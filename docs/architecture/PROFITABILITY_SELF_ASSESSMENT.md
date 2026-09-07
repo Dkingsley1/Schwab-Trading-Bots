@@ -85,4 +85,4 @@ The system-needs intelligence, self-model, runtime artifact refresh graph, and l
 
 Applying paper-only tightening preserves cumulative segmented soak history and does not request a full soak-clock reset. A semantic candidate change starts or continues a separately attributable clean candidate window; historical evidence is retained but never relabeled as evidence for the new candidate.
 
-The cumulative soak and clean promotion clock remain separate. Every verified accepted generation can contribute to developmental learning, while only the current unchanged candidate can accrue the clean 720 hours and current-candidate economic evidence required by the live-promotion contracts.
+The cumulative soak and promotion clocks remain separate. Every verified accepted generation can contribute to developmental learning, while only the current unchanged candidate can accrue its scope-aware elapsed and completed-session evidence plus the current-candidate economic evidence required by the live-promotion contracts. Material strategy, execution, and risk scopes retain the full 720-hour tier.

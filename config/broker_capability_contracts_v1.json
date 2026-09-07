@@ -15,6 +15,7 @@
         "supports_order_replace": true,
         "supports_order_cancel": true,
         "supports_order_fetch": true,
+        "supports_order_list": true,
         "supports_options": true,
         "supports_futures": true,
         "supports_news_context": true,
@@ -42,6 +43,29 @@
       "price": {"minimum": 0.0001, "maximum_decimals": 4},
       "rate_limit_pools": {"market_data": 120, "accounts": 60, "orders": 60},
       "account_types": ["BROKERAGE", "IRA", "ROTH_IRA"],
+      "account_truth_contract": {
+        "classification_axes": ["provider_account_type", "account_kind", "tax_wrapper", "trading_access", "borrowing_authority"],
+        "trading_access_models": ["cash", "limited_margin", "full_margin", "portfolio_margin", "unknown"],
+        "limited_margin_is_borrowing_authority": false,
+        "provider_account_type_can_grant_live_authority": false,
+        "negative_margin_balance_is_automatically_debt": false,
+        "balance_sections_preserved": ["currentBalances", "projectedBalances", "initialBalances"],
+        "account_flags_preserved": ["isClosingOnlyRestricted", "isDayTrader", "isIntradayMargin", "isPortfolioMargin", "pfcbFlag", "roundTrips"],
+        "redacted_fields": ["accountNumber", "accountHash", "accountReference"],
+        "unknown_safe_fields_visible": true,
+        "unknown_fields_can_grant_execution_authority": false,
+        "account_truth_can_block_but_never_grant_live_execution": true
+      },
+      "broker_communication_contract": {
+        "managed_credential_runtime_required": true,
+        "failed_refresh_preserves_last_known_good": true,
+        "schema_and_capability_drift_quarantined": true,
+        "shared_cross_process_rate_limit": true,
+        "live_account_binding": "explicit_schwab_hash_only",
+        "live_account_auto_discovery_allowed": false,
+        "durable_order_idempotency_required": true,
+        "full_active_order_inventory_reconciliation_required": true
+      },
       "settlement": {"EQUITY": "T+1", "ETF": "T+1", "OPTION": "T+1"}
     },
     "coinbase": {
@@ -57,6 +81,7 @@
         "supports_order_replace": false,
         "supports_order_cancel": false,
         "supports_order_fetch": false,
+        "supports_order_list": false,
         "supports_options": false,
         "supports_futures": true,
         "supports_news_context": false,
@@ -85,6 +110,7 @@
         "supports_order_replace": true,
         "supports_order_cancel": true,
         "supports_order_fetch": true,
+        "supports_order_list": true,
         "supports_options": false,
         "supports_futures": false,
         "supports_news_context": false,

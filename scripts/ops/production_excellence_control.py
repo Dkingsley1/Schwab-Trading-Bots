@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 if __package__ in {None, ""}:
@@ -16,6 +16,10 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.artifact_generation_lock import paper_profitability_generation_lock
+    from scripts.ops.candidate_scope_validation import (
+        evaluate_scope_validation,
+        load_planned_maintenance_windows,
+    )
     from scripts.ops.long_runtime_common import (
         load_json,
         parse_iso_utc,
@@ -24,6 +28,10 @@ if __package__ in {None, ""}:
     )
 else:
     from .artifact_generation_lock import paper_profitability_generation_lock
+    from .candidate_scope_validation import (
+        evaluate_scope_validation,
+        load_planned_maintenance_windows,
+    )
     from .long_runtime_common import (
         PROJECT_ROOT,
         load_json,
@@ -34,6 +42,9 @@ else:
 
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "production_excellence_v1.json"
+DEFAULT_GENERATED_ARTIFACT_POLICY_RELATIVE_PATH = (
+    "config/generated_artifact_policy.json"
+)
 DEFAULT_OUT_PATH = (
     PROJECT_ROOT / "governance" / "health" / "production_excellence_control_latest.json"
 )
@@ -104,6 +115,75 @@ def _project_path(project_root: Path, raw: Any) -> Path:
     return path if path.is_absolute() else project_root / path
 
 
+def _exact_project_relative_path(raw: Any) -> str:
+    text = str(raw or "").strip().replace("\\", "/")
+    path = PurePosixPath(text)
+    if (
+        not text
+        or path.is_absolute()
+        or path.as_posix() != text
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or any(token in text for token in ("*", "?", "[", "]", "{", "}"))
+    ):
+        return ""
+    return text
+
+
+def candidate_generated_artifact_policy(
+    project_root: Path, config: dict[str, Any]
+) -> dict[str, Any]:
+    candidate = _as_dict(config.get("candidate"))
+    required = bool(candidate.get("require_generated_artifact_policy", False))
+    configured_path = str(
+        candidate.get("generated_artifact_policy_path")
+        or DEFAULT_GENERATED_ARTIFACT_POLICY_RELATIVE_PATH
+    ).strip()
+    relative_policy_path = _exact_project_relative_path(configured_path)
+    invalid_entries: list[str] = []
+    if not relative_policy_path:
+        invalid_entries.append(configured_path or "<empty_policy_path>")
+        policy_path = project_root / DEFAULT_GENERATED_ARTIFACT_POLICY_RELATIVE_PATH
+    else:
+        policy_path = project_root / relative_policy_path
+
+    policy = load_json(policy_path) if policy_path.is_file() else {}
+    contract = _as_dict(policy.get("candidate_fingerprint_contract"))
+    exclusions_enabled = bool(
+        contract.get("exclude_exact_tracked_runtime_outputs", False)
+    )
+    raw_outputs = _as_list(policy.get("tracked_runtime_outputs"))
+    exclusions: list[str] = []
+    for raw in raw_outputs:
+        normalized = _exact_project_relative_path(raw)
+        if not normalized:
+            invalid_entries.append(str(raw or "<empty_output_path>"))
+        else:
+            exclusions.append(normalized)
+    if raw_outputs and not exclusions_enabled:
+        invalid_entries.append("candidate_fingerprint_contract_not_enabled")
+
+    policy_present = policy_path.is_file()
+    policy_loaded = bool(policy)
+    ready = bool(
+        not invalid_entries
+        and (not required or (policy_present and policy_loaded))
+        and (not raw_outputs or exclusions_enabled)
+    )
+    return {
+        "ready": ready,
+        "required": required,
+        "policy_path": str(policy_path),
+        "policy_relative_path": relative_policy_path,
+        "policy_present": policy_present,
+        "policy_loaded": policy_loaded,
+        "exact_exclusions_enabled": exclusions_enabled,
+        "excluded_paths": sorted(set(exclusions)) if ready else [],
+        "excluded_path_count": len(set(exclusions)) if ready else 0,
+        "invalid_entries": sorted(set(invalid_entries)),
+        "broad_exclusions_allowed": False,
+    }
+
+
 def _git_head(project_root: Path) -> str:
     proc = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -115,7 +195,13 @@ def _git_head(project_root: Path) -> str:
     return (proc.stdout or "").strip() if proc.returncode == 0 else ""
 
 
-def _scope_files(project_root: Path, patterns: Iterable[Any]) -> list[Path]:
+def _scope_files(
+    project_root: Path,
+    patterns: Iterable[Any],
+    *,
+    excluded_relative_paths: Iterable[str] = (),
+) -> list[Path]:
+    excluded = {str(path) for path in excluded_relative_paths}
     paths: set[Path] = set()
     for raw in patterns:
         pattern = str(raw or "").strip()
@@ -123,7 +209,9 @@ def _scope_files(project_root: Path, patterns: Iterable[Any]) -> list[Path]:
             continue
         for path in project_root.glob(pattern):
             if path.is_file() or path.is_symlink():
-                paths.add(path)
+                relative = str(path.relative_to(project_root)).replace(os.sep, "/")
+                if relative not in excluded:
+                    paths.add(path)
     return sorted(paths, key=lambda item: str(item.relative_to(project_root)))
 
 
@@ -131,8 +219,14 @@ def candidate_scope_files(
     project_root: Path, config: dict[str, Any]
 ) -> dict[str, list[Path]]:
     scopes = _as_dict(_as_dict(config.get("candidate")).get("scope_globs"))
+    generated_policy = candidate_generated_artifact_policy(project_root, config)
+    exclusions = _as_list(generated_policy.get("excluded_paths"))
     return {
-        str(scope): _scope_files(project_root, _as_list(patterns))
+        str(scope): _scope_files(
+            project_root,
+            _as_list(patterns),
+            excluded_relative_paths=exclusions,
+        )
         for scope, patterns in sorted(scopes.items())
     }
 
@@ -149,6 +243,23 @@ def _hash_scope(project_root: Path, paths: list[Path]) -> str:
             digest.update(_candidate_file_content(project_root, path))
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _candidate_path_sha256(project_root: Path, path: Path) -> str:
+    if path.is_symlink():
+        content = f"symlink:{os.readlink(path)}".encode("utf-8")
+    else:
+        content = _candidate_file_content(project_root, path)
+    return hashlib.sha256(content).hexdigest()
+
+
+def _scope_file_manifest(project_root: Path, paths: list[Path]) -> dict[str, str]:
+    return {
+        str(path.relative_to(project_root)).replace(
+            os.sep, "/"
+        ): _candidate_path_sha256(project_root, path)
+        for path in paths
+    }
 
 
 def _file_sha256(path: Path) -> str:
@@ -247,23 +358,88 @@ def _profitability_source_matches(
 def candidate_fingerprints(
     project_root: Path, config: dict[str, Any]
 ) -> dict[str, Any]:
+    generated_policy = candidate_generated_artifact_policy(project_root, config)
     rows: dict[str, dict[str, Any]] = {}
     for scope, files in candidate_scope_files(project_root, config).items():
         rows[scope] = {
             "sha256": _hash_scope(project_root, files),
             "file_count": len(files),
+            "file_manifest": _scope_file_manifest(project_root, files),
         }
     combined = {scope: row["sha256"] for scope, row in rows.items()}
+    source_coverage = candidate_source_coverage(project_root, config, rows=rows)
     return {
         "overall_sha256": _canonical_hash(combined),
         "scopes": rows,
         "scope_count": len(rows),
         "file_count": sum(_safe_int(row.get("file_count"), 0) for row in rows.values()),
+        "source_coverage": source_coverage,
         "normalization_contract": {
             "master_bot_registry_runtime_observations_excluded": True,
             "excluded_runtime_keys": sorted(REGISTRY_RUNTIME_OBSERVATION_KEYS),
             "strategy_definitions_and_thresholds_remain_hashed": True,
+            "per_file_manifests_recorded": True,
+            "generated_runtime_outputs_excluded_by_exact_path_only": bool(
+                generated_policy.get("ready", False)
+            ),
+            "generated_artifact_policy": generated_policy,
         },
+    }
+
+
+def candidate_source_coverage(
+    project_root: Path,
+    config: dict[str, Any],
+    *,
+    rows: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    candidate = _as_dict(config.get("candidate"))
+    scopes = _as_dict(candidate.get("scope_globs"))
+    inventory_patterns = _as_list(candidate.get("source_inventory_globs"))
+    if not inventory_patterns:
+        inventory_patterns = [
+            pattern for patterns in scopes.values() for pattern in _as_list(patterns)
+        ]
+    generated_policy = candidate_generated_artifact_policy(project_root, config)
+    excluded_paths = _as_list(generated_policy.get("excluded_paths"))
+    inventory = _scope_files(
+        project_root,
+        inventory_patterns,
+        excluded_relative_paths=excluded_paths,
+    )
+    scope_rows = rows or {
+        scope: {
+            "file_manifest": _scope_file_manifest(
+                project_root,
+                _scope_files(
+                    project_root,
+                    _as_list(patterns),
+                    excluded_relative_paths=excluded_paths,
+                ),
+            )
+        }
+        for scope, patterns in scopes.items()
+    }
+    memberships: dict[str, list[str]] = {}
+    for scope, row in scope_rows.items():
+        manifest = _as_dict(row.get("file_manifest"))
+        for relative in manifest:
+            memberships.setdefault(relative, []).append(str(scope))
+    inventory_paths = [
+        str(path.relative_to(project_root)).replace(os.sep, "/") for path in inventory
+    ]
+    uncovered = sorted(path for path in inventory_paths if not memberships.get(path))
+    return {
+        "ready": not uncovered and bool(generated_policy.get("ready", False)),
+        "required": bool(candidate.get("require_full_source_coverage", False)),
+        "inventory_file_count": len(inventory_paths),
+        "covered_file_count": len(inventory_paths) - len(uncovered),
+        "uncovered_file_count": len(uncovered),
+        "uncovered_files": uncovered,
+        "inventory_globs": [str(pattern) for pattern in inventory_patterns],
+        "generated_artifact_policy": generated_policy,
+        "excluded_generated_files": excluded_paths,
+        "excluded_generated_file_count": len(excluded_paths),
     }
 
 
@@ -383,6 +559,97 @@ def _changed_scopes(state: dict[str, Any], current: dict[str, Any]) -> list[str]
     ]
 
 
+def _git_changed_paths(project_root: Path, accepted_head: str) -> list[str]:
+    paths: set[str] = set()
+    commands: list[list[str]] = []
+    if accepted_head:
+        commands.append(
+            [
+                "git",
+                "diff",
+                "--name-only",
+                "--diff-filter=ACDMRTUXB",
+                accepted_head,
+                "--",
+            ]
+        )
+    commands.append(["git", "ls-files", "--others", "--exclude-standard"])
+    for command in commands:
+        proc = subprocess.run(
+            command,
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            continue
+        paths.update(line.strip() for line in proc.stdout.splitlines() if line.strip())
+    return sorted(paths)
+
+
+def _changed_scope_details(
+    project_root: Path,
+    state: dict[str, Any],
+    current: dict[str, Any],
+    changed_scopes: list[str],
+) -> dict[str, Any]:
+    accepted_scopes = _as_dict(state.get("scope_fingerprints"))
+    current_scopes = _as_dict(current.get("scopes"))
+    git_candidates = _git_changed_paths(
+        project_root, str(state.get("accepted_git_head") or "")
+    )
+    scope_changes: dict[str, dict[str, Any]] = {}
+    changed_files: set[str] = set()
+    comparison_complete = True
+    for scope in changed_scopes:
+        accepted_manifest = _as_dict(
+            _as_dict(accepted_scopes.get(scope)).get("file_manifest")
+        )
+        current_manifest = _as_dict(
+            _as_dict(current_scopes.get(scope)).get("file_manifest")
+        )
+        manifest_available = bool(accepted_manifest)
+        if manifest_available:
+            added = sorted(set(current_manifest) - set(accepted_manifest))
+            removed = sorted(set(accepted_manifest) - set(current_manifest))
+            modified = sorted(
+                path
+                for path in set(accepted_manifest) & set(current_manifest)
+                if str(accepted_manifest.get(path) or "")
+                != str(current_manifest.get(path) or "")
+            )
+            candidates: list[str] = []
+        else:
+            comparison_complete = False
+            added = []
+            removed = []
+            modified = []
+            candidates = sorted(
+                path for path in git_candidates if path in current_manifest
+            )
+        scope_files = sorted(set(added + removed + modified + candidates))
+        changed_files.update(scope_files)
+        scope_changes[scope] = {
+            "manifest_comparison_complete": manifest_available,
+            "added_files": added,
+            "removed_files": removed,
+            "modified_files": modified,
+            "legacy_git_candidates": candidates,
+            "changed_file_count": len(scope_files),
+            "changed_files": scope_files,
+        }
+    return {
+        "manifest_comparison_complete": comparison_complete,
+        "changed_scope_count": len(changed_scopes),
+        "changed_file_count": len(changed_files),
+        "changed_files": sorted(changed_files),
+        "scope_changes": scope_changes,
+        "legacy_git_candidate_fallback_used": bool(changed_scopes)
+        and not comparison_complete,
+    }
+
+
 def manage_candidate(
     project_root: Path,
     config: dict[str, Any],
@@ -400,6 +667,20 @@ def manage_candidate(
     current = candidate_fingerprints(project_root, config)
     chain_before = verify_candidate_event_chain(event_path)
     changed_before = _changed_scopes(state, current) if state else []
+    drift_before = (
+        _changed_scope_details(project_root, state, current, changed_before)
+        if state
+        else {
+            "manifest_comparison_complete": True,
+            "changed_scope_count": 0,
+            "changed_file_count": 0,
+            "changed_files": [],
+            "scope_changes": {},
+            "legacy_git_candidate_fallback_used": False,
+        }
+    )
+    source_coverage = _as_dict(current.get("source_coverage"))
+    coverage_required = bool(source_coverage.get("required", False))
     operation = "inspect"
     operation_error = ""
     quarantined_event_log = ""
@@ -431,6 +712,8 @@ def manage_candidate(
             state.get("event_chain_head") or ""
         ):
             operation_error = "candidate_state_event_chain_head_mismatch"
+        elif coverage_required and not source_coverage.get("ready", False):
+            operation_error = "candidate_source_scope_coverage_incomplete"
         elif not changed_before:
             operation_error = "no_candidate_drift_to_accept"
         elif len(str(change_reason or "").strip()) < minimum_reason:
@@ -503,6 +786,17 @@ def manage_candidate(
                 change_reason or "initial production-excellence candidate freeze"
             ).strip(),
             "previous_event_hash": previous_head,
+            "change_evidence": {
+                "manifest_comparison_complete": bool(
+                    drift_before.get("manifest_comparison_complete", False)
+                ),
+                "changed_file_count": _safe_int(
+                    drift_before.get("changed_file_count"), 0
+                ),
+                "changed_files": list(drift_before.get("changed_files") or []),
+                "scope_changes": _as_dict(drift_before.get("scope_changes")),
+                "source_coverage": source_coverage,
+            },
         }
         if recovering:
             event_unsigned["recovery_evidence"] = {
@@ -536,6 +830,11 @@ def manage_candidate(
                 "changed_scopes": changed,
                 "change_reason": event_unsigned["change_reason"],
                 "event_hash": event["event_hash"],
+                "changed_file_count": _safe_int(
+                    drift_before.get("changed_file_count"), 0
+                ),
+                "changed_files": list(drift_before.get("changed_files") or []),
+                "scope_changes": _as_dict(drift_before.get("scope_changes")),
             },
             "event_chain_head": event["event_hash"],
             "live_execution_authority": False,
@@ -546,11 +845,18 @@ def manage_candidate(
 
     chain_after = verify_candidate_event_chain(event_path)
     changed_after = _changed_scopes(state, current) if state else []
+    drift_after = (
+        _changed_scope_details(project_root, state, current, changed_after)
+        if state
+        else drift_before
+    )
     return {
         "state": state,
         "current": current,
         "changed_scopes": changed_after,
         "candidate_drift": bool(changed_after),
+        "drift_details": drift_after,
+        "source_coverage": source_coverage,
         "event_chain": chain_after,
         "operation": operation,
         "operation_error": operation_error,
@@ -726,9 +1032,15 @@ def build_payload(
     )
     state = _as_dict(candidate.get("state"))
     chain = _as_dict(candidate.get("event_chain"))
+    source_coverage = _as_dict(candidate.get("source_coverage"))
+    source_coverage_ready = bool(
+        not source_coverage.get("required", False)
+        or source_coverage.get("ready", False)
+    )
     candidate_ready = bool(
         state
         and not candidate.get("candidate_drift", False)
+        and source_coverage_ready
         and chain.get("ok", False)
         and _safe_int(chain.get("event_count"), 0) >= 1
         and str(chain.get("chain_head") or "")
@@ -778,8 +1090,23 @@ def build_payload(
                 "candidate_fingerprint_nonempty",
                 "Candidate fingerprint covers source files",
                 _safe_int(_as_dict(candidate.get("current")).get("file_count"), 0) > 0,
-                evidence=_as_dict(candidate.get("current")),
+                evidence={
+                    "overall_sha256": _as_dict(candidate.get("current")).get(
+                        "overall_sha256"
+                    ),
+                    "scope_count": _as_dict(candidate.get("current")).get(
+                        "scope_count"
+                    ),
+                    "file_count": _as_dict(candidate.get("current")).get("file_count"),
+                },
                 action="repair production-excellence scope globs so critical source files are fingerprinted",
+            ),
+            _check(
+                "candidate_source_scope_coverage",
+                "Every declared runtime source belongs to a candidate scope",
+                source_coverage_ready,
+                evidence=source_coverage,
+                action="map every uncovered runtime source into an explicit candidate scope before acceptance",
             ),
         ],
     )
@@ -792,13 +1119,37 @@ def build_payload(
         current_time,
     )
     soak_payload = _as_dict(soak.get("payload"))
-    soak_start = _window_start(state, _as_list(candidate_policy.get("soak_scopes")))
-    soak_age = _window_age_hours(soak_start, current_time)
-    required_soak = _safe_float(soak_policy.get("required_hours"), 720.0)
-    checkpoint = _safe_float(soak_policy.get("checkpoint_hours"), 168.0)
+    scope_validation = evaluate_scope_validation(
+        project_root,
+        config,
+        scope_windows_started_utc=_as_dict(
+            state.get("scope_windows_started_utc")
+        ),
+        required_scopes=_as_list(candidate_policy.get("soak_scopes")),
+        candidate_ready=candidate_ready,
+        now=current_time,
+        maintenance_windows=load_planned_maintenance_windows(
+            project_root, now=current_time
+        ),
+    )
+    scope_validation_checks = [
+        _check(
+            f"scope_{row.get('scope')}_validation",
+            f"{str(row.get('scope') or 'unknown').replace('_', ' ').title()} scope completes its {row.get('tier')} validation tier",
+            bool(row.get("ready", False)),
+            evidence=row,
+            action=(
+                f"continue the unchanged {row.get('scope')} scope until both "
+                f"{row.get('required_hours')} credited hours and "
+                f"{row.get('required_completed_sessions')} completed XNYS sessions are earned"
+            ),
+        )
+        for row in _as_list(scope_validation.get("scope_results"))
+        if isinstance(row, dict) and row.get("required_for_promotion", False)
+    ]
     pillar_2 = _pillar(
         "p02_clean_30_day_soak",
-        "Clean 30-Day Soak",
+        "Scope-Aware Candidate Validation",
         [
             _check(
                 "soak_candidate_frozen",
@@ -834,27 +1185,23 @@ def build_payload(
                 action="clear true unattended-soak blockers while keeping live execution locked",
             ),
             _check(
-                "seven_day_checkpoint",
-                "Candidate has seven clean days",
-                bool(candidate_ready and soak_age >= checkpoint),
+                "scope_validation_policy_ready",
+                "Scope validation policy and market calendar are verifiable",
+                bool(
+                    scope_validation.get("policy_ready", False)
+                    and _as_dict(scope_validation.get("calendar")).get(
+                        "ready", False
+                    )
+                ),
                 evidence={
-                    "window_start_utc": soak_start.isoformat() if soak_start else "",
-                    "age_hours": round(soak_age, 4),
-                    "required_hours": checkpoint,
+                    "policy_id": scope_validation.get("policy_id"),
+                    "policy_path": scope_validation.get("policy_path"),
+                    "policy_errors": scope_validation.get("policy_errors", []),
+                    "calendar": scope_validation.get("calendar", {}),
                 },
-                action="continue the unchanged soak through the seven-day checkpoint",
+                action="repair the canonical scope policy or XNYS calendar evidence before crediting candidate time",
             ),
-            _check(
-                "thirty_day_window",
-                "Candidate has 720 clean hours",
-                bool(candidate_ready and soak_age >= required_soak),
-                evidence={
-                    "window_start_utc": soak_start.isoformat() if soak_start else "",
-                    "age_hours": round(soak_age, 4),
-                    "required_hours": required_soak,
-                },
-                action="continue the unchanged candidate until the full 30-day window is complete",
-            ),
+            *scope_validation_checks,
             _check(
                 "soak_has_no_blockers",
                 "Soak has no unresolved blockers",
@@ -1804,6 +2151,7 @@ def build_payload(
         "live_money_consideration_ready": all_ready,
         "live_execution_authority": False,
         "live_orders_must_remain_disabled": not all_ready,
+        "scope_validation": scope_validation,
         "ready_pillar_count": ready_count,
         "pillar_count": len(pillars),
         "blocked_pillars": blockers,
@@ -1813,6 +2161,8 @@ def build_payload(
             "candidate_ready": candidate_ready,
             "candidate_drift": bool(candidate.get("candidate_drift", False)),
             "changed_scopes": candidate.get("changed_scopes", []),
+            "drift_details": candidate.get("drift_details", {}),
+            "source_coverage": source_coverage,
             "operation": candidate.get("operation"),
             "operation_error": candidate.get("operation_error"),
             "quarantined_event_log": candidate.get("quarantined_event_log"),
@@ -1820,6 +2170,10 @@ def build_payload(
             "event_path": candidate.get("event_path"),
             "event_chain": chain,
             "scope_windows_started_utc": state.get("scope_windows_started_utc", {}),
+            "scope_validation_policy_id": scope_validation.get("policy_id"),
+            "scope_aware_validation_complete": scope_validation.get(
+                "scope_aware_validation_complete", False
+            ),
             "historical_profitability_baseline": baseline,
         },
         "pillars": pillars,

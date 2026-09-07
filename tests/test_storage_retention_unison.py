@@ -88,7 +88,9 @@ def test_verified_cross_tier_move_resets_growth_baseline_and_persists_event(
         "_device_id",
         lambda path: 2 if src._path_within(Path(path), external_root) else 1,
     )
-    os.utime(source, (moved_at.timestamp(), moved_at.timestamp()), follow_symlinks=False)
+    os.utime(
+        source, (moved_at.timestamp(), moved_at.timestamp()), follow_symlinks=False
+    )
 
     event_path = project_root / "governance" / "runtime" / "capacity_epoch.json"
     control = src._storage_growth_baseline_control(
@@ -127,21 +129,42 @@ def test_storage_growth_forecast_names_verified_capacity_control_scope() -> None
     assert payload["confidence"] == "new_baseline"
 
 
-def test_video_cold_archive_override_cannot_bypass_protected_volume(monkeypatch) -> None:
+def test_video_cold_archive_override_cannot_bypass_protected_volume(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("BOT_ALLOW_VIDEO_COLD_ARCHIVE", "1")
-    monkeypatch.setenv("BOT_VIDEO_COLD_ARCHIVE_ROOT", "/Volumes/VIDEO/schwab_trading_bot_cold")
+    monkeypatch.setenv(
+        "BOT_VIDEO_COLD_ARCHIVE_ROOT", "/Volumes/VIDEO/schwab_trading_bot_cold"
+    )
 
     assert src._is_protected_volume(Path("/Volumes/VIDEO")) is True
-    assert src._is_protected_volume(Path("/Volumes/VIDEO/schwab_trading_bot_cold")) is True
-    assert src._is_protected_volume(Path("/Volumes/VIDEO/schwab_trading_bot_cold/data/proof.jsonl")) is True
+    assert (
+        src._is_protected_volume(Path("/Volumes/VIDEO/schwab_trading_bot_cold")) is True
+    )
+    assert (
+        src._is_protected_volume(
+            Path("/Volumes/VIDEO/schwab_trading_bot_cold/data/proof.jsonl")
+        )
+        is True
+    )
 
 
-def test_unconfigured_protected_candidate_does_not_claim_target_points_there(monkeypatch, tmp_path: Path) -> None:
+def test_unconfigured_protected_candidate_does_not_claim_target_points_there(
+    monkeypatch, tmp_path: Path
+) -> None:
     video_candidate = tmp_path / "VIDEO" / "schwab_trading_bot_cold"
     monkeypatch.delenv("BOT_SECOND_COLD_ROOT", raising=False)
-    monkeypatch.setattr(src, "DEFAULT_SECOND_COLD_CANDIDATES", (str(tmp_path / "BOT_COLD"), str(video_candidate)))
-    monkeypatch.setattr(src, "_is_protected_volume", lambda path: Path(path) == video_candidate)
-    monkeypatch.setattr(src, "_disk_snapshot", lambda path: {"free_gb": 0.0, "used_percent": 0.0})
+    monkeypatch.setattr(
+        src,
+        "DEFAULT_SECOND_COLD_CANDIDATES",
+        (str(tmp_path / "BOT_COLD"), str(video_candidate)),
+    )
+    monkeypatch.setattr(
+        src, "_is_protected_volume", lambda path: Path(path) == video_candidate
+    )
+    monkeypatch.setattr(
+        src, "_disk_snapshot", lambda path: {"free_gb": 0.0, "used_percent": 0.0}
+    )
 
     payload = src._second_cold_preflight()
 
@@ -151,11 +174,17 @@ def test_unconfigured_protected_candidate_does_not_claim_target_points_there(mon
     assert any(row["protected"] for row in payload["candidates"])
 
 
-def test_configured_protected_second_cold_target_remains_blocked(monkeypatch, tmp_path: Path) -> None:
+def test_configured_protected_second_cold_target_remains_blocked(
+    monkeypatch, tmp_path: Path
+) -> None:
     video_candidate = tmp_path / "VIDEO" / "schwab_trading_bot_cold"
     monkeypatch.setenv("BOT_SECOND_COLD_ROOT", str(video_candidate))
-    monkeypatch.setattr(src, "_is_protected_volume", lambda path: Path(path) == video_candidate)
-    monkeypatch.setattr(src, "_disk_snapshot", lambda path: {"free_gb": 0.0, "used_percent": 0.0})
+    monkeypatch.setattr(
+        src, "_is_protected_volume", lambda path: Path(path) == video_candidate
+    )
+    monkeypatch.setattr(
+        src, "_disk_snapshot", lambda path: {"free_gb": 0.0, "used_percent": 0.0}
+    )
 
     payload = src._second_cold_preflight()
 
@@ -270,7 +299,10 @@ def test_cold_archive_spillover_clears_projection_only_storage_blocker() -> None
     assert blocked["status"] == "blocked"
     assert payload["ready"] is True
     assert payload["blockers"] == []
-    assert payload["managed_blockers"] == ["insufficient_projected_free_space", "forecast_status_target_floor_breach"]
+    assert payload["managed_blockers"] == [
+        "insufficient_projected_free_space",
+        "forecast_status_target_floor_breach",
+    ]
     assert payload["cold_archive_adjusted_margin_gb"] > 0.0
     assert payload["control_env"]["BOT_COLD_ARCHIVE_SPILLOVER_READY"] == "1"
 
@@ -303,7 +335,9 @@ def test_cold_archive_spillover_does_not_hide_primary_pressure_risk() -> None:
     assert "insufficient_projected_free_space" in payload["blockers"]
 
 
-def test_cold_archive_spillover_capacity_uses_live_headroom_without_fixed_credit_cap(monkeypatch) -> None:
+def test_cold_archive_spillover_capacity_uses_live_headroom_without_fixed_credit_cap(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("BOT_COLD_ARCHIVE_RESERVE_GB", "64")
     monkeypatch.delenv("BOT_COLD_ARCHIVE_SPILLOVER_MAX_CREDIT_GB", raising=False)
 
@@ -317,7 +351,9 @@ def test_cold_archive_spillover_capacity_uses_live_headroom_without_fixed_credit
     assert capacity == 404.208
 
 
-def test_cold_archive_spillover_reports_capacity_shortfall_without_hiding_blocker(monkeypatch) -> None:
+def test_cold_archive_spillover_reports_capacity_shortfall_without_hiding_blocker(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("BOT_COLD_ARCHIVE_RESERVE_GB", "64")
     monkeypatch.delenv("BOT_COLD_ARCHIVE_SPILLOVER_MAX_CREDIT_GB", raising=False)
     continuous = {
@@ -328,7 +364,10 @@ def test_cold_archive_spillover_reports_capacity_shortfall_without_hiding_blocke
         "current_external_free_gb": 136.0,
         "pressure_free_gb": 64.0,
         "available_margin_gb": -500.0,
-        "blockers": ["insufficient_projected_free_space", "forecast_pressure_inside_horizon"],
+        "blockers": [
+            "insufficient_projected_free_space",
+            "forecast_pressure_inside_horizon",
+        ],
         "warnings": [],
         "control_env": {},
     }
@@ -344,7 +383,9 @@ def test_cold_archive_spillover_reports_capacity_shortfall_without_hiding_blocke
     assert payload["ready"] is False
     assert payload["cold_archive_spillover_available"] is True
     assert payload["cold_archive_spillover_ready"] is False
-    assert payload["cold_archive_spillover_status"] == "insufficient_capacity_for_horizon"
+    assert (
+        payload["cold_archive_spillover_status"] == "insufficient_capacity_for_horizon"
+    )
     assert payload["cold_archive_spillover_capacity_gb"] == 404.0
     assert payload["cold_archive_required_spillover_gb"] == 500.0
     assert payload["cold_archive_capacity_shortfall_gb"] == 96.0
@@ -376,7 +417,9 @@ def test_continuous_run_contract_uses_sustained_growth_with_burst_watch() -> Non
     assert payload["available_margin_gb"] == 120.4
 
 
-def test_continuous_run_contract_ignores_noisy_burst_when_sustained_growth_is_flat() -> None:
+def test_continuous_run_contract_ignores_noisy_burst_when_sustained_growth_is_flat() -> (
+    None
+):
     payload = src._continuous_run_contract(
         forecast={
             "status": "forecast_ready",
@@ -401,7 +444,9 @@ def test_continuous_run_contract_ignores_noisy_burst_when_sustained_growth_is_fl
     assert payload["control_env"]["BOT_CONTINUOUS_COLLECTION_READY"] == "1"
 
 
-def test_continuous_run_contract_does_not_hard_block_on_short_window_high_growth() -> None:
+def test_continuous_run_contract_does_not_hard_block_on_short_window_high_growth() -> (
+    None
+):
     payload = src._continuous_run_contract(
         forecast={
             "status": "near_pressure",
@@ -427,7 +472,9 @@ def test_continuous_run_contract_does_not_hard_block_on_short_window_high_growth
     assert payload["control_env"]["BOT_CONTINUOUS_COLLECTION_READY"] == "1"
 
 
-def test_continuous_run_contract_reclassifies_safe_short_window_watch_when_controls_are_green() -> None:
+def test_continuous_run_contract_reclassifies_safe_short_window_watch_when_controls_are_green() -> (
+    None
+):
     payload = src._continuous_run_contract(
         forecast={
             "status": "near_pressure",
@@ -494,10 +541,14 @@ def test_continuous_run_contract_accounts_for_collection_duty_cycle() -> None:
     assert payload["effective_daily_growth_gb"] == 8.4588
     assert payload["controlled_days_until_pressure_free"] > 30.0
     assert payload["control_env"]["BOT_CONTINUOUS_COLLECTION_READY"] == "1"
-    assert payload["control_env"]["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.16"
+    assert (
+        payload["control_env"]["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.16"
+    )
 
 
-def test_continuous_run_contract_uses_governed_projection_when_storage_controls_are_green() -> None:
+def test_continuous_run_contract_uses_governed_projection_when_storage_controls_are_green() -> (
+    None
+):
     payload = src._continuous_run_contract(
         forecast={
             "status": "near_pressure",
@@ -543,7 +594,9 @@ def test_continuous_run_contract_uses_governed_projection_when_storage_controls_
     assert payload["control_env"]["BOT_CONTINUOUS_COLLECTION_READY"] == "1"
 
 
-def test_continuous_run_contract_allows_bounded_post_maintenance_slope_without_manifest_first_storage() -> None:
+def test_continuous_run_contract_allows_bounded_post_maintenance_slope_without_manifest_first_storage() -> (
+    None
+):
     payload = src._continuous_run_contract(
         forecast={
             "status": "near_pressure",
@@ -588,12 +641,17 @@ def test_continuous_run_contract_allows_bounded_post_maintenance_slope_without_m
     assert payload["storage_bounded_control_ready"] is True
     assert payload["storage_bounded_projection"] is True
     assert payload["storage_projection_override"] is True
-    assert "bounded_storage_controls_override_short_post_maintenance_slope" in payload["warnings"]
+    assert (
+        "bounded_storage_controls_override_short_post_maintenance_slope"
+        in payload["warnings"]
+    )
     assert "manifest_first_storage_pending" in payload["warnings"]
     assert payload["control_env"]["BOT_CONTINUOUS_COLLECTION_READY"] == "1"
 
 
-def test_continuous_run_contract_does_not_allow_bounded_projection_below_required_free_space() -> None:
+def test_continuous_run_contract_does_not_allow_bounded_projection_below_required_free_space() -> (
+    None
+):
     payload = src._continuous_run_contract(
         forecast={
             "status": "near_pressure",
@@ -639,14 +697,74 @@ def test_deep_cold_needs_data_without_candidates_is_advisory() -> None:
     step = {
         "returncode": 2,
         "overall_status": "needs_data",
-        "payload": {"summary": {"candidate_count": 0, "candidate_gb": 0.0, "managed_count": 0}},
+        "payload": {
+            "summary": {"candidate_count": 0, "candidate_gb": 0.0, "managed_count": 0}
+        },
     }
 
-    assert src._deep_cold_needs_data_is_advisory("retention_freshness_deep_cold", step) is True
-    assert src._deep_cold_needs_data_is_advisory("retention_freshness_v2", step) is False
+    assert (
+        src._deep_cold_needs_data_is_advisory("retention_freshness_deep_cold", step)
+        is True
+    )
+    assert (
+        src._deep_cold_needs_data_is_advisory("retention_freshness_v2", step) is False
+    )
 
 
-def test_storage_retention_unison_runs_hot_plane_compactors(monkeypatch, tmp_path: Path) -> None:
+def test_deep_cold_partial_adaptive_release_without_failures_is_advisory() -> None:
+    step = {
+        "returncode": 2,
+        "overall_status": "needs_attention",
+        "payload": {
+            "adaptive_release": {"source_free_gb_after": 90.0},
+            "second_cold_move": {
+                "status": "partial",
+                "reason": "adaptive_release_target_unmet",
+                "moved_files": 23,
+                "moved_gb": 1.162,
+                "failed_files": 0,
+            },
+            "summary": {"managed_count": 23, "managed_gb": 1.162},
+        },
+    }
+
+    assert (
+        src._deep_cold_step_is_advisory(
+            "retention_freshness_deep_cold", step, pressure_free_gb=64.0
+        )
+        is True
+    )
+
+    step["payload"]["second_cold_move"]["failed_files"] = 1
+    assert (
+        src._deep_cold_step_is_advisory(
+            "retention_freshness_deep_cold", step, pressure_free_gb=64.0
+        )
+        is False
+    )
+
+    step["payload"]["second_cold_move"].update(
+        {
+            "failed_files": 0,
+            "candidate_files": 0,
+            "selected_candidate_files": 0,
+            "attempted_files": 0,
+            "moved_files": 0,
+            "moved_gb": 0.0,
+        }
+    )
+    step["payload"]["summary"].update({"managed_count": 0, "managed_gb": 0.0})
+    assert (
+        src._deep_cold_step_is_advisory(
+            "retention_freshness_deep_cold", step, pressure_free_gb=64.0
+        )
+        is True
+    )
+
+
+def test_storage_retention_unison_runs_hot_plane_compactors(
+    monkeypatch, tmp_path: Path
+) -> None:
     external_root = tmp_path / "external" / "schwab_trading_bot"
     external_root.mkdir(parents=True)
     (tmp_path / "governance" / "health").mkdir(parents=True)
@@ -656,29 +774,50 @@ def test_storage_retention_unison_runs_hot_plane_compactors(monkeypatch, tmp_pat
 
     commands: list[list[str]] = []
     timeouts: dict[str, int] = {}
+    events: list[tuple[str, str]] = []
+    real_write_payload = src.write_payload
+
+    def tracked_write_payload(path: Path, payload: dict[str, Any]) -> None:
+        events.append(("write", str(path)))
+        real_write_payload(path, payload)
 
     def fake_resolve_external_storage() -> SimpleNamespace:
         return SimpleNamespace(external_root=external_root)
 
     def fake_second_cold_preflight() -> dict[str, Any]:
-        return {"status": "ready", "score": 100.0, "grade": "A+", "ready": True, "next_action": "ready"}
+        return {
+            "status": "ready",
+            "score": 100.0,
+            "grade": "A+",
+            "ready": True,
+            "next_action": "ready",
+        }
 
-    def fake_run_json(command: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
+    def fake_run_json(
+        command: list[str], *, cwd: Path, timeout_sec: int
+    ) -> dict[str, Any]:
         commands.append(list(command))
         name = command[1]
+        events.append(("run", name))
         timeouts[name] = timeout_sec
         payload: dict[str, Any]
         if name == "deep-cold-storage-layer":
             published_forecast = json.loads(forecast_path.read_text(encoding="utf-8"))
             assert published_forecast.get("timestamp_utc")
             assert "current_external_free_gb" in published_forecast
-            payload = {"ok": True, "overall_status": "ready", "manifest_path": "manifest.json"}
+            payload = {
+                "ok": True,
+                "overall_status": "ready",
+                "manifest_path": "manifest.json",
+            }
         elif name == "cold-archive-compactor":
             payload = {
                 "ok": True,
                 "overall_status": "applied",
                 "archive_root": str(second_cold),
-                "manifest_path": str(second_cold / "cold_archive_compaction_manifest.jsonl"),
+                "manifest_path": str(
+                    second_cold / "cold_archive_compaction_manifest.jsonl"
+                ),
                 "readme_path": str(second_cold / "COLD_ARCHIVE_README.txt"),
                 "summary": {
                     "jsonl_candidate_count": 3,
@@ -711,34 +850,58 @@ def test_storage_retention_unison_runs_hot_plane_compactors(monkeypatch, tmp_pat
                     "raw_gb_cleared": 1.5,
                 },
                 "decision_packet": {"blocked_reasons": ["raw_compaction_not_applied"]},
-                "next_training_manifest": {"raw_source_queue_path": "raw.jsonl", "raw_eligible_source_queue_path": "eligible.jsonl"},
+                "next_training_manifest": {
+                    "raw_source_queue_path": "raw.jsonl",
+                    "raw_eligible_source_queue_path": "eligible.jsonl",
+                },
             }
         elif name == "bot-logs-cleanup-intelligence":
-            payload = {"ok": True, "overall_status": "ready", "projected_free_gb": 140.0, "selected_count": 0}
+            payload = {
+                "ok": True,
+                "overall_status": "ready",
+                "projected_free_gb": 140.0,
+                "selected_count": 0,
+            }
         elif name == "governance-telemetry-compactor":
             if "--project-root" in command:
                 payload = {
                     "ok": True,
                     "overall_status": "applied",
-                    "summary": {"candidate_count": 2, "selected_gb": 5.0, "estimated_hot_reduction_gb": 4.0},
+                    "summary": {
+                        "candidate_count": 2,
+                        "selected_gb": 5.0,
+                        "estimated_hot_reduction_gb": 4.0,
+                    },
                 }
             else:
                 payload = {
                     "ok": True,
                     "overall_status": "applied",
-                    "summary": {"candidate_count": 4, "selected_gb": 11.0, "estimated_hot_reduction_gb": 9.0},
+                    "summary": {
+                        "candidate_count": 4,
+                        "selected_gb": 11.0,
+                        "estimated_hot_reduction_gb": 9.0,
+                    },
                 }
         elif name == "governance-lifecycle-compactor":
             payload = {
                 "ok": True,
                 "overall_status": "applied",
-                "summary": {"candidate_count": 8, "selected_gb": 3.0, "estimated_reduction_gb": 2.4},
+                "summary": {
+                    "candidate_count": 8,
+                    "selected_gb": 3.0,
+                    "estimated_reduction_gb": 2.4,
+                },
             }
         elif name == "decision-log-compactor":
             payload = {
                 "ok": True,
                 "overall_status": "nothing_to_do",
-                "summary": {"candidate_count": 0, "selected_gb": 0.0, "estimated_reduction_gb": 0.0},
+                "summary": {
+                    "candidate_count": 0,
+                    "selected_gb": 0.0,
+                    "estimated_reduction_gb": 0.0,
+                },
             }
         elif name == "storage-tier-policy":
             payload = {
@@ -752,21 +915,45 @@ def test_storage_retention_unison_runs_hot_plane_compactors(monkeypatch, tmp_pat
                     "eligible_offload_gb": 7.5,
                     "compaction_only_files": 2,
                     "compaction_only_gb": 10.25,
-                    "delete_requires": ["verified_cold_copy", "sha256_match", "restore_probe", "retention_gate"],
-                    "never_delete_classes": ["keep_hot_critical", "stateful_sql_compaction_only"],
+                    "delete_requires": [
+                        "verified_cold_copy",
+                        "sha256_match",
+                        "restore_probe",
+                        "retention_gate",
+                    ],
+                    "never_delete_classes": [
+                        "keep_hot_critical",
+                        "stateful_sql_compaction_only",
+                    ],
                     "stateful_sql_policy": "checkpoint or mirror only",
                     "next_action": "use manifest for bounded offload",
                 },
                 "offload_manifest_summary": {"entry_count": 9, "omitted_count": 0},
             }
         elif name == "hot-lane-retention-control":
-            payload = {"ok": True, "overall_status": "ready", "overall_score": 99.0, "mode": "watch", "reasons": []}
+            payload = {
+                "ok": True,
+                "overall_status": "ready",
+                "overall_score": 99.0,
+                "mode": "watch",
+                "reasons": [],
+            }
         elif name == "creative-cotenant-guard":
-            payload = {"ok": True, "overall_status": "ready", "actions": [], "creative_mode": {}, "runtime_throttle": {}}
+            payload = {
+                "ok": True,
+                "overall_status": "ready",
+                "actions": [],
+                "creative_mode": {},
+                "runtime_throttle": {},
+            }
         elif name == "storage-quota-guard":
             payload = {"ok": True, "overall_status": "ready"}
         elif name == "ingestion-storage-control":
-            payload = {"ok": True, "overall_status": "ready", "storage_efficiency_contract": {"grade": "A+"}}
+            payload = {
+                "ok": True,
+                "overall_status": "ready",
+                "storage_efficiency_contract": {"grade": "A+"},
+            }
         else:
             payload = {"ok": True, "overall_status": "ready"}
         return {
@@ -783,6 +970,7 @@ def test_storage_retention_unison_runs_hot_plane_compactors(monkeypatch, tmp_pat
     monkeypatch.setattr(src, "resolve_external_storage", fake_resolve_external_storage)
     monkeypatch.setattr(src, "_second_cold_preflight", fake_second_cold_preflight)
     monkeypatch.setattr(src, "_run_json", fake_run_json)
+    monkeypatch.setattr(src, "write_payload", tracked_write_payload)
 
     payload = src.build_payload(
         tmp_path,
@@ -810,20 +998,35 @@ def test_storage_retention_unison_runs_hot_plane_compactors(monkeypatch, tmp_pat
     assert "--move-to-second-cold" in deep_cold_command
     assert "--adaptive" in deep_cold_command
     assert timeouts["deep-cold-storage-layer"] == 1800
-    assert deep_cold_command[deep_cold_command.index("--planning-horizon-days") + 1] == "30.0"
-    assert deep_cold_command[deep_cold_command.index("--source-free-target-gb") + 1] == "125.0"
+    assert (
+        deep_cold_command[deep_cold_command.index("--planning-horizon-days") + 1]
+        == "30.0"
+    )
+    assert "--source-free-target-gb" not in deep_cold_command
     assert str(second_cold) in deep_cold_command
     assert "--apply" in cold_archive_command
-    assert cold_archive_command[cold_archive_command.index("--archive-root") + 1] == str(second_cold)
+    assert cold_archive_command[
+        cold_archive_command.index("--archive-root") + 1
+    ] == str(second_cold)
     assert cold_archive_command[cold_archive_command.index("--max-files") + 1] == "6"
     assert cold_archive_command[cold_archive_command.index("--max-raw-gb") + 1] == "9.0"
-    assert cold_archive_command[cold_archive_command.index("--min-age-hours") + 1] == "36.0"
-    assert cold_archive_command[cold_archive_command.index("--compression-level") + 1] == "4"
+    assert (
+        cold_archive_command[cold_archive_command.index("--min-age-hours") + 1]
+        == "36.0"
+    )
+    assert (
+        cold_archive_command[cold_archive_command.index("--compression-level") + 1]
+        == "4"
+    )
     assert "--allow-active-writer" not in cold_archive_command
     assert "--coordinate-writer-handoff" in cold_archive_command
     telemetry_command = commands[command_names.index("governance-telemetry-compactor")]
-    telemetry_commands = [row for row in commands if row[1] == "governance-telemetry-compactor"]
-    external_telemetry_command = [row for row in telemetry_commands if "--project-root" in row][0]
+    telemetry_commands = [
+        row for row in commands if row[1] == "governance-telemetry-compactor"
+    ]
+    external_telemetry_command = [
+        row for row in telemetry_commands if "--project-root" in row
+    ][0]
     lifecycle_command = commands[command_names.index("governance-lifecycle-compactor")]
     decision_command = commands[command_names.index("decision-log-compactor")]
     cleanup_command = commands[command_names.index("bot-logs-cleanup-intelligence")]
@@ -836,32 +1039,143 @@ def test_storage_retention_unison_runs_hot_plane_compactors(monkeypatch, tmp_pat
     assert cleanup_command[cleanup_command.index("--max-tier") + 1] == "2"
     assert cleanup_command[cleanup_command.index("--max-delete-gb") + 1] == "22.0"
     assert payload["sections"]["hot_plane_compaction"]["status"] == "applied"
-    assert payload["sections"]["hot_plane_compaction"]["evidence"]["estimated_reduction_gb"] == 15.4
+    assert (
+        payload["sections"]["hot_plane_compaction"]["evidence"][
+            "estimated_reduction_gb"
+        ]
+        == 15.4
+    )
     assert payload["sections"]["bot_logs_lean"]["evidence"]["effective_max_tier"] == 2
     assert payload["sections"]["manifest_backed_offload"]["status"] == "planned"
-    assert payload["sections"]["manifest_backed_offload"]["evidence"]["eligible_offload_gb"] == 7.5
+    assert (
+        payload["sections"]["manifest_backed_offload"]["evidence"][
+            "eligible_offload_gb"
+        ]
+        == 7.5
+    )
     assert payload["sections"]["cold_archive_compaction"]["status"] == "applied"
-    assert payload["sections"]["cold_archive_compaction"]["evidence"]["released_gb"] == 4.25
-    assert payload["sections"]["cold_archive_compaction"]["evidence"]["gzip_finalize_candidate_count"] == 4
-    assert payload["sections"]["cold_archive_compaction"]["evidence"]["selected_gzip_finalize_count"] == 4
-    assert payload["sections"]["cold_archive_compaction"]["evidence"]["sqlite_inventory_count"] == 66
+    assert (
+        payload["sections"]["cold_archive_compaction"]["evidence"]["released_gb"]
+        == 4.25
+    )
+    assert (
+        payload["sections"]["cold_archive_compaction"]["evidence"][
+            "gzip_finalize_candidate_count"
+        ]
+        == 4
+    )
+    assert (
+        payload["sections"]["cold_archive_compaction"]["evidence"][
+            "selected_gzip_finalize_count"
+        ]
+        == 4
+    )
+    assert (
+        payload["sections"]["cold_archive_compaction"]["evidence"][
+            "sqlite_inventory_count"
+        ]
+        == 66
+    )
     assert payload["integration_contract"]["compacts_hot_governance_telemetry"] is True
-    assert payload["integration_contract"]["compacts_external_hot_governance_telemetry"] is True
-    assert payload["integration_contract"]["compacts_lifecycle_registry_backups"] is True
+    assert (
+        payload["integration_contract"]["compacts_external_hot_governance_telemetry"]
+        is True
+    )
+    assert (
+        payload["integration_contract"]["compacts_lifecycle_registry_backups"] is True
+    )
     assert payload["integration_contract"]["compacts_old_decision_logs"] is True
-    assert payload["integration_contract"]["uses_manifest_backed_offload_contract"] is True
-    assert payload["integration_contract"]["has_manifest_backed_copy_verify_worker"] is True
+    assert (
+        payload["integration_contract"]["uses_manifest_backed_offload_contract"] is True
+    )
+
+    assert (
+        payload["integration_contract"]["has_manifest_backed_copy_verify_worker"]
+        is True
+    )
     assert payload["integration_contract"]["stateful_sql_compaction_only"] is True
-    assert payload["integration_contract"]["publishes_growth_forecast_before_deep_cold"] is True
+    assert (
+        payload["integration_contract"]["publishes_growth_forecast_before_deep_cold"]
+        is True
+    )
+    assert (
+        payload["integration_contract"]["reconciles_ingestion_after_unison_publish"]
+        is True
+    )
+    assert (
+        payload["integration_contract"]["ingestion_post_publish_synchronized"] is True
+    )
+    assert payload["post_publish_reconciliation"]["status"] == "synchronized"
+    ingestion_events = [
+        index
+        for index, event in enumerate(events)
+        if event == ("run", "ingestion-storage-control")
+    ]
+    unison_write_events = [
+        index
+        for index, event in enumerate(events)
+        if event == ("write", str(tmp_path / "unison.json"))
+    ]
+    assert len(ingestion_events) == 2
+    assert len(unison_write_events) == 2
+    assert (
+        ingestion_events[0]
+        < unison_write_events[0]
+        < ingestion_events[1]
+        < unison_write_events[1]
+    )
     assert payload["integration_contract"]["compacts_cold_archive_losslessly"] is True
-    assert payload["integration_contract"]["cold_archive_restore_proof_manifest"] is True
-    assert payload["integration_contract"]["recovers_verified_cold_archive_gzip_orphans"] is True
-    assert payload["integration_contract"]["coordinates_cold_archive_writer_handoff"] is True
-    assert payload["integration_contract"]["preserves_direct_archive_readability"] is True
-    assert payload["integration_contract"]["defers_cold_compaction_while_writer_active"] is True
+    assert (
+        payload["integration_contract"]["cold_archive_restore_proof_manifest"] is True
+    )
+    assert (
+        payload["integration_contract"]["recovers_verified_cold_archive_gzip_orphans"]
+        is True
+    )
+    assert (
+        payload["integration_contract"]["coordinates_cold_archive_writer_handoff"]
+        is True
+    )
+    assert (
+        payload["integration_contract"]["preserves_direct_archive_readability"] is True
+    )
+    assert (
+        payload["integration_contract"]["defers_cold_compaction_while_writer_active"]
+        is True
+    )
     assert payload["control_env"]["BOT_MANIFEST_BACKED_OFFLOAD_CONTRACT_ACTIVE"] == "1"
     assert payload["control_env"]["BOT_COLD_ARCHIVE_COMPACTION_ACTIVE"] == "1"
-    assert payload["recommended_commands"]["bounded_cold_archive_compaction_wave"][1] == "cold-archive-compactor"
+    assert (
+        payload["recommended_commands"]["bounded_cold_archive_compaction_wave"][1]
+        == "cold-archive-compactor"
+    )
+
+    commands.clear()
+    monkeypatch.setenv(
+        "STORAGE_RETENTION_UNISON_DEEP_COLD_SOURCE_FREE_TARGET_GB", "111.5"
+    )
+    src.build_payload(
+        tmp_path,
+        apply=True,
+        pressure_free_gb=999999.0,
+        cleanup_max_delete_gb=22.0,
+        telemetry_max_gb=11.0,
+        lifecycle_max_gb=3.0,
+        decision_max_gb=5.0,
+        cold_archive_max_files=6,
+        cold_archive_max_gb=9.0,
+        cold_archive_min_age_hours=36.0,
+        cold_archive_compression_level=4,
+        out_path=tmp_path / "unison_explicit_source_target.json",
+        history_path=tmp_path / "history.jsonl",
+        forecast_path=forecast_path,
+    )
+    command_names = [row[1] for row in commands]
+    deep_cold_command = commands[command_names.index("deep-cold-storage-layer")]
+    assert (
+        deep_cold_command[deep_cold_command.index("--source-free-target-gb") + 1]
+        == "111.5"
+    )
 
 
 def test_hot_plane_compaction_treats_lock_owner_as_in_progress() -> None:
@@ -886,7 +1200,9 @@ def test_hot_plane_compaction_treats_lock_owner_as_in_progress() -> None:
     assert contract["busy_lanes"] == ["governance_telemetry_compactor"]
 
 
-def test_storage_retention_unison_treats_foreground_advisory_as_non_hard(monkeypatch, tmp_path: Path) -> None:
+def test_storage_retention_unison_treats_foreground_advisory_as_non_hard(
+    monkeypatch, tmp_path: Path
+) -> None:
     external_root = tmp_path / "external" / "schwab_trading_bot"
     external_root.mkdir(parents=True)
     (tmp_path / "governance" / "health").mkdir(parents=True)
@@ -895,19 +1211,33 @@ def test_storage_retention_unison_treats_foreground_advisory_as_non_hard(monkeyp
         return SimpleNamespace(external_root=external_root)
 
     def fake_second_cold_preflight() -> dict[str, Any]:
-        return {"status": "ready", "score": 100.0, "grade": "A+", "ready": True, "next_action": "ready"}
+        return {
+            "status": "ready",
+            "score": 100.0,
+            "grade": "A+",
+            "ready": True,
+            "next_action": "ready",
+        }
 
-    def fake_run_json(command: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
+    def fake_run_json(
+        command: list[str], *, cwd: Path, timeout_sec: int
+    ) -> dict[str, Any]:
         name = command[1]
         payload: dict[str, Any] = {"ok": True, "overall_status": "ready"}
         rc = 0
         ok = True
         if name == "retention-intelligence-v2":
-            payload["retention_report_card"] = {"overall_score": 99.0, "overall_grade": "A+"}
+            payload["retention_report_card"] = {
+                "overall_score": 99.0,
+                "overall_grade": "A+",
+            }
         elif name == "raw-training-compaction":
             payload.update(
                 {
-                    "raw_summary": {"raw_jsonl_count": 4, "eligible_training_source_count": 2},
+                    "raw_summary": {
+                        "raw_jsonl_count": 4,
+                        "eligible_training_source_count": 2,
+                    },
                     "decision_packet": {"blocked_reasons": []},
                 }
             )
@@ -917,7 +1247,10 @@ def test_storage_retention_unison_treats_foreground_advisory_as_non_hard(monkeyp
             payload.update(
                 {
                     "pressure": {"live_hot_path_bytes": 0},
-                    "manifest_backed_offload_contract": {"status": "planned", "score": 99.0},
+                    "manifest_backed_offload_contract": {
+                        "status": "planned",
+                        "score": 99.0,
+                    },
                     "offload_manifest_summary": {},
                 }
             )
@@ -967,7 +1300,9 @@ def test_storage_retention_unison_treats_foreground_advisory_as_non_hard(monkeyp
     assert payload["overall_status"] == "ready"
 
 
-def test_storage_retention_unison_treats_foreground_timeout_as_advisory(monkeypatch, tmp_path: Path) -> None:
+def test_storage_retention_unison_treats_foreground_timeout_as_advisory(
+    monkeypatch, tmp_path: Path
+) -> None:
     external_root = tmp_path / "external" / "schwab_trading_bot"
     external_root.mkdir(parents=True)
     (tmp_path / "governance" / "health").mkdir(parents=True)
@@ -976,20 +1311,34 @@ def test_storage_retention_unison_treats_foreground_timeout_as_advisory(monkeypa
         return SimpleNamespace(external_root=external_root)
 
     def fake_second_cold_preflight() -> dict[str, Any]:
-        return {"status": "ready", "score": 100.0, "grade": "A+", "ready": True, "next_action": "ready"}
+        return {
+            "status": "ready",
+            "score": 100.0,
+            "grade": "A+",
+            "ready": True,
+            "next_action": "ready",
+        }
 
-    def fake_run_json(command: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
+    def fake_run_json(
+        command: list[str], *, cwd: Path, timeout_sec: int
+    ) -> dict[str, Any]:
         name = command[1]
         payload: dict[str, Any] = {"ok": True, "overall_status": "ready"}
         rc = 0
         ok = True
         timed_out = False
         if name == "retention-intelligence-v2":
-            payload["retention_report_card"] = {"overall_score": 99.0, "overall_grade": "A+"}
+            payload["retention_report_card"] = {
+                "overall_score": 99.0,
+                "overall_grade": "A+",
+            }
         elif name == "raw-training-compaction":
             payload.update(
                 {
-                    "raw_summary": {"raw_jsonl_count": 4, "eligible_training_source_count": 2},
+                    "raw_summary": {
+                        "raw_jsonl_count": 4,
+                        "eligible_training_source_count": 2,
+                    },
                     "decision_packet": {"blocked_reasons": []},
                 }
             )
@@ -999,7 +1348,10 @@ def test_storage_retention_unison_treats_foreground_timeout_as_advisory(monkeypa
             payload.update(
                 {
                     "pressure": {"live_hot_path_bytes": 0},
-                    "manifest_backed_offload_contract": {"status": "planned", "score": 99.0},
+                    "manifest_backed_offload_contract": {
+                        "status": "planned",
+                        "score": 99.0,
+                    },
                     "offload_manifest_summary": {},
                 }
             )
@@ -1041,7 +1393,9 @@ def test_storage_retention_unison_treats_foreground_timeout_as_advisory(monkeypa
     assert "foreground_app_protection" not in payload["command_failures"]
     assert "command_failed:foreground_app_protection" not in payload["hard_blockers"]
     assert payload["sections"]["foreground_protection"]["status"] == "advisory"
-    assert payload["sections"]["foreground_protection"]["evidence"]["actions"] == ["foreground_guard_timeout"]
+    assert payload["sections"]["foreground_protection"]["evidence"]["actions"] == [
+        "foreground_guard_timeout"
+    ]
 
 
 def test_storage_retention_unison_accepts_degraded_quota_when_free_space_is_above_target(
@@ -1055,13 +1409,24 @@ def test_storage_retention_unison_accepts_degraded_quota_when_free_space_is_abov
         return SimpleNamespace(external_root=external_root)
 
     def fake_second_cold_preflight() -> dict[str, Any]:
-        return {"status": "ready", "score": 100.0, "grade": "A+", "ready": True, "next_action": "ready"}
+        return {
+            "status": "ready",
+            "score": 100.0,
+            "grade": "A+",
+            "ready": True,
+            "next_action": "ready",
+        }
 
-    def fake_run_json(command: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
+    def fake_run_json(
+        command: list[str], *, cwd: Path, timeout_sec: int
+    ) -> dict[str, Any]:
         name = command[1]
         payload: dict[str, Any] = {"ok": True, "overall_status": "ready"}
         if name == "retention-intelligence-v2":
-            payload["retention_report_card"] = {"overall_score": 99.0, "overall_grade": "A+"}
+            payload["retention_report_card"] = {
+                "overall_score": 99.0,
+                "overall_grade": "A+",
+            }
         elif name == "raw-training-compaction":
             payload.update(
                 {
@@ -1074,12 +1439,21 @@ def test_storage_retention_unison_accepts_degraded_quota_when_free_space_is_abov
                 }
             )
         elif name == "bot-logs-cleanup-intelligence":
-            payload.update({"overall_status": "ready", "projected_free_gb": 140.0, "selected_count": 0})
+            payload.update(
+                {
+                    "overall_status": "ready",
+                    "projected_free_gb": 140.0,
+                    "selected_count": 0,
+                }
+            )
         elif name == "storage-tier-policy":
             payload.update(
                 {
                     "pressure": {"live_hot_path_bytes": 0},
-                    "manifest_backed_offload_contract": {"status": "planned", "score": 99.0},
+                    "manifest_backed_offload_contract": {
+                        "status": "planned",
+                        "score": 99.0,
+                    },
                     "offload_manifest_summary": {},
                 }
             )
@@ -1106,9 +1480,15 @@ def test_storage_retention_unison_accepts_degraded_quota_when_free_space_is_abov
                         },
                     },
                     "steady_state": {"target_status": {"steady_state_ready": True}},
-                    "storage": {"retention_debt_gb": 0.0, "retention_debt_target_gb": 0.25},
+                    "storage": {
+                        "retention_debt_gb": 0.0,
+                        "retention_debt_target_gb": 0.25,
+                    },
                     "collector_intake_enforcement_audit": {"status": "enforced"},
-                    "external_route_verification": {"verification_state": "ready", "coverage_ratio": 1.0},
+                    "external_route_verification": {
+                        "verification_state": "ready",
+                        "coverage_ratio": 1.0,
+                    },
                     "storage_resilience": {"overall_status": "ready"},
                 }
             )
@@ -1138,7 +1518,220 @@ def test_storage_retention_unison_accepts_degraded_quota_when_free_space_is_abov
         forecast_path=tmp_path / "forecast.json",
     )
 
-    assert payload["continuous_run_contract"]["storage_controls"]["quota_status"] == "degraded"
+    assert (
+        payload["continuous_run_contract"]["storage_controls"]["quota_status"]
+        == "degraded"
+    )
     assert payload["continuous_run_contract"]["storage_controls"]["quota_ready"] is True
     assert "storage_quota_not_ready" not in payload["hard_blockers"]
     assert payload["overall_status"] == "ready"
+
+
+def test_storage_retention_unison_treats_managed_bot_logs_target_miss_as_watch(
+    monkeypatch, tmp_path: Path
+) -> None:
+    external_root = tmp_path / "external" / "schwab_trading_bot"
+    external_root.mkdir(parents=True)
+    (tmp_path / "governance" / "health").mkdir(parents=True)
+
+    def fake_resolve_external_storage() -> SimpleNamespace:
+        return SimpleNamespace(external_root=external_root)
+
+    def fake_local_storage_reserve_contract(project_root: Path) -> dict[str, Any]:
+        return {
+            "status": "ready",
+            "ready": True,
+            "ok": True,
+            "grade": "A+",
+            "free_gb": 200.0,
+            "pressure_active": False,
+            "hard_block": False,
+            "next_action": "internal reserve is ready",
+        }
+
+    def fake_second_cold_preflight() -> dict[str, Any]:
+        return {
+            "status": "ready",
+            "score": 100.0,
+            "grade": "A+",
+            "ready": True,
+            "candidates": [{"ready": True, "free_gb": 200.0}],
+            "next_action": "ready",
+        }
+
+    def fake_storage_growth_forecast(**_: Any) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        return {
+            "timestamp_utc": now.isoformat(),
+            "status": "target_floor_breach",
+            "score": 84.0,
+            "grade": "B",
+            "source": "test",
+            "confidence": "sustained",
+            "baseline": {
+                "timestamp_utc": (now - timedelta(hours=2)).isoformat(),
+                "external_free_gb": 118.0,
+            },
+            "sustained_baseline": {
+                "timestamp_utc": (now - timedelta(hours=2)).isoformat(),
+                "external_free_gb": 118.0,
+            },
+            "burst_baseline": {},
+            "current_external_free_gb": 118.0,
+            "current_internal_free_gb": 200.0,
+            "target_free_gb": 125.0,
+            "pressure_free_gb": 64.0,
+            "elapsed_days": 1.0,
+            "consumed_gb_per_day": 0.0,
+            "sustained_consumed_gb_per_day": 0.0,
+            "burst_consumed_gb_per_day": 0.0,
+            "days_until_target_free": None,
+            "days_until_pressure_free": None,
+            "burst_days_until_pressure_free": None,
+            "next_action": "below unattended target but above pressure floor",
+        }
+
+    def fake_run_json(
+        command: list[str], *, cwd: Path, timeout_sec: int
+    ) -> dict[str, Any]:
+        name = command[1]
+        payload: dict[str, Any] = {"ok": True, "overall_status": "ready"}
+        rc = 0
+        ok = True
+        if name == "deep-cold-storage-layer":
+            rc = 2
+            ok = False
+            payload = {
+                "ok": False,
+                "overall_status": "needs_attention",
+                "manifest_path": "manifest.json",
+                "adaptive_release": {"source_free_gb_after": 90.0},
+                "second_cold_move": {
+                    "status": "partial",
+                    "reason": "adaptive_release_target_unmet",
+                    "moved_files": 23,
+                    "moved_gb": 1.162,
+                    "failed_files": 0,
+                },
+                "summary": {"managed_count": 23, "managed_gb": 1.162},
+            }
+        elif name == "retention-intelligence-v2":
+            ok = False
+            payload = {
+                "ok": False,
+                "overall_status": "needs_work",
+                "blockers": ["deep_cold_or_quota_not_clean"],
+                "retention_report_card": {
+                    "overall_score": 88.0,
+                    "overall_grade": "B+",
+                },
+            }
+        elif name == "raw-training-compaction":
+            payload.update(
+                {
+                    "raw_summary": {
+                        "raw_jsonl_count": 4,
+                        "eligible_training_source_count": 2,
+                    },
+                    "decision_packet": {"blocked_reasons": []},
+                }
+            )
+        elif name == "bot-logs-cleanup-intelligence":
+            rc = 2
+            ok = False
+            payload.update(
+                {
+                    "ok": False,
+                    "overall_status": "blocked",
+                    "projected_free_gb": 118.0,
+                    "selected_count": 0,
+                    "retention_intelligence_v2": {"ready": False},
+                }
+            )
+        elif name == "storage-tier-policy":
+            payload.update(
+                {
+                    "pressure": {"live_hot_path_bytes": 0},
+                    "manifest_backed_offload_contract": {
+                        "status": "planned",
+                        "score": 99.0,
+                    },
+                    "offload_manifest_summary": {},
+                }
+            )
+        elif name == "hot-lane-retention-control":
+            payload.update({"overall_score": 99.0, "mode": "watch", "reasons": []})
+        elif name == "ingestion-storage-control":
+            payload.update(
+                {
+                    "storage_efficiency_contract": {
+                        "overall_status": "ready",
+                        "grade": "A+",
+                        "raw_payload_policy": "manifest_first_compress_old_sources",
+                        "metrics": {
+                            "raw_compression_candidate_gb": 0.0,
+                            "local_fallback_reconciliation_count": 0,
+                            "sparse_large_line_pending_bytes": 0,
+                            "deep_cold_ready": True,
+                        },
+                    },
+                    "steady_state": {"target_status": {"steady_state_ready": True}},
+                    "storage": {
+                        "retention_debt_gb": 0.0,
+                        "retention_debt_target_gb": 0.25,
+                    },
+                    "collector_intake_enforcement_audit": {"status": "enforced"},
+                    "external_route_verification": {
+                        "verification_state": "ready",
+                        "coverage_ratio": 1.0,
+                    },
+                    "storage_resilience": {"overall_status": "ready"},
+                }
+            )
+        return {
+            "command": list(command),
+            "returncode": rc,
+            "timed_out": False,
+            "ok": ok,
+            "overall_status": str(payload.get("overall_status") or "ready"),
+            "payload": payload,
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+
+    monkeypatch.setattr(src, "resolve_external_storage", fake_resolve_external_storage)
+    monkeypatch.setattr(
+        src, "local_storage_reserve_contract", fake_local_storage_reserve_contract
+    )
+    monkeypatch.setattr(src, "_second_cold_preflight", fake_second_cold_preflight)
+    monkeypatch.setattr(src, "_storage_growth_forecast", fake_storage_growth_forecast)
+    monkeypatch.setattr(src, "_run_json", fake_run_json)
+
+    payload = src.build_payload(
+        tmp_path,
+        apply=True,
+        target_free_gb=125.0,
+        pressure_free_gb=64.0,
+        cleanup_max_delete_gb=48.0,
+        out_path=tmp_path / "unison.json",
+        history_path=tmp_path / "history.jsonl",
+        forecast_path=tmp_path / "forecast.json",
+    )
+
+    bot_logs = payload["sections"]["bot_logs_lean"]
+    retention = payload["sections"]["retention_freshness"]
+    assert retention["status"] == "watch"
+    assert retention["evidence"]["deep_cold_advisory"] is True
+    assert retention["evidence"]["retention_blockers"] == [
+        "deep_cold_or_quota_not_clean"
+    ]
+    assert bot_logs["status"] == "watch"
+    assert bot_logs["score"] == 94.0
+    assert bot_logs["evidence"]["raw_status"] == "blocked"
+    assert bot_logs["evidence"]["retention_ready"] is False
+    assert bot_logs["evidence"]["retention_effectively_ready"] is True
+    assert bot_logs["evidence"]["soft_target_miss_managed"] is True
+    assert bot_logs["evidence"]["pressure_floor_gb"] == 96.0
+    assert "retention_freshness_deep_cold" not in payload["command_failures"]
+    assert "bot_logs_lean" not in payload["command_failures"]
+    assert payload["hard_blockers"] == []

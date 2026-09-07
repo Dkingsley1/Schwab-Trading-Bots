@@ -506,11 +506,23 @@ def test_report_accepts_only_candidate_bound_measurement_inputs(tmp_path: Path) 
     assert accepted["measurement_input_binding"]["bound"] is True
     assert accepted["measurements"]["execution_alpha_attribution"]["available"] is True
     assert accepted["evidence_ready_measurement_engine_count"] == 1
+    assert accepted["economically_supported_measurement_engine_count"] == 0
 
     raw = json.loads(inputs_path.read_text(encoding="utf-8"))
+    raw["measurements"]["execution_alpha_attribution"]["economic_grade_eligible"] = True
+    raw["measurements"]["execution_alpha_attribution"][
+        "evidence_class"
+    ] = "candidate_bound_schema_v2_fill"
+    inputs_path.write_text(json.dumps(raw), encoding="utf-8")
+    economically_eligible = build_payload(project)
+    assert economically_eligible["economically_supported_measurement_engine_count"] == 1
+
     raw["candidate_id"] = "wrong-candidate"
     inputs_path.write_text(json.dumps(raw), encoding="utf-8")
     rejected = build_payload(project)
+    assert rejected["ok"] is False
+    assert rejected["overall_status"] == "blocked"
+    assert "measurement_input_candidate_mismatch" in rejected["blockers"]
     assert rejected["measurement_input_binding"]["bound"] is False
     assert rejected["measurements"]["execution_alpha_attribution"]["available"] is False
     assert rejected["evidence_ready_measurement_engine_count"] == 0

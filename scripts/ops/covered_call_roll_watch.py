@@ -15,16 +15,34 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.long_runtime_common import iso_now, load_json, write_payload
+    from scripts.ops.schwab_account_capability_truth import (
+        normalize_operator_classification,
+    )
 else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, write_payload
+    from .schwab_account_capability_truth import normalize_operator_classification
 
 
-DEFAULT_SNAPSHOT_PATH = PROJECT_ROOT / "governance" / "health" / "broker_truth_shared_snapshot_schwab_latest.json"
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "covered_call_roll_watch_latest.json"
-DEFAULT_ALERT_LATEST_PATH = PROJECT_ROOT / "governance" / "alerts" / "critical_latest_covered_call_roll_watch.json"
+DEFAULT_SNAPSHOT_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "health"
+    / "broker_truth_shared_snapshot_schwab_latest.json"
+)
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "covered_call_roll_watch_latest.json"
+)
+DEFAULT_ALERT_LATEST_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "alerts"
+    / "critical_latest_covered_call_roll_watch.json"
+)
 DEFAULT_PREFERENCE_PATH = PROJECT_ROOT / "config" / "covered_call_roll_preferences.json"
 DEFAULT_ACCOUNT_ALIAS_PATH = PROJECT_ROOT / "config" / "account_aliases.json"
-OCC_SYMBOL_RE = re.compile(r"^(?P<underlying>.+?)\s+(?P<yymmdd>\d{6})(?P<right>[CP])(?P<strike>\d{8})$")
+OCC_SYMBOL_RE = re.compile(
+    r"^(?P<underlying>.+?)\s+(?P<yymmdd>\d{6})(?P<right>[CP])(?P<strike>\d{8})$"
+)
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:
@@ -53,10 +71,16 @@ def _parse_iso_date(raw: Any) -> date | None:
 
 
 def _account_meta(node: dict[str, Any], *, index: int) -> dict[str, Any]:
-    meta = node.get("_broker_account") if isinstance(node.get("_broker_account"), dict) else {}
+    meta = (
+        node.get("_broker_account")
+        if isinstance(node.get("_broker_account"), dict)
+        else {}
+    )
     label = str(meta.get("account_label") or "").strip()
     if not label:
-        tail = str(meta.get("account_number_tail") or meta.get("account_reference_tail") or "").strip()
+        tail = str(
+            meta.get("account_number_tail") or meta.get("account_reference_tail") or ""
+        ).strip()
         label = f"account_{index + 1}_{tail}" if tail else f"account_{index + 1}"
     return {
         "account_key": label,
@@ -67,11 +91,19 @@ def _account_meta(node: dict[str, Any], *, index: int) -> dict[str, Any]:
     }
 
 
-def _annotated_position_rows_from_account(account: dict[str, Any], *, index: int) -> list[dict[str, Any]]:
-    sec = account.get("securitiesAccount") if isinstance(account.get("securitiesAccount"), dict) else account
+def _annotated_position_rows_from_account(
+    account: dict[str, Any], *, index: int
+) -> list[dict[str, Any]]:
+    sec = (
+        account.get("securitiesAccount")
+        if isinstance(account.get("securitiesAccount"), dict)
+        else account
+    )
     if not isinstance(sec, dict):
         return []
-    meta = _account_meta(sec if isinstance(sec.get("_broker_account"), dict) else account, index=index)
+    meta = _account_meta(
+        sec if isinstance(sec.get("_broker_account"), dict) else account, index=index
+    )
     rows = sec.get("positions")
     out: list[dict[str, Any]] = []
     if not isinstance(rows, list):
@@ -90,7 +122,9 @@ def _annotated_position_rows_from_account(account: dict[str, Any], *, index: int
 
 
 def _position_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
-    fetched = snapshot.get("fetched") if isinstance(snapshot.get("fetched"), dict) else {}
+    fetched = (
+        snapshot.get("fetched") if isinstance(snapshot.get("fetched"), dict) else {}
+    )
     payload = fetched.get("payload") if isinstance(fetched.get("payload"), dict) else {}
     accounts = payload.get("accounts")
     if isinstance(accounts, list):
@@ -129,7 +163,10 @@ def _parse_occ_symbol(raw: Any) -> dict[str, Any]:
 
 
 def _row_account_key(row: dict[str, Any]) -> str:
-    return str(row.get("_account_key") or row.get("_account_label") or "account_1").strip() or "account_1"
+    return (
+        str(row.get("_account_key") or row.get("_account_label") or "account_1").strip()
+        or "account_1"
+    )
 
 
 def _account_alias_rows(account_aliases: dict[str, Any] | None) -> dict[str, Any]:
@@ -140,7 +177,9 @@ def _account_alias_rows(account_aliases: dict[str, Any] | None) -> dict[str, Any
     return rows if isinstance(rows, dict) else {}
 
 
-def _account_alias_for(row: dict[str, Any], account_aliases: dict[str, Any] | None) -> dict[str, Any]:
+def _account_alias_for(
+    row: dict[str, Any], account_aliases: dict[str, Any] | None
+) -> dict[str, Any]:
     rows = _account_alias_rows(account_aliases)
     if not rows:
         return {}
@@ -148,7 +187,19 @@ def _account_alias_for(row: dict[str, Any], account_aliases: dict[str, Any] | No
     key = str(row.get("_account_key") or "").strip()
     tail = str(row.get("_account_number_tail") or "").strip()
     ref_tail = str(row.get("_account_reference_tail") or "").strip()
-    candidates = {item for item in (label, key, tail, ref_tail, f"tail:{tail}", f"account_tail:{tail}", f"reference_tail:{ref_tail}") if item}
+    candidates = {
+        item
+        for item in (
+            label,
+            key,
+            tail,
+            ref_tail,
+            f"tail:{tail}",
+            f"account_tail:{tail}",
+            f"reference_tail:{ref_tail}",
+        )
+        if item
+    }
     for candidate in candidates:
         raw = rows.get(candidate)
         if isinstance(raw, dict):
@@ -177,7 +228,9 @@ def _alias_text(alias: dict[str, Any], *keys: str) -> str:
     return ""
 
 
-def _equity_positions(rows: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, float]]]:
+def _equity_positions(
+    rows: list[dict[str, Any]],
+) -> dict[str, dict[str, dict[str, float]]]:
     out: dict[str, dict[str, dict[str, float]]] = {}
     for row in rows:
         inst = _instrument(row)
@@ -187,11 +240,19 @@ def _equity_positions(rows: list[dict[str, Any]]) -> dict[str, dict[str, dict[st
         if not symbol:
             continue
         account_key = _row_account_key(row)
-        qty = _safe_float(row.get("longQuantity"), 0.0) - _safe_float(row.get("shortQuantity"), 0.0)
+        qty = _safe_float(row.get("longQuantity"), 0.0) - _safe_float(
+            row.get("shortQuantity"), 0.0
+        )
         market_value = _safe_float(row.get("marketValue"), 0.0)
-        px = market_value / qty if qty > 0.0 and market_value > 0.0 else _safe_float(
-            row.get("currentPrice", row.get("marketPrice", row.get("averagePrice"))),
-            0.0,
+        px = (
+            market_value / qty
+            if qty > 0.0 and market_value > 0.0
+            else _safe_float(
+                row.get(
+                    "currentPrice", row.get("marketPrice", row.get("averagePrice"))
+                ),
+                0.0,
+            )
         )
         account_positions = out.setdefault(account_key, {})
         prior = account_positions.get(symbol)
@@ -219,7 +280,9 @@ def _date_iso(value: date) -> str:
     return value.isoformat()
 
 
-def _roll_windows(expiration: date, *, today: date, itm_pct: float, args: argparse.Namespace) -> dict[str, Any]:
+def _roll_windows(
+    expiration: date, *, today: date, itm_pct: float, args: argparse.Namespace
+) -> dict[str, Any]:
     early_start = expiration - timedelta(days=_safe_int(args.early_dte, 60))
     primary_start = expiration - timedelta(days=_safe_int(args.primary_start_dte, 45))
     primary_end = expiration - timedelta(days=_safe_int(args.primary_end_dte, 21))
@@ -244,7 +307,9 @@ def _roll_windows(expiration: date, *, today: date, itm_pct: float, args: argpar
     }
 
 
-def _operator_preference_for(underlying: str, preferences: dict[str, Any] | None) -> dict[str, Any]:
+def _operator_preference_for(
+    underlying: str, preferences: dict[str, Any] | None
+) -> dict[str, Any]:
     if not isinstance(preferences, dict):
         return {}
     scoped = preferences.get("covered_call_roll_preferences")
@@ -263,15 +328,21 @@ def _operator_roll_preference_packet(
 ) -> dict[str, Any]:
     pref = _operator_preference_for(underlying, preferences)
     wait_price = _safe_float(
-        pref.get("operator_wait_for_underlying_price", pref.get("wait_for_underlying_price")),
+        pref.get(
+            "operator_wait_for_underlying_price", pref.get("wait_for_underlying_price")
+        ),
         0.0,
     )
     if wait_price <= 0.0:
         return {}
-    trigger_hit = bool(underlying_price > 0.0 and underlying_price <= wait_price + 0.005)
+    trigger_hit = bool(
+        underlying_price > 0.0 and underlying_price <= wait_price + 0.005
+    )
     return {
         "active": True,
-        "operator_roll_bias": str(pref.get("operator_roll_bias") or "wait_for_pullback_before_early_roll"),
+        "operator_roll_bias": str(
+            pref.get("operator_roll_bias") or "wait_for_pullback_before_early_roll"
+        ),
         "wait_for_underlying_price": round(wait_price, 4),
         "trigger_direction": "at_or_below",
         "trigger_hit": trigger_hit,
@@ -295,7 +366,11 @@ def _classify_call(
     args: argparse.Namespace,
 ) -> tuple[str, str, list[str]]:
     if not covered:
-        return "uncovered_short_call", "critical", ["short_call_not_covered_by_100_shares"]
+        return (
+            "uncovered_short_call",
+            "critical",
+            ["short_call_not_covered_by_100_shares"],
+        )
 
     recommended_start = date.fromisoformat(str(windows["recommended_start"]))
     primary_start = date.fromisoformat(str(windows["primary_start"]))
@@ -305,7 +380,11 @@ def _classify_call(
     early_itm = itm_pct >= float(args.itm_early_pct) / 100.0
     wait_price = _safe_float(operator_preference.get("wait_for_underlying_price"), 0.0)
     wait_active = bool(operator_preference.get("active") and wait_price > 0.0)
-    wait_hit = bool(wait_active and underlying_price > 0.0 and underlying_price <= wait_price + 0.005)
+    wait_hit = bool(
+        wait_active
+        and underlying_price > 0.0
+        and underlying_price <= wait_price + 0.005
+    )
 
     reasons: list[str] = []
     if deep_itm:
@@ -325,14 +404,18 @@ def _classify_call(
         reasons.append(f"inside_primary_watch_window dte={dte}")
         return "primary_watch", "warn", reasons
     if wait_active and wait_hit:
-        reasons.append(f"operator_wait_price_hit underlying={underlying_price:.2f}<=trigger={wait_price:.2f}")
+        reasons.append(
+            f"operator_wait_price_hit underlying={underlying_price:.2f}<=trigger={wait_price:.2f}"
+        )
         if underlying_price > strike:
             reasons.append(f"still_itm={itm_pct:.2%}")
             return "operator_price_review", "critical", reasons
         reasons.append("roll_pressure_relieved_at_or_below_strike")
         return "operator_price_hit_otm_review", "warn", reasons
     if wait_active and early_itm:
-        reasons.append(f"operator_wait_price_not_hit underlying={underlying_price:.2f}>trigger={wait_price:.2f}")
+        reasons.append(
+            f"operator_wait_price_not_hit underlying={underlying_price:.2f}>trigger={wait_price:.2f}"
+        )
         return "operator_wait_price_watch", "warn", reasons
     if early_itm:
         reasons.append(f"pre_window_itm_watch starts={windows['recommended_start']}")
@@ -375,6 +458,7 @@ def evaluate(
         if dte < 0:
             continue
         account_alias = _account_alias_for(row, account_aliases)
+        account_classification = normalize_operator_classification(account_alias)
         covered_shares_required = int(math.ceil(short_contracts * 100.0))
         covered = shares + 1e-9 >= covered_shares_required
         itm_pct = (px / strike) - 1.0 if px > 0.0 and strike > 0.0 else 0.0
@@ -404,9 +488,20 @@ def evaluate(
             "underlying": underlying,
             "account_label": str(row.get("_account_label") or account_key),
             "account_index": _safe_int(row.get("_account_index"), 0),
-            "operator_account_label": _alias_text(account_alias, "operator_account_label", "label", "name"),
-            "operator_account_kind": _alias_text(account_alias, "operator_account_kind", "account_kind", "kind"),
-            "operator_trading_type": _alias_text(account_alias, "trading_type", "operator_trading_type"),
+            "account_policy_key": account_classification.get("account_policy_key", ""),
+            "operator_account_label": account_classification.get(
+                "operator_account_label", ""
+            ),
+            "operator_account_kind": account_classification.get(
+                "account_kind", "unknown"
+            ),
+            "operator_trading_type": account_classification.get(
+                "trading_access", "unknown"
+            ),
+            "tax_wrapper": account_classification.get("tax_wrapper", "unknown"),
+            "borrowing_allowed": bool(
+                account_classification.get("borrowing_allowed", False)
+            ),
             "option_symbol": str(parsed["symbol"]),
             "right": "CALL",
             "strike": round(strike, 4),
@@ -436,7 +531,8 @@ def evaluate(
         overall_status = "critical"
         ok = False
     elif any(
-        str(call.get("status")) in {"pre_window_itm_watch", "primary_watch", "operator_wait_price_watch"}
+        str(call.get("status"))
+        in {"pre_window_itm_watch", "primary_watch", "operator_wait_price_watch"}
         for call in calls
     ):
         overall_status = "watch"
@@ -450,7 +546,13 @@ def evaluate(
         next_call = sorted(
             calls,
             key=lambda item: (
-                date.fromisoformat(str((item.get("roll_window") or {}).get("recommended_start", "9999-12-31"))),
+                date.fromisoformat(
+                    str(
+                        (item.get("roll_window") or {}).get(
+                            "recommended_start", "9999-12-31"
+                        )
+                    )
+                ),
                 int(item.get("dte", 9999) or 9999),
             ),
         )[0]
@@ -465,20 +567,34 @@ def evaluate(
         "account_aliases_source": str(DEFAULT_ACCOUNT_ALIAS_PATH),
         "today": _date_iso(today),
         "position_rows": len(rows),
-        "account_count": len({str(row.get("_account_key") or "account_1") for row in rows}) if rows else 0,
+        "account_count": (
+            len({str(row.get("_account_key") or "account_1") for row in rows})
+            if rows
+            else 0
+        ),
         "covered_call_count": len(calls),
         "alert_count": len(alert_calls),
-        "next_roll_window": (next_call or {}).get("roll_window", {}) if next_call else {},
-        "next_roll_underlying": (next_call or {}).get("underlying", "") if next_call else "",
+        "next_roll_window": (
+            (next_call or {}).get("roll_window", {}) if next_call else {}
+        ),
+        "next_roll_underlying": (
+            (next_call or {}).get("underlying", "") if next_call else ""
+        ),
         "covered_calls": calls,
         "recommended_actions": _recommended_actions(calls, alert_calls),
     }
 
 
-def _recommended_actions(calls: list[dict[str, Any]], alert_calls: list[dict[str, Any]]) -> list[str]:
+def _recommended_actions(
+    calls: list[dict[str, Any]], alert_calls: list[dict[str, Any]]
+) -> list[str]:
     if alert_calls:
         active = alert_calls[0]
-        preference = active.get("operator_roll_preference") if isinstance(active.get("operator_roll_preference"), dict) else {}
+        preference = (
+            active.get("operator_roll_preference")
+            if isinstance(active.get("operator_roll_preference"), dict)
+            else {}
+        )
         if str(active.get("status")) == "operator_price_review":
             return [
                 f"{active.get('underlying')} is at or below the operator roll-review trigger {preference.get('wait_for_underlying_price')}",
@@ -489,9 +605,20 @@ def _recommended_actions(calls: list[dict[str, Any]], alert_calls: list[dict[str
             "keep the decision advisory-only unless an operator explicitly approves an order ticket",
         ]
     if calls:
-        call = sorted(calls, key=lambda row: str((row.get("roll_window") or {}).get("recommended_start", "")))[0]
-        window = call.get("roll_window") if isinstance(call.get("roll_window"), dict) else {}
-        preference = call.get("operator_roll_preference") if isinstance(call.get("operator_roll_preference"), dict) else {}
+        call = sorted(
+            calls,
+            key=lambda row: str(
+                (row.get("roll_window") or {}).get("recommended_start", "")
+            ),
+        )[0]
+        window = (
+            call.get("roll_window") if isinstance(call.get("roll_window"), dict) else {}
+        )
+        preference = (
+            call.get("operator_roll_preference")
+            if isinstance(call.get("operator_roll_preference"), dict)
+            else {}
+        )
         if preference.get("active") and not preference.get("trigger_hit"):
             return [
                 f"wait for {call.get('underlying')} at or below {preference.get('wait_for_underlying_price')} before voluntary early roll review",
@@ -505,13 +632,21 @@ def _recommended_actions(calls: list[dict[str, Any]], alert_calls: list[dict[str
 
 
 def _alert_message(payload: dict[str, Any]) -> str:
-    rows = payload.get("covered_calls") if isinstance(payload.get("covered_calls"), list) else []
+    rows = (
+        payload.get("covered_calls")
+        if isinstance(payload.get("covered_calls"), list)
+        else []
+    )
     active = [row for row in rows if str(row.get("severity")) == "critical"]
     if not active:
         return ""
     row = active[0]
     window = row.get("roll_window") if isinstance(row.get("roll_window"), dict) else {}
-    preference = row.get("operator_roll_preference") if isinstance(row.get("operator_roll_preference"), dict) else {}
+    preference = (
+        row.get("operator_roll_preference")
+        if isinstance(row.get("operator_roll_preference"), dict)
+        else {}
+    )
     if str(row.get("status")) == "operator_price_review":
         return (
             f"{row.get('underlying')} covered call operator roll-review trigger hit\n"
@@ -528,7 +663,9 @@ def _alert_message(payload: dict[str, Any]) -> str:
     )
 
 
-def write_alert(payload: dict[str, Any], *, alert_path: Path = DEFAULT_ALERT_LATEST_PATH) -> None:
+def write_alert(
+    payload: dict[str, Any], *, alert_path: Path = DEFAULT_ALERT_LATEST_PATH
+) -> None:
     message = _alert_message(payload)
     if not message:
         try:
@@ -553,7 +690,9 @@ def write_alert(payload: dict[str, Any], *, alert_path: Path = DEFAULT_ALERT_LAT
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Watch held Schwab covered calls and publish roll-window alerts.")
+    parser = argparse.ArgumentParser(
+        description="Watch held Schwab covered calls and publish roll-window alerts."
+    )
     parser.add_argument("--snapshot-path", default=str(DEFAULT_SNAPSHOT_PATH))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--alert-file", default=str(DEFAULT_ALERT_LATEST_PATH))
@@ -595,7 +734,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:
-        window = payload.get("next_roll_window") if isinstance(payload.get("next_roll_window"), dict) else {}
+        window = (
+            payload.get("next_roll_window")
+            if isinstance(payload.get("next_roll_window"), dict)
+            else {}
+        )
         print(
             "covered_call_roll_watch "
             f"status={payload.get('overall_status')} "

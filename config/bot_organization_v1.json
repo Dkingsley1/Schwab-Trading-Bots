@@ -21,6 +21,365 @@
       "null"
     ]
   },
+  "bot_setup_contract": {
+    "contract_id": "bot_setup_contract_v1",
+    "purpose": "Make every bot's setup explicit by tier, role group, lifecycle state, reporting line, inputs, outputs, and forbidden authorities without changing runtime decisions or trading behavior.",
+    "authority": {
+      "metadata_only": true,
+      "can_change_runtime_decisions": false,
+      "can_mutate_registry": false,
+      "can_change_source_code": false,
+      "can_submit_paper_order": false,
+      "can_submit_live_order": false,
+      "can_allocate_capital": false,
+      "can_promote_candidate": false,
+      "can_claim_profitability": false
+    },
+    "tier_definitions": [
+      {
+        "tier_id": "infrastructure",
+        "display_name": "Infrastructure Bots",
+        "purpose": "Maintain sources, storage, queues, freshness, safety checks, evaluation plumbing, and operational evidence.",
+        "reports_to_tier": "master",
+        "owns": ["data_freshness", "storage_runtime", "writer_queue", "runtime_health", "audit_receipts"],
+        "consumes": ["raw_sources", "runtime_artifacts", "control_contracts"],
+        "publishes": ["health_artifacts", "quality_evidence", "operational_needs"],
+        "setup_requires": ["bot_id", "bot_role", "active", "lifecycle_state", "sleeve_id", "role_id", "correlation_cluster_id"],
+        "forbidden_actions": ["submit_orders", "change_trade_logic", "allocate_capital", "grant_live_authority"]
+      },
+      {
+        "tier_id": "sub",
+        "display_name": "Sub Bots",
+        "purpose": "Observe a narrow sleeve, family, horizon, regime, or candidate behavior and publish shadow evidence.",
+        "reports_to_tier": "master",
+        "owns": ["local_signal_observation", "candidate_features", "abstention_reason", "sleeve_specific_context"],
+        "consumes": ["point_in_time_market_context", "sleeve_contract", "strategy_group_context"],
+        "publishes": ["shadow_votes", "candidate_evidence", "local_needs"],
+        "setup_requires": ["bot_id", "bot_role", "active", "lifecycle_state", "sleeve_id", "sub_sleeve_id", "cohort_id", "role_id", "regime_profile_id"],
+        "forbidden_actions": ["submit_orders", "self_promote", "increase_size", "override_master_or_grandmaster"]
+      },
+      {
+        "tier_id": "master",
+        "display_name": "Sleeve Master Bots",
+        "purpose": "Aggregate sub-bot and infrastructure evidence inside a sleeve, explain local edge quality, and report needs upward.",
+        "reports_to_tier": "grand_master",
+        "owns": ["sleeve_evidence_summary", "local_conflict_resolution", "strategy_family_rollup", "sleeve_quality_debt"],
+        "consumes": ["sub_bot_shadow_votes", "infrastructure_health", "strategy_organization", "execution_cost_evidence"],
+        "publishes": ["sleeve_master_packet", "sleeve_recommendations", "sleeve_blockers"],
+        "setup_requires": ["bot_id", "bot_role", "active", "lifecycle_state", "sleeve_id", "role_id", "setup_reports_to_tier"],
+        "forbidden_actions": ["submit_orders", "allocate_capital", "grant_live_authority", "claim_profitability_without_post_cost_evidence"]
+      },
+      {
+        "tier_id": "grand_master",
+        "display_name": "Grandmaster Bots",
+        "purpose": "Coordinate cross-sleeve context, resolve conflicts, keep authority boundaries clear, and prepare human-readable decision packets.",
+        "reports_to_tier": "operator_review",
+        "owns": ["cross_sleeve_exposure_map", "portfolio_conflict_resolution", "promotion_gate_context", "operator_decision_packet"],
+        "consumes": ["sleeve_master_packets", "system_needs", "paper_truth", "account_constraints", "risk_boundary_contracts"],
+        "publishes": ["grandmaster_context_packet", "cross_sleeve_needs", "human_review_readiness"],
+        "setup_requires": ["bot_id", "bot_role", "active", "lifecycle_state", "role_id", "setup_reports_to_tier"],
+        "forbidden_actions": ["submit_orders", "allocate_capital_automatically", "force_trade_for_evidence", "grant_live_authority"]
+      }
+    ],
+    "role_groups": [
+      {
+        "role_id": "evidence",
+        "display_name": "Evidence",
+        "purpose": "Collect, normalize, timestamp, and preserve observations.",
+        "primary_outputs": ["point_in_time_rows", "provenance_receipts", "coverage_gaps"],
+        "success_signal": "fresh_candidate_bound_observations_with_receipts"
+      },
+      {
+        "role_id": "signal",
+        "display_name": "Signal",
+        "purpose": "Score hypotheses and market context without direct execution authority.",
+        "primary_outputs": ["shadow_votes", "confidence_scores", "abstention_reasons"],
+        "success_signal": "calibrated_shadow_votes_with_clear_abstentions"
+      },
+      {
+        "role_id": "risk",
+        "display_name": "Risk",
+        "purpose": "Detect exposure, drawdown, tail, authority, and route risks.",
+        "primary_outputs": ["risk_flags", "guardrail_context", "blocker_reasons"],
+        "success_signal": "risk_flags_are_current_and_joinable_to_candidate_evidence"
+      },
+      {
+        "role_id": "execution",
+        "display_name": "Execution",
+        "purpose": "Measure paper fill realism, cost, slippage, and route quality.",
+        "primary_outputs": ["fill_quality_rows", "cost_model_evidence", "route_diagnostics"],
+        "success_signal": "execution_costs_are_independent_current_and_candidate_bound"
+      },
+      {
+        "role_id": "evaluation",
+        "display_name": "Evaluation",
+        "purpose": "Replay, score, validate, quarantine, and compare results.",
+        "primary_outputs": ["quality_scores", "replay_results", "quarantine_reasons"],
+        "success_signal": "post_cost_results_survive_replay_and_holdout_checks"
+      },
+      {
+        "role_id": "coordination",
+        "display_name": "Coordination",
+        "purpose": "Route local evidence to masters, masters to grandmasters, and policy context back down.",
+        "primary_outputs": ["handoff_packets", "routing_edges", "priority_ladders"],
+        "success_signal": "every_active_bot_has_an_auditable_upstream_route"
+      },
+      {
+        "role_id": "shared_service",
+        "display_name": "Shared Service",
+        "purpose": "Provide reusable platform capabilities that support trading and ops brains without owning trades.",
+        "primary_outputs": ["service_health", "dependency_status", "operator_needs"],
+        "success_signal": "service_health_is_current_and_authority_safe"
+      }
+    ],
+    "lifecycle_states": [
+      {
+        "state": "active",
+        "meaning": "Bot is active in the registry and may publish its configured shadow/control outputs.",
+        "paper_vote_allowed": "only_if_registry_paper_flag_and_signal_role_allow_it",
+        "live_vote_allowed": false
+      },
+      {
+        "state": "data_collection_only",
+        "meaning": "Bot collects observations and context but must not influence execution decisions.",
+        "paper_vote_allowed": false,
+        "live_vote_allowed": false
+      },
+      {
+        "state": "paper_live_data",
+        "meaning": "Bot can participate in paper/live-data evidence collection under paper-only locks.",
+        "paper_vote_allowed": "shadow_only_when_eligible",
+        "live_vote_allowed": false
+      },
+      {
+        "state": "paper_probation",
+        "meaning": "Bot is being observed for candidate-bound post-cost quality before broader use.",
+        "paper_vote_allowed": "shadow_only_when_eligible",
+        "live_vote_allowed": false
+      },
+      {
+        "state": "qualified_shadow",
+        "meaning": "Bot has enough evidence to be considered in shadow aggregation but still has no live authority.",
+        "paper_vote_allowed": "shadow_only_when_eligible",
+        "live_vote_allowed": false
+      },
+      {
+        "state": "quarantined",
+        "meaning": "Bot is retained for audit and repair but excluded from active decision evidence.",
+        "paper_vote_allowed": false,
+        "live_vote_allowed": false
+      },
+      {
+        "state": "retired",
+        "meaning": "Bot is preserved for lineage but excluded from active routing.",
+        "paper_vote_allowed": false,
+        "live_vote_allowed": false
+      },
+      {
+        "state": "deleted",
+        "meaning": "Bot is excluded from active organization and kept only for registry lineage.",
+        "paper_vote_allowed": false,
+        "live_vote_allowed": false
+      }
+    ],
+    "routing_invariants": {
+      "sub_and_infrastructure_report_to_master": true,
+      "masters_report_to_grandmaster": true,
+      "grandmasters_report_to_operator_review": true,
+      "policy_broadcast_may_flow_downward": true,
+      "downward_policy_broadcast_cannot_submit_orders": true,
+      "one_assignment_per_registered_bot": true,
+      "assignment_receipts_required": true
+    },
+    "hardening_invariants": {
+      "required_tiers": ["infrastructure", "sub", "master", "grand_master"],
+      "required_role_groups": ["evidence", "signal", "risk", "execution", "evaluation", "coordination", "shared_service"],
+      "allowed_lifecycle_states": ["active", "data_collection_only", "paper_live_data", "paper_probation", "qualified_shadow", "quarantined", "retired", "deleted"],
+      "required_tier_fields": ["tier_id", "display_name", "purpose", "reports_to_tier", "owns", "consumes", "publishes", "setup_requires", "forbidden_actions"],
+      "required_role_fields": ["role_id", "display_name", "purpose", "primary_outputs", "success_signal"],
+      "required_lifecycle_fields": ["state", "meaning", "paper_vote_allowed", "live_vote_allowed"],
+      "assignment_required_fields": ["bot_id", "setup_tier", "setup_role_group", "setup_lifecycle_state", "sleeve_id", "sub_sleeve_id", "cohort_id", "role_id", "regime_profile_id", "correlation_cluster_id"],
+      "authority_false_fields": ["can_change_runtime_decisions", "can_mutate_registry", "can_change_source_code", "can_submit_paper_order", "can_submit_live_order", "can_allocate_capital", "can_promote_candidate", "can_claim_profitability"],
+      "metadata_authority_must_remain_true": true,
+      "every_assignment_must_have_setup_tier": true,
+      "every_role_id_must_have_role_group": true,
+      "lifecycle_states_must_be_known": true
+    },
+    "operator_output_requirements": [
+      "show_tier_counts",
+      "show_role_group_counts",
+      "show_lifecycle_counts",
+      "show_setup_coverage_ratio",
+      "show_missing_setup_metadata",
+      "show_hardening_status"
+    ]
+  },
+  "tripwire_contract": {
+    "contract_id": "bot_tripwire_contract_v1",
+    "purpose": "Classify bot-organization, hierarchy, lifecycle, paper-authority, and review-debt conditions into explicit tripwires with owners and required evidence, without changing runtime decisions or trading authority.",
+    "authority": {
+      "metadata_only": true,
+      "can_change_runtime_decisions": false,
+      "can_mutate_registry": false,
+      "can_change_source_code": false,
+      "can_submit_paper_order": false,
+      "can_submit_live_order": false,
+      "can_allocate_capital": false,
+      "can_promote_candidate": false,
+      "can_claim_profitability": false
+    },
+    "severity_levels": ["advisory", "watch", "degraded", "critical"],
+    "tripwires": [
+      {
+        "tripwire_id": "registry_coverage_drop",
+        "category": "identity_and_lineage",
+        "severity": "degraded",
+        "metric": "organization_coverage_ratio",
+        "operator": "lt",
+        "threshold": 1.0,
+        "owner": "bot_organization_control",
+        "action": "rebuild_hierarchy_receipts_and_block_runtime_widening",
+        "evidence_required": ["full_registry_assignment_receipt", "missing_bot_id_list"],
+        "applies_to_tiers": ["infrastructure", "sub", "master", "grand_master"]
+      },
+      {
+        "tripwire_id": "duplicate_bot_identity",
+        "category": "identity_and_lineage",
+        "severity": "critical",
+        "metric": "duplicate_bot_id_count",
+        "operator": "gt",
+        "threshold": 0,
+        "owner": "bot_organization_control",
+        "action": "block_catalog_and_require_unique_identity_repair",
+        "evidence_required": ["duplicate_bot_id_list", "registry_sha256"],
+        "applies_to_tiers": ["infrastructure", "sub", "master", "grand_master"]
+      },
+      {
+        "tripwire_id": "setup_contract_break",
+        "category": "setup_contract",
+        "severity": "critical",
+        "metric": "setup_failed_check_count",
+        "operator": "gt",
+        "threshold": 0,
+        "owner": "bot_organization_control",
+        "action": "block_hierarchy_changes_until_setup_contract_is_ready",
+        "evidence_required": ["failed_setup_check_list", "bot_setup_summary"],
+        "applies_to_tiers": ["infrastructure", "sub", "master", "grand_master"]
+      },
+      {
+        "tripwire_id": "review_debt_present",
+        "category": "classification_quality",
+        "severity": "advisory",
+        "metric": "review_queue_count",
+        "operator": "gt",
+        "threshold": 0,
+        "owner": "operator_review",
+        "action": "prioritize_low_confidence_assignments_without_granting_execution",
+        "evidence_required": ["review_queue", "classification_confidence", "review_reasons"],
+        "applies_to_tiers": ["sub", "infrastructure"]
+      },
+      {
+        "tripwire_id": "explicit_sleeve_coverage_low",
+        "category": "classification_quality",
+        "severity": "advisory",
+        "metric": "explicit_sleeve_ratio",
+        "operator": "lt",
+        "threshold": 0.95,
+        "owner": "operator_review",
+        "action": "increase_explicit_sleeve_metadata_coverage_before_runtime_routing_changes",
+        "evidence_required": ["explicit_sleeve_ratio", "policy_fallback_assignment_list"],
+        "applies_to_tiers": ["sub", "master", "grand_master"]
+      },
+      {
+        "tripwire_id": "shadow_cell_soft_pressure",
+        "category": "resource_and_correlation",
+        "severity": "advisory",
+        "metric": "soft_shadow_cell_count",
+        "operator": "gt",
+        "threshold": 0,
+        "owner": "master_bot",
+        "action": "rank_then_park_low_marginal_value_bots",
+        "evidence_required": ["oversubscribed_shadow_cells", "marginal_value_rank"],
+        "applies_to_tiers": ["sub", "master"]
+      },
+      {
+        "tripwire_id": "shadow_cell_hard_pressure",
+        "category": "resource_and_correlation",
+        "severity": "degraded",
+        "metric": "hard_shadow_cell_count",
+        "operator": "gt",
+        "threshold": 0,
+        "owner": "grand_master_bot",
+        "action": "block_new_admission_and_shadow_voting_for_excess_rows",
+        "evidence_required": ["hard_limit_shadow_cells", "resource_budget_contract"],
+        "applies_to_tiers": ["sub", "master", "grand_master"]
+      },
+      {
+        "tripwire_id": "regime_metadata_gap",
+        "category": "regime_context",
+        "severity": "degraded",
+        "metric": "regime_metadata_access_error_count",
+        "operator": "gt",
+        "threshold": 0,
+        "owner": "regime_metadata_access",
+        "action": "block_regime_sensitive_routing_until_metadata_access_is_repaired",
+        "evidence_required": ["regime_metadata_access_errors", "regime_model_contract"],
+        "applies_to_tiers": ["sub", "master", "grand_master"]
+      },
+      {
+        "tripwire_id": "unknown_regime_axes_present",
+        "category": "regime_context",
+        "severity": "advisory",
+        "metric": "unknown_regime_profile_count",
+        "operator": "gt",
+        "threshold": 0,
+        "owner": "operator_review",
+        "action": "replace_unknown_axes_with_evidence_backed_market_or_operational_context",
+        "evidence_required": ["unknown_axes", "preferred_regimes", "source_provenance"],
+        "applies_to_tiers": ["sub", "master"]
+      },
+      {
+        "tripwire_id": "paper_authority_leak",
+        "category": "authority_boundary",
+        "severity": "critical",
+        "metric": "organization_layer_execution_authority_count",
+        "operator": "gt",
+        "threshold": 0,
+        "owner": "system_role_contract",
+        "action": "remove_order_authority_from_organization_layer_before_runtime_use",
+        "evidence_required": ["authority_contract", "offending_bot_id_list"],
+        "applies_to_tiers": ["infrastructure", "sub", "master", "grand_master"]
+      },
+      {
+        "tripwire_id": "live_registry_flag_present",
+        "category": "authority_boundary",
+        "severity": "critical",
+        "metric": "live_registry_flag_count",
+        "operator": "gt",
+        "threshold": 0,
+        "owner": "live_execution_gateway",
+        "action": "block_live_release_and_reconcile_registry_authority_flags",
+        "evidence_required": ["live_registry_flag_bot_ids", "system_role_contract"],
+        "applies_to_tiers": ["infrastructure", "sub", "master", "grand_master"]
+      }
+    ],
+    "hardening_invariants": {
+      "required_tripwire_ids": ["registry_coverage_drop", "duplicate_bot_identity", "setup_contract_break", "review_debt_present", "explicit_sleeve_coverage_low", "shadow_cell_soft_pressure", "shadow_cell_hard_pressure", "regime_metadata_gap", "unknown_regime_axes_present", "paper_authority_leak", "live_registry_flag_present"],
+      "required_tripwire_fields": ["tripwire_id", "category", "severity", "metric", "operator", "threshold", "owner", "action", "evidence_required", "applies_to_tiers"],
+      "authority_false_fields": ["can_change_runtime_decisions", "can_mutate_registry", "can_change_source_code", "can_submit_paper_order", "can_submit_live_order", "can_allocate_capital", "can_promote_candidate", "can_claim_profitability"],
+      "metadata_authority_must_remain_true": true,
+      "only_degraded_or_critical_tripwires_can_block": true,
+      "tripwires_do_not_grant_execution_or_profitability": true
+    },
+    "operator_output_requirements": [
+      "show_active_tripwire_count",
+      "show_tripwire_severity_counts",
+      "show_tripwire_category_counts",
+      "show_blocking_tripwires",
+      "show_tripwire_owner_and_action",
+      "show_evidence_required"
+    ]
+  },
   "classification": {
     "precedence": [
       "registry_explicit",

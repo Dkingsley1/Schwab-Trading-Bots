@@ -447,6 +447,8 @@ def build_payload(
     unique_new: dict[str, dict[str, Any]] = {str(row["evidence_sha256"]): row for row in accepted}
     new_record_count = 0
     materialized_paths: list[str] = []
+    materialization_status = "not_attempted"
+    materialization_error = ""
     if apply:
         ledger_path.mkdir(parents=True, exist_ok=True)
         for digest, row in sorted(unique_new.items()):
@@ -465,7 +467,14 @@ def build_payload(
             candidate=candidate,
             cutoff=cutoff,
         )
-        materialized_paths = _materialize_trade_logs(trade_log_path, eligible_ledger_rows)
+        try:
+            materialized_paths = _materialize_trade_logs(
+                trade_log_path, eligible_ledger_rows
+            )
+            materialization_status = "ready"
+        except OSError as exc:
+            materialization_status = "storage_unavailable"
+            materialization_error = f"{type(exc).__name__}:{exc}"
         next_state = {
             "schema_version": SCHEMA_VERSION,
             "timestamp_utc": iso_now(),
@@ -488,15 +497,27 @@ def build_payload(
             candidate=candidate,
             cutoff=cutoff,
         )
+        materialization_status = "dry_run"
 
     total_accepted = len(ledger_rows)
     candidate_eligible = len(eligible_ledger_rows)
-    status = "blocked" if not candidate.get("bound", False) else "conflict" if conflicts else "ready" if candidate_eligible else "waiting_for_source"
+    materialization_ok = materialization_status in {"ready", "dry_run", "not_attempted"}
+    status = (
+        "blocked"
+        if not candidate.get("bound", False)
+        else "conflict"
+        if conflicts
+        else "storage_unavailable"
+        if not materialization_ok
+        else "ready"
+        if candidate_eligible
+        else "waiting_for_source"
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "timestamp_utc": iso_now(),
         "overall_status": status,
-        "ok": bool(candidate.get("bound", False) and not conflicts),
+        "ok": bool(candidate.get("bound", False) and not conflicts and materialization_ok),
         "apply": bool(apply),
         "candidate_binding": candidate,
         "inbox": str(inbox_path),
@@ -517,6 +538,13 @@ def build_payload(
         "rejected_tail": rejected[-20:],
         "conflicts": conflicts[-20:],
         "materialized_trade_logs": materialized_paths,
+        "trade_log_materialization": {
+            "status": materialization_status,
+            "ok": materialization_ok,
+            "error": materialization_error,
+            "storage_required_for_paper_performance_ingestion": True,
+            "ledger_scan_completed": True,
+        },
         "control_contract": {
             "model_derived_fills_never_accepted": True,
             "paper_or_replay_account_mode_required": True,
@@ -529,10 +557,16 @@ def build_payload(
             "identity_material_excludes_storage_location": True,
             "provenance_relocation_preserves_immutable_identity": True,
             "idempotent_trade_log_materialization": True,
+            "storage_failure_preserves_health_payload": True,
             "live_execution_authority": False,
         },
         "recommended_actions": ordered_unique(
             [
+                (
+                    "repair independent-fill trade-log storage path before counting materialized fill evidence"
+                    if not materialization_ok
+                    else ""
+                ),
                 "route broker-paper execution receipts or licensed market-replay observations into the independent-fill inbox",
                 "keep expected-fill-model rows in simulator diagnostics only",
                 "investigate immutable source-record conflicts before using affected evidence",

@@ -5,6 +5,8 @@ from scripts.ops import platform_settlement_stabilization as src
 
 
 def _write_json(path: Path, payload: dict) -> None:
+    if path.name in {"process_watchdog_latest.json", "backpressure_drainer_fleet_latest.json", "writer_process_intelligence_latest.json"}:
+        payload = {"timestamp_utc": src.iso_now(), **payload}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
@@ -161,6 +163,24 @@ def test_single_writer_guard_blocks_active_chain_without_single_primary_proof(tm
     assert guard["overall_status"] == "blocked"
     assert guard["sql_link_writer_running_count"] == 2
     assert guard["guarded_single_writer_chain"] is False
+
+
+def test_stale_writer_proof_requires_observational_refresh_not_forced_maintenance(tmp_path):
+    _seed_project(tmp_path)
+    _write_json(tmp_path / "governance/health/process_watchdog_latest.json", {"status": [{"name": "sql_link_writer", "running": 2}]})
+    _write_json(tmp_path / "governance/health/backpressure_drainer_fleet_latest.json", {"writer_active": True, "writer_lock_held": True})
+    _write_json(tmp_path / "governance/health/writer_process_intelligence_latest.json", {
+        "timestamp_utc": "2000-01-01T00:00:00Z", "overall_status": "ready",
+        "writer_health": {"writer_lock_held": True, "shard_writer_lane_contract": {
+            "primary_merge_writer_count": 1, "sqlite_primary_writer_count": 1, "single_primary_merge_writer": True,
+        }},
+    })
+    guard = src.build_payload(tmp_path)["sections"]["single_writer_guard"]
+    assert guard["overall_status"] == "blocked"
+    assert guard["evidence_status"] == "evidence_unavailable"
+    assert guard["unverified_sources"] == ["writer_process_intelligence"]
+    assert not guard["guarded_single_writer_chain"]
+    assert guard["recommended_commands"] == [["./scripts/ops/opsctl.sh", "writer-process-intelligence", "--json"]]
 
 
 def test_platform_settlement_stabilization_writes_artifacts(tmp_path: Path) -> None:

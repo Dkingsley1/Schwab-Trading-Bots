@@ -144,7 +144,7 @@ def _mode_matches_target(actual_mode: str, target_mode: str) -> bool:
     actual = str(actual_mode or "").strip()
     target = str(target_mode or "").strip()
     if target == "local":
-        return actual in {"local_fallback", "local_fallback_split_brain"}
+        return actual == "local_fallback"
     return actual in {"external", "external_curated"}
 
 

@@ -17,7 +17,9 @@ else:
     from .long_runtime_common import iso_now, write_payload
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "system_drift_registry_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "system_drift_registry_latest.json"
+)
 
 
 def _python_bin(project_root: Path) -> str:
@@ -40,7 +42,9 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "artifact_path": health_root / "commands_hygiene_latest.json",
             "kind": "commands_hygiene",
             "max_age_minutes": 30,
-            "repair_commands": [["./scripts/ops/opsctl.sh", "commands-hygiene", "--apply", "--json"]],
+            "repair_commands": [
+                ["./scripts/ops/opsctl.sh", "commands-hygiene", "--apply", "--json"]
+            ],
             "notes": [
                 "Keeps COMMANDS.md and the runbook script aligned with the curated operator inventory.",
             ],
@@ -66,9 +70,25 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 30,
-            "repair_commands": [["./scripts/ops/opsctl.sh", "codex-project-guard", "--staged", "--json"]],
+            "repair_commands": [
+                ["./scripts/ops/opsctl.sh", "codex-project-guard", "--staged", "--json"]
+            ],
             "notes": [
                 "Keeps Codex-authored work anchored to AGENTS.md and the system source-of-truth map.",
+            ],
+        },
+        {
+            "name": "source_mutation_guard",
+            "family": "source_integrity_surface",
+            "artifact_path": health_root / "source_mutation_guard_latest.json",
+            "status_key": "overall_status",
+            "ok_key": "ok",
+            "max_age_minutes": 20,
+            "repair_commands": [],
+            "assigned_bot": "production_candidate_controller",
+            "owner_bot": "promotion_governance",
+            "notes": [
+                "Unaccepted source drift is operator-managed: test and explicitly accept a new immutable candidate; no autopilot may accept it.",
             ],
         },
         {
@@ -80,7 +100,12 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "max_age_minutes": 45,
             "repair_commands": [
                 ["./scripts/ops/opsctl.sh", "section-grade-guard", "--json"],
-                ["./scripts/ops/opsctl.sh", "section-grade-autopilot", "--apply", "--json"],
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "section-grade-autopilot",
+                    "--apply",
+                    "--json",
+                ],
             ],
         },
         {
@@ -92,7 +117,12 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "max_age_minutes": 45,
             "repair_commands": [
                 ["./scripts/ops/opsctl.sh", "grade-regression-guard", "--json"],
-                ["./scripts/ops/opsctl.sh", "grade-regression-autopilot", "--apply", "--json"],
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "grade-regression-autopilot",
+                    "--apply",
+                    "--json",
+                ],
             ],
         },
         {
@@ -103,9 +133,24 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "ok_key": "ok",
             "max_age_minutes": 30,
             "repair_commands": [
-                ["./scripts/ops/opsctl.sh", "adaptive-regression-guard", "--apply", "--json"],
-                ["./scripts/ops/opsctl.sh", "grade-regression-autopilot", "--apply", "--json"],
-                ["./scripts/ops/opsctl.sh", "section-grade-autopilot", "--apply", "--json"],
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "adaptive-regression-guard",
+                    "--apply",
+                    "--json",
+                ],
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "grade-regression-autopilot",
+                    "--apply",
+                    "--json",
+                ],
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "section-grade-autopilot",
+                    "--apply",
+                    "--json",
+                ],
             ],
             "notes": [
                 "Learns persistence across grade, section, and runtime regression guards before escalating repairs.",
@@ -118,7 +163,14 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 30,
-            "repair_commands": [["./scripts/ops/opsctl.sh", "one-numbers-regression-guard", "--apply", "--json"]],
+            "repair_commands": [
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "one-numbers-regression-guard",
+                    "--apply",
+                    "--json",
+                ]
+            ],
             "assigned_bot": "system_drift_autopilot",
             "owner_bot": "infrastructure_autofix_bot",
             "notes": [
@@ -146,7 +198,14 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 180,
-            "repair_commands": [["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"]],
+            "repair_commands": [
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "paper-profitability-control",
+                    "--apply",
+                    "--json",
+                ]
+            ],
             "assigned_bot": "paper_profitability_control",
             "owner_bot": "infrabot_adaptive_governor",
             "notes": [
@@ -160,7 +219,14 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 20,
-            "repair_commands": [["./scripts/ops/opsctl.sh", "chrome-headless-guard", "--apply", "--json"]],
+            "repair_commands": [
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "chrome-headless-guard",
+                    "--apply",
+                    "--json",
+                ]
+            ],
         },
         {
             "name": "system_summary_report",
@@ -169,7 +235,15 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 120,
-            "repair_commands": [["./scripts/ops/opsctl.sh", "system-summary", "--refresh-supporting-artifacts", "--render-pdf", "--json"]],
+            "repair_commands": [
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "system-summary",
+                    "--refresh-supporting-artifacts",
+                    "--render-pdf",
+                    "--json",
+                ]
+            ],
         },
         {
             "name": "system_summary_autopilot",
@@ -178,7 +252,11 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 120,
-            "repair_commands": [_py_cmd(project_root, "scripts/ops/system_summary_autopilot.py", "--json")],
+            "repair_commands": [
+                _py_cmd(
+                    project_root, "scripts/ops/system_summary_autopilot.py", "--json"
+                )
+            ],
         },
         {
             "name": "report_pdf_bundle",
@@ -189,33 +267,64 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "max_age_minutes": 120,
             "guarded_paper_stale_advisory": True,
             "repair_commands": [["./scripts/ops/opsctl.sh", "report-pdfs", "--json"]],
-            "notes": ["PDF rendering is optional during a strict green paper soak and must not open headless browsers."],
+            "notes": [
+                "PDF rendering is optional during a strict green paper soak and must not open headless browsers."
+            ],
         },
         {
             "name": "architecture_upgrade_scoreboard",
             "family": "architecture_surface",
-            "artifact_path": health_root / "architecture_upgrade_scoreboard_latest.json",
+            "artifact_path": health_root
+            / "architecture_upgrade_scoreboard_latest.json",
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 90,
             "repair_commands": [
-                _py_cmd(project_root, "scripts/ops/mode_switchboard_mission_control.py", "--json"),
-                _py_cmd(project_root, "scripts/ops/decision_provenance_cards.py", "--json"),
-                _py_cmd(project_root, "scripts/ops/autonomy_control_plane.py", "--json"),
-                _py_cmd(project_root, "scripts/ops/architecture_upgrade_scoreboard.py", "--json"),
+                _py_cmd(
+                    project_root,
+                    "scripts/ops/mode_switchboard_mission_control.py",
+                    "--json",
+                ),
+                _py_cmd(
+                    project_root, "scripts/ops/decision_provenance_cards.py", "--json"
+                ),
+                _py_cmd(
+                    project_root, "scripts/ops/autonomy_control_plane.py", "--json"
+                ),
+                _py_cmd(
+                    project_root,
+                    "scripts/ops/architecture_upgrade_scoreboard.py",
+                    "--json",
+                ),
             ],
         },
         {
             "name": "system_architecture_contract_graph",
             "family": "architecture_surface",
-            "artifact_path": health_root / "system_architecture_contract_graph_latest.json",
+            "artifact_path": health_root
+            / "system_architecture_contract_graph_latest.json",
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 30,
             "repair_commands": [
-                ["./scripts/ops/opsctl.sh", "system-architecture-contract-graph", "--apply", "--json"],
-                ["./scripts/ops/opsctl.sh", "adaptive-regression-guard", "--apply", "--json"],
-                ["./scripts/ops/opsctl.sh", "distributed-cell-architecture", "--apply", "--json"],
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "system-architecture-contract-graph",
+                    "--apply",
+                    "--json",
+                ],
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "adaptive-regression-guard",
+                    "--apply",
+                    "--json",
+                ],
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "distributed-cell-architecture",
+                    "--apply",
+                    "--json",
+                ],
             ],
             "notes": [
                 "Maps architecture artifacts, dependencies, freshness, and authority boundaries into a system-wide contract graph.",
@@ -229,8 +338,18 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "ok_key": "ok",
             "max_age_minutes": 30,
             "repair_commands": [
-                ["./scripts/ops/opsctl.sh", "system-architecture-autopilot", "--apply", "--json"],
-                ["./scripts/ops/opsctl.sh", "system-architecture-contract-graph", "--apply", "--json"],
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "system-architecture-autopilot",
+                    "--apply",
+                    "--json",
+                ],
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "system-architecture-contract-graph",
+                    "--apply",
+                    "--json",
+                ],
             ],
             "notes": [
                 "Plans dependency-ordered architecture repairs from the contract graph; command execution requires explicit --execute-safe-repairs.",
@@ -242,7 +361,9 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "artifact_path": health_root / "process_watchdog_latest.json",
             "kind": "watchdog",
             "max_age_minutes": 15,
-            "repair_commands": [_py_cmd(project_root, "scripts/ops/process_watchdog.py", "--json")],
+            "repair_commands": [
+                _py_cmd(project_root, "scripts/ops/process_watchdog.py", "--json")
+            ],
         },
         {
             "name": "incident_closeout",
@@ -251,16 +372,21 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 45,
-            "repair_commands": [["./scripts/ops/opsctl.sh", "incident-closeout", "--json"]],
+            "repair_commands": [
+                ["./scripts/ops/opsctl.sh", "incident-closeout", "--json"]
+            ],
         },
         {
             "name": "live_runtime_separation",
             "family": "safety_surface",
-            "artifact_path": health_root / "live_runtime_separation_control_latest.json",
+            "artifact_path": health_root
+            / "live_runtime_separation_control_latest.json",
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 45,
-            "repair_commands": [["./scripts/ops/opsctl.sh", "live-runtime-separation", "--json"]],
+            "repair_commands": [
+                ["./scripts/ops/opsctl.sh", "live-runtime-separation", "--json"]
+            ],
         },
         {
             "name": "infrastructure_autofix",
@@ -277,11 +403,14 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
         {
             "name": "master_infrastructure_supervisor",
             "family": "infrastructure_surface",
-            "artifact_path": health_root / "master_infrastructure_supervisor_latest.json",
+            "artifact_path": health_root
+            / "master_infrastructure_supervisor_latest.json",
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 30,
-            "repair_commands": [["./scripts/ops/opsctl.sh", "master-infra-supervisor", "--json"]],
+            "repair_commands": [
+                ["./scripts/ops/opsctl.sh", "master-infra-supervisor", "--json"]
+            ],
             "notes": [
                 "Parent infrastructure supervisor that verifies child bots, storage routes, command docs, report jobs, and One Numbers original-start coverage together.",
             ],
@@ -293,7 +422,9 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 30,
-            "repair_commands": [["./scripts/ops/opsctl.sh", "coinbase-api-health", "--json"]],
+            "repair_commands": [
+                ["./scripts/ops/opsctl.sh", "coinbase-api-health", "--json"]
+            ],
             "assigned_bot": "master_infrastructure_supervisor",
             "owner_bot": "infrastructure_autofix_bot",
             "notes": [
@@ -306,7 +437,9 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "artifact_path": health_root / "point_in_time_event_store_latest.json",
             "ok_key": "ok",
             "max_age_minutes": 60,
-            "repair_commands": [["./scripts/ops/opsctl.sh", "point-in-time-event-store", "--json"]],
+            "repair_commands": [
+                ["./scripts/ops/opsctl.sh", "point-in-time-event-store", "--json"]
+            ],
         },
         {
             "name": "replay_hash_registry_guard",
@@ -314,7 +447,9 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "artifact_path": health_root / "replay_hash_registry_guard_latest.json",
             "ok_key": "ok",
             "max_age_minutes": 60,
-            "repair_commands": [["./scripts/ops/opsctl.sh", "replay-hash-registry", "--json"]],
+            "repair_commands": [
+                ["./scripts/ops/opsctl.sh", "replay-hash-registry", "--json"]
+            ],
         },
         {
             "name": "golden_replay_regression_guard",
@@ -323,7 +458,9 @@ def surface_specs(project_root: Path = PROJECT_ROOT) -> list[dict[str, Any]]:
             "status_key": "overall_status",
             "ok_key": "ok",
             "max_age_minutes": 60,
-            "repair_commands": [["./scripts/ops/opsctl.sh", "golden-replay-regression", "--json"]],
+            "repair_commands": [
+                ["./scripts/ops/opsctl.sh", "golden-replay-regression", "--json"]
+            ],
         },
     ]
 
@@ -337,7 +474,9 @@ def _jsonable_command(command: Any) -> list[str]:
 def _jsonable_spec(spec: dict[str, Any]) -> dict[str, Any]:
     repair_commands = [
         command
-        for command in (_jsonable_command(raw) for raw in list(spec.get("repair_commands") or []))
+        for command in (
+            _jsonable_command(raw) for raw in list(spec.get("repair_commands") or [])
+        )
         if command
     ]
     return {
@@ -372,13 +511,17 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "repairable_surface_count": sum(1 for spec in specs if spec.get("repairable")),
         "family_counts": family_counts,
         "surfaces": specs,
-        "recommended_commands": [["./scripts/ops/opsctl.sh", "system-drift-guard", "--json"]],
+        "recommended_commands": [
+            ["./scripts/ops/opsctl.sh", "system-drift-guard", "--json"]
+        ],
         "policy": "registry_declares_drift_surfaces; guard_evaluates_current_artifact_state",
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Emit the system drift surface registry artifact.")
+    parser = argparse.ArgumentParser(
+        description="Emit the system drift surface registry artifact."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")

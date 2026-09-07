@@ -3,12 +3,14 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import os
+import re
 from typing import Any, Dict, List, Optional
 import warnings
 
 from core.brokers.base import BrokerAdapter, BrokerCallSpec
 from core.brokers.models import BrokerAuthRequest, BrokerCapabilities, BrokerCredentials
 from core.brokers.schwab_credentials import resolve_schwab_credentials
+from core.brokers.schwab_credentials import enforce_managed_schwab_runtime
 
 
 @contextmanager
@@ -63,6 +65,7 @@ class SchwabBrokerAdapter(BrokerAdapter):
         supports_order_replace=True,
         supports_order_cancel=True,
         supports_order_fetch=True,
+        supports_order_list=True,
         supports_options=True,
         supports_futures=True,
         supports_exotic_derivatives_direct=False,
@@ -86,6 +89,9 @@ class SchwabBrokerAdapter(BrokerAdapter):
         return resolve_schwab_credentials()
 
     def authenticate(self, auth_request: BrokerAuthRequest) -> Any:
+        enforce_managed_schwab_runtime(
+            require_by_default=bool(str(os.getenv("BOT_RUNTIME_PROFILE", "")).strip())
+        )
         easy_client = _schwab_easy_client()
         client = easy_client(
             api_key=auth_request.credentials.api_key,
@@ -160,6 +166,48 @@ class SchwabBrokerAdapter(BrokerAdapter):
             candidates.append(("get_order", (account_reference_value, order_id_value), {}))
         candidates.append(("get_order", (order_id_value,), {}))
         return candidates
+
+    def orders_snapshot_candidates(
+        self,
+        *,
+        account_reference: str,
+        max_results: int = 500,
+        lookback_days: int = 60,
+    ) -> List[BrokerCallSpec]:
+        account_reference_value = str(account_reference or "").strip()
+        if not account_reference_value:
+            return []
+        now_utc = datetime.now(timezone.utc)
+        start_utc = now_utc - timedelta(days=max(int(lookback_days), 1))
+        return [
+            (
+                "get_orders_for_account",
+                (account_reference_value,),
+                {
+                    "max_results": max(int(max_results), 1),
+                    "from_entered_datetime": start_utc,
+                    "to_entered_datetime": now_utc,
+                },
+            )
+        ]
+
+    def validate_live_account_reference(self, account_reference: str) -> Dict[str, Any]:
+        reference = str(account_reference or "").strip()
+        hash_bound = bool(
+            len(reference) >= 16
+            and not reference.isdigit()
+            and not reference.startswith("****")
+            and "*" not in reference
+            and re.fullmatch(r"[A-Za-z0-9._~+-]+", reference)
+        )
+        return {
+            "ok": hash_bound,
+            "reason": "ok" if hash_bound else "schwab_live_account_hash_required",
+            "broker": self.name,
+            "reference_present": bool(reference),
+            "hash_bound": hash_bound,
+            "raw_reference_emitted": False,
+        }
 
     def quote_candidates(self, *, symbol: str) -> List[BrokerCallSpec]:
         symbol_value = str(symbol or "").strip().upper()

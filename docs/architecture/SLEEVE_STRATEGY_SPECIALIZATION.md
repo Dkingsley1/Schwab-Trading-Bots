@@ -23,6 +23,14 @@ Named strategies use `sleeve::{sleeve_id}::{strategy_name}::v1`. A decision rece
 - Cash and conservative strategies are evaluated on capital preservation net of opportunity cost.
 - Infrastructure strategies are control-only and never receive a trading-profit objective.
 
+## Economic Context Source Of Truth
+
+`config/sleeve_strategy_contracts_v1.json` owns the canonical `sleeve_economic_context_v1` contract. Every trading sleeve must demonstrate positive objective-specific economic contribution after costs in its intended market context before a separate allocator may consider it for capital. The contract does not require all sleeves to activate or profit simultaneously and does not guarantee profitability.
+
+The canonical economic states are `active`, `collect_only`, `quarantined`, `retired`, and `control_only`. `Active` means the current candidate binding, objective evidence, benchmark or utility hurdle, regime, sources, costs, liquidity, capacity, risk, account, route, and marginal portfolio contribution are all clear. It remains advisory metadata and does not allocate capital. Missing context or evidence produces `collect_only`; adverse expectancy, drift, drawdown, or integrity failure produces `quarantined`; mature adverse evidence or supersession produces `retired`; infrastructure remains `control_only`.
+
+Economic value follows the objective rather than one raw-P&L definition. Alpha and relative-value sleeves require positive post-cost return against their benchmark. Income sleeves require tax-aware income plus total return. Execution sleeves require measurable implementation-cost improvement. Hedge sleeves require tail-loss and drawdown reduction net of carry. Capital-preservation sleeves require positive risk-adjusted preservation utility. Control-only sleeves are graded only on operational effectiveness.
+
 ## Twelve-Thousand-Strategy Library
 
 The policy deterministically materializes exactly `12,000` strategy hypotheses across `111` sleeves. Every sleeve receives `108` or `109` strategies, satisfying the minimum of `100` without giving every process 100 simultaneous jobs. The existing `879` catalog and curated contracts remain the hot runtime catalog. The remaining `11,121` hypotheses are `cold_research`: they are generated only in the research report, consume no runtime strategy slot, and have no training, action, sizing, allocation, promotion, or live-order authority.
@@ -52,6 +60,8 @@ Run `./scripts/ops/opsctl.sh strategy-library --sleeve crypto_spot --regime-rele
 ## Lifecycle
 
 The hot report uses `parked_candidate`, `probation`, `watch`, `validated_candidate`, `demotion_review`, `retirement_review`, and `control_only`; the generated catalog adds `cold_untested`. A state is descriptive evidence, not promotion authority. Missing or mismatched candidate binding parks the strategy. No historical candidate or lifetime fallback is allowed.
+
+Those research lifecycle labels remain more granular than the economic state model. Downstream allocation and execution controls must treat anything short of complete context-qualified evidence as non-active, and the more restrictive state always wins.
 
 ## Candidate-Bound Paper Scaling
 

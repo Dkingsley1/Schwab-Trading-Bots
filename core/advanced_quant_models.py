@@ -7,15 +7,14 @@ from importlib import util as importlib_util
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from core.mlx_runtime_guard import mlx_modules
+
 try:
     import numpy as np
 except Exception:  # pragma: no cover - numpy is optional for the lightweight fallback.
     np = None
 
-try:
-    import mlx.core as mx
-except Exception:  # pragma: no cover - MLX is optional outside Apple Silicon runtimes.
-    mx = None
+mx, _, _, _MLX_IMPORT_ERROR = mlx_modules()
 
 try:
     import QuantLib as ql

@@ -1285,7 +1285,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Generations with attributable outcomes: `{developmental.get('attributable_generation_count', 0)}`",
         f"- Mature developmental generations: `{developmental.get('mature_developmental_generation_count', 0)}`",
         f"- Bounded paper actions: `{len(_as_list(developmental.get('bounded_paper_action_plan')))}`",
-        "- Historical generations earn current economic-grade or clean 720-hour credit: `False`",
+        "- Historical generations earn current economic-grade or current scope-validation credit: `False`",
         "",
         "## Eight-Lane Program",
         "",
@@ -1318,11 +1318,29 @@ def main() -> int:
     project_root = Path(args.project_root).expanduser().resolve()
     config_path = Path(args.config).expanduser().resolve() if args.config else None
     payload = build_payload(project_root, config_path=config_path)
-    write_payload(Path(args.out_file).expanduser(), payload)
+    markdown_status = {
+        "attempted": False,
+        "available": False,
+        "path": "",
+        "error": "",
+    }
     if not args.no_markdown:
         markdown_path = Path(args.markdown_out).expanduser()
-        markdown_path.parent.mkdir(parents=True, exist_ok=True)
-        markdown_path.write_text(render_markdown(payload), encoding="utf-8")
+        markdown_status["attempted"] = True
+        markdown_status["path"] = str(markdown_path)
+        try:
+            markdown_path.parent.mkdir(parents=True, exist_ok=True)
+            markdown_path.write_text(render_markdown(payload), encoding="utf-8")
+            markdown_status["available"] = True
+        except OSError as exc:
+            markdown_status["error"] = f"{type(exc).__name__}:{exc}"
+            payload.setdefault("warnings", [])
+            if isinstance(payload["warnings"], list):
+                payload["warnings"].append(
+                    "profitability_self_assessment_markdown_storage_unavailable"
+                )
+    payload["operator_markdown_report"] = markdown_status
+    write_payload(Path(args.out_file).expanduser(), payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

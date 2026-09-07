@@ -1,4 +1,5 @@
 import json
+import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -26,33 +27,83 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
         "paper_execution_calibration",
         "paper_performance",
         "sleeve_strategy_specialization",
+        "trading_behavior_drill_program",
         "paper_profitability_control",
         "quantitative_challenger_report",
         "readiness_evidence_accrual",
     ]
     assert len(dashboard) < len(refresh.default_steps())
     assert len(production) < len(refresh.default_steps())
-    assert dashboard.index("market_replay_fill_capture") < dashboard.index("independent_fill_acquisition")
-    assert dashboard.index("runtime_training_snapshot") < dashboard.index("feature_store_manifest")
-    assert dashboard.index("snapshot_coverage") < dashboard.index("feature_store_manifest")
-    assert dashboard.index("feature_store_manifest") < dashboard.index("research_context_expansion")
-    assert dashboard.index("research_context_expansion") < dashboard.index("collector_contracts")
-    assert dashboard.index("collector_contracts") < dashboard.index("source_verification")
-    assert dashboard.index("source_verification") < dashboard.index("capability_materialization")
-    assert dashboard.index("capability_materialization") < dashboard.index("collector_capability_control")
+    assert dashboard.index("market_replay_fill_capture") < dashboard.index(
+        "independent_fill_acquisition"
+    )
+    assert dashboard.index("runtime_training_snapshot") < dashboard.index(
+        "feature_store_manifest"
+    )
+    assert dashboard.index("snapshot_coverage") < dashboard.index(
+        "feature_store_manifest"
+    )
+    assert dashboard.index("feature_store_manifest") < dashboard.index(
+        "research_context_expansion"
+    )
+    assert dashboard.index("research_context_expansion") < dashboard.index(
+        "collector_contracts"
+    )
+    assert dashboard.index("collector_contracts") < dashboard.index(
+        "source_verification"
+    )
+    assert dashboard.index("source_verification") < dashboard.index(
+        "capability_materialization"
+    )
+    assert dashboard.index("capability_materialization") < dashboard.index(
+        "collector_capability_control"
+    )
     assert dashboard.index("source_verification") < dashboard.index("provider_mesh")
-    assert dashboard.index("collector_capability_control") < dashboard.index("provider_mesh")
-    assert dashboard.index("storage_retention_unison") < dashboard.index("notification_escalation_ladder")
-    assert dashboard.index("state_snapshot_restore_drill") < dashboard.index("storage_resilience_control")
-    assert dashboard.index("storage_resilience_control") < dashboard.index("ingestion_storage_control")
-    assert dashboard.index("ingestion_storage_control") < dashboard.index("blackstart_recovery")
-    assert dashboard.index("blackstart_recovery") < dashboard.index("unattended_soak_readiness")
-    assert dashboard.index("notification_escalation_ladder") < dashboard.index("unattended_soak_readiness")
-    assert dashboard.index("paper_execution_calibration") < dashboard.index("readiness_evidence_accrual")
-    assert dashboard.index("paper_performance") < dashboard.index("quantitative_challenger_report")
-    assert dashboard.index("paper_performance") < dashboard.index("sleeve_strategy_specialization")
+    assert dashboard.index("collector_capability_control") < dashboard.index(
+        "provider_mesh"
+    )
+    assert dashboard.index("storage_retention_unison") < dashboard.index(
+        "notification_escalation_ladder"
+    )
+    assert dashboard.index("state_snapshot_restore_drill") < dashboard.index(
+        "storage_resilience_control"
+    )
+    assert dashboard.index("storage_resilience_control") < dashboard.index(
+        "ingestion_storage_control"
+    )
+    assert dashboard.index("ingestion_storage_control") < dashboard.index(
+        "blackstart_recovery"
+    )
+    assert dashboard.index("blackstart_recovery") < dashboard.index(
+        "unattended_soak_readiness"
+    )
+    assert dashboard.index("notification_escalation_ladder") < dashboard.index(
+        "unattended_soak_readiness"
+    )
+    assert dashboard.index("paper_execution_calibration") < dashboard.index(
+        "readiness_evidence_accrual"
+    )
+    assert dashboard.index("paper_performance") < dashboard.index(
+        "quantitative_challenger_report"
+    )
+    assert dashboard.index("paper_performance") < dashboard.index(
+        "sleeve_strategy_specialization"
+    )
+    assert dashboard.index("paper_performance") < dashboard.index(
+        "trading_behavior_drill_program"
+    )
+    assert dashboard.index("trading_behavior_drill_program") < dashboard.index(
+        "paper_profitability_control"
+    )
     dashboard_steps = {row["name"]: row for row in refresh.profile_steps("dashboard")}
-    assert set(dashboard_steps["storage_retention_unison"]["allowed_returncodes"]) == {0, 2}
+    assert dashboard_steps["paper_profitability_control"]["depends_on"] == [
+        "paper_performance",
+        "trading_behavior_drill_program",
+    ]
+    assert set(dashboard_steps["storage_retention_unison"]["allowed_returncodes"]) == {
+        0,
+        2,
+    }
 
     required_pillar_owners = {
         "memory_pressure_intelligence",
@@ -67,6 +118,7 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
         "content_addressed_store",
         "production_readiness",
         "production_excellence",
+        "source_mutation_guard",
         "investor_readiness_control",
         "system_drift_guard",
         "master_infrastructure_supervisor",
@@ -74,19 +126,45 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
         "institutional_capability_control",
     }
     assert required_pillar_owners.issubset(set(production))
-    assert production.index("memory_pressure_intelligence") < production.index("autonomic_resource_governor")
-    assert production.index("autonomic_resource_governor") < production.index("coherent_training_profitability_refresh")
-    assert production.index("coherent_training_profitability_refresh") < production.index("promotion_candidate_advancement")
-    assert production.index("one_numbers_report") < production.index("portfolio_risk_ledger")
-    assert production.index("portfolio_risk_ledger") < production.index("execution_budget")
-    assert production.index("execution_budget") < production.index("risk_service_boundary")
-    assert production.index("content_addressed_store") < production.index("storage_disaster_recovery")
-    assert production.index("secret_scan") < production.index("security_evidence_autofix")
-    assert production.index("security_evidence_autofix") < production.index("security_audit")
-    assert production.index("state_snapshot_restore_drill") < production.index("storage_resilience_control")
-    assert production.index("storage_resilience_control") < production.index("ingestion_storage_control")
-    assert production.index("ingestion_storage_control") < production.index("blackstart_recovery")
-    assert production.index("storage_disaster_recovery") < production.index("blackstart_recovery")
+    assert production.index("memory_pressure_intelligence") < production.index(
+        "autonomic_resource_governor"
+    )
+    assert production.index("autonomic_resource_governor") < production.index(
+        "coherent_training_profitability_refresh"
+    )
+    assert production.index(
+        "coherent_training_profitability_refresh"
+    ) < production.index("promotion_candidate_advancement")
+    assert production.index("one_numbers_report") < production.index(
+        "portfolio_risk_ledger"
+    )
+    assert production.index("portfolio_risk_ledger") < production.index(
+        "execution_budget"
+    )
+    assert production.index("execution_budget") < production.index(
+        "risk_service_boundary"
+    )
+    assert production.index("content_addressed_store") < production.index(
+        "storage_disaster_recovery"
+    )
+    assert production.index("secret_scan") < production.index(
+        "security_evidence_autofix"
+    )
+    assert production.index("security_evidence_autofix") < production.index(
+        "security_audit"
+    )
+    assert production.index("state_snapshot_restore_drill") < production.index(
+        "storage_resilience_control"
+    )
+    assert production.index("storage_resilience_control") < production.index(
+        "ingestion_storage_control"
+    )
+    assert production.index("ingestion_storage_control") < production.index(
+        "blackstart_recovery"
+    )
+    assert production.index("storage_disaster_recovery") < production.index(
+        "blackstart_recovery"
+    )
     production_steps = {row["name"]: row for row in refresh.profile_steps("production")}
     assert production_steps["coherent_training_profitability_refresh"]["args"] == [
         "--scope",
@@ -104,7 +182,9 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
     assert "--apply" in production_steps["storage_disaster_recovery"]["args"]
     assert set(production_steps["live_canary_control"]["allowed_returncodes"]) == {0, 2}
     assert production_steps["investor_readiness_control"]["args"] == ["--json"]
-    assert set(production_steps["investor_readiness_control"]["allowed_returncodes"]) == {0, 2}
+    assert set(
+        production_steps["investor_readiness_control"]["allowed_returncodes"]
+    ) == {0, 2}
     assert set(production_steps["investor_readiness_control"]["depends_on"]) == {
         "production_excellence",
         "profitability_evidence_firewall",
@@ -114,8 +194,17 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
     }
     assert production_steps["livefeed_refresh_guard"]["args"] == ["--apply", "--json"]
     assert production_steps["livefeed_refresh_guard"]["max_age_minutes"] == 15.0
-    assert production_steps["stateful_storage_regression_guard"]["args"] == ["--apply", "--json"]
+    assert production_steps["stateful_storage_regression_guard"]["args"] == [
+        "--apply",
+        "--json",
+    ]
     assert production_steps["codex_project_guard"]["args"] == ["--staged", "--json"]
+    assert production_steps["source_mutation_guard"]["depends_on"] == [
+        "production_excellence"
+    ]
+    assert production_steps["system_drift_registry"]["depends_on"] == [
+        "source_mutation_guard"
+    ]
     assert production_steps["incident_closeout"]["artifact"] == (
         "governance/health/incident_closeout_autopilot_latest.json"
     )
@@ -129,28 +218,51 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
         "system_architecture_contract_graph",
         "system_architecture_autopilot",
     }
-    assert set(production_steps["system_architecture_contract_graph"]["depends_on"]) >= {
+    assert set(
+        production_steps["system_architecture_contract_graph"]["depends_on"]
+    ) >= {
         "system_drift_registry",
         "schwab_indicator_intelligence",
         "system_expansion_execution",
         "distributed_cell_architecture",
         "architecture_hardening",
     }
-    assert production_steps["master_infrastructure_supervisor"]["depends_on"] == ["system_drift_guard"]
-    assert production_steps["system_self_model_settled"]["depends_on"] == ["master_infrastructure_supervisor"]
-    assert production_steps["system_architecture_contract_graph_settled"]["depends_on"] == ["system_self_model_settled"]
+    for name in ("platform_intelligence", "platform_brain_v5", "platform_stabilization_quality", "platform_settlement_stabilization"):
+        assert name in production
+        assert production_steps[name]["max_age_minutes"] < 45
+        assert "--apply" not in production_steps[name]["args"]
+        assert production.index(name) < production.index("architecture_hardening")
+    assert "platform_settlement_stabilization" in production_steps["architecture_hardening"]["depends_on"]
+    assert production.index("writer_process_intelligence") < production.index("platform_settlement_stabilization")
+    assert "writer_process_intelligence" in production_steps["platform_settlement_stabilization"]["depends_on"]
+    assert production_steps["writer_process_intelligence"]["args"] == ["--json"]
+    assert production_steps["master_infrastructure_supervisor"]["depends_on"] == [
+        "system_drift_guard"
+    ]
+    assert production_steps["system_self_model_settled"]["depends_on"] == [
+        "master_infrastructure_supervisor"
+    ]
+    assert production_steps["system_architecture_contract_graph_settled"][
+        "depends_on"
+    ] == ["system_self_model_settled"]
     assert production_steps["system_architecture_autopilot_settled"]["depends_on"] == [
         "system_architecture_contract_graph_settled"
     ]
-    assert production.index("master_infrastructure_supervisor") < production.index("system_self_model_settled")
-    assert production.index("system_self_model_settled") < production.index("system_architecture_contract_graph_settled")
-    assert production.index("system_architecture_contract_graph_settled") < production.index(
-        "system_architecture_autopilot_settled"
+    assert production.index("master_infrastructure_supervisor") < production.index(
+        "system_self_model_settled"
     )
-    assert production.index("production_excellence") < production.index("investor_readiness_control")
-    assert production.index("coherent_training_profitability_refresh") < production.index(
-        "quantitative_challenger_report"
+    assert production.index("system_self_model_settled") < production.index(
+        "system_architecture_contract_graph_settled"
     )
+    assert production.index(
+        "system_architecture_contract_graph_settled"
+    ) < production.index("system_architecture_autopilot_settled")
+    assert production.index("production_excellence") < production.index(
+        "investor_readiness_control"
+    )
+    assert production.index(
+        "coherent_training_profitability_refresh"
+    ) < production.index("quantitative_challenger_report")
     assert production.index("quantitative_challenger_report") < production.index(
         "institutional_capability_control"
     )
@@ -240,8 +352,20 @@ def test_due_step_accepts_evidence_pending_return_code(tmp_path: Path) -> None:
     artifact = tmp_path / "governance" / "health" / "test_latest.json"
 
     def runner(*_args, **_kwargs):
-        _write(artifact, {"timestamp_utc": NOW.isoformat(), "overall_status": "evidence_pending", "ok": False})
-        return {"rc": 2, "stdout": json.dumps({"overall_status": "evidence_pending", "ok": False}), "stderr": "", "timed_out": False}
+        _write(
+            artifact,
+            {
+                "timestamp_utc": NOW.isoformat(),
+                "overall_status": "evidence_pending",
+                "ok": False,
+            },
+        )
+        return {
+            "rc": 2,
+            "stdout": json.dumps({"overall_status": "evidence_pending", "ok": False}),
+            "stderr": "",
+            "timed_out": False,
+        }
 
     payload = refresh.refresh(
         tmp_path,
@@ -271,15 +395,65 @@ def test_timeout_is_an_operational_failure(tmp_path: Path) -> None:
     assert payload["operational_failures"] == ["test_step"]
 
 
+@pytest.mark.parametrize("evidence", [
+    {"timestamp_utc": (NOW - timedelta(days=1)).isoformat()},
+    {"timestamp_utc": (NOW + timedelta(days=1)).isoformat()},
+    {"timestamp_utc": "invalid"},
+    {"ok": True},
+])
+def test_success_exit_without_current_published_evidence_fails(tmp_path, evidence):
+    artifact = tmp_path / "governance/health/test_latest.json"
+    _write(artifact, evidence)
+    calls = []
+
+    def runner(*args, **kwargs):
+        calls.append(args)
+        return {"rc": 0, "stdout": json.dumps({"ok": True, "timestamp_utc": NOW.isoformat()})}
+
+    payload = refresh.refresh(tmp_path, steps=[_spec("governance/health/test_latest.json")], runner=runner, now=NOW)
+    assert calls
+    assert not payload["ok"]
+    assert payload["refreshed_step_count"] == 0
+    assert not payload["steps"][0]["artifact_freshness_after"]["fresh"]
+
+
+def test_refresh_status_comes_from_published_file_not_stdout(tmp_path):
+    artifact = tmp_path / "governance/health/test_latest.json"
+
+    def runner(*args, **kwargs):
+        _write(artifact, {"timestamp_utc": NOW.isoformat(), "ok": False, "overall_status": "blocked"})
+        return {"rc": 2, "stdout": '{"ok":true,"overall_status":"ready"}'}
+
+    payload = refresh.refresh(tmp_path, steps=[_spec("governance/health/test_latest.json", allowed=(0, 2))], runner=runner, now=NOW)
+    assert payload["ok"]
+    assert payload["steps"][0]["published_ok"] is False
+    assert payload["steps"][0]["published_status"] == "blocked"
+
+
 def test_refresh_report_cooldown_returns_without_rewriting(tmp_path: Path) -> None:
     out = tmp_path / "governance" / "health" / "readiness_evidence_refresh_latest.json"
-    _write(out, {"timestamp_utc": (NOW - timedelta(minutes=2)).isoformat(), "overall_status": "ready", "ok": True})
+    _write(
+        out,
+        {
+            "timestamp_utc": (NOW - timedelta(minutes=2)).isoformat(),
+            "overall_status": "ready",
+            "ok": True,
+        },
+    )
 
     payload = refresh.refresh(tmp_path, steps=[], now=NOW)
 
     assert payload["refresh_skipped"] is True
     assert payload["write_latest"] is False
     assert payload["refresh_skip_reason"] == "cooldown_active"
+
+
+@pytest.mark.parametrize("evidence", [{"ok": True}, {"timestamp_utc": "2099-01-01T00:00:00Z"}])
+def test_invalid_prior_timestamp_cannot_hold_refresh_in_cooldown(tmp_path, evidence):
+    _write(tmp_path / "governance/health/readiness_evidence_refresh_latest.json", evidence)
+    payload = refresh.refresh(tmp_path, steps=[], now=NOW)
+    assert payload["refresh_skipped"] is False
+    assert payload["write_latest"] is True
 
 
 def test_unattended_soak_runs_after_all_freshness_dependencies() -> None:
@@ -316,7 +490,10 @@ def test_profitability_firewall_runs_after_all_hardening_evidence_producers() ->
         "profitability_benchmark_capture",
         "profitability_benchmark_hurdle",
     }.issubset(dependencies)
-    assert "profitability_evidence_firewall" in steps["production_excellence"]["depends_on"]
+    assert (
+        "profitability_evidence_firewall"
+        in steps["production_excellence"]["depends_on"]
+    )
 
 
 def test_production_quality_refreshes_health_gates_before_derived_controls() -> None:
@@ -331,7 +508,9 @@ def test_runtime_self_awareness_refreshes_in_dependency_order() -> None:
     steps = {row["name"]: row for row in refresh.default_steps()}
 
     assert steps["memory_pressure_intelligence"]["max_age_minutes"] <= 15
-    assert steps["autonomic_resource_governor"]["depends_on"] == ["memory_pressure_intelligence"]
+    assert steps["autonomic_resource_governor"]["depends_on"] == [
+        "memory_pressure_intelligence"
+    ]
     assert steps["bot_needs_intelligence"]["depends_on"] == ["training_quality_control"]
     assert set(steps["training_runtime_control"]["depends_on"]) == {
         "memory_pressure_intelligence",
@@ -339,7 +518,10 @@ def test_runtime_self_awareness_refreshes_in_dependency_order() -> None:
         "training_quality_control",
         "bot_needs_intelligence",
     }
-    assert "training_runtime_control" in steps["promotion_candidate_advancement"]["depends_on"]
+    assert (
+        "training_runtime_control"
+        in steps["promotion_candidate_advancement"]["depends_on"]
+    )
     assert set(steps["architecture_upgrade_scoreboard"]["depends_on"]) == {
         "production_excellence",
         "training_runtime_control",
@@ -358,7 +540,9 @@ def test_runtime_self_awareness_refreshes_in_dependency_order() -> None:
     }
 
 
-def test_uniform_hardening_runs_after_critical_freshness_producers_and_before_readiness() -> None:
+def test_uniform_hardening_runs_after_critical_freshness_producers_and_before_readiness() -> (
+    None
+):
     steps = {row["name"]: row for row in refresh.default_steps()}
 
     assert set(steps["runtime_paper_regression_guard"]["depends_on"]) == {
@@ -370,7 +554,9 @@ def test_uniform_hardening_runs_after_critical_freshness_producers_and_before_re
         "health_gates",
     }
     assert set(steps["source_verification"]["depends_on"]) == {"collector_contracts"}
-    assert set(steps["capability_materialization"]["depends_on"]) == {"source_verification"}
+    assert set(steps["capability_materialization"]["depends_on"]) == {
+        "source_verification"
+    }
     assert set(steps["collector_capability_control"]["depends_on"]) == {
         "collector_contracts",
         "source_verification",
@@ -381,8 +567,14 @@ def test_uniform_hardening_runs_after_critical_freshness_producers_and_before_re
         "source_verification",
     }
     assert "--apply" in steps["source_verification_autorefresh"]["args"]
-    assert "source_verification_autorefresh" in steps["paper_truth_dependency_refresh"]["depends_on"]
-    assert "runtime_paper_regression_guard" in steps["production_quality_control"]["depends_on"]
+    assert (
+        "source_verification_autorefresh"
+        in steps["paper_truth_dependency_refresh"]["depends_on"]
+    )
+    assert (
+        "runtime_paper_regression_guard"
+        in steps["production_quality_control"]["depends_on"]
+    )
     assert set(steps["uniform_hardening_contract"]["depends_on"]) == {
         "coherent_training_profitability_refresh",
         "production_quality_slo",

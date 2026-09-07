@@ -14,9 +14,20 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import load_json, payload_age_minutes, run_bounded_process_group, write_payload
+    from scripts.ops.long_runtime_common import (
+        evidence_freshness,
+        load_json,
+        run_bounded_process_group,
+        write_payload,
+    )
 else:
-    from .long_runtime_common import PROJECT_ROOT, load_json, payload_age_minutes, run_bounded_process_group, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT,
+        evidence_freshness,
+        load_json,
+        run_bounded_process_group,
+        write_payload,
+    )
 
 
 DEFAULT_OUT = Path("governance/health/readiness_evidence_refresh_latest.json")
@@ -41,6 +52,7 @@ PROFILE_STEP_NAMES: dict[str, tuple[str, ...]] = {
         "paper_performance",
         "sleeve_strategy_specialization",
         "quantitative_challenger_report",
+        "trading_behavior_drill_program",
         "paper_profitability_control",
         "readiness_evidence_accrual",
     ),
@@ -63,6 +75,7 @@ PROFILE_STEP_NAMES: dict[str, tuple[str, ...]] = {
         "paper_performance",
         "sleeve_strategy_specialization",
         "quantitative_challenger_report",
+        "trading_behavior_drill_program",
         "paper_profitability_control",
         "storage_retention_unison",
         "stateful_storage_regression_guard",
@@ -130,6 +143,7 @@ PROFILE_STEP_NAMES: dict[str, tuple[str, ...]] = {
         "production_readiness",
         "live_money_readiness",
         "production_excellence",
+        "source_mutation_guard",
         "investor_readiness_control",
         "autonomy_control_plane",
         "architecture_upgrade_scoreboard",
@@ -143,6 +157,11 @@ PROFILE_STEP_NAMES: dict[str, tuple[str, ...]] = {
         "schwab_indicator_intelligence",
         "system_expansion_execution",
         "distributed_cell_architecture",
+        "platform_intelligence",
+        "platform_brain_v5",
+        "platform_stabilization_quality",
+        "writer_process_intelligence",
+        "platform_settlement_stabilization",
         "architecture_hardening",
         "system_architecture_contract_graph",
         "system_architecture_autopilot",
@@ -289,7 +308,11 @@ def default_steps() -> list[dict[str, Any]]:
             "--json",
             max_age_minutes=30,
             allowed_returncodes=(0, 2),
-            depends_on=("runtime_training_snapshot", "point_in_time_event_store", "snapshot_coverage"),
+            depends_on=(
+                "runtime_training_snapshot",
+                "point_in_time_event_store",
+                "snapshot_coverage",
+            ),
         ),
         _step(
             "research_context_expansion",
@@ -309,7 +332,12 @@ def default_steps() -> list[dict[str, Any]]:
             "--json",
             max_age_minutes=15,
             allowed_returncodes=(0, 2),
-            depends_on=("market_replay_fill_capture", "feature_store_manifest", "snapshot_coverage", "research_context_expansion"),
+            depends_on=(
+                "market_replay_fill_capture",
+                "feature_store_manifest",
+                "snapshot_coverage",
+                "research_context_expansion",
+            ),
         ),
         _step(
             "source_verification",
@@ -334,7 +362,11 @@ def default_steps() -> list[dict[str, Any]]:
             "governance/health/collector_capability_control_latest.json",
             "--json",
             max_age_minutes=15,
-            depends_on=("collector_contracts", "source_verification", "capability_materialization"),
+            depends_on=(
+                "collector_contracts",
+                "source_verification",
+                "capability_materialization",
+            ),
         ),
         _step(
             "provider_mesh",
@@ -379,12 +411,20 @@ def default_steps() -> list[dict[str, Any]]:
             depends_on=("paper_performance",),
         ),
         _step(
+            "trading_behavior_drill_program",
+            "scripts/ops/trading_behavior_drill_program.py",
+            "governance/research/trading_behavior_drill_program_latest.json",
+            "--json",
+            max_age_minutes=360,
+            depends_on=("paper_performance",),
+        ),
+        _step(
             "paper_profitability_control",
             "scripts/ops/paper_profitability_control.py",
             "governance/health/paper_profitability_control_latest.json",
             "--apply",
             "--json",
-            depends_on=("paper_performance",),
+            depends_on=("paper_performance", "trading_behavior_drill_program"),
         ),
         _step(
             "one_numbers_report",
@@ -432,7 +472,11 @@ def default_steps() -> list[dict[str, Any]]:
             "--json",
             max_age_minutes=60,
             allowed_returncodes=(0, 2),
-            depends_on=("sleeve_allocator", "portfolio_risk_ledger", "portfolio_capacity_curves"),
+            depends_on=(
+                "sleeve_allocator",
+                "portfolio_risk_ledger",
+                "portfolio_capacity_curves",
+            ),
         ),
         _step(
             "live_reconciliation_slo",
@@ -542,7 +586,10 @@ def default_steps() -> list[dict[str, Any]]:
             "scripts/ops/profitability_benchmark_hurdle.py",
             "governance/research/profitability_benchmark_hurdle_latest.json",
             "--json",
-            depends_on=("profitability_independent_validator", "profitability_benchmark_capture"),
+            depends_on=(
+                "profitability_independent_validator",
+                "profitability_benchmark_capture",
+            ),
         ),
         _step(
             "profitability_evidence_firewall",
@@ -637,7 +684,11 @@ def default_steps() -> list[dict[str, Any]]:
             "--json",
             max_age_minutes=60,
             allowed_returncodes=(0, 2),
-            depends_on=("canary_rollout", "promotion_quality_gate", "risk_service_boundary"),
+            depends_on=(
+                "canary_rollout",
+                "promotion_quality_gate",
+                "risk_service_boundary",
+            ),
         ),
         _step(
             "secret_scan",
@@ -748,7 +799,11 @@ def default_steps() -> list[dict[str, Any]]:
             "--json",
             max_age_minutes=60,
             allowed_returncodes=(0, 2),
-            depends_on=("storage_disaster_recovery", "storage_resilience_control", "ingestion_storage_control"),
+            depends_on=(
+                "storage_disaster_recovery",
+                "storage_resilience_control",
+                "ingestion_storage_control",
+            ),
         ),
         _step(
             "unattended_soak_readiness",
@@ -774,7 +829,11 @@ def default_steps() -> list[dict[str, Any]]:
             "governance/health/health_gates_latest.json",
             "--json",
             max_age_minutes=60,
-            depends_on=("storage_resilience_control", "ingestion_storage_control", "blackstart_recovery"),
+            depends_on=(
+                "storage_resilience_control",
+                "ingestion_storage_control",
+                "blackstart_recovery",
+            ),
         ),
         _step(
             "source_verification_autorefresh",
@@ -799,7 +858,12 @@ def default_steps() -> list[dict[str, Any]]:
             "--json",
             max_age_minutes=30,
             allowed_returncodes=(0, 2),
-            depends_on=("paper_execution_calibration", "paper_performance", "health_gates", "source_verification_autorefresh"),
+            depends_on=(
+                "paper_execution_calibration",
+                "paper_performance",
+                "health_gates",
+                "source_verification_autorefresh",
+            ),
         ),
         _step(
             "runtime_paper_regression_guard",
@@ -921,7 +985,11 @@ def default_steps() -> list[dict[str, Any]]:
             "--json",
             max_age_minutes=30,
             allowed_returncodes=(0, 2),
-            depends_on=("production_excellence", "training_runtime_control", "autonomy_control_plane"),
+            depends_on=(
+                "production_excellence",
+                "training_runtime_control",
+                "autonomy_control_plane",
+            ),
         ),
         _step(
             "codex_project_guard",
@@ -969,11 +1037,20 @@ def default_steps() -> list[dict[str, Any]]:
             depends_on=("production_excellence", "architecture_upgrade_scoreboard"),
         ),
         _step(
+            "source_mutation_guard",
+            "scripts/ops/source_mutation_guard.py",
+            "governance/health/source_mutation_guard_latest.json",
+            "--json",
+            max_age_minutes=20,
+            depends_on=("production_excellence",),
+        ),
+        _step(
             "system_drift_registry",
             "scripts/ops/system_drift_registry.py",
             "governance/health/system_drift_registry_latest.json",
             "--json",
             max_age_minutes=60,
+            depends_on=("source_mutation_guard",),
         ),
         _step(
             "adaptive_regression_guard",
@@ -1022,6 +1099,49 @@ def default_steps() -> list[dict[str, Any]]:
             depends_on=("adaptive_regression_guard",),
         ),
         _step(
+            "platform_intelligence",
+            "scripts/ops/platform_intelligence_expansion.py",
+            "governance/health/platform_intelligence_expansion_latest.json",
+            "--json",
+            max_age_minutes=30,
+            allowed_returncodes=(0, 2),
+        ),
+        _step(
+            "platform_brain_v5",
+            "scripts/ops/platform_brain_v5.py",
+            "governance/health/platform_brain_v5_latest.json",
+            "--json",
+            max_age_minutes=30,
+            allowed_returncodes=(0, 2),
+            depends_on=("platform_intelligence",),
+        ),
+        _step(
+            "platform_stabilization_quality",
+            "scripts/ops/platform_stabilization_quality.py",
+            "governance/health/platform_stabilization_quality_latest.json",
+            "--json",
+            max_age_minutes=30,
+            allowed_returncodes=(0, 2),
+            depends_on=("platform_brain_v5",),
+        ),
+        _step(
+            "writer_process_intelligence",
+            "scripts/ops/writer_process_intelligence.py",
+            "governance/health/writer_process_intelligence_latest.json",
+            "--json",
+            max_age_minutes=30,
+            allowed_returncodes=(0, 2),
+        ),
+        _step(
+            "platform_settlement_stabilization",
+            "scripts/ops/platform_settlement_stabilization.py",
+            "governance/health/platform_settlement_stabilization_latest.json",
+            "--json",
+            max_age_minutes=30,
+            allowed_returncodes=(0, 2),
+            depends_on=("platform_stabilization_quality", "writer_process_intelligence"),
+        ),
+        _step(
             "architecture_hardening",
             "scripts/ops/system_architecture_hardening.py",
             "governance/health/system_architecture_hardening_latest.json",
@@ -1029,7 +1149,7 @@ def default_steps() -> list[dict[str, Any]]:
             "--json",
             max_age_minutes=180,
             allowed_returncodes=(0, 2),
-            depends_on=("distributed_cell_architecture", "adaptive_regression_guard"),
+            depends_on=("distributed_cell_architecture", "adaptive_regression_guard", "platform_settlement_stabilization"),
         ),
         _step(
             "system_architecture_contract_graph",
@@ -1147,7 +1267,9 @@ def default_steps() -> list[dict[str, Any]]:
     ]
 
 
-def profile_steps(profile: str, *, steps: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def profile_steps(
+    profile: str, *, steps: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     available = steps if steps is not None else default_steps()
     profile_key = str(profile or "all").strip().lower()
     if profile_key == "all":
@@ -1158,18 +1280,8 @@ def profile_steps(profile: str, *, steps: list[dict[str, Any]] | None = None) ->
 
 def _artifact_age(path: Path, *, now: datetime) -> float | None:
     payload = load_json(path)
-    return payload_age_minutes(payload, path, now=now)
-
-
-def _parse_last_json(stdout: str) -> dict[str, Any]:
-    for raw in reversed([line.strip() for line in str(stdout or "").splitlines() if line.strip()]):
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            continue
-        if isinstance(payload, dict):
-            return payload
-    return {}
+    freshness = evidence_freshness(payload, now=now)
+    return freshness["age_minutes"] if freshness["status"] in {"fresh", "stale"} else None
 
 
 def _acquire_lock(path: Path) -> tuple[Any | None, str]:
@@ -1184,7 +1296,9 @@ def _acquire_lock(path: Path) -> tuple[Any | None, str]:
         return None, owner
     handle.seek(0)
     handle.truncate()
-    handle.write(f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()}\n")
+    handle.write(
+        f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()}\n"
+    )
     handle.flush()
     return handle, ""
 
@@ -1205,11 +1319,21 @@ def refresh(
     effective_out = _resolve(project_root, out_path)
     prior = load_json(effective_out)
     profile_key = str(profile or "all").strip().lower()
-    prior_profile_runs = prior.get("profile_runs") if isinstance(prior.get("profile_runs"), dict) else {}
-    prior_profile = prior_profile_runs.get(profile_key) if isinstance(prior_profile_runs.get(profile_key), dict) else {}
-    if not prior_profile and str(prior.get("profile") or "all").strip().lower() == profile_key:
+    prior_profile_runs = (
+        prior.get("profile_runs") if isinstance(prior.get("profile_runs"), dict) else {}
+    )
+    prior_profile = (
+        prior_profile_runs.get(profile_key)
+        if isinstance(prior_profile_runs.get(profile_key), dict)
+        else {}
+    )
+    if (
+        not prior_profile
+        and str(prior.get("profile") or "all").strip().lower() == profile_key
+    ):
         prior_profile = prior
-    prior_age = payload_age_minutes(prior_profile, effective_out, now=current) if prior_profile else None
+    prior_freshness = evidence_freshness(prior_profile, now=current)
+    prior_age = prior_freshness["age_minutes"] if prior_freshness["status"] in {"fresh", "stale"} else None
     if (
         not force
         and prior
@@ -1234,8 +1358,16 @@ def refresh(
         name = str(spec.get("name") or "unnamed")
         artifact = _resolve(project_root, Path(str(spec.get("artifact") or "")))
         age_before = _artifact_age(artifact, now=current)
-        dependency_refreshed = any(statuses.get(str(dep)) == "refreshed" for dep in spec.get("depends_on") or [])
-        due = bool(force or dependency_refreshed or age_before is None or age_before > float(spec.get("max_age_minutes", 15.0)))
+        dependency_refreshed = any(
+            statuses.get(str(dep)) == "refreshed"
+            for dep in spec.get("depends_on") or []
+        )
+        due = bool(
+            force
+            or dependency_refreshed
+            or age_before is None
+            or age_before > float(spec.get("max_age_minutes", 15.0))
+        )
         if not due:
             statuses[name] = "fresh"
             results.append(
@@ -1243,12 +1375,18 @@ def refresh(
                     "name": name,
                     "status": "fresh",
                     "artifact": str(artifact),
-                    "age_minutes": round(age_before, 3) if age_before is not None else None,
+                    "age_minutes": (
+                        round(age_before, 3) if age_before is not None else None
+                    ),
                     "executed": False,
                 }
             )
             continue
-        command = [sys.executable, str(project_root / str(spec.get("script") or "")), *[str(arg) for arg in spec.get("args") or []]]
+        command = [
+            sys.executable,
+            str(project_root / str(spec.get("script") or "")),
+            *[str(arg) for arg in spec.get("args") or []],
+        ]
         result = runner(
             command,
             cwd=project_root,
@@ -1264,8 +1402,18 @@ def refresh(
         rc = int(result.get("rc", 125))
         allowed = {int(value) for value in spec.get("allowed_returncodes") or [0]}
         artifact_present = artifact.exists()
-        parsed = _parse_last_json(str(result.get("stdout") or ""))
-        operational_ok = bool(rc in allowed and artifact_present and not result.get("timed_out", False))
+        published = load_json(artifact)
+        freshness_after = evidence_freshness(
+            published,
+            max_age_minutes=float(spec.get("max_age_minutes", 15.0)),
+            now=now or datetime.now(timezone.utc),
+        )
+        operational_ok = bool(
+            rc in allowed
+            and artifact_present
+            and freshness_after["fresh"]
+            and not result.get("timed_out", False)
+        )
         status = "refreshed" if operational_ok else "failed"
         statuses[name] = status
         if operational_ok:
@@ -1282,9 +1430,14 @@ def refresh(
                 "timed_out": bool(result.get("timed_out", False)),
                 "artifact": str(artifact),
                 "artifact_present": artifact_present,
-                "age_minutes_before": round(age_before, 3) if age_before is not None else None,
-                "published_status": str(parsed.get("overall_status") or parsed.get("status") or ""),
-                "published_ok": parsed.get("ok"),
+                "artifact_freshness_after": freshness_after,
+                "age_minutes_before": (
+                    round(age_before, 3) if age_before is not None else None
+                ),
+                "published_status": str(
+                    published.get("overall_status") or published.get("status") or ""
+                ),
+                "published_ok": published.get("ok"),
                 "stdout_tail": str(result.get("stdout") or "")[-1000:],
                 "stderr_tail": str(result.get("stderr") or "")[-1000:],
             }
@@ -1332,15 +1485,23 @@ def refresh(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run a bounded dependency-ordered refresh of live-money readiness evidence.")
+    parser = argparse.ArgumentParser(
+        description="Run a bounded dependency-ordered refresh of live-money readiness evidence."
+    )
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     parser.add_argument("--out-file", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK)
     parser.add_argument("--cooldown-minutes", type=float, default=15.0)
     parser.add_argument("--timeout-seconds", type=int, default=180)
-    parser.add_argument("--profile", choices=["all", *sorted(PROFILE_STEP_NAMES)], default="all")
+    parser.add_argument(
+        "--profile", choices=["all", *sorted(PROFILE_STEP_NAMES)], default="all"
+    )
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--apply", action="store_true", help="Publish the refresh report; evidence producers publish their own bounded artifacts.")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Publish the refresh report; evidence producers publish their own bounded artifacts.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     project_root = args.project_root.expanduser().resolve()

@@ -526,7 +526,15 @@ def _control_results(
             evidence={"candidate_flow": candidate_flow, "post_cost_expectancy": post_cost},
         )
     )
-    soak_ready = bool(soak.get("clean_720_hours_complete") and canary.get("supervised_canary_ready"))
+    scope_validation_available = "scope_aware_validation_complete" in soak
+    elapsed_validation_ready = bool(
+        soak.get("scope_aware_validation_complete", False)
+        if scope_validation_available
+        else soak.get("clean_720_hours_complete", False)
+    )
+    soak_ready = bool(
+        elapsed_validation_ready and canary.get("supervised_canary_ready")
+    )
     results.append(
         _result(
             _manifest_row(rows, "r04_complete_soak_before_canary"),
@@ -534,7 +542,12 @@ def _control_results(
             organic_evidence_ready=soak_ready,
             blockers=[
                 "soak_or_canary_control_missing" if not (soak and canary) else "",
-                "clean_720_hour_soak_pending" if not soak.get("clean_720_hours_complete") else "",
+                "scope_aware_candidate_validation_pending"
+                if scope_validation_available and not elapsed_validation_ready
+                else "",
+                "clean_720_hour_soak_pending"
+                if not scope_validation_available and not elapsed_validation_ready
+                else "",
                 *[str(item) for item in _as_list(canary.get("blocking_reasons"))],
             ],
             evidence={
@@ -548,6 +561,21 @@ def _control_results(
                     soak.get("main_soak_count_is_promotion_credit", False)
                 ),
                 "clean_720_hours_complete": bool(soak.get("clean_720_hours_complete")),
+                "validation_mode": (
+                    "scope_aware_elapsed_and_xnys_sessions"
+                    if scope_validation_available
+                    else "legacy_uniform_720_hour_fallback"
+                ),
+                "scope_aware_validation_complete": bool(
+                    soak.get("scope_aware_validation_complete", False)
+                ),
+                "scope_validation_grade": soak.get("scope_validation_grade"),
+                "scope_validation_score": _safe_float(
+                    soak.get("scope_validation_score")
+                ),
+                "scope_validation_blocking_scopes": _as_dict(
+                    soak.get("scope_validation")
+                ).get("blocking_scopes", []),
                 "clean_window_elapsed_hours": _safe_float(soak.get("clean_window_elapsed_hours")),
                 "observed_window_elapsed_hours": _safe_float(soak.get("observed_window_elapsed_hours")),
                 "historical_segmented_wall_clock_hours": _safe_float(

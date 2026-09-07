@@ -7,7 +7,10 @@ The laboratory gives the platform a finite, architecture-specific alpha ontology
 The canonical owners are:
 
 - `config/alpha_concept_registry_v1.json`: ontology, engine floors, routes, conditional requirements, references, and zero-authority policy.
+- `config/alpha_measurement_materialization_v1.json`: strict schema-v2 candidate binding, observed-factor allowlist, purged walk-forward policy, direct-capacity input requirements, and zero-authority routing policy.
 - `core/alpha_concept_engine.py`: deterministic estimators.
+- `scripts/build_behavior_dataset_from_decisions.py`: candidate-bound forecasts, realized market paths, sleeve and strategy identity, post-cost trade deltas, and BUY/SELL/HOLD counterfactual outcomes.
+- `scripts/ops/alpha_concept_input_materializer.py`: exact-candidate input materialization, post-cost identity validation, MLX-accelerated purged walk-forward diagnostics, and fail-closed evidence routing.
 - `scripts/ops/alpha_concept_report.py`: candidate binding, evidence routing, grades, collection priorities, JSON evidence, and the operator report.
 - `config/sleeve_alpha_toolbox_v1.json` and `scripts/ops/sleeve_alpha_toolbox_control.py`: explicit evidence-axis routes for every declared sleeve, structural coverage receipts, and candidate evidence gaps.
 
@@ -34,12 +37,16 @@ The canonical owners are:
 
 The report consumes the accepted candidate and candidate-filtered paper-performance watermark. Optional engine inputs belong in `governance/research/alpha_concept_inputs_latest.json` and must carry the same candidate ID plus a timestamp at or after the candidate cutoff. A missing, stale, pre-cutoff, or mismatched packet is ignored.
 
+The materializer admits only behavior-dataset schema v8 rows whose log schema is v2 or newer, schema receipt is valid, candidate identity exactly matches, candidate-bound receipt is present, and timestamp is at or after the active cutoff. It never relabels earlier generations. HOLD and rejected-decision paths support forecast IC, calibration, stability, and counterfactual-regret research, but they never count as realized trade PnL. Economic support requires an internally consistent schema-v2 post-cost trade delta or an observed fill.
+
+Capacity remains unavailable unless direct dollar-volume, spread, fee, slippage, volatility, impact, and tested-notional inputs exist. Relative-volume scores are not promoted into dollar volume. Causal transport remains unavailable until a reviewed identification design exists; observational selection alone is not treated as causality.
+
 The report publishes four separate grades:
 
 - **Implementation**: whether all sixteen deterministic engines exist.
 - **Catalog routing**: whether every canonical concept has a declared local owner.
 - **Candidate evidence**: whether the fifteen economic measurements have sufficient identity-bound inputs. Active-learning readiness is excluded.
-- **Economic support**: whether mature candidate evidence passes each estimator's configured diagnostic.
+- **Economic support**: whether mature candidate-bound post-cost trade or fill evidence passes each estimator's configured diagnostic. Counterfactual forecast paths may make a research estimator available but cannot raise this grade.
 
 An implementation or routing `A+` is not evidence of alpha. An economic `F` during a fresh candidate simply means the system is collecting; it cannot be upgraded by metadata, synthetic samples, lifetime pooling, or pre-candidate history.
 
@@ -57,8 +64,11 @@ The report runs after paper performance, quantitative challengers, and alpha lif
 Use:
 
 ```bash
+./scripts/ops/opsctl.sh alpha-measurement-inputs --json
 ./scripts/ops/opsctl.sh alpha-concepts --json
 ```
+
+`alpha-concepts` refreshes the materialized input packet by default. Use `--no-refresh-inputs` only when reproducing a previously captured packet.
 
 Human-readable output is written to `exports/reports/operator/alpha_concept_report_latest.md`.
 

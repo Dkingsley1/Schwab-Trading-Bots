@@ -69,6 +69,39 @@ def test_valid_fill_is_content_addressed_and_materialized_idempotently(tmp_path:
     assert rows[0]["provenance"]["candidate_id"] == "pc-test-g1"
 
 
+def test_trade_log_storage_failure_preserves_independent_fill_payload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _candidate(tmp_path)
+    inbox = tmp_path / "exports" / "independent_fill_inbox"
+    inbox.mkdir(parents=True)
+    (inbox / "broker.jsonl").write_text(json.dumps(_valid_fill()) + "\n", encoding="utf-8")
+
+    def _raise_storage_error(*_args, **_kwargs):
+        raise PermissionError("external trade-log volume unavailable")
+
+    monkeypatch.setattr(acquisition, "_materialize_trade_logs", _raise_storage_error)
+
+    payload = acquisition.build_payload(tmp_path, apply=True, now=NOW)
+
+    assert payload["overall_status"] == "storage_unavailable"
+    assert payload["ok"] is False
+    assert payload["new_ledger_records"] == 1
+    assert payload["accepted_ledger_records"] == 1
+    assert payload["candidate_eligible_ledger_records"] == 1
+    assert payload["trade_log_materialization"]["status"] == "storage_unavailable"
+    assert payload["trade_log_materialization"]["ok"] is False
+    assert "PermissionError" in payload["trade_log_materialization"]["error"]
+    assert (
+        "repair independent-fill trade-log storage path before counting materialized fill evidence"
+        in payload["recommended_actions"]
+    )
+    assert (
+        payload["control_contract"]["storage_failure_preserves_health_payload"]
+        is True
+    )
+
+
 def test_model_fill_and_pre_candidate_fill_are_rejected(tmp_path: Path) -> None:
     _candidate(tmp_path)
     inbox = tmp_path / "exports" / "independent_fill_inbox"

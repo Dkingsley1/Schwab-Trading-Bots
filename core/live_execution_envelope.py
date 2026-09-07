@@ -216,6 +216,11 @@ def verify_live_execution_envelope(
     max_account_snapshot_age_seconds: float = 30.0,
     max_spread_bps: float = 75.0,
     max_future_skew_seconds: float = 2.0,
+    require_affirmative_risk_decision: bool = False,
+    require_quote_provenance: bool = False,
+    allowed_quote_providers: tuple[str, ...] = (),
+    require_canary_preflight_receipt: bool = False,
+    expected_account_policy_key: str = "",
 ) -> dict[str, Any]:
     blockers: list[str] = []
     current = now_utc or _utc_now()
@@ -251,6 +256,13 @@ def verify_live_execution_envelope(
     intent_verification = verify_order_intent_evidence(intent)
     if not intent_verification.get("ok", False):
         blockers.append("order_intent_evidence_invalid")
+    risk_decision = (
+        intent.get("risk_decision")
+        if isinstance(intent.get("risk_decision"), Mapping)
+        else {}
+    )
+    if require_affirmative_risk_decision and risk_decision.get("ok") is not True:
+        blockers.append("order_intent_risk_decision_not_approved")
     if not str(envelope.get("candidate_id") or "").strip():
         blockers.append("candidate_id_missing")
     if (
@@ -291,6 +303,32 @@ def verify_live_execution_envelope(
                 blockers.append("account_snapshot_timestamp_in_future")
             elif snapshot_age > max(float(max_account_snapshot_age_seconds), 0.0):
                 blockers.append("account_snapshot_is_stale")
+        if require_canary_preflight_receipt:
+            preflight = (
+                snapshot.get("live_canary_preflight_receipt")
+                if isinstance(snapshot.get("live_canary_preflight_receipt"), Mapping)
+                else {}
+            )
+            if not preflight:
+                blockers.append("live_canary_preflight_receipt_missing")
+            else:
+                if preflight.get("ready") is not True:
+                    blockers.append("live_canary_preflight_receipt_not_ready")
+                if len(str(preflight.get("receipt_sha256") or "").strip()) != 64:
+                    blockers.append("live_canary_preflight_receipt_sha256_missing")
+                if (
+                    expected_account_policy_key
+                    and str(preflight.get("account_policy_key") or "").strip()
+                    != str(expected_account_policy_key).strip()
+                ):
+                    blockers.append("live_canary_preflight_account_policy_mismatch")
+                if (
+                    str(preflight.get("account_reference_sha256") or "")
+                    .strip()
+                    .lower()
+                    != expected_account_hash
+                ):
+                    blockers.append("live_canary_preflight_account_reference_mismatch")
 
     expected_hashes = {
         "intent_sha256": str(intent.get("intent_sha256") or "").strip().lower(),
@@ -385,6 +423,16 @@ def verify_live_execution_envelope(
         max_future_skew_seconds=max_future_skew_seconds,
     )
     blockers.extend(quote_blockers)
+    quote_provider = str(quote.get("source_provider") or "").strip().lower()
+    allowed_provider_set = {
+        str(item or "").strip().lower()
+        for item in allowed_quote_providers
+        if str(item or "").strip()
+    }
+    if require_quote_provenance and not quote_provider:
+        blockers.append("quote_source_provider_missing")
+    elif allowed_provider_set and quote_provider not in allowed_provider_set:
+        blockers.append("quote_source_provider_not_allowed")
     spread_bps = _quote_spread_bps(quote)
     if spread_bps is None:
         blockers.append("quote_spread_evidence_missing")
@@ -433,6 +481,7 @@ def verify_live_execution_envelope(
         "parity_fields": parity_fields,
         "quote_age_seconds": quote_age_seconds,
         "spread_bps": spread_bps,
+        "quote_source_provider": quote_provider,
         "expected_envelope_sha256": expected_envelope_sha256,
         "envelope_sha256": str(envelope.get("envelope_sha256") or ""),
         "client_order_id": str(envelope.get("client_order_id") or ""),

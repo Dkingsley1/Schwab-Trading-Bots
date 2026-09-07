@@ -278,6 +278,55 @@ def test_assessment_separates_historical_debt_from_current_candidate(tmp_path: P
     }
 
 
+def test_main_preserves_json_when_operator_markdown_storage_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    out_file = (
+        tmp_path / "governance" / "health" / "profitability_self_assessment_latest.json"
+    )
+    blocked_parent = tmp_path / "exports" / "reports" / "operator"
+    blocked_parent.parent.mkdir(parents=True, exist_ok=True)
+    blocked_parent.write_text("not a directory", encoding="utf-8")
+    markdown_out = blocked_parent / "profitability_self_assessment_latest.md"
+
+    def _fake_payload(_project_root, *, config_path=None):
+        return {
+            "ok": True,
+            "overall_status": "collecting",
+            "grades": {},
+            "measurement": {},
+            "needs": [],
+        }
+
+    monkeypatch.setattr(assessment, "build_payload", _fake_payload)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "profitability_self_assessment.py",
+            "--project-root",
+            str(tmp_path),
+            "--out-file",
+            str(out_file),
+            "--markdown-out",
+            str(markdown_out),
+            "--json",
+        ],
+    )
+
+    rc = assessment.main()
+    payload = json.loads(out_file.read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert payload["operator_markdown_report"]["attempted"] is True
+    assert payload["operator_markdown_report"]["available"] is False
+    assert "FileExistsError" in payload["operator_markdown_report"]["error"]
+    assert (
+        "profitability_self_assessment_markdown_storage_unavailable"
+        in payload["warnings"]
+    )
+
+
 def test_assessment_uses_verified_generations_for_bounded_developmental_actions(
     tmp_path: Path,
 ) -> None:

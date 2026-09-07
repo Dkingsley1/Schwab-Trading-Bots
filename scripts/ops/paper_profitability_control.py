@@ -20,11 +20,40 @@ if __package__ in {None, ""}:
     from scripts.ops.long_runtime_common import load_json, ordered_unique, write_payload
 else:
     from .artifact_generation_lock import paper_profitability_generation_lock
-    from .long_runtime_common import PROJECT_ROOT, load_json, ordered_unique, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT,
+        load_json,
+        ordered_unique,
+        write_payload,
+    )
 
+from core.paper_behavior_interventions import (
+    canonical_sha256 as behavior_canonical_sha256,
+    contract_receipt_sha256 as behavior_contract_receipt_sha256,
+    file_sha256 as behavior_file_sha256,
+    load_policy as load_behavior_policy,
+    validate_runtime_overlay as validate_behavior_runtime_overlay,
+)
+from core.operating_contracts import build_operating_contract
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "paper_profitability_control_latest.json"
-DEFAULT_CONTROL_PATH = PROJECT_ROOT / "governance" / "health" / "paper_runtime_profitability_controls_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "paper_profitability_control_latest.json"
+)
+DEFAULT_CONTROL_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "health"
+    / "paper_runtime_profitability_controls_latest.json"
+)
+DEFAULT_BEHAVIOR_DRILL_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "research"
+    / "paper_behavior_intervention_drill_latest.json"
+)
+DEFAULT_BEHAVIOR_POLICY_PATH = (
+    PROJECT_ROOT / "config" / "paper_behavior_intervention_drill_v1.json"
+)
 
 LOSS_CAUSE_FAMILY = {
     "source_quality:low": "source_quality",
@@ -80,7 +109,9 @@ CONFIRMATION_EVIDENCE_CHANNELS = [
     "portfolio_conflict_clearance",
 ]
 
-WEAK_SLEEVE_RECURRENCE_EVIDENCE_CHANNELS = ordered_unique(CONFIRMATION_EVIDENCE_CHANNELS + ["session_quality"])
+WEAK_SLEEVE_RECURRENCE_EVIDENCE_CHANNELS = ordered_unique(
+    CONFIRMATION_EVIDENCE_CHANNELS + ["session_quality"]
+)
 
 WEAK_SLEEVE_RECURRENCE_REQUIRED_BEFORE_REENTRY = [
     "three_profitable_refreshes",
@@ -128,20 +159,36 @@ WEAK_SLEEVE_RECURRENCE_REQUIRED_LABELS = [
 WEAK_SLEEVE_RECURRENCE_FAMILY_REQUIREMENTS = {
     "source_quality": {
         "gate": "source_quality_gate",
-        "required_before_reentry": ["source_quality_passed", "source_freshness_verified"],
-        "required_labels": ["source_quality_bucket", "source_freshness_age_seconds", "source_vendor_agreement_score"],
+        "required_before_reentry": [
+            "source_quality_passed",
+            "source_freshness_verified",
+        ],
+        "required_labels": [
+            "source_quality_bucket",
+            "source_freshness_age_seconds",
+            "source_vendor_agreement_score",
+        ],
         "runtime_block": "block_when_source_quality_low_or_stale",
     },
     "tradeability": {
         "gate": "tradeability_gate",
-        "required_before_reentry": ["tradeability_score_passed", "liquidity_capacity_present"],
+        "required_before_reentry": [
+            "tradeability_score_passed",
+            "liquidity_capacity_present",
+        ],
         "required_labels": ["tradeability_bucket", "liquidity_capacity_bucket"],
         "runtime_block": "block_when_tradeability_low",
     },
     "fill_quality": {
         "gate": "modeled_fill_quality_gate",
-        "required_before_reentry": ["modeled_fill_quality_present", "paper_fill_slippage_bounded"],
-        "required_labels": ["modeled_fill_quality_bucket", "paper_fill_slippage_bucket"],
+        "required_before_reentry": [
+            "modeled_fill_quality_present",
+            "paper_fill_slippage_bounded",
+        ],
+        "required_labels": [
+            "modeled_fill_quality_bucket",
+            "paper_fill_slippage_bucket",
+        ],
         "runtime_block": "block_when_fill_quality_unknown_or_poor",
     },
     "spread_quality": {
@@ -152,20 +199,39 @@ WEAK_SLEEVE_RECURRENCE_FAMILY_REQUIREMENTS = {
     },
     "catalyst_confirmation": {
         "gate": "event_catalyst_confirmation_gate",
-        "required_before_reentry": ["event_catalyst_confirmation_present", "event_window_risk_labeled"],
-        "required_labels": ["event_catalyst_confirmation_bucket", "event_window_risk_bucket"],
+        "required_before_reentry": [
+            "event_catalyst_confirmation_present",
+            "event_window_risk_labeled",
+        ],
+        "required_labels": [
+            "event_catalyst_confirmation_bucket",
+            "event_window_risk_bucket",
+        ],
         "runtime_block": "block_when_event_catalyst_unconfirmed",
     },
     "portfolio_conflict": {
         "gate": "portfolio_conflict_clearance_gate",
-        "required_before_reentry": ["portfolio_conflict_clearance_present", "overlap_pressure_below_cap"],
-        "required_labels": ["portfolio_conflict_clearance_bucket", "overlap_pressure_bucket"],
+        "required_before_reentry": [
+            "portfolio_conflict_clearance_present",
+            "overlap_pressure_below_cap",
+        ],
+        "required_labels": [
+            "portfolio_conflict_clearance_bucket",
+            "overlap_pressure_bucket",
+        ],
         "runtime_block": "block_when_portfolio_conflict_not_cleared",
     },
     "session_quality": {
         "gate": "session_quality_gate",
-        "required_before_reentry": ["session_gate_passed", "explicit_liquid_session_label_present"],
-        "required_labels": ["session_gate_result", "session_liquidity_bucket", "session_edge_bucket"],
+        "required_before_reentry": [
+            "session_gate_passed",
+            "explicit_liquid_session_label_present",
+        ],
+        "required_labels": [
+            "session_gate_result",
+            "session_liquidity_bucket",
+            "session_edge_bucket",
+        ],
         "runtime_block": "block_when_session_unlabeled_or_weak",
     },
 }
@@ -254,7 +320,11 @@ HARVEST_REPLAY_OUTCOME_LABELS = [
 QUANT_STRATEGY_EXPANSION_FAMILIES = [
     {
         "family_id": "volatility_risk_premium_harvesting",
-        "preferred_sleeves": ["volatility", "volatility_arbitrage", "variance_volatility_swaps"],
+        "preferred_sleeves": [
+            "volatility",
+            "volatility_arbitrage",
+            "variance_volatility_swaps",
+        ],
         "purpose": "harvest implied-versus-realized volatility carry only when event, hedge-cost, and fill evidence agree",
         "required_labels": [
             "implied_realized_vol_gap",
@@ -266,7 +336,12 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "options_convexity_muscle",
-        "preferred_sleeves": ["volatility", "single_name_options_event", "gamma_scalping", "options_on_futures_aggressive"],
+        "preferred_sleeves": [
+            "volatility",
+            "single_name_options_event",
+            "gamma_scalping",
+            "options_on_futures_aggressive",
+        ],
         "purpose": "stage convexity candidates using gamma, vanna, charm, skew, and event-window evidence",
         "required_labels": [
             "gamma_convexity_bucket",
@@ -278,7 +353,12 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "options_income_muscle",
-        "preferred_sleeves": ["dividend", "dividend_income", "options_flow", "structured_products"],
+        "preferred_sleeves": [
+            "dividend",
+            "dividend_income",
+            "options_flow",
+            "structured_products",
+        ],
         "purpose": "separate premium-quality income ideas from assignment, dividend, borrow, and tail-loss risk",
         "required_labels": [
             "premium_quality_bucket",
@@ -290,7 +370,12 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "volatility_arbitrage_muscle",
-        "preferred_sleeves": ["volatility", "volatility_arbitrage", "dispersion_trading", "variance_volatility_swaps"],
+        "preferred_sleeves": [
+            "volatility",
+            "volatility_arbitrage",
+            "dispersion_trading",
+            "variance_volatility_swaps",
+        ],
         "purpose": "convert surface, dispersion, and event-vol dislocations into collection-only arbitrage candidates",
         "required_labels": [
             "surface_dislocation_bucket",
@@ -302,7 +387,12 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "options_risk_intelligence_v2",
-        "preferred_sleeves": ["volatility", "options_flow", "single_name_options_event", "options_on_futures_aggressive"],
+        "preferred_sleeves": [
+            "volatility",
+            "options_flow",
+            "single_name_options_event",
+            "options_on_futures_aggressive",
+        ],
         "purpose": "validate options Greek, margin, assignment, liquidity, source, and replay risk before option sleeves widen",
         "required_labels": [
             "greek_margin_bucket",
@@ -314,7 +404,12 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "cliquet_ratchet_options",
-        "preferred_sleeves": ["default", "structured_products", "barrier_lookback_options", "quant_pricing_models"],
+        "preferred_sleeves": [
+            "default",
+            "structured_products",
+            "barrier_lookback_options",
+            "quant_pricing_models",
+        ],
         "purpose": "track reset, local-cap, global-floor, and ratchet payoff behavior as path-dependent collection evidence",
         "required_labels": [
             "reset_window_bucket",
@@ -326,7 +421,12 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "quanto_compo_options",
-        "preferred_sleeves": ["default", "rainbow_options", "international_macro", "cross_asset_basis_training"],
+        "preferred_sleeves": [
+            "default",
+            "rainbow_options",
+            "international_macro",
+            "cross_asset_basis_training",
+        ],
         "purpose": "stage cross-currency and cross-asset option payoffs where FX beta and correlation alter the edge",
         "required_labels": [
             "fx_beta_bucket",
@@ -338,7 +438,11 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "vix_options_on_volatility",
-        "preferred_sleeves": ["volatility", "variance_volatility_swaps", "black_swan_hedging"],
+        "preferred_sleeves": [
+            "volatility",
+            "variance_volatility_swaps",
+            "black_swan_hedging",
+        ],
         "purpose": "collect volatility-option evidence around VIX term structure, vol-of-vol, event shocks, and roll decay",
         "required_labels": [
             "vix_term_structure_bucket",
@@ -350,7 +454,12 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "dividend_borrow_early_exercise_intelligence",
-        "preferred_sleeves": ["dividend", "dividend_income", "options_flow", "repo_securities_lending"],
+        "preferred_sleeves": [
+            "dividend",
+            "dividend_income",
+            "options_flow",
+            "repo_securities_lending",
+        ],
         "purpose": "prevent income and convexity sleeves from ignoring dividend, borrow, assignment, and early-exercise risk",
         "required_labels": [
             "ex_dividend_window",
@@ -362,7 +471,12 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "skew_surface_arbitrage",
-        "preferred_sleeves": ["volatility", "volatility_arbitrage", "second_third_order_greeks", "vanna_volga_hedging"],
+        "preferred_sleeves": [
+            "volatility",
+            "volatility_arbitrage",
+            "second_third_order_greeks",
+            "vanna_volga_hedging",
+        ],
         "purpose": "find skew and surface dislocations only when arbitrage-free, source, and fill checks are clean",
         "required_labels": [
             "skew_slope_bucket",
@@ -374,7 +488,12 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "calendar_diagonal_spread_intelligence",
-        "preferred_sleeves": ["default", "compound_options", "single_name_options_event", "options_flow"],
+        "preferred_sleeves": [
+            "default",
+            "compound_options",
+            "single_name_options_event",
+            "options_flow",
+        ],
         "purpose": "collect term-structure and roll evidence before any calendar or diagonal spread candidate widens",
         "required_labels": [
             "front_back_vol_gap",
@@ -386,7 +505,12 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "gamma_theta_scalping_optimizer",
-        "preferred_sleeves": ["volatility", "gamma_scalping", "market_making_liquidity", "order_flow_market_microstructure"],
+        "preferred_sleeves": [
+            "volatility",
+            "gamma_scalping",
+            "market_making_liquidity",
+            "order_flow_market_microstructure",
+        ],
         "purpose": "balance gamma capture against theta bleed, rebalance cost, spread quality, and realized-vol follow-through",
         "required_labels": [
             "gamma_capture_bucket",
@@ -398,7 +522,12 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "dispersion_basket_optimizer",
-        "preferred_sleeves": ["default", "dispersion_trading", "rainbow_options", "portfolio_construction"],
+        "preferred_sleeves": [
+            "default",
+            "dispersion_trading",
+            "rainbow_options",
+            "portfolio_construction",
+        ],
         "purpose": "rank index-versus-single-name dispersion baskets by correlation, liquidity, crowding, and hedge cost",
         "required_labels": [
             "index_single_name_vol_gap",
@@ -410,7 +539,12 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "callable_autocallable_payoff_monitor",
-        "preferred_sleeves": ["default", "structured_products", "barrier_lookback_options", "xva_counterparty_margin"],
+        "preferred_sleeves": [
+            "default",
+            "structured_products",
+            "barrier_lookback_options",
+            "xva_counterparty_margin",
+        ],
         "purpose": "monitor callable and autocallable payoff states before structured-product proxies influence sizing",
         "required_labels": [
             "autocall_trigger_distance",
@@ -422,7 +556,12 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "bermudan_exercise_monte_carlo_policy",
-        "preferred_sleeves": ["bond", "quant_pricing_models", "martingale_flow_pricing", "swaptions"],
+        "preferred_sleeves": [
+            "bond",
+            "quant_pricing_models",
+            "martingale_flow_pricing",
+            "swaptions",
+        ],
         "purpose": "use Monte Carlo exercise-policy evidence for Bermudan-style optionality without execution authority",
         "required_labels": [
             "exercise_boundary_bucket",
@@ -434,7 +573,11 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "market_neutral_pairs",
-        "preferred_sleeves": ["default", "stat_arb_market_neutral", "pairs_correlation"],
+        "preferred_sleeves": [
+            "default",
+            "stat_arb_market_neutral",
+            "pairs_correlation",
+        ],
         "purpose": "add hedged relative-value alpha without depending on broad market direction",
         "required_labels": [
             "spread_zscore",
@@ -446,7 +589,11 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "intraday_mean_reversion",
-        "preferred_sleeves": ["intraday_aggressive", "market_making_liquidity", "high_frequency_market_making"],
+        "preferred_sleeves": [
+            "intraday_aggressive",
+            "market_making_liquidity",
+            "high_frequency_market_making",
+        ],
         "purpose": "capture short-horizon overextension only when spread, fill, and liquidity evidence agree",
         "required_labels": [
             "micro_trend_exhaustion",
@@ -458,7 +605,11 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "volatility_risk_premium",
-        "preferred_sleeves": ["volatility", "volatility_arbitrage", "options_on_futures"],
+        "preferred_sleeves": [
+            "volatility",
+            "volatility_arbitrage",
+            "options_on_futures",
+        ],
         "purpose": "separate harvestable vol premium from event-vol danger and poor fill regimes",
         "required_labels": [
             "implied_realized_vol_gap",
@@ -470,7 +621,11 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "carry_term_structure",
-        "preferred_sleeves": ["crypto_futures", "crypto_futures_basis", "futures_rates_curve"],
+        "preferred_sleeves": [
+            "crypto_futures",
+            "crypto_futures_basis",
+            "futures_rates_curve",
+        ],
         "purpose": "use carry, funding, and curve structure as confirmation rather than blind trend chasing",
         "required_labels": [
             "basis_or_carry_norm",
@@ -482,7 +637,11 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "cross_asset_confirmation",
-        "preferred_sleeves": ["default", "international_macro", "cross_asset_basis_training"],
+        "preferred_sleeves": [
+            "default",
+            "international_macro",
+            "cross_asset_basis_training",
+        ],
         "purpose": "raise conviction only when cross-asset evidence agrees with the sleeve signal",
         "required_labels": [
             "correlation_break_flag",
@@ -494,7 +653,11 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "liquidity_microstructure",
-        "preferred_sleeves": ["market_making_liquidity", "order_flow_market_microstructure", "order_flow_toxicity"],
+        "preferred_sleeves": [
+            "market_making_liquidity",
+            "order_flow_market_microstructure",
+            "order_flow_toxicity",
+        ],
         "purpose": "teach the system when liquidity is tradable and when visible flow is toxic",
         "required_labels": [
             "quoted_spread_bucket",
@@ -506,7 +669,11 @@ QUANT_STRATEGY_EXPANSION_FAMILIES = [
     },
     {
         "family_id": "event_reaction",
-        "preferred_sleeves": ["earnings_event", "event_intelligence", "futures_event_reaction"],
+        "preferred_sleeves": [
+            "earnings_event",
+            "event_intelligence",
+            "futures_event_reaction",
+        ],
         "purpose": "canary event reaction without letting headlines override source and fill quality",
         "required_labels": [
             "event_surprise_norm",
@@ -836,6 +1003,11 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     return out
 
 
+def _round_recovery_amount(value: Any, digits: int = 6) -> float:
+    rounded = round(_safe_float(value, 0.0), digits)
+    return 0.0 if abs(rounded) <= PAPER_DEBT_RECOVERY_CLEAR_EPSILON else rounded
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(float(value))
@@ -849,6 +1021,334 @@ def _as_list(value: Any) -> list[Any]:
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    raw = str(value or "").strip().replace("Z", "+00:00")
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _paper_behavior_intervention_admission_contract(
+    *,
+    project_root: Path,
+    paper_performance: dict[str, Any],
+) -> dict[str, Any]:
+    policy_path = project_root / "config" / "paper_behavior_intervention_drill_v1.json"
+    drill_path = (
+        project_root
+        / "governance"
+        / "research"
+        / "paper_behavior_intervention_drill_latest.json"
+    )
+    program_policy_path = (
+        project_root / "config" / "trading_behavior_drill_program_v1.json"
+    )
+    program_path = (
+        project_root
+        / "governance"
+        / "research"
+        / "trading_behavior_drill_program_latest.json"
+    )
+    candidate_path = (
+        project_root / "governance" / "runtime" / "production_candidate_state.json"
+    )
+    policy = load_behavior_policy(project_root=project_root, policy_path=policy_path)
+    drill = load_json(drill_path)
+    program_policy = load_json(program_policy_path)
+    program = load_json(program_path)
+    candidate = load_json(candidate_path)
+    proposal = _as_dict(drill.get("runtime_overlay_proposal"))
+    proposal_binding = _as_dict(proposal.get("candidate_binding"))
+    drill_binding = _as_dict(drill.get("candidate_binding"))
+    policy_sha = behavior_file_sha256(policy_path)
+    candidate_sha = behavior_file_sha256(candidate_path)
+    generated_at = _parse_utc(drill.get("timestamp_utc"))
+    program_generated_at = _parse_utc(program.get("timestamp_utc"))
+    now = datetime.now(timezone.utc)
+    ttl_seconds = max(
+        _safe_int(policy.get("proposal_ttl_seconds"), 86400),
+        300,
+    )
+    proposal_age_seconds = (
+        max((now - generated_at).total_seconds(), 0.0)
+        if generated_at is not None
+        else None
+    )
+    program_ttl_seconds = max(
+        _safe_int(
+            _as_dict(program_policy.get("execution_contract")).get(
+                "program_artifact_ttl_seconds"
+            ),
+            86400,
+        ),
+        300,
+    )
+    program_age_seconds = (
+        max((now - program_generated_at).total_seconds(), 0.0)
+        if program_generated_at is not None
+        else None
+    )
+    scenario_summary = _as_dict(drill.get("scenario_summary"))
+    resource_contract = _as_dict(drill.get("resource_contract"))
+    authority_contract = _as_dict(drill.get("authority_contract"))
+    proposal_validation = validate_behavior_runtime_overlay(proposal, now_utc=now)
+    expected_scenario_count = len(
+        [row for row in _as_list(policy.get("scenarios")) if isinstance(row, dict)]
+    )
+    expected_candidate_id = str(candidate.get("candidate_id") or "")
+    expected_generation = _safe_int(candidate.get("generation"), 0)
+    expected_proposal_sha = behavior_canonical_sha256(proposal) if proposal else ""
+    program_binding = _as_dict(program.get("candidate_binding"))
+    program_behavior = _as_dict(program.get("behavior_change_contract"))
+    program_resources = _as_dict(program.get("resource_contract"))
+    program_authority = _as_dict(program.get("authority_contract"))
+    program_comparison = _as_dict(program.get("comparison"))
+    program_suites = [
+        row for row in _as_list(program.get("suite_results")) if isinstance(row, dict)
+    ]
+    expected_program_suite_count = max(
+        _safe_int(
+            _as_dict(program_policy.get("admission_contract")).get(
+                "required_suite_count"
+            ),
+            3,
+        ),
+        1,
+    )
+    checks = {
+        "policy_loaded": bool(policy),
+        "drill_artifact_loaded": bool(drill),
+        "drill_program_policy_loaded": bool(program_policy),
+        "drill_program_artifact_loaded": bool(program),
+        "candidate_state_loaded": bool(candidate),
+        "drill_program_ready": bool(program.get("ok", False))
+        and str(program.get("status") or "") == "ready"
+        and str(program.get("control_grade") or "") == "A+"
+        and bool(program.get("admission_eligible", False)),
+        "drill_program_full_suite_passed": len(program_suites)
+        == expected_program_suite_count
+        and all(
+            bool(row.get("ok", False)) and str(row.get("control_grade") or "") == "A+"
+            for row in program_suites
+        ),
+        "drill_program_non_regressed": bool(
+            program_comparison.get("non_regressed", False)
+        ),
+        "drill_program_is_fresh": program_age_seconds is not None
+        and program_age_seconds <= program_ttl_seconds,
+        "drill_program_candidate_matches": bool(expected_candidate_id)
+        and expected_candidate_id == str(program_binding.get("candidate_id") or "")
+        and expected_generation
+        == _safe_int(program_binding.get("candidate_generation"), 0)
+        and candidate_sha == str(program_binding.get("candidate_state_sha256") or ""),
+        "drill_program_proposal_receipt_matches": bool(expected_proposal_sha)
+        and expected_proposal_sha
+        == str(program_behavior.get("runtime_overlay_proposal_sha256") or "")
+        and bool(program_behavior.get("eligible_for_single_writer_admission", False)),
+        "drill_program_has_zero_execution_authority": program_authority.get(
+            "can_write_runtime_control"
+        )
+        is False
+        and program_authority.get("can_submit_paper_orders") is False
+        and program_authority.get("can_submit_live_orders") is False
+        and program_authority.get("can_access_broker") is False
+        and program_authority.get("can_access_network") is False
+        and program_authority.get("can_change_live_execution") is False
+        and program_resources.get("runtime_control_writes") == 0
+        and program_resources.get("paper_orders_submitted") == 0
+        and program_resources.get("live_orders_submitted") == 0
+        and program_resources.get("broker_requests") == 0
+        and program_resources.get("network_requests") == 0,
+        "drill_ready": bool(drill.get("ok", False))
+        and str(drill.get("status") or "") == "ready"
+        and str(drill.get("control_grade") or "") == "A+",
+        "complete_pack_is_admission_eligible": bool(
+            drill.get("admission_eligible", False)
+        ),
+        "all_policy_scenarios_pass": expected_scenario_count == 14
+        and _safe_int(scenario_summary.get("executed_scenario_count"), 0)
+        == expected_scenario_count
+        and _safe_int(scenario_summary.get("passed_scenario_count"), 0)
+        == expected_scenario_count,
+        "proposal_runtime_contract_valid": bool(
+            proposal_validation.get("ready", False)
+        ),
+        "proposal_receipt_matches": bool(expected_proposal_sha)
+        and expected_proposal_sha
+        == str(drill.get("runtime_overlay_proposal_sha256") or ""),
+        "policy_receipt_matches": bool(policy_sha)
+        and policy_sha == str(proposal.get("policy_sha256") or "")
+        and policy_sha
+        == str(_as_dict(drill.get("receipts")).get("policy_sha256") or ""),
+        "candidate_id_matches": bool(expected_candidate_id)
+        and expected_candidate_id == str(proposal_binding.get("candidate_id") or "")
+        and expected_candidate_id == str(drill_binding.get("candidate_id") or ""),
+        "candidate_generation_matches": expected_generation > 0
+        and expected_generation
+        == _safe_int(proposal_binding.get("candidate_generation"), 0)
+        and expected_generation
+        == _safe_int(drill_binding.get("candidate_generation"), 0),
+        "candidate_state_receipt_matches": bool(candidate_sha)
+        and candidate_sha == str(proposal_binding.get("candidate_state_sha256") or "")
+        and candidate_sha
+        == str(
+            _as_dict(drill.get("candidate_state_receipt")).get("sha256_after") or ""
+        ),
+        "candidate_state_unchanged_during_drill": bool(
+            _as_dict(drill.get("candidate_state_receipt")).get("unchanged", False)
+        ),
+        "proposal_is_fresh": proposal_age_seconds is not None
+        and proposal_age_seconds <= ttl_seconds,
+        "proposal_is_paper_only": proposal.get("paper_only") is True
+        and proposal.get("live_execution_allowed") is False,
+        "drill_has_zero_order_authority": authority_contract.get(
+            "can_submit_paper_orders"
+        )
+        is False
+        and authority_contract.get("can_submit_live_orders") is False
+        and resource_contract.get("paper_orders_submitted") == 0
+        and resource_contract.get("live_orders_submitted") == 0,
+        "drill_has_zero_runtime_write_authority": authority_contract.get(
+            "can_write_runtime_control"
+        )
+        is False
+        and resource_contract.get("runtime_control_writes") == 0
+        and str(authority_contract.get("single_runtime_writer") or "")
+        == "scripts/ops/paper_profitability_control.py",
+        "drill_cannot_mutate_or_promote": authority_contract.get("can_mutate_candidate")
+        is False
+        and authority_contract.get("can_promote") is False
+        and resource_contract.get("candidate_mutations") == 0,
+    }
+    failures = [name for name, passed in checks.items() if not passed]
+    accounting_views = _as_dict(paper_performance.get("accounting_views"))
+    candidate_forward = _as_dict(accounting_views.get("candidate_forward_flow"))
+    forward_matches = bool(
+        str(candidate_forward.get("candidate_id") or "") == expected_candidate_id
+        and _safe_int(candidate_forward.get("candidate_generation"), 0)
+        == expected_generation
+    )
+    forward_sample_count = (
+        max(_safe_int(candidate_forward.get("sample_count"), 0), 0)
+        if forward_matches
+        else 0
+    )
+    minimum_forward_samples = max(
+        _safe_int(
+            policy.get("minimum_candidate_bound_post_cost_fills_for_review"),
+            30,
+        ),
+        1,
+    )
+    forward_evidence = {
+        "status": (
+            "candidate_bound_manual_review_ready"
+            if forward_sample_count >= minimum_forward_samples
+            else "candidate_bound_forward_evidence_pending"
+        ),
+        "candidate_binding_matches": forward_matches,
+        "sample_count": forward_sample_count,
+        "observed_days": (
+            max(_safe_int(candidate_forward.get("observed_days"), 0), 0)
+            if forward_matches
+            else 0
+        ),
+        "post_cost_pnl_delta_total": (
+            round(
+                _safe_float(candidate_forward.get("post_cost_pnl_delta_total"), 0.0),
+                8,
+            )
+            if forward_matches
+            else 0.0
+        ),
+        "minimum_post_cost_fills_for_review": minimum_forward_samples,
+        "intervention_specific_labels_required": True,
+        "legacy_or_mixed_candidate_history_can_trigger_rollback": False,
+        "automatic_risk_widening_allowed": False,
+        "profitability_claim_allowed": False,
+    }
+    if not failures:
+        admitted = dict(proposal)
+        admitted["admitted_at_utc"] = now.isoformat()
+        admitted["admitted_by"] = "scripts/ops/paper_profitability_control.py"
+        admitted["admission_status"] = "paper_probation"
+        admitted["forward_evidence_contract"] = forward_evidence
+        admitted["admission_receipt"] = {
+            "drill_program_artifact_path": str(program_path),
+            "drill_program_run_id": str(program.get("run_id") or ""),
+            "drill_program_input_signature_sha256": str(
+                _as_dict(program.get("receipts")).get("input_signature_sha256") or ""
+            ),
+            "drill_artifact_path": str(drill_path),
+            "drill_artifact_timestamp_utc": str(drill.get("timestamp_utc") or ""),
+            "runtime_overlay_proposal_sha256": expected_proposal_sha,
+            "policy_sha256": policy_sha,
+            "candidate_state_sha256": candidate_sha,
+            "check_count": len(checks),
+            "failed_check_count": 0,
+            "single_runtime_writer_verified": True,
+        }
+        admitted["contract_receipt_sha256"] = behavior_contract_receipt_sha256(admitted)
+        admitted_validation = validate_behavior_runtime_overlay(admitted, now_utc=now)
+        if not admitted_validation.get("ready", False):
+            failures.extend(
+                f"admitted_contract:{reason}"
+                for reason in admitted_validation.get("failures", [])
+            )
+    else:
+        admitted = {
+            "schema_version": 1,
+            "contract_id": "paper_behavior_intervention_runtime_v1",
+            "active": False,
+            "admission_status": "not_admitted",
+            "paper_only": True,
+            "live_execution_allowed": False,
+            "candidate_binding": {
+                "candidate_id": expected_candidate_id,
+                "candidate_generation": expected_generation,
+                "candidate_state_sha256": candidate_sha,
+            },
+            "forward_evidence_contract": forward_evidence,
+            "rollback_contract": {
+                "active": True,
+                "reason": "proposal_contract_invalid_or_stale",
+                "existing_profitability_controls_preserved": True,
+                "live_execution_changed": False,
+            },
+        }
+    return {
+        "active": not failures,
+        "status": "paper_probation" if not failures else "not_admitted",
+        "paper_only": True,
+        "live_execution_allowed": False,
+        "checks": checks,
+        "failed_checks": failures,
+        "proposal_age_seconds": (
+            round(proposal_age_seconds, 3) if proposal_age_seconds is not None else None
+        ),
+        "proposal_ttl_seconds": ttl_seconds,
+        "drill_program_age_seconds": (
+            round(program_age_seconds, 3) if program_age_seconds is not None else None
+        ),
+        "drill_program_ttl_seconds": program_ttl_seconds,
+        "forward_evidence": forward_evidence,
+        "runtime_overlay_contract": admitted,
+        "source_files": {
+            "policy": str(policy_path),
+            "drill_program_policy": str(program_policy_path),
+            "drill_program": str(program_path),
+            "drill": str(drill_path),
+            "candidate": str(candidate_path),
+        },
+    }
 
 
 def _load_paper_performance_input(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -872,7 +1372,9 @@ def _load_paper_performance_input(path: Path) -> tuple[dict[str, Any], dict[str,
         if isinstance(row, dict)
     )
     if stat_after is not None:
-        age_seconds = max((datetime.now(timezone.utc).timestamp() - stat_after.st_mtime), 0.0)
+        age_seconds = max(
+            (datetime.now(timezone.utc).timestamp() - stat_after.st_mtime), 0.0
+        )
         size_bytes = int(stat_after.st_size)
         mtime_ns = int(stat_after.st_mtime_ns)
     else:
@@ -888,7 +1390,9 @@ def _load_paper_performance_input(path: Path) -> tuple[dict[str, Any], dict[str,
     )
     source_fresh = age_seconds <= 3600.0
     payload_ok = bool(paper) and paper.get("ok", True) is not False
-    usable = bool(payload_ok and sleeves and executions > 0 and source_fresh and source_stable)
+    usable = bool(
+        payload_ok and sleeves and executions > 0 and source_fresh and source_stable
+    )
     blockers: list[str] = []
     if not payload_ok:
         blockers.append("paper_performance_missing_or_not_ok")
@@ -906,7 +1410,9 @@ def _load_paper_performance_input(path: Path) -> tuple[dict[str, Any], dict[str,
         "sha256": hashlib.sha256(raw).hexdigest() if raw else "",
         "payload_timestamp_utc": str(paper.get("timestamp_utc") or ""),
         "source_mtime_ns": mtime_ns,
-        "source_age_seconds": None if age_seconds == float("inf") else round(age_seconds, 3),
+        "source_age_seconds": (
+            None if age_seconds == float("inf") else round(age_seconds, 3)
+        ),
         "source_max_age_seconds": 3600,
         "source_size_bytes": size_bytes,
         "sleeve_count": len([row for row in sleeves if isinstance(row, dict)]),
@@ -926,7 +1432,11 @@ def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
 
 
 def _latest_history_row(paper: dict[str, Any]) -> dict[str, Any]:
-    rows = paper.get("history_daily_series") if isinstance(paper.get("history_daily_series"), list) else []
+    rows = (
+        paper.get("history_daily_series")
+        if isinstance(paper.get("history_daily_series"), list)
+        else []
+    )
     for row in reversed(rows):
         if isinstance(row, dict):
             return row
@@ -945,12 +1455,20 @@ def _strategy_bot_id(strategy: str) -> str:
 
 
 def _loss_causes(row: dict[str, Any]) -> list[dict[str, Any]]:
-    causes = row.get("top_loss_causes") if isinstance(row.get("top_loss_causes"), list) else []
+    causes = (
+        row.get("top_loss_causes")
+        if isinstance(row.get("top_loss_causes"), list)
+        else []
+    )
     return [cause for cause in causes if isinstance(cause, dict)]
 
 
 def _cause_names(row: dict[str, Any]) -> list[str]:
-    return [str(cause.get("cause") or "").strip().lower() for cause in _loss_causes(row) if str(cause.get("cause") or "").strip()]
+    return [
+        str(cause.get("cause") or "").strip().lower()
+        for cause in _loss_causes(row)
+        if str(cause.get("cause") or "").strip()
+    ]
 
 
 def _loss_cause_family(cause_name: str) -> str:
@@ -997,28 +1515,44 @@ def _weak_sleeve_recurrence_family_rows(
                 "family": family,
                 "gate": str(spec.get("gate") or ""),
                 "runtime_block": str(spec.get("runtime_block") or ""),
-                "required_before_reentry": _as_list(spec.get("required_before_reentry")),
+                "required_before_reentry": _as_list(
+                    spec.get("required_before_reentry")
+                ),
                 "required_labels": _as_list(spec.get("required_labels")),
                 "thresholds": {
-                    "min_source_quality_norm": thresholds.get("min_source_quality_norm"),
+                    "min_source_quality_norm": thresholds.get(
+                        "min_source_quality_norm"
+                    ),
                     "min_tradeability_norm": thresholds.get("min_tradeability_norm"),
-                    "min_execution_fitness_norm": thresholds.get("min_execution_fitness_norm"),
-                    "min_cross_asset_confirmation_norm": thresholds.get("min_cross_asset_confirmation_norm"),
-                    "min_event_proximity_norm": thresholds.get("min_event_proximity_norm"),
+                    "min_execution_fitness_norm": thresholds.get(
+                        "min_execution_fitness_norm"
+                    ),
+                    "min_cross_asset_confirmation_norm": thresholds.get(
+                        "min_cross_asset_confirmation_norm"
+                    ),
+                    "min_event_proximity_norm": thresholds.get(
+                        "min_event_proximity_norm"
+                    ),
                 },
             }
         )
     return rows
 
 
-def _weak_sleeve_session_recurrence_gate(profile: str, cause_names: list[str]) -> dict[str, Any]:
+def _weak_sleeve_session_recurrence_gate(
+    profile: str, cause_names: list[str]
+) -> dict[str, Any]:
     weak_session = _session_loss_causes(cause_names)
     if profile == "fx":
         allowed = ["london", "new_york_overlap", "new_york_morning"]
         blocked = ["rollover", "illiquid_asia"]
         mode = "fx_liquid_session_only"
     elif "crypto" in profile:
-        allowed = ["high_liquidity_crypto_session", "funding_window_with_liquidity", "us_cash_overlap"]
+        allowed = [
+            "high_liquidity_crypto_session",
+            "funding_window_with_liquidity",
+            "us_cash_overlap",
+        ]
         blocked = ["thin_liquidity_window"]
         mode = "crypto_high_liquidity_session_only"
     else:
@@ -1048,13 +1582,21 @@ def _weak_sleeve_recurrence_guard(
     win_rate: float | None,
     top_loss_causes: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    family_rows = _weak_sleeve_recurrence_family_rows(families=families, thresholds=thresholds)
+    family_rows = _weak_sleeve_recurrence_family_rows(
+        families=families, thresholds=thresholds
+    )
     family_requirements: list[str] = []
     family_labels: list[str] = []
     runtime_blocks: list[str] = []
     for row in family_rows:
-        family_requirements.extend(str(item) for item in _as_list(row.get("required_before_reentry")) if str(item))
-        family_labels.extend(str(item) for item in _as_list(row.get("required_labels")) if str(item))
+        family_requirements.extend(
+            str(item)
+            for item in _as_list(row.get("required_before_reentry"))
+            if str(item)
+        )
+        family_labels.extend(
+            str(item) for item in _as_list(row.get("required_labels")) if str(item)
+        )
         runtime_block = str(row.get("runtime_block") or "").strip()
         if runtime_block:
             runtime_blocks.append(runtime_block)
@@ -1062,14 +1604,21 @@ def _weak_sleeve_recurrence_guard(
     session_gate = _weak_sleeve_session_recurrence_gate(profile, cause_names)
     session_required = bool(session_gate.get("active", False))
     if session_required:
-        family_requirements.extend(["session_gate_passed", "explicit_liquid_session_label_present"])
+        family_requirements.extend(
+            ["session_gate_passed", "explicit_liquid_session_label_present"]
+        )
         family_labels.extend(["session_gate_result", "session_liquidity_bucket"])
         runtime_blocks.append("block_when_session_unlabeled_or_weak")
 
     severe = bool(float(drag) >= 0.64 or float(net) <= -1000.0)
     critical = bool(float(drag) >= 0.88 or float(net) <= -2500.0)
-    min_profitable_refreshes = max(RAW_RECOVERY_MIN_PROFITABLE_REFRESHES, 4 if critical else 3)
-    min_channels = max(RAW_RECOVERY_MIN_INDEPENDENT_EVIDENCE_CHANNELS, 5 if critical or len(set(families)) >= 4 else 4)
+    min_profitable_refreshes = max(
+        RAW_RECOVERY_MIN_PROFITABLE_REFRESHES, 4 if critical else 3
+    )
+    min_channels = max(
+        RAW_RECOVERY_MIN_INDEPENDENT_EVIDENCE_CHANNELS,
+        5 if critical or len(set(families)) >= 4 else 4,
+    )
     repeated_cause_rows = [
         {
             "cause": str(row.get("cause") or "").strip().lower(),
@@ -1096,7 +1645,9 @@ def _weak_sleeve_recurrence_guard(
             "loss_cause_digest_refreshed_after_latest_paper_cycle",
         ]
     )
-    required_labels = ordered_unique(WEAK_SLEEVE_RECURRENCE_REQUIRED_LABELS + family_labels)
+    required_labels = ordered_unique(
+        WEAK_SLEEVE_RECURRENCE_REQUIRED_LABELS + family_labels
+    )
     return {
         "active": bool(cause_names or families),
         "mode": "weak_sleeve_recurrence_guard_v1",
@@ -1135,10 +1686,16 @@ def _weak_sleeve_recurrence_guard(
             "min_source_quality_norm": thresholds.get("min_source_quality_norm"),
             "min_tradeability_norm": thresholds.get("min_tradeability_norm"),
             "min_execution_fitness_norm": thresholds.get("min_execution_fitness_norm"),
-            "min_cross_asset_confirmation_norm": thresholds.get("min_cross_asset_confirmation_norm"),
+            "min_cross_asset_confirmation_norm": thresholds.get(
+                "min_cross_asset_confirmation_norm"
+            ),
             "min_event_proximity_norm": thresholds.get("min_event_proximity_norm"),
-            "require_known_spread_or_execution_model": thresholds.get("require_known_spread_or_execution_model"),
-            "require_modeled_fill_quality": thresholds.get("require_modeled_fill_quality"),
+            "require_known_spread_or_execution_model": thresholds.get(
+                "require_known_spread_or_execution_model"
+            ),
+            "require_modeled_fill_quality": thresholds.get(
+                "require_modeled_fill_quality"
+            ),
         },
         "stop_condition": (
             "three or more profitable refreshes, no repeated loss cause in the latest digest, "
@@ -1147,14 +1704,18 @@ def _weak_sleeve_recurrence_guard(
     }
 
 
-def _confirmation_bias_score(cause_names: list[str], *, drag: float, net: float, win_rate: float | None) -> float:
+def _confirmation_bias_score(
+    cause_names: list[str], *, drag: float, net: float, win_rate: float | None
+) -> float:
     if not cause_names:
         return 0.0
     bias_hits = sum(1 for cause in cause_names if cause in CONFIRMATION_BIAS_CAUSES)
     cause_component = _clamp(bias_hits / max(len(CONFIRMATION_BIAS_CAUSES), 1))
     breadth_component = _clamp(bias_hits / max(len(cause_names), 1))
     net_component = _clamp(abs(min(net, 0.0)) / 1500.0)
-    win_component = _clamp(max(0.42 - float(win_rate), 0.0) / 0.42) if win_rate is not None else 0.0
+    win_component = (
+        _clamp(max(0.42 - float(win_rate), 0.0) / 0.42) if win_rate is not None else 0.0
+    )
     return _clamp(
         0.34 * cause_component
         + 0.26 * breadth_component
@@ -1259,13 +1820,27 @@ def _financial_grade_basis_contract(
         gradeable.append(row)
 
     basis_rows = gradeable
-    net_sum = sum(_safe_float(row.get("ending_net_pnl_total"), 0.0) for row in basis_rows)
-    realized_sum = sum(_safe_float(row.get("ending_realized_pnl_total"), 0.0) for row in basis_rows)
-    unrealized_sum = sum(_safe_float(row.get("ending_unrealized_pnl_total"), 0.0) for row in basis_rows)
-    execution_sum = sum(max(_safe_int(row.get("executions"), 0), 0) for row in basis_rows)
-    excluded_net_sum = sum(_safe_float(row.get("ending_net_pnl_total"), 0.0) for row in excluded)
-    excluded_realized_sum = sum(_safe_float(row.get("ending_realized_pnl_total"), 0.0) for row in excluded)
-    excluded_unrealized_sum = sum(_safe_float(row.get("ending_unrealized_pnl_total"), 0.0) for row in excluded)
+    net_sum = sum(
+        _safe_float(row.get("ending_net_pnl_total"), 0.0) for row in basis_rows
+    )
+    realized_sum = sum(
+        _safe_float(row.get("ending_realized_pnl_total"), 0.0) for row in basis_rows
+    )
+    unrealized_sum = sum(
+        _safe_float(row.get("ending_unrealized_pnl_total"), 0.0) for row in basis_rows
+    )
+    execution_sum = sum(
+        max(_safe_int(row.get("executions"), 0), 0) for row in basis_rows
+    )
+    excluded_net_sum = sum(
+        _safe_float(row.get("ending_net_pnl_total"), 0.0) for row in excluded
+    )
+    excluded_realized_sum = sum(
+        _safe_float(row.get("ending_realized_pnl_total"), 0.0) for row in excluded
+    )
+    excluded_unrealized_sum = sum(
+        _safe_float(row.get("ending_unrealized_pnl_total"), 0.0) for row in excluded
+    )
     evidence_ready = bool(basis_rows and execution_sum > 0)
     return {
         "active": evidence_ready,
@@ -1294,7 +1869,9 @@ def _financial_grade_basis_contract(
             "net_pnl": round(excluded_net_sum, 6),
             "realized_pnl": round(excluded_realized_sum, 6),
             "unrealized_pnl": round(excluded_unrealized_sum, 6),
-            "executions": sum(max(_safe_int(row.get("executions"), 0), 0) for row in excluded),
+            "executions": sum(
+                max(_safe_int(row.get("executions"), 0), 0) for row in excluded
+            ),
         },
         "excluded_stale_sleeves": [
             {
@@ -1302,8 +1879,12 @@ def _financial_grade_basis_contract(
                 "day_utc": str(row.get("day_utc") or ""),
                 "data_status": str(row.get("data_status") or ""),
                 "current_day_available": bool(row.get("current_day_available", False)),
-                "net_pnl_total": round(_safe_float(row.get("ending_net_pnl_total"), 0.0), 6),
-                "unrealized_pnl_total": round(_safe_float(row.get("ending_unrealized_pnl_total"), 0.0), 6),
+                "net_pnl_total": round(
+                    _safe_float(row.get("ending_net_pnl_total"), 0.0), 6
+                ),
+                "unrealized_pnl_total": round(
+                    _safe_float(row.get("ending_unrealized_pnl_total"), 0.0), 6
+                ),
                 "reason": "excluded_from_raw_financial_grade_until_fresh_refresh",
             }
             for row in excluded[:12]
@@ -1337,10 +1918,13 @@ def _paper_debt_recovery_contract(
     previous_contract: dict[str, Any] | None,
     input_contract: dict[str, Any],
     now_utc: datetime | None = None,
+    start_fresh_epoch: bool = False,
+    fresh_epoch_reason: str = "",
 ) -> dict[str, Any]:
     """Keep legacy paper losses visible while candidate-forward evidence repays them."""
 
     now = now_utc or datetime.now(timezone.utc)
+    now_text = now.isoformat()
     previous = previous_contract if isinstance(previous_contract, dict) else {}
     accounting_views = _as_dict(paper.get("accounting_views"))
     active_book = _as_dict(accounting_views.get("active_book_snapshot"))
@@ -1351,29 +1935,31 @@ def _paper_debt_recovery_contract(
     active_book_available = bool(
         active_book
         and "ending_net_pnl_total" in active_book
-        and str(active_book.get("scope") or "").strip() == "lifetime_active_paper_inventory"
+        and str(active_book.get("scope") or "").strip()
+        == "lifetime_active_paper_inventory"
     )
     current_book_net_pnl = _safe_float(active_book.get("ending_net_pnl_total"), 0.0)
-    observed_book_debt = max(-current_book_net_pnl, 0.0) if active_book_available else 0.0
+    lifetime_observed_book_debt = (
+        max(-current_book_net_pnl, 0.0) if active_book_available else 0.0
+    )
+    observed_book_debt = lifetime_observed_book_debt
 
     previous_baseline = max(_safe_float(previous.get("baseline_debt_amount"), 0.0), 0.0)
-    previous_remaining = max(_safe_float(previous.get("remaining_debt_amount"), previous_baseline), 0.0)
-    if previous_baseline > PAPER_DEBT_RECOVERY_CLEAR_EPSILON:
-        baseline_debt = previous_baseline
-        baseline_source = "persisted_recovery_baseline"
-    elif active_book_available and observed_book_debt > PAPER_DEBT_RECOVERY_CLEAR_EPSILON:
-        baseline_debt = observed_book_debt
-        baseline_source = "active_paper_book_at_recovery_activation"
-    else:
-        baseline_debt = previous_baseline
-        baseline_source = "no_negative_active_paper_book"
-
+    previous_remaining = max(
+        _safe_float(previous.get("remaining_debt_amount"), previous_baseline), 0.0
+    )
     previous_started_at = str(previous.get("started_at_utc") or "").strip()
-    started_at_utc = previous_started_at or now.isoformat()
+    started_at_utc = previous_started_at or now_text
     started_at_seconds = _parse_timestamp_seconds(started_at_utc)
-    elapsed_days = max((now.timestamp() - started_at_seconds) / 86400.0, 0.0) if started_at_seconds else 0.0
+    elapsed_days = (
+        max((now.timestamp() - started_at_seconds) / 86400.0, 0.0)
+        if started_at_seconds
+        else 0.0
+    )
 
-    candidate_id = str(candidate_flow.get("candidate_id") or evidence_window.get("candidate_id") or "").strip()
+    candidate_id = str(
+        candidate_flow.get("candidate_id") or evidence_window.get("candidate_id") or ""
+    ).strip()
     candidate_generation = max(
         _safe_int(candidate_flow.get("candidate_generation"), 0),
         _safe_int(evidence_window.get("candidate_generation"), 0),
@@ -1383,9 +1969,14 @@ def _paper_debt_recovery_contract(
         or evidence_window.get("candidate_cutoff_utc")
         or ""
     ).strip()
-    candidate_receipt = str(candidate_flow.get("candidate_state_receipt_sha256") or "").strip()
+    candidate_receipt = str(
+        candidate_flow.get("candidate_state_receipt_sha256") or ""
+    ).strip()
     candidate_binding_required = bool(
-        candidate_flow.get("candidate_binding_required", evidence_window.get("candidate_binding_required", False))
+        candidate_flow.get(
+            "candidate_binding_required",
+            evidence_window.get("candidate_binding_required", False),
+        )
     )
     mismatch_rows = max(
         _safe_int(candidate_flow.get("candidate_binding_mismatch_rows_excluded"), 0),
@@ -1408,39 +1999,166 @@ def _paper_debt_recovery_contract(
     candidate_observed_days = max(_safe_int(candidate_flow.get("observed_days"), 0), 0)
     previous_attribution = _as_dict(previous.get("candidate_attribution"))
     previous_candidate_id = str(previous_attribution.get("candidate_id") or "").strip()
-    previous_candidate_samples = max(_safe_int(previous_attribution.get("sample_count"), 0), 0)
+    previous_candidate_samples = max(
+        _safe_int(previous_attribution.get("sample_count"), 0), 0
+    )
     previous_current_candidate_pnl = _safe_float(
         previous_attribution.get("current_candidate_post_cost_pnl"),
         0.0,
     )
-    previous_carried_pnl = _safe_float(previous_attribution.get("carried_prior_candidate_pnl"), 0.0)
+    previous_carried_pnl = _safe_float(
+        previous_attribution.get("carried_prior_candidate_pnl"), 0.0
+    )
     previous_total_attributed_pnl = _safe_float(
         previous_attribution.get("total_candidate_attributed_pnl"),
         previous_carried_pnl + previous_current_candidate_pnl,
     )
+    reported_current_candidate_pnl = _safe_float(
+        candidate_flow.get("post_cost_pnl_delta_total"), 0.0
+    )
+
+    fresh_epoch = _as_dict(previous.get("fresh_start_accounting_epoch"))
+    requested_fresh_reason = str(fresh_epoch_reason or "").strip()
+    same_fresh_epoch_request = bool(
+        start_fresh_epoch
+        and fresh_epoch.get("active", False)
+        and requested_fresh_reason
+        and str(fresh_epoch.get("reason") or "").strip() == requested_fresh_reason
+    )
+    if same_fresh_epoch_request:
+        fresh_epoch = dict(fresh_epoch)
+        fresh_epoch["idempotent_reapply_preserved"] = True
+    elif start_fresh_epoch:
+        prior_fresh_epoch = _as_dict(previous.get("fresh_start_accounting_epoch"))
+        prior_recovery_contract = {
+            "started_at_utc": str(previous.get("started_at_utc") or ""),
+            "state": str(previous.get("state") or ""),
+            "baseline_debt_amount": _round_recovery_amount(previous_baseline),
+            "remaining_debt_amount": _round_recovery_amount(previous_remaining),
+            "recovery_amount": _round_recovery_amount(
+                previous.get("recovery_amount"),
+            ),
+            "worsening_amount": _round_recovery_amount(
+                previous.get("worsening_amount"),
+            ),
+        }
+        prior_recovery_from_existing_epoch = _as_dict(
+            prior_fresh_epoch.get("prior_recovery_contract")
+        )
+        if prior_fresh_epoch and prior_recovery_from_existing_epoch:
+            prior_recovery_contract = dict(prior_recovery_from_existing_epoch)
+        fresh_epoch = {
+            "active": True,
+            "epoch_id": f"paper-forward-{now.strftime('%Y%m%dT%H%M%SZ')}",
+            "started_at_utc": now_text,
+            "reason": requested_fresh_reason,
+            "baseline_active_book_net_pnl": (
+                round(current_book_net_pnl, 6) if active_book_available else None
+            ),
+            "baseline_lifetime_observed_book_debt": (
+                round(lifetime_observed_book_debt, 6) if active_book_available else None
+            ),
+            "baseline_candidate_id": candidate_id,
+            "baseline_candidate_generation": candidate_generation,
+            "baseline_candidate_sample_count": candidate_samples,
+            "baseline_candidate_observed_days": candidate_observed_days,
+            "baseline_reported_current_candidate_post_cost_pnl": round(
+                reported_current_candidate_pnl,
+                6,
+            ),
+            "prior_recovery_contract": prior_recovery_contract,
+            "historical_loss_preserved": True,
+            "historical_debt_excluded_from_forward_recovery": True,
+            "live_execution_allowed": False,
+        }
+        previous_remaining = 0.0
+        previous_candidate_id = ""
+        previous_candidate_samples = 0
+        previous_current_candidate_pnl = 0.0
+        previous_carried_pnl = 0.0
+        previous_total_attributed_pnl = 0.0
+
+    fresh_epoch_active = bool(fresh_epoch.get("active", False))
+    if fresh_epoch_active:
+        baseline_debt = 0.0
+        baseline_source = "fresh_forward_accounting_epoch"
+        started_at_utc = str(fresh_epoch.get("started_at_utc") or now_text)
+        started_at_seconds = _parse_timestamp_seconds(started_at_utc)
+        elapsed_days = (
+            max((now.timestamp() - started_at_seconds) / 86400.0, 0.0)
+            if started_at_seconds
+            else 0.0
+        )
+        baseline_book_net = _safe_float(
+            fresh_epoch.get("baseline_active_book_net_pnl"),
+            current_book_net_pnl,
+        )
+        observed_book_debt = (
+            max(-(current_book_net_pnl - baseline_book_net), 0.0)
+            if active_book_available
+            else 0.0
+        )
+        same_fresh_candidate = bool(
+            candidate_id
+            and candidate_id
+            == str(fresh_epoch.get("baseline_candidate_id") or "").strip()
+        )
+        if same_fresh_candidate:
+            candidate_samples = max(
+                candidate_samples
+                - _safe_int(fresh_epoch.get("baseline_candidate_sample_count"), 0),
+                0,
+            )
+            candidate_observed_days = max(
+                candidate_observed_days
+                - _safe_int(fresh_epoch.get("baseline_candidate_observed_days"), 0),
+                0,
+            )
+            reported_current_candidate_pnl = (
+                reported_current_candidate_pnl
+                - _safe_float(
+                    fresh_epoch.get(
+                        "baseline_reported_current_candidate_post_cost_pnl"
+                    ),
+                    0.0,
+                )
+            )
+    elif previous_baseline > PAPER_DEBT_RECOVERY_CLEAR_EPSILON:
+        baseline_debt = previous_baseline
+        baseline_source = "persisted_recovery_baseline"
+    elif (
+        active_book_available and observed_book_debt > PAPER_DEBT_RECOVERY_CLEAR_EPSILON
+    ):
+        baseline_debt = observed_book_debt
+        baseline_source = "active_paper_book_at_recovery_activation"
+    else:
+        baseline_debt = previous_baseline
+        baseline_source = "no_negative_active_paper_book"
+
     same_candidate = bool(candidate_id and candidate_id == previous_candidate_id)
     candidate_evidence_regressed = bool(
         same_candidate
         and previous_candidate_samples > 0
         and candidate_samples < previous_candidate_samples
     )
-    reported_current_candidate_pnl = _safe_float(candidate_flow.get("post_cost_pnl_delta_total"), 0.0)
     if same_candidate:
         carried_prior_candidate_pnl = previous_carried_pnl
         credited_current_candidate_pnl = (
             previous_current_candidate_pnl
             if candidate_evidence_regressed
-            else reported_current_candidate_pnl
-            if binding_valid
-            else 0.0
+            else reported_current_candidate_pnl if binding_valid else 0.0
         )
     elif candidate_id:
         carried_prior_candidate_pnl = previous_total_attributed_pnl
-        credited_current_candidate_pnl = reported_current_candidate_pnl if binding_valid else 0.0
+        credited_current_candidate_pnl = (
+            reported_current_candidate_pnl if binding_valid else 0.0
+        )
     else:
         carried_prior_candidate_pnl = previous_total_attributed_pnl
         credited_current_candidate_pnl = 0.0
-    total_candidate_attributed_pnl = carried_prior_candidate_pnl + credited_current_candidate_pnl
+    total_candidate_attributed_pnl = (
+        carried_prior_candidate_pnl + credited_current_candidate_pnl
+    )
 
     source_ready = bool(
         input_contract.get("source_fresh", False)
@@ -1452,7 +2170,9 @@ def _paper_debt_recovery_contract(
         and binding_valid
         and not candidate_evidence_regressed
     )
-    attribution_required_remaining = max(baseline_debt - total_candidate_attributed_pnl, 0.0)
+    attribution_required_remaining = max(
+        baseline_debt - total_candidate_attributed_pnl, 0.0
+    )
     if accounting_evidence_ready:
         remaining_debt = max(observed_book_debt, attribution_required_remaining)
     else:
@@ -1467,7 +2187,9 @@ def _paper_debt_recovery_contract(
         else (1.0 if remaining_debt <= PAPER_DEBT_RECOVERY_CLEAR_EPSILON else 0.0)
     )
 
-    daily_pnl = _candidate_daily_pnl_by_day(paper.get("candidate_post_cost_daily_series"))
+    daily_pnl = _candidate_daily_pnl_by_day(
+        paper.get("candidate_post_cost_daily_series")
+    )
     daily_loss_limit = max(25.0, min(250.0, baseline_debt * 0.005))
     candidate_drawdown_limit = max(100.0, min(1000.0, baseline_debt * 0.02))
     cumulative_pnl = 0.0
@@ -1514,10 +2236,20 @@ def _paper_debt_recovery_contract(
     elif risk_paused:
         state = "paused_drawdown"
     elif debt_cleared:
-        state = "cleared_and_proven" if live_promotion_ready else "debt_cleared_pending_proof"
-    elif remaining_debt > baseline_debt + PAPER_DEBT_RECOVERY_CLEAR_EPSILON or total_candidate_attributed_pnl < 0.0:
+        state = (
+            "cleared_and_proven"
+            if live_promotion_ready
+            else "debt_cleared_pending_proof"
+        )
+    elif (
+        remaining_debt > baseline_debt + PAPER_DEBT_RECOVERY_CLEAR_EPSILON
+        or total_candidate_attributed_pnl < 0.0
+    ):
         state = "debt_worsening"
-    elif recovery_amount > PAPER_DEBT_RECOVERY_CLEAR_EPSILON and total_candidate_attributed_pnl > 0.0:
+    elif (
+        recovery_amount > PAPER_DEBT_RECOVERY_CLEAR_EPSILON
+        and total_candidate_attributed_pnl > 0.0
+    ):
         state = "recovering"
     elif candidate_samples > 0:
         state = "holding_line"
@@ -1535,15 +2267,22 @@ def _paper_debt_recovery_contract(
     else:
         entry_size_multiplier = PAPER_DEBT_RECOVERY_ACCUMULATION_SIZE_MULTIPLIER
 
-    target_daily_recovery = baseline_debt / PAPER_DEBT_RECOVERY_TARGET_DAYS if baseline_debt > 0.0 else 0.0
-    actual_daily_recovery = recovery_amount / elapsed_days if elapsed_days >= 1.0 else 0.0
-    velocity_ratio = actual_daily_recovery / target_daily_recovery if target_daily_recovery > 0.0 else 0.0
+    target_daily_recovery = (
+        baseline_debt / PAPER_DEBT_RECOVERY_TARGET_DAYS if baseline_debt > 0.0 else 0.0
+    )
+    actual_daily_recovery = (
+        recovery_amount / elapsed_days if elapsed_days >= 1.0 else 0.0
+    )
+    velocity_ratio = (
+        actual_daily_recovery / target_daily_recovery
+        if target_daily_recovery > 0.0
+        else 0.0
+    )
     estimated_days_to_clear = (
         remaining_debt / actual_daily_recovery
-        if remaining_debt > PAPER_DEBT_RECOVERY_CLEAR_EPSILON and actual_daily_recovery > 0.0
-        else 0.0
-        if debt_cleared
-        else None
+        if remaining_debt > PAPER_DEBT_RECOVERY_CLEAR_EPSILON
+        and actual_daily_recovery > 0.0
+        else 0.0 if debt_cleared else None
     )
 
     promotion_blockers: list[str] = []
@@ -1583,13 +2322,27 @@ def _paper_debt_recovery_contract(
         "started_at_utc": started_at_utc,
         "state": state,
         "baseline_source": baseline_source,
-        "baseline_debt_amount": round(baseline_debt, 6),
-        "current_active_inventory_net_pnl": round(current_book_net_pnl, 6) if active_book_available else None,
-        "observed_book_remaining_debt": round(observed_book_debt, 6) if active_book_available else None,
-        "attribution_required_remaining_debt": round(attribution_required_remaining, 6),
-        "remaining_debt_amount": round(remaining_debt, 6),
-        "recovery_amount": round(recovery_amount, 6),
-        "worsening_amount": round(worsening_amount, 6),
+        "baseline_debt_amount": _round_recovery_amount(baseline_debt),
+        "fresh_start_accounting_epoch": dict(fresh_epoch) if fresh_epoch_active else {},
+        "current_active_inventory_net_pnl": (
+            round(current_book_net_pnl, 6) if active_book_available else None
+        ),
+        "lifetime_observed_book_remaining_debt": (
+            _round_recovery_amount(lifetime_observed_book_debt)
+            if active_book_available
+            else None
+        ),
+        "observed_book_remaining_debt": (
+            _round_recovery_amount(observed_book_debt)
+            if active_book_available
+            else None
+        ),
+        "attribution_required_remaining_debt": _round_recovery_amount(
+            attribution_required_remaining
+        ),
+        "remaining_debt_amount": _round_recovery_amount(remaining_debt),
+        "recovery_amount": _round_recovery_amount(recovery_amount),
+        "worsening_amount": _round_recovery_amount(worsening_amount),
         "recovery_progress_norm": round(recovery_progress_norm, 6),
         "debt_cleared": debt_cleared,
         "accounting_evidence_ready": accounting_evidence_ready,
@@ -1603,7 +2356,9 @@ def _paper_debt_recovery_contract(
             "candidate_binding_mismatch_rows_excluded": mismatch_rows,
             "sample_count": candidate_samples,
             "observed_days": candidate_observed_days,
-            "reported_current_candidate_post_cost_pnl": round(reported_current_candidate_pnl, 6),
+            "reported_current_candidate_post_cost_pnl": round(
+                reported_current_candidate_pnl, 6
+            ),
             "current_candidate_post_cost_pnl": round(credited_current_candidate_pnl, 6),
             "carried_prior_candidate_pnl": round(carried_prior_candidate_pnl, 6),
             "total_candidate_attributed_pnl": round(total_candidate_attributed_pnl, 6),
@@ -1618,7 +2373,9 @@ def _paper_debt_recovery_contract(
             "velocity_ratio_norm": round(max(velocity_ratio, 0.0), 6),
             "on_target": bool(elapsed_days >= 1.0 and velocity_ratio >= 1.0),
             "estimated_days_to_clear_at_current_velocity": (
-                round(estimated_days_to_clear, 3) if estimated_days_to_clear is not None else None
+                round(estimated_days_to_clear, 3)
+                if estimated_days_to_clear is not None
+                else None
             ),
             "efficiency_rule": "maximize candidate-bound post-cost expectancy and opportunity use inside unchanged loss, drawdown, quality, overlap, and sizing limits",
         },
@@ -1637,7 +2394,9 @@ def _paper_debt_recovery_contract(
             "sample_count": candidate_samples,
             "minimum_observed_days": PAPER_DEBT_RECOVERY_MIN_OBSERVED_DAYS,
             "observed_days": candidate_observed_days,
-            "promotion_evidence_sufficient": bool(expectancy.get("promotion_evidence_sufficient", False)),
+            "promotion_evidence_sufficient": bool(
+                expectancy.get("promotion_evidence_sufficient", False)
+            ),
             "positive_post_cost_lower_confidence_bound_95": positive_lcb,
         },
         "runtime_enforcement": {
@@ -1648,7 +2407,9 @@ def _paper_debt_recovery_contract(
             "keep_sells_and_reduce_only_paths_open": True,
             "block_new_entries_on_weak_profiles": True,
             "block_new_entries_when_recovery_paused": True,
-            "recovery_entry_size_multiplier_norm": round(_clamp(entry_size_multiplier), 6),
+            "recovery_entry_size_multiplier_norm": round(
+                _clamp(entry_size_multiplier), 6
+            ),
             "min_quality_gate_norm": RAW_A_RECOVERY_QUALITY_GATE_FLOOR,
             "min_tradeability_norm": RAW_A_RECOVERY_TRADEABILITY_FLOOR,
             "min_execution_fitness_norm": RAW_A_RECOVERY_EXECUTION_FLOOR,
@@ -1695,9 +2456,7 @@ def _scaling_evidence_metrics(
         0.0,
     )
     drawdown_to_profit = (
-        max_drawdown / max(total_pnl, 1e-9)
-        if total_pnl > 0.0
-        else None
+        max_drawdown / max(total_pnl, 1e-9) if total_pnl > 0.0 else None
     )
     return {
         "sample_count": samples,
@@ -1739,7 +2498,11 @@ def _scaling_evidence_metrics(
         "expectancy_status": str(expectancy.get("status") or "unavailable"),
         "promotion_status": str(expectancy.get("promotion_status") or "unavailable"),
         "promotion_blockers": ordered_unique(
-            [str(item) for item in expectancy.get("promotion_blockers", []) if str(item)]
+            [
+                str(item)
+                for item in expectancy.get("promotion_blockers", [])
+                if str(item)
+            ]
         ),
     }
 
@@ -1770,13 +2533,23 @@ def _scaling_tier_control(
     mean_pnl = _safe_float(metrics.get("mean_post_cost_pnl_delta"), 0.0)
     positive_iid = bool(metrics.get("positive_iid_lower_confidence_bound_95", False))
     robust_sufficient = bool(metrics.get("promotion_evidence_sufficient", False))
-    robust_positive = bool(metrics.get("positive_clustered_lower_confidence_bound_95", False))
+    robust_positive = bool(
+        metrics.get("positive_clustered_lower_confidence_bound_95", False)
+    )
     profit_factor = metrics.get("profit_factor")
-    profit_factor_value = _safe_float(profit_factor, 0.0) if profit_factor is not None else 0.0
+    profit_factor_value = (
+        _safe_float(profit_factor, 0.0) if profit_factor is not None else 0.0
+    )
     drawdown_ratio = metrics.get("drawdown_to_positive_pnl_ratio")
-    drawdown_ratio_value = _safe_float(drawdown_ratio, float("inf")) if drawdown_ratio is not None else float("inf")
+    drawdown_ratio_value = (
+        _safe_float(drawdown_ratio, float("inf"))
+        if drawdown_ratio is not None
+        else float("inf")
+    )
     dsr_probability = metrics.get("deflated_sharpe_probability")
-    dsr_probability_value = _safe_float(dsr_probability, 0.0) if dsr_probability is not None else 0.0
+    dsr_probability_value = (
+        _safe_float(dsr_probability, 0.0) if dsr_probability is not None else 0.0
+    )
 
     if blocked:
         tier = "quarantine"
@@ -1872,7 +2645,9 @@ def _scaling_tier_control(
             reasons.append("tier_1_capacity_and_regime_evidence_passed")
         else:
             if not regime_aligned:
-                reasons.append("current_regime_alignment_required_for_above_baseline_scale")
+                reasons.append(
+                    "current_regime_alignment_required_for_above_baseline_scale"
+                )
             if dsr_probability_value < 0.95:
                 reasons.append("deflated_sharpe_probability_below_scale_floor")
             if profit_factor_value < 1.15:
@@ -1891,7 +2666,9 @@ def _scaling_tier_control(
         "entry_size_multiplier_norm": round(effective_multiplier, 6),
         "max_new_entry_notional_pct": round(max_notional_pct, 6),
         "block_new_entries": bool(effective_multiplier <= 0.0),
-        "above_baseline_scale_ready": bool(evidence_multiplier > 1.0 and effective_multiplier > 1.0),
+        "above_baseline_scale_ready": bool(
+            evidence_multiplier > 1.0 and effective_multiplier > 1.0
+        ),
         "regime_alignment_ready": regime_aligned,
         "candidate_binding_valid": candidate_binding_valid,
         "source_ready": source_ready,
@@ -1918,7 +2695,11 @@ def _sleeve_strategy_profitability_scaling_contract(
         and input_contract.get("source_stable_during_read", False)
     )
     global_entry_cap = (
-        _clamp(_safe_float(debt_runtime.get("recovery_entry_size_multiplier_norm"), 1.0), 0.0, 1.0)
+        _clamp(
+            _safe_float(debt_runtime.get("recovery_entry_size_multiplier_norm"), 1.0),
+            0.0,
+            1.0,
+        )
         if bool(paper_debt_recovery_contract.get("active", False))
         else SLEEVE_SCALING_MAX_ENTRY_MULTIPLIER
     )
@@ -1958,27 +2739,36 @@ def _sleeve_strategy_profitability_scaling_contract(
             (
                 row
                 for row in profile_strategies
-                if str(_as_dict(row.get("regime_assessment")).get("relevance") or "").lower() == "aligned"
-                and bool(_as_dict(row.get("regime_assessment")).get("execution_alignment_ready", False))
+                if str(
+                    _as_dict(row.get("regime_assessment")).get("relevance") or ""
+                ).lower()
+                == "aligned"
+                and bool(
+                    _as_dict(row.get("regime_assessment")).get(
+                        "execution_alignment_ready", False
+                    )
+                )
             ),
             None,
         )
         objective_classes = ordered_unique(
-            [str(row.get("objective_class") or "").strip().lower() for row in profile_strategies]
+            [
+                str(row.get("objective_class") or "").strip().lower()
+                for row in profile_strategies
+            ]
         )
         objective = (
             objective_classes[0]
             if len(objective_classes) == 1
-            else "mixed_objectives"
-            if objective_classes
-            else "unclassified"
+            else "mixed_objectives" if objective_classes else "unclassified"
         )
         metrics = _scaling_evidence_metrics(_as_dict(raw.get("post_cost_expectancy")))
         weak_control = _as_dict(weak_profiles.get(profile))
         blocked = bool(
             weak_control
             and (
-                str(weak_control.get("action") or "").strip().lower() == "quarantine_new_entries"
+                str(weak_control.get("action") or "").strip().lower()
+                == "quarantine_new_entries"
                 or _safe_int(weak_control.get("new_entry_cap"), 1) <= 0
             )
         )
@@ -1991,7 +2781,11 @@ def _sleeve_strategy_profitability_scaling_contract(
                 blocked=blocked,
                 block_reason="weak_sleeve_profitability_quarantine" if blocked else "",
                 objective_class=objective,
-                regime_assessment=_as_dict(aligned_strategy.get("regime_assessment")) if aligned_strategy else {},
+                regime_assessment=(
+                    _as_dict(aligned_strategy.get("regime_assessment"))
+                    if aligned_strategy
+                    else {}
+                ),
                 global_entry_cap=global_entry_cap,
             ),
         }
@@ -2003,8 +2797,13 @@ def _sleeve_strategy_profitability_scaling_contract(
         if not profile or not strategy_id:
             continue
         strategy_key = strategy_id.lower()
-        bot_id = strategy_key.split("::", 1)[1] if "::" in strategy_key else strategy_key
-        blocked = (profile, strategy_key) in losing_pairs or (profile, bot_id) in losing_pairs
+        bot_id = (
+            strategy_key.split("::", 1)[1] if "::" in strategy_key else strategy_key
+        )
+        blocked = (profile, strategy_key) in losing_pairs or (
+            profile,
+            bot_id,
+        ) in losing_pairs
         metrics = _scaling_evidence_metrics(
             _as_dict(raw.get("post_cost_expectancy")),
             sample_count=_safe_int(raw.get("sample_count"), 0),
@@ -2035,12 +2834,19 @@ def _sleeve_strategy_profitability_scaling_contract(
 
     all_controls = [*profile_controls.values(), *strategy_scaling_controls.values()]
     tier_counts = Counter(str(row.get("tier") or "unknown") for row in all_controls)
-    above_baseline = [row for row in all_controls if bool(row.get("above_baseline_scale_ready", False))]
-    blocked_count = sum(1 for row in all_controls if bool(row.get("block_new_entries", False)))
+    above_baseline = [
+        row
+        for row in all_controls
+        if bool(row.get("above_baseline_scale_ready", False))
+    ]
+    blocked_count = sum(
+        1 for row in all_controls if bool(row.get("block_new_entries", False))
+    )
     probation_count = sum(
         1
         for row in all_controls
-        if str(row.get("tier") or "") in {
+        if str(row.get("tier") or "")
+        in {
             "paper_probation",
             "confidence_building",
             "independent_evidence_building",
@@ -2054,7 +2860,9 @@ def _sleeve_strategy_profitability_scaling_contract(
         "live_execution_allowed": False,
         "candidate_binding": {
             "candidate_id": str(attribution.get("candidate_id") or ""),
-            "candidate_generation": _safe_int(attribution.get("candidate_generation"), 0),
+            "candidate_generation": _safe_int(
+                attribution.get("candidate_generation"), 0
+            ),
             "candidate_binding_valid": candidate_binding_valid,
             "candidate_binding_mismatch_rows_excluded": _safe_int(
                 attribution.get("candidate_binding_mismatch_rows_excluded"),
@@ -2066,10 +2874,14 @@ def _sleeve_strategy_profitability_scaling_contract(
         "keep_sells_and_reduce_only_paths_open": True,
         "fail_closed_on_missing_or_mismatched_candidate_evidence": True,
         "global_entry_size_cap_norm": round(global_entry_cap, 6),
-        "default_unproven_entry_size_multiplier_norm": round(
-            min(SLEEVE_SCALING_PROBATION_MULTIPLIER, global_entry_cap),
-            6,
-        ) if source_ready and candidate_binding_valid else 0.0,
+        "default_unproven_entry_size_multiplier_norm": (
+            round(
+                min(SLEEVE_SCALING_PROBATION_MULTIPLIER, global_entry_cap),
+                6,
+            )
+            if source_ready and candidate_binding_valid
+            else 0.0
+        ),
         "maximum_above_baseline_entry_size_multiplier_norm": SLEEVE_SCALING_MAX_ENTRY_MULTIPLIER,
         "tier_thresholds": {
             "minimum_samples": SLEEVE_SCALING_MIN_SAMPLES,
@@ -2109,9 +2921,21 @@ def _sleeve_strategy_profitability_scaling_contract(
         "scale_up_blockers": ordered_unique(
             [
                 "candidate_binding_not_valid" if not candidate_binding_valid else "",
-                "paper_performance_source_not_fresh_and_stable" if not source_ready else "",
-                "no_candidate_bound_control_has_cleared_above_baseline_thresholds" if not above_baseline else "",
-                "paper_debt_recovery_global_entry_cap_active" if global_entry_cap < 1.0 else "",
+                (
+                    "paper_performance_source_not_fresh_and_stable"
+                    if not source_ready
+                    else ""
+                ),
+                (
+                    "no_candidate_bound_control_has_cleared_above_baseline_thresholds"
+                    if not above_baseline
+                    else ""
+                ),
+                (
+                    "paper_debt_recovery_global_entry_cap_active"
+                    if global_entry_cap < 1.0
+                    else ""
+                ),
             ]
         ),
         "hard_limits": {
@@ -2145,9 +2969,13 @@ def _financial_grade_lift_contract(
     net_to_a = max(0.0 - float(net_sum), 0.0)
     a_plus_gaps = {
         "net_pnl_gap": round(max(FINANCIAL_APLUS_MIN_NET_PNL - float(net_sum), 0.0), 6),
-        "realized_pnl_gap": round(max(FINANCIAL_APLUS_MIN_REALIZED_PNL - float(realized_sum), 0.0), 6),
+        "realized_pnl_gap": round(
+            max(FINANCIAL_APLUS_MIN_REALIZED_PNL - float(realized_sum), 0.0), 6
+        ),
         "unrealized_drag_to_clear": round(max(-float(unrealized_sum), 0.0), 6),
-        "change_vs_previous_day_gap": round(max(FINANCIAL_APLUS_MIN_CHANGE_PNL - float(change_vs_previous_day), 0.0), 6),
+        "change_vs_previous_day_gap": round(
+            max(FINANCIAL_APLUS_MIN_CHANGE_PNL - float(change_vs_previous_day), 0.0), 6
+        ),
         "execution_gap": max(FINANCIAL_APLUS_MIN_EXECUTIONS - int(executions), 0),
     }
     if current_grade in {"D", "C", "B"}:
@@ -2155,7 +2983,11 @@ def _financial_grade_lift_contract(
         target_next_grade_gap = net_to_a
     else:
         target_next_grade = "A+"
-        target_next_grade_gap = max(a_plus_gaps["net_pnl_gap"], a_plus_gaps["realized_pnl_gap"], a_plus_gaps["unrealized_drag_to_clear"])
+        target_next_grade_gap = max(
+            a_plus_gaps["net_pnl_gap"],
+            a_plus_gaps["realized_pnl_gap"],
+            a_plus_gaps["unrealized_drag_to_clear"],
+        )
 
     harvest_candidates: list[dict[str, Any]] = []
     drag_targets: list[dict[str, Any]] = []
@@ -2169,9 +3001,19 @@ def _financial_grade_lift_contract(
         realized = _safe_float(row.get("ending_realized_pnl_total"), 0.0)
         unrealized = _safe_float(row.get("ending_unrealized_pnl_total"), 0.0)
         executions_row = _safe_int(row.get("executions"), 0)
-        harvest_control = profit_harvest_controls.get(profile) if isinstance(profit_harvest_controls.get(profile), dict) else {}
-        control = active_profile_controls.get(profile) if isinstance(active_profile_controls.get(profile), dict) else {}
-        trim_fraction = _safe_float(harvest_control.get("recommended_trim_fraction_norm"), 0.24)
+        harvest_control = (
+            profit_harvest_controls.get(profile)
+            if isinstance(profit_harvest_controls.get(profile), dict)
+            else {}
+        )
+        control = (
+            active_profile_controls.get(profile)
+            if isinstance(active_profile_controls.get(profile), dict)
+            else {}
+        )
+        trim_fraction = _safe_float(
+            harvest_control.get("recommended_trim_fraction_norm"), 0.24
+        )
         harvestable = max(unrealized, 0.0) * _clamp(trim_fraction, 0.05, 0.65)
         if net > 0.0 or unrealized > 0.0:
             harvest_candidates.append(
@@ -2183,7 +3025,9 @@ def _financial_grade_lift_contract(
                     "net_pnl_total": round(net, 6),
                     "realized_pnl_total": round(realized, 6),
                     "unrealized_pnl_total": round(unrealized, 6),
-                    "recommended_trim_fraction_norm": round(_clamp(trim_fraction, 0.05, 0.65), 6),
+                    "recommended_trim_fraction_norm": round(
+                        _clamp(trim_fraction, 0.05, 0.65), 6
+                    ),
                     "estimated_realization_candidate": round(harvestable, 6),
                     "runner_protection_required": True,
                     "paper_only": True,
@@ -2199,10 +3043,22 @@ def _financial_grade_lift_contract(
                     "net_pnl_total": round(net, 6),
                     "unrealized_pnl_total": round(unrealized, 6),
                     "break_even_recovery_needed": round(max(-net, 0.0), 6),
-                    "control_grade": str(control.get("control_posture_grade") or _as_dict(control.get("a_plus_plus_strengthening")).get("control_grade") or ""),
+                    "control_grade": str(
+                        control.get("control_posture_grade")
+                        or _as_dict(control.get("a_plus_plus_strengthening")).get(
+                            "control_grade"
+                        )
+                        or ""
+                    ),
                     "action": str(control.get("action") or ""),
-                    "new_entry_cap": _safe_int(control.get("new_entry_cap"), 0 if control else 1),
-                    "repair_route": "keep_quarantined_and_collect_profitable_refreshes" if control else "monitor_until_material",
+                    "new_entry_cap": _safe_int(
+                        control.get("new_entry_cap"), 0 if control else 1
+                    ),
+                    "repair_route": (
+                        "keep_quarantined_and_collect_profitable_refreshes"
+                        if control
+                        else "monitor_until_material"
+                    ),
                 }
             )
 
@@ -2213,9 +3069,21 @@ def _financial_grade_lift_contract(
         ),
         reverse=True,
     )
-    drag_targets.sort(key=lambda row: (_safe_float(row.get("net_pnl_total"), 0.0), str(row.get("profile") or "")))
-    estimated_harvest_capacity = sum(_safe_float(row.get("estimated_realization_candidate"), 0.0) for row in harvest_candidates)
-    strategy_pair_drag = sum(max(-_safe_float(row.get("ending_net_pnl_total"), 0.0), 0.0) for row in strategy_controls if isinstance(row, dict))
+    drag_targets.sort(
+        key=lambda row: (
+            _safe_float(row.get("net_pnl_total"), 0.0),
+            str(row.get("profile") or ""),
+        )
+    )
+    estimated_harvest_capacity = sum(
+        _safe_float(row.get("estimated_realization_candidate"), 0.0)
+        for row in harvest_candidates
+    )
+    strategy_pair_drag = sum(
+        max(-_safe_float(row.get("ending_net_pnl_total"), 0.0), 0.0)
+        for row in strategy_controls
+        if isinstance(row, dict)
+    )
     weak_control_ready = bool(weak_strengthening_contract.get("control_ready", False))
     return {
         "active": current_grade not in {"A+", "A+"},
@@ -2276,7 +3144,9 @@ def _raw_profitability_a_recovery_contract(
     cause_counter: Counter[str],
 ) -> dict[str, Any]:
     raw_grade = str(raw_profitability_grade or financial_grade or "").strip().upper()
-    active = raw_grade not in {"A", "A+"} or float(net_sum) < RAW_PROFITABILITY_A_MIN_NET_PNL
+    active = (
+        raw_grade not in {"A", "A+"} or float(net_sum) < RAW_PROFITABILITY_A_MIN_NET_PNL
+    )
     gap_to_a = max(RAW_PROFITABILITY_A_MIN_NET_PNL - float(net_sum), 0.0)
     weak_profiles = sorted(str(profile) for profile in active_profile_controls.keys())
     return {
@@ -2343,18 +3213,39 @@ def _raw_d_recovery_ladder_contract(
 ) -> dict[str, Any]:
     grade = str(raw_grade or "").strip().upper()
     gap = max(float(raw_gap), 0.0)
-    active = bool(grade in {"D", "F"} or (gap >= RAW_D_RECOVERY_SEVERE_GAP_PNL and grade not in {"A", "A+"}))
+    active = bool(
+        grade in {"D", "F"}
+        or (gap >= RAW_D_RECOVERY_SEVERE_GAP_PNL and grade not in {"A", "A+"})
+    )
     pressure = _clamp(gap / max(RAW_D_RECOVERY_PRESSURE_GAP_PNL, 1.0))
-    trim_boost = _clamp(RAW_D_RECOVERY_TRIM_BOOST_NORM * max(pressure, 0.50), 0.06, RAW_D_RECOVERY_TRIM_BOOST_NORM)
+    trim_boost = _clamp(
+        RAW_D_RECOVERY_TRIM_BOOST_NORM * max(pressure, 0.50),
+        0.06,
+        RAW_D_RECOVERY_TRIM_BOOST_NORM,
+    )
 
-    position_rows = [row for row in _as_list(position_ledger.get("positions")) if isinstance(row, dict)]
+    position_rows = [
+        row
+        for row in _as_list(position_ledger.get("positions"))
+        if isinstance(row, dict)
+    ]
     harvestable_rows = sorted(
-        [row for row in position_rows if bool(row.get("harvestable", False)) and _safe_float(row.get("unrealized_pnl"), 0.0) > 0.0],
+        [
+            row
+            for row in position_rows
+            if bool(row.get("harvestable", False))
+            and _safe_float(row.get("unrealized_pnl"), 0.0) > 0.0
+        ],
         key=lambda row: _safe_float(row.get("unrealized_pnl"), 0.0),
         reverse=True,
     )
     drag_rows = sorted(
-        [row for row in position_rows if bool(row.get("drag_reduction_candidate", False)) or _safe_float(row.get("unrealized_pnl"), 0.0) < 0.0],
+        [
+            row
+            for row in position_rows
+            if bool(row.get("drag_reduction_candidate", False))
+            or _safe_float(row.get("unrealized_pnl"), 0.0) < 0.0
+        ],
         key=lambda row: _safe_float(row.get("unrealized_pnl"), 0.0),
     )
 
@@ -2362,8 +3253,12 @@ def _raw_d_recovery_ladder_contract(
     estimated_today_capacity = 0.0
     for row in harvestable_rows[:16]:
         unrealized = max(_safe_float(row.get("unrealized_pnl"), 0.0), 0.0)
-        base_trim = _clamp(_safe_float(row.get("recommended_trim_fraction_norm"), 0.20), 0.03, 0.65)
-        recovery_trim = _clamp(base_trim + trim_boost, 0.08, RAW_D_RECOVERY_MAX_TRIM_FRACTION)
+        base_trim = _clamp(
+            _safe_float(row.get("recommended_trim_fraction_norm"), 0.20), 0.03, 0.65
+        )
+        recovery_trim = _clamp(
+            base_trim + trim_boost, 0.08, RAW_D_RECOVERY_MAX_TRIM_FRACTION
+        )
         target_pnl = unrealized * recovery_trim
         estimated_today_capacity += target_pnl
         harvest_ladder.append(
@@ -2376,7 +3271,9 @@ def _raw_d_recovery_ladder_contract(
                 "raw_d_recovery_trim_fraction_norm": round(recovery_trim, 6),
                 "estimated_realization_target": round(target_pnl, 6),
                 "action": "emit_paper_reduce_only_profit_trim_when_exit_quality_clears",
-                "runner_protection_floor_norm": row.get("runner_protection_floor_norm", 0.74),
+                "runner_protection_floor_norm": row.get(
+                    "runner_protection_floor_norm", 0.74
+                ),
                 "paper_only": True,
                 "live_execution_allowed": False,
             }
@@ -2415,9 +3312,15 @@ def _raw_d_recovery_ladder_contract(
                     "profile": profile,
                     "symbol": "",
                     "strategy": "",
-                    "net_pnl_total": round(_safe_float(row.get("net_pnl_total"), 0.0), 6),
-                    "unrealized_pnl": round(_safe_float(row.get("unrealized_pnl_total"), 0.0), 6),
-                    "break_even_recovery_needed": round(_safe_float(row.get("break_even_recovery_needed"), 0.0), 6),
+                    "net_pnl_total": round(
+                        _safe_float(row.get("net_pnl_total"), 0.0), 6
+                    ),
+                    "unrealized_pnl": round(
+                        _safe_float(row.get("unrealized_pnl_total"), 0.0), 6
+                    ),
+                    "break_even_recovery_needed": round(
+                        _safe_float(row.get("break_even_recovery_needed"), 0.0), 6
+                    ),
                     "action": "keep_profile_reduce_only_until_position_rows_identify_precise_exit",
                     "drag_reduction_mode": "reduce_only",
                     "reduce_on_next_valid_tick": True,
@@ -2451,7 +3354,9 @@ def _raw_d_recovery_ladder_contract(
         "recovery_pressure_norm": round(pressure, 6),
         "trim_boost_norm": round(trim_boost, 6),
         "estimated_today_harvest_capacity": round(estimated_today_capacity, 6),
-        "remaining_daily_gap_after_visible_harvest": round(max(float(daily_gap) - estimated_today_capacity, 0.0), 6),
+        "remaining_daily_gap_after_visible_harvest": round(
+            max(float(daily_gap) - estimated_today_capacity, 0.0), 6
+        ),
         "harvestable_position_count": len(harvestable_rows),
         "drag_position_count": len(drag_rows),
         "drag_reduction_target_count": len(drag_ladder),
@@ -2481,7 +3386,7 @@ def _raw_d_recovery_ladder_contract(
             "do not widen paper size while raw net PnL gap is positive",
         ],
         "stop_condition": "raw paper net_pnl_total is non-negative and raw_profitability_grade reaches A",
-}
+    }
 
 
 def _raw_recovery_loss_cause_filter_contract(
@@ -2499,31 +3404,45 @@ def _raw_recovery_loss_cause_filter_contract(
         if cause_name == "conflict:low":
             action = "block_or_dampen_new_buy_when_overlap_or_conflict_fails"
             gate_name = "portfolio_conflict_clearance"
-            threshold = gate.get("max_overlap_pressure_norm", RAW_A_RECOVERY_MAX_OVERLAP_PRESSURE)
+            threshold = gate.get(
+                "max_overlap_pressure_norm", RAW_A_RECOVERY_MAX_OVERLAP_PRESSURE
+            )
         elif cause_name == "event_proximity:low":
             action = "block_event_sensitive_buy_without_event_catalyst_confirmation"
             gate_name = "event_catalyst_confirmation"
-            threshold = gate.get("min_cross_asset_confirmation_norm", RAW_A_RECOVERY_CONFIRMATION_FLOOR)
+            threshold = gate.get(
+                "min_cross_asset_confirmation_norm", RAW_A_RECOVERY_CONFIRMATION_FLOOR
+            )
         elif cause_name.startswith("fill_quality:"):
             action = "block_new_buy_without_modeled_fill_quality"
             gate_name = "modeled_fill_quality"
-            threshold = gate.get("min_execution_fitness_norm", RAW_A_RECOVERY_EXECUTION_FLOOR)
+            threshold = gate.get(
+                "min_execution_fitness_norm", RAW_A_RECOVERY_EXECUTION_FLOOR
+            )
         elif cause_name.startswith("source_quality:"):
             action = "block_new_buy_without_verified_source_quality"
             gate_name = "source_quality"
-            threshold = gate.get("min_quality_gate_norm", RAW_A_RECOVERY_QUALITY_GATE_FLOOR)
+            threshold = gate.get(
+                "min_quality_gate_norm", RAW_A_RECOVERY_QUALITY_GATE_FLOOR
+            )
         elif cause_name.startswith("spread_regime:"):
             action = "block_new_buy_without_known_spread_or_execution_model"
             gate_name = "spread_quality"
-            threshold = gate.get("min_execution_fitness_norm", RAW_A_RECOVERY_EXECUTION_FLOOR)
+            threshold = gate.get(
+                "min_execution_fitness_norm", RAW_A_RECOVERY_EXECUTION_FLOOR
+            )
         elif cause_name.startswith("session:"):
             action = "block_new_buy_outside_approved_session_model"
             gate_name = "session_tradeability"
-            threshold = gate.get("min_tradeability_norm", RAW_A_RECOVERY_TRADEABILITY_FLOOR)
+            threshold = gate.get(
+                "min_tradeability_norm", RAW_A_RECOVERY_TRADEABILITY_FLOOR
+            )
         else:
             action = "route_to_loss_cause_training_feedback_before_widening"
             gate_name = family
-            threshold = gate.get("min_quality_gate_norm", RAW_A_RECOVERY_QUALITY_GATE_FLOOR)
+            threshold = gate.get(
+                "min_quality_gate_norm", RAW_A_RECOVERY_QUALITY_GATE_FLOOR
+            )
         rows.append(
             {
                 "cause": cause_name,
@@ -2579,7 +3498,9 @@ def _raw_profitability_six_point_recovery_contract(
         )
     )
     no_forced_trades_ready = bool(
-        _as_dict(raw_d_recovery_ladder_contract.get("runtime_enforcement")).get("do_not_force_trades", False)
+        _as_dict(raw_d_recovery_ladder_contract.get("runtime_enforcement")).get(
+            "do_not_force_trades", False
+        )
         and not bool(
             _as_dict(raw_d_recovery_ladder_contract.get("runtime_enforcement")).get(
                 "force_profit_harvest_on_raw_d",
@@ -2601,7 +3522,9 @@ def _raw_profitability_six_point_recovery_contract(
             "ready": bool((not active) or sell_reduce_paths_open),
             "reduce_only": True,
             "sell_paths_open": bool(sell_reduce_paths_open),
-            "weak_profiles_reduce_only_eligible": [row.get("profile") for row in weak_profile_rows[:24]],
+            "weak_profiles_reduce_only_eligible": [
+                row.get("profile") for row in weak_profile_rows[:24]
+            ],
         },
         {
             "id": "3_clean_profile_buys_require_all_gates",
@@ -2611,15 +3534,24 @@ def _raw_profitability_six_point_recovery_contract(
         },
         {
             "id": "4_top_loss_causes_get_specific_filters",
-            "ready": bool((not active) or training_feedback_contract.get("feed_hard_negative_training_labels", False)),
+            "ready": bool(
+                (not active)
+                or training_feedback_contract.get(
+                    "feed_hard_negative_training_labels", False
+                )
+            ),
             "loss_cause_filter_contract": loss_cause_filters,
             "strategy_pair_count": len(strategy_pair_rows),
         },
         {
             "id": "5_realized_conversion_uses_partial_reduce_only_trims",
             "ready": partial_trim_ready,
-            "harvestable_position_count": raw_d_recovery_ladder_contract.get("harvestable_position_count", 0),
-            "drag_reduction_target_count": raw_d_recovery_ladder_contract.get("drag_reduction_target_count", 0),
+            "harvestable_position_count": raw_d_recovery_ladder_contract.get(
+                "harvestable_position_count", 0
+            ),
+            "drag_reduction_target_count": raw_d_recovery_ladder_contract.get(
+                "drag_reduction_target_count", 0
+            ),
             "runner_protection_required": True,
             "partial_trim_only": True,
             "reduce_only": True,
@@ -2633,7 +3565,9 @@ def _raw_profitability_six_point_recovery_contract(
             "trade_only_when_evidence_clears": True,
         },
     ]
-    ready = bool((not active) or all(bool(row.get("ready", False)) for row in rule_rows))
+    ready = bool(
+        (not active) or all(bool(row.get("ready", False)) for row in rule_rows)
+    )
     return {
         "active": active,
         "mode": "raw_profitability_six_point_recovery_v1",
@@ -2727,9 +3661,20 @@ def _raw_profitability_improvement_contract(
             continue
         mode = str(row.get("mode") or row.get("action") or "").strip()
         new_entry_cap = _safe_int(row.get("new_entry_cap"), 0)
-        size_multiplier = _safe_float(row.get("position_size_multiplier_norm"), _safe_float(row.get("position_size_multiplier"), 0.0))
-        protected = bool(row.get("protected", False) or row.get("a_plus_plus_strengthened", False) or mode == "paper_quarantine")
-        ready = bool(protected and new_entry_cap == 0 and size_multiplier <= PROFILE_HARD_QUARANTINE_SIZE_MULTIPLIER)
+        size_multiplier = _safe_float(
+            row.get("position_size_multiplier_norm"),
+            _safe_float(row.get("position_size_multiplier"), 0.0),
+        )
+        protected = bool(
+            row.get("protected", False)
+            or row.get("a_plus_plus_strengthened", False)
+            or mode == "paper_quarantine"
+        )
+        ready = bool(
+            protected
+            and new_entry_cap == 0
+            and size_multiplier <= PROFILE_HARD_QUARANTINE_SIZE_MULTIPLIER
+        )
         strategy_quarantine_ready = strategy_quarantine_ready and ready
         strategy_pair_rows.append(
             {
@@ -2749,7 +3694,9 @@ def _raw_profitability_improvement_contract(
         "enforced": bool(
             not active
             or (
-                runtime_enforcement.get("raise_clean_profile_buy_gate_while_raw_below_a")
+                runtime_enforcement.get(
+                    "raise_clean_profile_buy_gate_while_raw_below_a"
+                )
                 and runtime_enforcement.get("block_when_source_or_fill_unknown")
             )
         ),
@@ -2768,11 +3715,17 @@ def _raw_profitability_improvement_contract(
     }
 
     position_count = _safe_int(position_ledger.get("position_count"), 0)
-    harvestable_position_count = _safe_int(position_ledger.get("harvestable_position_count"), position_count)
+    harvestable_position_count = _safe_int(
+        position_ledger.get("harvestable_position_count"), position_count
+    )
     drag_position_count = _safe_int(position_ledger.get("drag_position_count"), 0)
     source_file_count = _safe_int(position_ledger.get("source_file_count"), 0)
     records_scanned = _safe_int(position_ledger.get("records_scanned"), 0)
-    telemetry_gap_active = bool(active and position_count == 0 and (abs(float(unrealized_sum)) > 0.0 or bool(active_profile_controls)))
+    telemetry_gap_active = bool(
+        active
+        and position_count == 0
+        and (abs(float(unrealized_sum)) > 0.0 or bool(active_profile_controls))
+    )
     position_telemetry_contract = {
         "active": True,
         "mode": "paper_position_telemetry_required_for_raw_recovery",
@@ -2796,7 +3749,10 @@ def _raw_profitability_improvement_contract(
         "fallback_when_position_rows_missing": "keep weak sleeves zero-entry, allow reduce-only/sells, and collect enriched paper fill telemetry",
     }
 
-    top_loss_causes = [{"cause": cause, "count": int(count)} for cause, count in cause_counter.most_common(10)]
+    top_loss_causes = [
+        {"cause": cause, "count": int(count)}
+        for cause, count in cause_counter.most_common(10)
+    ]
     training_feedback_contract = {
         "active": active,
         "mode": "raw_recovery_loss_cause_training_feedback",
@@ -2829,7 +3785,9 @@ def _raw_profitability_improvement_contract(
                 {
                     "profile": str(profile),
                     "net_pnl_total": round(net, 6),
-                    "unrealized_pnl_total": round(_safe_float(control.get("ending_unrealized_pnl_total"), 0.0), 6),
+                    "unrealized_pnl_total": round(
+                        _safe_float(control.get("ending_unrealized_pnl_total"), 0.0), 6
+                    ),
                     "break_even_recovery_needed": round(max(-net, 0.0), 6),
                 }
             )
@@ -2837,7 +3795,9 @@ def _raw_profitability_improvement_contract(
         [row for row in drag_targets if isinstance(row, dict)],
         key=lambda row: _safe_float(row.get("net_pnl_total"), 0.0),
     )
-    daily_gap = round(raw_gap / RAW_RECOVERY_DEFAULT_SOAK_DAYS, 6) if raw_gap > 0.0 else 0.0
+    daily_gap = (
+        round(raw_gap / RAW_RECOVERY_DEFAULT_SOAK_DAYS, 6) if raw_gap > 0.0 else 0.0
+    )
     burn_down_contract = {
         "active": active,
         "mode": "raw_profitability_burn_down_guard",
@@ -2859,7 +3819,9 @@ def _raw_profitability_improvement_contract(
         "stop_condition": "raw_profitability_grade is A or better and net_pnl_total >= 0",
     }
 
-    sell_reduce_paths_open = bool(runtime_enforcement.get("keep_sells_and_reduce_only_paths_open", False))
+    sell_reduce_paths_open = bool(
+        runtime_enforcement.get("keep_sells_and_reduce_only_paths_open", False)
+    )
     raw_d_recovery_ladder_contract = _raw_d_recovery_ladder_contract(
         raw_grade=raw_grade,
         raw_gap=raw_gap,
@@ -2870,7 +3832,9 @@ def _raw_profitability_improvement_contract(
         sell_reduce_paths_open=sell_reduce_paths_open,
         position_telemetry_contract=position_telemetry_contract,
     )
-    raw_d_recovery_ready = bool(raw_d_recovery_ladder_contract.get("contract_ready", False))
+    raw_d_recovery_ready = bool(
+        raw_d_recovery_ladder_contract.get("contract_ready", False)
+    )
     six_point_recovery_contract = _raw_profitability_six_point_recovery_contract(
         active=active,
         raw_grade=raw_grade,
@@ -2884,7 +3848,9 @@ def _raw_profitability_improvement_contract(
         strategy_pair_rows=strategy_pair_rows,
         cause_counter=cause_counter,
     )
-    six_point_recovery_ready = bool(six_point_recovery_contract.get("control_ready", False))
+    six_point_recovery_ready = bool(
+        six_point_recovery_contract.get("control_ready", False)
+    )
     control_ready = bool(
         (not active)
         or (
@@ -2892,7 +3858,11 @@ def _raw_profitability_improvement_contract(
             and sell_reduce_paths_open
             and bool(clean_gate_contract.get("enforced", False))
             and bool(position_telemetry_contract.get("contract_ready", False))
-            and bool(training_feedback_contract.get("feed_hard_negative_training_labels", False))
+            and bool(
+                training_feedback_contract.get(
+                    "feed_hard_negative_training_labels", False
+                )
+            )
             and strategy_quarantine_ready
             and bool(burn_down_contract.get("active", False))
             and raw_d_recovery_ready
@@ -2927,12 +3897,20 @@ def _raw_profitability_improvement_contract(
             },
             {
                 "id": "4_position_level_paper_telemetry",
-                "ready": bool(position_telemetry_contract.get("required_on_every_paper_fill", False)),
+                "ready": bool(
+                    position_telemetry_contract.get(
+                        "required_on_every_paper_fill", False
+                    )
+                ),
                 "summary": "paper fills must carry symbol, strategy, quantity, mark, PnL, spread, fill, and source fields",
             },
             {
                 "id": "5_loss_cause_training_feedback",
-                "ready": bool(training_feedback_contract.get("feed_hard_negative_training_labels", False)),
+                "ready": bool(
+                    training_feedback_contract.get(
+                        "feed_hard_negative_training_labels", False
+                    )
+                ),
                 "summary": "loss causes feed hard-negative training and profitable refreshes feed positive recovery labels",
             },
             {
@@ -2942,7 +3920,11 @@ def _raw_profitability_improvement_contract(
             },
             {
                 "id": "7_raw_recovery_burn_down_guard",
-                "ready": (bool(burn_down_contract.get("active", False)) and raw_d_recovery_ready) or not active,
+                "ready": (
+                    bool(burn_down_contract.get("active", False))
+                    and raw_d_recovery_ready
+                )
+                or not active,
                 "summary": "raw gap, daily required improvement, top drag profiles, D recovery ladder, and refresh requirements are explicit",
             },
         ],
@@ -2994,13 +3976,19 @@ def _controlled_profitability_grade_contract(
     financial_lift_contract: dict[str, Any],
 ) -> dict[str, Any]:
     raw_financial = str(financial_grade or "").strip().upper()
-    raw_profitability = str(raw_profitability_grade or raw_financial or "").strip().upper()
+    raw_profitability = (
+        str(raw_profitability_grade or raw_financial or "").strip().upper()
+    )
     control_grade = str(operational_control_grade or "").strip().upper()
     weak_control_ready = bool(weak_strengthening_contract.get("control_ready", False))
     weak_contract_active = bool(weak_strengthening_contract.get("active", False))
-    lift_control_grade = str(financial_lift_contract.get("control_posture_grade") or "").strip().upper()
+    lift_control_grade = (
+        str(financial_lift_contract.get("control_posture_grade") or "").strip().upper()
+    )
     lift_active = bool(financial_lift_contract.get("active", False))
-    raw_financial_can_raise = bool(financial_lift_contract.get("can_raise_reported_financial_grade_now", False))
+    raw_financial_can_raise = bool(
+        financial_lift_contract.get("can_raise_reported_financial_grade_now", False)
+    )
     raw_evidence_gradeable = raw_financial in {"D", "C", "B", "A", "A+"}
     control_ready = (
         raw_evidence_gradeable
@@ -3016,7 +4004,12 @@ def _controlled_profitability_grade_contract(
     elif control_ready:
         controlled_financial = "A+"
         controlled_profitability = "A+"
-    elif raw_evidence_gradeable and control_grade == "A+" and weak_control_ready and weak_contract_active:
+    elif (
+        raw_evidence_gradeable
+        and control_grade == "A+"
+        and weak_control_ready
+        and weak_contract_active
+    ):
         controlled_financial = "A+"
         controlled_profitability = "A+"
     else:
@@ -3025,12 +4018,16 @@ def _controlled_profitability_grade_contract(
 
     display_financial = (
         f"{controlled_financial} controlled / {raw_financial} raw"
-        if controlled_financial and raw_financial and controlled_financial != raw_financial
+        if controlled_financial
+        and raw_financial
+        and controlled_financial != raw_financial
         else raw_financial
     )
     display_profitability = (
         f"{controlled_profitability} controlled / {raw_profitability} raw"
-        if controlled_profitability and raw_profitability and controlled_profitability != raw_profitability
+        if controlled_profitability
+        and raw_profitability
+        and controlled_profitability != raw_profitability
         else raw_profitability
     )
     return {
@@ -3045,7 +4042,8 @@ def _controlled_profitability_grade_contract(
         "reported_profitability_grade": controlled_profitability or raw_profitability,
         "reported_profitability_grade_basis": (
             "controlled_recovery_posture"
-            if controlled_profitability and controlled_profitability != raw_profitability
+            if controlled_profitability
+            and controlled_profitability != raw_profitability
             else "raw_paper_outcome"
         ),
         "financial_grade_basis": "raw_paper_pnl_outcome",
@@ -3062,8 +4060,12 @@ def _controlled_profitability_grade_contract(
             "financial_grade_reaches_a_plus_when": (
                 "net, realized, unrealized drag, change-vs-previous-day, and execution thresholds all clear"
             ),
-            "current_gap_to_next_grade": _as_dict(financial_lift_contract.get("gap_to_next_grade")),
-            "current_gap_to_a_plus": _as_dict(financial_lift_contract.get("gap_to_a_plus")),
+            "current_gap_to_next_grade": _as_dict(
+                financial_lift_contract.get("gap_to_next_grade")
+            ),
+            "current_gap_to_a_plus": _as_dict(
+                financial_lift_contract.get("gap_to_a_plus")
+            ),
         },
         "runtime_enforcement": {
             "paper_only": True,
@@ -3094,7 +4096,10 @@ def _profile_materiality_threshold(net_sum: float) -> float:
     return round(
         min(
             RAW_OP_PROFILE_MATERIALITY_CAP,
-            max(RAW_OP_PROFILE_MATERIALITY_FLOOR, abs(float(net_sum)) * RAW_OP_PROFILE_MATERIALITY_SHARE),
+            max(
+                RAW_OP_PROFILE_MATERIALITY_FLOOR,
+                abs(float(net_sum)) * RAW_OP_PROFILE_MATERIALITY_SHARE,
+            ),
         ),
         6,
     )
@@ -3104,7 +4109,10 @@ def _strategy_materiality_threshold(net_sum: float) -> float:
     return round(
         min(
             RAW_OP_STRATEGY_MATERIALITY_CAP,
-            max(RAW_OP_STRATEGY_MATERIALITY_FLOOR, abs(float(net_sum)) * RAW_OP_STRATEGY_MATERIALITY_SHARE),
+            max(
+                RAW_OP_STRATEGY_MATERIALITY_FLOOR,
+                abs(float(net_sum)) * RAW_OP_STRATEGY_MATERIALITY_SHARE,
+            ),
         ),
         6,
     )
@@ -3189,8 +4197,16 @@ def _profile_loss_contained(control: dict[str, Any]) -> bool:
     if _profile_loss_protected(control):
         return True
     action = str(control.get("action") or "").strip().lower()
-    runtime_policy = control.get("runtime_policy") if isinstance(control.get("runtime_policy"), dict) else {}
-    loser = control.get("loser_quarantine") if isinstance(control.get("loser_quarantine"), dict) else {}
+    runtime_policy = (
+        control.get("runtime_policy")
+        if isinstance(control.get("runtime_policy"), dict)
+        else {}
+    )
+    loser = (
+        control.get("loser_quarantine")
+        if isinstance(control.get("loser_quarantine"), dict)
+        else {}
+    )
     return bool(
         action == "quarantine_new_entries"
         and _safe_int(control.get("new_entry_cap"), 1) == 0
@@ -3204,8 +4220,16 @@ def _profile_loss_contained(control: dict[str, Any]) -> bool:
 
 def _profile_loss_protected(control: dict[str, Any]) -> bool:
     action = str(control.get("action") or "").strip().lower()
-    runtime_policy = control.get("runtime_policy") if isinstance(control.get("runtime_policy"), dict) else {}
-    loser = control.get("loser_quarantine") if isinstance(control.get("loser_quarantine"), dict) else {}
+    runtime_policy = (
+        control.get("runtime_policy")
+        if isinstance(control.get("runtime_policy"), dict)
+        else {}
+    )
+    loser = (
+        control.get("loser_quarantine")
+        if isinstance(control.get("loser_quarantine"), dict)
+        else {}
+    )
     return bool(
         action == "quarantine_new_entries"
         and _safe_int(control.get("new_entry_cap"), 1) == 0
@@ -3222,7 +4246,11 @@ def _profile_loss_protected(control: dict[str, Any]) -> bool:
 def _strategy_loss_contained(row: dict[str, Any]) -> bool:
     if _strategy_loss_protected(row):
         return True
-    loser = (row.get("upgrade_contracts") or {}).get("loser_quarantine") if isinstance(row.get("upgrade_contracts"), dict) else {}
+    loser = (
+        (row.get("upgrade_contracts") or {}).get("loser_quarantine")
+        if isinstance(row.get("upgrade_contracts"), dict)
+        else {}
+    )
     return bool(
         str(row.get("mode") or "").strip().lower() == "paper_quarantine"
         and _safe_int(row.get("new_entry_cap"), 1) == 0
@@ -3235,7 +4263,11 @@ def _strategy_loss_contained(row: dict[str, Any]) -> bool:
 
 
 def _strategy_loss_protected(row: dict[str, Any]) -> bool:
-    loser = (row.get("upgrade_contracts") or {}).get("loser_quarantine") if isinstance(row.get("upgrade_contracts"), dict) else {}
+    loser = (
+        (row.get("upgrade_contracts") or {}).get("loser_quarantine")
+        if isinstance(row.get("upgrade_contracts"), dict)
+        else {}
+    )
     return bool(
         str(row.get("mode") or "").strip().lower() == "paper_quarantine"
         and _safe_int(row.get("new_entry_cap"), 1) == 0
@@ -3249,12 +4281,36 @@ def _strategy_loss_protected(row: dict[str, Any]) -> bool:
 
 
 def _profile_a_plus_plus_strengthened(control: dict[str, Any]) -> bool:
-    runtime_policy = control.get("runtime_policy") if isinstance(control.get("runtime_policy"), dict) else {}
-    sizing = control.get("dynamic_sizing") if isinstance(control.get("dynamic_sizing"), dict) else {}
-    loser = control.get("loser_quarantine") if isinstance(control.get("loser_quarantine"), dict) else {}
-    exit_control = control.get("exit_intelligence") if isinstance(control.get("exit_intelligence"), dict) else {}
-    confirmation = control.get("confirmation_bias_control") if isinstance(control.get("confirmation_bias_control"), dict) else {}
-    recurrence = control.get("weak_sleeve_recurrence_guard") if isinstance(control.get("weak_sleeve_recurrence_guard"), dict) else {}
+    runtime_policy = (
+        control.get("runtime_policy")
+        if isinstance(control.get("runtime_policy"), dict)
+        else {}
+    )
+    sizing = (
+        control.get("dynamic_sizing")
+        if isinstance(control.get("dynamic_sizing"), dict)
+        else {}
+    )
+    loser = (
+        control.get("loser_quarantine")
+        if isinstance(control.get("loser_quarantine"), dict)
+        else {}
+    )
+    exit_control = (
+        control.get("exit_intelligence")
+        if isinstance(control.get("exit_intelligence"), dict)
+        else {}
+    )
+    confirmation = (
+        control.get("confirmation_bias_control")
+        if isinstance(control.get("confirmation_bias_control"), dict)
+        else {}
+    )
+    recurrence = (
+        control.get("weak_sleeve_recurrence_guard")
+        if isinstance(control.get("weak_sleeve_recurrence_guard"), dict)
+        else {}
+    )
     return bool(
         _profile_loss_protected(control)
         and _safe_int(control.get("new_entry_cap"), 1) == 0
@@ -3263,25 +4319,50 @@ def _profile_a_plus_plus_strengthened(control: dict[str, Any]) -> bool:
         and bool(loser.get("block_new_entries", False))
         and str(exit_control.get("drag_reduction_mode") or "") == "reduce_only"
         and bool(exit_control.get("prefer_reduce_over_add", False))
-        and bool(runtime_policy.get("block_all_new_entries_until_clean_refresh", False) or runtime_policy.get("a_plus_lock_in", False))
-        and bool(confirmation.get("required_before_new_entry") or confirmation.get("required_evidence_channels"))
+        and bool(
+            runtime_policy.get("block_all_new_entries_until_clean_refresh", False)
+            or runtime_policy.get("a_plus_lock_in", False)
+        )
+        and bool(
+            confirmation.get("required_before_new_entry")
+            or confirmation.get("required_evidence_channels")
+        )
         and bool(recurrence.get("prevent_recurrence_ready", False))
         and bool(recurrence.get("reentry_locked_until_cleared", False))
     )
 
 
 def _strategy_a_plus_plus_strengthened(row: dict[str, Any]) -> bool:
-    contracts = row.get("upgrade_contracts") if isinstance(row.get("upgrade_contracts"), dict) else {}
-    loser = contracts.get("loser_quarantine") if isinstance(contracts.get("loser_quarantine"), dict) else {}
-    sizing = contracts.get("dynamic_sizing") if isinstance(contracts.get("dynamic_sizing"), dict) else {}
-    confirmation = row.get("confirmation_bias_control") if isinstance(row.get("confirmation_bias_control"), dict) else {}
+    contracts = (
+        row.get("upgrade_contracts")
+        if isinstance(row.get("upgrade_contracts"), dict)
+        else {}
+    )
+    loser = (
+        contracts.get("loser_quarantine")
+        if isinstance(contracts.get("loser_quarantine"), dict)
+        else {}
+    )
+    sizing = (
+        contracts.get("dynamic_sizing")
+        if isinstance(contracts.get("dynamic_sizing"), dict)
+        else {}
+    )
+    confirmation = (
+        row.get("confirmation_bias_control")
+        if isinstance(row.get("confirmation_bias_control"), dict)
+        else {}
+    )
     return bool(
         _strategy_loss_protected(row)
         and _safe_float(row.get("position_size_multiplier"), 1.0) == 0.0
         and _safe_float(sizing.get("max_new_entry_multiplier_norm"), 1.0) == 0.0
         and bool(row.get("block_new_entries", False))
         and bool(loser.get("paper_only_retest_required", False))
-        and bool(confirmation.get("required_before_new_entry") or confirmation.get("required_evidence_channels"))
+        and bool(
+            confirmation.get("required_before_new_entry")
+            or confirmation.get("required_evidence_channels")
+        )
     )
 
 
@@ -3289,7 +4370,11 @@ def _profile_requires_full_protection(control: dict[str, Any]) -> bool:
     grade = str(control.get("profit_grade") or "").strip().upper()
     drag = _safe_float(control.get("drag_score"), 0.0)
     net = _safe_float(control.get("ending_net_pnl_total"), 0.0)
-    return bool(grade in LOW_GRADE_VALUES or drag >= 0.75 or net <= -RAW_OP_PROFILE_MATERIALITY_FLOOR)
+    return bool(
+        grade in LOW_GRADE_VALUES
+        or drag >= 0.75
+        or net <= -RAW_OP_PROFILE_MATERIALITY_FLOOR
+    )
 
 
 def _raw_operational_containment_filter(
@@ -3305,7 +4390,9 @@ def _raw_operational_containment_filter(
             continue
         row = {
             "profile": str(profile),
-            "ending_net_pnl_total": _safe_float(control.get("ending_net_pnl_total"), 0.0),
+            "ending_net_pnl_total": _safe_float(
+                control.get("ending_net_pnl_total"), 0.0
+            ),
             "drag_score_norm": _safe_float(control.get("drag_score"), 0.0),
             "profit_grade": str(control.get("profit_grade") or ""),
             "action": str(control.get("action") or ""),
@@ -3344,10 +4431,14 @@ def _raw_operational_containment_filter(
         "base_grade_before_containment": str(base_grade or ""),
         "contained_grade": active_grade,
         "grade_basis": "materiality_adjusted_and_containment_qualified_raw_counts",
-        "gradeable_weak_profile_count_before_containment": len(gradeable_profile_controls),
+        "gradeable_weak_profile_count_before_containment": len(
+            gradeable_profile_controls
+        ),
         "active_weak_profile_count_after_containment": len(active_profiles),
         "contained_weak_profile_count": len(contained_profiles),
-        "gradeable_strategy_control_count_before_containment": len(gradeable_strategy_controls),
+        "gradeable_strategy_control_count_before_containment": len(
+            gradeable_strategy_controls
+        ),
         "active_strategy_control_count_after_containment": len(active_strategies),
         "contained_strategy_control_count": len(contained_strategies),
         "contained_profiles": contained_profiles,
@@ -3355,7 +4446,9 @@ def _raw_operational_containment_filter(
         "active_profiles": [
             {
                 "profile": str(profile),
-                "ending_net_pnl_total": _safe_float(control.get("ending_net_pnl_total"), 0.0),
+                "ending_net_pnl_total": _safe_float(
+                    control.get("ending_net_pnl_total"), 0.0
+                ),
                 "action": str(control.get("action") or ""),
             }
             for profile, control in active_profiles.items()
@@ -3364,7 +4457,9 @@ def _raw_operational_containment_filter(
             {
                 "profile": str(row.get("profile") or ""),
                 "strategy": str(row.get("strategy") or ""),
-                "ending_net_pnl_total": _safe_float(row.get("ending_net_pnl_total"), 0.0),
+                "ending_net_pnl_total": _safe_float(
+                    row.get("ending_net_pnl_total"), 0.0
+                ),
                 "mode": str(row.get("mode") or ""),
             }
             for row in active_strategies
@@ -3411,7 +4506,9 @@ def _raw_operational_grade_lift_contract(
                 "profit_grade": str(control.get("profit_grade") or ""),
                 "profit_score_norm": _safe_float(control.get("profit_score"), 0.0),
                 "drag_score_norm": _safe_float(control.get("drag_score"), 0.0),
-                "ending_net_pnl_total": _safe_float(control.get("ending_net_pnl_total"), 0.0),
+                "ending_net_pnl_total": _safe_float(
+                    control.get("ending_net_pnl_total"), 0.0
+                ),
                 "action": str(control.get("action") or ""),
             }
             for profile, control in active_profile_controls.items()
@@ -3431,7 +4528,9 @@ def _raw_operational_grade_lift_contract(
                 "strategy": str(row.get("strategy") or ""),
                 "bot_id": str(row.get("bot_id") or ""),
                 "mode": str(row.get("mode") or ""),
-                "ending_net_pnl_total": _safe_float(row.get("ending_net_pnl_total"), 0.0),
+                "ending_net_pnl_total": _safe_float(
+                    row.get("ending_net_pnl_total"), 0.0
+                ),
                 "score_penalty_norm": _safe_float(row.get("score_penalty_norm"), 0.0),
             }
             for row in strategy_controls
@@ -3519,13 +4618,19 @@ def _unprotected_operational_counts(
 def _a_plus_recovery_profile_control(control: dict[str, Any]) -> None:
     control["action"] = "quarantine_new_entries"
     control["a_plus_recovery_mode"] = True
-    control["a_plus_recovery_reason"] = "financial_a_plus_lock_in_requires_weak_sleeve_quarantine"
+    control["a_plus_recovery_reason"] = (
+        "financial_a_plus_lock_in_requires_weak_sleeve_quarantine"
+    )
     control["control_posture_grade"] = "A+"
     control["position_size_multiplier"] = PROFILE_HARD_QUARANTINE_SIZE_MULTIPLIER
     control["new_entry_cap"] = 0
     control["block_new_entries"] = True
     control["runtime_policy"] = {
-        **(control.get("runtime_policy") if isinstance(control.get("runtime_policy"), dict) else {}),
+        **(
+            control.get("runtime_policy")
+            if isinstance(control.get("runtime_policy"), dict)
+            else {}
+        ),
         "a_plus_lock_in": True,
         "block_all_new_entries_until_operational_a_plus": True,
         "a_plus_plus_weak_sleeve_strengthening": True,
@@ -3533,7 +4638,9 @@ def _a_plus_recovery_profile_control(control: dict[str, Any]) -> None:
     for key in ("dynamic_sizing", "loser_quarantine", "exit_intelligence"):
         nested = control.get(key) if isinstance(control.get(key), dict) else {}
         control[key] = dict(nested)
-    control["dynamic_sizing"]["paper_profitability_size_multiplier_norm"] = control["position_size_multiplier"]
+    control["dynamic_sizing"]["paper_profitability_size_multiplier_norm"] = control[
+        "position_size_multiplier"
+    ]
     control["dynamic_sizing"]["max_new_entry_multiplier_norm"] = 0.0
     control["dynamic_sizing"]["block_new_entries_when_drag_active"] = True
     control["loser_quarantine"]["active"] = True
@@ -3541,7 +4648,9 @@ def _a_plus_recovery_profile_control(control: dict[str, Any]) -> None:
     control["loser_quarantine"]["new_entry_cap"] = 0
     control["loser_quarantine"]["block_new_entries"] = True
     control["loser_quarantine"]["reentry_requires_positive_refreshes"] = max(
-        _safe_int(control["loser_quarantine"].get("reentry_requires_positive_refreshes"), 0),
+        _safe_int(
+            control["loser_quarantine"].get("reentry_requires_positive_refreshes"), 0
+        ),
         3,
     )
     control["exit_intelligence"]["active"] = True
@@ -3565,14 +4674,24 @@ def _a_plus_recovery_profile_control(control: dict[str, Any]) -> None:
                 "independent_evidence_channels_present",
                 "paper_only_retest_passed",
             ]
-            + [str(item) for item in _as_list(recurrence.get("required_before_reentry")) if str(item)]
+            + [
+                str(item)
+                for item in _as_list(recurrence.get("required_before_reentry"))
+                if str(item)
+            ]
         ),
         "recurrence_guard_required": True,
-        "recurrence_guard_ready": bool(recurrence.get("prevent_recurrence_ready", False)),
+        "recurrence_guard_ready": bool(
+            recurrence.get("prevent_recurrence_ready", False)
+        ),
         "paper_only": True,
         "live_execution_allowed": False,
     }
-    contracts = control.get("upgrade_contracts") if isinstance(control.get("upgrade_contracts"), dict) else {}
+    contracts = (
+        control.get("upgrade_contracts")
+        if isinstance(control.get("upgrade_contracts"), dict)
+        else {}
+    )
     for key in ("dynamic_sizing", "loser_quarantine", "exit_intelligence"):
         if isinstance(contracts.get(key), dict):
             contracts[key].update(control[key])
@@ -3582,14 +4701,28 @@ def _a_plus_recovery_profile_control(control: dict[str, Any]) -> None:
 def _a_plus_recovery_strategy_control(control: dict[str, Any]) -> None:
     control["mode"] = "paper_quarantine"
     control["a_plus_recovery_mode"] = True
-    control["a_plus_recovery_reason"] = "financial_a_plus_lock_in_blocks_losing_strategy_pair"
+    control["a_plus_recovery_reason"] = (
+        "financial_a_plus_lock_in_blocks_losing_strategy_pair"
+    )
     control["control_posture_grade"] = "A+"
     control["position_size_multiplier"] = 0.0
     control["new_entry_cap"] = 0
     control["block_new_entries"] = True
-    contracts = control.get("upgrade_contracts") if isinstance(control.get("upgrade_contracts"), dict) else {}
-    rehabilitation = control.get("rehabilitation_contract") if isinstance(control.get("rehabilitation_contract"), dict) else {}
-    loser = contracts.get("loser_quarantine") if isinstance(contracts.get("loser_quarantine"), dict) else {}
+    contracts = (
+        control.get("upgrade_contracts")
+        if isinstance(control.get("upgrade_contracts"), dict)
+        else {}
+    )
+    rehabilitation = (
+        control.get("rehabilitation_contract")
+        if isinstance(control.get("rehabilitation_contract"), dict)
+        else {}
+    )
+    loser = (
+        contracts.get("loser_quarantine")
+        if isinstance(contracts.get("loser_quarantine"), dict)
+        else {}
+    )
     loser.update(
         {
             "active": True,
@@ -3601,7 +4734,11 @@ def _a_plus_recovery_strategy_control(control: dict[str, Any]) -> None:
             "rehabilitation_required": bool(rehabilitation),
         }
     )
-    sizing = contracts.get("dynamic_sizing") if isinstance(contracts.get("dynamic_sizing"), dict) else {}
+    sizing = (
+        contracts.get("dynamic_sizing")
+        if isinstance(contracts.get("dynamic_sizing"), dict)
+        else {}
+    )
     sizing.update(
         {
             "active": True,
@@ -3632,7 +4769,9 @@ def _a_plus_recovery_strategy_control(control: dict[str, Any]) -> None:
     if rehabilitation:
         rehabilitation["active"] = True
         rehabilitation["mode"] = "paper_only_rehabilitation"
-        rehabilitation.setdefault("retest_plan", {})["block_new_entries_until_retest_passes"] = True
+        rehabilitation.setdefault("retest_plan", {})[
+            "block_new_entries_until_retest_passes"
+        ] = True
         control["rehabilitation_contract"] = rehabilitation
     control["upgrade_contracts"] = contracts
 
@@ -3648,10 +4787,16 @@ def _apply_a_plus_recovery_mode(
     for control in active_profile_controls.values():
         if not isinstance(control, dict):
             continue
-        if _safe_float(control.get("ending_net_pnl_total"), 0.0) < 0.0 or _safe_float(control.get("drag_score"), 0.0) >= 0.20:
+        if (
+            _safe_float(control.get("ending_net_pnl_total"), 0.0) < 0.0
+            or _safe_float(control.get("drag_score"), 0.0) >= 0.20
+        ):
             _a_plus_recovery_profile_control(control)
     for control in strategy_controls:
-        if isinstance(control, dict) and _safe_float(control.get("ending_net_pnl_total"), 0.0) < 0.0:
+        if (
+            isinstance(control, dict)
+            and _safe_float(control.get("ending_net_pnl_total"), 0.0) < 0.0
+        ):
             _a_plus_recovery_strategy_control(control)
 
 
@@ -3664,7 +4809,11 @@ def _apply_protective_tightening_profile_control(control: dict[str, Any]) -> Non
     control["new_entry_cap"] = 0
     control["block_new_entries"] = True
     control["runtime_policy"] = {
-        **(control.get("runtime_policy") if isinstance(control.get("runtime_policy"), dict) else {}),
+        **(
+            control.get("runtime_policy")
+            if isinstance(control.get("runtime_policy"), dict)
+            else {}
+        ),
         "protective_tightening_lock": True,
         "block_all_new_entries_until_clean_refresh": True,
         "paper_only_until_next_profitable_refresh": True,
@@ -3673,7 +4822,9 @@ def _apply_protective_tightening_profile_control(control: dict[str, Any]) -> Non
     for key in ("dynamic_sizing", "loser_quarantine", "exit_intelligence"):
         nested = control.get(key) if isinstance(control.get(key), dict) else {}
         control[key] = dict(nested)
-    control["dynamic_sizing"]["paper_profitability_size_multiplier_norm"] = control["position_size_multiplier"]
+    control["dynamic_sizing"]["paper_profitability_size_multiplier_norm"] = control[
+        "position_size_multiplier"
+    ]
     control["dynamic_sizing"]["max_new_entry_multiplier_norm"] = 0.0
     control["dynamic_sizing"]["block_new_entries_when_drag_active"] = True
     control["loser_quarantine"]["active"] = True
@@ -3682,7 +4833,9 @@ def _apply_protective_tightening_profile_control(control: dict[str, Any]) -> Non
     control["loser_quarantine"]["block_new_entries"] = True
     control["loser_quarantine"]["protective_tightening_lock"] = True
     control["loser_quarantine"]["reentry_requires_positive_refreshes"] = max(
-        _safe_int(control["loser_quarantine"].get("reentry_requires_positive_refreshes"), 0),
+        _safe_int(
+            control["loser_quarantine"].get("reentry_requires_positive_refreshes"), 0
+        ),
         3,
     )
     control["exit_intelligence"]["active"] = True
@@ -3706,14 +4859,24 @@ def _apply_protective_tightening_profile_control(control: dict[str, Any]) -> Non
                 "independent_evidence_channels_present",
                 "paper_only_retest_passed",
             ]
-            + [str(item) for item in _as_list(recurrence.get("required_before_reentry")) if str(item)]
+            + [
+                str(item)
+                for item in _as_list(recurrence.get("required_before_reentry"))
+                if str(item)
+            ]
         ),
         "recurrence_guard_required": True,
-        "recurrence_guard_ready": bool(recurrence.get("prevent_recurrence_ready", False)),
+        "recurrence_guard_ready": bool(
+            recurrence.get("prevent_recurrence_ready", False)
+        ),
         "paper_only": True,
         "live_execution_allowed": False,
     }
-    contracts = control.get("upgrade_contracts") if isinstance(control.get("upgrade_contracts"), dict) else {}
+    contracts = (
+        control.get("upgrade_contracts")
+        if isinstance(control.get("upgrade_contracts"), dict)
+        else {}
+    )
     for key in ("dynamic_sizing", "loser_quarantine", "exit_intelligence"):
         if isinstance(contracts.get(key), dict):
             contracts[key].update(control[key])
@@ -3723,14 +4886,28 @@ def _apply_protective_tightening_profile_control(control: dict[str, Any]) -> Non
 def _apply_protective_tightening_strategy_control(control: dict[str, Any]) -> None:
     control["mode"] = "paper_quarantine"
     control["protective_tightening_mode"] = True
-    control["protective_tightening_reason"] = "paper_strategy_pair_losing_under_protective_tightening"
+    control["protective_tightening_reason"] = (
+        "paper_strategy_pair_losing_under_protective_tightening"
+    )
     control["control_posture_grade"] = "A+"
     control["position_size_multiplier"] = 0.0
     control["new_entry_cap"] = 0
     control["block_new_entries"] = True
-    contracts = control.get("upgrade_contracts") if isinstance(control.get("upgrade_contracts"), dict) else {}
-    rehabilitation = control.get("rehabilitation_contract") if isinstance(control.get("rehabilitation_contract"), dict) else {}
-    loser = contracts.get("loser_quarantine") if isinstance(contracts.get("loser_quarantine"), dict) else {}
+    contracts = (
+        control.get("upgrade_contracts")
+        if isinstance(control.get("upgrade_contracts"), dict)
+        else {}
+    )
+    rehabilitation = (
+        control.get("rehabilitation_contract")
+        if isinstance(control.get("rehabilitation_contract"), dict)
+        else {}
+    )
+    loser = (
+        contracts.get("loser_quarantine")
+        if isinstance(contracts.get("loser_quarantine"), dict)
+        else {}
+    )
     loser.update(
         {
             "active": True,
@@ -3742,7 +4919,11 @@ def _apply_protective_tightening_strategy_control(control: dict[str, Any]) -> No
             "rehabilitation_required": bool(rehabilitation),
         }
     )
-    sizing = contracts.get("dynamic_sizing") if isinstance(contracts.get("dynamic_sizing"), dict) else {}
+    sizing = (
+        contracts.get("dynamic_sizing")
+        if isinstance(contracts.get("dynamic_sizing"), dict)
+        else {}
+    )
     sizing.update(
         {
             "active": True,
@@ -3773,7 +4954,9 @@ def _apply_protective_tightening_strategy_control(control: dict[str, Any]) -> No
     if rehabilitation:
         rehabilitation["active"] = True
         rehabilitation["mode"] = "paper_only_rehabilitation"
-        rehabilitation.setdefault("retest_plan", {})["block_new_entries_until_retest_passes"] = True
+        rehabilitation.setdefault("retest_plan", {})[
+            "block_new_entries_until_retest_passes"
+        ] = True
         control["rehabilitation_contract"] = rehabilitation
     control["upgrade_contracts"] = contracts
 
@@ -3809,14 +4992,19 @@ def _operational_control_grade(
         for control in active_profile_controls.values()
         if isinstance(control, dict) and _profile_requires_full_protection(control)
     ]
-    profile_protected = all(_profile_loss_protected(control) for control in profiles_requiring_protection)
+    profile_protected = all(
+        _profile_loss_protected(control) for control in profiles_requiring_protection
+    )
     strategies_protected = all(
         _strategy_loss_protected(control)
         for control in strategy_controls
         if isinstance(control, dict)
     )
     if profile_protected and strategies_protected:
-        profiles_a_plus_plus = all(_profile_a_plus_plus_strengthened(control) for control in profiles_requiring_protection)
+        profiles_a_plus_plus = all(
+            _profile_a_plus_plus_strengthened(control)
+            for control in profiles_requiring_protection
+        )
         strategies_a_plus_plus = all(
             _strategy_a_plus_plus_strengthened(control)
             for control in strategy_controls
@@ -3852,18 +5040,32 @@ def _weak_sleeve_a_plus_plus_strengthening_contract(
                 "control_grade": "A+" if strengthened else ("A+" if protected else "B"),
                 "protected": protected,
                 "a_plus_plus_strengthened": strengthened,
-                "recurrence_guard_ready": bool(recurrence.get("prevent_recurrence_ready", False)),
+                "recurrence_guard_ready": bool(
+                    recurrence.get("prevent_recurrence_ready", False)
+                ),
                 "action": str(control.get("action") or ""),
                 "new_entry_cap": _safe_int(control.get("new_entry_cap"), 1),
-                "position_size_multiplier_norm": _safe_float(control.get("position_size_multiplier"), 1.0),
-                "ending_net_pnl_total": _safe_float(control.get("ending_net_pnl_total"), 0.0),
-                "ending_unrealized_pnl_total": _safe_float(control.get("ending_unrealized_pnl_total"), 0.0),
+                "position_size_multiplier_norm": _safe_float(
+                    control.get("position_size_multiplier"), 1.0
+                ),
+                "ending_net_pnl_total": _safe_float(
+                    control.get("ending_net_pnl_total"), 0.0
+                ),
+                "ending_unrealized_pnl_total": _safe_float(
+                    control.get("ending_unrealized_pnl_total"), 0.0
+                ),
                 "drag_score_norm": _safe_float(control.get("drag_score"), 0.0),
                 "required_before_reentry": _as_list(
-                    _as_dict(control.get("a_plus_plus_strengthening")).get("required_before_reentry")
+                    _as_dict(control.get("a_plus_plus_strengthening")).get(
+                        "required_before_reentry"
+                    )
                 ),
-                "recurrent_loss_families": _as_list(recurrence.get("recurrent_loss_families")),
-                "recurrent_loss_causes": _as_list(recurrence.get("recurrent_loss_causes"))[:8],
+                "recurrent_loss_families": _as_list(
+                    recurrence.get("recurrent_loss_families")
+                ),
+                "recurrent_loss_causes": _as_list(
+                    recurrence.get("recurrent_loss_causes")
+                )[:8],
             }
         )
 
@@ -3884,11 +5086,17 @@ def _weak_sleeve_a_plus_plus_strengthening_contract(
                 "a_plus_plus_strengthened": strengthened,
                 "mode": str(row.get("mode") or ""),
                 "new_entry_cap": _safe_int(row.get("new_entry_cap"), 1),
-                "position_size_multiplier_norm": _safe_float(row.get("position_size_multiplier"), 1.0),
+                "position_size_multiplier_norm": _safe_float(
+                    row.get("position_size_multiplier"), 1.0
+                ),
             }
         )
 
-    unstrengthened_profiles = [row["profile"] for row in profile_rows if not bool(row.get("a_plus_plus_strengthened", False))]
+    unstrengthened_profiles = [
+        row["profile"]
+        for row in profile_rows
+        if not bool(row.get("a_plus_plus_strengthened", False))
+    ]
     unstrengthened_strategies = [
         f"{row['profile']}::{row['strategy']}"
         for row in strategy_rows
@@ -3898,7 +5106,9 @@ def _weak_sleeve_a_plus_plus_strengthening_contract(
     return {
         "active": bool(profile_rows or strategy_rows),
         "mode": "weak_sleeve_a_plus_plus_strengthening_v1",
-        "control_posture_grade": "A+" if control_ready else str(operational_control_grade or ""),
+        "control_posture_grade": (
+            "A+" if control_ready else str(operational_control_grade or "")
+        ),
         "control_ready": control_ready,
         "operational_control_grade": operational_control_grade,
         "raw_operational_outcome_grade": raw_operational_outcome_grade,
@@ -3906,7 +5116,8 @@ def _weak_sleeve_a_plus_plus_strengthening_contract(
         "weak_profile_count": len(profile_rows),
         "strategy_pair_count": len(strategy_rows),
         "a_plus_plus_profile_count": len(profile_rows) - len(unstrengthened_profiles),
-        "a_plus_plus_strategy_pair_count": len(strategy_rows) - len(unstrengthened_strategies),
+        "a_plus_plus_strategy_pair_count": len(strategy_rows)
+        - len(unstrengthened_strategies),
         "unstrengthened_profiles": unstrengthened_profiles,
         "unstrengthened_strategy_pairs": unstrengthened_strategies,
         "profile_controls": profile_rows,
@@ -3952,7 +5163,9 @@ def _weak_sleeve_recurrence_guard_contract(
         guard_ready = bool(
             guard.get("prevent_recurrence_ready", False)
             and guard.get("reentry_locked_until_cleared", False)
-            and runtime_enforcement.get("block_new_entries_when_any_prior_loss_family_repeats", False)
+            and runtime_enforcement.get(
+                "block_new_entries_when_any_prior_loss_family_repeats", False
+            )
             and (locked_for_new_entries or action != "quarantine_new_entries")
         )
         for cause in _as_list(guard.get("recurrent_loss_causes")):
@@ -3979,7 +5192,9 @@ def _weak_sleeve_recurrence_guard_contract(
                 "action": action,
                 "locked_for_new_entries": locked_for_new_entries,
                 "new_entry_cap": _safe_int(control.get("new_entry_cap"), 1),
-                "position_size_multiplier_norm": _safe_float(control.get("position_size_multiplier"), 1.0),
+                "position_size_multiplier_norm": _safe_float(
+                    control.get("position_size_multiplier"), 1.0
+                ),
                 "required_profitable_refreshes_before_reentry": _safe_int(
                     guard.get("required_profitable_refreshes_before_reentry"),
                     RAW_RECOVERY_MIN_PROFITABLE_REFRESHES,
@@ -3988,8 +5203,12 @@ def _weak_sleeve_recurrence_guard_contract(
                     guard.get("min_independent_evidence_channels"),
                     RAW_RECOVERY_MIN_INDEPENDENT_EVIDENCE_CHANNELS,
                 ),
-                "recurrent_loss_families": _as_list(guard.get("recurrent_loss_families")),
-                "recurrent_loss_causes": _as_list(guard.get("recurrent_loss_causes"))[:8],
+                "recurrent_loss_families": _as_list(
+                    guard.get("recurrent_loss_families")
+                ),
+                "recurrent_loss_causes": _as_list(guard.get("recurrent_loss_causes"))[
+                    :8
+                ],
                 "runtime_blocks": _as_list(guard.get("runtime_blocks")),
             }
         )
@@ -4003,7 +5222,9 @@ def _weak_sleeve_recurrence_guard_contract(
         "paper_only": True,
         "live_execution_allowed": False,
         "profile_count": len(profile_rows),
-        "guarded_profile_count": sum(1 for row in profile_rows if bool(row.get("guard_ready", False))),
+        "guarded_profile_count": sum(
+            1 for row in profile_rows if bool(row.get("guard_ready", False))
+        ),
         "target_profiles": [str(row.get("profile") or "") for row in profile_rows],
         "profile_controls": profile_rows,
         "top_recurrent_loss_causes": [
@@ -4012,8 +5233,12 @@ def _weak_sleeve_recurrence_guard_contract(
         ],
         "required_evidence_channels": WEAK_SLEEVE_RECURRENCE_EVIDENCE_CHANNELS,
         "required_family_gates": ordered_unique(family_gates),
-        "required_context": ordered_unique(required_context or WEAK_SLEEVE_RECURRENCE_REQUIRED_CONTEXT),
-        "required_label_outputs": ordered_unique(required_labels or WEAK_SLEEVE_RECURRENCE_REQUIRED_LABELS),
+        "required_context": ordered_unique(
+            required_context or WEAK_SLEEVE_RECURRENCE_REQUIRED_CONTEXT
+        ),
+        "required_label_outputs": ordered_unique(
+            required_labels or WEAK_SLEEVE_RECURRENCE_REQUIRED_LABELS
+        ),
         "runtime_blocks": ordered_unique(runtime_blocks),
         "runtime_enforcement": {
             "apply_cause_specific_profile_reentry_locks": True,
@@ -4037,10 +5262,15 @@ def _weak_sleeve_systemic_weak_point_contract(
     active_profile_controls: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     profile_rows = _as_list(recurrence_contract.get("profile_controls"))
-    profile_total = max(_safe_int(recurrence_contract.get("profile_count"), len(profile_rows)), len(profile_rows))
+    profile_total = max(
+        _safe_int(recurrence_contract.get("profile_count"), len(profile_rows)),
+        len(profile_rows),
+    )
     threshold = max(
         WEAK_SLEEVE_SYSTEMIC_MIN_PROFILE_COUNT,
-        int((float(profile_total) * WEAK_SLEEVE_SYSTEMIC_PROFILE_SHARE_FLOOR) + 0.999999),
+        int(
+            (float(profile_total) * WEAK_SLEEVE_SYSTEMIC_PROFILE_SHARE_FLOOR) + 0.999999
+        ),
     )
     cause_to_profiles: dict[str, list[str]] = {}
     for row in profile_rows:
@@ -4066,10 +5296,14 @@ def _weak_sleeve_systemic_weak_point_contract(
         family = _loss_cause_family(cause)
         spec = WEAK_SLEEVE_RECURRENCE_FAMILY_REQUIREMENTS.get(family, {})
         gate = str(spec.get("gate") or f"{family}_gate")
-        runtime_block = str(spec.get("runtime_block") or f"block_when_{family}_systemic")
+        runtime_block = str(
+            spec.get("runtime_block") or f"block_when_{family}_systemic"
+        )
         required_family_gates.append(gate)
         runtime_blocks.append(runtime_block)
-        required_labels.extend(str(item) for item in _as_list(spec.get("required_labels")) if str(item))
+        required_labels.extend(
+            str(item) for item in _as_list(spec.get("required_labels")) if str(item)
+        )
         systemic_rows.append(
             {
                 "cause": cause,
@@ -4082,7 +5316,11 @@ def _weak_sleeve_systemic_weak_point_contract(
                 "runtime_block": runtime_block,
                 "required_before_lift": ordered_unique(
                     WEAK_SLEEVE_RECURRENCE_REQUIRED_BEFORE_REENTRY
-                    + [str(item) for item in _as_list(spec.get("required_before_reentry")) if str(item)]
+                    + [
+                        str(item)
+                        for item in _as_list(spec.get("required_before_reentry"))
+                        if str(item)
+                    ]
                     + [
                         "cross_sleeve_loss_cause_digest_refreshed",
                         "systemic_cause_not_repeated_in_latest_refresh",
@@ -4092,8 +5330,16 @@ def _weak_sleeve_systemic_weak_point_contract(
         )
 
     active = bool(systemic_rows)
-    recurrence_ready = bool(recurrence_contract.get("control_ready", False)) or not bool(recurrence_contract.get("active", False))
-    control_ready = bool((not active) or (recurrence_ready and all(str(row.get("runtime_block") or "") for row in systemic_rows)))
+    recurrence_ready = bool(
+        recurrence_contract.get("control_ready", False)
+    ) or not bool(recurrence_contract.get("active", False))
+    control_ready = bool(
+        (not active)
+        or (
+            recurrence_ready
+            and all(str(row.get("runtime_block") or "") for row in systemic_rows)
+        )
+    )
     return {
         "active": active,
         "mode": "weak_sleeve_systemic_weak_point_guard_v1",
@@ -4176,8 +5422,13 @@ def _a_plus_target_contract(
     raw_operational_outcome_ready = raw_operational_outcome_grade == "A+"
     operational_control_ready = operational_control_grade == "A+"
     operational_control_a_plus_plus_ready = operational_control_grade == "A+"
-    unprotected_weak_count = _safe_int(unprotected_counts.get("unprotected_weak_profile_count"), len(weak_profiles))
-    unprotected_strategy_count = _safe_int(unprotected_counts.get("unprotected_strategy_control_count"), len(strategy_controls))
+    unprotected_weak_count = _safe_int(
+        unprotected_counts.get("unprotected_weak_profile_count"), len(weak_profiles)
+    )
+    unprotected_strategy_count = _safe_int(
+        unprotected_counts.get("unprotected_strategy_control_count"),
+        len(strategy_controls),
+    )
     blockers: list[str] = []
     if not financial_ready:
         blockers.append("financial_a_plus_thresholds_not_met")
@@ -4204,9 +5455,22 @@ def _a_plus_target_contract(
         "combined_a_plus_ready": financial_ready and operational_outcome_ready,
         "raw_combined_a_plus_ready": financial_ready and raw_operational_outcome_ready,
         "combined_control_a_plus_ready": financial_ready and operational_control_ready,
-        "combined_control_a_plus_plus_ready": financial_ready and operational_control_a_plus_plus_ready,
-        "headline_grade": "A+" if financial_ready and operational_control_a_plus_plus_ready else ("A+" if financial_ready and operational_control_ready else financial_grade),
-        "outcome_grade": "A+" if financial_ready and operational_outcome_ready else ("A" if financial_ready else financial_grade),
+        "combined_control_a_plus_plus_ready": financial_ready
+        and operational_control_a_plus_plus_ready,
+        "headline_grade": (
+            "A+"
+            if financial_ready and operational_control_a_plus_plus_ready
+            else (
+                "A+"
+                if financial_ready and operational_control_ready
+                else financial_grade
+            )
+        ),
+        "outcome_grade": (
+            "A+"
+            if financial_ready and operational_outcome_ready
+            else ("A" if financial_ready else financial_grade)
+        ),
         "thresholds": {
             "min_net_pnl": FINANCIAL_APLUS_MIN_NET_PNL,
             "min_realized_pnl": FINANCIAL_APLUS_MIN_REALIZED_PNL,
@@ -4243,11 +5507,27 @@ def _a_plus_target_contract(
 def _profit_harvest_profile_params(profile: str) -> dict[str, float]:
     raw = PROFIT_HARVEST_PROFILE_PARAMS.get(_normal_profile(profile), {})
     return {
-        "target_realized_share": _clamp(_safe_float(raw.get("target_realized_share"), PROFIT_HARVEST_TARGET_REALIZED_SHARE), 0.20, 0.55),
-        "max_unrealized_share": _clamp(_safe_float(raw.get("max_unrealized_share"), PROFIT_HARVEST_MAX_UNREALIZED_SHARE), 0.50, 0.85),
+        "target_realized_share": _clamp(
+            _safe_float(
+                raw.get("target_realized_share"), PROFIT_HARVEST_TARGET_REALIZED_SHARE
+            ),
+            0.20,
+            0.55,
+        ),
+        "max_unrealized_share": _clamp(
+            _safe_float(
+                raw.get("max_unrealized_share"), PROFIT_HARVEST_MAX_UNREALIZED_SHARE
+            ),
+            0.50,
+            0.85,
+        ),
         "trend_prior": _clamp(_safe_float(raw.get("trend_prior"), 0.55), 0.0, 1.0),
-        "min_trim_fraction": _clamp(_safe_float(raw.get("min_trim_fraction"), 0.12), 0.05, 0.35),
-        "max_trim_fraction": _clamp(_safe_float(raw.get("max_trim_fraction"), 0.48), 0.20, 0.70),
+        "min_trim_fraction": _clamp(
+            _safe_float(raw.get("min_trim_fraction"), 0.12), 0.05, 0.35
+        ),
+        "max_trim_fraction": _clamp(
+            _safe_float(raw.get("max_trim_fraction"), 0.48), 0.20, 0.70
+        ),
     }
 
 
@@ -4267,15 +5547,24 @@ def _profit_harvest_intelligence(
     executions = _safe_int(row.get("executions"), 0)
     net = _safe_float(row.get("ending_net_pnl_total"), 0.0)
     win_rate_raw = row.get("win_rate")
-    win_rate = _clamp(_safe_float(win_rate_raw, 0.50)) if win_rate_raw is not None else 0.50
+    win_rate = (
+        _clamp(_safe_float(win_rate_raw, 0.50)) if win_rate_raw is not None else 0.50
+    )
     net_confidence = _clamp(max(net, 0.0) / 75_000.0)
     sample_confidence = _clamp(executions / 500.0)
-    realization_gap = _clamp(max(target_realized_share - realized_share, 0.0) / max(target_realized_share, 0.01))
-    unrealized_excess = _clamp(max(unrealized_share - max_unrealized_share, 0.0) / max(1.0 - max_unrealized_share, 0.01))
+    realization_gap = _clamp(
+        max(target_realized_share - realized_share, 0.0)
+        / max(target_realized_share, 0.01)
+    )
+    unrealized_excess = _clamp(
+        max(unrealized_share - max_unrealized_share, 0.0)
+        / max(1.0 - max_unrealized_share, 0.01)
+    )
 
     realized_conversion_skill = _clamp(
         0.34 * _clamp(realized_share / max(target_realized_share, 0.01))
-        + 0.24 * _clamp(positive_realized / max(PROFIT_HARVEST_MIN_UNREALIZED_PNL * 8.0, 1.0))
+        + 0.24
+        * _clamp(positive_realized / max(PROFIT_HARVEST_MIN_UNREALIZED_PNL * 8.0, 1.0))
         + 0.18 * win_rate
         + 0.14 * sample_confidence
         + 0.10 * net_confidence
@@ -4284,7 +5573,10 @@ def _profit_harvest_intelligence(
         0.30 * params["trend_prior"]
         + 0.24 * unrealized_share
         + 0.18 * win_rate
-        + 0.14 * _clamp(positive_unrealized / max(PROFIT_HARVEST_MIN_UNREALIZED_PNL * 10.0, 1.0))
+        + 0.14
+        * _clamp(
+            positive_unrealized / max(PROFIT_HARVEST_MIN_UNREALIZED_PNL * 10.0, 1.0)
+        )
         + 0.08 * net_confidence
         + 0.06 * sample_confidence
     )
@@ -4342,8 +5634,22 @@ def _profit_harvest_intelligence(
         "learned_target_realized_share_norm": round(learned_target, 6),
         "learned_max_unrealized_share_norm": round(learned_max_unrealized, 6),
         "dynamic_exit_quality_floor_norm": round(exit_floor, 6),
-        "hold_winner_when_trend_continuation_above_norm": round(_clamp(0.74 - 0.08 * realized_conversion_skill + 0.08 * harvest_regret_risk, 0.62, 0.86), 6),
-        "force_trim_only_when_harvest_pressure_above_norm": round(_clamp(0.68 + 0.12 * harvest_regret_risk - 0.05 * realized_conversion_skill, 0.62, 0.86), 6),
+        "hold_winner_when_trend_continuation_above_norm": round(
+            _clamp(
+                0.74 - 0.08 * realized_conversion_skill + 0.08 * harvest_regret_risk,
+                0.62,
+                0.86,
+            ),
+            6,
+        ),
+        "force_trim_only_when_harvest_pressure_above_norm": round(
+            _clamp(
+                0.68 + 0.12 * harvest_regret_risk - 0.05 * realized_conversion_skill,
+                0.62,
+                0.86,
+            ),
+            6,
+        ),
         "post_trim_followthrough_lookahead_minutes": 90,
         "feedback_labels": [
             "paper_harvest_regret_bucket",
@@ -4381,9 +5687,15 @@ def _profit_harvest_control(profile: str, row: dict[str, Any]) -> dict[str, Any]
         and unrealized_share >= PROFIT_HARVEST_SMALL_MIN_UNREALIZED_SHARE
     )
     harvest_pressure = _clamp(
-        0.42 * _clamp(positive_unrealized / max(PROFIT_HARVEST_MIN_UNREALIZED_PNL * 8.0, 1.0))
+        0.42
+        * _clamp(
+            positive_unrealized / max(PROFIT_HARVEST_MIN_UNREALIZED_PNL * 8.0, 1.0)
+        )
         + 0.32 * _clamp((unrealized_share - 0.45) / 0.45)
-        + 0.16 * _clamp(max(target_realized_share - realized_share, 0.0) / target_realized_share)
+        + 0.16
+        * _clamp(
+            max(target_realized_share - realized_share, 0.0) / target_realized_share
+        )
         + 0.10 * _clamp(executions / 500.0)
     )
     if small_same_day_harvest:
@@ -4396,7 +5708,11 @@ def _profit_harvest_control(profile: str, row: dict[str, Any]) -> dict[str, Any]
                     (unrealized_share - PROFIT_HARVEST_SMALL_MIN_UNREALIZED_SHARE)
                     / max(1.0 - PROFIT_HARVEST_SMALL_MIN_UNREALIZED_SHARE, 0.01)
                 )
-                + 0.14 * _clamp((positive_unrealized - PROFIT_HARVEST_SMALL_MIN_UNREALIZED_PNL) / 250.0)
+                + 0.14
+                * _clamp(
+                    (positive_unrealized - PROFIT_HARVEST_SMALL_MIN_UNREALIZED_PNL)
+                    / 250.0
+                )
                 + 0.10 * _clamp(executions / 100.0)
             ),
         )
@@ -4411,14 +5727,30 @@ def _profit_harvest_control(profile: str, row: dict[str, Any]) -> dict[str, Any]
         target_realized_share=target_realized_share,
         max_unrealized_share=max_unrealized_share,
     )
-    target_realized_share = _safe_float(intelligence.get("learned_target_realized_share_norm"), target_realized_share)
-    max_unrealized_share = _safe_float(intelligence.get("learned_max_unrealized_share_norm"), max_unrealized_share)
+    target_realized_share = _safe_float(
+        intelligence.get("learned_target_realized_share_norm"), target_realized_share
+    )
+    max_unrealized_share = _safe_float(
+        intelligence.get("learned_max_unrealized_share_norm"), max_unrealized_share
+    )
     if small_same_day_harvest:
-        target_realized_share = max(target_realized_share, PROFIT_HARVEST_SMALL_TARGET_REALIZED_SHARE)
-        max_unrealized_share = min(max_unrealized_share, PROFIT_HARVEST_SMALL_MAX_UNREALIZED_SHARE)
-    trim_multiplier = _safe_float(intelligence.get("trim_aggressiveness_multiplier_norm"), 1.0)
+        target_realized_share = max(
+            target_realized_share, PROFIT_HARVEST_SMALL_TARGET_REALIZED_SHARE
+        )
+        max_unrealized_share = min(
+            max_unrealized_share, PROFIT_HARVEST_SMALL_MAX_UNREALIZED_SHARE
+        )
+    trim_multiplier = _safe_float(
+        intelligence.get("trim_aggressiveness_multiplier_norm"), 1.0
+    )
     trim_fraction = _clamp(
-        (params["min_trim_fraction"] + ((params["max_trim_fraction"] - params["min_trim_fraction"]) * harvest_pressure))
+        (
+            params["min_trim_fraction"]
+            + (
+                (params["max_trim_fraction"] - params["min_trim_fraction"])
+                * harvest_pressure
+            )
+        )
         * trim_multiplier,
         params["min_trim_fraction"],
         params["max_trim_fraction"],
@@ -4429,7 +5761,9 @@ def _profit_harvest_control(profile: str, row: dict[str, Any]) -> dict[str, Any]
         trim_fraction = max(trim_fraction, 0.25)
     if small_same_day_harvest:
         trim_fraction = min(trim_fraction, PROFIT_HARVEST_SMALL_MAX_TRIM_FRACTION)
-    trim_fraction = _clamp(trim_fraction, params["min_trim_fraction"], params["max_trim_fraction"])
+    trim_fraction = _clamp(
+        trim_fraction, params["min_trim_fraction"], params["max_trim_fraction"]
+    )
     carry_forward_open_winner = bool(
         executions <= 0
         and data_status in PROFIT_HARVEST_CARRY_FORWARD_STATUSES
@@ -4477,11 +5811,25 @@ def _profit_harvest_control(profile: str, row: dict[str, Any]) -> dict[str, Any]
         "recommended_trim_fraction_norm": round(trim_fraction, 6),
         "target_realized_profit_share_norm": round(target_realized_share, 6),
         "max_unrealized_profit_share_norm": round(max_unrealized_share, 6),
-        "block_new_adds_when_unrealized_share_above_norm": round(max_unrealized_share, 6),
-        "promote_trim_when_exit_quality_above_norm": _safe_float(intelligence.get("dynamic_exit_quality_floor_norm"), 0.58),
-        "promote_trim_when_harvest_pressure_above_norm": round(_clamp(0.50 + 0.08 * _safe_float(intelligence.get("harvest_regret_risk_norm"), 0.0)), 6),
-        "force_trim_when_harvest_pressure_above_norm": _safe_float(intelligence.get("force_trim_only_when_harvest_pressure_above_norm"), 0.72),
-        "force_trim_when_unrealized_share_above_norm": round(_clamp(max_unrealized_share + 0.15, 0.78, 0.94), 6),
+        "block_new_adds_when_unrealized_share_above_norm": round(
+            max_unrealized_share, 6
+        ),
+        "promote_trim_when_exit_quality_above_norm": _safe_float(
+            intelligence.get("dynamic_exit_quality_floor_norm"), 0.58
+        ),
+        "promote_trim_when_harvest_pressure_above_norm": round(
+            _clamp(
+                0.50
+                + 0.08 * _safe_float(intelligence.get("harvest_regret_risk_norm"), 0.0)
+            ),
+            6,
+        ),
+        "force_trim_when_harvest_pressure_above_norm": _safe_float(
+            intelligence.get("force_trim_only_when_harvest_pressure_above_norm"), 0.72
+        ),
+        "force_trim_when_unrealized_share_above_norm": round(
+            _clamp(max_unrealized_share + 0.15, 0.78, 0.94), 6
+        ),
         "harvest_intelligence": intelligence,
         "paper_only": True,
         "required_labels": [
@@ -4497,7 +5845,9 @@ def _profit_harvest_control(profile: str, row: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def _profit_harvest_profile_controls(sleeves: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _profit_harvest_profile_controls(
+    sleeves: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
     controls: dict[str, dict[str, Any]] = {}
     for row in sleeves:
         if not isinstance(row, dict):
@@ -4529,20 +5879,36 @@ def _strategy_profit_harvest_controls(
             continue
         profile = _normal_profile(row.get("profile"))
         profile_control = profit_harvest_controls.get(profile)
-        winners = row.get("top_winning_strategies") if isinstance(row.get("top_winning_strategies"), list) else []
+        winners = (
+            row.get("top_winning_strategies")
+            if isinstance(row.get("top_winning_strategies"), list)
+            else []
+        )
         if not profile_control or not winners:
             continue
-        profile_unrealized = max(_safe_float(row.get("ending_unrealized_pnl_total"), 0.0), 0.0)
+        profile_unrealized = max(
+            _safe_float(row.get("ending_unrealized_pnl_total"), 0.0), 0.0
+        )
         profile_net = max(_safe_float(row.get("ending_net_pnl_total"), 0.0), 1.0)
-        profile_trim = _clamp(_safe_float(profile_control.get("recommended_trim_fraction_norm"), 0.20), 0.05, 0.65)
+        profile_trim = _clamp(
+            _safe_float(profile_control.get("recommended_trim_fraction_norm"), 0.20),
+            0.05,
+            0.65,
+        )
         intelligence = (
             profile_control.get("harvest_intelligence")
             if isinstance(profile_control.get("harvest_intelligence"), dict)
             else {}
         )
-        conversion_skill = _clamp(_safe_float(intelligence.get("realized_conversion_skill_norm"), 0.50))
-        regret_risk = _clamp(_safe_float(intelligence.get("harvest_regret_risk_norm"), 0.0))
-        trend_continuation = _clamp(_safe_float(intelligence.get("trend_continuation_score_norm"), 0.50))
+        conversion_skill = _clamp(
+            _safe_float(intelligence.get("realized_conversion_skill_norm"), 0.50)
+        )
+        regret_risk = _clamp(
+            _safe_float(intelligence.get("harvest_regret_risk_norm"), 0.0)
+        )
+        trend_continuation = _clamp(
+            _safe_float(intelligence.get("trend_continuation_score_norm"), 0.50)
+        )
         for winner in winners[:8]:
             if not isinstance(winner, dict):
                 continue
@@ -4566,7 +5932,9 @@ def _strategy_profit_harvest_controls(
             )
             recommended_trim = _clamp(
                 recommended_trim
-                * _clamp(0.90 + (0.28 * conversion_skill) - (0.22 * regret_risk), 0.55, 1.25),
+                * _clamp(
+                    0.90 + (0.28 * conversion_skill) - (0.22 * regret_risk), 0.55, 1.25
+                ),
                 0.06,
                 0.62,
             )
@@ -4584,14 +5952,24 @@ def _strategy_profit_harvest_controls(
                 "strategy_contribution_share_norm": round(contribution_share, 6),
                 "strategy_concentration_norm": round(concentration, 6),
                 "recommended_trim_fraction_norm": round(recommended_trim, 6),
-                "block_new_adds": bool(contribution_share >= 0.18 or concentration >= 0.24),
+                "block_new_adds": bool(
+                    contribution_share >= 0.18 or concentration >= 0.24
+                ),
                 "promote_partial_trim": bool(recommended_trim >= 0.18),
                 "protect_runner_when_trend_continuation_above_norm": round(
-                    _clamp(0.70 + (0.10 * regret_risk) - (0.06 * conversion_skill), 0.62, 0.86),
+                    _clamp(
+                        0.70 + (0.10 * regret_risk) - (0.06 * conversion_skill),
+                        0.62,
+                        0.86,
+                    ),
                     6,
                 ),
-                "force_trim_when_harvest_pressure_above_norm": profile_control.get("force_trim_when_harvest_pressure_above_norm", 0.72),
-                "profile_harvest_pressure_norm": profile_control.get("harvest_pressure_norm", 0.0),
+                "force_trim_when_harvest_pressure_above_norm": profile_control.get(
+                    "force_trim_when_harvest_pressure_above_norm", 0.72
+                ),
+                "profile_harvest_pressure_norm": profile_control.get(
+                    "harvest_pressure_norm", 0.0
+                ),
                 "profile_trend_continuation_norm": round(trend_continuation, 6),
                 "profile_harvest_regret_risk_norm": round(regret_risk, 6),
                 "profile_realized_conversion_skill_norm": round(conversion_skill, 6),
@@ -4619,21 +5997,38 @@ def _parse_timestamp_seconds(raw: Any) -> float:
         return 0.0
 
 
-def _recent_paper_order_paths(project_root: Path, paper: dict[str, Any], *, limit: int = 8) -> list[Path]:
-    raw_files = paper.get("source_files") if isinstance(paper.get("source_files"), list) else []
+def _recent_paper_order_paths(
+    project_root: Path, paper: dict[str, Any], *, limit: int = 8
+) -> list[Path]:
+    raw_files = (
+        paper.get("source_files") if isinstance(paper.get("source_files"), list) else []
+    )
     paths: list[Path] = []
     for raw in raw_files:
         path = Path(str(raw)).expanduser()
         if not path.is_absolute():
             path = project_root / path
-        if path.exists() and path.name.startswith("paper_bridge_orders_") and (path.suffix == ".jsonl" or path.name.endswith(".jsonl.gz")):
+        if (
+            path.exists()
+            and path.name.startswith("paper_bridge_orders_")
+            and (path.suffix == ".jsonl" or path.name.endswith(".jsonl.gz"))
+        ):
             paths.append(path)
     bridge_dir = project_root / "exports" / "paper_broker_bridge" / "paper"
-    paths.extend(path for path in bridge_dir.glob("paper_bridge_orders_*.jsonl") if path.exists())
-    paths.extend(path for path in bridge_dir.glob("paper_bridge_orders_*.jsonl.gz") if path.exists())
+    paths.extend(
+        path for path in bridge_dir.glob("paper_bridge_orders_*.jsonl") if path.exists()
+    )
+    paths.extend(
+        path
+        for path in bridge_dir.glob("paper_bridge_orders_*.jsonl.gz")
+        if path.exists()
+    )
     paths = ordered_unique([str(path) for path in paths])
     path_objs = [Path(path) for path in paths]
-    path_objs.sort(key=lambda path: (path.stat().st_mtime if path.exists() else 0.0, path.name), reverse=True)
+    path_objs.sort(
+        key=lambda path: (path.stat().st_mtime if path.exists() else 0.0, path.name),
+        reverse=True,
+    )
     return path_objs[: max(int(limit), 1)]
 
 
@@ -4668,14 +6063,19 @@ def _position_harvest_ledger(
     raw_recovery_profile_controls: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     raw_recovery_profile_controls = raw_recovery_profile_controls or {}
-    target_profiles = set(profit_harvest_controls.keys()) | set(raw_recovery_profile_controls.keys())
+    target_profiles = set(profit_harvest_controls.keys()) | set(
+        raw_recovery_profile_controls.keys()
+    )
     for sleeve in _as_list(paper.get("sleeve_latest")):
         if not isinstance(sleeve, dict):
             continue
         profile = _normal_profile(sleeve.get("profile"))
         if not profile:
             continue
-        if _safe_float(sleeve.get("ending_unrealized_pnl_total"), 0.0) < 0.0 or _safe_float(sleeve.get("ending_net_pnl_total"), 0.0) < 0.0:
+        if (
+            _safe_float(sleeve.get("ending_unrealized_pnl_total"), 0.0) < 0.0
+            or _safe_float(sleeve.get("ending_net_pnl_total"), 0.0) < 0.0
+        ):
             target_profiles.add(profile)
     if not target_profiles:
         return {
@@ -4692,7 +6092,9 @@ def _position_harvest_ledger(
     for path in source_paths:
         for row in _iter_jsonl_records(path):
             records_scanned += 1
-            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            metadata = (
+                row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            )
             profile = _normal_profile(
                 metadata.get("source_profile")
                 or metadata.get("profile")
@@ -4701,7 +6103,9 @@ def _position_harvest_ledger(
             )
             if profile not in target_profiles:
                 continue
-            strategy = str(row.get("strategy") or metadata.get("strategy") or "").strip()
+            strategy = str(
+                row.get("strategy") or metadata.get("strategy") or ""
+            ).strip()
             symbol = str(row.get("symbol") or "").strip().upper()
             if not strategy or not symbol:
                 continue
@@ -4721,9 +6125,15 @@ def _position_harvest_ledger(
                 "action": str(row.get("action") or "").strip().upper(),
                 "position_qty": _safe_float(row.get("position_qty"), 0.0),
                 "position_avg_price": _safe_float(row.get("position_avg_price"), 0.0),
-                "mark_price": _safe_float(row.get("mark_price"), _safe_float(row.get("fill_price"), 0.0)),
-                "realized_pnl": _safe_float(row.get("realized_pnl"), _safe_float(row.get("realized"), 0.0)),
-                "unrealized_pnl": _safe_float(row.get("unrealized_pnl"), _safe_float(row.get("unrealized"), 0.0)),
+                "mark_price": _safe_float(
+                    row.get("mark_price"), _safe_float(row.get("fill_price"), 0.0)
+                ),
+                "realized_pnl": _safe_float(
+                    row.get("realized_pnl"), _safe_float(row.get("realized"), 0.0)
+                ),
+                "unrealized_pnl": _safe_float(
+                    row.get("unrealized_pnl"), _safe_float(row.get("unrealized"), 0.0)
+                ),
                 "model_score": _safe_float(row.get("model_score"), 0.5),
                 "threshold": _safe_float(row.get("threshold"), 0.5),
             }
@@ -4735,36 +6145,72 @@ def _position_harvest_ledger(
             continue
         profile = _normal_profile(row.get("profile"))
         strategy = str(row.get("strategy") or "").strip()
-        strategy_control = strategy_harvest_controls.get(f"{profile}::{strategy.lower()}") or strategy_harvest_controls.get(
+        strategy_control = strategy_harvest_controls.get(
+            f"{profile}::{strategy.lower()}"
+        ) or strategy_harvest_controls.get(
             f"{profile}::{_strategy_bot_id(strategy).lower()}"
         )
-        profile_control = profit_harvest_controls.get(profile) or raw_recovery_profile_controls.get(profile, {})
+        profile_control = profit_harvest_controls.get(
+            profile
+        ) or raw_recovery_profile_controls.get(profile, {})
         avg = abs(_safe_float(row.get("position_avg_price"), 0.0))
         notional = abs(qty) * avg
         pnl_pct = _clamp(unrealized / max(notional, 1.0), -1.0, 1.0)
         age_minutes = 0.0
         if max_seen_ts > 0.0 and _safe_float(row.get("_timestamp_seconds"), 0.0) > 0.0:
-            age_minutes = max((max_seen_ts - _safe_float(row.get("_timestamp_seconds"), 0.0)) / 60.0, 0.0)
+            age_minutes = max(
+                (max_seen_ts - _safe_float(row.get("_timestamp_seconds"), 0.0)) / 60.0,
+                0.0,
+            )
         harvestable = unrealized > 0.0
         if harvestable:
-            profile_trim = _clamp(_safe_float(profile_control.get("recommended_trim_fraction_norm"), 0.20), 0.05, 0.65)
-            strategy_trim = _clamp(_safe_float((strategy_control or {}).get("recommended_trim_fraction_norm"), profile_trim), 0.05, 0.65)
-            tier = _profit_tier_for_pnl(max(unrealized, _safe_float((strategy_control or {}).get("ending_net_pnl_total"), unrealized)))
+            profile_trim = _clamp(
+                _safe_float(
+                    profile_control.get("recommended_trim_fraction_norm"), 0.20
+                ),
+                0.05,
+                0.65,
+            )
+            strategy_trim = _clamp(
+                _safe_float(
+                    (strategy_control or {}).get("recommended_trim_fraction_norm"),
+                    profile_trim,
+                ),
+                0.05,
+                0.65,
+            )
+            tier = _profit_tier_for_pnl(
+                max(
+                    unrealized,
+                    _safe_float(
+                        (strategy_control or {}).get("ending_net_pnl_total"), unrealized
+                    ),
+                )
+            )
             position_trim = _clamp(
                 (0.48 * strategy_trim)
                 + (0.28 * _safe_float(tier.get("trim_fraction_norm"), 0.15))
-                + (0.14 * _clamp(unrealized / max(PROFIT_HARVEST_MIN_UNREALIZED_PNL, 1.0)))
+                + (
+                    0.14
+                    * _clamp(unrealized / max(PROFIT_HARVEST_MIN_UNREALIZED_PNL, 1.0))
+                )
                 + (0.10 * _clamp(pnl_pct / 0.04 if pnl_pct > 0.0 else 0.0)),
                 0.05,
                 0.62,
             )
-            trim_condition = "trim only when exit quality clears floor or continuation weakens"
+            trim_condition = (
+                "trim only when exit quality clears floor or continuation weakens"
+            )
             telemetry_role = "profit_harvest_candidate"
         else:
             tier = _profit_tier_for_pnl(0.0)
             position_trim = 0.0
             trim_condition = "raw recovery telemetry only; keep reduce-only/sell path open when exit quality clears"
-            telemetry_role = "raw_recovery_drag_evidence" if unrealized < 0.0 else "paper_position_telemetry"
+            telemetry_role = (
+                "raw_recovery_drag_evidence"
+                if unrealized < 0.0
+                else "paper_position_telemetry"
+            )
         positions.append(
             {
                 "profile": profile,
@@ -4772,7 +6218,9 @@ def _position_harvest_ledger(
                 "strategy": strategy,
                 "bot_id": row.get("bot_id"),
                 "position_qty": round(qty, 6),
-                "position_avg_price": round(_safe_float(row.get("position_avg_price"), 0.0), 6),
+                "position_avg_price": round(
+                    _safe_float(row.get("position_avg_price"), 0.0), 6
+                ),
                 "mark_price": round(_safe_float(row.get("mark_price"), 0.0), 6),
                 "unrealized_pnl": round(unrealized, 6),
                 "realized_pnl": round(_safe_float(row.get("realized_pnl"), 0.0), 6),
@@ -4786,16 +6234,23 @@ def _position_harvest_ledger(
                 "telemetry_role": telemetry_role,
                 "runner_protection_floor_norm": (strategy_control or {}).get(
                     "protect_runner_when_trend_continuation_above_norm",
-                    profile_control.get("harvest_intelligence", {}).get("hold_winner_when_trend_continuation_above_norm", 0.74)
-                    if isinstance(profile_control.get("harvest_intelligence"), dict)
-                    else 0.74,
+                    (
+                        profile_control.get("harvest_intelligence", {}).get(
+                            "hold_winner_when_trend_continuation_above_norm", 0.74
+                        )
+                        if isinstance(profile_control.get("harvest_intelligence"), dict)
+                        else 0.74
+                    ),
                 ),
                 "trim_condition": trim_condition,
                 "paper_only": True,
             }
         )
     existing_strategy_keys = {
-        (str(item.get("profile") or ""), str(item.get("strategy") or "").strip().lower())
+        (
+            str(item.get("profile") or ""),
+            str(item.get("strategy") or "").strip().lower(),
+        )
         for item in positions
     }
     for sleeve in _as_list(paper.get("sleeve_latest")):
@@ -4805,11 +6260,17 @@ def _position_harvest_ledger(
         if profile not in target_profiles:
             continue
         profile_control = profit_harvest_controls.get(profile, {})
-        profile_unrealized = max(_safe_float(sleeve.get("ending_unrealized_pnl_total"), 0.0), 0.0)
+        profile_unrealized = max(
+            _safe_float(sleeve.get("ending_unrealized_pnl_total"), 0.0), 0.0
+        )
         profile_net = max(_safe_float(sleeve.get("ending_net_pnl_total"), 0.0), 1.0)
         if profile_unrealized <= 0.0:
             continue
-        winners = sleeve.get("top_winning_strategies") if isinstance(sleeve.get("top_winning_strategies"), list) else []
+        winners = (
+            sleeve.get("top_winning_strategies")
+            if isinstance(sleeve.get("top_winning_strategies"), list)
+            else []
+        )
         for winner in winners[:8]:
             if not isinstance(winner, dict):
                 continue
@@ -4819,15 +6280,32 @@ def _position_harvest_ledger(
             net = _safe_float(winner.get("ending_net_pnl_total"), 0.0)
             if net <= 0.0:
                 continue
-            strategy_control = strategy_harvest_controls.get(f"{profile}::{strategy.lower()}") or strategy_harvest_controls.get(
+            strategy_control = strategy_harvest_controls.get(
+                f"{profile}::{strategy.lower()}"
+            ) or strategy_harvest_controls.get(
                 f"{profile}::{_strategy_bot_id(strategy).lower()}"
             )
-            profile_trim = _clamp(_safe_float(profile_control.get("recommended_trim_fraction_norm"), 0.20), 0.05, 0.65)
-            strategy_trim = _clamp(_safe_float((strategy_control or {}).get("recommended_trim_fraction_norm"), profile_trim), 0.05, 0.65)
+            profile_trim = _clamp(
+                _safe_float(
+                    profile_control.get("recommended_trim_fraction_norm"), 0.20
+                ),
+                0.05,
+                0.65,
+            )
+            strategy_trim = _clamp(
+                _safe_float(
+                    (strategy_control or {}).get("recommended_trim_fraction_norm"),
+                    profile_trim,
+                ),
+                0.05,
+                0.65,
+            )
             contribution_share = _clamp(net / max(profile_net, 1.0))
             concentration = _clamp(net / max(profile_unrealized, profile_net, 1.0))
             tier = _profit_tier_for_pnl(net)
-            estimated_unrealized = min(profile_unrealized, max(net, profile_unrealized * contribution_share))
+            estimated_unrealized = min(
+                profile_unrealized, max(net, profile_unrealized * contribution_share)
+            )
             position_trim = _clamp(
                 (0.46 * strategy_trim)
                 + (0.28 * _safe_float(tier.get("trim_fraction_norm"), 0.15))
@@ -4857,9 +6335,15 @@ def _position_harvest_ledger(
                     "telemetry_role": "profit_harvest_proxy_candidate",
                     "runner_protection_floor_norm": (strategy_control or {}).get(
                         "protect_runner_when_trend_continuation_above_norm",
-                        profile_control.get("harvest_intelligence", {}).get("hold_winner_when_trend_continuation_above_norm", 0.74)
-                        if isinstance(profile_control.get("harvest_intelligence"), dict)
-                        else 0.74,
+                        (
+                            profile_control.get("harvest_intelligence", {}).get(
+                                "hold_winner_when_trend_continuation_above_norm", 0.74
+                            )
+                            if isinstance(
+                                profile_control.get("harvest_intelligence"), dict
+                            )
+                            else 0.74
+                        ),
                     ),
                     "trim_condition": "synthetic open-winner proxy; trim only when exit quality clears floor or continuation weakens",
                     "source": "sleeve_top_winner_snapshot",
@@ -4876,8 +6360,12 @@ def _position_harvest_ledger(
         ),
         reverse=True,
     )
-    harvestable_position_count = sum(1 for row in positions if bool(row.get("harvestable", False)))
-    drag_position_count = sum(1 for row in positions if bool(row.get("drag_reduction_candidate", False)))
+    harvestable_position_count = sum(
+        1 for row in positions if bool(row.get("harvestable", False))
+    )
+    drag_position_count = sum(
+        1 for row in positions if bool(row.get("drag_reduction_candidate", False))
+    )
     return {
         "active": bool(positions),
         "mode": "paper_position_harvest_ledger",
@@ -4887,8 +6375,20 @@ def _position_harvest_ledger(
         "position_count": len(positions),
         "harvestable_position_count": harvestable_position_count,
         "drag_position_count": drag_position_count,
-        "total_positive_unrealized_pnl": round(sum(max(_safe_float(row.get("unrealized_pnl"), 0.0), 0.0) for row in positions), 6),
-        "total_drag_unrealized_pnl": round(sum(min(_safe_float(row.get("unrealized_pnl"), 0.0), 0.0) for row in positions), 6),
+        "total_positive_unrealized_pnl": round(
+            sum(
+                max(_safe_float(row.get("unrealized_pnl"), 0.0), 0.0)
+                for row in positions
+            ),
+            6,
+        ),
+        "total_drag_unrealized_pnl": round(
+            sum(
+                min(_safe_float(row.get("unrealized_pnl"), 0.0), 0.0)
+                for row in positions
+            ),
+            6,
+        ),
         "positions": positions[:64],
         "runtime_rules": [
             "position trims are partial and paper-only",
@@ -4958,26 +6458,59 @@ def _aggressive_harvest_mode_contract(
     sleeves: list[dict[str, Any]],
     profit_harvest_controls: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    aggressive_profiles = ["aggressive", "intraday_aggressive", "swing_aggressive", "options_on_futures_aggressive"]
+    aggressive_profiles = [
+        "aggressive",
+        "intraday_aggressive",
+        "swing_aggressive",
+        "options_on_futures_aggressive",
+    ]
     rows: list[dict[str, Any]] = []
     for profile in aggressive_profiles:
-        sleeve = next((row for row in sleeves if isinstance(row, dict) and _normal_profile(row.get("profile")) == profile), {})
+        sleeve = next(
+            (
+                row
+                for row in sleeves
+                if isinstance(row, dict)
+                and _normal_profile(row.get("profile")) == profile
+            ),
+            {},
+        )
         control = profit_harvest_controls.get(profile, {})
         params = _profit_harvest_profile_params(profile)
-        net = _safe_float(sleeve.get("ending_net_pnl_total"), 0.0) if isinstance(sleeve, dict) else 0.0
-        unrealized = _safe_float(sleeve.get("ending_unrealized_pnl_total"), 0.0) if isinstance(sleeve, dict) else 0.0
+        net = (
+            _safe_float(sleeve.get("ending_net_pnl_total"), 0.0)
+            if isinstance(sleeve, dict)
+            else 0.0
+        )
+        unrealized = (
+            _safe_float(sleeve.get("ending_unrealized_pnl_total"), 0.0)
+            if isinstance(sleeve, dict)
+            else 0.0
+        )
         rows.append(
             {
                 "profile": profile,
                 "active": bool(control.get("active", False)),
                 "armed": True,
-                "mode": "fast_partial_profit_then_trail" if profile == "intraday_aggressive" else "partial_profit_with_runner_guard",
+                "mode": (
+                    "fast_partial_profit_then_trail"
+                    if profile == "intraday_aggressive"
+                    else "partial_profit_with_runner_guard"
+                ),
                 "current_net_pnl_total": round(net, 6),
                 "current_unrealized_pnl_total": round(unrealized, 6),
-                "target_realized_profit_share_norm": control.get("target_realized_profit_share_norm", params["target_realized_share"]),
-                "max_unrealized_profit_share_norm": control.get("max_unrealized_profit_share_norm", params["max_unrealized_share"]),
-                "first_profit_trim_fraction_norm": round(max(params["min_trim_fraction"], 0.16), 6),
-                "second_profit_trim_fraction_norm": round(min(params["max_trim_fraction"], 0.42), 6),
+                "target_realized_profit_share_norm": control.get(
+                    "target_realized_profit_share_norm", params["target_realized_share"]
+                ),
+                "max_unrealized_profit_share_norm": control.get(
+                    "max_unrealized_profit_share_norm", params["max_unrealized_share"]
+                ),
+                "first_profit_trim_fraction_norm": round(
+                    max(params["min_trim_fraction"], 0.16), 6
+                ),
+                "second_profit_trim_fraction_norm": round(
+                    min(params["max_trim_fraction"], 0.42), 6
+                ),
                 "block_adds_after_tier_2_until_replay_clean": True,
                 "runner_guard_required": True,
                 "activation_condition": "sleeve net and unrealized paper pnl are positive",
@@ -4995,18 +6528,32 @@ def _aggressive_harvest_mode_contract(
     }
 
 
-def _runner_protection_contract(profit_harvest_controls: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _runner_protection_contract(
+    profit_harvest_controls: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for profile, control in sorted(profit_harvest_controls.items()):
-        intelligence = control.get("harvest_intelligence") if isinstance(control.get("harvest_intelligence"), dict) else {}
+        intelligence = (
+            control.get("harvest_intelligence")
+            if isinstance(control.get("harvest_intelligence"), dict)
+            else {}
+        )
         rows.append(
             {
                 "profile": profile,
                 "active": True,
-                "trend_continuation_hold_floor_norm": intelligence.get("hold_winner_when_trend_continuation_above_norm", 0.74),
-                "harvest_regret_risk_norm": intelligence.get("harvest_regret_risk_norm", 0.0),
-                "force_trim_pressure_floor_norm": control.get("force_trim_when_harvest_pressure_above_norm", 0.72),
-                "force_trim_unrealized_share_floor_norm": control.get("force_trim_when_unrealized_share_above_norm", 0.86),
+                "trend_continuation_hold_floor_norm": intelligence.get(
+                    "hold_winner_when_trend_continuation_above_norm", 0.74
+                ),
+                "harvest_regret_risk_norm": intelligence.get(
+                    "harvest_regret_risk_norm", 0.0
+                ),
+                "force_trim_pressure_floor_norm": control.get(
+                    "force_trim_when_harvest_pressure_above_norm", 0.72
+                ),
+                "force_trim_unrealized_share_floor_norm": control.get(
+                    "force_trim_when_unrealized_share_above_norm", 0.86
+                ),
                 "rule": "hold runner when continuation and regret risk are high unless force-trim thresholds fire",
             }
         )
@@ -5031,15 +6578,25 @@ def _profit_rotation_contract(
             {
                 "profile": profile,
                 "harvest_pressure_norm": control.get("harvest_pressure_norm", 0.0),
-                "available_unrealized_pnl": control.get("ending_unrealized_pnl_total", 0.0),
+                "available_unrealized_pnl": control.get(
+                    "ending_unrealized_pnl_total", 0.0
+                ),
                 "suggested_rotation_fraction_norm": round(
-                    _clamp(_safe_float(control.get("recommended_trim_fraction_norm"), 0.20) * 0.50, 0.04, 0.30),
+                    _clamp(
+                        _safe_float(control.get("recommended_trim_fraction_norm"), 0.20)
+                        * 0.50,
+                        0.04,
+                        0.30,
+                    ),
                     6,
                 ),
             }
             for profile, control in profit_harvest_controls.items()
         ],
-        key=lambda item: (_safe_float(item.get("harvest_pressure_norm"), 0.0), _safe_float(item.get("available_unrealized_pnl"), 0.0)),
+        key=lambda item: (
+            _safe_float(item.get("harvest_pressure_norm"), 0.0),
+            _safe_float(item.get("available_unrealized_pnl"), 0.0),
+        ),
         reverse=True,
     )
     recipient_candidates: list[dict[str, Any]] = []
@@ -5051,7 +6608,9 @@ def _profit_rotation_contract(
         if not profile or profile in donor_profiles:
             continue
         net = _safe_float(row.get("ending_net_pnl_total"), 0.0)
-        win_rate = _safe_float(row.get("win_rate"), 0.5 if row.get("win_rate") is not None else 0.5)
+        win_rate = _safe_float(
+            row.get("win_rate"), 0.5 if row.get("win_rate") is not None else 0.5
+        )
         unrealized = _safe_float(row.get("ending_unrealized_pnl_total"), 0.0)
         if net < 0.0:
             continue
@@ -5061,10 +6620,19 @@ def _profit_rotation_contract(
                 "net_pnl_total": round(net, 6),
                 "win_rate": round(win_rate, 6),
                 "unrealized_pnl_total": round(unrealized, 6),
-                "fit_score_norm": round(_clamp(0.40 * win_rate + 0.35 * _clamp(net / 5_000.0) + 0.25 * (1.0 - _clamp(max(unrealized, 0.0) / 5_000.0))), 6),
+                "fit_score_norm": round(
+                    _clamp(
+                        0.40 * win_rate
+                        + 0.35 * _clamp(net / 5_000.0)
+                        + 0.25 * (1.0 - _clamp(max(unrealized, 0.0) / 5_000.0))
+                    ),
+                    6,
+                ),
             }
         )
-    recipient_candidates.sort(key=lambda item: _safe_float(item.get("fit_score_norm"), 0.0), reverse=True)
+    recipient_candidates.sort(
+        key=lambda item: _safe_float(item.get("fit_score_norm"), 0.0), reverse=True
+    )
     if not recipient_candidates:
         recipient_candidates = [
             {
@@ -5121,7 +6689,10 @@ def _harvest_next_grade_target(grade: str) -> dict[str, Any]:
     if current == "A":
         return {"next_grade": "A+", "target_score_norm": PROFIT_HARVEST_APLUS_MIN_SCORE}
     if current == "A+":
-        return {"next_grade": "A+", "target_score_norm": PROFIT_HARVEST_APLUSPLUS_MIN_SCORE}
+        return {
+            "next_grade": "A+",
+            "target_score_norm": PROFIT_HARVEST_APLUSPLUS_MIN_SCORE,
+        }
     return {"next_grade": "A+", "target_score_norm": PROFIT_HARVEST_APLUSPLUS_MIN_SCORE}
 
 
@@ -5182,7 +6753,8 @@ def _raw_harvest_b_rescue_credit(
         "position_count": int(position_count),
         "min_position_count": PROFIT_HARVEST_RAW_B_RESCUE_MIN_LEDGER_POSITIONS,
         "max_credit_norm": PROFIT_HARVEST_RAW_B_RESCUE_MAX_CREDIT,
-        "control_surface_count": len(profit_harvest_controls) + len(strategy_harvest_controls),
+        "control_surface_count": len(profit_harvest_controls)
+        + len(strategy_harvest_controls),
         "reason": "raw harvest has mature ledger plus active paper-only harvest controls, so the remaining B gap is treated as controlled realization timing",
     }
 
@@ -5197,7 +6769,9 @@ def _raw_harvest_grade_lift_contract(
     position_count: int,
 ) -> dict[str, Any]:
     target = _harvest_next_grade_target(raw_grade)
-    target_score = _safe_float(target.get("target_score_norm"), PROFIT_HARVEST_C_MIN_SCORE)
+    target_score = _safe_float(
+        target.get("target_score_norm"), PROFIT_HARVEST_C_MIN_SCORE
+    )
     score_gap = max(target_score - float(raw_score), 0.0)
     return {
         "active": str(raw_grade or "") != "A+",
@@ -5212,12 +6786,20 @@ def _raw_harvest_grade_lift_contract(
             "unrealized_control_norm": round(float(unrealized_control), 6),
             "regret_control_norm": round(float(regret_control), 6),
             "position_count": int(position_count),
-            "position_count_credit_norm": round(_clamp(float(position_count) / 12.0), 6),
+            "position_count_credit_norm": round(
+                _clamp(float(position_count) / 12.0), 6
+            ),
         },
         "component_lift_if_solo": {
-            "realized_conversion_progress_norm": round(score_gap / 0.42 if score_gap > 0.0 else 0.0, 6),
-            "unrealized_control_norm": round(score_gap / 0.28 if score_gap > 0.0 else 0.0, 6),
-            "regret_control_norm": round(score_gap / 0.18 if score_gap > 0.0 else 0.0, 6),
+            "realized_conversion_progress_norm": round(
+                score_gap / 0.42 if score_gap > 0.0 else 0.0, 6
+            ),
+            "unrealized_control_norm": round(
+                score_gap / 0.28 if score_gap > 0.0 else 0.0, 6
+            ),
+            "regret_control_norm": round(
+                score_gap / 0.18 if score_gap > 0.0 else 0.0, 6
+            ),
         },
         "blended_lift_plan": {
             "realized_conversion_weight": 0.42,
@@ -5252,13 +6834,32 @@ def _profit_harvest_aplus_campaign_contract(
     position_ledger: dict[str, Any],
     strategy_harvest_controls: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    realized_share = _safe_float(profit_realization_contract.get("realized_profit_share_norm"), 0.0)
-    target_share = _safe_float(profit_realization_contract.get("target_realized_profit_share_norm"), PROFIT_HARVEST_TARGET_REALIZED_SHARE)
-    unrealized_share = _safe_float(profit_realization_contract.get("unrealized_profit_share_norm"), 0.0)
-    max_unrealized = _safe_float(profit_realization_contract.get("max_unrealized_profit_share_norm"), PROFIT_HARVEST_MAX_UNREALIZED_SHARE)
-    conversion_deficit = _clamp(max(PROFIT_HARVEST_APLUS_MIN_REALIZED_PROGRESS - conversion_progress, 0.0) / PROFIT_HARVEST_APLUS_MIN_REALIZED_PROGRESS)
-    unrealized_deficit = _clamp(max(PROFIT_HARVEST_APLUS_MIN_UNREALIZED_CONTROL - unrealized_control, 0.0) / PROFIT_HARVEST_APLUS_MIN_UNREALIZED_CONTROL)
-    score_deficit = _clamp(max(PROFIT_HARVEST_APLUS_MIN_SCORE - raw_score, 0.0) / PROFIT_HARVEST_APLUS_MIN_SCORE)
+    realized_share = _safe_float(
+        profit_realization_contract.get("realized_profit_share_norm"), 0.0
+    )
+    target_share = _safe_float(
+        profit_realization_contract.get("target_realized_profit_share_norm"),
+        PROFIT_HARVEST_TARGET_REALIZED_SHARE,
+    )
+    unrealized_share = _safe_float(
+        profit_realization_contract.get("unrealized_profit_share_norm"), 0.0
+    )
+    max_unrealized = _safe_float(
+        profit_realization_contract.get("max_unrealized_profit_share_norm"),
+        PROFIT_HARVEST_MAX_UNREALIZED_SHARE,
+    )
+    conversion_deficit = _clamp(
+        max(PROFIT_HARVEST_APLUS_MIN_REALIZED_PROGRESS - conversion_progress, 0.0)
+        / PROFIT_HARVEST_APLUS_MIN_REALIZED_PROGRESS
+    )
+    unrealized_deficit = _clamp(
+        max(PROFIT_HARVEST_APLUS_MIN_UNREALIZED_CONTROL - unrealized_control, 0.0)
+        / PROFIT_HARVEST_APLUS_MIN_UNREALIZED_CONTROL
+    )
+    score_deficit = _clamp(
+        max(PROFIT_HARVEST_APLUS_MIN_SCORE - raw_score, 0.0)
+        / PROFIT_HARVEST_APLUS_MIN_SCORE
+    )
     aplusplus_conversion_deficit = _clamp(
         max(PROFIT_HARVEST_APLUSPLUS_MIN_REALIZED_PROGRESS - conversion_progress, 0.0)
         / PROFIT_HARVEST_APLUSPLUS_MIN_REALIZED_PROGRESS
@@ -5271,12 +6872,24 @@ def _profit_harvest_aplus_campaign_contract(
         max(PROFIT_HARVEST_APLUSPLUS_MIN_REGRET_CONTROL - regret_control, 0.0)
         / PROFIT_HARVEST_APLUSPLUS_MIN_REGRET_CONTROL
     )
-    aplusplus_score_deficit = _clamp(max(PROFIT_HARVEST_APLUSPLUS_MIN_SCORE - raw_score, 0.0) / PROFIT_HARVEST_APLUSPLUS_MIN_SCORE)
-    target_realized_delta = max((target_share * PROFIT_HARVEST_APLUS_MIN_REALIZED_PROGRESS) - realized_share, 0.0)
-    aplusplus_target_realized_delta = max((target_share * PROFIT_HARVEST_APLUSPLUS_MIN_REALIZED_PROGRESS) - realized_share, 0.0)
+    aplusplus_score_deficit = _clamp(
+        max(PROFIT_HARVEST_APLUSPLUS_MIN_SCORE - raw_score, 0.0)
+        / PROFIT_HARVEST_APLUSPLUS_MIN_SCORE
+    )
+    target_realized_delta = max(
+        (target_share * PROFIT_HARVEST_APLUS_MIN_REALIZED_PROGRESS) - realized_share,
+        0.0,
+    )
+    aplusplus_target_realized_delta = max(
+        (target_share * PROFIT_HARVEST_APLUSPLUS_MIN_REALIZED_PROGRESS)
+        - realized_share,
+        0.0,
+    )
     excess_unrealized_delta = max(unrealized_share - max_unrealized, 0.0)
     raw_c_gap = max(PROFIT_HARVEST_C_MIN_SCORE - raw_score, 0.0)
-    raw_c_rescue_active = bool(raw_grade in {"D"} and raw_c_gap > 0.0 and raw_c_gap <= 0.08)
+    raw_c_rescue_active = bool(
+        raw_grade in {"D"} and raw_c_gap > 0.0 and raw_c_gap <= 0.08
+    )
     raw_c_rescue_pressure = _clamp(raw_c_gap / 0.08) if raw_c_rescue_active else 0.0
     position_count = _safe_int(
         position_ledger.get("harvestable_position_count"),
@@ -5317,11 +6930,13 @@ def _profit_harvest_aplus_campaign_contract(
         + 0.18 * _clamp(strategy_unique_count / 8.0)
         + 0.18 * _clamp(position_count / 24.0)
         + 0.16 * (1.0 if bool(position_ledger.get("active", False)) else 0.0)
-        + 0.14 * (1.0 if bool(profit_realization_contract.get("active", False)) else 0.0)
+        + 0.14
+        * (1.0 if bool(profit_realization_contract.get("active", False)) else 0.0)
         + 0.10 * _clamp(1.0 - score_deficit * 0.35)
         + 0.06 * _clamp(daily_goal_count / max(len(profit_harvest_controls), 1))
         + 0.04 * _clamp(laddered_goal_count / max(len(profit_harvest_controls), 1))
-        + 0.04 * _clamp(infrabot_supervised_count / max(len(profit_harvest_controls), 1))
+        + 0.04
+        * _clamp(infrabot_supervised_count / max(len(profit_harvest_controls), 1))
     )
     campaign_pressure = _clamp(
         0.44 * conversion_deficit
@@ -5341,13 +6956,22 @@ def _profit_harvest_aplus_campaign_contract(
         profile_pressure = _clamp(
             0.55 * campaign_pressure
             + 0.25 * _safe_float(control.get("harvest_pressure_norm"), 0.0)
-            + 0.20 * _clamp(_safe_float(control.get("unrealized_profit_share_norm"), 0.0) - _safe_float(control.get("max_unrealized_profit_share_norm"), 0.70), 0.0, 1.0)
+            + 0.20
+            * _clamp(
+                _safe_float(control.get("unrealized_profit_share_norm"), 0.0)
+                - _safe_float(control.get("max_unrealized_profit_share_norm"), 0.70),
+                0.0,
+                1.0,
+            )
         )
         aplusplus_profile_pressure = _clamp(
             0.54 * aplusplus_pressure
             + 0.24 * profile_pressure
             + 0.12 * _safe_float(control.get("harvest_pressure_norm"), 0.0)
-            + 0.10 * _clamp(_safe_float(control.get("unrealized_profit_share_norm"), 0.0), 0.0, 1.0)
+            + 0.10
+            * _clamp(
+                _safe_float(control.get("unrealized_profit_share_norm"), 0.0), 0.0, 1.0
+            )
         )
         c_rescue_boost = 0.18 * raw_c_rescue_pressure
         aplusplus_boost = 0.16 * aplusplus_profile_pressure
@@ -5361,15 +6985,88 @@ def _profit_harvest_aplus_campaign_contract(
             "raw_c_rescue_active": raw_c_rescue_active,
             "raw_c_rescue_pressure_norm": round(raw_c_rescue_pressure, 6),
             "one_letter_raw_outcome_lift_target": "C" if raw_c_rescue_active else "A",
-            "raw_c_rescue_minimum_mode": "partial_trim_to_realized_cash_before_new_adds" if raw_c_rescue_active else "standard_harvest",
-            "trim_fraction_boost_norm": round(_clamp(0.05 + 0.22 * profile_pressure + c_rescue_boost + aplusplus_boost, 0.05, 0.56), 6),
-            "exit_quality_floor_relief_norm": round(_clamp(0.02 + 0.10 * profile_pressure + 0.08 * raw_c_rescue_pressure + 0.06 * aplusplus_profile_pressure, 0.02, 0.32), 6),
-            "trim_pressure_floor_relief_norm": round(_clamp(0.04 + 0.12 * profile_pressure + 0.10 * raw_c_rescue_pressure + 0.08 * aplusplus_profile_pressure, 0.04, 0.38), 6),
-            "force_pressure_floor_relief_norm": round(_clamp(0.03 + 0.10 * profile_pressure + 0.09 * raw_c_rescue_pressure + 0.07 * aplusplus_profile_pressure, 0.03, 0.34), 6),
-            "force_unrealized_share_relief_norm": round(_clamp(0.02 + 0.08 * profile_pressure + 0.08 * raw_c_rescue_pressure + 0.06 * aplusplus_profile_pressure, 0.02, 0.28), 6),
-            "holdback_trend_floor_boost_norm": round(_clamp(0.03 + 0.08 * profile_pressure + 0.03 * raw_c_rescue_pressure + 0.04 * aplusplus_profile_pressure, 0.03, 0.20), 6),
-            "holdback_regret_floor_norm": round(_clamp(0.68 + 0.16 * profile_pressure + 0.08 * raw_c_rescue_pressure + 0.06 * aplusplus_profile_pressure, 0.68, 0.96), 6),
-            "block_new_adds_until_raw_grade_at_least": "C" if raw_c_rescue_active else "A",
+            "raw_c_rescue_minimum_mode": (
+                "partial_trim_to_realized_cash_before_new_adds"
+                if raw_c_rescue_active
+                else "standard_harvest"
+            ),
+            "trim_fraction_boost_norm": round(
+                _clamp(
+                    0.05 + 0.22 * profile_pressure + c_rescue_boost + aplusplus_boost,
+                    0.05,
+                    0.56,
+                ),
+                6,
+            ),
+            "exit_quality_floor_relief_norm": round(
+                _clamp(
+                    0.02
+                    + 0.10 * profile_pressure
+                    + 0.08 * raw_c_rescue_pressure
+                    + 0.06 * aplusplus_profile_pressure,
+                    0.02,
+                    0.32,
+                ),
+                6,
+            ),
+            "trim_pressure_floor_relief_norm": round(
+                _clamp(
+                    0.04
+                    + 0.12 * profile_pressure
+                    + 0.10 * raw_c_rescue_pressure
+                    + 0.08 * aplusplus_profile_pressure,
+                    0.04,
+                    0.38,
+                ),
+                6,
+            ),
+            "force_pressure_floor_relief_norm": round(
+                _clamp(
+                    0.03
+                    + 0.10 * profile_pressure
+                    + 0.09 * raw_c_rescue_pressure
+                    + 0.07 * aplusplus_profile_pressure,
+                    0.03,
+                    0.34,
+                ),
+                6,
+            ),
+            "force_unrealized_share_relief_norm": round(
+                _clamp(
+                    0.02
+                    + 0.08 * profile_pressure
+                    + 0.08 * raw_c_rescue_pressure
+                    + 0.06 * aplusplus_profile_pressure,
+                    0.02,
+                    0.28,
+                ),
+                6,
+            ),
+            "holdback_trend_floor_boost_norm": round(
+                _clamp(
+                    0.03
+                    + 0.08 * profile_pressure
+                    + 0.03 * raw_c_rescue_pressure
+                    + 0.04 * aplusplus_profile_pressure,
+                    0.03,
+                    0.20,
+                ),
+                6,
+            ),
+            "holdback_regret_floor_norm": round(
+                _clamp(
+                    0.68
+                    + 0.16 * profile_pressure
+                    + 0.08 * raw_c_rescue_pressure
+                    + 0.06 * aplusplus_profile_pressure,
+                    0.68,
+                    0.96,
+                ),
+                6,
+            ),
+            "block_new_adds_until_raw_grade_at_least": (
+                "C" if raw_c_rescue_active else "A"
+            ),
             "paper_only": True,
         }
     return {
@@ -5392,7 +7089,9 @@ def _profit_harvest_aplus_campaign_contract(
             "unrealized_control_deficit_norm": round(aplusplus_unrealized_deficit, 6),
             "regret_control_deficit_norm": round(aplusplus_regret_deficit, 6),
             "score_deficit_norm": round(aplusplus_score_deficit, 6),
-            "target_realized_profit_delta_norm": round(aplusplus_target_realized_delta, 6),
+            "target_realized_profit_delta_norm": round(
+                aplusplus_target_realized_delta, 6
+            ),
             "stop_condition": "raw harvest outcome reaches A+ with realized progress >= 0.98, unrealized control >= 0.96, and regret control >= 0.80",
         },
         "conversion_deficit_norm": round(conversion_deficit, 6),
@@ -5468,7 +7167,12 @@ def _remaining_low_grade_layers(
             "active_blocker": bool(active_blocker),
             "displayed_grade": str(displayed_grade or current_grade),
             "reason": str(reason),
-            "exact_command": ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
+            "exact_command": [
+                "./scripts/ops/opsctl.sh",
+                "paper-profitability-control",
+                "--apply",
+                "--json",
+            ],
             "expected_impact": str(expected_impact),
             "when_to_stop": str(when_to_stop),
         }
@@ -5476,34 +7180,62 @@ def _remaining_low_grade_layers(
             row["score_norm"] = round(float(score_norm), 6)
         layers.append(row)
 
-    base_harvest_grade = str(profit_harvest_report_card.get("base_raw_outcome_grade") or "").strip().upper()
-    displayed_harvest_grade = str(
-        profit_harvest_report_card.get("headline_grade")
-        or profit_harvest_report_card.get("grade")
-        or profit_harvest_report_card.get("raw_outcome_grade")
-        or ""
-    ).strip().upper()
-    raw_grade_lift_contract = _as_dict(profit_harvest_report_card.get("raw_grade_lift_contract"))
-    raw_grade_lift_components = _as_dict(raw_grade_lift_contract.get("current_components"))
+    base_harvest_grade = (
+        str(profit_harvest_report_card.get("base_raw_outcome_grade") or "")
+        .strip()
+        .upper()
+    )
+    displayed_harvest_grade = (
+        str(
+            profit_harvest_report_card.get("headline_grade")
+            or profit_harvest_report_card.get("grade")
+            or profit_harvest_report_card.get("raw_outcome_grade")
+            or ""
+        )
+        .strip()
+        .upper()
+    )
+    raw_grade_lift_contract = _as_dict(
+        profit_harvest_report_card.get("raw_grade_lift_contract")
+    )
+    raw_grade_lift_components = _as_dict(
+        raw_grade_lift_contract.get("current_components")
+    )
     position_count_known = bool(
         "position_count" in raw_grade_lift_components
         or "position_ledger_count" in profit_harvest_report_card
     )
     gradeable_harvest_exposure = (
         not position_count_known
-        or _safe_int(raw_grade_lift_components.get("position_count"), _safe_int(profit_harvest_report_card.get("position_ledger_count"), 0)) > 0
-        or _safe_float(profit_harvest_report_card.get("current_realized_profit_share_norm"), 0.0) > 0.0
-        or _safe_float(profit_harvest_report_card.get("current_unrealized_profit_share_norm"), 0.0) > 0.0
-        or _safe_float(profit_harvest_report_card.get("realized_conversion_progress_norm"), 0.0) > 0.0
+        or _safe_int(
+            raw_grade_lift_components.get("position_count"),
+            _safe_int(profit_harvest_report_card.get("position_ledger_count"), 0),
+        )
+        > 0
+        or _safe_float(
+            profit_harvest_report_card.get("current_realized_profit_share_norm"), 0.0
+        )
+        > 0.0
+        or _safe_float(
+            profit_harvest_report_card.get("current_unrealized_profit_share_norm"), 0.0
+        )
+        > 0.0
+        or _safe_float(
+            profit_harvest_report_card.get("realized_conversion_progress_norm"), 0.0
+        )
+        > 0.0
     )
     add(
         layer_id="paper_harvest_base_raw_outcome",
         category="base_evidence_grade",
         grade=base_harvest_grade,
         json_path="profit_harvest_report_card.base_raw_outcome_grade",
-        active_blocker=displayed_harvest_grade in LOW_GRADE_VALUES and gradeable_harvest_exposure,
+        active_blocker=displayed_harvest_grade in LOW_GRADE_VALUES
+        and gradeable_harvest_exposure,
         displayed_grade=displayed_harvest_grade,
-        score_norm=_safe_float(profit_harvest_report_card.get("base_raw_outcome_score_norm"), 0.0),
+        score_norm=_safe_float(
+            profit_harvest_report_card.get("base_raw_outcome_score_norm"), 0.0
+        ),
         reason=(
             "base harvest evidence is still low before rescue/control credits"
             if gradeable_harvest_exposure
@@ -5528,15 +7260,21 @@ def _remaining_low_grade_layers(
 
     contained_profiles = {
         str(row.get("profile") or "")
-        for row in _as_list(raw_operational_containment_filter.get("contained_profiles"))
+        for row in _as_list(
+            raw_operational_containment_filter.get("contained_profiles")
+        )
         if isinstance(row, dict)
     }
     probationary_profiles = {
         str(row.get("profile") or "")
-        for row in _as_list(raw_operational_materiality_filter.get("probationary_profiles"))
+        for row in _as_list(
+            raw_operational_materiality_filter.get("probationary_profiles")
+        )
         if isinstance(row, dict)
     }
-    for idx, row in enumerate(_as_list(raw_operational_materiality_filter.get("probationary_profiles"))):
+    for idx, row in enumerate(
+        _as_list(raw_operational_materiality_filter.get("probationary_profiles"))
+    ):
         if not isinstance(row, dict):
             continue
         profile = str(row.get("profile") or "")
@@ -5554,7 +7292,9 @@ def _remaining_low_grade_layers(
             when_to_stop="profile exits probation with a non-D/F profit grade or becomes material enough for direct remediation.",
         )
 
-    for idx, row in enumerate(_as_list(raw_operational_containment_filter.get("contained_profiles"))):
+    for idx, row in enumerate(
+        _as_list(raw_operational_containment_filter.get("contained_profiles"))
+    ):
         if not isinstance(row, dict):
             continue
         profile = str(row.get("profile") or "")
@@ -5579,7 +7319,9 @@ def _remaining_low_grade_layers(
         grade = str(control.get("profit_grade") or "")
         if grade.strip().upper() not in LOW_GRADE_VALUES:
             continue
-        contained_or_probationary = profile_name in contained_profiles or profile_name in probationary_profiles
+        contained_or_probationary = (
+            profile_name in contained_profiles or profile_name in probationary_profiles
+        )
         add(
             layer_id=f"paper_profile_profit:{profile_name}",
             category="profile_profit_grade",
@@ -5587,7 +7329,11 @@ def _remaining_low_grade_layers(
             json_path=f"active_profile_controls.{profile_name}.profit_grade",
             profile=profile_name,
             active_blocker=not contained_or_probationary,
-            displayed_grade="A+" if profile_name in contained_profiles else "probationary" if profile_name in probationary_profiles else "",
+            displayed_grade=(
+                "A+"
+                if profile_name in contained_profiles
+                else "probationary" if profile_name in probationary_profiles else ""
+            ),
             score_norm=_safe_float(control.get("profit_score"), 0.0),
             reason="profile-level paper profitability is still low",
             expected_impact="Repair labels, deweight bad decisions, tighten entries/exits, and require improved fresh paper results before widening.",
@@ -5610,20 +7356,41 @@ def _low_grade_control_report_card(
     remaining_low_grade_layers: list[dict[str, Any]],
     profit_harvest_report_card: dict[str, Any],
 ) -> dict[str, Any]:
-    active_blockers = [row for row in remaining_low_grade_layers if bool(row.get("active_blocker", False))]
-    contained_layers = [row for row in remaining_low_grade_layers if not bool(row.get("active_blocker", False))]
+    active_blockers = [
+        row
+        for row in remaining_low_grade_layers
+        if bool(row.get("active_blocker", False))
+    ]
+    contained_layers = [
+        row
+        for row in remaining_low_grade_layers
+        if not bool(row.get("active_blocker", False))
+    ]
     base_evidence_layers = [
-        row for row in remaining_low_grade_layers if str(row.get("category") or "") == "base_evidence_grade"
+        row
+        for row in remaining_low_grade_layers
+        if str(row.get("category") or "") == "base_evidence_grade"
     ]
     profile_layers = [
         row
         for row in remaining_low_grade_layers
-        if str(row.get("category") or "") in {"profile_profit_grade", "contained_profile_profit_grade", "probationary_profile_profit_grade"}
+        if str(row.get("category") or "")
+        in {
+            "profile_profit_grade",
+            "contained_profile_profit_grade",
+            "probationary_profile_profit_grade",
+        }
     ]
     harvest_campaign = _as_dict(profit_harvest_report_card.get("a_plus_campaign"))
     harvest_target = _as_dict(harvest_campaign.get("a_plus_plus_target"))
-    base_score = _safe_float(profit_harvest_report_card.get("base_raw_outcome_score_norm"), 0.0)
-    headline_grade = str(profit_harvest_report_card.get("headline_grade") or profit_harvest_report_card.get("raw_outcome_grade") or "")
+    base_score = _safe_float(
+        profit_harvest_report_card.get("base_raw_outcome_score_norm"), 0.0
+    )
+    headline_grade = str(
+        profit_harvest_report_card.get("headline_grade")
+        or profit_harvest_report_card.get("raw_outcome_grade")
+        or ""
+    )
     raw_grade = str(profit_harvest_report_card.get("base_raw_outcome_grade") or "")
 
     if active_blockers:
@@ -5651,7 +7418,8 @@ def _low_grade_control_report_card(
         "a_plus_control_ready": not active_blockers,
         "a_plus_plus_control_ready": not active_blockers,
         "a_plus_raw_evidence_ready": base_score >= PROFIT_HARVEST_APLUS_MIN_SCORE,
-        "a_plus_plus_raw_evidence_ready": base_score >= PROFIT_HARVEST_APLUSPLUS_MIN_SCORE,
+        "a_plus_plus_raw_evidence_ready": base_score
+        >= PROFIT_HARVEST_APLUSPLUS_MIN_SCORE,
         "raw_score_targets": {
             "current_base_raw_score_norm": round(base_score, 6),
             "a_plus_target_score_norm": PROFIT_HARVEST_APLUS_MIN_SCORE,
@@ -5661,9 +7429,15 @@ def _low_grade_control_report_card(
         },
         "control_evidence": {
             "harvest_campaign_active": bool(harvest_campaign.get("active", False)),
-            "harvest_campaign_control_grade": str(harvest_campaign.get("control_grade") or ""),
-            "harvest_campaign_control_score_norm": _safe_float(harvest_campaign.get("control_score_norm"), 0.0),
-            "harvest_a_plus_plus_control_ready": bool(harvest_target.get("control_ready", False)),
+            "harvest_campaign_control_grade": str(
+                harvest_campaign.get("control_grade") or ""
+            ),
+            "harvest_campaign_control_score_norm": _safe_float(
+                harvest_campaign.get("control_score_norm"), 0.0
+            ),
+            "harvest_a_plus_plus_control_ready": bool(
+                harvest_target.get("control_ready", False)
+            ),
         },
         "a_plus_target_contract": {
             "target": "convert the remaining raw D/F evidence into real A+/A+ evidence without hiding it",
@@ -5681,23 +7455,44 @@ def _profit_harvest_report_card(
     strategy_harvest_controls: dict[str, dict[str, Any]],
     profit_harvest_controls: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    realized_share = _safe_float(profit_realization_contract.get("realized_profit_share_norm"), 0.0)
-    target_share = _safe_float(profit_realization_contract.get("target_realized_profit_share_norm"), PROFIT_HARVEST_TARGET_REALIZED_SHARE)
-    unrealized_share = _safe_float(profit_realization_contract.get("unrealized_profit_share_norm"), 0.0)
-    max_unrealized = _safe_float(profit_realization_contract.get("max_unrealized_profit_share_norm"), PROFIT_HARVEST_MAX_UNREALIZED_SHARE)
+    realized_share = _safe_float(
+        profit_realization_contract.get("realized_profit_share_norm"), 0.0
+    )
+    target_share = _safe_float(
+        profit_realization_contract.get("target_realized_profit_share_norm"),
+        PROFIT_HARVEST_TARGET_REALIZED_SHARE,
+    )
+    unrealized_share = _safe_float(
+        profit_realization_contract.get("unrealized_profit_share_norm"), 0.0
+    )
+    max_unrealized = _safe_float(
+        profit_realization_contract.get("max_unrealized_profit_share_norm"),
+        PROFIT_HARVEST_MAX_UNREALIZED_SHARE,
+    )
     summary = (
         profit_realization_contract.get("intelligence_summary")
         if isinstance(profit_realization_contract.get("intelligence_summary"), dict)
         else {}
     )
     portfolio_fields_present = "portfolio_net_pnl_total" in profit_realization_contract
-    portfolio_net_pnl = _safe_float(profit_realization_contract.get("portfolio_net_pnl_total"), 0.0)
-    economic_evidence_ready = bool(not portfolio_fields_present or portfolio_net_pnl > 0.0)
+    portfolio_net_pnl = _safe_float(
+        profit_realization_contract.get("portfolio_net_pnl_total"), 0.0
+    )
+    economic_evidence_ready = bool(
+        not portfolio_fields_present or portfolio_net_pnl > 0.0
+    )
     conversion_progress = _clamp(realized_share / max(target_share, 0.01))
-    unrealized_control = _clamp(1.0 - max(unrealized_share - max_unrealized, 0.0) / max(1.0 - max_unrealized, 0.01))
-    regret_control = _clamp(1.0 - _safe_float(summary.get("avg_harvest_regret_risk_norm"), 0.0))
+    unrealized_control = _clamp(
+        1.0
+        - max(unrealized_share - max_unrealized, 0.0) / max(1.0 - max_unrealized, 0.01)
+    )
+    regret_control = _clamp(
+        1.0 - _safe_float(summary.get("avg_harvest_regret_risk_norm"), 0.0)
+    )
     telemetry_position_count = _safe_int(position_ledger.get("position_count"), 0)
-    position_count = _safe_int(position_ledger.get("harvestable_position_count"), telemetry_position_count)
+    position_count = _safe_int(
+        position_ledger.get("harvestable_position_count"), telemetry_position_count
+    )
     base_score = _clamp(
         0.42 * conversion_progress
         + 0.28 * unrealized_control
@@ -5754,8 +7549,7 @@ def _profit_harvest_report_card(
     control_grade = str(aplus_campaign.get("control_grade") or raw_grade)
     control_can_lift_headline = bool(
         economic_evidence_ready
-        and
-        aplus_campaign.get("active", False)
+        and aplus_campaign.get("active", False)
         and bool(profit_realization_contract.get("active", False))
         and bool(profit_harvest_controls or strategy_harvest_controls or position_count)
         and _harvest_grade_rank(control_grade) > _harvest_grade_rank(raw_grade)
@@ -5765,14 +7559,18 @@ def _profit_harvest_report_card(
         "active": bool(profit_realization_contract.get("active", False)),
         "economic_evidence_ready": economic_evidence_ready,
         "portfolio_net_pnl_total": round(portfolio_net_pnl, 6),
-        "raw_grade_suppressed_reason": ""
-        if economic_evidence_ready
-        else "portfolio_net_pnl_nonpositive",
+        "raw_grade_suppressed_reason": (
+            "" if economic_evidence_ready else "portfolio_net_pnl_nonpositive"
+        ),
         "grade": headline_grade,
         "headline_grade": headline_grade,
         "raw_outcome_grade": raw_grade,
         "control_grade": control_grade,
-        "grade_basis": "controlled_harvest_readiness" if headline_grade != raw_grade else "raw_harvest_outcome",
+        "grade_basis": (
+            "controlled_harvest_readiness"
+            if headline_grade != raw_grade
+            else "raw_harvest_outcome"
+        ),
         "score_norm": round(score, 6),
         "raw_outcome_score_norm": round(score, 6),
         "base_raw_outcome_grade": base_raw_grade,
@@ -5789,7 +7587,9 @@ def _profit_harvest_report_card(
         "position_ledger_count": position_count,
         "position_telemetry_count": telemetry_position_count,
         "drag_position_count": _safe_int(position_ledger.get("drag_position_count"), 0),
-        "strategy_harvest_control_count": len({id(row) for row in strategy_harvest_controls.values()}),
+        "strategy_harvest_control_count": len(
+            {id(row) for row in strategy_harvest_controls.values()}
+        ),
         "a_plus_campaign": aplus_campaign,
         "raw_grade_lift_contract": (
             aplus_campaign.get("raw_grade_lift_contract")
@@ -5831,13 +7631,26 @@ def _grand_master_profit_harvest_awareness_contract(
             "paper_profit_harvest_rotation_pressure_norm",
         ],
         "current": {
-            "realized_profit_share_norm": profit_realization_contract.get("realized_profit_share_norm", 0.0),
-            "unrealized_profit_share_norm": profit_realization_contract.get("unrealized_profit_share_norm", 0.0),
-            "target_realized_profit_share_norm": profit_realization_contract.get("target_realized_profit_share_norm", PROFIT_HARVEST_TARGET_REALIZED_SHARE),
+            "realized_profit_share_norm": profit_realization_contract.get(
+                "realized_profit_share_norm", 0.0
+            ),
+            "unrealized_profit_share_norm": profit_realization_contract.get(
+                "unrealized_profit_share_norm", 0.0
+            ),
+            "target_realized_profit_share_norm": profit_realization_contract.get(
+                "target_realized_profit_share_norm",
+                PROFIT_HARVEST_TARGET_REALIZED_SHARE,
+            ),
             "harvest_report_grade": report_card.get("grade", ""),
-            "avg_harvest_regret_risk_norm": summary.get("avg_harvest_regret_risk_norm", 0.0),
-            "avg_trend_continuation_score_norm": summary.get("avg_trend_continuation_score_norm", 0.0),
-            "avg_realized_conversion_skill_norm": summary.get("avg_realized_conversion_skill_norm", 0.0),
+            "avg_harvest_regret_risk_norm": summary.get(
+                "avg_harvest_regret_risk_norm", 0.0
+            ),
+            "avg_trend_continuation_score_norm": summary.get(
+                "avg_trend_continuation_score_norm", 0.0
+            ),
+            "avg_realized_conversion_skill_norm": summary.get(
+                "avg_realized_conversion_skill_norm", 0.0
+            ),
             "rotation_donor_count": len(rotation_contract.get("donors") or []),
         },
         "override_rules": [
@@ -5862,14 +7675,23 @@ def _profit_realization_contract(
     unrealized_share = _clamp(positive_unrealized / max(positive_total, 1.0))
     targets = sorted(
         profit_harvest_controls.values(),
-        key=lambda item: (_safe_float(item.get("harvest_pressure_norm"), 0.0), _safe_float(item.get("ending_unrealized_pnl_total"), 0.0)),
+        key=lambda item: (
+            _safe_float(item.get("harvest_pressure_norm"), 0.0),
+            _safe_float(item.get("ending_unrealized_pnl_total"), 0.0),
+        ),
         reverse=True,
     )
     if targets:
-        pressure_sum = sum(max(_safe_float(row.get("harvest_pressure_norm"), 0.0), 0.01) for row in targets)
+        pressure_sum = sum(
+            max(_safe_float(row.get("harvest_pressure_norm"), 0.0), 0.01)
+            for row in targets
+        )
         target_realized_share = _clamp(
             sum(
-                _safe_float(row.get("target_realized_profit_share_norm"), PROFIT_HARVEST_TARGET_REALIZED_SHARE)
+                _safe_float(
+                    row.get("target_realized_profit_share_norm"),
+                    PROFIT_HARVEST_TARGET_REALIZED_SHARE,
+                )
                 * max(_safe_float(row.get("harvest_pressure_norm"), 0.0), 0.01)
                 for row in targets
             )
@@ -5879,7 +7701,10 @@ def _profit_realization_contract(
         )
         max_unrealized_share = _clamp(
             sum(
-                _safe_float(row.get("max_unrealized_profit_share_norm"), PROFIT_HARVEST_MAX_UNREALIZED_SHARE)
+                _safe_float(
+                    row.get("max_unrealized_profit_share_norm"),
+                    PROFIT_HARVEST_MAX_UNREALIZED_SHARE,
+                )
                 * max(_safe_float(row.get("harvest_pressure_norm"), 0.0), 0.01)
                 for row in targets
             )
@@ -5890,7 +7715,12 @@ def _profit_realization_contract(
         intelligence_summary = {
             "avg_harvest_regret_risk_norm": round(
                 sum(
-                    _safe_float((row.get("harvest_intelligence") or {}).get("harvest_regret_risk_norm"), 0.0)
+                    _safe_float(
+                        (row.get("harvest_intelligence") or {}).get(
+                            "harvest_regret_risk_norm"
+                        ),
+                        0.0,
+                    )
                     for row in targets
                     if isinstance(row.get("harvest_intelligence"), dict)
                 )
@@ -5899,7 +7729,12 @@ def _profit_realization_contract(
             ),
             "avg_trend_continuation_score_norm": round(
                 sum(
-                    _safe_float((row.get("harvest_intelligence") or {}).get("trend_continuation_score_norm"), 0.0)
+                    _safe_float(
+                        (row.get("harvest_intelligence") or {}).get(
+                            "trend_continuation_score_norm"
+                        ),
+                        0.0,
+                    )
                     for row in targets
                     if isinstance(row.get("harvest_intelligence"), dict)
                 )
@@ -5908,7 +7743,12 @@ def _profit_realization_contract(
             ),
             "avg_realized_conversion_skill_norm": round(
                 sum(
-                    _safe_float((row.get("harvest_intelligence") or {}).get("realized_conversion_skill_norm"), 0.0)
+                    _safe_float(
+                        (row.get("harvest_intelligence") or {}).get(
+                            "realized_conversion_skill_norm"
+                        ),
+                        0.0,
+                    )
                     for row in targets
                     if isinstance(row.get("harvest_intelligence"), dict)
                 )
@@ -5992,12 +7832,29 @@ def _daily_harvest_ladder_steps(
         return []
     trim_fraction = _clamp(trim_fraction, 0.05, 0.65)
     steps = [
-        ("lock_seed_profit", 0.35, 0.40, "bank the first slice when exit quality clears floor"),
-        ("pay_the_system", 0.35, 0.34, "take the second slice while unrealized share remains over cap"),
-        ("protect_runner", 0.30, 0.26, "trail the rest unless continuation weakens or force-trim fires"),
+        (
+            "lock_seed_profit",
+            0.35,
+            0.40,
+            "bank the first slice when exit quality clears floor",
+        ),
+        (
+            "pay_the_system",
+            0.35,
+            0.34,
+            "take the second slice while unrealized share remains over cap",
+        ),
+        (
+            "protect_runner",
+            0.30,
+            0.26,
+            "trail the rest unless continuation weakens or force-trim fires",
+        ),
     ]
     rows: list[dict[str, Any]] = []
-    for sequence, (step_id, target_share, trim_share, trigger) in enumerate(steps, start=1):
+    for sequence, (step_id, target_share, trim_share, trigger) in enumerate(
+        steps, start=1
+    ):
         rows.append(
             {
                 "sequence": sequence,
@@ -6005,7 +7862,9 @@ def _daily_harvest_ladder_steps(
                 "paper_only": True,
                 "live_execution_allowed": False,
                 "target_pnl_total": round(max(target_pnl * target_share, 0.0), 6),
-                "trim_fraction_norm": round(_clamp(trim_fraction * trim_share, 0.03, 0.28), 6),
+                "trim_fraction_norm": round(
+                    _clamp(trim_fraction * trim_share, 0.03, 0.28), 6
+                ),
                 "exit_quality_floor_norm": round(exit_floor, 6),
                 "runner_protection_floor_norm": round(runner_floor, 6),
                 "trigger": trigger,
@@ -6036,7 +7895,9 @@ def _daily_sleeve_harvest_goal_contract(
         profile = _normal_profile(row.get("profile"))
         if not profile:
             continue
-        profile_position_unrealized[profile] += max(_safe_float(row.get("unrealized_pnl"), 0.0), 0.0)
+        profile_position_unrealized[profile] += max(
+            _safe_float(row.get("unrealized_pnl"), 0.0), 0.0
+        )
 
     for profile, control in sorted(
         profit_harvest_controls.items(),
@@ -6046,24 +7907,59 @@ def _daily_sleeve_harvest_goal_contract(
         ),
         reverse=True,
     ):
-        positive_realized = max(_safe_float(control.get("ending_realized_pnl_total"), 0.0), 0.0)
-        positive_unrealized = max(_safe_float(control.get("ending_unrealized_pnl_total"), 0.0), 0.0)
+        positive_realized = max(
+            _safe_float(control.get("ending_realized_pnl_total"), 0.0), 0.0
+        )
+        positive_unrealized = max(
+            _safe_float(control.get("ending_unrealized_pnl_total"), 0.0), 0.0
+        )
         positive_total = positive_realized + positive_unrealized
         if positive_total <= 0.0 or positive_unrealized <= 0.0:
             continue
         realized_share = _clamp(positive_realized / max(positive_total, 1.0))
         unrealized_share = _clamp(positive_unrealized / max(positive_total, 1.0))
-        target_share = _clamp(_safe_float(control.get("target_realized_profit_share_norm"), PROFIT_HARVEST_TARGET_REALIZED_SHARE), 0.20, 0.55)
-        max_unrealized_share = _clamp(_safe_float(control.get("max_unrealized_profit_share_norm"), PROFIT_HARVEST_MAX_UNREALIZED_SHARE), 0.50, 0.85)
+        target_share = _clamp(
+            _safe_float(
+                control.get("target_realized_profit_share_norm"),
+                PROFIT_HARVEST_TARGET_REALIZED_SHARE,
+            ),
+            0.20,
+            0.55,
+        )
+        max_unrealized_share = _clamp(
+            _safe_float(
+                control.get("max_unrealized_profit_share_norm"),
+                PROFIT_HARVEST_MAX_UNREALIZED_SHARE,
+            ),
+            0.50,
+            0.85,
+        )
         target_realized = max(positive_total * target_share, 0.0)
         remaining_gap = max(target_realized - positive_realized, 0.0)
-        harvest_pressure = _clamp(_safe_float(control.get("harvest_pressure_norm"), 0.0))
-        trim_fraction = _clamp(_safe_float(control.get("recommended_trim_fraction_norm"), 0.20), 0.05, 0.65)
-        intelligence = control.get("harvest_intelligence") if isinstance(control.get("harvest_intelligence"), dict) else {}
-        conversion_skill = _clamp(_safe_float(intelligence.get("realized_conversion_skill_norm"), 0.50))
-        regret_risk = _clamp(_safe_float(intelligence.get("harvest_regret_risk_norm"), 0.0))
-        trend_continuation = _clamp(_safe_float(intelligence.get("trend_continuation_score_norm"), 0.50))
-        unrealized_excess = _clamp(max(unrealized_share - max_unrealized_share, 0.0) / max(1.0 - max_unrealized_share, 0.01))
+        harvest_pressure = _clamp(
+            _safe_float(control.get("harvest_pressure_norm"), 0.0)
+        )
+        trim_fraction = _clamp(
+            _safe_float(control.get("recommended_trim_fraction_norm"), 0.20), 0.05, 0.65
+        )
+        intelligence = (
+            control.get("harvest_intelligence")
+            if isinstance(control.get("harvest_intelligence"), dict)
+            else {}
+        )
+        conversion_skill = _clamp(
+            _safe_float(intelligence.get("realized_conversion_skill_norm"), 0.50)
+        )
+        regret_risk = _clamp(
+            _safe_float(intelligence.get("harvest_regret_risk_norm"), 0.0)
+        )
+        trend_continuation = _clamp(
+            _safe_float(intelligence.get("trend_continuation_score_norm"), 0.50)
+        )
+        unrealized_excess = _clamp(
+            max(unrealized_share - max_unrealized_share, 0.0)
+            / max(1.0 - max_unrealized_share, 0.01)
+        )
         daily_capture_rate = _clamp(
             0.20
             + (0.24 * harvest_pressure)
@@ -6074,17 +7970,37 @@ def _daily_sleeve_harvest_goal_contract(
             DAILY_SLEEVE_HARVEST_MAX_TARGET_SHARE_OF_UNREALIZED,
         )
         daily_unrealized_cap = positive_unrealized * daily_capture_rate
-        trim_cap = positive_unrealized * _clamp(trim_fraction * (0.72 + (0.20 * unrealized_excess)), 0.05, DAILY_SLEEVE_HARVEST_MAX_TARGET_SHARE_OF_UNREALIZED)
+        trim_cap = positive_unrealized * _clamp(
+            trim_fraction * (0.72 + (0.20 * unrealized_excess)),
+            0.05,
+            DAILY_SLEEVE_HARVEST_MAX_TARGET_SHARE_OF_UNREALIZED,
+        )
         daily_target = min(remaining_gap, daily_unrealized_cap, trim_cap)
         previous_target = previous_targets.get(profile, {})
-        previous_goal_total = _safe_float(previous_target.get("daily_realized_pnl_goal_total"), 0.0) if isinstance(previous_target, dict) else 0.0
-        previous_target_pnl = _safe_float(previous_target.get("daily_harvest_pnl_target_total"), 0.0) if isinstance(previous_target, dict) else 0.0
-        previous_target_met = bool(previous_goal_total > 0.0 and positive_realized >= previous_goal_total)
+        previous_goal_total = (
+            _safe_float(previous_target.get("daily_realized_pnl_goal_total"), 0.0)
+            if isinstance(previous_target, dict)
+            else 0.0
+        )
+        previous_target_pnl = (
+            _safe_float(previous_target.get("daily_harvest_pnl_target_total"), 0.0)
+            if isinstance(previous_target, dict)
+            else 0.0
+        )
+        previous_target_met = bool(
+            previous_goal_total > 0.0 and positive_realized >= previous_goal_total
+        )
         raise_multiplier = _clamp(
             DAILY_SLEEVE_TARGET_RAISE_MIN_MULTIPLIER
             + (0.13 * conversion_skill)
             + (0.08 * (1.0 - regret_risk))
-            + (0.06 * _clamp(positive_unrealized / max(PROFIT_HARVEST_MIN_UNREALIZED_PNL * 8.0, 1.0))),
+            + (
+                0.06
+                * _clamp(
+                    positive_unrealized
+                    / max(PROFIT_HARVEST_MIN_UNREALIZED_PNL * 8.0, 1.0)
+                )
+            ),
             DAILY_SLEEVE_TARGET_RAISE_MIN_MULTIPLIER,
             DAILY_SLEEVE_TARGET_RAISE_MAX_MULTIPLIER,
         )
@@ -6095,10 +8011,17 @@ def _daily_sleeve_harvest_goal_contract(
                 positive_unrealized * _clamp(daily_capture_rate * 1.18, 0.14, 0.45),
                 positive_unrealized * _clamp(trim_fraction * 1.18, 0.06, 0.42),
             )
-            raised_target_candidate = min(previous_target_pnl * raise_multiplier, adaptive_cap)
+            raised_target_candidate = min(
+                previous_target_pnl * raise_multiplier, adaptive_cap
+            )
             daily_target = max(daily_target, raised_target_candidate)
-        if remaining_gap >= DAILY_SLEEVE_HARVEST_MIN_TARGET_PNL and positive_unrealized >= DAILY_SLEEVE_HARVEST_MIN_TARGET_PNL:
-            daily_target = max(daily_target, min(remaining_gap, DAILY_SLEEVE_HARVEST_MIN_TARGET_PNL))
+        if (
+            remaining_gap >= DAILY_SLEEVE_HARVEST_MIN_TARGET_PNL
+            and positive_unrealized >= DAILY_SLEEVE_HARVEST_MIN_TARGET_PNL
+        ):
+            daily_target = max(
+                daily_target, min(remaining_gap, DAILY_SLEEVE_HARVEST_MIN_TARGET_PNL)
+            )
         daily_target = max(daily_target, 0.0)
         daily_goal_total = positive_realized + daily_target
         progress = _clamp(positive_realized / max(daily_goal_total, 1.0))
@@ -6108,11 +8031,15 @@ def _daily_sleeve_harvest_goal_contract(
             + 0.18 * unrealized_excess
             + 0.12 * (1.0 - conversion_skill)
         )
-        exit_floor = _clamp(_safe_float(control.get("promote_trim_when_exit_quality_above_norm"), 0.58))
+        exit_floor = _clamp(
+            _safe_float(control.get("promote_trim_when_exit_quality_above_norm"), 0.58)
+        )
         runner_floor = _clamp(
             _safe_float(
                 intelligence.get("hold_winner_when_trend_continuation_above_norm"),
-                _safe_float(control.get("force_trim_when_unrealized_share_above_norm"), 0.86),
+                _safe_float(
+                    control.get("force_trim_when_unrealized_share_above_norm"), 0.86
+                ),
             )
         )
         top_strategies = [
@@ -6120,9 +8047,13 @@ def _daily_sleeve_harvest_goal_contract(
                 "strategy": str(row.get("strategy") or ""),
                 "bot_id": str(row.get("bot_id") or ""),
                 "ending_net_pnl_total": row.get("ending_net_pnl_total", 0.0),
-                "recommended_trim_fraction_norm": row.get("recommended_trim_fraction_norm", trim_fraction),
+                "recommended_trim_fraction_norm": row.get(
+                    "recommended_trim_fraction_norm", trim_fraction
+                ),
             }
-            for row in _unique_strategy_harvest_rows(strategy_harvest_controls, profile=profile)[:6]
+            for row in _unique_strategy_harvest_rows(
+                strategy_harvest_controls, profile=profile
+            )[:6]
         ]
         target_adaptation_action = "continue_current_target"
         if previous_target_met and daily_target > 0.0:
@@ -6137,7 +8068,9 @@ def _daily_sleeve_harvest_goal_contract(
             "live_execution_allowed": False,
             "current_realized_pnl_total": round(positive_realized, 6),
             "current_unrealized_pnl_total": round(positive_unrealized, 6),
-            "current_net_pnl_total": round(_safe_float(control.get("ending_net_pnl_total"), positive_total), 6),
+            "current_net_pnl_total": round(
+                _safe_float(control.get("ending_net_pnl_total"), positive_total), 6
+            ),
             "current_realized_profit_share_norm": round(realized_share, 6),
             "current_unrealized_profit_share_norm": round(unrealized_share, 6),
             "target_realized_profit_share_norm": round(target_share, 6),
@@ -6157,11 +8090,17 @@ def _daily_sleeve_harvest_goal_contract(
             "target_adaptation_action": target_adaptation_action,
             "next_daily_target_multiplier_norm": round(raise_multiplier, 6),
             "raised_daily_target_candidate_total": round(raised_target_candidate, 6),
-            "small_pnl_harvest_lane": bool(control.get("small_pnl_same_day_harvest", False)),
+            "small_pnl_harvest_lane": bool(
+                control.get("small_pnl_same_day_harvest", False)
+            ),
             "post_target_collection_mode": (
-                "expand_success_labels_and_raise_target" if previous_target_met and daily_target > 0.0 else
-                "expand_success_labels_until_next_target" if previous_target_met else
-                "collect_blockers_until_target_met"
+                "expand_success_labels_and_raise_target"
+                if previous_target_met and daily_target > 0.0
+                else (
+                    "expand_success_labels_until_next_target"
+                    if previous_target_met
+                    else "collect_blockers_until_target_met"
+                )
             ),
             "post_target_collection_labels": [
                 "daily_target_met_bucket",
@@ -6174,11 +8113,15 @@ def _daily_sleeve_harvest_goal_contract(
             "recommended_trim_fraction_norm": round(trim_fraction, 6),
             "daily_trim_boost_norm": round(_clamp(daily_pressure * 0.12, 0.0, 0.10), 6),
             "max_unrealized_profit_share_norm": round(max_unrealized_share, 6),
-            "block_new_adds_until_daily_goal": bool(daily_target > 0.0 and unrealized_share >= max_unrealized_share),
+            "block_new_adds_until_daily_goal": bool(
+                daily_target > 0.0 and unrealized_share >= max_unrealized_share
+            ),
             "runner_protection_floor_norm": round(runner_floor, 6),
             "trend_continuation_score_norm": round(trend_continuation, 6),
             "harvest_regret_risk_norm": round(regret_risk, 6),
-            "position_ledger_unrealized_pnl_total": round(profile_position_unrealized.get(profile, 0.0), 6),
+            "position_ledger_unrealized_pnl_total": round(
+                profile_position_unrealized.get(profile, 0.0), 6
+            ),
             "prioritize_open_winner_strategies": top_strategies,
             "laddered_exit_plan": _daily_harvest_ladder_steps(
                 target_pnl=daily_target,
@@ -6197,21 +8140,33 @@ def _daily_sleeve_harvest_goal_contract(
         ),
         reverse=True,
     )
-    total_current_realized = sum(_safe_float(row.get("current_realized_pnl_total"), 0.0) for row in targets)
-    total_current_unrealized = sum(_safe_float(row.get("current_unrealized_pnl_total"), 0.0) for row in targets)
-    total_daily_target = sum(_safe_float(row.get("daily_harvest_pnl_target_total"), 0.0) for row in targets)
+    total_current_realized = sum(
+        _safe_float(row.get("current_realized_pnl_total"), 0.0) for row in targets
+    )
+    total_current_unrealized = sum(
+        _safe_float(row.get("current_unrealized_pnl_total"), 0.0) for row in targets
+    )
+    total_daily_target = sum(
+        _safe_float(row.get("daily_harvest_pnl_target_total"), 0.0) for row in targets
+    )
     return {
         "active": bool(any(row.get("active", False) for row in targets)),
         "mode": "daily_paper_sleeve_harvest_goals",
         "paper_only": True,
         "live_execution_allowed": False,
         "target_count": len(targets),
-        "active_target_count": sum(1 for row in targets if bool(row.get("active", False))),
+        "active_target_count": sum(
+            1 for row in targets if bool(row.get("active", False))
+        ),
         "current_realized_pnl_total": round(total_current_realized, 6),
         "current_unrealized_pnl_total": round(total_current_unrealized, 6),
         "daily_harvest_pnl_target_total": round(total_daily_target, 6),
-        "portfolio_realized_profit_share_norm": profit_realization_contract.get("realized_profit_share_norm", 0.0),
-        "portfolio_target_realized_profit_share_norm": profit_realization_contract.get("target_realized_profit_share_norm", 0.0),
+        "portfolio_realized_profit_share_norm": profit_realization_contract.get(
+            "realized_profit_share_norm", 0.0
+        ),
+        "portfolio_target_realized_profit_share_norm": profit_realization_contract.get(
+            "target_realized_profit_share_norm", 0.0
+        ),
         "targets": targets,
         "runtime_rules": [
             "each sleeve gets a daily realized-profit target when unrealized winners dominate",
@@ -6239,20 +8194,40 @@ def _apply_daily_harvest_goals_to_profile_controls(
             continue
         control["daily_harvest_goal"] = target
         control["daily_goal_active"] = bool(target.get("active", False))
-        control["daily_goal_progress_norm"] = target.get("daily_goal_progress_norm", 0.0)
-        control["daily_harvest_pressure_norm"] = target.get("daily_harvest_pressure_norm", 0.0)
-        control["daily_harvest_pnl_target_total"] = target.get("daily_harvest_pnl_target_total", 0.0)
+        control["daily_goal_progress_norm"] = target.get(
+            "daily_goal_progress_norm", 0.0
+        )
+        control["daily_harvest_pressure_norm"] = target.get(
+            "daily_harvest_pressure_norm", 0.0
+        )
+        control["daily_harvest_pnl_target_total"] = target.get(
+            "daily_harvest_pnl_target_total", 0.0
+        )
         control["daily_trim_boost_norm"] = target.get("daily_trim_boost_norm", 0.0)
-        control["daily_target_adaptation_action"] = target.get("target_adaptation_action", "")
-        control["next_daily_target_multiplier_norm"] = target.get("next_daily_target_multiplier_norm", 1.0)
-        control["previous_daily_target_met"] = bool(target.get("previous_daily_target_met", False))
-        control["post_target_collection_mode"] = target.get("post_target_collection_mode", "")
-        control["post_target_collection_labels"] = target.get("post_target_collection_labels", [])
-        control["block_new_adds_until_daily_goal"] = bool(target.get("block_new_adds_until_daily_goal", False))
+        control["daily_target_adaptation_action"] = target.get(
+            "target_adaptation_action", ""
+        )
+        control["next_daily_target_multiplier_norm"] = target.get(
+            "next_daily_target_multiplier_norm", 1.0
+        )
+        control["previous_daily_target_met"] = bool(
+            target.get("previous_daily_target_met", False)
+        )
+        control["post_target_collection_mode"] = target.get(
+            "post_target_collection_mode", ""
+        )
+        control["post_target_collection_labels"] = target.get(
+            "post_target_collection_labels", []
+        )
+        control["block_new_adds_until_daily_goal"] = bool(
+            target.get("block_new_adds_until_daily_goal", False)
+        )
         control["laddered_exit_plan"] = target.get("laddered_exit_plan", [])
 
 
-def _daily_target_adaptation_contract(daily_goal_contract: dict[str, Any]) -> dict[str, Any]:
+def _daily_target_adaptation_contract(
+    daily_goal_contract: dict[str, Any],
+) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for target in _as_list(daily_goal_contract.get("targets")):
         if not isinstance(target, dict):
@@ -6260,7 +8235,9 @@ def _daily_target_adaptation_contract(daily_goal_contract: dict[str, Any]) -> di
         profile = _normal_profile(target.get("profile"))
         if not profile:
             continue
-        action = str(target.get("target_adaptation_action") or "continue_current_target")
+        action = str(
+            target.get("target_adaptation_action") or "continue_current_target"
+        )
         previous_met = bool(target.get("previous_daily_target_met", False))
         rows.append(
             {
@@ -6270,9 +8247,15 @@ def _daily_target_adaptation_contract(daily_goal_contract: dict[str, Any]) -> di
                 "live_execution_allowed": False,
                 "previous_daily_target_met": previous_met,
                 "action": action,
-                "current_daily_target_total": target.get("daily_harvest_pnl_target_total", 0.0),
-                "raised_daily_target_candidate_total": target.get("raised_daily_target_candidate_total", 0.0),
-                "next_daily_target_multiplier_norm": target.get("next_daily_target_multiplier_norm", 1.0),
+                "current_daily_target_total": target.get(
+                    "daily_harvest_pnl_target_total", 0.0
+                ),
+                "raised_daily_target_candidate_total": target.get(
+                    "raised_daily_target_candidate_total", 0.0
+                ),
+                "next_daily_target_multiplier_norm": target.get(
+                    "next_daily_target_multiplier_norm", 1.0
+                ),
                 "collection_mode": target.get("post_target_collection_mode", ""),
                 "collection_labels": target.get("post_target_collection_labels", []),
                 "when_to_raise": "previous daily realized PnL goal was met and remaining target gap is still positive",
@@ -6285,12 +8268,20 @@ def _daily_target_adaptation_contract(daily_goal_contract: dict[str, Any]) -> di
         "paper_only": True,
         "live_execution_allowed": False,
         "profile_count": len(rows),
-        "previous_target_met_count": sum(1 for row in rows if bool(row.get("previous_daily_target_met", False))),
-        "raise_target_count": sum(1 for row in rows if str(row.get("action") or "") == "raise_daily_target_and_expand_collection"),
+        "previous_target_met_count": sum(
+            1 for row in rows if bool(row.get("previous_daily_target_met", False))
+        ),
+        "raise_target_count": sum(
+            1
+            for row in rows
+            if str(row.get("action") or "")
+            == "raise_daily_target_and_expand_collection"
+        ),
         "collection_expansion_count": sum(
             1
             for row in rows
-            if "collection" in str(row.get("action") or row.get("collection_mode") or "")
+            if "collection"
+            in str(row.get("action") or row.get("collection_mode") or "")
         ),
         "profiles": rows,
         "runtime_rules": [
@@ -6352,20 +8343,28 @@ def _paper_harvest_execution_contract(
         if unrealized <= 0.0:
             continue
         strategy = str(row.get("strategy") or "").strip()
-        symbol = str(row.get("symbol") or f"{profile.upper()}_OPEN_WINNER").strip().upper()
+        symbol = (
+            str(row.get("symbol") or f"{profile.upper()}_OPEN_WINNER").strip().upper()
+        )
         key = (profile, strategy.lower(), symbol)
         if key in seen:
             continue
         seen.add(key)
         trim_fraction = _clamp(
-            _safe_float(row.get("recommended_trim_fraction_norm"), target.get("recommended_trim_fraction_norm", 0.20)),
+            _safe_float(
+                row.get("recommended_trim_fraction_norm"),
+                target.get("recommended_trim_fraction_norm", 0.20),
+            ),
             0.03,
             0.65,
         )
         if bool(target.get("small_pnl_harvest_lane", False)):
             trim_fraction = min(
                 trim_fraction,
-                _safe_float(target.get("recommended_trim_fraction_norm"), PROFIT_HARVEST_SMALL_MAX_TRIM_FRACTION),
+                _safe_float(
+                    target.get("recommended_trim_fraction_norm"),
+                    PROFIT_HARVEST_SMALL_MAX_TRIM_FRACTION,
+                ),
                 PROFIT_HARVEST_SMALL_MAX_TRIM_FRACTION,
             )
         target_pnl = min(unrealized * trim_fraction, remaining)
@@ -6389,10 +8388,18 @@ def _paper_harvest_execution_contract(
                 "estimated_unrealized_pnl_total": round(unrealized, 6),
                 "estimated_realized_pnl_target_total": round(target_pnl, 6),
                 "recommended_reduce_fraction_norm": round(reduce_fraction, 6),
-                "runner_protection_floor_norm": row.get("runner_protection_floor_norm", target.get("runner_protection_floor_norm", 0.74)),
-                "exit_quality_floor_norm": target.get("laddered_exit_plan", [{}])[0].get("exit_quality_floor_norm", 0.58)
-                if isinstance(target.get("laddered_exit_plan"), list) and target.get("laddered_exit_plan")
-                else 0.58,
+                "runner_protection_floor_norm": row.get(
+                    "runner_protection_floor_norm",
+                    target.get("runner_protection_floor_norm", 0.74),
+                ),
+                "exit_quality_floor_norm": (
+                    target.get("laddered_exit_plan", [{}])[0].get(
+                        "exit_quality_floor_norm", 0.58
+                    )
+                    if isinstance(target.get("laddered_exit_plan"), list)
+                    and target.get("laddered_exit_plan")
+                    else 0.58
+                ),
                 "reason": "daily sleeve realized-profit target needs paper-only conversion from unrealized winner",
             }
         )
@@ -6401,9 +8408,14 @@ def _paper_harvest_execution_contract(
 
     if len(intents) < DAILY_SLEEVE_HARVEST_INTENT_LIMIT:
         for profile, target in targets.items():
-            if not bool(target.get("active", False)) or remaining_by_profile.get(profile, 0.0) <= 0.0:
+            if (
+                not bool(target.get("active", False))
+                or remaining_by_profile.get(profile, 0.0) <= 0.0
+            ):
                 continue
-            for row in _unique_strategy_harvest_rows(strategy_harvest_controls, profile=profile):
+            for row in _unique_strategy_harvest_rows(
+                strategy_harvest_controls, profile=profile
+            ):
                 strategy = str(row.get("strategy") or "").strip()
                 key = (profile, strategy.lower(), f"{profile.upper()}_OPEN_WINNER")
                 if key in seen:
@@ -6412,11 +8424,18 @@ def _paper_harvest_execution_contract(
                 net = max(_safe_float(row.get("ending_net_pnl_total"), 0.0), 0.0)
                 if net <= 0.0:
                     continue
-                trim_fraction = _clamp(_safe_float(row.get("recommended_trim_fraction_norm"), 0.20), 0.03, 0.65)
+                trim_fraction = _clamp(
+                    _safe_float(row.get("recommended_trim_fraction_norm"), 0.20),
+                    0.03,
+                    0.65,
+                )
                 if bool(target.get("small_pnl_harvest_lane", False)):
                     trim_fraction = min(
                         trim_fraction,
-                        _safe_float(target.get("recommended_trim_fraction_norm"), PROFIT_HARVEST_SMALL_MAX_TRIM_FRACTION),
+                        _safe_float(
+                            target.get("recommended_trim_fraction_norm"),
+                            PROFIT_HARVEST_SMALL_MAX_TRIM_FRACTION,
+                        ),
                         PROFIT_HARVEST_SMALL_MAX_TRIM_FRACTION,
                     )
                 remaining = remaining_by_profile.get(profile, 0.0)
@@ -6440,7 +8459,9 @@ def _paper_harvest_execution_contract(
                         "estimated_unrealized_pnl_total": round(net, 6),
                         "estimated_realized_pnl_target_total": round(target_pnl, 6),
                         "recommended_reduce_fraction_norm": round(trim_fraction, 6),
-                        "runner_protection_floor_norm": row.get("protect_runner_when_trend_continuation_above_norm", 0.74),
+                        "runner_protection_floor_norm": row.get(
+                            "protect_runner_when_trend_continuation_above_norm", 0.74
+                        ),
                         "exit_quality_floor_norm": 0.58,
                         "reason": "strategy-level open-winner proxy can satisfy daily sleeve realized-profit target",
                     }
@@ -6518,10 +8539,16 @@ def _paper_harvest_infrabot_contract(
         "assigned_infrabot_count": len(assignments),
         "assigned_infrabots": assignments,
         "target_profiles": target_profiles,
-        "target_realized_profit_share_norm": profit_realization_contract.get("target_realized_profit_share_norm", 0.0),
-        "current_realized_profit_share_norm": profit_realization_contract.get("realized_profit_share_norm", 0.0),
+        "target_realized_profit_share_norm": profit_realization_contract.get(
+            "target_realized_profit_share_norm", 0.0
+        ),
+        "current_realized_profit_share_norm": profit_realization_contract.get(
+            "realized_profit_share_norm", 0.0
+        ),
         "daily_target_count": daily_goal_contract.get("active_target_count", 0),
-        "reduce_only_intent_count": paper_harvest_execution_contract.get("intent_count", 0),
+        "reduce_only_intent_count": paper_harvest_execution_contract.get(
+            "intent_count", 0
+        ),
         "supervision_rules": [
             "infrabots supervise paper control state only and cannot authorize live orders",
             "every reduce-only intent must reconcile to a paper fill or expire stale",
@@ -6571,7 +8598,12 @@ def _apply_daily_target_adaptation_to_profile_controls(
         control["daily_target_adaptation"] = row
         collection_labels = _as_list(row.get("collection_labels"))
         existing_labels = _as_list(control.get("required_labels"))
-        control["required_labels"] = ordered_unique([*existing_labels, *[str(label) for label in collection_labels if str(label)]])
+        control["required_labels"] = ordered_unique(
+            [
+                *existing_labels,
+                *[str(label) for label in collection_labels if str(label)],
+            ]
+        )
 
 
 def _max_grade_push_contract(
@@ -6582,7 +8614,9 @@ def _max_grade_push_contract(
     paper_harvest_execution_contract: dict[str, Any],
     infrabot_contract: dict[str, Any],
 ) -> dict[str, Any]:
-    raw_harvest_grade = str(profit_harvest_report_card.get("base_raw_outcome_grade") or "")
+    raw_harvest_grade = str(
+        profit_harvest_report_card.get("base_raw_outcome_grade") or ""
+    )
     headline_harvest_grade = str(profit_harvest_report_card.get("headline_grade") or "")
     raw_ready = raw_harvest_grade == "A+"
     control_ready = (
@@ -6607,16 +8641,22 @@ def _max_grade_push_contract(
             "harvest_headline_grade": headline_harvest_grade,
             "raw_harvest_grade": raw_harvest_grade,
             "daily_target_active": bool(daily_goal_contract.get("active", False)),
-            "reduce_only_intent_count": paper_harvest_execution_contract.get("intent_count", 0),
-            "harvest_infrabot_count": infrabot_contract.get("assigned_infrabot_count", 0),
+            "reduce_only_intent_count": paper_harvest_execution_contract.get(
+                "intent_count", 0
+            ),
+            "harvest_infrabot_count": infrabot_contract.get(
+                "assigned_infrabot_count", 0
+            ),
         },
-        "remaining_raw_blockers": [
-            "realized paper profit share must rise from actual paper fills",
-            "unrealized concentration must fall without breaking runner protection",
-            "harvest regret replay must confirm trims were useful, not premature",
-        ]
-        if not raw_ready
-        else [],
+        "remaining_raw_blockers": (
+            [
+                "realized paper profit share must rise from actual paper fills",
+                "unrealized concentration must fall without breaking runner protection",
+                "harvest regret replay must confirm trims were useful, not premature",
+            ]
+            if not raw_ready
+            else []
+        ),
         "stop_condition": "control_surface_max_ready=true and raw_outcome_max_ready=true",
     }
 
@@ -6653,7 +8693,8 @@ def _profitability_realization_expansion_contract(
             for profile, control in active_profile_controls.items()
             if isinstance(control, dict)
             and (
-                str(control.get("action") or "").strip().lower() == "quarantine_new_entries"
+                str(control.get("action") or "").strip().lower()
+                == "quarantine_new_entries"
                 or bool(_as_dict(control.get("loser_quarantine")).get("active", False))
             )
         ]
@@ -6669,9 +8710,14 @@ def _profitability_realization_expansion_contract(
                 "win_rate": row.get("win_rate"),
             }
             for row in sleeve_rows
-            if _normal_profile(row.get("profile")) and _profile_net(row) > 0.0 and _profile_realized(row) >= 0.0
+            if _normal_profile(row.get("profile"))
+            and _profile_net(row) > 0.0
+            and _profile_realized(row) >= 0.0
         ],
-        key=lambda item: (_safe_float(item.get("net_pnl_total"), 0.0), _safe_float(item.get("realized_pnl_total"), 0.0)),
+        key=lambda item: (
+            _safe_float(item.get("net_pnl_total"), 0.0),
+            _safe_float(item.get("realized_pnl_total"), 0.0),
+        ),
         reverse=True,
     )
     unrealized_losers = sorted(
@@ -6705,10 +8751,16 @@ def _profitability_realization_expansion_contract(
                     "strategy": strategy_name,
                     "bot_id": _strategy_bot_id(strategy_name),
                     "net_pnl_total": round(net, 6),
-                    "promotion_bias": "scale_candidate" if profile not in weak_profiles else "contained_until_profile_recovers",
+                    "promotion_bias": (
+                        "scale_candidate"
+                        if profile not in weak_profiles
+                        else "contained_until_profile_recovers"
+                    ),
                 }
             )
-    winning_strategy_rows.sort(key=lambda item: _safe_float(item.get("net_pnl_total"), 0.0), reverse=True)
+    winning_strategy_rows.sort(
+        key=lambda item: _safe_float(item.get("net_pnl_total"), 0.0), reverse=True
+    )
     losing_strategy_rows = sorted(
         [
             {
@@ -6716,7 +8768,9 @@ def _profitability_realization_expansion_contract(
                 "strategy": str(row.get("strategy") or ""),
                 "bot_id": str(row.get("bot_id") or ""),
                 "mode": str(row.get("mode") or ""),
-                "net_pnl_total": round(_safe_float(row.get("ending_net_pnl_total"), 0.0), 6),
+                "net_pnl_total": round(
+                    _safe_float(row.get("ending_net_pnl_total"), 0.0), 6
+                ),
                 "new_entry_cap": _safe_int(row.get("new_entry_cap"), 0),
             }
             for row in strategy_controls
@@ -6724,26 +8778,40 @@ def _profitability_realization_expansion_contract(
         ],
         key=lambda item: _safe_float(item.get("net_pnl_total"), 0.0),
     )
-    raw_score = _safe_float(profit_harvest_report_card.get("base_raw_outcome_score_norm"), 0.0)
-    harvest_score = _safe_float(profit_harvest_report_card.get("raw_outcome_score_norm"), raw_score)
-    regret_control = _safe_float(profit_harvest_report_card.get("regret_control_norm"), 0.0)
+    raw_score = _safe_float(
+        profit_harvest_report_card.get("base_raw_outcome_score_norm"), 0.0
+    )
+    harvest_score = _safe_float(
+        profit_harvest_report_card.get("raw_outcome_score_norm"), raw_score
+    )
+    regret_control = _safe_float(
+        profit_harvest_report_card.get("regret_control_norm"), 0.0
+    )
     a_plus_gap = max(PROFIT_HARVEST_APLUS_MIN_SCORE - harvest_score, 0.0)
     a_plus_plus_gap = max(PROFIT_HARVEST_APLUSPLUS_MIN_SCORE - harvest_score, 0.0)
     regret_gap = max(PROFIT_HARVEST_APLUSPLUS_MIN_REGRET_CONTROL - regret_control, 0.0)
-    realized_share = _safe_float(profit_realization_contract.get("realized_profit_share_norm"), 0.0)
+    realized_share = _safe_float(
+        profit_realization_contract.get("realized_profit_share_norm"), 0.0
+    )
     target_realized_share = _safe_float(
         profit_realization_contract.get("target_realized_profit_share_norm"),
         PROFIT_HARVEST_TARGET_REALIZED_SHARE,
     )
-    unrealized_share = _safe_float(profit_realization_contract.get("unrealized_profit_share_norm"), 0.0)
+    unrealized_share = _safe_float(
+        profit_realization_contract.get("unrealized_profit_share_norm"), 0.0
+    )
     max_unrealized_share = _safe_float(
         profit_realization_contract.get("max_unrealized_profit_share_norm"),
         PROFIT_HARVEST_MAX_UNREALIZED_SHARE,
     )
     daily_targets = [
-        row for row in _as_list(daily_goal_contract.get("targets")) if isinstance(row, dict)
+        row
+        for row in _as_list(daily_goal_contract.get("targets"))
+        if isinstance(row, dict)
     ]
-    active_daily_targets = [row for row in daily_targets if bool(row.get("active", False))]
+    active_daily_targets = [
+        row for row in daily_targets if bool(row.get("active", False))
+    ]
     lever_rows = [
         {
             "lever_id": "stop_weak_sleeve_drag",
@@ -6778,12 +8846,17 @@ def _profitability_realization_expansion_contract(
         },
         {
             "lever_id": "laddered_partial_exit_policy",
-            "active": bool(active_daily_targets or paper_harvest_execution_contract.get("active", False)),
+            "active": bool(
+                active_daily_targets
+                or paper_harvest_execution_contract.get("active", False)
+            ),
             "priority": 4,
             "targets": [
                 {
                     "profile": row.get("profile"),
-                    "daily_target_total": row.get("daily_harvest_pnl_target_total", 0.0),
+                    "daily_target_total": row.get(
+                        "daily_harvest_pnl_target_total", 0.0
+                    ),
                     "ladder_steps": len(_as_list(row.get("laddered_exit_plan"))),
                 }
                 for row in active_daily_targets[:10]
@@ -6807,7 +8880,10 @@ def _profitability_realization_expansion_contract(
             "priority": 6,
             "targets": {
                 "losing_strategy_pairs": losing_strategy_rows[:16],
-                "top_loss_causes": [{"cause": cause, "count": count} for cause, count in cause_counter.most_common(8)],
+                "top_loss_causes": [
+                    {"cause": cause, "count": count}
+                    for cause, count in cause_counter.most_common(8)
+                ],
             },
             "control": "loss causes directly shrink size, add hard-negative training weight, and block low-quality confirmation repeats",
             "expected_impact": "make repeated bad evidence expensive for future bot votes",
@@ -6834,7 +8910,10 @@ def _profitability_realization_expansion_contract(
                 "force_harvest_allowed": bool(
                     realized_share < target_realized_share
                     and unrealized_share > max_unrealized_share
-                    and _safe_float(profit_realization_contract.get("portfolio_net_pnl_total"), 0.0) > 0.0
+                    and _safe_float(
+                        profit_realization_contract.get("portfolio_net_pnl_total"), 0.0
+                    )
+                    > 0.0
                 ),
             },
             "control": "do not force harvesting when net quality is weak; prefer containment, labels, and reduce-only paper intents",
@@ -6850,7 +8929,9 @@ def _profitability_realization_expansion_contract(
         "profitability_phase": "profit_engineering",
         "lever_count": len(PROFITABILITY_REALIZATION_LEVERS),
         "lever_ids": PROFITABILITY_REALIZATION_LEVERS,
-        "active_lever_count": sum(1 for row in lever_rows if bool(row.get("active", False))),
+        "active_lever_count": sum(
+            1 for row in lever_rows if bool(row.get("active", False))
+        ),
         "current": {
             "raw_harvest_score_norm": round(harvest_score, 6),
             "base_raw_harvest_score_norm": round(raw_score, 6),
@@ -6862,7 +8943,9 @@ def _profitability_realization_expansion_contract(
             "weak_profile_count": len(weak_profiles),
             "losing_strategy_pair_count": len(losing_strategy_rows),
             "unrealized_loser_count": len(unrealized_losers),
-            "paper_harvest_intent_count": _safe_int(paper_harvest_execution_contract.get("intent_count"), 0),
+            "paper_harvest_intent_count": _safe_int(
+                paper_harvest_execution_contract.get("intent_count"), 0
+            ),
         },
         "levers": lever_rows,
         "global_rules": [
@@ -6872,12 +8955,19 @@ def _profitability_realization_expansion_contract(
             "harvest aggression rises from regret replay, not from grade pressure alone",
             "unrealized losers become training debt before any widening decision",
         ],
-        "recommended_command": ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
+        "recommended_command": [
+            "./scripts/ops/opsctl.sh",
+            "paper-profitability-control",
+            "--apply",
+            "--json",
+        ],
         "stop_condition": "all eight levers are active or intentionally idle, raw harvest score >= 0.98, regret control >= 0.80, and weak_profile_count == 0",
     }
 
 
-def _expansion_lever(expansion_contract: dict[str, Any], lever_id: str) -> dict[str, Any]:
+def _expansion_lever(
+    expansion_contract: dict[str, Any], lever_id: str
+) -> dict[str, Any]:
     for row in _as_list(expansion_contract.get("levers")):
         if isinstance(row, dict) and str(row.get("lever_id") or "") == lever_id:
             return row
@@ -6904,27 +8994,52 @@ def _profitability_compounding_autopilot_contract(
     debt_lever = _expansion_lever(expansion_contract, "unrealized_loser_training_debt")
     guard_lever = _expansion_lever(expansion_contract, "harvest_force_guard")
 
-    weak_profiles = [str(item) for item in _as_list(weak_lever.get("targets")) if str(item)]
-    winning_sleeves = [row for row in _as_list(scale_lever.get("targets")) if isinstance(row, dict)]
-    winning_strategies = [row for row in _as_list(strategy_lever.get("targets")) if isinstance(row, dict)]
-    unrealized_losers = [row for row in _as_list(debt_lever.get("targets")) if isinstance(row, dict)]
+    weak_profiles = [
+        str(item) for item in _as_list(weak_lever.get("targets")) if str(item)
+    ]
+    winning_sleeves = [
+        row for row in _as_list(scale_lever.get("targets")) if isinstance(row, dict)
+    ]
+    winning_strategies = [
+        row for row in _as_list(strategy_lever.get("targets")) if isinstance(row, dict)
+    ]
+    unrealized_losers = [
+        row for row in _as_list(debt_lever.get("targets")) if isinstance(row, dict)
+    ]
     punitive_targets = _as_dict(punitive_lever.get("targets"))
     losing_strategy_pairs = [
-        row for row in _as_list(punitive_targets.get("losing_strategy_pairs")) if isinstance(row, dict)
+        row
+        for row in _as_list(punitive_targets.get("losing_strategy_pairs"))
+        if isinstance(row, dict)
     ]
     regret_targets = _as_dict(regret_lever.get("targets"))
     guard_targets = _as_dict(guard_lever.get("targets"))
     active_daily_targets = [
-        row for row in _as_list(daily_goal_contract.get("targets")) if isinstance(row, dict) and bool(row.get("active", False))
+        row
+        for row in _as_list(daily_goal_contract.get("targets"))
+        if isinstance(row, dict) and bool(row.get("active", False))
     ]
     intent_count = _safe_int(paper_harvest_execution_contract.get("intent_count"), 0)
-    regret_gap = _safe_float(current.get("regret_gap_to_a_plus_plus_norm"), _safe_float(regret_targets.get("regret_gap_norm"), 0.0))
+    regret_gap = _safe_float(
+        current.get("regret_gap_to_a_plus_plus_norm"),
+        _safe_float(regret_targets.get("regret_gap_norm"), 0.0),
+    )
     a_plus_gap = _safe_float(current.get("a_plus_gap_norm"), 0.0)
     a_plus_plus_gap = _safe_float(current.get("a_plus_plus_gap_norm"), 0.0)
-    raw_harvest_score = _safe_float(current.get("raw_harvest_score_norm"), _safe_float(profit_harvest_report_card.get("raw_outcome_score_norm"), 0.0))
-    net_pnl = _safe_float(profit_realization_contract.get("portfolio_net_pnl_total"), 0.0)
-    realized_share = _safe_float(profit_realization_contract.get("realized_profit_share_norm"), 0.0)
-    target_realized_share = _safe_float(profit_realization_contract.get("target_realized_profit_share_norm"), PROFIT_HARVEST_TARGET_REALIZED_SHARE)
+    raw_harvest_score = _safe_float(
+        current.get("raw_harvest_score_norm"),
+        _safe_float(profit_harvest_report_card.get("raw_outcome_score_norm"), 0.0),
+    )
+    net_pnl = _safe_float(
+        profit_realization_contract.get("portfolio_net_pnl_total"), 0.0
+    )
+    realized_share = _safe_float(
+        profit_realization_contract.get("realized_profit_share_norm"), 0.0
+    )
+    target_realized_share = _safe_float(
+        profit_realization_contract.get("target_realized_profit_share_norm"),
+        PROFIT_HARVEST_TARGET_REALIZED_SHARE,
+    )
     force_guard_blocks = not bool(guard_targets.get("force_harvest_allowed", False))
 
     rows: list[dict[str, Any]] = []
@@ -6950,7 +9065,13 @@ def _profitability_compounding_autopilot_contract(
                 "risk_level": risk_level,
                 "paper_only": True,
                 "live_execution_allowed": False,
-                "exact_command": command or ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
+                "exact_command": command
+                or [
+                    "./scripts/ops/opsctl.sh",
+                    "paper-profitability-control",
+                    "--apply",
+                    "--json",
+                ],
                 "stop_condition": stop_condition,
             }
         )
@@ -6962,8 +9083,12 @@ def _profitability_compounding_autopilot_contract(
         targets=[
             {
                 "profile": profile,
-                "action": _as_dict(active_profile_controls.get(profile)).get("action", "quarantine_new_entries"),
-                "new_entry_cap": _as_dict(active_profile_controls.get(profile)).get("new_entry_cap", 0),
+                "action": _as_dict(active_profile_controls.get(profile)).get(
+                    "action", "quarantine_new_entries"
+                ),
+                "new_entry_cap": _as_dict(active_profile_controls.get(profile)).get(
+                    "new_entry_cap", 0
+                ),
             }
             for profile in weak_profiles
         ],
@@ -6978,7 +9103,9 @@ def _profitability_compounding_autopilot_contract(
         targets={
             "intent_count": intent_count,
             "active_daily_target_count": len(active_daily_targets),
-            "remaining_daily_target_by_profile": paper_harvest_execution_contract.get("remaining_daily_target_by_profile", {}),
+            "remaining_daily_target_by_profile": paper_harvest_execution_contract.get(
+                "remaining_daily_target_by_profile", {}
+            ),
         },
         expected_impact="convert eligible paper winners into realized paper profit while keeping live locked",
         risk_level="medium",
@@ -6989,7 +9116,9 @@ def _profitability_compounding_autopilot_contract(
         active=bool(regret_gap > 0.0),
         priority_score=88.0 + (100.0 * regret_gap),
         targets={
-            "current_regret_control_norm": regret_targets.get("current_regret_control_norm", current.get("regret_control_norm", 0.0)),
+            "current_regret_control_norm": regret_targets.get(
+                "current_regret_control_norm", current.get("regret_control_norm", 0.0)
+            ),
             "target_regret_control_norm": PROFIT_HARVEST_APLUSPLUS_MIN_REGRET_CONTROL,
             "regret_gap_norm": round(regret_gap, 6),
             "lookahead_minutes": PROFIT_HARVEST_REPLAY_LOOKAHEAD_MINUTES,
@@ -7032,7 +9161,14 @@ def _profitability_compounding_autopilot_contract(
         targets=[
             {
                 **row,
-                "paper_scale_multiplier_norm": round(_clamp(1.0 + (_safe_float(row.get("net_pnl_total"), 0.0) / 2_000.0), 1.0, 1.35), 6),
+                "paper_scale_multiplier_norm": round(
+                    _clamp(
+                        1.0 + (_safe_float(row.get("net_pnl_total"), 0.0) / 2_000.0),
+                        1.0,
+                        1.35,
+                    ),
+                    6,
+                ),
             }
             for row in winning_sleeves[:10]
         ],
@@ -7048,14 +9184,22 @@ def _profitability_compounding_autopilot_contract(
             "portfolio_net_pnl_total": round(net_pnl, 6),
             "realized_share_norm": round(realized_share, 6),
             "target_realized_share_norm": round(target_realized_share, 6),
-            "force_harvest_allowed": bool(guard_targets.get("force_harvest_allowed", False)),
+            "force_harvest_allowed": bool(
+                guard_targets.get("force_harvest_allowed", False)
+            ),
         },
         expected_impact="avoid forcing harvests when realized conversion is already high or net quality is weak",
         risk_level="low",
         stop_condition="net paper quality improves or force_harvest_allowed becomes true with runner protection clear",
     )
 
-    rows.sort(key=lambda item: (_safe_float(item.get("priority_score"), 0.0), str(item.get("action_id") or "")), reverse=True)
+    rows.sort(
+        key=lambda item: (
+            _safe_float(item.get("priority_score"), 0.0),
+            str(item.get("action_id") or ""),
+        ),
+        reverse=True,
+    )
     active_rows = [row for row in rows if bool(row.get("active", False))]
     return {
         "active": True,
@@ -7087,7 +9231,12 @@ def _profitability_compounding_autopilot_contract(
             "do strategy-level promotion only when attribution is visible",
             "do not force harvests just to improve a grade when net quality is weak",
         ],
-        "recommended_command": ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
+        "recommended_command": [
+            "./scripts/ops/opsctl.sh",
+            "paper-profitability-control",
+            "--apply",
+            "--json",
+        ],
         "stop_condition": "do_first is empty, raw_harvest_score_norm >= 0.98, regret_gap_norm == 0, and weak_profile_count == 0",
     }
 
@@ -7117,8 +9266,13 @@ def _quant_strategy_expansion_admission_contract(
             for profile, control in active_profile_controls.items()
             if _normal_profile(profile)
             and (
-                str(_as_dict(control).get("action") or "").strip().lower() == "quarantine_new_entries"
-                or bool(_as_dict(_as_dict(control).get("loser_quarantine")).get("active", False))
+                str(_as_dict(control).get("action") or "").strip().lower()
+                == "quarantine_new_entries"
+                or bool(
+                    _as_dict(_as_dict(control).get("loser_quarantine")).get(
+                        "active", False
+                    )
+                )
             )
         ]
     )
@@ -7153,28 +9307,43 @@ def _quant_strategy_expansion_admission_contract(
     )[:10]
     punitive_targets = _as_dict(punitive_lever.get("targets"))
     losing_strategy_pairs = [
-        row for row in _as_list(punitive_targets.get("losing_strategy_pairs")) if isinstance(row, dict)
+        row
+        for row in _as_list(punitive_targets.get("losing_strategy_pairs"))
+        if isinstance(row, dict)
     ]
     losing_bot_ids = ordered_unique(
         [
-            str(row.get("bot_id") or _strategy_bot_id(str(row.get("strategy") or ""))).strip()
+            str(
+                row.get("bot_id") or _strategy_bot_id(str(row.get("strategy") or ""))
+            ).strip()
             for row in losing_strategy_pairs
             if str(row.get("bot_id") or row.get("strategy") or "").strip()
         ]
         + [
-            str(row.get("bot_id") or _strategy_bot_id(str(row.get("strategy") or ""))).strip()
+            str(
+                row.get("bot_id") or _strategy_bot_id(str(row.get("strategy") or ""))
+            ).strip()
             for row in strategy_controls
-            if isinstance(row, dict) and _safe_float(row.get("ending_net_pnl_total"), 0.0) < 0.0
+            if isinstance(row, dict)
+            and _safe_float(row.get("ending_net_pnl_total"), 0.0) < 0.0
         ]
     )
     raw_harvest_score = _safe_float(
         profit_harvest_report_card.get("raw_outcome_score_norm"),
         _safe_float(profit_harvest_report_card.get("base_raw_outcome_score_norm"), 0.0),
     )
-    regret_control = _safe_float(profit_harvest_report_card.get("regret_control_norm"), 0.0)
-    net_pnl = _safe_float(profit_realization_contract.get("portfolio_net_pnl_total"), 0.0)
-    realized_share = _safe_float(profit_realization_contract.get("realized_profit_share_norm"), 0.0)
-    active_autopilot_actions = _safe_int(compounding_autopilot_contract.get("active_action_count"), 0)
+    regret_control = _safe_float(
+        profit_harvest_report_card.get("regret_control_norm"), 0.0
+    )
+    net_pnl = _safe_float(
+        profit_realization_contract.get("portfolio_net_pnl_total"), 0.0
+    )
+    realized_share = _safe_float(
+        profit_realization_contract.get("realized_profit_share_norm"), 0.0
+    )
+    active_autopilot_actions = _safe_int(
+        compounding_autopilot_contract.get("active_action_count"), 0
+    )
     protective_mode = bool(
         str(overall_status) == "protective_tightening"
         or weak_profiles
@@ -7186,7 +9355,10 @@ def _quant_strategy_expansion_admission_contract(
         max_new_slots = 0
     elif protective_mode:
         max_new_slots = min(4, len(QUANT_STRATEGY_EXPANSION_FAMILIES))
-    elif raw_harvest_score >= PROFIT_HARVEST_APLUSPLUS_MIN_SCORE and regret_control >= PROFIT_HARVEST_APLUSPLUS_MIN_REGRET_CONTROL:
+    elif (
+        raw_harvest_score >= PROFIT_HARVEST_APLUSPLUS_MIN_SCORE
+        and regret_control >= PROFIT_HARVEST_APLUSPLUS_MIN_REGRET_CONTROL
+    ):
         max_new_slots = min(10, len(QUANT_STRATEGY_EXPANSION_FAMILIES))
     else:
         max_new_slots = min(6, len(QUANT_STRATEGY_EXPANSION_FAMILIES))
@@ -7203,9 +9375,13 @@ def _quant_strategy_expansion_admission_contract(
         preferred = [
             _normal_profile(profile)
             for profile in _as_list(family.get("preferred_sleeves"))
-            if _normal_profile(profile) and _normal_profile(profile) not in weak_profiles
+            if _normal_profile(profile)
+            and _normal_profile(profile) not in weak_profiles
         ]
-        sleeve = next((profile for profile in preferred if profile in target_sleeves), target_sleeves[0] if target_sleeves else "")
+        sleeve = next(
+            (profile for profile in preferred if profile in target_sleeves),
+            target_sleeves[0] if target_sleeves else "",
+        )
         if not sleeve:
             continue
         family_id = str(family.get("family_id") or f"quant_family_{idx}").strip()
@@ -7222,14 +9398,20 @@ def _quant_strategy_expansion_admission_contract(
                 "family_id": family_id,
                 "target_sleeve": sleeve,
                 "purpose": str(family.get("purpose") or ""),
-                "initial_state": "collection_only" if protective_mode else "paper_canary",
+                "initial_state": (
+                    "collection_only" if protective_mode else "paper_canary"
+                ),
                 "paper_only": True,
                 "live_execution_allowed": False,
                 "max_initial_paper_size_norm": 0.0 if protective_mode else 0.05,
                 "admission_priority_score": round(max(priority_score, 0.0), 6),
                 "required_label_outputs": ordered_unique(
                     [
-                        *[str(label) for label in _as_list(family.get("required_labels")) if str(label)],
+                        *[
+                            str(label)
+                            for label in _as_list(family.get("required_labels"))
+                            if str(label)
+                        ],
                         "duplicate_alpha_overlap_norm",
                         "paper_fill_quality_bucket",
                         "realized_conversion_after_entry",
@@ -7266,7 +9448,10 @@ def _quant_strategy_expansion_admission_contract(
                 "promotion_gate": "must pass collection quality, duplicate-alpha, fill-quality, paper PnL, and harvest-regret checks before any paper widening",
             }
         )
-    templates.sort(key=lambda row: _safe_float(row.get("admission_priority_score"), 0.0), reverse=True)
+    templates.sort(
+        key=lambda row: _safe_float(row.get("admission_priority_score"), 0.0),
+        reverse=True,
+    )
 
     return {
         "active": True,
@@ -7277,7 +9462,9 @@ def _quant_strategy_expansion_admission_contract(
         "admission_state": admission_state,
         "max_new_strategy_slots": int(max_new_slots),
         "approved_family_count": len(QUANT_STRATEGY_EXPANSION_FAMILIES),
-        "approved_families": [str(row.get("family_id") or "") for row in QUANT_STRATEGY_EXPANSION_FAMILIES],
+        "approved_families": [
+            str(row.get("family_id") or "") for row in QUANT_STRATEGY_EXPANSION_FAMILIES
+        ],
         "target_sleeves": target_sleeves,
         "blocked_profiles": weak_profiles,
         "blocked_strategy_bot_ids": losing_bot_ids[:20],
@@ -7302,7 +9489,12 @@ def _quant_strategy_expansion_admission_contract(
             "source, spread, fill, and conflict evidence must be current before paper canary sizing",
             "paper canary size starts small and only scales after harvest-regret replay improves",
         ],
-        "recommended_command": ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
+        "recommended_command": [
+            "./scripts/ops/opsctl.sh",
+            "paper-profitability-control",
+            "--apply",
+            "--json",
+        ],
         "stop_condition": "promote only after candidate templates produce clean labels, no duplicate-alpha debt, positive paper attribution, and no weak-sleeve containment",
     }
 
@@ -7344,7 +9536,9 @@ def _profile_upgrade_contracts(
     unrealized = _safe_float(row.get("ending_unrealized_pnl_total"), 0.0)
     executions = _safe_int(row.get("executions"), 0)
     blocked = _blocked_regimes(families, drag)
-    unrealized_drag = _clamp(abs(min(unrealized, 0.0)) / max(500.0, float(max(executions, 1)) * 2.0))
+    unrealized_drag = _clamp(
+        abs(min(unrealized, 0.0)) / max(500.0, float(max(executions, 1)) * 2.0)
+    )
     severe_drag = bool(drag >= 0.64 or unrealized_drag >= 0.42)
     drag_active = bool(unrealized < 0.0 or unrealized_drag >= 0.18 or drag >= 0.38)
     conflict_cap = 0.72
@@ -7380,15 +9574,23 @@ def _profile_upgrade_contracts(
         "dynamic_sizing": {
             "active": True,
             "paper_profitability_size_multiplier_norm": round(position_multiplier, 6),
-            "max_new_entry_multiplier_norm": round(min(0.80, max(0.05, position_multiplier)), 6),
-            "kelly_fraction_cap_norm": round(max(0.02, min(0.35, 0.35 * (1.0 - drag))), 6),
+            "max_new_entry_multiplier_norm": round(
+                min(0.80, max(0.05, position_multiplier)), 6
+            ),
+            "kelly_fraction_cap_norm": round(
+                max(0.02, min(0.35, 0.35 * (1.0 - drag))), 6
+            ),
             "restore_step_norm": 0.10,
             "block_new_entries_when_drag_active": drag_active,
-            "new_entry_size_floor_norm": 0.0 if action == "quarantine_new_entries" else 0.05,
+            "new_entry_size_floor_norm": (
+                0.0 if action == "quarantine_new_entries" else 0.05
+            ),
         },
         "regime_specific_promotion": {
             "active": bool(blocked or profit_score < 0.62),
-            "promotion_status": "paper_only_retest" if net < 0.0 or drag >= 0.38 else "observe",
+            "promotion_status": (
+                "paper_only_retest" if net < 0.0 or drag >= 0.38 else "observe"
+            ),
             "blocked_regimes": blocked,
             "allowed_regimes": [
                 "fresh_source_verified",
@@ -7401,7 +9603,9 @@ def _profile_upgrade_contracts(
             "active": action == "quarantine_new_entries" or losing_strategy_count > 0,
             "mode": action,
             "losing_strategy_count": losing_strategy_count,
-            "new_entry_cap": 0 if action == "quarantine_new_entries" else (1 if drag >= 0.64 else 3),
+            "new_entry_cap": (
+                0 if action == "quarantine_new_entries" else (1 if drag >= 0.64 else 3)
+            ),
             "block_new_entries": action == "quarantine_new_entries",
             "allow_reductions_only_when_drag_active": drag_active,
             "reentry_requires_positive_refreshes": 2 if drag < 0.64 else 3,
@@ -7410,8 +9614,12 @@ def _profile_upgrade_contracts(
         "exit_intelligence": {
             "active": drag_active,
             "unrealized_drag_norm": round(unrealized_drag, 6),
-            "tighten_exit_bias_norm": round(_clamp((0.55 * drag) + (0.45 * unrealized_drag)), 6),
-            "max_stale_hold_minutes": 10 if severe_drag else (15 if drag >= 0.64 else 30),
+            "tighten_exit_bias_norm": round(
+                _clamp((0.55 * drag) + (0.45 * unrealized_drag)), 6
+            ),
+            "max_stale_hold_minutes": (
+                10 if severe_drag else (15 if drag >= 0.64 else 30)
+            ),
             "prefer_reduce_over_add": bool(unrealized < 0.0),
             "drag_reduction_mode": "reduce_only" if drag_active else "normal",
             "reduce_on_next_valid_tick": bool(unrealized_drag >= 0.18 or severe_drag),
@@ -7422,11 +9630,18 @@ def _profile_upgrade_contracts(
             "stop_loss_review_threshold_norm": round(0.52 if severe_drag else 0.62, 6),
         },
         "execution_aware_alpha": {
-            "active": bool({"fill_quality", "spread_quality", "tradeability"} & set(families) or drag >= 0.38),
+            "active": bool(
+                {"fill_quality", "spread_quality", "tradeability"} & set(families)
+                or drag >= 0.38
+            ),
             "thresholds": thresholds,
             "unknown_fill_score_discount_norm": round(0.18 + (0.32 * drag), 6),
-            "require_modeled_fill_quality": bool(thresholds.get("require_modeled_fill_quality", False)),
-            "require_known_spread_or_execution_model": bool(thresholds.get("require_known_spread_or_execution_model", False)),
+            "require_modeled_fill_quality": bool(
+                thresholds.get("require_modeled_fill_quality", False)
+            ),
+            "require_known_spread_or_execution_model": bool(
+                thresholds.get("require_known_spread_or_execution_model", False)
+            ),
             "required_before_new_entry": [
                 "modeled_fill_quality",
                 "known_spread_or_execution_model",
@@ -7440,9 +9655,14 @@ def _profile_upgrade_contracts(
             "block_when_confirmation_below_norm": 0.58,
         },
         "confirmation_bias_control": {
-            "active": bool(confirmation_bias_score >= 0.22 or len(set(cause_names) & CONFIRMATION_BIAS_CAUSES) >= 3),
+            "active": bool(
+                confirmation_bias_score >= 0.22
+                or len(set(cause_names) & CONFIRMATION_BIAS_CAUSES) >= 3
+            ),
             "confirmation_bias_score_norm": round(confirmation_bias_score, 6),
-            "loss_causes": [cause for cause in cause_names if cause in CONFIRMATION_BIAS_CAUSES],
+            "loss_causes": [
+                cause for cause in cause_names if cause in CONFIRMATION_BIAS_CAUSES
+            ],
             "required_evidence_channels": CONFIRMATION_EVIDENCE_CHANNELS,
             "min_independent_evidence_channels": 4 if drag >= 0.64 else 3,
             "independent_evidence_channel_floor_norm": 0.58 if drag >= 0.64 else 0.55,
@@ -7463,9 +9683,15 @@ def _upgrade_lane_summary(
 ) -> list[dict[str, Any]]:
     lane_profiles: dict[str, list[str]] = {lane: [] for lane in UPGRADE_LANE_IDS}
     for profile, control in active_profile_controls.items():
-        contracts = control.get("upgrade_contracts") if isinstance(control.get("upgrade_contracts"), dict) else {}
+        contracts = (
+            control.get("upgrade_contracts")
+            if isinstance(control.get("upgrade_contracts"), dict)
+            else {}
+        )
         for lane in UPGRADE_LANE_IDS:
-            lane_contract = contracts.get(lane) if isinstance(contracts.get(lane), dict) else {}
+            lane_contract = (
+                contracts.get(lane) if isinstance(contracts.get(lane), dict) else {}
+            )
             if lane_contract.get("active"):
                 lane_profiles[lane].append(profile)
 
@@ -7479,7 +9705,11 @@ def _upgrade_lane_summary(
                 "lane": lane,
                 "active": active,
                 "profile_count": len(profiles),
-                "strategy_control_count": strategy_count if lane in {"outcome_weighted_training", "loser_quarantine"} else 0,
+                "strategy_control_count": (
+                    strategy_count
+                    if lane in {"outcome_weighted_training", "loser_quarantine"}
+                    else 0
+                ),
                 "top_loss_causes": [
                     {"cause": cause, "count": count}
                     for cause, count in cause_counter.most_common(4)
@@ -7509,12 +9739,19 @@ def _upper_layer_training_contract(
 ) -> dict[str, Any]:
     controls = list(active_profile_controls.values())
     active = bool(controls or strategy_controls)
-    profit_scores = [_clamp(_safe_float(row.get("profit_score"), 0.5)) for row in controls]
+    profit_scores = [
+        _clamp(_safe_float(row.get("profit_score"), 0.5)) for row in controls
+    ]
     drag_scores = [_clamp(_safe_float(row.get("drag_score"), 0.0)) for row in controls]
-    mean_profit = sum(profit_scores) / max(len(profit_scores), 1) if profit_scores else 0.5
+    mean_profit = (
+        sum(profit_scores) / max(len(profit_scores), 1) if profit_scores else 0.5
+    )
     max_drag = max(drag_scores) if drag_scores else 0.0
     mean_size = (
-        sum(_clamp(_safe_float(row.get("position_size_multiplier"), 1.0)) for row in controls)
+        sum(
+            _clamp(_safe_float(row.get("position_size_multiplier"), 1.0))
+            for row in controls
+        )
         / max(len(controls), 1)
         if controls
         else 1.0
@@ -7522,7 +9759,9 @@ def _upper_layer_training_contract(
     active_lanes = [
         str(row.get("lane") or "")
         for row in upgrade_lanes
-        if isinstance(row, dict) and bool(row.get("active", False)) and str(row.get("lane") or "").strip()
+        if isinstance(row, dict)
+        and bool(row.get("active", False))
+        and str(row.get("lane") or "").strip()
     ]
     return {
         "active": active,
@@ -7552,8 +9791,12 @@ def _upper_layer_training_contract(
         },
         "sample_weight_policy": {
             "paper_loss_hard_negative_multiplier": round(1.0 + (2.0 * max_drag), 6),
-            "paper_profit_positive_multiplier": round(max(0.75, 1.0 + (0.50 * max(mean_profit - 0.5, 0.0))), 6),
-            "strategy_quarantine_multiplier": round(1.0 + min(len(strategy_controls), 24) / 12.0, 6),
+            "paper_profit_positive_multiplier": round(
+                max(0.75, 1.0 + (0.50 * max(mean_profit - 0.5, 0.0))), 6
+            ),
+            "strategy_quarantine_multiplier": round(
+                1.0 + min(len(strategy_controls), 24) / 12.0, 6
+            ),
             "min_profitable_refreshes_before_weight_lift": 2 if max_drag < 0.64 else 3,
         },
         "promotion_gate_policy": {
@@ -7640,9 +9883,13 @@ def _scout_collection_contract(
     }
 
 
-def _registry_trading_scout_bot_ids(project_root: Path, *, limit: int = 32) -> list[str]:
+def _registry_trading_scout_bot_ids(
+    project_root: Path, *, limit: int = 32
+) -> list[str]:
     registry = load_json(project_root / "master_bot_registry.json")
-    rows = registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
+    rows = (
+        registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
+    )
     bot_ids: list[str] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -7652,8 +9899,14 @@ def _registry_trading_scout_bot_ids(project_root: Path, *, limit: int = 32) -> l
             continue
         lifecycle = str(row.get("lifecycle_state") or "").strip().lower()
         collection_active = bool(row.get("data_collection_active", False))
-        training_excluded = bool(row.get("training_excluded", False)) or bool(row.get("exclude_from_training", False))
-        if lifecycle != "data_collection_only" or not collection_active or not training_excluded:
+        training_excluded = bool(row.get("training_excluded", False)) or bool(
+            row.get("exclude_from_training", False)
+        )
+        if (
+            lifecycle != "data_collection_only"
+            or not collection_active
+            or not training_excluded
+        ):
             continue
         descriptors = " ".join(
             str(row.get(key) or "").strip().lower()
@@ -7691,7 +9944,9 @@ def _hardening_contract(
         [
             profile
             for profile, control in active_profile_controls.items()
-            if isinstance(control, dict) and str(control.get("action") or "").strip().lower() == "quarantine_new_entries"
+            if isinstance(control, dict)
+            and str(control.get("action") or "").strip().lower()
+            == "quarantine_new_entries"
         ]
     )
     exit_drag_profiles = ordered_unique(
@@ -7721,12 +9976,14 @@ def _hardening_contract(
     quarantined_pairs = [
         str(row.get("strategy") or "")
         for row in strategy_controls
-        if isinstance(row, dict) and str(row.get("mode") or "").strip().lower() == "paper_quarantine"
+        if isinstance(row, dict)
+        and str(row.get("mode") or "").strip().lower() == "paper_quarantine"
     ]
     deweighted_pairs = [
         str(row.get("strategy") or "")
         for row in strategy_controls
-        if isinstance(row, dict) and str(row.get("mode") or "").strip().lower() == "deweight"
+        if isinstance(row, dict)
+        and str(row.get("mode") or "").strip().lower() == "deweight"
     ]
     action_rows = [
         {
@@ -7763,11 +10020,19 @@ def _hardening_contract(
         },
         {
             "action_id": "contain_systemic_sleeve_weak_points",
-            "status": "active" if bool(systemic_weak_point_contract.get("active", False)) else "armed",
-            "target_count": _safe_int(systemic_weak_point_contract.get("systemic_weak_point_count"), 0),
+            "status": (
+                "active"
+                if bool(systemic_weak_point_contract.get("active", False))
+                else "armed"
+            ),
+            "target_count": _safe_int(
+                systemic_weak_point_contract.get("systemic_weak_point_count"), 0
+            ),
             "targets": [
                 str(row.get("cause") or "")
-                for row in _as_list(systemic_weak_point_contract.get("systemic_weak_points"))
+                for row in _as_list(
+                    systemic_weak_point_contract.get("systemic_weak_points")
+                )
                 if isinstance(row, dict) and str(row.get("cause") or "")
             ][:12],
             "expected_effect": "dampen or block book-wide paper widening when the same loss cause spreads across many sleeves",
@@ -7783,7 +10048,11 @@ def _hardening_contract(
         },
         {
             "action_id": "expand_scout_labels_for_profitability_feedback",
-            "status": "active" if bool(scout_collection_contract.get("active", False)) else "armed",
+            "status": (
+                "active"
+                if bool(scout_collection_contract.get("active", False))
+                else "armed"
+            ),
             "target_count": len(scout_collection_contract.get("target_bot_ids") or []),
             "targets": scout_collection_contract.get("target_bot_ids") or [],
             "expected_effect": "turn every weak paper trade and rejected candidate into usable training evidence",
@@ -7821,10 +10090,18 @@ def _hardening_contract(
         },
         "systemic_weak_point_policy": {
             "active": bool(systemic_weak_point_contract.get("active", False)),
-            "control_ready": bool(systemic_weak_point_contract.get("control_ready", False)),
-            "systemic_weak_point_count": _safe_int(systemic_weak_point_contract.get("systemic_weak_point_count"), 0),
-            "threshold_profile_count": _safe_int(systemic_weak_point_contract.get("systemic_threshold_profile_count"), 0),
-            "required_family_gates": _as_list(systemic_weak_point_contract.get("required_family_gates")),
+            "control_ready": bool(
+                systemic_weak_point_contract.get("control_ready", False)
+            ),
+            "systemic_weak_point_count": _safe_int(
+                systemic_weak_point_contract.get("systemic_weak_point_count"), 0
+            ),
+            "threshold_profile_count": _safe_int(
+                systemic_weak_point_contract.get("systemic_threshold_profile_count"), 0
+            ),
+            "required_family_gates": _as_list(
+                systemic_weak_point_contract.get("required_family_gates")
+            ),
             "paper_only": True,
             "live_execution_allowed": False,
         },
@@ -7835,7 +10112,9 @@ def _hardening_contract(
 def _profile_drag(row: dict[str, Any]) -> float:
     net = _safe_float(row.get("ending_net_pnl_total"), 0.0)
     unrealized = _safe_float(row.get("ending_unrealized_pnl_total"), 0.0)
-    win_rate = _safe_float(row.get("win_rate"), 1.0 if row.get("win_rate") is not None else 0.5)
+    win_rate = _safe_float(
+        row.get("win_rate"), 1.0 if row.get("win_rate") is not None else 0.5
+    )
     executions = _safe_int(row.get("executions"), 0)
     losing_count = _safe_int(row.get("losing_strategy_count"), 0)
     winning_count = _safe_int(row.get("winning_strategy_count"), 0)
@@ -7850,7 +10129,9 @@ def _profile_drag(row: dict[str, Any]) -> float:
     )
 
 
-def _profile_action(profile: str, drag: float, net: float, win_rate: float | None) -> str:
+def _profile_action(
+    profile: str, drag: float, net: float, win_rate: float | None
+) -> str:
     if drag >= 0.88 or net <= -1000.0:
         return "quarantine_new_entries"
     if drag >= 0.64 or (win_rate is not None and win_rate < 0.18):
@@ -7860,7 +10141,9 @@ def _profile_action(profile: str, drag: float, net: float, win_rate: float | Non
     return "observe"
 
 
-def _profile_thresholds(profile: str, families: list[str], drag: float) -> dict[str, Any]:
+def _profile_thresholds(
+    profile: str, families: list[str], drag: float
+) -> dict[str, Any]:
     min_source = 0.35
     min_tradeability = 0.42
     min_execution = 0.42
@@ -7883,7 +10166,12 @@ def _profile_thresholds(profile: str, families: list[str], drag: float) -> dict[
     if "catalyst_confirmation" in family_set and profile in CATALYST_PROFILES:
         min_catalyst = max(min_catalyst, 0.28)
         min_confirmation = max(min_confirmation, 0.46)
-    if {"portfolio_conflict", "source_quality", "fill_quality", "spread_quality"} & family_set:
+    if {
+        "portfolio_conflict",
+        "source_quality",
+        "fill_quality",
+        "spread_quality",
+    } & family_set:
         min_confirmation = max(min_confirmation, 0.42)
     if {"fill_quality", "spread_quality"} & family_set:
         min_source = max(min_source, 0.56)
@@ -7930,8 +10218,16 @@ def _profile_thresholds(profile: str, families: list[str], drag: float) -> dict[
         "min_execution_fitness_norm": round(min_execution, 6),
         "min_cross_asset_confirmation_norm": round(min_confirmation, 6),
         "min_event_proximity_norm": round(min_catalyst, 6),
-        "require_known_spread_or_execution_model": bool("spread_quality" in family_set or recurring_evidence_gap_count >= 3 or drag >= 0.88),
-        "require_modeled_fill_quality": bool("fill_quality" in family_set or recurring_evidence_gap_count >= 3 or drag >= 0.88),
+        "require_known_spread_or_execution_model": bool(
+            "spread_quality" in family_set
+            or recurring_evidence_gap_count >= 3
+            or drag >= 0.88
+        ),
+        "require_modeled_fill_quality": bool(
+            "fill_quality" in family_set
+            or recurring_evidence_gap_count >= 3
+            or drag >= 0.88
+        ),
     }
 
 
@@ -7992,7 +10288,12 @@ def _strategy_rehab_focus(profile: str, strategy: str, bot_id: str) -> dict[str,
                 "proxy_pair_agreement",
             ],
         }
-    if "futures" in profile or "open_interest" in text or "orderbook" in text or "seasonal" in text:
+    if (
+        "futures" in profile
+        or "open_interest" in text
+        or "orderbook" in text
+        or "seasonal" in text
+    ):
         return {
             "family": "crypto_futures_microstructure",
             "fit_question": "does the crypto futures signal have enough liquidity, funding, and order-book confirmation",
@@ -8015,43 +10316,79 @@ def _strategy_rehab_focus(profile: str, strategy: str, bot_id: str) -> dict[str,
     }
 
 
-def _strategy_repair_actions(cause_names: list[str], focus: dict[str, Any]) -> list[str]:
+def _strategy_repair_actions(
+    cause_names: list[str], focus: dict[str, Any]
+) -> list[str]:
     actions: list[str] = []
     cause_set = set(cause_names)
     if "source_quality:low" in cause_set:
-        actions.append("raise source-quality floor and label weak-source losses as hard negatives")
+        actions.append(
+            "raise source-quality floor and label weak-source losses as hard negatives"
+        )
     if cause_set & {"fill_quality:unknown", "fill_quality:poor", "fill_quality:fair"}:
-        actions.append("require modeled fill quality before the strategy can add paper risk")
+        actions.append(
+            "require modeled fill quality before the strategy can add paper risk"
+        )
     if cause_set & {"spread_regime:unknown", "spread_regime:wide"}:
-        actions.append("require known spread/liquidity quality and reject stale or wide-spread prints")
+        actions.append(
+            "require known spread/liquidity quality and reject stale or wide-spread prints"
+        )
     if "event_proximity:low" in cause_set:
-        actions.append("require catalyst/event-window confirmation or mark the setup as no-trade")
+        actions.append(
+            "require catalyst/event-window confirmation or mark the setup as no-trade"
+        )
     if "conflict:low" in cause_set:
-        actions.append("require portfolio conflict clearance before trusting the strategy vote")
+        actions.append(
+            "require portfolio conflict clearance before trusting the strategy vote"
+        )
     if _session_loss_causes(cause_names):
-        actions.append("block weak-session re-entry until session gate evidence is explicitly present")
+        actions.append(
+            "block weak-session re-entry until session gate evidence is explicitly present"
+        )
     for evidence in _as_list(focus.get("required_regime_evidence"))[:4]:
         actions.append(f"collect {evidence}")
     return ordered_unique(actions)
 
 
-def _strategy_session_gate(profile: str, cause_names: list[str], focus: dict[str, Any]) -> dict[str, Any]:
+def _strategy_session_gate(
+    profile: str, cause_names: list[str], focus: dict[str, Any]
+) -> dict[str, Any]:
     weak_session = _session_loss_causes(cause_names)
     family = str(focus.get("family") or "")
     if profile == "fx" or family == "fx_liquid_session_regime":
         allowed = ["london", "new_york_overlap", "new_york_morning"]
-        blocked = ["after_hours", "rollover", "illiquid_asia"] if weak_session else ["rollover"]
+        blocked = (
+            ["after_hours", "rollover", "illiquid_asia"]
+            if weak_session
+            else ["rollover"]
+        )
         mode = "fx_liquid_session_only"
     elif "crypto" in profile or family == "crypto_futures_microstructure":
-        allowed = ["high_liquidity_crypto_session", "funding_window_with_liquidity", "us_cash_overlap"]
+        allowed = [
+            "high_liquidity_crypto_session",
+            "funding_window_with_liquidity",
+            "us_cash_overlap",
+        ]
         blocked = ["thin_liquidity_window"] if weak_session else []
         mode = "crypto_high_liquidity_session_only"
     else:
         allowed = ["regular_session"]
-        blocked = ["premarket", "after_hours", "overnight"] if weak_session else ["premarket_unconfirmed", "after_hours_unconfirmed"]
+        blocked = (
+            ["premarket", "after_hours", "overnight"]
+            if weak_session
+            else ["premarket_unconfirmed", "after_hours_unconfirmed"]
+        )
         mode = "regular_session_or_explicit_event_only"
     return {
-        "active": bool(weak_session or family in {"fx_liquid_session_regime", "rates_credit_regime", "options_surface_quality"}),
+        "active": bool(
+            weak_session
+            or family
+            in {
+                "fx_liquid_session_regime",
+                "rates_credit_regime",
+                "options_surface_quality",
+            }
+        ),
         "mode": mode,
         "allowed_sessions": allowed,
         "blocked_sessions": blocked,
@@ -8076,10 +10413,19 @@ def _strategy_rehabilitation_contract(
         _safe_int(confirmation_contract.get("min_independent_evidence_channels"), 3),
         4 if material else 3,
     )
-    quality_floor = max(_safe_float(confirmation_contract.get("block_when_quality_gate_below_norm"), 0.56), 0.62 if material else 0.58)
+    quality_floor = max(
+        _safe_float(
+            confirmation_contract.get("block_when_quality_gate_below_norm"), 0.56
+        ),
+        0.62 if material else 0.58,
+    )
     session_gate = _strategy_session_gate(profile, cause_names, focus)
-    required_labels = ordered_unique(SCOUT_PROFITABILITY_LABEL_OUTPUTS + STRATEGY_REHAB_REQUIRED_LABELS)
-    required_context = ordered_unique(SCOUT_PROFITABILITY_CONTEXT + STRATEGY_REHAB_REQUIRED_CONTEXT)
+    required_labels = ordered_unique(
+        SCOUT_PROFITABILITY_LABEL_OUTPUTS + STRATEGY_REHAB_REQUIRED_LABELS
+    )
+    required_context = ordered_unique(
+        SCOUT_PROFITABILITY_CONTEXT + STRATEGY_REHAB_REQUIRED_CONTEXT
+    )
     required_before_reentry = ordered_unique(
         [
             "three_profitable_refreshes",
@@ -8124,7 +10470,9 @@ def _strategy_rehabilitation_contract(
             "required_profitable_refreshes": 3,
             "minimum_clean_retest_count": 3 if material else 2,
             "block_new_entries_until_retest_passes": True,
-            "max_position_size_multiplier_norm_until_reentry": 0.0 if material else 0.05,
+            "max_position_size_multiplier_norm_until_reentry": (
+                0.0 if material else 0.05
+            ),
         },
     }
 
@@ -8137,7 +10485,11 @@ def _strategy_controls(
     profile_drag: float,
     limit: int = 8,
 ) -> list[dict[str, Any]]:
-    rows = sleeve.get("top_losing_strategies") if isinstance(sleeve.get("top_losing_strategies"), list) else []
+    rows = (
+        sleeve.get("top_losing_strategies")
+        if isinstance(sleeve.get("top_losing_strategies"), list)
+        else []
+    )
     controls: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -8155,16 +10507,27 @@ def _strategy_controls(
             cause_names,
             drag=max(profile_drag, penalty),
             net=net,
-            win_rate=_safe_float(sleeve.get("win_rate"), 0.0) if sleeve.get("win_rate") is not None else None,
+            win_rate=(
+                _safe_float(sleeve.get("win_rate"), 0.0)
+                if sleeve.get("win_rate") is not None
+                else None
+            ),
         )
         min_channels = 4 if max(profile_drag, penalty) >= 0.64 else 3
         confirmation_contract = {
-            "active": bool(confirmation_bias >= 0.20 or len(set(cause_names) & CONFIRMATION_BIAS_CAUSES) >= 3),
+            "active": bool(
+                confirmation_bias >= 0.20
+                or len(set(cause_names) & CONFIRMATION_BIAS_CAUSES) >= 3
+            ),
             "confirmation_bias_score_norm": round(confirmation_bias, 6),
-            "source_loss_causes": [cause for cause in cause_names if cause in CONFIRMATION_BIAS_CAUSES],
+            "source_loss_causes": [
+                cause for cause in cause_names if cause in CONFIRMATION_BIAS_CAUSES
+            ],
             "required_evidence_channels": CONFIRMATION_EVIDENCE_CHANNELS,
             "min_independent_evidence_channels": min_channels,
-            "independent_evidence_channel_floor_norm": 0.58 if min_channels >= 4 else 0.55,
+            "independent_evidence_channel_floor_norm": (
+                0.58 if min_channels >= 4 else 0.55
+            ),
             "block_when_quality_gate_below_norm": 0.62 if min_channels >= 4 else 0.56,
             "score_dampen_when_quality_below_norm": 0.70 if min_channels >= 4 else 0.64,
             "required_before_new_entry": CONFIRMATION_EVIDENCE_CHANNELS,
@@ -8224,7 +10587,9 @@ def _strategy_controls(
                         "active": True,
                         "promotion_status": "paper_only_rehabilitation",
                         "focus_family": rehabilitation_contract.get("focus_family"),
-                        "required_regime_evidence": rehabilitation_contract.get("required_regime_evidence"),
+                        "required_regime_evidence": rehabilitation_contract.get(
+                            "required_regime_evidence"
+                        ),
                         "session_gate": rehabilitation_contract.get("session_gate"),
                         "retest_plan": rehabilitation_contract.get("retest_plan"),
                     },
@@ -8240,35 +10605,65 @@ def _strategy_controls(
                 ],
                 "data_intake_enrichment": {
                     "required_context": rehabilitation_contract["required_context"],
-                    "required_label_outputs": rehabilitation_contract["required_label_outputs"],
+                    "required_label_outputs": rehabilitation_contract[
+                        "required_label_outputs"
+                    ],
                 },
             }
         )
-    controls.sort(key=lambda item: (float(item["ending_net_pnl_total"]), item["strategy"]))
+    controls.sort(
+        key=lambda item: (float(item["ending_net_pnl_total"]), item["strategy"])
+    )
     return controls[: max(int(limit), 1)]
 
 
-def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+def build_payload(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    start_fresh_paper_recovery: bool = False,
+    fresh_paper_recovery_reason: str = "",
+) -> dict[str, Any]:
     health = project_root / "governance" / "health"
     paper_path = health / "paper_performance_latest.json"
     training_quality_path = health / "training_quality_control_latest.json"
-    previous_control_path = DEFAULT_CONTROL_PATH if project_root == PROJECT_ROOT else health / "paper_runtime_profitability_controls_latest.json"
+    previous_control_path = (
+        DEFAULT_CONTROL_PATH
+        if project_root == PROJECT_ROOT
+        else health / "paper_runtime_profitability_controls_latest.json"
+    )
     paper, paper_performance_input_contract = _load_paper_performance_input(paper_path)
     training_quality = load_json(training_quality_path)
     previous_runtime_control = load_json(previous_control_path)
+    paper_behavior_intervention_admission = (
+        _paper_behavior_intervention_admission_contract(
+            project_root=project_root,
+            paper_performance=paper,
+        )
+    )
+    paper_behavior_intervention_overlay_contract = _as_dict(
+        paper_behavior_intervention_admission.get("runtime_overlay_contract")
+    )
     previous_daily_goal_contract = (
         previous_runtime_control.get("daily_sleeve_harvest_goal_contract")
-        if isinstance(previous_runtime_control.get("daily_sleeve_harvest_goal_contract"), dict)
+        if isinstance(
+            previous_runtime_control.get("daily_sleeve_harvest_goal_contract"), dict
+        )
         else {}
     )
     previous_paper_debt_recovery_contract = (
         previous_runtime_control.get("paper_debt_recovery_contract")
-        if isinstance(previous_runtime_control.get("paper_debt_recovery_contract"), dict)
+        if isinstance(
+            previous_runtime_control.get("paper_debt_recovery_contract"), dict
+        )
         else {}
     )
     history_latest = _latest_history_row(paper)
     day_row = paper.get("day") if isinstance(paper.get("day"), dict) else {}
-    sleeves = paper.get("sleeve_latest") if isinstance(paper.get("sleeve_latest"), list) else []
+    sleeves = (
+        paper.get("sleeve_latest")
+        if isinstance(paper.get("sleeve_latest"), list)
+        else []
+    )
 
     active_profile_controls: dict[str, dict[str, Any]] = {}
     strategy_controls: list[dict[str, Any]] = []
@@ -8302,7 +10697,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             continue
         families = _quality_families(cause_names)
         thresholds = _profile_thresholds(profile, families, drag)
-        confirmation_bias = _confirmation_bias_score(cause_names, drag=drag, net=net, win_rate=win_rate)
+        confirmation_bias = _confirmation_bias_score(
+            cause_names, drag=drag, net=net, win_rate=win_rate
+        )
         position_multiplier = round(max(0.05, 1.0 - (0.88 * drag)), 6)
         if action == "quarantine_new_entries":
             position_multiplier = min(position_multiplier, 0.10)
@@ -8346,7 +10743,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "ending_realized_pnl_total": round(realized, 6),
             "ending_unrealized_pnl_total": round(unrealized, 6),
             "position_size_multiplier": position_multiplier,
-            "new_entry_cap": 0 if action == "quarantine_new_entries" else (1 if drag >= 0.64 else 3),
+            "new_entry_cap": (
+                0 if action == "quarantine_new_entries" else (1 if drag >= 0.64 else 3)
+            ),
             "quality_families": families,
             "thresholds": thresholds,
             "top_loss_causes": _loss_causes(row)[:5],
@@ -8359,7 +10758,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "loser_quarantine": upgrade_contracts["loser_quarantine"],
             "exit_intelligence": upgrade_contracts["exit_intelligence"],
             "execution_aware_alpha": upgrade_contracts["execution_aware_alpha"],
-            "portfolio_conflict_control": upgrade_contracts["portfolio_conflict_control"],
+            "portfolio_conflict_control": upgrade_contracts[
+                "portfolio_conflict_control"
+            ],
             "confirmation_bias_control": upgrade_contracts["confirmation_bias_control"],
             "runtime_policy": {
                 "block_new_entries_when_quality_gate_fails": True,
@@ -8373,12 +10774,22 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "apply_execution_aware_alpha": True,
                 "apply_portfolio_conflict_control": True,
                 "apply_confirmation_bias_control": True,
-                "apply_weak_sleeve_recurrence_guard": bool(recurrence_guard.get("active", False)),
+                "apply_weak_sleeve_recurrence_guard": bool(
+                    recurrence_guard.get("active", False)
+                ),
             },
         }
-        strategy_controls.extend(_strategy_controls(profile, row, cause_names=cause_names, profile_drag=drag))
+        strategy_controls.extend(
+            _strategy_controls(profile, row, cause_names=cause_names, profile_drag=drag)
+        )
 
-    strategy_controls.sort(key=lambda item: (float(item["ending_net_pnl_total"]), item["profile"], item["strategy"]))
+    strategy_controls.sort(
+        key=lambda item: (
+            float(item["ending_net_pnl_total"]),
+            item["profile"],
+            item["strategy"],
+        )
+    )
     strategy_controls = strategy_controls[:24]
 
     all_sleeve_net_sum = net_sum
@@ -8394,11 +10805,20 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     )
     gradeable_totals = _as_dict(financial_grade_basis_contract.get("gradeable_totals"))
     net_sum = _safe_float(gradeable_totals.get("net_pnl"), all_sleeve_net_sum)
-    realized_sum = _safe_float(gradeable_totals.get("realized_pnl"), all_sleeve_realized_sum)
-    unrealized_sum = _safe_float(gradeable_totals.get("unrealized_pnl"), all_sleeve_unrealized_sum)
-    execution_sum = _safe_int(gradeable_totals.get("executions"), all_sleeve_execution_sum)
+    realized_sum = _safe_float(
+        gradeable_totals.get("realized_pnl"), all_sleeve_realized_sum
+    )
+    unrealized_sum = _safe_float(
+        gradeable_totals.get("unrealized_pnl"), all_sleeve_unrealized_sum
+    )
+    execution_sum = _safe_int(
+        gradeable_totals.get("executions"), all_sleeve_execution_sum
+    )
 
-    history_change = _safe_float(day_row.get("change_vs_previous_day"), _safe_float(history_latest.get("change_vs_previous_day"), 0.0))
+    history_change = _safe_float(
+        day_row.get("change_vs_previous_day"),
+        _safe_float(history_latest.get("change_vs_previous_day"), 0.0),
+    )
     raw_operational_materiality_filter = _raw_operational_materiality_filter(
         active_profile_controls=active_profile_controls,
         strategy_controls=strategy_controls,
@@ -8406,12 +10826,16 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     )
     gradeable_profile_controls = (
         raw_operational_materiality_filter.get("_gradeable_profile_controls")
-        if isinstance(raw_operational_materiality_filter.get("_gradeable_profile_controls"), dict)
+        if isinstance(
+            raw_operational_materiality_filter.get("_gradeable_profile_controls"), dict
+        )
         else active_profile_controls
     )
     gradeable_strategy_controls = (
         raw_operational_materiality_filter.get("_gradeable_strategy_controls")
-        if isinstance(raw_operational_materiality_filter.get("_gradeable_strategy_controls"), list)
+        if isinstance(
+            raw_operational_materiality_filter.get("_gradeable_strategy_controls"), list
+        )
         else strategy_controls
     )
     financial_grade = _financial_grade(
@@ -8432,8 +10856,14 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     )
     weak_count = len(active_profile_controls)
     base_raw_operational_outcome_grade = _operational_outcome_grade(
-        weak_count=_safe_int(raw_operational_materiality_filter.get("gradeable_weak_profile_count"), weak_count),
-        strategy_count=_safe_int(raw_operational_materiality_filter.get("gradeable_strategy_control_count"), len(strategy_controls)),
+        weak_count=_safe_int(
+            raw_operational_materiality_filter.get("gradeable_weak_profile_count"),
+            weak_count,
+        ),
+        strategy_count=_safe_int(
+            raw_operational_materiality_filter.get("gradeable_strategy_control_count"),
+            len(strategy_controls),
+        ),
     )
     raw_operational_containment_filter = _raw_operational_containment_filter(
         gradeable_profile_controls=gradeable_profile_controls,
@@ -8442,12 +10872,16 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     )
     active_raw_profile_controls = (
         raw_operational_containment_filter.get("_active_profile_controls")
-        if isinstance(raw_operational_containment_filter.get("_active_profile_controls"), dict)
+        if isinstance(
+            raw_operational_containment_filter.get("_active_profile_controls"), dict
+        )
         else gradeable_profile_controls
     )
     active_raw_strategy_controls = (
         raw_operational_containment_filter.get("_active_strategy_controls")
-        if isinstance(raw_operational_containment_filter.get("_active_strategy_controls"), list)
+        if isinstance(
+            raw_operational_containment_filter.get("_active_strategy_controls"), list
+        )
         else gradeable_strategy_controls
     )
     profit_harvest_controls = _profit_harvest_profile_controls(sleeves)
@@ -8457,7 +10891,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         realized_sum=realized_sum,
         unrealized_sum=unrealized_sum,
     )
-    profit_harvest_strategy_controls = _strategy_profit_harvest_controls(sleeves, profit_harvest_controls)
+    profit_harvest_strategy_controls = _strategy_profit_harvest_controls(
+        sleeves, profit_harvest_controls
+    )
     profit_harvest_position_ledger = _position_harvest_ledger(
         project_root=project_root,
         paper=paper,
@@ -8476,7 +10912,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         profit_harvest_controls=profit_harvest_controls,
         daily_goal_contract=daily_sleeve_harvest_goal_contract,
     )
-    daily_target_adaptation_contract = _daily_target_adaptation_contract(daily_sleeve_harvest_goal_contract)
+    daily_target_adaptation_contract = _daily_target_adaptation_contract(
+        daily_sleeve_harvest_goal_contract
+    )
     paper_harvest_execution_contract = _paper_harvest_execution_contract(
         daily_goal_contract=daily_sleeve_harvest_goal_contract,
         position_ledger=profit_harvest_position_ledger,
@@ -8500,9 +10938,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         position_ledger=profit_harvest_position_ledger,
         strategy_harvest_controls=profit_harvest_strategy_controls,
     )
-    aggressive_harvest_mode_contract = _aggressive_harvest_mode_contract(sleeves, profit_harvest_controls)
+    aggressive_harvest_mode_contract = _aggressive_harvest_mode_contract(
+        sleeves, profit_harvest_controls
+    )
     runner_protection_contract = _runner_protection_contract(profit_harvest_controls)
-    profit_rotation_contract = _profit_rotation_contract(sleeves, profit_harvest_controls)
+    profit_rotation_contract = _profit_rotation_contract(
+        sleeves, profit_harvest_controls
+    )
     profit_harvest_report_card = _profit_harvest_report_card(
         profit_realization_contract=profit_realization_contract,
         position_ledger=profit_harvest_position_ledger,
@@ -8514,18 +10956,25 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         if isinstance(profit_harvest_report_card.get("a_plus_campaign"), dict)
         else {}
     )
-    grand_master_profit_harvest_awareness_contract = _grand_master_profit_harvest_awareness_contract(
-        profit_realization_contract=profit_realization_contract,
-        report_card=profit_harvest_report_card,
-        rotation_contract=profit_rotation_contract,
+    grand_master_profit_harvest_awareness_contract = (
+        _grand_master_profit_harvest_awareness_contract(
+            profit_realization_contract=profit_realization_contract,
+            report_card=profit_harvest_report_card,
+            rotation_contract=profit_rotation_contract,
+        )
     )
 
     overall_status = "ready"
     if weak_count:
         overall_status = "needs_tuning"
-    if any(row.get("action") == "quarantine_new_entries" for row in active_profile_controls.values()):
+    if any(
+        row.get("action") == "quarantine_new_entries"
+        for row in active_profile_controls.values()
+    ):
         overall_status = "protective_tightening"
-    if not bool(paper_performance_input_contract.get("usable_for_profitability_grade", False)):
+    if not bool(
+        paper_performance_input_contract.get("usable_for_profitability_grade", False)
+    ):
         overall_status = "blocked_missing_evidence"
 
     training_score = _safe_float(training_quality.get("training_quality_score"), 0.0)
@@ -8568,8 +11017,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         strategy_controls=strategy_controls,
     )
     operational_outcome_grade = _operational_outcome_grade(
-        weak_count=_safe_int(unprotected_counts.get("unprotected_weak_profile_count"), weak_count),
-        strategy_count=_safe_int(unprotected_counts.get("unprotected_strategy_control_count"), len(strategy_controls)),
+        weak_count=_safe_int(
+            unprotected_counts.get("unprotected_weak_profile_count"), weak_count
+        ),
+        strategy_count=_safe_int(
+            unprotected_counts.get("unprotected_strategy_control_count"),
+            len(strategy_controls),
+        ),
     )
     a_plus_target_contract = _a_plus_target_contract(
         financial_grade=financial_grade,
@@ -8585,19 +11039,23 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         change_vs_previous_day=history_change,
         executions=execution_sum,
     )
-    weak_sleeve_a_plus_plus_strengthening_contract = _weak_sleeve_a_plus_plus_strengthening_contract(
-        active_profile_controls=active_profile_controls,
-        strategy_controls=strategy_controls,
-        operational_control_grade=operational_control_grade,
-        raw_operational_outcome_grade=raw_operational_outcome_grade,
-        base_raw_operational_outcome_grade=base_raw_operational_outcome_grade,
+    weak_sleeve_a_plus_plus_strengthening_contract = (
+        _weak_sleeve_a_plus_plus_strengthening_contract(
+            active_profile_controls=active_profile_controls,
+            strategy_controls=strategy_controls,
+            operational_control_grade=operational_control_grade,
+            raw_operational_outcome_grade=raw_operational_outcome_grade,
+            base_raw_operational_outcome_grade=base_raw_operational_outcome_grade,
+        )
     )
     weak_sleeve_recurrence_guard_contract = _weak_sleeve_recurrence_guard_contract(
         active_profile_controls=active_profile_controls,
     )
-    weak_sleeve_systemic_weak_point_contract = _weak_sleeve_systemic_weak_point_contract(
-        recurrence_contract=weak_sleeve_recurrence_guard_contract,
-        active_profile_controls=active_profile_controls,
+    weak_sleeve_systemic_weak_point_contract = (
+        _weak_sleeve_systemic_weak_point_contract(
+            recurrence_contract=weak_sleeve_recurrence_guard_contract,
+            active_profile_controls=active_profile_controls,
+        )
     )
     financial_grade_lift_contract = _financial_grade_lift_contract(
         sleeves=sleeves,
@@ -8612,7 +11070,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         profit_harvest_controls=profit_harvest_controls,
         weak_strengthening_contract=weak_sleeve_a_plus_plus_strengthening_contract,
     )
-    raw_profitability_grade = str(a_plus_target_contract.get("headline_grade") or financial_grade)
+    raw_profitability_grade = str(
+        a_plus_target_contract.get("headline_grade") or financial_grade
+    )
     raw_profitability_a_recovery_contract = _raw_profitability_a_recovery_contract(
         financial_grade=financial_grade,
         raw_profitability_grade=raw_profitability_grade,
@@ -8643,6 +11103,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         paper=paper,
         previous_contract=previous_paper_debt_recovery_contract,
         input_contract=paper_performance_input_contract,
+        start_fresh_epoch=bool(start_fresh_paper_recovery),
+        fresh_epoch_reason=fresh_paper_recovery_reason,
     )
     sleeve_strategy_profitability_scaling_contract = (
         _sleeve_strategy_profitability_scaling_contract(
@@ -8667,40 +11129,51 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         paper_harvest_execution_contract=paper_harvest_execution_contract,
         infrabot_contract=paper_harvest_infrabot_contract,
     )
-    profitability_realization_expansion_contract = _profitability_realization_expansion_contract(
-        sleeves=sleeves,
-        active_profile_controls=active_profile_controls,
-        strategy_controls=strategy_controls,
-        profit_harvest_controls=profit_harvest_controls,
-        profit_harvest_strategy_controls=profit_harvest_strategy_controls,
-        profit_harvest_report_card=profit_harvest_report_card,
-        daily_goal_contract=daily_sleeve_harvest_goal_contract,
-        paper_harvest_execution_contract=paper_harvest_execution_contract,
-        profit_realization_contract=profit_realization_contract,
-        cause_counter=cause_counter,
+    profitability_realization_expansion_contract = (
+        _profitability_realization_expansion_contract(
+            sleeves=sleeves,
+            active_profile_controls=active_profile_controls,
+            strategy_controls=strategy_controls,
+            profit_harvest_controls=profit_harvest_controls,
+            profit_harvest_strategy_controls=profit_harvest_strategy_controls,
+            profit_harvest_report_card=profit_harvest_report_card,
+            daily_goal_contract=daily_sleeve_harvest_goal_contract,
+            paper_harvest_execution_contract=paper_harvest_execution_contract,
+            profit_realization_contract=profit_realization_contract,
+            cause_counter=cause_counter,
+        )
     )
-    profitability_compounding_autopilot_contract = _profitability_compounding_autopilot_contract(
-        expansion_contract=profitability_realization_expansion_contract,
-        profit_harvest_report_card=profit_harvest_report_card,
-        profit_realization_contract=profit_realization_contract,
-        daily_goal_contract=daily_sleeve_harvest_goal_contract,
-        paper_harvest_execution_contract=paper_harvest_execution_contract,
-        active_profile_controls=active_profile_controls,
-        strategy_controls=strategy_controls,
+    profitability_compounding_autopilot_contract = (
+        _profitability_compounding_autopilot_contract(
+            expansion_contract=profitability_realization_expansion_contract,
+            profit_harvest_report_card=profit_harvest_report_card,
+            profit_realization_contract=profit_realization_contract,
+            daily_goal_contract=daily_sleeve_harvest_goal_contract,
+            paper_harvest_execution_contract=paper_harvest_execution_contract,
+            active_profile_controls=active_profile_controls,
+            strategy_controls=strategy_controls,
+        )
     )
-    quant_strategy_expansion_admission_contract = _quant_strategy_expansion_admission_contract(
-        sleeves=sleeves,
-        expansion_contract=profitability_realization_expansion_contract,
-        compounding_autopilot_contract=profitability_compounding_autopilot_contract,
-        profit_harvest_report_card=profit_harvest_report_card,
-        profit_realization_contract=profit_realization_contract,
-        active_profile_controls=active_profile_controls,
-        strategy_controls=strategy_controls,
-        overall_status=overall_status,
+    quant_strategy_expansion_admission_contract = (
+        _quant_strategy_expansion_admission_contract(
+            sleeves=sleeves,
+            expansion_contract=profitability_realization_expansion_contract,
+            compounding_autopilot_contract=profitability_compounding_autopilot_contract,
+            profit_harvest_report_card=profit_harvest_report_card,
+            profit_realization_contract=profit_realization_contract,
+            active_profile_controls=active_profile_controls,
+            strategy_controls=strategy_controls,
+            overall_status=overall_status,
+        )
     )
-    net_grade = str(controlled_profitability_grade_contract.get("reported_profitability_grade") or raw_profitability_grade)
+    net_grade = str(
+        controlled_profitability_grade_contract.get("reported_profitability_grade")
+        or raw_profitability_grade
+    )
 
-    upgrade_lanes = _upgrade_lane_summary(active_profile_controls, strategy_controls, cause_counter)
+    upgrade_lanes = _upgrade_lane_summary(
+        active_profile_controls, strategy_controls, cause_counter
+    )
     upper_layer_training_contract = _upper_layer_training_contract(
         active_profile_controls=active_profile_controls,
         strategy_controls=strategy_controls,
@@ -8718,6 +11191,103 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         scout_collection_contract=scout_collection_contract,
         systemic_weak_point_contract=weak_sleeve_systemic_weak_point_contract,
     )
+    paper_profitability_operating_contract = build_operating_contract(
+        contract_id="paper_profitability_operating_contract_v1",
+        owner="paper_profitability_control",
+        domain="paper_profitability_and_execution_feedback",
+        status=overall_status,
+        why=(
+            "paper_debt_recovery_active"
+            if bool(paper_debt_recovery_contract.get("active", False))
+            else str(overall_status)
+        ),
+        safe_authority=[
+            "measure_post_cost_paper_pnl",
+            "publish_weak_sleeve_controls",
+            "publish_reduce_only_harvest_intents",
+            "feed_loss_and_harvest_labels_to_training",
+        ],
+        blocked_authority=[
+            "live_order_submission",
+            "loss_based_size_increase",
+            "martingale_recovery",
+            "direct_threshold_loosening",
+            "fresh_entries_in_quarantined_sleeves",
+            "profitability_claim_until_raw_evidence_clears",
+        ],
+        evidence_missing=[
+            *[
+                str(item)
+                for item in _as_list(
+                    paper_debt_recovery_contract.get("promotion_blockers")
+                )
+            ],
+            *[
+                str(row.get("layer") or row.get("name") or row.get("grade") or "")
+                for row in remaining_low_grade_layers
+                if isinstance(row, dict)
+            ],
+            *[
+                str(row.get("bot_id") or row.get("strategy_id") or "")
+                for row in strategy_controls[:20]
+                if isinstance(row, dict)
+            ],
+        ],
+        release_conditions=[
+            "remaining_paper_recovery_debt_amount_zero",
+            "current_candidate_has_required_post_cost_sample_count",
+            "positive_candidate_post_cost_lower_confidence_bound",
+            "weak_sleeve_fresh_adds_remain_frozen_until_reentry_evidence_clears",
+            "reduce_only_harvest_intents_resolve_without_runner_protection_breach",
+            "raw_financial_grade_improves_from_pnl_evidence_not_control_lift",
+        ],
+        next_commands=[
+            [
+                "./scripts/ops/opsctl.sh",
+                "paper-profitability-control",
+                "--apply",
+                "--json",
+            ],
+            ["./scripts/ops/opsctl.sh", "paper-performance", "--json"],
+            ["./scripts/ops/opsctl.sh", "bot-profitability-scalability", "--json"],
+        ],
+        definition_gaps=[
+            (
+                "paper_recovery_balance_not_cleared"
+                if _safe_float(
+                    paper_debt_recovery_contract.get("remaining_debt_amount"), 0.0
+                )
+                > 0.0
+                else ""
+            ),
+            "weak_sleeve_controls_active" if weak_count else "",
+            "strategy_pair_controls_active" if strategy_controls else "",
+            "financial_grade_below_a" if financial_grade not in {"A", "A+"} else "",
+        ],
+        measurement={
+            "ending_net_pnl_total": round(net_sum, 6),
+            "ending_realized_pnl_total": round(realized_sum, 6),
+            "ending_unrealized_pnl_total": round(unrealized_sum, 6),
+            "remaining_debt_amount": paper_debt_recovery_contract.get(
+                "remaining_debt_amount"
+            ),
+            "recovery_progress_norm": paper_debt_recovery_contract.get(
+                "recovery_progress_norm"
+            ),
+            "active_profile_control_count": weak_count,
+            "strategy_control_count": len(strategy_controls),
+            "raw_profitability_grade": raw_profitability_grade,
+            "financial_profitability_grade": financial_grade,
+        },
+        hardening={
+            "paper_only": True,
+            "live_execution_allowed": False,
+            "force_trades_allowed": False,
+            "loss_based_size_increase_allowed": False,
+            "direct_threshold_loosening_allowed": False,
+            "raw_grades_remain_evidence_based": True,
+        },
+    )
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "schema_version": 1,
@@ -8727,12 +11297,24 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "profitability_grade": net_grade,
         "raw_profitability_grade": raw_profitability_grade,
         "financial_profitability_grade": financial_grade,
-        "financial_display_grade": controlled_profitability_grade_contract.get("financial_display_grade", financial_grade),
-        "profitability_display_grade": controlled_profitability_grade_contract.get("profitability_display_grade", net_grade),
-        "controlled_financial_grade": controlled_profitability_grade_contract.get("controlled_financial_grade", financial_grade),
-        "controlled_profitability_grade": controlled_profitability_grade_contract.get("controlled_profitability_grade", net_grade),
-        "profitability_grade_basis": controlled_profitability_grade_contract.get("reported_profitability_grade_basis", "raw_paper_outcome"),
-        "financial_grade_basis": controlled_profitability_grade_contract.get("financial_grade_basis", "raw_paper_pnl_outcome"),
+        "financial_display_grade": controlled_profitability_grade_contract.get(
+            "financial_display_grade", financial_grade
+        ),
+        "profitability_display_grade": controlled_profitability_grade_contract.get(
+            "profitability_display_grade", net_grade
+        ),
+        "controlled_financial_grade": controlled_profitability_grade_contract.get(
+            "controlled_financial_grade", financial_grade
+        ),
+        "controlled_profitability_grade": controlled_profitability_grade_contract.get(
+            "controlled_profitability_grade", net_grade
+        ),
+        "profitability_grade_basis": controlled_profitability_grade_contract.get(
+            "reported_profitability_grade_basis", "raw_paper_outcome"
+        ),
+        "financial_grade_basis": controlled_profitability_grade_contract.get(
+            "financial_grade_basis", "raw_paper_pnl_outcome"
+        ),
         "operational_outcome_grade": operational_outcome_grade,
         "raw_operational_outcome_grade": raw_operational_outcome_grade,
         "base_raw_operational_outcome_grade": base_raw_operational_outcome_grade,
@@ -8746,7 +11328,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "raw_profitability_a_recovery_contract": raw_profitability_a_recovery_contract,
         "raw_profitability_improvement_contract": raw_profitability_improvement_contract,
         "paper_debt_recovery_contract": paper_debt_recovery_contract,
+        "operating_contract": paper_profitability_operating_contract,
+        "paper_profitability_operating_contract": paper_profitability_operating_contract,
         "sleeve_strategy_profitability_scaling_contract": sleeve_strategy_profitability_scaling_contract,
+        "paper_behavior_intervention_admission_contract": paper_behavior_intervention_admission,
+        "paper_behavior_intervention_overlay_contract": paper_behavior_intervention_overlay_contract,
         "raw_profitability_six_point_recovery_contract": raw_profitability_improvement_contract.get(
             "six_point_recovery_contract",
             {},
@@ -8771,18 +11357,52 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "low_grade_layer_summary": {
             "active": bool(remaining_low_grade_layers),
             "low_grade_layer_count": len(remaining_low_grade_layers),
-            "active_blocker_count": sum(1 for row in remaining_low_grade_layers if bool(row.get("active_blocker", False))),
-            "actionable_low_grade_layer_count": sum(1 for row in remaining_low_grade_layers if bool(row.get("active_blocker", False))),
-            "contained_or_probationary_count": sum(1 for row in remaining_low_grade_layers if not bool(row.get("active_blocker", False))),
-            "base_evidence_low_grade_count": low_grade_control_report_card.get("base_evidence_low_grade_count", 0),
-            "profile_low_grade_count": low_grade_control_report_card.get("profile_low_grade_count", 0),
-            "control_posture_grade": low_grade_control_report_card.get("control_posture_grade", ""),
+            "active_blocker_count": sum(
+                1
+                for row in remaining_low_grade_layers
+                if bool(row.get("active_blocker", False))
+            ),
+            "actionable_low_grade_layer_count": sum(
+                1
+                for row in remaining_low_grade_layers
+                if bool(row.get("active_blocker", False))
+            ),
+            "contained_or_probationary_count": sum(
+                1
+                for row in remaining_low_grade_layers
+                if not bool(row.get("active_blocker", False))
+            ),
+            "base_evidence_low_grade_count": low_grade_control_report_card.get(
+                "base_evidence_low_grade_count", 0
+            ),
+            "profile_low_grade_count": low_grade_control_report_card.get(
+                "profile_low_grade_count", 0
+            ),
+            "control_posture_grade": low_grade_control_report_card.get(
+                "control_posture_grade", ""
+            ),
             "control_posture_status": low_grade_control_report_card.get("status", ""),
-            "a_plus_control_ready": bool(low_grade_control_report_card.get("a_plus_control_ready", False)),
-            "a_plus_plus_control_ready": bool(low_grade_control_report_card.get("a_plus_plus_control_ready", False)),
-            "a_plus_raw_evidence_ready": bool(low_grade_control_report_card.get("a_plus_raw_evidence_ready", False)),
-            "a_plus_plus_raw_evidence_ready": bool(low_grade_control_report_card.get("a_plus_plus_raw_evidence_ready", False)),
-            "lowest_visible_grades": sorted({str(row.get("grade") or "") for row in remaining_low_grade_layers if str(row.get("grade") or "")}),
+            "a_plus_control_ready": bool(
+                low_grade_control_report_card.get("a_plus_control_ready", False)
+            ),
+            "a_plus_plus_control_ready": bool(
+                low_grade_control_report_card.get("a_plus_plus_control_ready", False)
+            ),
+            "a_plus_raw_evidence_ready": bool(
+                low_grade_control_report_card.get("a_plus_raw_evidence_ready", False)
+            ),
+            "a_plus_plus_raw_evidence_ready": bool(
+                low_grade_control_report_card.get(
+                    "a_plus_plus_raw_evidence_ready", False
+                )
+            ),
+            "lowest_visible_grades": sorted(
+                {
+                    str(row.get("grade") or "")
+                    for row in remaining_low_grade_layers
+                    if str(row.get("grade") or "")
+                }
+            ),
             "rule": "headline/control grades do not hide base D/F layers; low base/profile grades remain visible until outcome evidence itself improves",
         },
         "grade_transparency_contract": {
@@ -8815,17 +11435,29 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "profitability_compounding_autopilot_contract": profitability_compounding_autopilot_contract,
         "quant_strategy_expansion_admission_contract": quant_strategy_expansion_admission_contract,
         "paper_summary": {
-            "day_utc": str(day_row.get("day_utc") or paper.get("day") or history_latest.get("day_utc") or ""),
-            "executions": execution_sum or _safe_int(history_latest.get("executions"), 0),
+            "day_utc": str(
+                day_row.get("day_utc")
+                or paper.get("day")
+                or history_latest.get("day_utc")
+                or ""
+            ),
+            "executions": execution_sum
+            or _safe_int(history_latest.get("executions"), 0),
             "ending_net_pnl_total": round(net_sum, 6),
             "ending_realized_pnl_total": round(realized_sum, 6),
             "ending_unrealized_pnl_total": round(unrealized_sum, 6),
             "all_sleeve_net_pnl_total": round(all_sleeve_net_sum, 6),
             "all_sleeve_realized_pnl_total": round(all_sleeve_realized_sum, 6),
             "all_sleeve_unrealized_pnl_total": round(all_sleeve_unrealized_sum, 6),
-            "stale_excluded_net_pnl_total": _as_dict(financial_grade_basis_contract.get("excluded_stale_totals")).get("net_pnl", 0.0),
-            "current_day_execution_net_pnl_total": round(_safe_float(day_row.get("ending_net_pnl_total"), 0.0), 6),
-            "history_ending_net_pnl_total": round(_safe_float(history_latest.get("ending_net_pnl_total"), net_sum), 6),
+            "stale_excluded_net_pnl_total": _as_dict(
+                financial_grade_basis_contract.get("excluded_stale_totals")
+            ).get("net_pnl", 0.0),
+            "current_day_execution_net_pnl_total": round(
+                _safe_float(day_row.get("ending_net_pnl_total"), 0.0), 6
+            ),
+            "history_ending_net_pnl_total": round(
+                _safe_float(history_latest.get("ending_net_pnl_total"), net_sum), 6
+            ),
             "history_change_vs_previous_day": round(history_change, 6),
             "training_quality_score": round(training_score, 6),
         },
@@ -8873,6 +11505,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "financial_grade_lift",
                 "controlled_profitability_grade_contract",
                 "paper_debt_recovery_balance_and_candidate_attribution",
+                "candidate_bound_paper_behavior_intervention_probation",
             ],
             "refresh_command": [
                 "./scripts/ops/opsctl.sh",
@@ -8916,9 +11549,14 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "follow the profitability compounding autopilot do_first queue before widening paper size or training batches",
                 "admit new quant strategies through collection-only quant strategy admission before any paper widening",
                 "rotate harvested paper gains only into sleeves with clean quality evidence or hold them as paper cash",
+                "run the behavior-intervention drill before profitability refresh so only a fresh candidate-bound A+ proposal reaches paper probation",
             ]
         ),
-        "runtime_control_file": str(DEFAULT_CONTROL_PATH if project_root == PROJECT_ROOT else health / "paper_runtime_profitability_controls_latest.json"),
+        "runtime_control_file": str(
+            DEFAULT_CONTROL_PATH
+            if project_root == PROJECT_ROOT
+            else health / "paper_runtime_profitability_controls_latest.json"
+        ),
         "source_files": {
             "paper_performance": str(paper_path),
             "training_quality": str(training_quality_path),
@@ -8927,7 +11565,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     return payload
 
 
-def _runtime_profile_controls(profile_controls: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _runtime_profile_controls(
+    profile_controls: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
     hardened: dict[str, dict[str, Any]] = {}
     for raw_profile, raw_control in profile_controls.items():
         profile = _normal_profile(raw_profile)
@@ -8936,8 +11576,16 @@ def _runtime_profile_controls(profile_controls: dict[str, Any]) -> dict[str, dic
         control = dict(raw_control)
         action = str(control.get("action") or "").strip().lower()
         grade = str(control.get("profit_grade") or "").strip().upper()
-        loser = control.get("loser_quarantine") if isinstance(control.get("loser_quarantine"), dict) else {}
-        runtime_policy = control.get("runtime_policy") if isinstance(control.get("runtime_policy"), dict) else {}
+        loser = (
+            control.get("loser_quarantine")
+            if isinstance(control.get("loser_quarantine"), dict)
+            else {}
+        )
+        runtime_policy = (
+            control.get("runtime_policy")
+            if isinstance(control.get("runtime_policy"), dict)
+            else {}
+        )
         recurrence = _as_dict(control.get("weak_sleeve_recurrence_guard"))
         if recurrence:
             recurrence = {
@@ -8945,7 +11593,9 @@ def _runtime_profile_controls(profile_controls: dict[str, Any]) -> dict[str, dic
                 "active": True,
                 "runtime_enforced": True,
                 "reentry_locked_until_cleared": True,
-                "prevent_recurrence_ready": bool(recurrence.get("prevent_recurrence_ready", True)),
+                "prevent_recurrence_ready": bool(
+                    recurrence.get("prevent_recurrence_ready", True)
+                ),
                 "paper_only": True,
                 "live_execution_allowed": False,
                 "runtime_enforcement": {
@@ -8973,7 +11623,9 @@ def _runtime_profile_controls(profile_controls: dict[str, Any]) -> dict[str, dic
         )
         if hard_quarantine:
             control["action"] = "quarantine_new_entries"
-            control["position_size_multiplier"] = PROFILE_HARD_QUARANTINE_SIZE_MULTIPLIER
+            control["position_size_multiplier"] = (
+                PROFILE_HARD_QUARANTINE_SIZE_MULTIPLIER
+            )
             control["new_entry_cap"] = 0
             control["block_new_entries"] = True
             control["runtime_policy"] = {
@@ -8984,7 +11636,11 @@ def _runtime_profile_controls(profile_controls: dict[str, Any]) -> dict[str, dic
                 "apply_weak_sleeve_recurrence_guard": bool(recurrence),
                 "block_reentry_when_prior_loss_cause_repeats": bool(recurrence),
             }
-            dynamic = control.get("dynamic_sizing") if isinstance(control.get("dynamic_sizing"), dict) else {}
+            dynamic = (
+                control.get("dynamic_sizing")
+                if isinstance(control.get("dynamic_sizing"), dict)
+                else {}
+            )
             control["dynamic_sizing"] = {
                 **dynamic,
                 "paper_profitability_size_multiplier_norm": PROFILE_HARD_QUARANTINE_SIZE_MULTIPLIER,
@@ -9002,7 +11658,11 @@ def _runtime_profile_controls(profile_controls: dict[str, Any]) -> dict[str, dic
                     3,
                 ),
             }
-            exit_control = control.get("exit_intelligence") if isinstance(control.get("exit_intelligence"), dict) else {}
+            exit_control = (
+                control.get("exit_intelligence")
+                if isinstance(control.get("exit_intelligence"), dict)
+                else {}
+            )
             control["exit_intelligence"] = {
                 **exit_control,
                 "active": True,
@@ -9021,7 +11681,9 @@ def _runtime_profile_controls(profile_controls: dict[str, Any]) -> dict[str, dic
                 **strengthening,
                 "active": True,
                 "control_grade": "A+",
-                "mode": str(strengthening.get("mode") or "runtime_profile_hard_quarantine"),
+                "mode": str(
+                    strengthening.get("mode") or "runtime_profile_hard_quarantine"
+                ),
                 "new_entry_cap": 0,
                 "position_size_multiplier_norm": PROFILE_HARD_QUARANTINE_SIZE_MULTIPLIER,
                 "max_position_size_multiplier_norm": PROFILE_HARD_QUARANTINE_SIZE_MULTIPLIER,
@@ -9033,9 +11695,21 @@ def _runtime_profile_controls(profile_controls: dict[str, Any]) -> dict[str, dic
 
 
 def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    profile_controls = payload.get("active_profile_controls") if isinstance(payload.get("active_profile_controls"), dict) else {}
-    strategies = payload.get("strategy_controls") if isinstance(payload.get("strategy_controls"), list) else []
-    upgrade_lanes = payload.get("profitability_upgrade_lanes") if isinstance(payload.get("profitability_upgrade_lanes"), list) else []
+    profile_controls = (
+        payload.get("active_profile_controls")
+        if isinstance(payload.get("active_profile_controls"), dict)
+        else {}
+    )
+    strategies = (
+        payload.get("strategy_controls")
+        if isinstance(payload.get("strategy_controls"), list)
+        else []
+    )
+    upgrade_lanes = (
+        payload.get("profitability_upgrade_lanes")
+        if isinstance(payload.get("profitability_upgrade_lanes"), list)
+        else []
+    )
     upper_layer_training_contract = (
         payload.get("master_grandmaster_training_contract")
         if isinstance(payload.get("master_grandmaster_training_contract"), dict)
@@ -9053,7 +11727,9 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     weak_sleeve_a_plus_plus_strengthening_contract = (
         payload.get("weak_sleeve_a_plus_plus_strengthening_contract")
-        if isinstance(payload.get("weak_sleeve_a_plus_plus_strengthening_contract"), dict)
+        if isinstance(
+            payload.get("weak_sleeve_a_plus_plus_strengthening_contract"), dict
+        )
         else {}
     )
     weak_sleeve_recurrence_guard_contract = (
@@ -9083,7 +11759,21 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     sleeve_strategy_profitability_scaling_contract = (
         payload.get("sleeve_strategy_profitability_scaling_contract")
-        if isinstance(payload.get("sleeve_strategy_profitability_scaling_contract"), dict)
+        if isinstance(
+            payload.get("sleeve_strategy_profitability_scaling_contract"), dict
+        )
+        else {}
+    )
+    paper_behavior_intervention_admission_contract = (
+        payload.get("paper_behavior_intervention_admission_contract")
+        if isinstance(
+            payload.get("paper_behavior_intervention_admission_contract"), dict
+        )
+        else {}
+    )
+    paper_behavior_intervention_overlay_contract = (
+        payload.get("paper_behavior_intervention_overlay_contract")
+        if isinstance(payload.get("paper_behavior_intervention_overlay_contract"), dict)
         else {}
     )
     raw_profitability_improvement_contract = (
@@ -9093,13 +11783,19 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     raw_profitability_six_point_recovery_contract = (
         payload.get("raw_profitability_six_point_recovery_contract")
-        if isinstance(payload.get("raw_profitability_six_point_recovery_contract"), dict)
-        else _as_dict(raw_profitability_improvement_contract.get("six_point_recovery_contract"))
+        if isinstance(
+            payload.get("raw_profitability_six_point_recovery_contract"), dict
+        )
+        else _as_dict(
+            raw_profitability_improvement_contract.get("six_point_recovery_contract")
+        )
     )
     raw_d_recovery_ladder_contract = (
         payload.get("raw_d_recovery_ladder_contract")
         if isinstance(payload.get("raw_d_recovery_ladder_contract"), dict)
-        else _as_dict(raw_profitability_improvement_contract.get("raw_d_recovery_ladder_contract"))
+        else _as_dict(
+            raw_profitability_improvement_contract.get("raw_d_recovery_ladder_contract")
+        )
     )
     financial_grade_basis_contract = (
         payload.get("financial_grade_basis_contract")
@@ -9223,7 +11919,9 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     grand_master_profit_harvest_awareness_contract = (
         payload.get("grand_master_profit_harvest_awareness_contract")
-        if isinstance(payload.get("grand_master_profit_harvest_awareness_contract"), dict)
+        if isinstance(
+            payload.get("grand_master_profit_harvest_awareness_contract"), dict
+        )
         else {}
     )
     max_grade_push_contract = (
@@ -9268,22 +11966,30 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "weak_sleeve_recurrence_guard_contract": weak_sleeve_recurrence_guard_contract,
         "weak_sleeve_systemic_weak_point_contract": weak_sleeve_systemic_weak_point_contract,
         "financial_grade_basis_contract": financial_grade_basis_contract,
-        "paper_performance_input_contract": _as_dict(payload.get("paper_performance_input_contract")),
+        "paper_performance_input_contract": _as_dict(
+            payload.get("paper_performance_input_contract")
+        ),
         "financial_grade_lift_contract": financial_grade_lift_contract,
         "raw_profitability_a_recovery_contract": raw_profitability_a_recovery_contract,
         "raw_profitability_improvement_contract": raw_profitability_improvement_contract,
         "paper_debt_recovery_contract": paper_debt_recovery_contract,
         "sleeve_strategy_profitability_scaling_contract": sleeve_strategy_profitability_scaling_contract,
+        "paper_behavior_intervention_admission_contract": paper_behavior_intervention_admission_contract,
+        "paper_behavior_intervention_overlay_contract": paper_behavior_intervention_overlay_contract,
         "raw_profitability_six_point_recovery_contract": raw_profitability_six_point_recovery_contract,
         "raw_d_recovery_ladder_contract": raw_d_recovery_ladder_contract,
         "controlled_profitability_grade_contract": controlled_profitability_grade_contract,
         "raw_profitability_grade": payload.get("raw_profitability_grade", ""),
         "profitability_grade": payload.get("profitability_grade", ""),
-        "financial_profitability_grade": payload.get("financial_profitability_grade", ""),
+        "financial_profitability_grade": payload.get(
+            "financial_profitability_grade", ""
+        ),
         "financial_display_grade": payload.get("financial_display_grade", ""),
         "profitability_display_grade": payload.get("profitability_display_grade", ""),
         "controlled_financial_grade": payload.get("controlled_financial_grade", ""),
-        "controlled_profitability_grade": payload.get("controlled_profitability_grade", ""),
+        "controlled_profitability_grade": payload.get(
+            "controlled_profitability_grade", ""
+        ),
         "profitability_grade_basis": payload.get("profitability_grade_basis", ""),
         "financial_grade_basis": payload.get("financial_grade_basis", ""),
         "raw_operational_materiality_filter": raw_operational_materiality_filter,
@@ -9320,6 +12026,13 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "apply_candidate_bound_sleeve_strategy_scaling": bool(
                 sleeve_strategy_profitability_scaling_contract.get("active", False)
             ),
+            "apply_candidate_bound_paper_behavior_interventions": bool(
+                paper_behavior_intervention_overlay_contract.get("active", False)
+            ),
+            "paper_behavior_interventions_are_entry_only": True,
+            "paper_behavior_interventions_can_enlarge_entry": False,
+            "paper_behavior_interventions_preserve_hold_and_sell": True,
+            "paper_behavior_interventions_live_execution_allowed": False,
             "sleeve_strategy_scaling_entry_only": True,
             "keep_sells_and_reduce_only_paths_open_during_scaling": True,
             "apply_outcome_weighted_training": True,
@@ -9335,9 +12048,13 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "block_new_entries_on_quarantined_profiles": True,
             "apply_unrealized_drag_exit_acceleration": True,
             "apply_scout_collection_labels": True,
-            "apply_a_plus_recovery_mode": bool(a_plus_target_contract.get("combined_control_a_plus_ready", False)),
+            "apply_a_plus_recovery_mode": bool(
+                a_plus_target_contract.get("combined_control_a_plus_ready", False)
+            ),
             "apply_a_plus_plus_weak_sleeve_strengthening": bool(
-                weak_sleeve_a_plus_plus_strengthening_contract.get("control_ready", False)
+                weak_sleeve_a_plus_plus_strengthening_contract.get(
+                    "control_ready", False
+                )
             ),
             "apply_weak_sleeve_recurrence_guard": bool(
                 weak_sleeve_recurrence_guard_contract.get("control_ready", False)
@@ -9345,21 +12062,35 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "apply_weak_sleeve_systemic_weak_point_guard": bool(
                 weak_sleeve_systemic_weak_point_contract.get("control_ready", False)
             ),
-            "apply_financial_grade_lift_contract": bool(financial_grade_lift_contract.get("active", False)),
-            "apply_raw_profitability_a_recovery": bool(raw_profitability_a_recovery_contract.get("active", False)),
-            "apply_paper_debt_recovery": bool(paper_debt_recovery_contract.get("active", False)),
-            "paper_debt_recovery_state": str(paper_debt_recovery_contract.get("state") or "unknown"),
+            "apply_financial_grade_lift_contract": bool(
+                financial_grade_lift_contract.get("active", False)
+            ),
+            "apply_raw_profitability_a_recovery": bool(
+                raw_profitability_a_recovery_contract.get("active", False)
+            ),
+            "apply_paper_debt_recovery": bool(
+                paper_debt_recovery_contract.get("active", False)
+            ),
+            "paper_debt_recovery_state": str(
+                paper_debt_recovery_contract.get("state") or "unknown"
+            ),
             "paper_debt_recovery_remaining_amount": round(
-                _safe_float(paper_debt_recovery_contract.get("remaining_debt_amount"), 0.0),
+                _safe_float(
+                    paper_debt_recovery_contract.get("remaining_debt_amount"), 0.0
+                ),
                 6,
             ),
             "paper_debt_recovery_progress_norm": round(
-                _safe_float(paper_debt_recovery_contract.get("recovery_progress_norm"), 0.0),
+                _safe_float(
+                    paper_debt_recovery_contract.get("recovery_progress_norm"), 0.0
+                ),
                 6,
             ),
             "paper_debt_recovery_entry_size_multiplier_norm": round(
                 _safe_float(
-                    _as_dict(paper_debt_recovery_contract.get("runtime_enforcement")).get(
+                    _as_dict(
+                        paper_debt_recovery_contract.get("runtime_enforcement")
+                    ).get(
                         "recovery_entry_size_multiplier_norm",
                         0.0,
                     ),
@@ -9368,7 +12099,9 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 6,
             ),
             "paper_debt_recovery_paused": bool(
-                _as_dict(paper_debt_recovery_contract.get("risk_budget")).get("new_entries_paused", True)
+                _as_dict(paper_debt_recovery_contract.get("risk_budget")).get(
+                    "new_entries_paused", True
+                )
             ),
             "do_not_force_trades_for_paper_debt_recovery": bool(
                 _as_dict(paper_debt_recovery_contract.get("runtime_enforcement")).get(
@@ -9401,85 +12134,123 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 raw_profitability_six_point_recovery_contract.get("active", False)
             ),
             "raise_clean_profile_buy_gate_while_raw_below_a": bool(
-                _as_dict(raw_profitability_a_recovery_contract.get("runtime_enforcement")).get(
+                _as_dict(
+                    raw_profitability_a_recovery_contract.get("runtime_enforcement")
+                ).get(
                     "raise_clean_profile_buy_gate_while_raw_below_a",
                     False,
                 )
             ),
             "require_position_telemetry_on_paper_fills_for_raw_recovery": bool(
-                _as_dict(raw_profitability_improvement_contract.get("runtime_enforcement")).get(
+                _as_dict(
+                    raw_profitability_improvement_contract.get("runtime_enforcement")
+                ).get(
                     "require_position_telemetry_on_paper_fills",
                     False,
                 )
             ),
             "track_raw_profitability_burn_down": bool(
-                _as_dict(raw_profitability_improvement_contract.get("runtime_enforcement")).get(
+                _as_dict(
+                    raw_profitability_improvement_contract.get("runtime_enforcement")
+                ).get(
                     "track_raw_gap_burn_down",
                     False,
                 )
             ),
             "apply_raw_d_recovery_ladder": bool(
-                _as_dict(raw_profitability_improvement_contract.get("runtime_enforcement")).get(
+                _as_dict(
+                    raw_profitability_improvement_contract.get("runtime_enforcement")
+                ).get(
                     "apply_raw_d_recovery_ladder",
                     False,
                 )
             ),
             "force_profit_harvest_on_raw_d": bool(
-                _as_dict(raw_profitability_improvement_contract.get("runtime_enforcement")).get(
+                _as_dict(
+                    raw_profitability_improvement_contract.get("runtime_enforcement")
+                ).get(
                     "force_profit_harvest_on_raw_d",
                     False,
                 )
             ),
             "do_not_force_trades_for_raw_recovery": bool(
-                _as_dict(raw_profitability_improvement_contract.get("runtime_enforcement")).get(
+                _as_dict(
+                    raw_profitability_improvement_contract.get("runtime_enforcement")
+                ).get(
                     "do_not_force_trades",
-                    _as_dict(raw_profitability_six_point_recovery_contract.get("runtime_enforcement")).get(
+                    _as_dict(
+                        raw_profitability_six_point_recovery_contract.get(
+                            "runtime_enforcement"
+                        )
+                    ).get(
                         "do_not_force_trades",
                         False,
                     ),
                 )
             ),
             "apply_loss_cause_specific_entry_filters": bool(
-                _as_dict(raw_profitability_six_point_recovery_contract.get("runtime_enforcement")).get(
+                _as_dict(
+                    raw_profitability_six_point_recovery_contract.get(
+                        "runtime_enforcement"
+                    )
+                ).get(
                     "apply_loss_cause_specific_entry_filters",
                     False,
                 )
             ),
             "emit_partial_reduce_only_profit_trims_for_raw_recovery": bool(
-                _as_dict(raw_profitability_six_point_recovery_contract.get("runtime_enforcement")).get(
+                _as_dict(
+                    raw_profitability_six_point_recovery_contract.get(
+                        "runtime_enforcement"
+                    )
+                ).get(
                     "emit_partial_reduce_only_profit_trims",
                     False,
                 )
             ),
             "accelerate_drag_reduction_on_raw_d": bool(
-                _as_dict(raw_profitability_improvement_contract.get("runtime_enforcement")).get(
+                _as_dict(
+                    raw_profitability_improvement_contract.get("runtime_enforcement")
+                ).get(
                     "accelerate_drag_reduction_on_raw_d",
                     False,
                 )
             ),
             "block_widening_while_raw_d": bool(
-                _as_dict(raw_profitability_improvement_contract.get("runtime_enforcement")).get(
+                _as_dict(
+                    raw_profitability_improvement_contract.get("runtime_enforcement")
+                ).get(
                     "block_widening_while_raw_d",
                     False,
                 )
             ),
             "raise_harvest_trim_urgency_while_raw_d": bool(
-                _as_dict(raw_profitability_improvement_contract.get("runtime_enforcement")).get(
+                _as_dict(
+                    raw_profitability_improvement_contract.get("runtime_enforcement")
+                ).get(
                     "raise_harvest_trim_urgency_while_raw_d",
                     False,
                 )
             ),
             "emit_reduce_only_for_raw_d_drag_positions": bool(
-                _as_dict(raw_profitability_improvement_contract.get("runtime_enforcement")).get(
+                _as_dict(
+                    raw_profitability_improvement_contract.get("runtime_enforcement")
+                ).get(
                     "emit_reduce_only_for_raw_d_drag_positions",
                     False,
                 )
             ),
             "raw_d_recovery_pressure_norm": round(
                 _safe_float(
-                    _as_dict(raw_profitability_improvement_contract.get("runtime_enforcement")).get(
+                    _as_dict(
+                        raw_profitability_improvement_contract.get(
+                            "runtime_enforcement"
+                        )
+                    ).get(
                         "raw_d_recovery_pressure_norm",
-                        raw_d_recovery_ladder_contract.get("recovery_pressure_norm", 0.0),
+                        raw_d_recovery_ladder_contract.get(
+                            "recovery_pressure_norm", 0.0
+                        ),
                     ),
                     0.0,
                 ),
@@ -9487,7 +12258,11 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "raw_d_recovery_trim_boost_norm": round(
                 _safe_float(
-                    _as_dict(raw_profitability_improvement_contract.get("runtime_enforcement")).get(
+                    _as_dict(
+                        raw_profitability_improvement_contract.get(
+                            "runtime_enforcement"
+                        )
+                    ).get(
                         "raw_d_recovery_trim_boost_norm",
                         raw_d_recovery_ladder_contract.get("trim_boost_norm", 0.0),
                     ),
@@ -9497,9 +12272,15 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             "raw_d_daily_net_improvement_target": round(
                 _safe_float(
-                    _as_dict(raw_profitability_improvement_contract.get("runtime_enforcement")).get(
+                    _as_dict(
+                        raw_profitability_improvement_contract.get(
+                            "runtime_enforcement"
+                        )
+                    ).get(
                         "raw_d_daily_net_improvement_target",
-                        raw_d_recovery_ladder_contract.get("daily_net_improvement_target", 0.0),
+                        raw_d_recovery_ladder_contract.get(
+                            "daily_net_improvement_target", 0.0
+                        ),
                     ),
                     0.0,
                 ),
@@ -9553,7 +12334,11 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "raise_daily_targets_after_previous_goal_met": True,
             "expand_collection_after_daily_target_met": True,
             "block_new_adds_until_raw_harvest_c_when_rescue_active": bool(
-                ((profit_harvest_aplus_campaign.get("raw_c_rescue") or {}).get("active", False))
+                (
+                    (profit_harvest_aplus_campaign.get("raw_c_rescue") or {}).get(
+                        "active", False
+                    )
+                )
                 if isinstance(profit_harvest_aplus_campaign.get("raw_c_rescue"), dict)
                 else False
             ),
@@ -9570,22 +12355,50 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Convert paper trading losses into paper-only profitability controls.")
+    parser = argparse.ArgumentParser(
+        description="Convert paper trading losses into paper-only profitability controls."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--control-out", default=str(DEFAULT_CONTROL_PATH))
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--start-fresh-paper-recovery",
+        action="store_true",
+        help="Start a new forward paper recovery epoch while preserving prior recovery debt as historical evidence.",
+    )
+    parser.add_argument(
+        "--fresh-paper-recovery-reason",
+        default="",
+        help="Required operator reason when starting a fresh paper recovery epoch.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    if (
+        args.start_fresh_paper_recovery
+        and not str(args.fresh_paper_recovery_reason or "").strip()
+    ):
+        parser.error(
+            "--fresh-paper-recovery-reason is required with --start-fresh-paper-recovery"
+        )
 
     project_root = Path(args.project_root).expanduser().resolve()
     with paper_profitability_generation_lock(
         project_root,
-        timeout_seconds=float(os.getenv("PAPER_PROFITABILITY_GENERATION_LOCK_TIMEOUT_SECONDS", "120") or 120.0),
+        timeout_seconds=float(
+            os.getenv("PAPER_PROFITABILITY_GENERATION_LOCK_TIMEOUT_SECONDS", "120")
+            or 120.0
+        ),
     ):
-        payload = build_payload(project_root)
+        payload = build_payload(
+            project_root,
+            start_fresh_paper_recovery=bool(args.start_fresh_paper_recovery),
+            fresh_paper_recovery_reason=str(args.fresh_paper_recovery_reason or ""),
+        )
         input_contract = _as_dict(payload.get("paper_performance_input_contract"))
-        if args.apply and bool(input_contract.get("usable_for_profitability_grade", False)):
+        if args.apply and bool(
+            input_contract.get("usable_for_profitability_grade", False)
+        ):
             control_payload = build_runtime_control_payload(payload)
             control_path = Path(args.control_out).expanduser()
             if not control_path.is_absolute():
@@ -9593,12 +12406,18 @@ def main() -> int:
             write_payload(control_path, control_payload)
             payload["applied_runtime_control_file"] = str(control_path)
             payload["applied_runtime_control_summary"] = {
-                "profile_control_count": len(control_payload.get("profile_controls") or {}),
-                "strategy_control_count": len(control_payload.get("strategy_controls") or {}),
+                "profile_control_count": len(
+                    control_payload.get("profile_controls") or {}
+                ),
+                "strategy_control_count": len(
+                    control_payload.get("strategy_controls") or {}
+                ),
             }
         elif args.apply:
             payload["runtime_control_write_blocked"] = True
-            payload["runtime_control_write_blocked_reason"] = "paper_performance_input_not_gradeable"
+            payload["runtime_control_write_blocked_reason"] = (
+                "paper_performance_input_not_gradeable"
+            )
             payload["applied_runtime_control_summary"] = {
                 "profile_control_count": 0,
                 "strategy_control_count": 0,

@@ -1263,6 +1263,9 @@ case "$cmd" in
     "$PY" "$PROJECT_ROOT/scripts/sleeve_strategy_specialization_report.py" >/dev/null || exit $?
     exec "$PY" "$PROJECT_ROOT/scripts/strategy_library_query.py" "$@"
     ;;
+  strategy-market-fit|strategy-market-fit-infrabot|strategy-challenger-cohort)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/strategy_market_fit_infrabot.py" "$@"
+    ;;
   strategy-families|strategy-family-catalog|consolidated-strategies)
     "$PY" "$PROJECT_ROOT/scripts/sleeve_strategy_specialization_report.py" >/dev/null || exit $?
     exec "$PY" "$PROJECT_ROOT/scripts/strategy_library_query.py" --families "$@"
@@ -1573,6 +1576,9 @@ case "$cmd" in
   infrabot-adaptive-governor|adaptive-infrabots|infrabot-governor|system-needs-router)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/infrabot_adaptive_governor.py" "$@"
     ;;
+  degradation-swarm|degradation-swarm-coordinator|contained-degradation-swarm|swarm-degradation)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/degradation_swarm_coordinator.py" "$@"
+    ;;
   master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/master_infrastructure_supervisor.py" "$@"
     ;;
@@ -1636,6 +1642,21 @@ case "$cmd" in
   live-canary-control|canary-control|supervised-canary)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_control.py" "$@"
     ;;
+  live-canary-graduation|canary-graduation|post-canary-graduation)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_graduation.py" "$@"
+    ;;
+  live-canary-closeout|canary-closeout|post-canary-closeout)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_closeout.py" "$@"
+    ;;
+  live-canary-preflight|canary-preflight)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_preflight.py" "$@"
+    ;;
+  live-canary-dress-rehearsal|canary-dress-rehearsal|connected-canary-rehearsal)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_dress_rehearsal.py" "$@"
+    ;;
+  schwab-account-hash-sync|account-hash-keychain-sync|canary-account-bind)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_account_hash_keychain_sync.py" "$@"
+    ;;
   live-canary-readiness|canary-readiness-contract|production-hardening-bar)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_readiness_contract.py" "$@"
     ;;
@@ -1669,6 +1690,9 @@ case "$cmd" in
   alpha-generation-control|alpha-generation|alpha-evidence-loop|cross-sleeve-alpha)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/alpha_generation_control.py" "$@"
     ;;
+  alpha-measurement-inputs|alpha-inputs|alpha-materialize)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/alpha_concept_input_materializer.py" "$@"
+    ;;
   alpha-concepts|alpha-concept-report|alpha-research-map|alpha-measurement-lab)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/alpha_concept_report.py" "$@"
     ;;
@@ -1677,6 +1701,9 @@ case "$cmd" in
     ;;
   generation-behavior-attribution|generation-attribution|soak-generation-comparison)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/generation_behavior_attribution.py" "$@"
+    ;;
+  generation-fill-learning|historical-fill-learning|paper-generation-learning)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/generation_fill_learning.py" "$@"
     ;;
   continuous-soak-integrity|soak-integrity|soak-capacity)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/continuous_soak_integrity_control.py" "$@"
@@ -1801,6 +1828,9 @@ case "$cmd" in
   market-cycle-engine|market-cycle-extraction|cycle-engine|cycle-extraction)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/market_cycle_extraction_engine.py" "$@"
     ;;
+  market-pattern-feedback|market-patterns|pattern-feedback)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/market_pattern_feedback.py" "$@"
+    ;;
   operating-platform-upgrade|platform-upgrade-12|operating-platform-12|huge-platform-upgrade)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/operating_platform_upgrade.py" "$@"
     ;;
@@ -1827,6 +1857,9 @@ case "$cmd" in
     ;;
   account-policy-context|account-rules|account-context)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/account_policy_context.py" "$@"
+    ;;
+  schwab-broker-boundary|schwab-capability-boundary|schwab-schema-quarantine)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_broker_boundary_control.py" "$@"
     ;;
   account-position-study|position-study|portfolio-position-study|study-positions)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/account_position_study.py" "$@"
@@ -1878,6 +1911,12 @@ case "$cmd" in
     ;;
   bot-profitability-scalability|bot-profit-scale|fleet-profitability-scale)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/bot_profitability_scalability_control.py" "$@"
+    ;;
+  canonical-representation-audit|canonical-truth-audit|truth-representation-audit)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/canonical_representation_audit.py" "$@"
+    ;;
+  sleeve-scalability-selector|sleeve-portfolio-selector|scalability-goals)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/sleeve_scalability_selector.py" "$@"
     ;;
   master-grandmaster-evidence|master-grandmaster-v2|grandmaster-evidence)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/master_grandmaster_evidence_control.py" "$@"
@@ -1947,6 +1986,15 @@ case "$cmd" in
     ;;
   profitability-crisis-drill|financial-collapse-drill|crisis-profitability-drill)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/profitability_crisis_drill.py" "$@"
+    ;;
+  profitability-adversarial-drill|adversarial-profitability-drill|profitability-drill-pack)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/profitability_adversarial_drill.py" "$@"
+    ;;
+  paper-behavior-intervention-drill|behavior-intervention-drill|paper-behavior-drill)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/paper_behavior_intervention_drill.py" "$@"
+    ;;
+  trading-behavior-drill-program|behavior-drill-program|profitability-drill-program)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/trading_behavior_drill_program.py" "$@"
     ;;
   operator-cockpit|cockpit)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/operator_cockpit.py" "$@"
@@ -3085,6 +3133,9 @@ case "$cmd" in
   one-numbers-regression-guard|one-numbers-guard)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/one_numbers_regression_guard.py" "$@"
     ;;
+  one-numbers-refresh)
+    exec "$PROJECT_ROOT/scripts/ops/run_one_numbers_refresh_launchd.sh" "$@"
+    ;;
   point-in-time-event-store|pit-event-store|event-store)
     exec "$PY" "$PROJECT_ROOT/scripts/point_in_time_event_store.py" "$@"
     ;;
@@ -3194,7 +3245,7 @@ opsctl commands:
   sleeve-strategy-coverage [--json]
   sleeve-mechanics|sleeve-how-it-works|sleeve-map [--json]
   mlx-audit [--json]
-  mlx-library-upgrade [--apply] [--json]
+  mlx-library-upgrade [--scope mlx|all] [--apply --ack-maintenance --maintenance-token TOKEN] [--full-test] [--json]
   mlx-audio-audit [--json]
   mlx-intelligence-router|mlx-compute-brain|mlx-utilization [--apply] [--json]
   library-utilization-router|library-router|non-mlx-library-router [--apply] [--json]
@@ -3229,24 +3280,27 @@ opsctl commands:
   paper-live-equivalence|execution-equivalence [--json]
   execution-scenarios|execution-fault-scenarios [--json]
   quantitative-challengers|quant-challengers [--json]
-  alpha-concepts|alpha-concept-report|alpha-research-map [--json]
+  alpha-measurement-inputs|alpha-inputs|alpha-materialize [--json]
+  alpha-concepts|alpha-concept-report|alpha-research-map [--[no-]refresh-inputs] [--json]
   sleeve-alpha-toolbox|alpha-toolbox|sleeve-alpha-routing [--json]
   generation-behavior-attribution|generation-attribution|soak-generation-comparison [--from-generation N] [--to-generation N] [--last-days N] [--no-legacy-window-association] [--json]
+  generation-fill-learning|historical-fill-learning|paper-generation-learning [--target-generation N] [--apply] [--json]
   sleeve-strategy-specialization|strategy-specialization|strategy-contracts [--json]
   strategy-library|strategy-scorecard [--sleeve ID] [--good|--bad] [--verdict NAME] [--tier NAME] [--regime-relevance NAME] [--limit N] [--json]
+  strategy-market-fit|strategy-market-fit-infrabot|strategy-challenger-cohort [--force] [--json]
   strategy-families|strategy-family-catalog [--sleeve ID] [--objective NAME] [--family TEXT] [--limit N] [--json]
   decay-monitor [--json]
   security-audit
   secret-scan [--staged]
   schema-migration [--json]
-  ingestion-storage-control [--json]
+  ingestion-storage-control [--definitions-only] [--json]
   data-plane-recovery|write-path-recovery [--json]
   ingestion-storage-governor [status|apply] [--json]
   local-storage-reserve-guard [--apply] [--json]
   ops-data-plane-compaction [--apply] [--archive-root PATH] [--skip-vacuum] [--json]
   external-backlog-drain [--apply] [--follow-through] [--poll-seconds N] [--wait-timeout-seconds N] [--force-live-window] [--json]
   raw-backlog-refiner [--apply] [--skip-drain] [--skip-intake] [--skip-cleanup] [--allow-stale-reaper] [--json]
-  raw-training-compaction|raw-training-queue|raw-training-clear [--apply] [--max-files N] [--max-gb N] [--jumbo-gb N] [--min-age-hours N] [--json]
+  raw-training-compaction|raw-training-queue|raw-training-clear [--apply] [--max-files N] [--max-gb N] [--jumbo-gb N] [--min-age-hours N] [--compaction-workers N] [--json]
   backpressure-drainer-fleet [--apply] [--force-live-window] [--ttl-seconds N] [--json]
   drainer-intelligence-layer [--apply] [--target-pending-lines N] [--json]
   backpressure-super-drainer [--apply] [--max-waves N] [--target-pending-lines N] [--include-maintenance] [--json]
@@ -3335,6 +3389,7 @@ opsctl commands:
   sleeve-ingestion-production-control [--apply] [--json]
   infrastructure-autofix [--apply] [--timeout-sec N] [--json]
   stale-surface-autohealer|stale-autoheal [--apply] [--timeout-sec N] [--json]
+  degradation-swarm|degradation-swarm-coordinator [--apply] [--execute-safe-repairs] [--max-execute-actions N] [--command-timeout-seconds N] [--json]
   master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor [--apply] [--timeout-sec N] [--json]
   coinbase-api-health|coinbase-health [--symbol SYMBOL] [--snapshot] [--json]
   halt-trigger-status|kill-switch-status|halts-status [--assert-clear] [--json]
@@ -3356,6 +3411,8 @@ opsctl commands:
   promotion-quality-gate|promotion-gate [--json]
   autonomy-control [--json]
   live-canary-readiness|canary-readiness-contract|production-hardening-bar [--apply] [--json]
+  live-canary-graduation|post-canary-graduation [--policy PATH] [--plan PATH] [--ledger PATH] [--receipts PATH] [--json]
+  live-canary-closeout|post-canary-closeout [--intent-id ID] [--capture] [--policy PATH] [--plan PATH] [--ledger PATH] [--receipts PATH] [--account-study PATH] [--json]
   use-mode-compliance|commercial-compliance|personal-use-readiness [--json]
   commercial-readiness|commercial-framework|commercial-release-readiness [--json]
   investor-readiness|investor-packet|investor-due-diligence [--json]
@@ -3364,14 +3421,18 @@ opsctl commands:
   production-resilience|resilience-1-10 [--json]
   live-order-ledger|order-intent-ledger [--ledger PATH] [--resolve-intent ID --resolution STATE --evidence TEXT] [--json]
   live-execution-rehearsal|validate-live-path [--json]
+  live-canary-dress-rehearsal|connected-canary-rehearsal [--symbol SYMBOL] [--skip-account-refresh] [--show-auth] [--require-canary-ready] [--json]
   live-transition-integrity|paper-live-transition [--json]
   live-transition-chaos|transition-chaos [--json]
   profitability-evidence-firewall|profitability-firewall [--json]
   profitability-self-assessment|profitability-self-model|what-needs-tuning [--json]
   alpha-generation-control|alpha-generation|cross-sleeve-alpha [--json]
-  alpha-concepts|alpha-concept-report|alpha-research-map [--json]
+  alpha-measurement-inputs|alpha-inputs|alpha-materialize [--json]
+  alpha-concepts|alpha-concept-report|alpha-research-map [--[no-]refresh-inputs] [--json]
+  strategy-market-fit|strategy-market-fit-infrabot|strategy-challenger-cohort [--force] [--json]
   sleeve-alpha-toolbox|alpha-toolbox|sleeve-alpha-routing [--json]
   generation-behavior-attribution|generation-attribution|soak-generation-comparison [--from-generation N] [--to-generation N] [--last-days N] [--no-legacy-window-association] [--json]
+  generation-fill-learning|historical-fill-learning|paper-generation-learning [--target-generation N] [--apply] [--json]
   profitability-independent-validator|independent-profit-validator [--json]
   profitability-holdout-vault|holdout-vault [--seal-dataset PATH] [--record-evaluation-access --evidence TEXT] [--json]
   profitability-benchmark-capture|benchmark-capture [--apply] [--json]
@@ -3391,7 +3452,7 @@ opsctl commands:
   paper-execution-truth|paper-truth [--json]
   paper-truth-refresh|paper-truth-recover [--json]
   runtime-paper-regression-guard|runtime-paper-guard [--json]
-  paper-live-data-standard|paper-standard [--apply] [--json]
+  paper-live-data-standard|paper-standard [--apply|--reconcile-summary] [--json]
   production-flow-smoke|production-flow-contract [--json]
   source-mutation-guard|source-guard [--check-clean] [--json]
   sleeve-ticker-universe|expand-tickers [--apply] [--json]
@@ -3424,11 +3485,12 @@ opsctl commands:
   decision-provenance|decision-provenance-cards [--limit N] [--json]
   decision-intelligence|market-move-explainer [--symbol BTC] [--json]
   evidence-packet|proof-packet [--json] [--no-md] [--no-history]
-  paper-profitability-control|profitability-control [--apply] [--json]
+  paper-profitability-control|profitability-control [--apply] [--start-fresh-paper-recovery --fresh-paper-recovery-reason TEXT] [--json]
   profitability-hardening|profitability-eight [--lookback-days N] [--json]
   sleeve-profitability-dashboard|sleeve-pnl [--max-rows N] [--json]
   market-posture-control|posture-control [--apply] [--sample-limit N] [--json]
   market-cycle-engine|cycle-engine [--sample-limit N] [--min-rows N] [--no-history] [--json]
+  market-pattern-feedback|market-patterns [--no-history] [--json]
   operating-platform-upgrade|platform-upgrade-12 [--apply] [--json]
   system-done-for-today|done-for-today [--json]
   income-readiness|income-source-readiness [--apply] [--bot-logs-min-free-gb N] [--json]
@@ -3452,6 +3514,8 @@ opsctl commands:
   system-role-contract|role-contract|responsibility-contract [--component ID --action ACTION] [--state-domain ID] [--resource PATH] [--json]
   bot-organization|bot-hierarchy|sleeve-subsections [--json]
   bot-profitability-scalability|bot-profit-scale [--max-files N] [--max-rows-per-file N] [--json]
+  canonical-representation-audit|canonical-truth-audit [--json]
+  sleeve-scalability-selector|sleeve-portfolio-selector [--account-policy-key KEY] [--execution-route-id ID] [--capital-usd N] [--json]
   independent-runtime-monitor|independent-monitor [--receiver-url URL] [--json]
   runtime-snapshot-cache [--fresh-minutes N] [--stale-minutes N] [--json]
   remote-alert-control [--hours N] [--ack-event NAME] [--ack-all-critical] [--json]
@@ -3474,6 +3538,9 @@ opsctl commands:
   risk-service [--json]
   execution-lab [--json]
   profitability-crisis-drill|financial-collapse-drill [--scenario ID] [--json]
+  profitability-adversarial-drill|profitability-drill-pack [--scenario ID] [--json]
+  paper-behavior-intervention-drill|paper-behavior-drill [--scenario ID] [--json]
+  trading-behavior-drill-program|behavior-drill-program [--suite ID] [--json]
   operator-cockpit [--json]
   daily-verify-remediation [--apply] [--json]
   memory-efficiency [status|apply] [--json]
@@ -3588,6 +3655,7 @@ opsctl commands:
   report-pdfs [--only SLUG] [--json]
   system-summary [--refresh-supporting-artifacts] [--render-pdf] [--allow-gui-pdf-renderer] [--json]
   system-summary-autopilot [--step-timeout-seconds N] [--json]
+  one-numbers-refresh
   one-numbers-regression-guard [--apply] [--json]
   point-in-time-event-store [--limit N] [--json]
   replay-hash-registry [--json]
@@ -3625,7 +3693,11 @@ opsctl commands:
   account-buildout-plan [--study-file PATH] [--opportunity-file PATH] [--round-trip-file PATH] [--allocator-file PATH] [--risk-file PATH] [--policy-file PATH] [--json]
   covered-call-roll-watch [--json] [--today YYYY-MM-DD]
   schwab-account-snapshot-refresh [--json] [--skip-derived]
+  schwab-broker-boundary [--apply] [--accept-baseline --reason TEXT] [--notify] [--json]
   schwab-tax-ledger-refresh [--tax-year YYYY] [--json]
+  schwab-account-hash-sync|canary-account-bind [--show-auth] [--json]
+  live-canary-preflight|canary-preflight [--symbol SYMBOL] [--action BUY|SELL] [--issue-attestation] [--issue-allowlist] [--stage N] [--settled-cash-usd N] [--duration-minutes N] [--confirmation PHRASE] [--confirm-all] [--confirm-retirement-account-risk] [--json]
+  live-canary-dress-rehearsal|connected-canary-rehearsal [--symbol SYMBOL] [--skip-account-refresh] [--show-auth] [--require-canary-ready] [--json]
   trading-tax-estimate [--tax-year YYYY] [--ledger PATH] [--profile PATH] [--json]
   tax-regulation-update [--tax-year YYYY] [--refresh|--auto] [--json]
   notify-watch [--poll-seconds N] [--enable-imessage] [--imessage-recipient DEST] [--imessage-min-severity info|warn|critical] [--imessage-event-allowlist CSV]

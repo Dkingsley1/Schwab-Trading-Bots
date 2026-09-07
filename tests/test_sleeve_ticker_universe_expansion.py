@@ -47,6 +47,19 @@ def test_sleeve_ticker_universe_expands_applicable_sleeves() -> None:
     assert len(env["TICKER_UNIVERSE_HOT_SYMBOLS"].split(",")) == 150
     assert len(env["TICKER_UNIVERSE_STANDARD_SYMBOLS"].split(",")) == 500
     assert len(env["TICKER_UNIVERSE_SLOW_SYMBOLS"].split(",")) == 500
+    all_symbols = env["TICKER_UNIVERSE_ALL_SYMBOLS"].split(",")
+    hot_symbols = set(env["TICKER_UNIVERSE_HOT_SYMBOLS"].split(","))
+    standard_symbols = set(env["TICKER_UNIVERSE_STANDARD_SYMBOLS"].split(","))
+    slow_symbols = set(env["TICKER_UNIVERSE_SLOW_SYMBOLS"].split(","))
+    assert len(set(all_symbols)) == 1000
+    assert payload["canonical_symbol_count"] == 1000
+    assert payload["canonical_duplicate_symbol_count"] == 0
+    assert len(payload["canonical_manifest_sha256"]) == 64
+    assert hot_symbols.issubset(set(all_symbols))
+    assert standard_symbols.isdisjoint(slow_symbols)
+    assert standard_symbols | slow_symbols == set(all_symbols)
+    assert all(payload["universe_truth"]["invariants"].values())
+    assert payload["universe_truth"]["all_symbols_scheduled_simultaneously"] is False
     assert "ACWI" in env["TICKER_UNIVERSE_ALL_SYMBOLS"]
     assert "SNDK" in env["TICKER_UNIVERSE_ALL_SYMBOLS"]
     assert env["TICKER_NEWS_MAX_SYMBOLS"] == "1000"
@@ -54,8 +67,14 @@ def test_sleeve_ticker_universe_expands_applicable_sleeves() -> None:
     assert env["FREE_EQUITY_REFERENCE_MAX_SYMBOLS"] == "240"
     assert env["TICKER_UNIVERSE_STORAGE_PROFILE"] == "tiered_1000_guarded"
     assert "SLEEVE_TICKER_UNIVERSE_ENABLED" in env
-    assert payload["data_intake_routes"]["market_micro_context"]["mode"] == "runtime_env_MARKET_MICRO_SYMBOLS_bounded_500"
-    assert payload["data_intake_routes"]["ticker_news_context"]["mode"] == "runtime_env_TICKER_NEWS_MAX_SYMBOLS_1000"
+    assert (
+        payload["data_intake_routes"]["market_micro_context"]["mode"]
+        == "runtime_env_MARKET_MICRO_SYMBOLS_bounded_500"
+    )
+    assert (
+        payload["data_intake_routes"]["ticker_news_context"]["mode"]
+        == "runtime_env_TICKER_NEWS_MAX_SYMBOLS_1000"
+    )
     assert payload["expansion_sections"]["ai_power_data_center_infrastructure"] == [
         "VRT",
         "GEV",
@@ -72,6 +91,8 @@ def test_sleeve_ticker_universe_expands_applicable_sleeves() -> None:
     ]
     assert len(payload["expansion_sections"]["liquid_us_equities"]) == 251
     assert payload["tier_contract"]["target_symbol_count"] == 1000
+    assert payload["tier_contract"]["canonical_unique_symbol_count"] == 1000
+    assert payload["tier_contract"]["canonical_duplicate_symbol_count"] == 0
     assert payload["tier_contract"]["slow_symbol_count"] == 500
     assert payload["storage_optimization_env"]["RETENTION_STALE_PURGE_MAX_GB"] == "8"
     assert payload["safety_contract"]["adds_live_execution"] is False
@@ -79,10 +100,14 @@ def test_sleeve_ticker_universe_expands_applicable_sleeves() -> None:
     assert payload["safety_contract"]["slow_tier_deferred_on_storage_pressure"] is True
 
 
-def test_sleeve_ticker_universe_apply_writes_override_and_health(tmp_path: Path) -> None:
+def test_sleeve_ticker_universe_apply_writes_override_and_health(
+    tmp_path: Path,
+) -> None:
     out = tmp_path / "governance" / "health" / "sleeve_ticker_universe_latest.json"
     override = tmp_path / "config" / ".env.sleeve_ticker_universe_override"
-    payload = src.apply_payload(tmp_path, src.build_payload(tmp_path), out_path=out, override_path=override)
+    payload = src.apply_payload(
+        tmp_path, src.build_payload(tmp_path), out_path=out, override_path=override
+    )
     text = override.read_text(encoding="utf-8")
 
     assert payload["apply_result"]["applied"] is True

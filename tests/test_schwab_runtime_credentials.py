@@ -10,6 +10,8 @@ from core.brokers import schwab as schwab_broker
 from core.brokers.models import BrokerAuthRequest, BrokerCredentials
 from core.brokers.schwab_credentials import (
     DEFAULT_SERVICES,
+    enforce_managed_schwab_runtime,
+    managed_schwab_runtime_status,
     resolve_schwab_credentials,
     schwab_credentials_ready,
 )
@@ -67,7 +69,7 @@ def test_token_epoch_changes_without_including_token_material(tmp_path: Path) ->
     assert after["expires_at_epoch"] == 9999999999.0
 
 
-def test_breaker_rejects_measurement_from_before_auth_epoch() -> None:
+def test_breaker_allows_fresh_measurement_during_bounded_auth_rotation_grace() -> None:
     now = 2_000.0
     metrics: dict[str, object] = {
         "_breaker_source_present": True,
@@ -75,7 +77,33 @@ def test_breaker_rejects_measurement_from_before_auth_epoch() -> None:
         "_broker_auth_epoch": {"present": True, "mtime_epoch": 1_900.0},
         "data_quality_session_local_timestamp": datetime.fromtimestamp(1_800.0, timezone.utc).isoformat(),
     }
-    args = argparse.Namespace(breaker_max_metric_age_seconds=900.0, broker="schwab")
+    args = argparse.Namespace(
+        breaker_max_metric_age_seconds=900.0,
+        breaker_post_auth_evidence_grace_seconds=120.0,
+        broker="schwab",
+    )
+
+    actionable, reason = launcher._breaker_metrics_actionable(metrics, args, now_epoch=now)
+
+    assert actionable is True
+    assert reason == "fresh_actionable_metrics"
+
+
+def test_breaker_rejects_measurement_that_misses_auth_rotation_grace() -> None:
+    now = 2_000.0
+    metrics: dict[str, object] = {
+        "_breaker_source_present": True,
+        "_breaker_source_age_seconds": 5.0,
+        "_broker_auth_epoch": {"present": True, "mtime_epoch": 1_950.0},
+        "data_quality_session_local_timestamp": datetime.fromtimestamp(
+            1_800.0, timezone.utc
+        ).isoformat(),
+    }
+    args = argparse.Namespace(
+        breaker_max_metric_age_seconds=900.0,
+        breaker_post_auth_evidence_grace_seconds=120.0,
+        broker="schwab",
+    )
 
     actionable, reason = launcher._breaker_metrics_actionable(metrics, args, now_epoch=now)
 
@@ -144,3 +172,32 @@ def test_schwab_adapter_applies_bounded_http_timeout(monkeypatch) -> None:
 
     assert result is client
     assert client.timeout == 12.0
+
+
+def test_managed_runtime_attestation_is_fail_closed_when_required() -> None:
+    status = managed_schwab_runtime_status(
+        {"SCHWAB_MANAGED_RUNTIME_REQUIRED": "1"}
+    )
+
+    assert status["ready"] is False
+    try:
+        enforce_managed_schwab_runtime(
+            {"SCHWAB_MANAGED_RUNTIME_REQUIRED": "1"}
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "schwab_managed_runtime_attestation_required"
+    else:
+        raise AssertionError("missing managed runtime attestation must be rejected")
+
+
+def test_managed_runtime_attestation_accepts_loader_source() -> None:
+    status = enforce_managed_schwab_runtime(
+        {
+            "SCHWAB_MANAGED_RUNTIME_REQUIRED": "1",
+            "SCHWAB_MANAGED_RUNTIME_ATTESTED": "1",
+            "SCHWAB_MANAGED_RUNTIME_SOURCE": "load_runtime_env",
+        }
+    )
+
+    assert status["ready"] is True
+    assert status["secret_material_present"] is False

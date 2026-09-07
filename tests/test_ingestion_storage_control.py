@@ -11,6 +11,210 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import ingestion_storage_control as src
 
 
+def test_overlay_lane_reconciliation_removes_core_support_double_count() -> None:
+    source_rel = "governance/evidence/canary_rollout_observations.jsonl"
+    raw_live = {
+        "core_pending_lines": 425087,
+        "deferred_pending_lines": 1181,
+        "cold_pending_lines": 0,
+        "support_pending_lines": 0,
+        "stale_stage_pending_lines": 0,
+        "total_pending_lines": 426268,
+        "oldest_pending_age_seconds": 1760.0,
+        "oldest_age_min_pending_lines": 100,
+        "top_pending_files": [
+            {
+                "source_rel": source_rel,
+                "pending_lines": 424460,
+                "oldest_pending_age_seconds": 1760.0,
+            },
+            {
+                "source_rel": "decisions/paper/trade_decisions.jsonl",
+                "pending_lines": 627,
+                "oldest_pending_age_seconds": 30.0,
+            },
+        ],
+        "top_deferred_pending_files": [],
+        "top_cold_pending_files": [],
+        "top_support_telemetry_pending_files": [],
+        "top_stale_stage_pending_files": [],
+    }
+    overlay = {
+        "active": True,
+        "top_pending_files": [
+            {
+                "source_rel": source_rel,
+                "pending_lines": 424460,
+                "pressure_lane": "support",
+            }
+        ],
+    }
+
+    reconciliation = src._reconcile_raw_backpressure_with_overlay_lanes(
+        raw_live,
+        overlay,
+    )
+
+    assert reconciliation["active"] is True
+    assert reconciliation["pending_lines_reclassified"] == 424460
+    assert raw_live["core_pending_lines"] == 627
+    assert raw_live["support_pending_lines"] == 0
+    assert raw_live["total_pending_lines"] == 426268
+    assert raw_live["oldest_pending_age_seconds"] == 30.0
+    assert raw_live["top_pending_files"] == [
+        {
+            "source_rel": "decisions/paper/trade_decisions.jsonl",
+            "pending_lines": 627,
+            "oldest_pending_age_seconds": 30.0,
+        }
+    ]
+
+
+def test_overlay_lane_reconciliation_removes_support_subset_from_deferred() -> None:
+    source_rel = "governance/evidence/canary_rollout_observations.jsonl"
+    evidence_row = {
+        "source_rel": source_rel,
+        "pending_lines": 424460,
+        "oldest_pending_age_seconds": 1760.0,
+    }
+    raw_live = {
+        "core_pending_lines": 627,
+        "deferred_pending_lines": 425641,
+        "cold_pending_lines": 0,
+        "support_pending_lines": 424460,
+        "stale_stage_pending_lines": 0,
+        "total_pending_lines": 426268,
+        "oldest_pending_age_seconds": 30.0,
+        "oldest_age_min_pending_lines": 100,
+        "top_pending_files": [],
+        "top_deferred_pending_files": [evidence_row],
+        "top_cold_pending_files": [],
+        "top_support_telemetry_pending_files": [evidence_row],
+        "top_stale_stage_pending_files": [],
+    }
+    overlay = {
+        "active": True,
+        "top_pending_files": [
+            {
+                "source_rel": source_rel,
+                "pending_lines": 424460,
+                "pressure_lane": "support",
+            }
+        ],
+    }
+
+    reconciliation = src._reconcile_raw_backpressure_with_overlay_lanes(
+        raw_live,
+        overlay,
+    )
+
+    assert reconciliation["active"] is True
+    assert raw_live["deferred_pending_lines"] == 1181
+    assert raw_live["support_pending_lines"] == 424460
+    assert raw_live["total_pending_lines"] == 426268
+    assert raw_live["top_deferred_pending_files"] == []
+    assert raw_live["top_support_telemetry_pending_files"] == [evidence_row]
+
+
+def test_fresh_moderate_raw_support_contract_clears_stale_secondary_index_hard_gate(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 9, 3, 1, 15, tzinfo=timezone.utc)
+    health = tmp_path / "governance" / "health"
+    source_rel = "governance/evidence/canary_rollout_observations.jsonl"
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "pending_lines": 800,
+            "pending_lines_total": 60927,
+            "pending_lines_deferred": 60127,
+            "pending_lines_cold": 0,
+            "pending_lines_support_telemetry": 58987,
+            "pending_lines_stale_stage": 0,
+            "pending_lines_threshold": 15000,
+            "oldest_pending_age_seconds": 30.0,
+            "oldest_age_threshold_seconds": 240.0,
+            "overload": False,
+            "lane_accounting": {
+                "total_pending_lines_source_deduplicated": True,
+                "deferred_includes_support_telemetry": True,
+            },
+            "top_deferred_pending_files": [
+                {"source_rel": source_rel, "pending_lines": 58987}
+            ],
+            "top_support_telemetry_pending_files": [
+                {"source_rel": source_rel, "pending_lines": 58987}
+            ],
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gate_triggered": True,
+            "recommended_operating_mode": "shadow_only",
+            "hard_gates": {"ingestion_backpressure_overload": True},
+            "storage_pressure": {
+                "retention_debt_gb": 0.0,
+                "severe_backpressure_overload": True,
+            },
+            "ingestion_pressure": {"severe_backpressure_overload": True},
+        },
+    )
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        {
+            "route_verification": {
+                "verification_state": "ready",
+                "ready_count": 3,
+                "tracked_count": 3,
+                "coverage_ratio": 1.0,
+                "mismatches": [],
+            }
+        },
+    )
+    _write_json(
+        health / "storage_resilience_control_latest.json",
+        {
+            "overall_status": "ready",
+            "resilience_score": 100,
+            "restore_drill_fresh": True,
+            "dual_root_ready": True,
+            "warm_standby_ready": True,
+            "unresolved_split_brain_conflicts": 0,
+        },
+    )
+    _write_json(
+        health / "external_backlog_drain_latest.json",
+        {
+            "overall_status": "drain_active",
+            "recommended_now": True,
+            "aged_candidate_files": 5,
+        },
+    )
+
+    payload = src.build_payload(tmp_path, now_utc=now)
+
+    overlay = payload["sql_ingestion_pending_overlay"]
+    backpressure = payload["backpressure"]
+    assert overlay["managed_support_classification_source"] == (
+        "fresh_raw_support_contract"
+    )
+    assert overlay["raw_support_dominant"] is True
+    assert backpressure["pressure_deferred_pending_lines"] == 1140
+    assert backpressure["pressure_support_pending_lines"] == 5000
+    assert backpressure["pressure_total_pending_lines"] == 6940
+    assert backpressure["managed_support_pressure_clear"] is True
+    assert backpressure["effective_pressure_clear"] is True
+    assert payload["storage"]["raw_aged_backlog_candidate_files"] == 5
+    assert payload["storage"]["aged_backlog_candidate_files"] == 0
+    assert payload["storage"]["aged_backlog_candidate_files_suppressed_by_effective_pressure"] is True
+    assert "stale_old_pending_work" not in payload["backlog_relief_contract"]["active_issue_ids"]
+    assert payload["bounded_recovery_contract"]["effective_hard_gate_active"] is False
+    assert payload["severity"] == "stable"
+    assert payload["overall_status"] == "ready"
+
+
 def test_shard_state_reconciliation_keeps_tiny_old_side_lane_out_of_core_age(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -51,6 +255,55 @@ def test_shard_state_reconciliation_keeps_tiny_old_side_lane_out_of_core_age(
     assert reconciliation["pending_line_reduction"] == 50
     assert raw_live["oldest_pending_age_seconds"] == 60.0
     assert raw_live["total_pending_lines"] == 164
+
+
+def test_shard_state_reconciliation_deduplicates_total_reduction_by_source(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source_rel = "governance/evidence/canary_rollout_observations.jsonl"
+    source_row = {
+        "source_rel": source_rel,
+        "pending_lines": 100,
+        "oldest_pending_age_seconds": 60.0,
+    }
+    raw_live = {
+        "core_pending_lines": 0,
+        "deferred_pending_lines": 100,
+        "cold_pending_lines": 0,
+        "support_pending_lines": 100,
+        "stale_stage_pending_lines": 0,
+        "total_pending_lines": 100,
+        "oldest_pending_age_seconds": 0.0,
+        "oldest_age_min_pending_lines": 100,
+        "top_pending_files": [],
+        "top_deferred_pending_files": [source_row],
+        "top_support_telemetry_pending_files": [source_row],
+    }
+
+    monkeypatch.setattr(
+        src,
+        "_state_progress_for_source",
+        lambda _project_root, _source_rel: {
+            "reconciled": True,
+            "pending_lines": 80,
+            "last_line": 20,
+            "total_lines": 100,
+            "state_file": "state.json",
+            "line_count_method": "bounded_exact_count",
+        },
+    )
+
+    reconciliation = src._reconcile_raw_backpressure_with_shard_state(
+        tmp_path,
+        raw_live,
+    )
+
+    assert reconciliation["pending_line_reduction"] == 20
+    assert reconciliation["lane_counter_reduction"] == 40
+    assert reconciliation["total_reduction_source_count"] == 1
+    assert raw_live["deferred_pending_lines"] == 80
+    assert raw_live["support_pending_lines"] == 80
+    assert raw_live["total_pending_lines"] == 80
 
 
 def test_collector_intake_audit_accepts_stricter_a_plus_plus_target(tmp_path: Path) -> None:
@@ -2510,7 +2763,7 @@ def test_ingestion_storage_control_manages_large_support_overlay_without_critica
             "pending_lines_total": 55564,
             "pending_lines_deferred": 45056,
             "pending_lines_cold": 0,
-            "pending_lines_support_telemetry": 4,
+            "pending_lines_support_telemetry": 45000,
             "pending_lines_stale_stage": 0,
             "pending_lines_threshold": 15000,
             "oldest_pending_age_seconds": 72587.807,
@@ -2521,6 +2774,20 @@ def test_ingestion_storage_control_manages_large_support_overlay_without_critica
                     "source_rel": "governance/events/execution_lane_stale_skips_20260728.jsonl",
                     "pending_lines": 890,
                     "oldest_pending_age_seconds": 72587.807,
+                }
+            ],
+            "top_deferred_pending_files": [
+                {
+                    "source_rel": "governance/channels/risk/aggressive_equities_schwab/risk_20260729.jsonl",
+                    "pending_lines": 45000,
+                    "oldest_pending_age_seconds": 580.641,
+                }
+            ],
+            "top_support_telemetry_pending_files": [
+                {
+                    "source_rel": "governance/channels/risk/aggressive_equities_schwab/risk_20260729.jsonl",
+                    "pending_lines": 45000,
+                    "oldest_pending_age_seconds": 580.641,
                 }
             ],
         },
@@ -2634,6 +2901,8 @@ def test_ingestion_storage_control_manages_large_support_overlay_without_critica
     payload = src.build_payload(tmp_path, now_utc=now)
 
     assert payload["sql_ingestion_pending_overlay"]["managed_support_overlay_backlog"] is True
+    assert payload["sql_ingestion_pending_overlay"]["raw_lane_reconciliation"]["active"] is True
+    assert payload["backpressure"]["raw_live"]["deferred_pending_lines"] == 56
     assert payload["sql_ingestion_pending_overlay"]["support_overlay_dominant"] is True
     assert payload["sql_ingestion_pending_overlay"]["raw_support_pending_lines"] == 612561
     assert payload["sql_ingestion_pending_overlay"]["overlay_non_support_pending_for_dominance"] == 1475
@@ -4813,14 +5082,46 @@ def test_raw_live_expansion_headroom_contract_marks_warm_raw_live_as_limited() -
     assert contract["expansion_ready"] is False
     assert contract["grade"] in {"A", "B"}
     assert contract["control_env"]["RAW_LIVE_EXPANSION_GUARD_ACTIVE"] == "1"
-    assert contract["control_env"]["SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES"] == "4000"
-    assert contract["control_env"]["SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES"] == "2000"
+    assert contract["control_env"]["SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES"] == "5500"
+    assert contract["control_env"]["SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES"] == "1500"
+    assert contract["targets"]["admission_pause_lines"] == 4000
+    assert contract["targets"]["shadow_loop_pause_capacity_lines"] == 5500
+    assert (
+        int(contract["control_env"]["SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES"])
+        - int(contract["control_env"]["SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES"])
+        == int(contract["control_env"]["RAW_LIVE_CORE_RESERVE_TARGET"])
+    )
     assert contract["control_env"]["SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS"] == "8"
     assert contract["control_env"]["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_AGED_SOURCE_SECONDS"] == "180.0"
     assert contract["control_env"]["SHADOW_LOOP_BOOTSTRAP_BACKLOG_STAGGER_ENABLED"] == "1"
     assert contract["control_env"]["SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED"] == "1"
-    assert contract["control_env"]["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES"] == "2000"
+    assert contract["control_env"]["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES"] == "2500"
     assert contract["control_env"]["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.16"
+
+
+def test_raw_live_expansion_headroom_caps_inflight_reserve_at_total_capacity(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("RAW_LIVE_EXPANSION_CORE_RESERVE_TARGET", "4500")
+    monkeypatch.setenv("RAW_LIVE_EXPANSION_TOTAL_RESERVE_TARGET", "5000")
+    monkeypatch.setenv("RAW_LIVE_INFLIGHT_RESERVE_LINES", "3000")
+
+    contract = src._raw_live_expansion_headroom_contract(
+        raw_live_backpressure={
+            "core_pending_lines": 0,
+            "total_pending_lines": 0,
+            "oldest_pending_age_seconds": 0.0,
+        },
+        pending_threshold=15000,
+        age_threshold_seconds=240.0,
+        core_target=5000,
+    )
+
+    assert contract["targets"]["inflight_reserve_lines"] == 500
+    assert contract["targets"]["admission_pause_lines"] == 4500
+    assert contract["targets"]["shadow_loop_pause_capacity_lines"] == 5000
+    assert contract["control_env"]["SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES"] == "5000"
+    assert contract["control_env"]["SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES"] == "500"
 
 
 def test_raw_live_expansion_headroom_contract_allows_bigger_expansion_when_cool() -> None:

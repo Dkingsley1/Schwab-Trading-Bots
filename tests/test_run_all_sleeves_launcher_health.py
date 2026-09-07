@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from scripts import run_all_sleeves as src
@@ -107,6 +108,47 @@ def test_launcher_health_counts_unspawned_policy_parked_executor_as_stable() -> 
     assert contract["class_counts"]["execution_lane"]["stable_non_running"] == 1
     assert contract["collection_fanout_ready"] is True
     assert contract["paper_execution_ready"] is False
+
+
+def test_launcher_health_distinguishes_resident_executor_from_quality_clearance(
+    tmp_path, monkeypatch
+) -> None:
+    breaker_path = tmp_path / "execution_runtime_breaker_latest.json"
+    breaker_path.write_text(
+        json.dumps(
+            {
+                "active": True,
+                "status": "breach_observed",
+                "reasons": ["data_quality_low:65.00"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(src, "EXECUTION_BREAKER_STATE_PATH", breaker_path)
+    spec = src.JobSpec(
+        name="paper_executor",
+        cmd=["python", "executor.py"],
+        env={"EXECUTION_RUNTIME_BREAKER_REQUIRED": "1"},
+        breaker_group="execution",
+    )
+
+    payload = src._launcher_health_payload(
+        specs={"paper_executor": spec},
+        procs={"paper_executor": DummyProc(101, None)},  # type: ignore[arg-type]
+        proc_started_at={"paper_executor": 1.0},
+        restart_history={},
+        quarantined_jobs={},
+        launcher_started_at=1.0,
+        phase="running",
+    )
+    contract = payload["launcher_readiness_contract"]
+
+    assert payload["overall_status"] == "guarded_ready"
+    assert contract["readiness_status"] == "resident_execution_safety_hold"
+    assert contract["paper_execution_resident"] is True
+    assert contract["paper_execution_ready"] is False
+    assert contract["execution_runtime_hold"] is True
+    assert contract["exact_needs"][0]["blocker"] == "data_quality_low:65.00"
 
 
 def test_launcher_health_ready_when_all_lanes_are_stably_non_running() -> None:

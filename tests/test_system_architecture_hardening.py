@@ -2,7 +2,6 @@ import json
 import sys
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -11,13 +10,20 @@ from scripts.ops import system_architecture_hardening as src
 
 
 def _write_json(path: Path, payload: dict) -> None:
+    if path.name in {
+        "platform_intelligence_expansion_latest.json", "platform_brain_v5_latest.json",
+        "platform_stabilization_quality_latest.json", "platform_settlement_stabilization_latest.json",
+    }:
+        payload = {"timestamp_utc": src.iso_now(), **payload}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
 def _write_opsctl(project_root: Path, *, missing: list[str] | None = None) -> None:
     missing_set = set(missing or [])
-    text = "\n".join(cmd for cmd in src.REQUIRED_OPSCTL_COMMANDS if cmd not in missing_set)
+    text = "\n".join(
+        cmd for cmd in src.REQUIRED_OPSCTL_COMMANDS if cmd not in missing_set
+    )
     path = project_root / "scripts" / "ops" / "opsctl.sh"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text + "\n", encoding="utf-8")
@@ -37,9 +43,21 @@ def _seed_ready_project(project_root: Path) -> None:
             },
         },
     )
-    _write_json(health / "paper_400_ramp_latest.json", {"stage": "armed", "blockers": []})
-    _write_json(health / "global_halt_auto_clear_latest.json", {"halt": False, "halt_state": "clear_ready", "clear_blockers": []})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"overall_status": "ready", "write_failure_count": 0, "account_snapshot_failure_count": 0})
+    _write_json(
+        health / "paper_400_ramp_latest.json", {"stage": "armed", "blockers": []}
+    )
+    _write_json(
+        health / "global_halt_auto_clear_latest.json",
+        {"halt": False, "halt_state": "clear_ready", "clear_blockers": []},
+    )
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "overall_status": "ready",
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+        },
+    )
     _write_json(
         health / "writer_process_intelligence_latest.json",
         {
@@ -55,34 +73,94 @@ def _seed_ready_project(project_root: Path) -> None:
             },
         },
     )
-    _write_json(health / "backpressure_drainer_fleet_latest.json", {"writer_lock_held": True})
+    _write_json(
+        health / "backpressure_drainer_fleet_latest.json", {"writer_lock_held": True}
+    )
     _write_json(
         health / "ingestion_storage_control_latest.json",
-        {"severity": "stable", "pressure_index": 0.01, "backpressure": {"total_pending_lines": 12, "pending_lines_threshold": 1000}},
+        {
+            "severity": "stable",
+            "pressure_index": 0.01,
+            "backpressure": {
+                "total_pending_lines": 12,
+                "pending_lines_threshold": 1000,
+            },
+        },
     )
-    _write_json(health / "runtime_throttle_control_latest.json", {"overall_status": "ready", "host_saturation_score": 20, "compute_pressure_level": "normal", "memory_pressure_level": "normal"})
-    _write_json(health / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health / "swap_pressure_governor_latest.json", {"swap_pressure": {"tier": "normal", "swap_used_gb": 0.1}})
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "ready",
+            "host_saturation_score": 20,
+            "compute_pressure_level": "normal",
+            "memory_pressure_level": "normal",
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json", {"overall_status": "ready"}
+    )
+    _write_json(
+        health / "swap_pressure_governor_latest.json",
+        {"swap_pressure": {"tier": "normal", "swap_used_gb": 0.1}},
+    )
     _write_json(health / "pressure_relief_control_latest.json", {"tier": "observe"})
     _write_json(
         health / "process_watchdog_latest.json",
         {
             "status": [{"name": "sql_link_writer", "running": 1, "heartbeat_ok": True}],
             "alert_summary": {"critical_count": 0, "warning_count": 0},
-            "restart_storm_isolation": {"isolated_count": 0, "execution_blocking_count": 0, "isolated_targets": []},
+            "restart_storm_isolation": {
+                "isolated_count": 0,
+                "execution_blocking_count": 0,
+                "isolated_targets": [],
+            },
             "safety_pause": {"active": False},
         },
     )
-    _write_json(health / "platform_intelligence_expansion_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "platform_intelligence_expansion_latest.json",
+        {"overall_status": "ready"},
+    )
     _write_json(health / "platform_brain_v5_latest.json", {"overall_status": "ready"})
-    _write_json(health / "platform_stabilization_quality_latest.json", {"overall_status": "ready"})
-    _write_json(health / "platform_settlement_stabilization_latest.json", {"overall_status": "ready"})
-    _write_json(health / "data_collection_observation_rollup_latest.json", {"overall_status": "ready", "collector_count": 10, "bots_with_observations": 10, "zero_observation_count": 0, "total_observations": 1000})
-    _write_json(health / "training_quality_control_latest.json", {"overall_status": "ready", "training_quality_score": 88.0})
-    _write_json(health / "training_runtime_control_latest.json", {"overall_status": "ready", "launch_allowed": False, "launch_blockers": []})
-    _write_json(health / "provider_mesh_latest.json", {"overall_status": "ready", "summary": {"required_contract_ok": 2, "required_collectors": 2}, "cooldowns": []})
+    _write_json(
+        health / "platform_stabilization_quality_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health / "platform_settlement_stabilization_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health / "data_collection_observation_rollup_latest.json",
+        {
+            "overall_status": "ready",
+            "collector_count": 10,
+            "bots_with_observations": 10,
+            "zero_observation_count": 0,
+            "total_observations": 1000,
+        },
+    )
+    _write_json(
+        health / "training_quality_control_latest.json",
+        {"overall_status": "ready", "training_quality_score": 88.0},
+    )
+    _write_json(
+        health / "training_runtime_control_latest.json",
+        {"overall_status": "ready", "launch_allowed": False, "launch_blockers": []},
+    )
+    _write_json(
+        health / "provider_mesh_latest.json",
+        {
+            "overall_status": "ready",
+            "summary": {"required_contract_ok": 2, "required_collectors": 2},
+            "cooldowns": [],
+        },
+    )
     _write_json(health / "source_verification_latest.json", {"overall_status": "ready"})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"overall_status": "ready", "read_only": True})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready", "read_only": True},
+    )
     _write_opsctl(project_root)
 
 
@@ -104,7 +182,9 @@ def test_architecture_hardening_ready_when_all_contracts_align(tmp_path: Path) -
     assert payload["recommended_env_overrides"]["ALLOW_ORDER_EXECUTION"] == "0"
 
 
-def test_architecture_hardening_accepts_idle_on_demand_sql_writer(tmp_path: Path) -> None:
+def test_architecture_hardening_accepts_idle_on_demand_sql_writer(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -124,17 +204,31 @@ def test_architecture_hardening_accepts_idle_on_demand_sql_writer(tmp_path: Path
             },
         },
     )
-    _write_json(health / "backpressure_drainer_fleet_latest.json", {"writer_lock_held": False})
+    _write_json(
+        health / "backpressure_drainer_fleet_latest.json", {"writer_lock_held": False}
+    )
     _write_json(
         health / "process_watchdog_latest.json",
         {
             "status": [{"name": "sql_link_writer", "running": 0, "heartbeat_ok": True}],
             "alert_summary": {"critical_count": 0, "warning_count": 0},
-            "restart_storm_isolation": {"isolated_count": 0, "execution_blocking_count": 0, "isolated_targets": []},
+            "restart_storm_isolation": {
+                "isolated_count": 0,
+                "execution_blocking_count": 0,
+                "isolated_targets": [],
+            },
             "safety_pause": {"active": False},
         },
     )
-    _write_json(health / "system_plumbing_control_latest.json", {"overall_status": "ready", "plumbing_score": 100, "blockers": [], "warnings": []})
+    _write_json(
+        health / "system_plumbing_control_latest.json",
+        {
+            "overall_status": "ready",
+            "plumbing_score": 100,
+            "blockers": [],
+            "warnings": [],
+        },
+    )
 
     payload = src.build_payload(tmp_path)
     writer = payload["sections"]["storage_writer_data_plane"]
@@ -145,7 +239,9 @@ def test_architecture_hardening_accepts_idle_on_demand_sql_writer(tmp_path: Path
     assert writer["evidence"]["writer_idle_complete"] is True
 
 
-def test_architecture_hardening_manages_closed_training_budget_during_guarded_paper(tmp_path: Path) -> None:
+def test_architecture_hardening_manages_closed_training_budget_during_guarded_paper(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -166,10 +262,15 @@ def test_architecture_hardening_manages_closed_training_budget_during_guarded_pa
     assert training["watch_items"] == []
     assert contract["active"] is True
     assert contract["training_budget_closed_managed"] is True
-    assert contract["reason"] == "training_budget_closed_is_managed_during_guarded_paper_soak"
+    assert (
+        contract["reason"]
+        == "training_budget_closed_is_managed_during_guarded_paper_soak"
+    )
 
 
-def test_architecture_hardening_treats_no_training_candidates_as_healthy_idle(tmp_path: Path) -> None:
+def test_architecture_hardening_treats_no_training_candidates_as_healthy_idle(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -191,10 +292,15 @@ def test_architecture_hardening_treats_no_training_candidates_as_healthy_idle(tm
     assert training["watch_items"] == []
     assert contract["active"] is True
     assert contract["training_idle_no_candidates_managed"] is True
-    assert contract["reason"] == "no_training_candidates_is_healthy_idle_during_guarded_paper_soak"
+    assert (
+        contract["reason"]
+        == "no_training_candidates_is_healthy_idle_during_guarded_paper_soak"
+    )
 
 
-def test_architecture_hardening_manages_no_candidates_with_closed_budget(tmp_path: Path) -> None:
+def test_architecture_hardening_manages_no_candidates_with_closed_budget(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -203,7 +309,10 @@ def test_architecture_hardening_manages_no_candidates_with_closed_budget(tmp_pat
             "overall_status": "constrained",
             "prep_allowed": True,
             "launch_allowed": False,
-            "launch_blockers": ["no_bot_needs_training_candidates", "autonomic_training_budget_closed"],
+            "launch_blockers": [
+                "no_bot_needs_training_candidates",
+                "autonomic_training_budget_closed",
+            ],
         },
     )
 
@@ -217,10 +326,15 @@ def test_architecture_hardening_manages_no_candidates_with_closed_budget(tmp_pat
     assert contract["active"] is True
     assert contract["training_budget_closed_managed"] is True
     assert contract["training_idle_no_candidates_managed"] is True
-    assert contract["reason"] == "no_training_candidates_is_healthy_idle_during_guarded_paper_soak"
+    assert (
+        contract["reason"]
+        == "no_training_candidates_is_healthy_idle_during_guarded_paper_soak"
+    )
 
 
-def test_architecture_hardening_uses_actionable_collection_zero_contract(tmp_path: Path) -> None:
+def test_architecture_hardening_uses_actionable_collection_zero_contract(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -250,7 +364,9 @@ def test_architecture_hardening_uses_actionable_collection_zero_contract(tmp_pat
     assert training["evidence"]["zero_observation_count"] == 0
 
 
-def test_architecture_hardening_treats_plumbed_sql_overlay_cleanup_as_watch(tmp_path: Path) -> None:
+def test_architecture_hardening_treats_plumbed_sql_overlay_cleanup_as_watch(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -296,11 +412,72 @@ def test_architecture_hardening_treats_plumbed_sql_overlay_cleanup_as_watch(tmp_
     assert payload["ok"] is True
     assert payload["hard_section_count"] == 0
     assert payload["sections"]["storage_writer_data_plane"]["overall_status"] == "watch"
-    assert payload["sections"]["storage_writer_data_plane"]["blocks_guarded_paper"] is False
-    assert payload["sections"]["storage_writer_data_plane"]["evidence"]["storage_overlay_relief"]["active"] is True
+    assert (
+        payload["sections"]["storage_writer_data_plane"]["blocks_guarded_paper"]
+        is False
+    )
+    assert (
+        payload["sections"]["storage_writer_data_plane"]["evidence"][
+            "storage_overlay_relief"
+        ]["active"]
+        is True
+    )
 
 
-def test_architecture_hardening_manages_bounded_transient_writer_pressure(tmp_path: Path) -> None:
+def test_architecture_hardening_uses_verified_effective_storage_pressure(
+    tmp_path: Path,
+) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.034,
+            "backpressure": {
+                "core_pending_lines": 509,
+                "total_pending_lines": 426109,
+                "pending_lines_threshold": 15000,
+                "effective_pressure_clear": True,
+                "effective_raw_live_source": "raw_live_backpressure+managed_support_overlay_pressure",
+                "effective_raw_live": {
+                    "core_pending_lines": 509,
+                    "total_pending_lines": 6642,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+                "raw_live": {
+                    "core_pending_lines": 509,
+                    "total_pending_lines": 426109,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+            },
+            "continuous_run_soak_contract": {
+                "soak_ready": True,
+                "blockers": [],
+            },
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    writer = payload["sections"]["storage_writer_data_plane"]
+    capacity = payload["sections"]["runtime_capacity_partition"]
+
+    assert payload["overall_status"] == "ready"
+    assert writer["overall_status"] == "ready"
+    assert writer["findings"] == []
+    assert writer["evidence"]["effective_pressure_contract"] is True
+    assert writer["evidence"]["total_pending_lines"] == 6642
+    assert writer["evidence"]["raw_total_pending_lines"] == 426109
+    assert writer["evidence"]["storage_overlay_relief"]["active"] is True
+    assert capacity["evidence"]["storage_effective_pressure_contract"] is True
+    assert capacity["evidence"]["storage_total_pending_lines"] == 6642
+    assert capacity["evidence"]["storage_raw_total_pending_lines"] == 426109
+
+
+def test_architecture_hardening_manages_bounded_transient_writer_pressure(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -328,7 +505,12 @@ def test_architecture_hardening_manages_bounded_transient_writer_pressure(tmp_pa
     )
     _write_json(
         health / "system_plumbing_control_latest.json",
-        {"overall_status": "ready", "plumbing_score": 100, "blockers": [], "warnings": []},
+        {
+            "overall_status": "ready",
+            "plumbing_score": 100,
+            "blockers": [],
+            "warnings": [],
+        },
     )
 
     payload = src.build_payload(tmp_path)
@@ -340,7 +522,9 @@ def test_architecture_hardening_manages_bounded_transient_writer_pressure(tmp_pa
     assert writer["evidence"]["bounded_writer_pressure_managed"] is True
 
 
-def test_architecture_hardening_manages_bounded_steady_state_without_active_drain(tmp_path: Path) -> None:
+def test_architecture_hardening_manages_bounded_steady_state_without_active_drain(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -369,11 +553,20 @@ def test_architecture_hardening_manages_bounded_steady_state_without_active_drai
     )
     _write_json(
         health / "data_plane_recovery_controller_latest.json",
-        {"overall_status": "degraded", "write_failure_count": 0, "account_snapshot_failure_count": 0},
+        {
+            "overall_status": "degraded",
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+        },
     )
     _write_json(
         health / "system_plumbing_control_latest.json",
-        {"overall_status": "ready", "plumbing_score": 100, "blockers": [], "warnings": []},
+        {
+            "overall_status": "ready",
+            "plumbing_score": 100,
+            "blockers": [],
+            "warnings": [],
+        },
     )
 
     payload = src.build_payload(tmp_path)
@@ -388,14 +581,20 @@ def test_architecture_hardening_manages_bounded_steady_state_without_active_drai
     assert "storage_pressure_index_high" not in writer["findings"]
 
 
-def test_architecture_hardening_allows_isolated_read_only_collector_watch(tmp_path: Path) -> None:
+def test_architecture_hardening_allows_isolated_read_only_collector_watch(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     _write_json(
         tmp_path / "governance" / "health" / "process_watchdog_latest.json",
         {
             "status": [{"name": "sql_link_writer", "running": 1, "heartbeat_ok": True}],
             "alert_summary": {"critical_count": 0, "warning_count": 1},
-            "restart_storm_isolation": {"isolated_count": 1, "execution_blocking_count": 0, "isolated_targets": ["coinbase_loop"]},
+            "restart_storm_isolation": {
+                "isolated_count": 1,
+                "execution_blocking_count": 0,
+                "isolated_targets": ["coinbase_loop"],
+            },
             "safety_pause": {"active": False},
         },
     )
@@ -404,16 +603,27 @@ def test_architecture_hardening_allows_isolated_read_only_collector_watch(tmp_pa
 
     assert payload["ok"] is True
     assert payload["overall_status"] == "watch"
-    assert payload["sections"]["collector_process_quarantine"]["overall_status"] == "watch"
-    assert payload["sections"]["collector_process_quarantine"]["blocks_guarded_paper"] is False
+    assert (
+        payload["sections"]["collector_process_quarantine"]["overall_status"] == "watch"
+    )
+    assert (
+        payload["sections"]["collector_process_quarantine"]["blocks_guarded_paper"]
+        is False
+    )
     assert payload["anatomy_layers"]["heart"]["overall_status"] == "watch"
     assert payload["anatomy_layers"]["organs"]["overall_status"] == "watch"
     assert payload["anatomy_layers"]["skeleton"]["overall_status"] == "ready"
 
 
-def test_architecture_hardening_manages_explicitly_isolated_read_only_collector_storms(tmp_path: Path) -> None:
+def test_architecture_hardening_manages_explicitly_isolated_read_only_collector_storms(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
-    health_fast = json.loads((tmp_path / "governance" / "health" / "health_fast_latest.json").read_text(encoding="utf-8"))
+    health_fast = json.loads(
+        (tmp_path / "governance" / "health" / "health_fast_latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
     health_fast["process_watchdog"] = {
         "alert_summary": {
             "critical_count": 0,
@@ -428,13 +638,19 @@ def test_architecture_hardening_manages_explicitly_isolated_read_only_collector_
             ],
         }
     }
-    _write_json(tmp_path / "governance" / "health" / "health_fast_latest.json", health_fast)
+    _write_json(
+        tmp_path / "governance" / "health" / "health_fast_latest.json", health_fast
+    )
     _write_json(
         tmp_path / "governance" / "health" / "process_watchdog_latest.json",
         {
             "status": [{"name": "sql_link_writer", "running": 1, "heartbeat_ok": True}],
             "alert_summary": {"critical_count": 0, "warning_count": 0},
-            "restart_storm_isolation": {"isolated_count": 1, "execution_blocking_count": 0, "isolated_targets": ["coinbase_loop"]},
+            "restart_storm_isolation": {
+                "isolated_count": 1,
+                "execution_blocking_count": 0,
+                "isolated_targets": ["coinbase_loop"],
+            },
             "safety_pause": {"active": False},
         },
     )
@@ -449,9 +665,15 @@ def test_architecture_hardening_manages_explicitly_isolated_read_only_collector_
     assert payload["anatomy_layers"]["heart"]["overall_status"] == "ready"
 
 
-def test_architecture_hardening_prefers_health_fast_restart_isolation_for_collector_rows(tmp_path: Path) -> None:
+def test_architecture_hardening_prefers_health_fast_restart_isolation_for_collector_rows(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
-    health_fast = json.loads((tmp_path / "governance" / "health" / "health_fast_latest.json").read_text(encoding="utf-8"))
+    health_fast = json.loads(
+        (tmp_path / "governance" / "health" / "health_fast_latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
     health_fast["process_watchdog"] = {
         "alert_summary": {
             "critical_count": 0,
@@ -478,13 +700,19 @@ def test_architecture_hardening_prefers_health_fast_restart_isolation_for_collec
         },
         "safety_pause": {"active": False},
     }
-    _write_json(tmp_path / "governance" / "health" / "health_fast_latest.json", health_fast)
+    _write_json(
+        tmp_path / "governance" / "health" / "health_fast_latest.json", health_fast
+    )
     _write_json(
         tmp_path / "governance" / "health" / "process_watchdog_latest.json",
         {
             "status": [{"name": "sql_link_writer", "running": 1, "heartbeat_ok": True}],
             "alert_summary": {"critical_count": 0, "warning_count": 0},
-            "restart_storm_isolation": {"isolated_count": 1, "execution_blocking_count": 0, "isolated_targets": ["coinbase_loop"]},
+            "restart_storm_isolation": {
+                "isolated_count": 1,
+                "execution_blocking_count": 0,
+                "isolated_targets": ["coinbase_loop"],
+            },
             "safety_pause": {"active": False},
         },
     )
@@ -498,11 +726,17 @@ def test_architecture_hardening_prefers_health_fast_restart_isolation_for_collec
     assert collector["evidence"]["managed_quarantine_contract"]["active"] is True
 
 
-def test_architecture_hardening_blocks_truthy_live_execution_flags(tmp_path: Path) -> None:
+def test_architecture_hardening_blocks_truthy_live_execution_flags(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     _write_json(
         tmp_path / "governance" / "health" / "paper_400_ramp_latest.json",
-        {"stage": "armed", "blockers": [], "recommended_env_overrides": {"ALLOW_ORDER_EXECUTION": "1"}},
+        {
+            "stage": "armed",
+            "blockers": [],
+            "recommended_env_overrides": {"ALLOW_ORDER_EXECUTION": "1"},
+        },
     )
 
     payload = src.build_payload(tmp_path)
@@ -511,7 +745,9 @@ def test_architecture_hardening_blocks_truthy_live_execution_flags(tmp_path: Pat
     assert payload["ok"] is False
     assert payload["overall_status"] == "blocked"
     assert safety["overall_status"] == "blocked"
-    assert safety["evidence"]["truthy_live_enable_flags"][0]["path"].endswith("ALLOW_ORDER_EXECUTION")
+    assert safety["evidence"]["truthy_live_enable_flags"][0]["path"].endswith(
+        "ALLOW_ORDER_EXECUTION"
+    )
 
 
 def test_architecture_hardening_blocks_duplicate_sql_writer(tmp_path: Path) -> None:
@@ -542,7 +778,9 @@ def test_architecture_hardening_blocks_duplicate_sql_writer(tmp_path: Path) -> N
     assert payload["anatomy_layers"]["heart"]["overall_status"] == "blocked"
 
 
-def test_architecture_hardening_marks_stale_paper_ramp_global_blocker_as_watch(tmp_path: Path) -> None:
+def test_architecture_hardening_marks_stale_paper_ramp_global_blocker_as_watch(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     _write_json(
         tmp_path / "governance" / "health" / "paper_400_ramp_latest.json",
@@ -557,10 +795,15 @@ def test_architecture_hardening_marks_stale_paper_ramp_global_blocker_as_watch(t
     assert payload["sections"]["truth_source_consistency"]["overall_status"] == "watch"
 
 
-def test_architecture_hardening_treats_protect_live_as_safety_boundary_not_runtime_debt(tmp_path: Path) -> None:
+def test_architecture_hardening_treats_protect_live_as_safety_boundary_not_runtime_debt(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     _write_json(
-        tmp_path / "governance" / "health" / "live_runtime_separation_control_latest.json",
+        tmp_path
+        / "governance"
+        / "health"
+        / "live_runtime_separation_control_latest.json",
         {
             "overall_status": "degraded",
             "release_contract": {"live_lane_should_be_read_only": True},
@@ -577,7 +820,9 @@ def test_architecture_hardening_treats_protect_live_as_safety_boundary_not_runti
     assert payload["anatomy_layers"]["skin"]["overall_status"] == "ready"
 
 
-def test_architecture_hardening_surfaces_mac_fluidity_debt_as_runtime_watch(tmp_path: Path) -> None:
+def test_architecture_hardening_surfaces_mac_fluidity_debt_as_runtime_watch(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     _write_json(
         tmp_path / "governance" / "health" / "runtime_throttle_control_latest.json",
@@ -603,7 +848,9 @@ def test_architecture_hardening_surfaces_mac_fluidity_debt_as_runtime_watch(tmp_
     assert runtime["evidence"]["mac_fluidity_band"] == "strained"
 
 
-def test_architecture_hardening_manages_guarded_smooth_runtime_capacity(tmp_path: Path) -> None:
+def test_architecture_hardening_manages_guarded_smooth_runtime_capacity(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     _write_json(
         tmp_path / "governance" / "health" / "runtime_throttle_control_latest.json",
@@ -631,7 +878,9 @@ def test_architecture_hardening_manages_guarded_smooth_runtime_capacity(tmp_path
     assert payload["anatomy_strength_score"] == 100.0
 
 
-def test_architecture_hardening_manages_runtime_ready_bounded_writer_contract(tmp_path: Path) -> None:
+def test_architecture_hardening_manages_runtime_ready_bounded_writer_contract(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     _write_json(
         tmp_path / "governance" / "health" / "runtime_throttle_control_latest.json",
@@ -665,10 +914,15 @@ def test_architecture_hardening_manages_runtime_ready_bounded_writer_contract(tm
     assert runtime["overall_status"] == "ready"
     assert runtime["findings"] == []
     assert runtime["evidence"]["managed_runtime_ready_contract"]["active"] is True
-    assert "mac_fluidity_status=needs_work" in runtime["evidence"]["managed_runtime_ready_contract"]["managed_findings"]
+    assert (
+        "mac_fluidity_status=needs_work"
+        in runtime["evidence"]["managed_runtime_ready_contract"]["managed_findings"]
+    )
 
 
-def test_architecture_hardening_consumes_plumbing_runtime_memory_relief(tmp_path: Path) -> None:
+def test_architecture_hardening_consumes_plumbing_runtime_memory_relief(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -685,7 +939,10 @@ def test_architecture_hardening_consumes_plumbing_runtime_memory_relief(tmp_path
             },
         },
     )
-    _write_json(health / "memory_efficiency_control_latest.json", {"overall_status": "needs_work"})
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {"overall_status": "needs_work"},
+    )
     _write_json(
         health / "system_plumbing_control_latest.json",
         {
@@ -708,10 +965,15 @@ def test_architecture_hardening_consumes_plumbing_runtime_memory_relief(tmp_path
     assert runtime["overall_status"] == "ready"
     assert runtime["findings"] == []
     assert runtime["evidence"]["managed_plumbing_runtime_contract"]["active"] is True
-    assert "memory_status=needs_work" in runtime["evidence"]["managed_plumbing_runtime_contract"]["managed_findings"]
+    assert (
+        "memory_status=needs_work"
+        in runtime["evidence"]["managed_plumbing_runtime_contract"]["managed_findings"]
+    )
 
 
-def test_architecture_hardening_treats_platform_watch_as_managed_under_strict_clear(tmp_path: Path) -> None:
+def test_architecture_hardening_treats_platform_watch_as_managed_under_strict_clear(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     for name in (
@@ -732,10 +994,14 @@ def test_architecture_hardening_treats_platform_watch_as_managed_under_strict_cl
     assert payload["anatomy_layers"]["brain"]["overall_status"] == "ready"
 
 
-def test_architecture_hardening_treats_platform_watch_as_managed_under_guarded_paper(tmp_path: Path) -> None:
+def test_architecture_hardening_treats_platform_watch_as_managed_under_guarded_paper(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
-    health_fast = json.loads((health / "health_fast_latest.json").read_text(encoding="utf-8"))
+    health_fast = json.loads(
+        (health / "health_fast_latest.json").read_text(encoding="utf-8")
+    )
     health_fast["strict_all_clear"] = False
     health_fast["global_halt"] = {"halt": False, "clear_blockers": []}
     _write_json(health / "health_fast_latest.json", health_fast)
@@ -754,10 +1020,15 @@ def test_architecture_hardening_treats_platform_watch_as_managed_under_guarded_p
     assert platform["overall_status"] == "ready"
     assert platform["watch_items"] == []
     assert platform["evidence"]["managed_watch_contract"]["active"] is True
-    assert platform["evidence"]["managed_watch_contract"]["reason"] == "platform_watch_states_are_nonblocking_under_guarded_paper_ready"
+    assert (
+        platform["evidence"]["managed_watch_contract"]["reason"]
+        == "platform_watch_states_are_nonblocking_under_guarded_paper_ready"
+    )
 
 
-def test_architecture_hardening_isolates_optional_provider_source_debt(tmp_path: Path) -> None:
+def test_architecture_hardening_isolates_optional_provider_source_debt(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -776,7 +1047,11 @@ def test_architecture_hardening_isolates_optional_provider_source_debt(tmp_path:
             "overall_status": "degraded",
             "unverified_sources": ["macro_crossstack", "sec_edgar_context"],
             "stale_artifacts": ["sec_edgar_context", "extended_quant_context"],
-            "degraded_artifacts": ["macro_crossstack", "sec_edgar_context", "extended_quant_context"],
+            "degraded_artifacts": [
+                "macro_crossstack",
+                "sec_edgar_context",
+                "extended_quant_context",
+            ],
             "autorefresh_contract": {"enabled": True},
         },
     )
@@ -795,7 +1070,9 @@ def test_architecture_hardening_isolates_optional_provider_source_debt(tmp_path:
     assert "macro_crossstack" in contract["managed_verification_debt"]
 
 
-def test_architecture_hardening_manages_optional_provider_cooldown_when_required_mesh_is_ready(tmp_path: Path) -> None:
+def test_architecture_hardening_manages_optional_provider_cooldown_when_required_mesh_is_ready(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -821,7 +1098,49 @@ def test_architecture_hardening_manages_optional_provider_cooldown_when_required
     assert contract["optional_provider_cooldown_managed"] is True
 
 
-def test_architecture_hardening_treats_collection_maturity_as_watch_under_guarded_paper(tmp_path: Path) -> None:
+def test_architecture_hardening_does_not_misclassify_verified_source_warning_as_drift(
+    tmp_path: Path,
+) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "source_verification_latest.json",
+        {
+            "overall_status": "ready",
+            "unverified_sources": [],
+            "stale_artifacts": [],
+            "degraded_artifacts": ["fx_market_context"],
+            "artifact_pair_contract": {"status": "ready"},
+            "autorefresh_contract": {"enabled": True},
+            "sources": [
+                {
+                    "source_id": "fx_market_context",
+                    "verification_status": "cross_verified",
+                    "fresh": True,
+                    "ok": True,
+                    "notes": ["partial_sources=5/6"],
+                    "evidence": {
+                        "artifact_pair_contract": {"ready": True},
+                    },
+                }
+            ],
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    provider = payload["sections"]["provider_source_mesh"]
+    contract = provider["evidence"]["source_mesh_debt_contract"]
+
+    assert payload["overall_status"] == "ready"
+    assert provider["overall_status"] == "ready"
+    assert contract["critical_source_debt"] == []
+    assert contract["verified_source_warnings"] == ["fx_market_context"]
+    assert contract["artifact_pair_contract_status"] == "ready"
+
+
+def test_architecture_hardening_treats_collection_maturity_as_watch_under_guarded_paper(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -835,7 +1154,10 @@ def test_architecture_hardening_treats_collection_maturity_as_watch_under_guarde
             "training_ready_count": 0,
         },
     )
-    _write_json(health / "training_quality_control_latest.json", {"overall_status": "blocked", "training_quality_score": 93.5})
+    _write_json(
+        health / "training_quality_control_latest.json",
+        {"overall_status": "blocked", "training_quality_score": 93.5},
+    )
 
     payload = src.build_payload(tmp_path)
     training = payload["sections"]["training_evidence_contract"]
@@ -847,7 +1169,60 @@ def test_architecture_hardening_treats_collection_maturity_as_watch_under_guarde
     assert training["evidence"]["managed_training_evidence_contract"]["active"] is True
 
 
-def test_architecture_hardening_treats_refreshing_core_source_debt_as_watch_under_guarded_paper(tmp_path: Path) -> None:
+def test_architecture_hardening_manages_small_training_quality_drift_during_guarded_paper(
+    tmp_path: Path,
+) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "training_quality_control_latest.json",
+        {"overall_status": "blocked", "training_quality_score": 74.85},
+    )
+
+    payload = src.build_payload(tmp_path)
+    training = payload["sections"]["training_evidence_contract"]
+    contract = training["evidence"]["managed_training_evidence_contract"]
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "watch"
+    assert payload["hard_section_count"] == 0
+    assert training["overall_status"] == "watch"
+    assert training["blocks_guarded_paper"] is False
+    assert contract["active"] is True
+    assert contract["guarded_paper_quality_floor"] == 70.0
+    assert contract["training_quality_debt_managed"] is True
+    assert contract["live_promotion_gate_deferred"] is True
+    assert (
+        contract["reason"]
+        == "training_quality_and_collection_maturity_debt_is_nonblocking_for_guarded_paper_soak"
+    )
+
+
+def test_architecture_hardening_keeps_training_quality_below_safety_floor_hard(
+    tmp_path: Path,
+) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "training_quality_control_latest.json",
+        {"overall_status": "blocked", "training_quality_score": 69.99},
+    )
+
+    payload = src.build_payload(tmp_path)
+    training = payload["sections"]["training_evidence_contract"]
+    contract = training["evidence"]["managed_training_evidence_contract"]
+
+    assert payload["ok"] is False
+    assert payload["overall_status"] == "needs_work"
+    assert training["overall_status"] == "needs_work"
+    assert contract["active"] is False
+    assert contract["training_quality_debt_managed"] is False
+    assert contract["live_promotion_gate_deferred"] is False
+
+
+def test_architecture_hardening_treats_refreshing_core_source_debt_as_watch_under_guarded_paper(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -869,15 +1244,27 @@ def test_architecture_hardening_treats_refreshing_core_source_debt_as_watch_unde
     assert payload["overall_status"] == "watch"
     assert payload["hard_section_count"] == 0
     assert provider["overall_status"] == "watch"
-    assert "core_source_verification_debt_managed_by_guarded_paper_autorefresh" in provider["watch_items"]
+    assert (
+        "core_source_verification_debt_managed_by_guarded_paper_autorefresh"
+        in provider["watch_items"]
+    )
     assert contract["guarded_paper_source_debt_advisory"] is True
 
 
-def test_architecture_hardening_writes_section_config_and_override_artifacts(tmp_path: Path) -> None:
+def test_architecture_hardening_writes_section_config_and_override_artifacts(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     payload = src.build_payload(tmp_path)
 
-    written = src.write_outputs(tmp_path, tmp_path / "governance" / "health" / "system_architecture_hardening_latest.json", payload)
+    written = src.write_outputs(
+        tmp_path,
+        tmp_path
+        / "governance"
+        / "health"
+        / "system_architecture_hardening_latest.json",
+        payload,
+    )
 
     assert Path(written["latest"]).exists()
     assert Path(written["config"]).exists()
@@ -886,11 +1273,42 @@ def test_architecture_hardening_writes_section_config_and_override_artifacts(tmp
     assert len(written["anatomy_artifacts"]) == payload["anatomy_layer_count"]
     assert Path(written["anatomy_artifacts"]["body"]).exists()
     latest = json.loads(Path(written["latest"]).read_text(encoding="utf-8"))
-    assert latest["written_artifacts"]["anatomy_artifacts"]["body"] == written["anatomy_artifacts"]["body"]
-    assert "ALLOW_ORDER_EXECUTION=0" in Path(written["env_override"]).read_text(encoding="utf-8")
+    assert (
+        latest["written_artifacts"]["anatomy_artifacts"]["body"]
+        == written["anatomy_artifacts"]["body"]
+    )
+    assert "ALLOW_ORDER_EXECUTION=0" in Path(written["env_override"]).read_text(
+        encoding="utf-8"
+    )
 
 
-def test_architecture_config_refresh_is_idempotent_when_semantics_are_unchanged(tmp_path: Path) -> None:
+def test_architecture_hardening_writes_latest_snapshot_without_applying_config(
+    tmp_path: Path,
+) -> None:
+    _seed_ready_project(tmp_path)
+    payload = src.build_payload(tmp_path)
+    latest_path = (
+        tmp_path / "governance" / "health" / "system_architecture_hardening_latest.json"
+    )
+
+    written = src.write_latest_snapshot(latest_path, payload)
+
+    assert written == {
+        "latest": str(latest_path),
+        "mode": "latest_snapshot_only",
+    }
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    assert latest["timestamp_utc"] == payload["timestamp_utc"]
+    assert latest["written_artifacts"]["mode"] == "latest_snapshot_only"
+    assert not (tmp_path / "config" / "system_architecture_hardening_v1.json").exists()
+    assert not (
+        tmp_path / "config" / ".env.system_architecture_hardening_override"
+    ).exists()
+
+
+def test_architecture_config_refresh_is_idempotent_when_semantics_are_unchanged(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     payload = src.build_payload(tmp_path)
     payload["timestamp_utc"] = "2026-08-05T12:00:00+00:00"
@@ -904,13 +1322,18 @@ def test_architecture_config_refresh_is_idempotent_when_semantics_are_unchanged(
     assert json.loads(first_text)["updated_at_utc"] == "2026-08-05T12:00:00+00:00"
 
 
-def test_architecture_config_refresh_updates_timestamp_when_semantics_change(tmp_path: Path) -> None:
+def test_architecture_config_refresh_updates_timestamp_when_semantics_change(
+    tmp_path: Path,
+) -> None:
     _seed_ready_project(tmp_path)
     payload = src.build_payload(tmp_path)
     payload["timestamp_utc"] = "2026-08-05T12:00:00+00:00"
     config_path = src.write_config(tmp_path, payload)
     payload["timestamp_utc"] = "2026-08-05T13:00:00+00:00"
-    payload["architecture_invariants"] = [*payload["architecture_invariants"], "new_invariant"]
+    payload["architecture_invariants"] = [
+        *payload["architecture_invariants"],
+        "new_invariant",
+    ]
 
     src.write_config(tmp_path, payload)
     refreshed = json.loads(config_path.read_text(encoding="utf-8"))

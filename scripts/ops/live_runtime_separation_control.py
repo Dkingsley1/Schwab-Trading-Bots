@@ -114,9 +114,19 @@ def _overlay_only_storage_relief(storage_control: dict[str, Any], runtime_thrott
     backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
     effective_raw_live = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
     effective_source = str(backpressure.get("effective_raw_live_source") or effective_raw_live.get("source") or "").strip()
+    effective_pressure_contract = bool(
+        backpressure.get("effective_pressure_clear", False)
+        and effective_raw_live
+    )
     use_effective = bool(
-        backpressure.get("overlay_adjusted", False)
-        and (backpressure.get("overlay_pressure_clear", False) or effective_source == "fresh_empty_sql_ingestion_overlay")
+        effective_pressure_contract
+        or (
+            backpressure.get("overlay_adjusted", False)
+            and (
+                backpressure.get("overlay_pressure_clear", False)
+                or effective_source == "fresh_empty_sql_ingestion_overlay"
+            )
+        )
         and effective_raw_live
     )
     raw_live = effective_raw_live if use_effective else backpressure.get("raw_live") if isinstance(backpressure.get("raw_live"), dict) else {}
@@ -144,13 +154,21 @@ def _overlay_only_storage_relief(storage_control: dict[str, Any], runtime_thrott
         else {}
     )
     runtime_relief_active = bool(runtime_storage.get("overlay_capacity_relief", False) or capacity_relief.get("active", False))
-    active = bool((overlay_adjusted and raw_live_clear) or (runtime_relief_active and raw_live_clear))
+    active = bool(
+        raw_live_clear
+        and (
+            overlay_adjusted
+            or runtime_relief_active
+            or effective_pressure_contract
+        )
+    )
     return {
         "active": active,
         "overlay_adjusted": overlay_adjusted,
         "runtime_overlay_capacity_relief": runtime_relief_active,
         "effective_raw_live_used": use_effective,
         "effective_raw_live_source": effective_source,
+        "effective_pressure_contract": effective_pressure_contract,
         "raw_live_clear": raw_live_clear,
         "raw_live": {
             "core_pending_lines": raw_core,

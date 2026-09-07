@@ -6,6 +6,7 @@ from scripts.shadow_watchdog import (
     Target,
     _build_default_schwab_cmd,
     _can_restart,
+    _canonical_parent_health,
     _creative_pause_guard_active,
     _decode_start_cmd,
     _evaluate_halt_auto_clear,
@@ -210,6 +211,60 @@ def test_schwab_parent_heartbeat_startup_grace_prevents_restart_storm() -> None:
         hb_ok=False,
         process_age_seconds=421.0,
     ) is False
+
+
+def test_canonical_parent_health_is_authoritative_for_matching_live_launcher(
+    tmp_path,
+) -> None:
+    health_path = tmp_path / "all_sleeves_launcher_latest.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "launcher_pid": 321,
+                "phase": "running",
+                "overall_status": "guarded_ready",
+            }
+        ),
+        encoding="utf-8",
+    )
+    target = Target(
+        name="schwab_parallel",
+        match="scripts/run_all_sleeves.py",
+        start_cmd="echo hi",
+        heartbeat_stale_seconds=180,
+    )
+
+    health = _canonical_parent_health(target, [321], health_path=health_path)
+
+    assert health["healthy"] is True
+    assert health["reason"] == "fresh_matching_launcher_health"
+    assert health["phase"] == "running"
+
+
+def test_canonical_parent_health_rejects_another_launcher_pid(tmp_path) -> None:
+    health_path = tmp_path / "all_sleeves_launcher_latest.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "launcher_pid": 999,
+                "phase": "running",
+            }
+        ),
+        encoding="utf-8",
+    )
+    target = Target(
+        name="schwab_parallel",
+        match="scripts/run_all_sleeves.py",
+        start_cmd="echo hi",
+        heartbeat_stale_seconds=180,
+    )
+
+    health = _canonical_parent_health(target, [321], health_path=health_path)
+
+    assert health["healthy"] is False
+    assert health["reason"] == "launcher_health_pid_mismatch"
 
 
 def test_creative_pause_guard_suppresses_shadow_restart_for_music(tmp_path, monkeypatch) -> None:

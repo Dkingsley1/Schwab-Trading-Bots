@@ -615,6 +615,38 @@ class LiveOrderLedger:
             ).fetchone()
         return self._row_dict(row)
 
+    def intents(self) -> list[dict[str, Any]]:
+        """Return the immutable materialized intent rows for read-only controls."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM order_intents ORDER BY created_at_utc, intent_id"
+            ).fetchall()
+        return [self._row_dict(row) for row in rows]
+
+    def events(self, *, intent_id: str = "") -> list[dict[str, Any]]:
+        """Return hash-chain events without exposing a mutable database handle."""
+        key = str(intent_id or "").strip()
+        with self._connect() as conn:
+            if key:
+                rows = conn.execute(
+                    "SELECT * FROM order_events WHERE intent_id = ? ORDER BY event_id",
+                    (key,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM order_events ORDER BY event_id"
+                ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._row_dict(row)
+            try:
+                details = json.loads(str(item.get("details_json") or "{}"))
+            except json.JSONDecodeError:
+                details = {}
+            item["details"] = details if isinstance(details, dict) else {}
+            output.append(item)
+        return output
+
     def unresolved(self) -> list[dict[str, Any]]:
         placeholders = ",".join("?" for _ in UNRESOLVED_STATES)
         with self._connect() as conn:

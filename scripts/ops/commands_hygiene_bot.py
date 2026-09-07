@@ -1188,6 +1188,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             "Accounts And Positions",
             _command_entry(
                 project_root,
+                "Bind verified Schwab accounts to Keychain",
+                ["./scripts/ops/opsctl.sh schwab-account-hash-sync --json"],
+                notes=[
+                    "Discovers connected Schwab routing hashes, maps them through operator-verified last-four aliases, and stores only the opaque references in the macOS Keychain.",
+                    "It writes no raw hashes to repository artifacts and cannot arm live execution.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Refresh Schwab account positions",
                 ["./scripts/ops/opsctl.sh schwab-account-snapshot-refresh --json"],
                 notes=[
@@ -1200,6 +1209,47 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh account-position-study --json"],
                 notes=[
                     "Builds `governance/health/account_position_study_latest.json` from all visible Schwab accounts, account aliases, recent sleeve decisions, and covered-call roll context.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Check the supervised live-canary preflight",
+                ["./scripts/ops/opsctl.sh live-canary-preflight --json"],
+                notes=[
+                    "Fail-closed check for the exact candidate/account binding, settled-cash attestation, broker restrictions, risk boundary, live-order ledger, immutable release, tax review, and exchange session.",
+                    "The Roth canary additionally requires explicit retirement loss-capacity, contribution-capacity, and cross-account wash-sale confirmation. The command cannot arm live execution.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Run the connected read-only canary dress rehearsal",
+                [
+                    "./scripts/ops/opsctl.sh live-canary-dress-rehearsal --symbol SCHD --json"
+                ],
+                notes=[
+                    "Refreshes designated Schwab account truth, fetches a real provider quote, and builds the exact redacted one-share LIMIT/NORMAL/DAY payload plus cash, position, collateral, and reconciliation projections.",
+                    "Every live switch is forced off. The control never submits, cancels, replaces, or grants live authority; `ready_locked` is expected while funding, release, attestation, session, or earned-evidence gates remain.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Seal a reconciled live-canary closeout",
+                [
+                    "./scripts/ops/opsctl.sh live-canary-closeout --intent-id INTENT_ID --json",
+                    "./scripts/ops/opsctl.sh live-canary-closeout --intent-id INTENT_ID --capture --json",
+                ],
+                notes=[
+                    "Run immediately after the live lane reports a terminal fill and after a fresh Schwab account snapshot. The command appends only when the hash-chained order event, exact account position delta, isolated cash delta, conservative cost floor, and safety state agree.",
+                    "Preview without `--capture` first. It never contacts or mutates the broker, never persists raw account or broker identifiers, and cannot authorize a follow-on order, stage change, or capital increase.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review post-canary graduation milestones",
+                ["./scripts/ops/opsctl.sh live-canary-graduation --json"],
+                notes=[
+                    "Reads the durable live-order ledger and sealed broker closeout receipts to track the first reconciled fill, round trips, independent days, post-cost outcomes, fill fidelity, drawdown, regime coverage, and bounded future-tier evidence.",
+                    "Missing earned evidence is a normal waiting state. Tampering, identity mismatch, ambiguity, or safety violations fail closed; the control cannot issue an allowlist, progress a stage, change limits, or submit an order.",
                 ],
             ),
             _command_entry(
@@ -1372,6 +1422,34 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Run the adversarial profitability drill pack",
+                ["./scripts/ops/opsctl.sh profitability-adversarial-drill --json"],
+                notes=[
+                    "Runs fourteen deterministic paper-only economic-adversarial scenarios without starting a daemon or contacting a broker.",
+                    "The capacity scenario covers all runtime sleeves from the $200 canary through $1,000,000 across normal, wide-spread, thin-liquidity, and high-volatility/latency states.",
+                    "An A+ grades drill execution and failure-mode detection only; modeled capacity remains diagnostic until candidate-forward fills and costs calibrate it.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Run paper behavior intervention drills",
+                ["./scripts/ops/opsctl.sh paper-behavior-intervention-drill --json"],
+                notes=[
+                    "Runs fourteen candidate-bound champion/challenger scenarios that test paper-only abstention, throttling, recovery, and sizing behavior.",
+                    "A fresh complete A+ proposal can be admitted only by paper-profitability-control; the drill itself cannot write runtime controls, submit orders, grant live authority, or prove organic profitability.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Run the complete trading behavior drill program",
+                ["./scripts/ops/opsctl.sh trading-behavior-drill-program --json"],
+                notes=[
+                    "Freezes one candidate and policy receipt, then runs crisis, adversarial profitability, and paper behavior suites under one bounded run ID.",
+                    "The program rejects regressions and candidate mutations, retains a compact evidence history, and may only propose a paper overlay to paper-profitability-control; it has no order or live authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Capture the candidate-bound passive benchmark close",
                 [
                     "./scripts/ops/opsctl.sh profitability-benchmark-capture --apply --json"
@@ -1479,6 +1557,16 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Check all 12,000 strategies against current market conditions",
+                ["./scripts/ops/opsctl.sh strategy-market-fit --force"],
+                notes=[
+                    "Checks every preserved strategy contract in bounded batches and maintains five exact existing cold strategies as a shadow-only challenger cohort.",
+                    "Market-fit scores rank research attention, not expected return; the scanner cannot activate strategies, change the candidate or soak, submit paper or live orders, or claim profitability without candidate-bound post-cost proof.",
+                    "Omit `--force` to reuse the last full scan whenever all source signatures are unchanged.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Browse the consolidated strategy-family catalog",
                 [
                     "./scripts/ops/opsctl.sh strategy-families --sleeve crypto_spot --objective digital_asset_alpha --limit 40"
@@ -1561,6 +1649,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Build current-generation learning from verified historical paper fills",
+                ["./scripts/ops/opsctl.sh generation-fill-learning --apply --json"],
+                notes=[
+                    "Builds an offline challenger dataset owned by the current accepted candidate, presently G104, while preserving every verified fill's source generation.",
+                    "Exact candidate or decision receipts are required; unbound rows are quarantined, expected-fill simulations remain nonempirical, and lineage, chronological validation, and training-quality gates must pass before trainer consumption.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Replay decision thresholds and exit choices",
                 ["./scripts/ops/opsctl.sh counterfactual-replay --json"],
                 notes=[
@@ -1570,6 +1667,16 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
         ),
         _section(
             "Storage",
+            _command_entry(
+                project_root,
+                "Inspect storage routes and ingestion definitions",
+                ["./scripts/ops/opsctl.sh ingestion-storage-control --definitions-only --json"],
+                notes=[
+                    "Prints bounded canonical-path observations, owning lane/lifecycle policies, and separate fetch, qualification, SQL checkpoint, merge, and archive boundaries.",
+                    "This mode does not write a health artifact, inspect database contents, or apply route/throttle changes; --out-file is ignored. Exit 2 reports definition or route inspection issues, not a full runtime-health verdict.",
+                    "The ordinary ingestion-storage-control --json report includes the same data_plane_definition section. See docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md.",
+                ],
+            ),
             _command_entry(
                 project_root,
                 "Switch collection to the Mac's internal drive",
@@ -1786,10 +1893,11 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Plan or apply the MLX library upgrade bundle",
                 [
                     "./scripts/ops/opsctl.sh mlx-library-upgrade --json",
-                    "./scripts/ops/opsctl.sh mlx-library-upgrade --apply --json",
+                    "./scripts/ops/opsctl.sh mlx-library-upgrade --scope all --json",
+                    './scripts/ops/opsctl.sh mlx-library-upgrade --scope all --apply --ack-maintenance --maintenance-token "$MAINTENANCE_TOKEN" --full-test --json',
                 ],
                 notes=[
-                    "The dry run prints the pinned MLX package bundle from `config/requirements.lock.txt`; the apply form installs those pins, then you should run `./scripts/ops/opsctl.sh mlx-audit --json`.",
+                    "The dry run plans either the MLX-only bundle or the complete exact lock from `config/requirements.lock.txt`. Apply is fail-closed: an active maintenance hold, its matching token, a stopped runtime stack, and explicit acknowledgement are required. The transaction snapshots the current environment, installs the lock, runs dependency and native-runtime audits plus capability smoke tests, optionally runs the full suite, and automatically rolls back if any validation fails. Never pass credentials or broker tokens as the maintenance token.",
                 ],
             ),
             _command_entry(
@@ -1879,6 +1987,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 notes=[
                     "Publishes candidate-bound per-bot regime learning, forward post-cost ranking, marginal contribution, lifecycle advice, capacity curves, bounded top-K activation, and shared feature, checkpoint, archive, resource, and model-cache evidence.",
                     "Control maturity and economic evidence are graded separately; the manifest cannot allocate capital or create an order.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review sleeve scalability goals and portfolio fit",
+                ["./scripts/ops/opsctl.sh sleeve-scalability-selector --json"],
+                notes=[
+                    "Ranks only candidate-bound sleeves with positive conservative post-cost evidence, persistence, regime fit, independent contribution, execution calibration, and enough capacity for the current account, route, capital tier, and order size.",
+                    "It may recommend one sleeve or a bounded low-correlation set and reports six earned scalability goals. Unknown correlation, stale evidence, route mismatch, or insufficient capacity abstains; the report cannot allocate capital, change a limit or allowlist, or create an order.",
                 ],
             ),
             _command_entry(
@@ -2020,13 +2137,26 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Inspect candidate source drift",
+                [
+                    "./scripts/ops/opsctl.sh source-mutation-guard --json",
+                    "./scripts/ops/opsctl.sh production-excellence --json",
+                ],
+                notes=[
+                    "Shows dynamically discovered dirty candidate source, exact changed scopes and files, source-inventory coverage, and event-chain state.",
+                    "Detection is automatic, but acceptance is operator-only; the drift autopilot cannot advance a candidate or restore clean soak credit.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Freeze or accept a production candidate",
                 [
                     "./scripts/ops/opsctl.sh production-excellence --apply --initialize-candidate --json",
                     './scripts/ops/opsctl.sh production-excellence --apply --accept-candidate-change --change-reason "Describe the reviewed production change" --json',
                 ],
                 notes=[
-                    "Initialize only after the intended production code is committed. Accepted changes reset only the affected evidence scopes and preserve historical profitability.",
+                    "Run focused regressions first, then accept the exact reviewed working-tree fingerprint before committing. The pre-commit source guard blocks unaccepted candidate-scoped changes.",
+                    "Accepted changes record exact file evidence, reset only affected evidence scopes, and preserve historical profitability. No self-healing process may accept drift.",
                 ],
             ),
             _command_entry(
@@ -3032,18 +3162,24 @@ def build_payload(
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Author COMMANDS.md and the runbook helper from the curated operator command inventory."
     )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
-    parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
+    parser.add_argument("--out-file", default="")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    payload = build_payload(Path(args.project_root).resolve(), apply=bool(args.apply))
-    write_payload(Path(args.out_file).expanduser(), payload)
+    project_root = Path(args.project_root).expanduser().resolve()
+    out_file = (
+        Path(args.out_file).expanduser()
+        if str(args.out_file or "").strip()
+        else project_root / "governance" / "health" / "commands_hygiene_latest.json"
+    )
+    payload = build_payload(project_root, apply=bool(args.apply))
+    write_payload(out_file, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

@@ -210,6 +210,37 @@ def test_raw_decision_freshness_can_lead_a_stale_sqlite_merge(tmp_path: Path) ->
     )
 
 
+def test_raw_decision_freshness_includes_canonical_channel_when_explanations_lag(
+    tmp_path: Path,
+) -> None:
+    explanation_dir = tmp_path / "decision_explanations" / "shadow_default"
+    explanation_dir.mkdir(parents=True)
+    (explanation_dir / "decision_explanations_20260331.jsonl").write_text(
+        json.dumps({"timestamp_utc": "2026-03-31T14:45:00+00:00", "action": "HOLD"})
+        + "\n",
+        encoding="utf-8",
+    )
+    channel_dir = (
+        tmp_path
+        / "governance"
+        / "channels"
+        / "decision"
+        / "dividend_equities_schwab"
+    )
+    channel_dir.mkdir(parents=True)
+    (channel_dir / "decision_20260331.jsonl").write_text(
+        json.dumps({"timestamp_utc": "2026-03-31T15:02:30+00:00", "action": "BUY"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot = one_numbers._raw_decision_freshness_snapshot(tmp_path, "20260331")
+
+    assert snapshot["row_count"] == 2
+    assert snapshot["source_file_count"] == 2
+    assert snapshot["latest_timestamp"] == "2026-03-31T15:02:30+00:00"
+
+
 def test_raw_snapshot_deduplicates_hot_and_compressed_siblings(tmp_path: Path) -> None:
     decision_dir = tmp_path / "decision_explanations" / "shadow_default"
     decision_dir.mkdir(parents=True)

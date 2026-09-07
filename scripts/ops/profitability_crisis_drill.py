@@ -535,6 +535,16 @@ def build_payload(
             "live_release_evidence": False,
             "profitability_proof": False,
         },
+        "resource_contract": {
+            "persistent_processes_started": 0,
+            "network_requests": 0,
+            "broker_requests": 0,
+            "paper_orders_submitted": 0,
+            "live_orders_submitted": 0,
+            "candidate_mutations": 0,
+            "runtime_control_writes": 0,
+            "work_units": len(phase_rows),
+        },
         "authority_contract": dict(authority),
         "next_actions": [
             "Preserve severe-phase new-exposure abstention and reduce-only exit priority.",
@@ -550,6 +560,21 @@ def build_payload(
             },
         },
     }
+
+
+def publish_payload(
+    *,
+    project_root: Path,
+    payload: Mapping[str, Any],
+    out_path: str | Path = DEFAULT_OUT_PATH,
+    source: str = "profitability_crisis_drill",
+) -> bool:
+    return safe_write_json_atomic(
+        str(_resolve_path(project_root, out_path)),
+        dict(payload),
+        project_root=str(project_root),
+        source=source,
+    )
 
 
 def main() -> int:
@@ -572,12 +597,10 @@ def main() -> int:
         policy_path=args.policy,
         requested_scenarios=args.scenario or None,
     )
-    out_path = _resolve_path(root, args.out_file)
-    written = safe_write_json_atomic(
-        str(out_path),
-        payload,
-        project_root=str(root),
-        source="profitability_crisis_drill",
+    written = publish_payload(
+        project_root=root,
+        payload=payload,
+        out_path=args.out_file,
     )
     if not written:
         payload["ok"] = False

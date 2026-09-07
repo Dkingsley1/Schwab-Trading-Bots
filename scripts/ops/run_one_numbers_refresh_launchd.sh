@@ -7,6 +7,7 @@ PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 SUMMARY_PATH="$PROJECT_ROOT/exports/one_numbers/one_numbers_summary.json"
 BACKPRESSURE_PATH="$PROJECT_ROOT/governance/health/ingestion_backpressure_latest.json"
 DIVERGENCE_PATH="$PROJECT_ROOT/governance/health/data_source_divergence_latest.json"
+AUTH_TOKEN_PATH="$PROJECT_ROOT/token.json"
 
 cd "$PROJECT_ROOT"
 
@@ -18,25 +19,16 @@ fi
 export BOT_RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-$PROFILE}"
 export MAINTENANCE_SLOT_DEFER_OUTSIDE_QUIET_WINDOW=0
 export MAINTENANCE_SLOT_DEFER_WHILE_SQL_LINK_ACTIVE=0
-
-set +e
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/maintenance_slot_guard.py" --slot one_numbers_refresh --begin
-guard_rc=$?
-set -e
-if [[ "$guard_rc" == "0" ]]; then
-  trap '"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/maintenance_slot_guard.py" --slot one_numbers_refresh --end >/dev/null 2>&1 || true' EXIT INT TERM
-else
-  if [[ "$guard_rc" == "${MAINTENANCE_SLOT_SKIP_EXIT_CODE:-75}" ]]; then
-    exit 0
-  fi
-  exit "$guard_rc"
-fi
+export MAINTENANCE_SLOT_ONE_NUMBERS_REFRESH_MIN_INTERVAL_SECONDS="${MAINTENANCE_SLOT_ONE_NUMBERS_REFRESH_MIN_INTERVAL_SECONDS:-180}"
 
 SESSION_TZ="${ONE_NUMBERS_SESSION_TIMEZONE:-${ONE_NUMBERS_REPORT_TIMEZONE:-America/New_York}}"
 SESSION_START="${ONE_NUMBERS_SESSION_START:-09:30}"
 SESSION_END="${ONE_NUMBERS_SESSION_END:-16:00}"
 SESSION_INTERVAL="${ONE_NUMBERS_REFRESH_INTERVAL_SECONDS:-300}"
 OFF_HOURS_INTERVAL="${ONE_NUMBERS_OFF_HOURS_REFRESH_INTERVAL_SECONDS:-3600}"
+RISK_CRITICAL_MAX_AGE_SECONDS="${ONE_NUMBERS_RISK_CRITICAL_MAX_AGE_SECONDS:-14400}"
+BREAKER_MAX_AGE_SECONDS="${ONE_NUMBERS_BREAKER_MAX_AGE_SECONDS:-600}"
+RISK_CRITICAL_NICE="${ONE_NUMBERS_RISK_CRITICAL_NICE:-15}"
 
 clock_now=(${(s: :)$(TZ="$SESSION_TZ" date "+%u %H %M")})
 iso_weekday="${clock_now[1]:-7}"
@@ -55,6 +47,29 @@ if not path.exists():
     print(999999999)
 else:
     print(max(int(time.time() - path.stat().st_mtime), 0))
+PY
+}
+
+auth_epoch_refresh_required() {
+  "$PYTHON_BIN" - "$SUMMARY_PATH" "$AUTH_TOKEN_PATH" <<'PY'
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import sys
+
+summary_path = Path(sys.argv[1])
+token_path = Path(sys.argv[2])
+try:
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    raw = str(payload.get("data_quality_session_local_timestamp") or "").strip()
+    measured = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if measured.tzinfo is None:
+        measured = measured.replace(tzinfo=timezone.utc)
+    token_mtime = token_path.stat().st_mtime
+except Exception:
+    print(0)
+    raise SystemExit(0)
+print(1 if measured.timestamp() + 2.0 < token_mtime else 0)
 PY
 }
 
@@ -82,24 +97,61 @@ if (( session_open == 1 )); then
 fi
 
 summary_age_seconds="$(age_seconds_for "$SUMMARY_PATH")"
+auth_epoch_refresh_due="$(auth_epoch_refresh_required)"
 
 guard_output=""
+critical_refresh=0
+report_refreshed=0
 if ! guard_output="$(refresh_guard_output)"; then
-  echo "one_numbers_refresh skip resource_guard_blocked session_open=$session_open detail=${guard_output:-resource_guard_blocked}"
-  exit 0
+  if (( summary_age_seconds >= RISK_CRITICAL_MAX_AGE_SECONDS || summary_age_seconds >= BREAKER_MAX_AGE_SECONDS || auth_epoch_refresh_due == 1 )) && [[ "$guard_output" == *"support_maintenance_frozen_for_mac_fluidity"* ]]; then
+    if guard_output="$("$PYTHON_BIN" "$PROJECT_ROOT/scripts/resource_guard.py" --profile refresh --ignore-support-freeze)"; then
+      critical_refresh=1
+      echo "one_numbers_refresh critical_override support_freeze_only=1 age_seconds=$summary_age_seconds breaker_deadline=$BREAKER_MAX_AGE_SECONDS auth_epoch_refresh_due=$auth_epoch_refresh_due nice=$RISK_CRITICAL_NICE"
+    else
+      echo "one_numbers_refresh skip real_resource_guard_blocked age_seconds=$summary_age_seconds detail=${guard_output:-resource_guard_blocked}"
+      exit 0
+    fi
+  else
+    echo "one_numbers_refresh skip resource_guard_blocked session_open=$session_open detail=${guard_output:-resource_guard_blocked}"
+    exit 0
+  fi
 fi
 
-if (( summary_age_seconds >= ${target_interval:-300} )); then
+set +e
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/maintenance_slot_guard.py" --slot one_numbers_refresh --begin
+guard_rc=$?
+set -e
+if [[ "$guard_rc" == "0" ]]; then
+  trap '"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/maintenance_slot_guard.py" --slot one_numbers_refresh --end >/dev/null 2>&1 || true' EXIT INT TERM
+else
+  if [[ "$guard_rc" == "${MAINTENANCE_SLOT_SKIP_EXIT_CODE:-75}" ]]; then
+    exit 0
+  fi
+  exit "$guard_rc"
+fi
+
+if (( summary_age_seconds >= ${target_interval:-300} || auth_epoch_refresh_due == 1 )); then
   if ps -axo command | grep -q "[b]uild_one_numbers_report.py"; then
     echo "one_numbers_refresh skip refresh_already_running session_open=$session_open"
+  elif (( critical_refresh == 1 )); then
+    /usr/bin/nice -n "$RISK_CRITICAL_NICE" "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py"
+    report_refreshed=1
   else
     "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py"
+    report_refreshed=1
   fi
 else
-  echo "one_numbers_refresh skip age_seconds=$summary_age_seconds target_interval=$target_interval session_open=$session_open"
+  echo "one_numbers_refresh skip age_seconds=$summary_age_seconds target_interval=$target_interval auth_epoch_refresh_due=$auth_epoch_refresh_due session_open=$session_open"
 fi
 
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/one_numbers_regression_guard.py" --apply --json || true
+
+if (( report_refreshed == 1 )); then
+  /usr/bin/nice -n "$RISK_CRITICAL_NICE" "$PYTHON_BIN" "$PROJECT_ROOT/scripts/portfolio_risk_ledger.py" --json || true
+  /usr/bin/nice -n "$RISK_CRITICAL_NICE" "$PYTHON_BIN" "$PROJECT_ROOT/scripts/portfolio_allocator_service.py" --json || true
+  /usr/bin/nice -n "$RISK_CRITICAL_NICE" "$PYTHON_BIN" "$PROJECT_ROOT/scripts/paper_reconciliation_slo_guard.py" --json || true
+  /usr/bin/nice -n "$RISK_CRITICAL_NICE" "$PYTHON_BIN" "$PROJECT_ROOT/scripts/risk_service_boundary.py" --json || true
+fi
 
 backpressure_age_seconds="$(age_seconds_for "$BACKPRESSURE_PATH")"
 if (( backpressure_age_seconds >= ${INGESTION_BACKPRESSURE_REFRESH_INTERVAL_SECONDS:-300} )); then

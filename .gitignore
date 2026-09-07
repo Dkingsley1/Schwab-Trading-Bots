@@ -22,6 +22,8 @@ token.json.refresh.lock
 .env
 .env.*
 !config/.env.example
+config/account_aliases.json
+config/account_policy_registry.json
 
 # Runtime outputs (large / generated)
 .runtime_locks/

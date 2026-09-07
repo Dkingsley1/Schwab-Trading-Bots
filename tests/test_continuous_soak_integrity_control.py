@@ -8,7 +8,8 @@ def test_soak_hardening_a_plus_does_not_fake_elapsed_completion(tmp_path) -> Non
     files = {
         "scripts/ops/production_excellence_control.py": (
             "verify_candidate_event_chain candidate_chain_recovery_anchor all_evidence_windows_reset "
-            "scope_windows_started_utc changed_scopes required_hours thirty_day_window"
+            "scope_windows_started_utc changed_scopes evaluate_scope_validation "
+            "scope_aware_validation_complete"
         ),
         "scripts/ops/source_verification_autorefresh.py": (
             "source_verification_retry_state.json starvation_override"
@@ -93,6 +94,76 @@ def test_candidate_drift_preserves_observed_age_but_receives_zero_clean_credit(
     assert payload["observed_window_elapsed_hours"] == 800.0
     assert payload["clean_window_elapsed_hours"] == 0.0
     assert payload["candidate_drift_invalidates_elapsed_credit"] is True
+    assert payload["clean_720_hours_complete"] is False
+
+
+def test_scope_aware_operations_validation_can_complete_before_legacy_720_hours(
+    tmp_path,
+) -> None:
+    now = datetime(2026, 8, 10, 21, 0, tzinfo=timezone.utc)
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True)
+    (health / "production_excellence_control_latest.json").write_text(
+        json.dumps(
+            {
+                "candidate": {
+                    "candidate_ready": True,
+                    "candidate_drift": False,
+                    "event_chain": {"ok": True, "event_count": 1},
+                    "scope_windows_started_utc": {
+                        "operations": "2026-08-05T21:00:00+00:00"
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = tmp_path / "config"
+    config.mkdir(parents=True)
+    (config / "production_excellence_v1.json").write_text(
+        json.dumps(
+            {
+                "candidate": {
+                    "scope_validation_policy_path": (
+                        "config/candidate_scope_validation_v1.json"
+                    ),
+                    "require_scope_validation_policy": True,
+                    "soak_scopes": ["operations"],
+                },
+                "soak": {"required_hours": 720},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (config / "candidate_scope_validation_v1.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "policy_id": "test-scope-aware",
+                "calendar": {
+                    "calendar_id": "XNYS",
+                    "minimum_version": "4.13.2",
+                },
+                "tiers": {
+                    "operations": {
+                        "required_hours": 72,
+                        "required_completed_sessions": 3,
+                        "blocks_promotion": True,
+                    }
+                },
+                "scope_tiers": {"operations": "operations"},
+                "unknown_scope_tier": "operations",
+                "authority": {"live_execution_authority": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = control.build_payload(tmp_path, now=now)
+
+    assert payload["scope_aware_validation_complete"] is True
+    assert payload["scope_validation_grade"] == "A+"
+    assert payload["scope_validation"]["calendar"]["ready"] is True
     assert payload["clean_720_hours_complete"] is False
 
 

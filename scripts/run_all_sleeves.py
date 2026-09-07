@@ -41,12 +41,16 @@ FX_SHADOW = PROJECT_ROOT / "scripts" / "run_fx_shadow.py"
 SPECIALIZED_SLEEVE_SHADOW = PROJECT_ROOT / "scripts" / "run_specialized_sleeve_shadow.py"
 AGGRESSIVE_MODES = PROJECT_ROOT / "scripts" / "run_parallel_aggressive_modes.py"
 EXECUTION_LANE = PROJECT_ROOT / "scripts" / "run_execution_lane.py"
+SHADOW_TRAINING_LOOP = PROJECT_ROOT / "scripts" / "run_shadow_training_loop.py"
 HALT_FLAG_PATH = PROJECT_ROOT / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
 PREFLIGHT_SCRIPT = PROJECT_ROOT / "scripts" / "shadow_preflight.py"
 DEBUG_SNAPSHOT_SCRIPT = PROJECT_ROOT / "scripts" / "collect_debug_snapshot.sh"
 CAPTURE_CONFIG_SCRIPT = PROJECT_ROOT / "scripts" / "capture_run_config.py"
 PAPER_TRADE_LOCK_PATH = PROJECT_ROOT / "governance" / "health" / "PAPER_TRADE_LOCK.flag"
 LAUNCHER_HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "all_sleeves_launcher_latest.json"
+EXECUTION_BREAKER_STATE_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "execution_runtime_breaker_latest.json"
+)
 ACCOUNT_POSITION_STUDY_PATH = PROJECT_ROOT / "governance" / "health" / "account_position_study_latest.json"
 PROCESS_FANOUT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.process_fanout_guard_override"
 COLLECTION_BREAKER_GROUP = "collection"
@@ -231,6 +235,7 @@ class JobSpec:
     heartbeat_startup_grace_seconds: int = 0
     max_runtime_seconds: int = 0
     code_watch_paths: tuple[Path, ...] = ()
+    code_watch_settle_seconds: int = 0
     auth_watch_paths: tuple[Path, ...] = ()
     auth_change_mode: str = "in_process_rebind"
 
@@ -650,13 +655,20 @@ def _job_recycle_due(
                 continue
             if mtime > started:
                 return True, f"auth_epoch_changed:{path.name}"
+    changed_paths: list[tuple[Path, float]] = []
     for path in spec.code_watch_paths:
         try:
             mtime = float(path.stat().st_mtime)
         except Exception:
             continue
         if mtime > started:
-            return True, f"code_changed:{path.name}"
+            changed_paths.append((path, mtime))
+    if changed_paths:
+        newest_path, newest_mtime = max(changed_paths, key=lambda item: item[1])
+        settle_seconds = max(int(spec.code_watch_settle_seconds or 0), 0)
+        if settle_seconds > 0 and (now_epoch - newest_mtime) < float(settle_seconds):
+            return False, ""
+        return True, f"code_changed:{newest_path.name}"
     return False, ""
 
 
@@ -728,7 +740,10 @@ def _launcher_readiness_contract(
     repair_active: bool,
     policy_parked_jobs: set[str],
     clean_exited_jobs: set[str],
+    execution_breaker_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    breaker_state = dict(execution_breaker_state or {})
+    execution_runtime_hold = bool(breaker_state.get("active", False))
     class_counts: dict[str, dict[str, int]] = {}
     for row in jobs:
         name = str(row.get("name") or "")
@@ -761,7 +776,10 @@ def _launcher_readiness_contract(
         row for row in jobs if _launcher_job_class(str(row.get("name") or "")) == "execution_lane"
     ]
     execution_policy_parked = [row for row in execution_rows if bool(row.get("policy_parked", False))]
-    execution_lane_ready = bool(not execution_rows or all(row.get("state") == "running" for row in execution_rows))
+    execution_lane_resident = bool(
+        not execution_rows or all(row.get("state") == "running" for row in execution_rows)
+    )
+    execution_lane_ready = bool(execution_lane_resident and not execution_runtime_hold)
     collection_rows = [
         row for row in jobs if _launcher_job_class(str(row.get("name") or "")).endswith("collection")
     ]
@@ -786,6 +804,8 @@ def _launcher_readiness_contract(
         score -= 20.0
     if execution_policy_parked:
         score -= 8.0
+    if execution_runtime_hold:
+        score -= 5.0
     score = round(max(score, 0.0), 1)
 
     if phase == "starting":
@@ -796,6 +816,8 @@ def _launcher_readiness_contract(
         readiness_status = "repair_optional_first"
     elif execution_policy_parked:
         readiness_status = "guarded_execution_blocked"
+    elif execution_runtime_hold:
+        readiness_status = "resident_execution_safety_hold"
     elif policy_parked_jobs or clean_exited_jobs:
         readiness_status = "stable_with_parked_lanes"
     else:
@@ -809,6 +831,7 @@ def _launcher_readiness_contract(
         and not restart_pressure_jobs
         and not policy_parked_jobs
         and not clean_exited_jobs
+        and not execution_runtime_hold
     )
     if can_expand:
         max_new_collect_only_sleeves = 10
@@ -847,6 +870,21 @@ def _launcher_readiness_contract(
                 "when_to_stop": "stop when phase=running or repair_packet.status=needs_repair",
             }
         )
+    if execution_runtime_hold:
+        exact_needs.append(
+            {
+                "target": "paper_executor",
+                "job_class": "execution_lane",
+                "blocker": str(
+                    (breaker_state.get("reasons") or ["execution_runtime_hold"])[0]
+                ),
+                "exact_file": str(EXECUTION_BREAKER_STATE_PATH),
+                "exact_command": ["./scripts/ops/opsctl.sh", "one-numbers-refresh"],
+                "expected_impact": "keep reconciliation resident while reopening entry execution only after fresh quality evidence clears",
+                "risk_level": "low",
+                "when_to_stop": "stop when active=false and the paper executor remains running",
+            }
+        )
 
     return {
         "active": True,
@@ -856,7 +894,12 @@ def _launcher_readiness_contract(
         "readiness_status": readiness_status,
         "readiness_score": score,
         "collection_fanout_ready": collection_fanout_ready,
+        "paper_execution_resident": execution_lane_resident,
         "paper_execution_ready": execution_lane_ready,
+        "execution_runtime_hold": execution_runtime_hold,
+        "execution_runtime_breaker_status": str(
+            breaker_state.get("status") or "not_required"
+        ),
         "execution_policy_parked_count": len(execution_policy_parked),
         "execution_attention": [
             {
@@ -890,6 +933,8 @@ def _launcher_readiness_contract(
             "policy-parked and clean-exited lanes are not treated as process outages",
             "a policy-parked execution lane remains visible as guarded rather than fully ready",
             "restart pressure reduces expansion slots before it becomes a storm",
+            "paper reconciliation remains resident while runtime quality holds block new exposure",
+            "planned code and max-runtime recycles do not consume the crash restart budget",
         ],
         "recommended_commands": [
             ["./scripts/ops/opsctl.sh", "watchdog-intelligence", "--apply", "--json"],
@@ -1051,6 +1096,18 @@ def _launcher_health_payload(
         else [],
         "policy": "repair_read_only_sleeve_collection_without_enabling_live_execution",
     }
+    breaker_required = any(
+        str(spec.env.get("EXECUTION_RUNTIME_BREAKER_REQUIRED", "0"))
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"}
+        for spec in specs.values()
+    )
+    execution_breaker_state = (
+        _read_json(EXECUTION_BREAKER_STATE_PATH) if breaker_required else {}
+    )
+    if bool(execution_breaker_state.get("active", False)) and overall_status == "ready":
+        overall_status = "guarded_ready"
     launcher_readiness_contract = _launcher_readiness_contract(
         jobs=jobs,
         problem_jobs=problem_jobs,
@@ -1060,6 +1117,7 @@ def _launcher_health_payload(
         repair_active=repair_active,
         policy_parked_jobs=parked_jobs,
         clean_exited_jobs=clean_jobs,
+        execution_breaker_state=execution_breaker_state,
     )
     repair_packet["launcher_readiness_status"] = launcher_readiness_contract["readiness_status"]
     repair_packet["launcher_readiness_score"] = launcher_readiness_contract["readiness_score"]
@@ -1082,6 +1140,7 @@ def _launcher_health_payload(
         "clean_exited_job_count": len(clean_jobs),
         "clean_exited_jobs": sorted(clean_jobs),
         "quarantined_jobs": quarantined_jobs,
+        "execution_runtime_breaker": execution_breaker_state,
         "launcher_readiness_contract": launcher_readiness_contract,
         "repair_packet": repair_packet,
         "repair_infrabots": repair_infrabots,
@@ -1095,6 +1154,48 @@ def _write_launcher_health(payload: dict[str, Any], path: Path = LAUNCHER_HEALTH
         path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
     except Exception as exc:
         print(f"[LauncherHealth] warning failed err={exc}")
+
+
+def _execution_breaker_state_payload(
+    *,
+    active: bool,
+    status: str,
+    reasons: list[str],
+    source_actionable: bool,
+    latched: bool,
+    breach_streak: int,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "contract_version": "execution_runtime_breaker_v1",
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "launcher_pid": os.getpid(),
+        "active": bool(active),
+        "status": str(status or "unknown"),
+        "reasons": [str(reason) for reason in reasons if str(reason)],
+        "source_actionable": bool(source_actionable),
+        "latched": bool(latched),
+        "breach_streak": max(int(breach_streak), 0),
+        "paper_policy": "closure_only" if active else "standard_gates",
+        "live_policy": "blocked" if active else "standard_gates",
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    payload["state_sha256"] = hashlib.sha256(encoded).hexdigest()
+    return payload
+
+
+def _write_execution_breaker_state(payload: dict[str, Any]) -> None:
+    try:
+        path = EXECUTION_BREAKER_STATE_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8"
+        )
+        tmp.replace(path)
+    except Exception as exc:
+        print(f"[ExecutionBreakerState] warning failed err={exc}")
 
 
 def _terminate_process_group(proc: subprocess.Popen) -> None:
@@ -1274,7 +1375,23 @@ def _breaker_metrics_actionable(
         token_mtime = _safe_float(auth_epoch.get("mtime_epoch"), 0.0)
         if measurement_epoch is None:
             return False, "measurement_timestamp_missing_for_auth_epoch"
-        if token_mtime > 0.0 and measurement_epoch + 2.0 < token_mtime:
+        post_auth_grace_seconds = max(
+            float(
+                getattr(
+                    args,
+                    "breaker_post_auth_evidence_grace_seconds",
+                    240.0,
+                )
+                or 0.0
+            ),
+            0.0,
+        )
+        auth_measurement_lag = max(token_mtime - measurement_epoch, 0.0)
+        if (
+            token_mtime > 0.0
+            and measurement_epoch + 2.0 < token_mtime
+            and auth_measurement_lag > post_auth_grace_seconds
+        ):
             return False, "measurement_predates_auth_epoch"
 
     session_aware = _boolish(metrics.get("data_quality_session_aware"), False)
@@ -1290,13 +1407,19 @@ def _breaker_policy_parked_jobs(
     *,
     now: float,
     latched_groups: set[str] | None = None,
+    resident_jobs: set[str] | None = None,
 ) -> set[str]:
     latched = set(latched_groups or set())
+    resident = set(resident_jobs or set())
     return {
         name
         for name, spec in specs.items()
-        if spec.breaker_group in latched
-        or float(group_disabled_until.get(spec.breaker_group, 0.0) or 0.0) > float(now)
+        if name not in resident
+        and (
+            spec.breaker_group in latched
+            or float(group_disabled_until.get(spec.breaker_group, 0.0) or 0.0)
+            > float(now)
+        )
     }
 
 
@@ -1308,10 +1431,20 @@ def _job_uses_schwab_auth(spec: JobSpec, *, default_broker: str) -> bool:
         return str(default_broker or "").strip().lower() == "schwab"
 
 
-def _breaker_reasons(metrics: dict, args, *, runtime_seconds: float = 0.0) -> tuple[list[str], str]:
+def _breaker_reasons(
+    metrics: dict,
+    args,
+    *,
+    runtime_seconds: float = 0.0,
+    now_epoch: float | None = None,
+) -> tuple[list[str], str]:
     reasons: list[str] = []
     broker_domain = "stocks" if args.broker == "schwab" else "crypto"
-    actionable, _reason = _breaker_metrics_actionable(metrics, args)
+    actionable, _reason = _breaker_metrics_actionable(
+        metrics,
+        args,
+        now_epoch=now_epoch,
+    )
     if not actionable:
         return reasons, broker_domain
 
@@ -1330,6 +1463,68 @@ def _breaker_reasons(metrics: dict, args, *, runtime_seconds: float = 0.0) -> tu
         reasons.append(f"{pnl_key}_low:{pnl_val:.6f}")
 
     return reasons, broker_domain
+
+
+def _startup_breaker_evidence(
+    metrics: dict[str, object],
+    args: argparse.Namespace,
+    *,
+    launcher_started_at: float,
+    now_epoch: float,
+) -> dict[str, object]:
+    actionable, actionable_reason = _breaker_metrics_actionable(
+        metrics,
+        args,
+        now_epoch=now_epoch,
+    )
+    if not actionable:
+        return {
+            "ready": False,
+            "source_actionable": False,
+            "status": "startup_evidence_pending",
+            "reasons": [f"breaker_evidence_{actionable_reason}"],
+        }
+
+    measurement_age = _iso_age_seconds(
+        metrics.get("data_quality_session_local_timestamp"),
+        now_epoch=now_epoch,
+    )
+    measurement_epoch = (
+        float(now_epoch) - float(measurement_age)
+        if measurement_age is not None
+        else 0.0
+    )
+    if measurement_epoch + 2.0 < float(launcher_started_at):
+        return {
+            "ready": False,
+            "source_actionable": False,
+            "status": "startup_evidence_pending",
+            "reasons": ["launcher_startup_evidence_pending"],
+        }
+
+    enforced_runtime_seconds = max(
+        float(now_epoch) - float(launcher_started_at),
+        float(getattr(args, "breaker_data_quality_grace_seconds", 0.0) or 0.0),
+    )
+    reasons, _domain = _breaker_reasons(
+        metrics,
+        args,
+        runtime_seconds=enforced_runtime_seconds,
+        now_epoch=now_epoch,
+    )
+    if reasons:
+        return {
+            "ready": False,
+            "source_actionable": True,
+            "status": "startup_evidence_blocked",
+            "reasons": reasons,
+        }
+    return {
+        "ready": True,
+        "source_actionable": True,
+        "status": "ready",
+        "reasons": [],
+    }
 
 
 def _emit_incident_snapshot(reason: str, detail: str = "") -> None:
@@ -1536,6 +1731,14 @@ def main() -> int:
         type=int,
         default=int(os.getenv("ALL_SLEEVES_BREAKER_MAX_METRIC_AGE_SECONDS", "900")),
         help="Ignore stale one-number snapshots; stale evidence cannot terminate runtime processes.",
+    )
+    parser.add_argument(
+        "--breaker-post-auth-evidence-grace-seconds",
+        type=int,
+        default=int(
+            os.getenv("ALL_SLEEVES_BREAKER_POST_AUTH_EVIDENCE_GRACE_SECONDS", "240")
+        ),
+        help="Keep fresh quality evidence actionable briefly while One Numbers catches up to a routine token rotation.",
     )
     parser.add_argument("--breaker-min-data-quality", type=float, default=float(os.getenv("ALL_SLEEVES_BREAKER_MIN_DQ", "75")))
     parser.add_argument("--breaker-max-blocked-rate", type=float, default=float(os.getenv("ALL_SLEEVES_BREAKER_MAX_BLOCKED", "0.35")))
@@ -1787,6 +1990,42 @@ def main() -> int:
         env["ASYNC_PIPELINE_WORKERS"] = str(max(args.workers_aggressive, 1))
         specs["aggressive_modes"] = JobSpec("aggressive_modes", aggressive_cmd, env, breaker_group=COLLECTION_BREAKER_GROUP)
 
+    collection_entrypoints = {
+        "baseline_parallel": PARALLEL_SHADOWS,
+        "dividend": DIVIDEND_SHADOW,
+        "dividend_capture": DIVIDEND_CAPTURE_SHADOW,
+        "bond": BOND_SHADOW,
+        "fx": FX_SHADOW,
+        "aggressive_modes": AGGRESSIVE_MODES,
+    }
+    collection_control_paths = (
+        SHADOW_TRAINING_LOOP,
+        PROJECT_ROOT / "core" / "base_trader.py",
+        PROJECT_ROOT / "core" / "execution_simulator.py",
+        PROJECT_ROOT / "core" / "risk_engine.py",
+        PROJECT_ROOT / "core" / "position_sizing.py",
+        PROJECT_ROOT / "core" / "portfolio_optimizer.py",
+        PROJECT_ROOT / "core" / "profitability_hardening.py",
+        PROJECT_ROOT / "core" / "paper_behavior_interventions.py",
+        PROJECT_ROOT / "core" / "institutional_decision_flow.py",
+        PROJECT_ROOT / "core" / "collector_capability_routing.py",
+        PROJECT_ROOT / "core" / "runtime_override_precedence.py",
+        PROJECT_ROOT / "core" / "cpu_workload_policy.py",
+        PROJECT_ROOT / "core" / "sleeve_strategy_specialization.py",
+        PROJECT_ROOT / "core" / "execution_queue.py",
+        PROJECT_ROOT / "core" / "execution_lane_pipeline.py",
+    )
+    collection_reload_settle_seconds = max(
+        int(os.getenv("COLLECTION_LANE_CODE_RELOAD_SETTLE_SECONDS", "30") or 30),
+        5,
+    )
+    for name, spec in specs.items():
+        if spec.breaker_group != COLLECTION_BREAKER_GROUP:
+            continue
+        entrypoint = collection_entrypoints.get(name, SPECIALIZED_SLEEVE_SHADOW)
+        spec.code_watch_paths = tuple(dict.fromkeys((entrypoint, *collection_control_paths)))
+        spec.code_watch_settle_seconds = collection_reload_settle_seconds
+
     startup_policy_parked_jobs = _fanout_policy_parked_jobs(specs, startup_fanout_policy)
     if args.with_paper_executor:
         paper_executor_nice = _paper_executor_target_nice(args.nice_baseline)
@@ -1798,6 +2037,7 @@ def main() -> int:
         env = dict(base_env)
         env["MARKET_DATA_ONLY"] = "0"
         env["ALLOW_ORDER_EXECUTION"] = "1"
+        env["EXECUTION_RUNTIME_BREAKER_REQUIRED"] = "1"
         env.setdefault("PAPER_RECONCILIATION_HEARTBEAT_WHEN_PAUSED", "1")
         paper_heartbeat_stale_seconds = max(int(os.getenv("OPS_WATCHDOG_PAPER_EXECUTOR_HEARTBEAT_STALE_SECONDS", "240") or 240), 60)
         specs["paper_executor"] = JobSpec(
@@ -1812,8 +2052,21 @@ def main() -> int:
             code_watch_paths=(
                 EXECUTION_LANE,
                 PROJECT_ROOT / "core" / "base_trader.py",
+                PROJECT_ROOT / "core" / "channel_queue.py",
+                PROJECT_ROOT / "core" / "execution_contract.py",
                 PROJECT_ROOT / "core" / "execution_lane_pipeline.py",
+                PROJECT_ROOT / "core" / "institutional_decision_flow.py",
                 PROJECT_ROOT / "core" / "live_execution_controls.py",
+                PROJECT_ROOT / "core" / "profitability_hardening.py",
+                PROJECT_ROOT / "core" / "system_role_contracts.py",
+                PROJECT_ROOT / "config" / "system_role_contracts_v1.json",
+            ),
+            code_watch_settle_seconds=max(
+                int(
+                    os.getenv("EXECUTION_LANE_CODE_RELOAD_SETTLE_SECONDS", "30")
+                    or 30
+                ),
+                5,
             ),
         )
         if not _paper_execution_consumer_enabled():
@@ -1829,6 +2082,7 @@ def main() -> int:
         env = dict(base_env)
         env["MARKET_DATA_ONLY"] = "0"
         env["ALLOW_ORDER_EXECUTION"] = "1"
+        env["EXECUTION_RUNTIME_BREAKER_REQUIRED"] = "1"
         live_heartbeat_stale_seconds = max(int(os.getenv("OPS_WATCHDOG_EXECUTION_HEARTBEAT_STALE_SECONDS", "240") or 240), 60)
         specs["live_executor"] = JobSpec(
             "live_executor",
@@ -1842,8 +2096,21 @@ def main() -> int:
             code_watch_paths=(
                 EXECUTION_LANE,
                 PROJECT_ROOT / "core" / "base_trader.py",
+                PROJECT_ROOT / "core" / "channel_queue.py",
+                PROJECT_ROOT / "core" / "execution_contract.py",
                 PROJECT_ROOT / "core" / "execution_lane_pipeline.py",
+                PROJECT_ROOT / "core" / "institutional_decision_flow.py",
                 PROJECT_ROOT / "core" / "live_execution_controls.py",
+                PROJECT_ROOT / "core" / "profitability_hardening.py",
+                PROJECT_ROOT / "core" / "system_role_contracts.py",
+                PROJECT_ROOT / "config" / "system_role_contracts_v1.json",
+            ),
+            code_watch_settle_seconds=max(
+                int(
+                    os.getenv("EXECUTION_LANE_CODE_RELOAD_SETTLE_SECONDS", "30")
+                    or 30
+                ),
+                5,
             ),
         )
 
@@ -1855,6 +2122,7 @@ def main() -> int:
     procs: dict[str, subprocess.Popen] = {}
     proc_started_at: dict[str, float] = {}
     restart_history: dict[str, list[float]] = {name: [] for name in specs}
+    planned_recycles: dict[str, dict[str, object]] = {}
     quarantined_jobs: dict[str, dict[str, object]] = {}
     clean_exited_at: dict[str, float] = {}
     breaker_streaks: dict[str, int] = {EXECUTION_BREAKER_GROUP: 0}
@@ -1868,6 +2136,25 @@ def main() -> int:
     breaker_path = Path(args.breaker_one_numbers_path)
     launcher_started_at = time.time()
     last_health_write_ts = 0.0
+
+    _write_execution_breaker_state(
+        _execution_breaker_state_payload(
+            active=not bool(args.disable_circuit_breakers),
+            status=(
+                "disabled_by_operator"
+                if args.disable_circuit_breakers
+                else "startup_evidence_pending"
+            ),
+            reasons=(
+                []
+                if args.disable_circuit_breakers
+                else ["launcher_startup_evidence_pending"]
+            ),
+            source_actionable=bool(args.disable_circuit_breakers),
+            latched=False,
+            breach_streak=0,
+        )
+    )
 
     _write_launcher_health(
         _launcher_health_payload(
@@ -1943,6 +2230,7 @@ def main() -> int:
                     group_disabled_until,
                     now=now,
                     latched_groups=breaker_latched_groups,
+                    resident_jobs={"paper_executor"},
                 )
             )
             if "paper_executor" in specs and not _paper_execution_consumer_enabled():
@@ -2028,9 +2316,44 @@ def main() -> int:
                 last_breaker_check_ts = now
                 runtime_seconds = max(now - launcher_started_at, 0.0)
                 if runtime_seconds < max(args.breaker_startup_grace_seconds, 0):
-                    print(
-                        "[CircuitBreaker] startup_grace "
-                        f"remaining_s={int(max(args.breaker_startup_grace_seconds - runtime_seconds, 0))}"
+                    remaining_seconds = int(
+                        max(args.breaker_startup_grace_seconds - runtime_seconds, 0)
+                    )
+                    metrics = _read_one_numbers(
+                        breaker_path,
+                        auth_token_path=(
+                            auth_token_path if args.broker == "schwab" else None
+                        ),
+                    )
+                    startup_evidence = _startup_breaker_evidence(
+                        metrics,
+                        args,
+                        launcher_started_at=launcher_started_at,
+                        now_epoch=now,
+                    )
+                    if bool(startup_evidence["ready"]):
+                        print(
+                            "[CircuitBreaker] startup_grace_released "
+                            f"remaining_s={remaining_seconds} "
+                            "reason=fresh_post_start_evidence_clear"
+                        )
+                    else:
+                        print(
+                            "[CircuitBreaker] startup_grace "
+                            f"remaining_s={remaining_seconds} "
+                            f"status={startup_evidence['status']}"
+                        )
+                    _write_execution_breaker_state(
+                        _execution_breaker_state_payload(
+                            active=not bool(startup_evidence["ready"]),
+                            status=str(startup_evidence["status"]),
+                            reasons=list(startup_evidence["reasons"]),
+                            source_actionable=bool(
+                                startup_evidence["source_actionable"]
+                            ),
+                            latched=False,
+                            breach_streak=0,
+                        )
                     )
                 else:
                     metrics = _read_one_numbers(
@@ -2038,7 +2361,12 @@ def main() -> int:
                         auth_token_path=(auth_token_path if args.broker == "schwab" else None),
                     )
                     actionable, metric_reason = _breaker_metrics_actionable(metrics, args, now_epoch=now)
-                    reasons, _domain = _breaker_reasons(metrics, args, runtime_seconds=runtime_seconds)
+                    reasons, _domain = _breaker_reasons(
+                        metrics,
+                        args,
+                        runtime_seconds=runtime_seconds,
+                        now_epoch=now,
+                    )
                     breaker_group = EXECUTION_BREAKER_GROUP
                     if not actionable:
                         breaker_streaks[breaker_group] = 0
@@ -2078,8 +2406,40 @@ def main() -> int:
                         for name, proc in list(procs.items()):
                             if specs[name].breaker_group != breaker_group:
                                 continue
+                            if name == "paper_executor":
+                                continue
                             if proc.poll() is None:
                                 _terminate_process_group(proc)
+
+                    breaker_latched = breaker_group in breaker_latched_groups
+                    if not actionable:
+                        state_active = True
+                        state_status = "evidence_unavailable"
+                        state_reasons = [f"breaker_evidence_{metric_reason}"]
+                    elif reasons:
+                        state_active = True
+                        state_status = (
+                            "latched" if breaker_latched else "breach_observed"
+                        )
+                        state_reasons = list(reasons)
+                    elif breaker_latched:
+                        state_active = True
+                        state_status = "latched_cooldown"
+                        state_reasons = ["execution_breaker_latched_cooldown"]
+                    else:
+                        state_active = False
+                        state_status = "ready"
+                        state_reasons = []
+                    _write_execution_breaker_state(
+                        _execution_breaker_state_payload(
+                            active=state_active,
+                            status=state_status,
+                            reasons=state_reasons,
+                            source_actionable=actionable,
+                            latched=breaker_latched,
+                            breach_streak=breaker_streaks.get(breaker_group, 0),
+                        )
+                    )
 
             for name in _newly_unparked_job_names(specs, procs, quarantined_jobs, policy_parked_jobs):
                 procs[name] = _spawn(specs[name])
@@ -2153,6 +2513,11 @@ def main() -> int:
                     if recycle_due:
                         print(f"[{name}] recycle_due reason={recycle_reason}; recycling child")
                         _emit_incident_snapshot("execution_lane_recycle_due", f"{name}:{recycle_reason}")
+                        planned_recycles[name] = {
+                            "requested_at": now,
+                            "reason": recycle_reason,
+                            "previous_pid": int(proc.pid),
+                        }
                         _terminate_process_group(proc)
                         _write_launcher_health(
                             _launcher_health_payload(
@@ -2168,6 +2533,35 @@ def main() -> int:
                                 clean_exited_jobs=set(clean_exited_at),
                             )
                         )
+                    continue
+
+                planned_recycle = planned_recycles.get(name)
+                if planned_recycle:
+                    if name in policy_parked_jobs:
+                        continue
+                    planned_recycles.pop(name, None)
+                    time.sleep(min(max(args.restart_delay_seconds, 1), 3))
+                    procs[name] = _spawn(specs[name])
+                    proc_started_at[name] = time.time()
+                    print(
+                        f"[{name}] planned_recycle_complete "
+                        f"reason={planned_recycle.get('reason', 'maintenance')} "
+                        "failure_restart_counted=0"
+                    )
+                    _write_launcher_health(
+                        _launcher_health_payload(
+                            specs=specs,
+                            procs=procs,
+                            proc_started_at=proc_started_at,
+                            restart_history=restart_history,
+                            quarantined_jobs=quarantined_jobs,
+                            launcher_started_at=launcher_started_at,
+                            phase="running",
+                            note=f"planned_recycle_complete_{name}",
+                            policy_parked_jobs=policy_parked_jobs,
+                            clean_exited_jobs=set(clean_exited_at),
+                        )
+                    )
                     continue
 
                 if name in clean_exited_at:

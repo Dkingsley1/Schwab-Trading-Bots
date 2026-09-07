@@ -57,6 +57,9 @@ guard_args=(--slot "$SLOT" --begin)
 if [[ "${MAINTENANCE_SLOT_ALLOW_DURING_MACRO_EVENT:-0}" == "1" ]]; then
   guard_args+=(--allow-during-macro-event)
 fi
+if [[ "$SLOT" == "strategy_market_fit_infrabot" ]]; then
+  guard_args+=(--no-defer-outside-quiet-window --no-defer-while-sql-link-active)
+fi
 "$PYTHON_BIN" "$GUARD" "${guard_args[@]}"
 guard_rc=$?
 set -e

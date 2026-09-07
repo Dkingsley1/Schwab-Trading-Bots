@@ -62,6 +62,8 @@ from core.execution_lane_pipeline import (
     configure_trader_for_lane,
     emit_paper_reconciliation_heartbeat,
     process_execution_intent,
+    publish_execution_consumer_failure,
+    publish_execution_replay_suppressed,
     publish_execution_result,
     queue_db_path,
     update_lane_health,
@@ -114,7 +116,9 @@ def _control_env_value(name: str, default: str = "") -> str:
 
 
 def _acquire_execution_lane_lock(mode: str):
-    lock_root = Path(os.getenv("EXECUTION_LANE_LOCK_ROOT", str(EXECUTION_LANE_LOCK_ROOT))).expanduser()
+    lock_root = Path(
+        os.getenv("EXECUTION_LANE_LOCK_ROOT", str(EXECUTION_LANE_LOCK_ROOT))
+    ).expanduser()
     lock_root.mkdir(parents=True, exist_ok=True)
     lock_path = lock_root / f"execution_lane_{mode}.lock"
     handle = lock_path.open("a+", encoding="utf-8")
@@ -138,7 +142,9 @@ def _acquire_execution_lane_lock(mode: str):
         f"started_utc={datetime.now(timezone.utc).isoformat()}\n"
     )
     handle.flush()
-    print(f"[ExecutionLaneLock] acquired mode={mode} lock_path={lock_path} pid={os.getpid()}")
+    print(
+        f"[ExecutionLaneLock] acquired mode={mode} lock_path={lock_path} pid={os.getpid()}"
+    )
     return handle
 
 
@@ -392,6 +398,118 @@ def _publish_stale_skip_audit(row: dict, *, queue_db_override: str) -> None:
         row["result_publish_error_type"] = type(exc).__name__
         _append_jsonl(events_path, {**row, "event": "stale_skip_result_publish_error"})
         _write_json(latest_path, row)
+
+
+def _process_execution_message_with_outcome(
+    *,
+    trader,
+    mode: str,
+    message,
+    queue_db_override: str,
+) -> dict[str, object]:
+    """Contain one poison message so the long-running lane stays available."""
+
+    try:
+        published = process_execution_intent(
+            project_root=str(PROJECT_ROOT),
+            trader=trader,
+            mode=mode,
+            message=message,
+            queue_db_override=queue_db_override,
+        )
+        result_payload = (
+            published.get("result")
+            if isinstance(published, dict)
+            and isinstance(published.get("result"), dict)
+            else {}
+        )
+        return {
+            "handled": True,
+            "durable_outcome": True,
+            "result_status": str(result_payload.get("result_status") or ""),
+            "result_message_id": str(result_payload.get("message_id") or ""),
+            "recovery_action": "ack_after_processing_claim_finalized",
+        }
+    except Exception as exc:
+        recovery_action = (
+            "dead_letter_ack_reconcile_before_next_intent"
+            if str(mode).strip().lower() == "live"
+            else "dead_letter_ack_and_continue"
+        )
+        failure = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "event": "execution_lane_consumer_exception",
+            "mode": str(mode),
+            "message_id": str(getattr(message, "message_id", "") or ""),
+            "channel": str(getattr(message, "channel", "") or ""),
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:1000],
+            "recovery_action": recovery_action,
+        }
+        dead_letter_published = False
+        dead_letter_message_id = ""
+        try:
+            dead_letter = publish_execution_consumer_failure(
+                project_root=str(PROJECT_ROOT),
+                mode=mode,
+                message=message,
+                error=exc,
+                queue_db_override=queue_db_override,
+            )
+            dead_letter_message_id = str(dead_letter.get("message_id") or "")
+            dead_letter_published = True
+            failure["dead_letter_published"] = True
+        except Exception as publish_exc:
+            failure["dead_letter_published"] = False
+            failure["dead_letter_publish_error_type"] = type(publish_exc).__name__
+            failure["dead_letter_publish_error"] = str(publish_exc)[:1000]
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        audit_published = False
+        try:
+            _append_jsonl(
+                PROJECT_ROOT
+                / "governance"
+                / "events"
+                / f"execution_lane_consumer_failures_{day}.jsonl",
+                failure,
+            )
+            audit_published = True
+        except Exception as audit_exc:
+            failure["local_audit_published"] = False
+            failure["local_audit_error_type"] = type(audit_exc).__name__
+            failure["local_audit_error"] = str(audit_exc)[:1000]
+        print(
+            f"[ExecutionLaneError] mode={mode} "
+            f"message_id={failure['message_id'] or 'unknown'} "
+            f"error_type={failure['error_type']} action={recovery_action}"
+        )
+        return {
+            "handled": False,
+            "durable_outcome": bool(dead_letter_published or audit_published),
+            "result_status": f"{str(mode).strip().upper()}_CONSUMER_ERROR_BLOCKED",
+            "result_message_id": dead_letter_message_id,
+            "recovery_action": recovery_action,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:1000],
+        }
+
+
+def _process_execution_message_safely(
+    *,
+    trader,
+    mode: str,
+    message,
+    queue_db_override: str,
+) -> bool:
+    """Compatibility wrapper for callers that only need handled/not-handled."""
+
+    outcome = _process_execution_message_with_outcome(
+        trader=trader,
+        mode=mode,
+        message=message,
+        queue_db_override=queue_db_override,
+    )
+    return bool(outcome.get("handled", False))
 
 
 def _stale_fast_drain_enabled() -> bool:
@@ -757,6 +875,7 @@ def main() -> int:
     trader: BaseTrader | None = None
     auth_ok = True
     auth_error = ""
+    paper_runtime_hold_reported = False
 
     if args.mode == "paper" and _paper_execution_paused_for_runtime():
         pause_reason = "paper_execution_paused_for_runtime_pressure"
@@ -781,10 +900,10 @@ def main() -> int:
                     queue_channel=channel,
                     queue_db_override=args.queue_db,
                     auth_ok=bool(auth_ok),
-                    auth_error=(
-                        pause_reason if auth_ok else (auth_error or pause_reason)
-                    ),
+                    auth_error=(auth_error if not auth_ok else ""),
+                    hold_reason=pause_reason,
                 )
+                paper_runtime_hold_reported = True
                 last_lane_health_update = time.monotonic()
             if args.once:
                 return 5
@@ -813,7 +932,8 @@ def main() -> int:
                         "LIVE_ORDER_INTERRUPTED_STALE_SECONDS", 5.0, minimum=0.0
                     ),
                     0.0,
-                )
+                ),
+                full_account_scan=True,
             )
             last_live_order_reconcile_heartbeat = time.monotonic()
             if bool(live_reconciliation.get("ok", False)):
@@ -847,6 +967,7 @@ def main() -> int:
         auth_ok=auth_ok,
         auth_error=auth_error,
     )
+    paper_runtime_hold_reported = False
     last_lane_health_update = time.monotonic()
     while True:
         _load_control_env()
@@ -861,7 +982,8 @@ def main() -> int:
                         "LIVE_ORDER_INTERRUPTED_STALE_SECONDS", 5.0, minimum=0.0
                     ),
                     0.0,
-                )
+                ),
+                full_account_scan=True,
             )
             last_live_order_reconcile_heartbeat = time.monotonic()
             if not bool(live_reconciliation.get("ok", False)):
@@ -889,6 +1011,7 @@ def main() -> int:
                 )
                 continue
         if args.mode == "paper" and _paper_execution_paused_for_runtime():
+            paper_runtime_hold_reported = True
             if _lane_health_update_due(last_lane_health_update, lane_health_interval):
                 update_lane_health(
                     project_root=str(PROJECT_ROOT),
@@ -896,8 +1019,9 @@ def main() -> int:
                     processed_count=processed_total,
                     queue_channel=channel,
                     queue_db_override=args.queue_db,
-                    auth_ok=False,
-                    auth_error="paper_execution_paused_for_runtime_pressure",
+                    auth_ok=bool(auth_ok),
+                    auth_error=(auth_error if not auth_ok else ""),
+                    hold_reason="paper_execution_paused_for_runtime_pressure",
                 )
                 last_lane_health_update = time.monotonic()
             if args.once:
@@ -906,6 +1030,19 @@ def main() -> int:
                 max(_env_float("EXECUTION_LANE_POLL_SECONDS", args.poll_seconds), 5.0)
             )
             continue
+
+        if args.mode == "paper" and paper_runtime_hold_reported:
+            update_lane_health(
+                project_root=str(PROJECT_ROOT),
+                mode=args.mode,
+                processed_count=processed_total + skipped_stale_total,
+                queue_channel=channel,
+                queue_db_override=args.queue_db,
+                auth_ok=bool(auth_ok),
+                auth_error=(auth_error if not auth_ok else ""),
+            )
+            paper_runtime_hold_reported = False
+            last_lane_health_update = time.monotonic()
 
         batch_limit = _env_int("EXECUTION_LANE_BATCH_LIMIT", args.limit)
         poll_seconds = _env_float("EXECUTION_LANE_POLL_SECONDS", args.poll_seconds)
@@ -972,6 +1109,9 @@ def main() -> int:
             continue
 
         stale_messages = []
+        acknowledged_messages = []
+        live_reconcile_blocked = False
+        processing_claim_blocked = False
         stale_freshness_failures: set[str] = set()
         stale_max_age_seconds = _intent_max_age_seconds(args.mode)
         for message in messages:
@@ -980,6 +1120,7 @@ def main() -> int:
             )
             if stale:
                 stale_messages.append(message)
+                acknowledged_messages.append(message)
                 stale_freshness_failures.add(freshness_failure)
                 stale_max_age_seconds = max_age_seconds
                 continue
@@ -997,14 +1138,172 @@ def main() -> int:
                     auth_error=auth_error,
                 )
                 last_lane_health_update = now_mono
-            process_execution_intent(
-                project_root=str(PROJECT_ROOT),
+            try:
+                processing_claim = queue.claim_message_processing(
+                    consumer=consumer,
+                    channel=channel,
+                    message=message,
+                )
+            except Exception as claim_exc:
+                auth_error = (
+                    "execution_processing_claim_failed:"
+                    f"{type(claim_exc).__name__}:{str(claim_exc)[:500]}"
+                )
+                processing_claim_blocked = True
+                break
+
+            if not bool(processing_claim.get("claimed", False)):
+                prior_state = str(processing_claim.get("state") or "").lower()
+                if args.mode == "live" and prior_state in {
+                    "processing",
+                    "outcome_ambiguous",
+                }:
+                    live_reconciliation = trader.reconcile_durable_live_orders(
+                        interrupted_stale_seconds=0.0,
+                        full_account_scan=True,
+                    )
+                    last_live_order_reconcile_heartbeat = time.monotonic()
+                    if not bool(live_reconciliation.get("ok", False)):
+                        reconciliation_blockers = [
+                            str(item)
+                            for item in live_reconciliation.get("blockers", [])[:5]
+                            if str(item)
+                        ]
+                        auth_error = (
+                            "live_order_reconciliation_blocked_before_replay_ack"
+                        )
+                        if reconciliation_blockers:
+                            auth_error += ":" + ",".join(reconciliation_blockers)
+                        live_reconcile_blocked = True
+                        break
+                    auth_error = ""
+                try:
+                    replay_audit = publish_execution_replay_suppressed(
+                        project_root=str(PROJECT_ROOT),
+                        mode=args.mode,
+                        message=message,
+                        prior_claim=processing_claim,
+                        queue_db_override=args.queue_db,
+                    )
+                    if prior_state in {"processing", "outcome_ambiguous"}:
+                        queue.finalize_message_processing(
+                            consumer=consumer,
+                            channel=channel,
+                            message=message,
+                            state="replay_suppressed",
+                            outcome_status=str(
+                                replay_audit.get("result_status")
+                                or f"{args.mode.upper()}_REPLAY_SUPPRESSED"
+                            ),
+                            outcome_message_id=str(
+                                replay_audit.get("message_id") or ""
+                            ),
+                            details={
+                                "prior_state": prior_state,
+                                "policy": "never_reexecute_an_already_claimed_intent",
+                            },
+                        )
+                except Exception as replay_exc:
+                    auth_error = (
+                        "execution_replay_audit_failed:"
+                        f"{type(replay_exc).__name__}:{str(replay_exc)[:500]}"
+                    )
+                    processing_claim_blocked = True
+                    break
+                acknowledged_messages.append(message)
+                processed_total += 1
+                continue
+
+            outcome = _process_execution_message_with_outcome(
                 trader=trader,
                 mode=args.mode,
                 message=message,
                 queue_db_override=args.queue_db,
             )
             processed_total += 1
+            durable_outcome = bool(outcome.get("durable_outcome", False))
+            handled = bool(outcome.get("handled", False))
+            if not durable_outcome:
+                try:
+                    queue.finalize_message_processing(
+                        consumer=consumer,
+                        channel=channel,
+                        message=message,
+                        state="outcome_ambiguous",
+                        outcome_status=str(outcome.get("result_status") or ""),
+                        outcome_message_id=str(
+                            outcome.get("result_message_id") or ""
+                        ),
+                        details={
+                            "reason": "execution_outcome_has_no_durable_audit",
+                            "handled": handled,
+                        },
+                    )
+                except Exception:
+                    pass
+                auth_error = "execution_outcome_audit_unavailable"
+                processing_claim_blocked = True
+                break
+            if not handled and args.mode == "live":
+                live_reconciliation = trader.reconcile_durable_live_orders(
+                    interrupted_stale_seconds=0.0,
+                    full_account_scan=True,
+                )
+                last_live_order_reconcile_heartbeat = time.monotonic()
+                if not bool(live_reconciliation.get("ok", False)):
+                    reconciliation_blockers = [
+                        str(item)
+                        for item in live_reconciliation.get("blockers", [])[:5]
+                        if str(item)
+                    ]
+                    auth_error = (
+                        "live_order_reconciliation_blocked_after_consumer_error"
+                    )
+                    if reconciliation_blockers:
+                        auth_error += ":" + ",".join(reconciliation_blockers)
+                    try:
+                        queue.finalize_message_processing(
+                            consumer=consumer,
+                            channel=channel,
+                            message=message,
+                            state="outcome_ambiguous",
+                            outcome_status=str(outcome.get("result_status") or ""),
+                            outcome_message_id=str(
+                                outcome.get("result_message_id") or ""
+                            ),
+                            details={
+                                "reason": "live_reconciliation_blocked_after_consumer_error",
+                                "blockers": reconciliation_blockers,
+                            },
+                        )
+                    except Exception:
+                        pass
+                    live_reconcile_blocked = True
+                    break
+                auth_error = ""
+            try:
+                queue.finalize_message_processing(
+                    consumer=consumer,
+                    channel=channel,
+                    message=message,
+                    state=("completed" if handled else "dead_lettered"),
+                    outcome_status=str(outcome.get("result_status") or ""),
+                    outcome_message_id=str(outcome.get("result_message_id") or ""),
+                    details={
+                        "handled": handled,
+                        "recovery_action": str(
+                            outcome.get("recovery_action") or ""
+                        ),
+                    },
+                )
+            except Exception as finalize_exc:
+                auth_error = (
+                    "execution_processing_finalize_failed:"
+                    f"{type(finalize_exc).__name__}:{str(finalize_exc)[:500]}"
+                )
+                processing_claim_blocked = True
+                break
+            acknowledged_messages.append(message)
             if message_sleep_seconds > 0.0:
                 time.sleep(message_sleep_seconds)
             now_mono = time.monotonic()
@@ -1032,7 +1331,11 @@ def main() -> int:
             )
             skipped_stale_total += len(stale_messages)
 
-        queue.ack_messages(consumer=consumer, channel=channel, messages=messages)
+        queue.ack_messages(
+            consumer=consumer,
+            channel=channel,
+            messages=acknowledged_messages,
+        )
         if args.mode == "paper":
             last_paper_reconcile_heartbeat = emit_paper_reconciliation_heartbeat(
                 project_root=str(PROJECT_ROOT),
@@ -1054,6 +1357,38 @@ def main() -> int:
                 auth_error=auth_error,
             )
             last_lane_health_update = time.monotonic()
+
+        if live_reconcile_blocked:
+            update_lane_health(
+                project_root=str(PROJECT_ROOT),
+                mode=args.mode,
+                processed_count=processed_total + skipped_stale_total,
+                queue_channel=channel,
+                queue_db_override=args.queue_db,
+                auth_ok=auth_ok,
+                auth_error=auth_error,
+            )
+            last_lane_health_update = time.monotonic()
+            if args.once:
+                return 7
+            time.sleep(max(poll_seconds, live_order_reconcile_interval))
+            continue
+
+        if processing_claim_blocked:
+            update_lane_health(
+                project_root=str(PROJECT_ROOT),
+                mode=args.mode,
+                processed_count=processed_total + skipped_stale_total,
+                queue_channel=channel,
+                queue_db_override=args.queue_db,
+                auth_ok=False,
+                auth_error=auth_error,
+            )
+            last_lane_health_update = time.monotonic()
+            if args.once:
+                return 8
+            time.sleep(max(poll_seconds, 2.0))
+            continue
 
         if args.once:
             return 0

@@ -71,6 +71,25 @@ class BrokerAdapter:
     def fetch_order_candidates(self, *, account_reference: str, order_id: str) -> List[BrokerCallSpec]:
         return []
 
+    def orders_snapshot_candidates(
+        self,
+        *,
+        account_reference: str,
+        max_results: int = 500,
+        lookback_days: int = 60,
+    ) -> List[BrokerCallSpec]:
+        return []
+
+    def validate_live_account_reference(self, account_reference: str) -> Dict[str, Any]:
+        reference = str(account_reference or "").strip()
+        return {
+            "ok": bool(reference),
+            "reason": "ok" if reference else "live_account_reference_missing",
+            "broker": self.name,
+            "reference_present": bool(reference),
+            "hash_bound": bool(reference),
+        }
+
     def quote_candidates(self, *, symbol: str) -> List[BrokerCallSpec]:
         return []
 

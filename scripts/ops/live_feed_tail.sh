@@ -9,6 +9,7 @@ HEALTH_DIR="$PROJECT_ROOT/governance/health"
 HEAVY_MARKER_FILE="$HEALTH_DIR/live_feed_heavy_view_latest.json"
 LIVEFEED_HEALTH_FILE="$HEALTH_DIR/livefeed_local_latest.json"
 LIVE_FEED_MAIN_PID="$$"
+LIVE_FEED_BOOTSTRAP_PID=""
 
 if [[ -f "$MEMORY_OVERRIDE_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -341,6 +342,7 @@ HEAVY_INCLUDE_ALL_DECISION_DIRS="${LIVE_FEED_HEAVY_INCLUDE_ALL_DECISION_DIRS:-0}
 HEAVY_MAX_FOLLOW_FILES="${LIVE_FEED_HEAVY_MAX_FOLLOW_FILES:-36}"
 HEAVY_TAIL_BYTES="${LIVE_FEED_HEAVY_TAIL_BYTES:-262144}"
 HEAVY_BOOTSTRAP_SNAPSHOT="${LIVE_FEED_HEAVY_BOOTSTRAP_SNAPSHOT:-1}"
+HEAVY_ASYNC_BOOTSTRAP="${LIVE_FEED_HEAVY_ASYNC_BOOTSTRAP:-1}"
 HEAVY_BOOTSTRAP_MAX_LINES="${LIVE_FEED_HEAVY_BOOTSTRAP_MAX_LINES:-80}"
 HEAVY_SNAPSHOT_MAX_LINES="${LIVE_FEED_HEAVY_SNAPSHOT_MAX_LINES:-180}"
 HEAVY_VISIBLE_KEEPALIVE_DEFAULT="${LIVE_FEED_HEAVY_VISIBLE_KEEPALIVE_DEFAULT:-1}"
@@ -363,6 +365,7 @@ KEEPALIVE_ENABLED="${LIVE_FEED_KEEPALIVE_ENABLED:-1}"
 KEEPALIVE_SECONDS="${LIVE_FEED_KEEPALIVE_SECONDS:-15}"
 STARTUP_STATUS_ENABLED="${LIVE_FEED_STARTUP_STATUS_ENABLED:-1}"
 DECISION_MAX_AGE_HOURS="${LIVE_FEED_DECISION_MAX_AGE_HOURS:-48}"
+STATUS_ARTIFACT_MAX_AGE_SECONDS="${LIVE_FEED_STATUS_ARTIFACT_MAX_AGE_SECONDS:-600}"
 PRESSURE_OPTIMIZED="0"
 
 if [[ "$HEAVY_REQUESTED" == "1" && "$LINES_EXPLICIT" != "1" ]]; then
@@ -397,6 +400,14 @@ fi
 if ! [[ "$HEAVY_BOOTSTRAP_MAX_LINES" =~ ^[0-9]+$ ]]; then
   HEAVY_BOOTSTRAP_MAX_LINES="80"
 fi
+case "${HEAVY_ASYNC_BOOTSTRAP:l}" in
+  1|true|yes|on)
+    HEAVY_ASYNC_BOOTSTRAP="1"
+    ;;
+  *)
+    HEAVY_ASYNC_BOOTSTRAP="0"
+    ;;
+esac
 if ! [[ "$HEAVY_SNAPSHOT_MAX_LINES" =~ ^[0-9]+$ ]]; then
   HEAVY_SNAPSHOT_MAX_LINES="180"
 fi
@@ -425,6 +436,9 @@ if ! [[ "$DECISION_SNAPSHOT_TAIL_BYTES" =~ ^[0-9]+$ ]]; then
 fi
 if ! [[ "$DECISION_MAX_AGE_HOURS" =~ ^[0-9]+$ ]]; then
   DECISION_MAX_AGE_HOURS="48"
+fi
+if ! [[ "$STATUS_ARTIFACT_MAX_AGE_SECONDS" =~ ^[0-9]+$ ]]; then
+  STATUS_ARTIFACT_MAX_AGE_SECONDS="600"
 fi
 
 if [[ "$HEAVY_REQUESTED" == "1" && "$SHOW_KEEPALIVE_EXPLICIT" != "1" ]]; then
@@ -795,6 +809,7 @@ write_heavy_marker() {
     printf '"tail_start_mode":"%s",' "$TAIL_START_MODE"
     printf '"tail_start_bytes":%s,' "$HEAVY_TAIL_BYTES"
     printf '"bootstrap_snapshot":%s,' "$HEAVY_BOOTSTRAP_SNAPSHOT"
+    printf '"async_bootstrap":%s,' "$HEAVY_ASYNC_BOOTSTRAP"
     printf '"bootstrap_max_lines":%s,' "$HEAVY_BOOTSTRAP_MAX_LINES"
     printf '"snapshot_max_lines":%s,' "$HEAVY_SNAPSHOT_MAX_LINES"
     printf '"decision_max_age_hours":%s,' "$DECISION_MAX_AGE_HOURS"
@@ -875,6 +890,9 @@ mark_heavy_inactive() {
 }
 
 cleanup_live_feed() {
+  if [[ -n "${LIVE_FEED_BOOTSTRAP_PID:-}" ]]; then
+    kill "$LIVE_FEED_BOOTSTRAP_PID" >/dev/null 2>&1 || true
+  fi
   if [[ -n "${LIVE_FEED_KEEPALIVE_PID:-}" ]]; then
     kill "$LIVE_FEED_KEEPALIVE_PID" >/dev/null 2>&1 || true
   fi
@@ -913,13 +931,17 @@ start_live_feed_keepalive() {
 
 emit_live_feed_keepalive() {
   local keepalive_count="${1:-0}"
+  local detail_snapshot_state="ready"
+  if [[ -n "${LIVE_FEED_BOOTSTRAP_PID:-}" ]] && kill -0 "$LIVE_FEED_BOOTSTRAP_PID" >/dev/null 2>&1; then
+    detail_snapshot_state="loading"
+  fi
   [[ "$SHOW_KEEPALIVE" == "1" && "$VISIBLE_KEEPALIVE_ALLOWED" == "1" ]] || return 0
-  printf 'live_feed_keepalive timestamp_utc=%s keepalive_count=%s source=%s heavy=%s files=%s following=1 important_only=%s waiting_for_new_matching_lines=1 next_keepalive_seconds=%s interrupt=ctrl-c\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$keepalive_count" "$SOURCE" "$HEAVY_REQUESTED" "${#files[@]}" "$IMPORTANT_ONLY" "$KEEPALIVE_SECONDS"
-  if [[ "$HEAVY_REQUESTED" == "1" && "$INCLUDE_DECISIONS" == "1" && "$KEEPALIVE_DECISION_SNAPSHOT" == "1" && "$KEEPALIVE_DECISION_EVERY" -gt 0 && ( "$keepalive_count" -eq 0 || $((keepalive_count % KEEPALIVE_DECISION_EVERY)) -eq 0 ) ]]; then
+  printf 'live_feed_keepalive timestamp_utc=%s keepalive_count=%s source=%s heavy=%s files=%s following=1 detail_snapshot=%s important_only=%s waiting_for_new_matching_lines=1 next_keepalive_seconds=%s interrupt=ctrl-c\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$keepalive_count" "$SOURCE" "$HEAVY_REQUESTED" "${#files[@]}" "$detail_snapshot_state" "$IMPORTANT_ONLY" "$KEEPALIVE_SECONDS"
+  if [[ "$detail_snapshot_state" == "ready" && "$HEAVY_REQUESTED" == "1" && "$INCLUDE_DECISIONS" == "1" && "$KEEPALIVE_DECISION_SNAPSHOT" == "1" && "$KEEPALIVE_DECISION_EVERY" -gt 0 && "$keepalive_count" -gt 0 && $((keepalive_count % KEEPALIVE_DECISION_EVERY)) -eq 0 ]]; then
     emit_livefeed_decision_paper_snapshot | truncate_live_lines 0 0 || true
   fi
-  if [[ "$HEAVY_REQUESTED" == "1" && "$STATUS_SNAPSHOT" == "1" && "$KEEPALIVE_STATUS_EVERY" -gt 0 && "$keepalive_count" -gt 0 && $((keepalive_count % KEEPALIVE_STATUS_EVERY)) -eq 0 ]]; then
+  if [[ "$detail_snapshot_state" == "ready" && "$HEAVY_REQUESTED" == "1" && "$STATUS_SNAPSHOT" == "1" && "$KEEPALIVE_STATUS_EVERY" -gt 0 && "$keepalive_count" -gt 0 && $((keepalive_count % KEEPALIVE_STATUS_EVERY)) -eq 0 ]]; then
     echo "live_feed_keepalive_status_snapshot=begin every=${KEEPALIVE_STATUS_EVERY} keepalive_count=${keepalive_count}"
     emit_livefeed_status_snapshot | truncate_live_lines 40 || true
     echo "live_feed_keepalive_status_snapshot=end"
@@ -1162,7 +1184,7 @@ truncate_live_lines() {
   function important_operator_line(line, lower) {
     lower = tolower(line)
     if (paper_mirror_selection_line(line)) return 0
-    if (line ~ /^\[(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-data|paper-profit|profit-hardening|paper-truth|decision-latest|decision-route)\]/) return 1
+    if (line ~ /^\[(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-plumbing|paper-data|paper-profit|profit-hardening|paper-truth|decision-latest|decision-route)\]/) return 1
     if (line ~ /\[Decision\]|\[decision\]|ExecutionIntent|ShadowLoop|RegimeCooldown|AdaptiveInterval/) return 1
     if (line ~ /"symbol"[[:space:]]*:/ && line ~ /"action"[[:space:]]*:|"master_action"[[:space:]]*:|"master_intent_action"[[:space:]]*:|"grand_action"[[:space:]]*:/) return 1
     if (line ~ /symbol=[^[:space:]]+/ && line ~ /action=|grand_action=|futures_action=|options_action=|master_action=/) return 1
@@ -1376,7 +1398,7 @@ emit_livefeed_status_snapshot() {
     status_py="$(command -v python3 || true)"
   fi
   [[ -n "$status_py" ]] || return 0
-  "$status_py" - "$PROJECT_ROOT" "$SOURCE" <<'PY'
+  "$status_py" - "$PROJECT_ROOT" "$SOURCE" "$STATUS_ARTIFACT_MAX_AGE_SECONDS" <<'PY'
 import json
 import os
 import re
@@ -1386,6 +1408,10 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 source = sys.argv[2]
+try:
+    status_artifact_max_age_seconds = max(float(sys.argv[3]), 1.0)
+except (IndexError, TypeError, ValueError):
+    status_artifact_max_age_seconds = 600.0
 health = root / "governance" / "health"
 external = root / "data" / "external_context"
 if str(root) not in sys.path:
@@ -1398,6 +1424,35 @@ def load(path: Path) -> dict:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def parse_timestamp(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def artifact_freshness(path: Path, payload: dict, *, max_age_seconds=None):
+    limit = status_artifact_max_age_seconds if max_age_seconds is None else max(float(max_age_seconds), 1.0)
+    timestamp = None
+    for key in ("timestamp_utc", "updated_at_utc", "generated_at_utc", "created_at_utc"):
+        timestamp = parse_timestamp(payload.get(key))
+        if timestamp is not None:
+            break
+    if timestamp is None:
+        try:
+            timestamp = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            timestamp = None
+    age_seconds = max((datetime.now(timezone.utc) - timestamp).total_seconds(), 0.0) if timestamp else None
+    return bool(payload and age_seconds is not None and age_seconds <= limit), age_seconds
 
 
 def nested(payload: dict, *keys: str):
@@ -1457,13 +1512,26 @@ def as_num(value) -> str:
     return f"{number:.3f}".rstrip("0").rstrip(".")
 
 
+def as_count(value) -> int:
+    try:
+        return max(int(float(value)), 0)
+    except Exception:
+        return 0
+
+
 print(f"live_feed_status_snapshot=begin source={source} timestamp_utc={datetime.now(timezone.utc).isoformat()}")
 
-feed = load(health / "livefeed_local_latest.json")
+feed_path = health / "livefeed_local_latest.json"
+feed = load(feed_path)
 if feed:
+    feed_fresh, feed_age = artifact_freshness(feed_path, feed)
+    feed_source_status = str(feed.get("status") or "unknown")
     print(
         "[feed] "
-        f"status={feed.get('status', 'unknown')} "
+        f"status={feed_source_status if feed_fresh else 'stale'} "
+        f"source_status={feed_source_status} "
+        f"fresh={as_bool(feed_fresh)} "
+        f"age={as_num(feed_age)} "
         f"alive={as_bool(feed.get('alive'))} "
         f"heavy={feed.get('heavy', '')} "
         f"files={feed.get('file_count', '')}"
@@ -1541,43 +1609,76 @@ except Exception as exc:
         f"owner=livefeed impact=paper_unverified error={compact(exc, 140)} action=livefeed-status-contract"
     )
 
-remote = load(health / "remote_alert_control_latest.json")
+remote_path = health / "remote_alert_control_latest.json"
+remote = load(remote_path)
 if remote:
+    remote_fresh, remote_age = artifact_freshness(remote_path, remote)
+    remote_source_status = str(remote.get("overall_status") or "unknown").strip().lower()
     backlog = remote.get("critical_backlog") if isinstance(remote.get("critical_backlog"), dict) else {}
     channels = remote.get("channels") if isinstance(remote.get("channels"), dict) else {}
+    unsent_count = as_count(backlog.get("unsent_count"))
+    unacked_count = as_count(backlog.get("unacked_count"))
+    stale_idle_snapshot = bool(
+        not remote_fresh
+        and remote_source_status in {"ready", "ok", "idle"}
+        and unsent_count == 0
+        and unacked_count == 0
+    )
+    remote_display_status = (
+        remote_source_status
+        if remote_fresh
+        else ("idle" if stale_idle_snapshot else "stale")
+    )
     print(
         "[alerts] "
-        f"status={remote.get('overall_status', 'unknown')} "
+        f"status={remote_display_status} "
+        f"source_status={remote_source_status} "
+        f"artifact_fresh={as_bool(remote_fresh)} "
+        f"expired_empty_snapshot={as_bool(stale_idle_snapshot)} "
+        f"age={as_num(remote_age)} "
         f"imessage={as_bool(channels.get('imessage_bridge'))} "
-        f"unsent={backlog.get('unsent_count', '')} "
-        f"unacked={backlog.get('unacked_count', '')}"
+        f"unsent={unsent_count} "
+        f"unacked={unacked_count} "
+        f"impact={'none' if stale_idle_snapshot else ('none' if remote_fresh else 'alert_delivery_unverified')}"
     )
 
-watchdog = load(health / "process_watchdog_latest.json")
+watchdog_path = health / "process_watchdog_latest.json"
+watchdog = load(watchdog_path)
 if watchdog:
+    watchdog_fresh, watchdog_age = artifact_freshness(watchdog_path, watchdog)
+    watchdog_source_status = str(watchdog.get("overall_status") or "unknown").strip().lower()
     intel = watchdog.get("watchdog_intelligence") if isinstance(watchdog.get("watchdog_intelligence"), dict) else {}
     restarts = watchdog.get("restarts") if isinstance(watchdog.get("restarts"), list) else []
     print(
         "[watchdog] "
-        f"status={watchdog.get('overall_status', 'unknown')} "
+        f"status={watchdog_source_status if watchdog_fresh else 'stale'} "
+        f"source_status={watchdog_source_status} "
+        f"fresh={as_bool(watchdog_fresh)} "
+        f"age={as_num(watchdog_age)} "
         f"grade={intel.get('grade', '')} "
         f"active_issues={intel.get('active_issue_count', '')} "
         f"restarts={len(restarts)}"
     )
 
-dashboard = load(health / "runtime_gate_dashboard_latest.json")
+dashboard_path = health / "runtime_gate_dashboard_latest.json"
+dashboard = load(dashboard_path)
 if dashboard:
+    dashboard_fresh, dashboard_age = artifact_freshness(dashboard_path, dashboard)
     overall = dashboard.get("overall") if isinstance(dashboard.get("overall"), dict) else {}
     active_attention = overall.get("attention") if isinstance(overall.get("attention"), list) else []
     managed_attention = overall.get("managed_attention") if isinstance(overall.get("managed_attention"), list) else []
-    dashboard_status = str(overall.get("status") or "unknown").strip().lower()
-    dashboard_level = "alert" if dashboard_status in {"critical", "blocked", "failed"} else ("watch" if dashboard_status in {"degraded", "warn", "warning"} else "ok")
+    dashboard_source_status = str(overall.get("status") or "unknown").strip().lower()
+    dashboard_status = dashboard_source_status if dashboard_fresh else "stale"
+    dashboard_level = "alert" if dashboard_status in {"critical", "blocked", "failed"} else ("watch" if dashboard_status in {"degraded", "warn", "warning", "stale"} else "ok")
     forensic_attention = overall.get("forensic_attention") if isinstance(overall.get("forensic_attention"), list) else []
     promotion_state = "evidence_pending" if "promotion_not_ready" in forensic_attention else "ready"
     print(
         "[dashboard] "
         f"level={dashboard_level} "
         f"status={dashboard_status} "
+        f"source_status={dashboard_source_status} "
+        f"fresh={as_bool(dashboard_fresh)} "
+        f"age={as_num(dashboard_age)} "
         f"ok={as_bool(overall.get('ok'))} "
         f"active={len(active_attention)} "
         f"managed={len(managed_attention)} "
@@ -1585,8 +1686,15 @@ if dashboard:
         f"attention={joined(active_attention, 160)}"
     )
 
-hdf5 = load(health / "hdf5_training_cache_latest.json")
+hdf5_path = health / "hdf5_training_cache_latest.json"
+hdf5 = load(hdf5_path)
 if hdf5:
+    hdf5_fresh, hdf5_age = artifact_freshness(
+        hdf5_path,
+        hdf5,
+        max_age_seconds=status_artifact_max_age_seconds * 6.0,
+    )
+    hdf5_source_status = str(hdf5.get("overall_status") or "unknown").strip().lower()
     cache = hdf5.get("cache") if isinstance(hdf5.get("cache"), dict) else {}
     freshness = hdf5.get("freshness_gate") if isinstance(hdf5.get("freshness_gate"), dict) else {}
     schema = hdf5.get("schema_validation") if isinstance(hdf5.get("schema_validation"), dict) else {}
@@ -1594,7 +1702,10 @@ if hdf5:
     speedup = bench.get("speedup_ratio", "")
     print(
         "[hdf5] "
-        f"status={hdf5.get('overall_status', 'unknown')} "
+        f"status={hdf5_source_status if hdf5_fresh else 'stale'} "
+        f"source_status={hdf5_source_status} "
+        f"fresh_artifact={as_bool(hdf5_fresh)} "
+        f"age={as_num(hdf5_age)} "
         f"fresh={as_bool(freshness.get('fresh'))} "
         f"schema={as_bool(schema.get('ok'))} "
         f"rows={cache.get('row_count', '')} "
@@ -1602,8 +1713,11 @@ if hdf5:
         f"speedup={speedup}"
     )
 
-coord = load(health / "coordination_state_latest.json")
+coord_path = health / "coordination_state_latest.json"
+coord = load(coord_path)
 if coord:
+    coord_fresh, coord_age = artifact_freshness(coord_path, coord)
+    coord_source_status = str(coord.get("overall_status") or "unknown").strip().lower()
     policies = coord.get("policies") if isinstance(coord.get("policies"), dict) else {}
     live = policies.get("live_orders") if isinstance(policies.get("live_orders"), dict) else {}
     paper = policies.get("paper_execution") if isinstance(policies.get("paper_execution"), dict) else {}
@@ -1612,7 +1726,10 @@ if coord:
     terminal = policies.get("terminal_restart") if isinstance(policies.get("terminal_restart"), dict) else {}
     print(
         "[coord] "
-        f"status={coord.get('overall_status', 'unknown')} "
+        f"status={coord_source_status if coord_fresh else 'stale'} "
+        f"source_status={coord_source_status} "
+        f"fresh={as_bool(coord_fresh)} "
+        f"age={as_num(coord_age)} "
         f"mode={coord.get('coordination_mode', '')} "
         f"live={as_bool(live.get('allowed'))} "
         f"paper={as_bool(paper.get('allowed'))} "
@@ -2341,6 +2458,11 @@ def emit_paper() -> None:
     lane = load_json(health / "execution_lane_paper_latest.json")
     if lane:
         gateway = lane.get("execution_gateway") if isinstance(lane.get("execution_gateway"), dict) else {}
+        runtime_breaker = (
+            lane.get("runtime_execution_breaker")
+            if isinstance(lane.get("runtime_execution_breaker"), dict)
+            else {}
+        )
         print(
             "[paper] "
             f"level={'ok' if lane.get('auth_ok') and not lane.get('auth_error') else 'alert'} "
@@ -2351,8 +2473,59 @@ def emit_paper() -> None:
             f"pending_unknown={as_bool(lane.get('pending_rows_unknown'))} "
             f"approved_intents={gateway.get('approved_intents', '')} "
             f"pre_trade_orders={gateway.get('pre_trade_orders', '')} "
+            f"resident={as_bool(lane.get('execution_consumer_resident'))} "
+            f"new_exposure={as_bool(lane.get('accepting_new_exposure'))} "
+            f"breaker={runtime_breaker.get('status', '')} "
             f"auth_ok={as_bool(lane.get('auth_ok'))} "
             f"auth_error={compact(lane.get('auth_error'), 72)}"
+        )
+        evidence = (
+            lane.get("execution_result_evidence")
+            if isinstance(lane.get("execution_result_evidence"), dict)
+            else {}
+        )
+        plumbing_status = str(
+            lane.get("execution_plumbing_status")
+            or evidence.get("plumbing_status")
+            or "unknown"
+        )
+        plumbing_level = (
+            "alert"
+            if plumbing_status == "contract_or_consumer_failure"
+            else (
+                "ok"
+                if plumbing_status
+                in {
+                    "ready_executed",
+                    "ready_non_execution_activity",
+                    "idle_ready_waiting_for_intent",
+                    "protected_orchestration_only",
+                    "resident_runtime_safety_hold",
+                    "replay_safely_suppressed",
+                }
+                else "watch"
+            )
+        )
+        claims = (
+            lane.get("processing_claim_stats")
+            if isinstance(lane.get("processing_claim_stats"), dict)
+            else {}
+        )
+        print(
+            "[paper-plumbing] "
+            f"level={plumbing_level} "
+            f"status={plumbing_status} "
+            f"activity={evidence.get('activity_status', '')} "
+            f"latest={evidence.get('latest_non_stale_status', '')} "
+            f"reason={compact(evidence.get('latest_non_stale_reason'), 120)} "
+            f"executed={evidence.get('paper_executed_rows', 0)} "
+            f"policy_blocks={evidence.get('paper_standard_blocked_rows', 0)} "
+            f"runtime_holds={evidence.get('runtime_breaker_blocked_rows', 0)} "
+            f"replay_suppressed={evidence.get('replay_suppressed_rows', 0)} "
+            f"contract_failures={evidence.get('intent_contract_blocked_rows', 0)} "
+            f"consumer_failures={evidence.get('consumer_error_blocked_rows', 0)} "
+            f"claims_processing={claims.get('processing', 0)} "
+            f"claims_ambiguous={claims.get('ambiguous', 0)}"
         )
     standard = load_json(health / "paper_live_data_standard_latest.json")
     if standard:
@@ -2617,12 +2790,18 @@ run_filtered_snapshot() {
 
 drop_stale_bootstrap_state_lines() {
   awk '
-    /^\[(ALERT|WATCH|OK|INFO|FLOW)\][[:space:]]+\[(dashboard|storage|throttle|broker|auth|schwab-auth)\]/ { next }
-    /^\[(dashboard|storage|throttle|broker|auth|schwab-auth)\]/ { next }
+    /^\[(ALERT|WATCH|OK|INFO|FLOW)\][[:space:]]+\[(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-plumbing|paper-data|paper-profit|paper-debt|profit-hardening|paper-truth|profitability-truth|strategy-market-fit|alerts|watchdog|hdf5|coord|feed)\]/ { next }
+    /^\[(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-plumbing|paper-data|paper-profit|paper-debt|profit-hardening|paper-truth|profitability-truth|strategy-market-fit|alerts|watchdog|hdf5|coord|feed)\]/ { next }
     /^\[(BrokerConfig|StorageRoute)\]/ { next }
     /BrokerConfig/ { next }
     /StorageRoute/ { next }
     { print; fflush() }
+  '
+}
+
+mark_historical_bootstrap_lines() {
+  awk '
+    { print "[history non_authoritative=true] " $0; fflush() }
   '
 }
 
@@ -2631,17 +2810,29 @@ run_filtered_state_safe_snapshot() {
   local line_limit="${2:-0}"
   if command -v rg >/dev/null 2>&1; then
     if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
-      tail_source_snapshot | rg --line-buffered -i -e "$pattern" | drop_stale_bootstrap_state_lines | truncate_live_lines "$line_limit"
+      tail_source_snapshot | drop_stale_bootstrap_state_lines | rg --line-buffered -i -e "$pattern" | mark_historical_bootstrap_lines | truncate_live_lines "$line_limit"
     else
-      tail_source_snapshot | rg --line-buffered -i -e "$pattern" | rg --line-buffered -v '^\[Decision\]' | drop_stale_bootstrap_state_lines | truncate_live_lines "$line_limit"
+      tail_source_snapshot | drop_stale_bootstrap_state_lines | rg --line-buffered -i -e "$pattern" | rg --line-buffered -v '^\[Decision\]' | mark_historical_bootstrap_lines | truncate_live_lines "$line_limit"
     fi
   else
     if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
-      tail_source_snapshot | grep --line-buffered -Ei "$pattern" | drop_stale_bootstrap_state_lines | truncate_live_lines "$line_limit"
+      tail_source_snapshot | drop_stale_bootstrap_state_lines | grep --line-buffered -Ei "$pattern" | mark_historical_bootstrap_lines | truncate_live_lines "$line_limit"
     else
-      tail_source_snapshot | grep --line-buffered -Ei "$pattern" | grep --line-buffered -Ev '^\[Decision\]' | drop_stale_bootstrap_state_lines | truncate_live_lines "$line_limit"
+      tail_source_snapshot | drop_stale_bootstrap_state_lines | grep --line-buffered -Ei "$pattern" | grep --line-buffered -Ev '^\[Decision\]' | mark_historical_bootstrap_lines | truncate_live_lines "$line_limit"
     fi
   fi
+}
+
+emit_livefeed_detail_snapshot() {
+  local pattern="$1"
+  echo "live_feed_detail_snapshot=begin mode=$TAIL_START_MODE bytes=$HEAVY_TAIL_BYTES authoritative_status=false"
+  if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
+    emit_livefeed_decision_paper_snapshot | truncate_live_lines 0 0 || true
+  fi
+  echo "live_feed_bootstrap_snapshot=begin mode=$TAIL_START_MODE bytes=$HEAVY_TAIL_BYTES history=true authoritative_status=false"
+  run_filtered_state_safe_snapshot "$pattern" "$HEAVY_BOOTSTRAP_MAX_LINES" || true
+  echo "live_feed_bootstrap_snapshot=end history=true authoritative_status=false"
+  echo "live_feed_detail_snapshot=ready authoritative_status=current_snapshot"
 }
 
 filter_pat="$ops_pat|$json_pat"
@@ -2677,15 +2868,18 @@ if [[ "$SNAPSHOT" == "1" ]]; then
   exit 0
 fi
 
-if [[ "$HEAVY_REQUESTED" == "1" && "$HEAVY_BOOTSTRAP_SNAPSHOT" == "1" ]]; then
-  emit_livefeed_status_snapshot | truncate_live_lines 80 || true
-  echo "live_feed_bootstrap_snapshot=begin mode=$TAIL_START_MODE bytes=$HEAVY_TAIL_BYTES"
-  run_filtered_state_safe_snapshot "$filter_pat" "$HEAVY_BOOTSTRAP_MAX_LINES" || true
-  echo "live_feed_following=1 interrupt=ctrl-c"
-else
-  emit_livefeed_status_snapshot | truncate_live_lines 80 || true
-fi
+emit_livefeed_status_snapshot | truncate_live_lines 80 || true
 install_live_feed_trap
+if [[ "$HEAVY_REQUESTED" == "1" && "$HEAVY_BOOTSTRAP_SNAPSHOT" == "1" ]]; then
+  if [[ "$HEAVY_ASYNC_BOOTSTRAP" == "1" ]]; then
+    echo "live_feed_following=1 interrupt=ctrl-c detail_snapshot=loading detail_preserved=true"
+    emit_livefeed_detail_snapshot "$filter_pat" &
+    LIVE_FEED_BOOTSTRAP_PID=$!
+  else
+    emit_livefeed_detail_snapshot "$filter_pat"
+    echo "live_feed_following=1 interrupt=ctrl-c detail_snapshot=ready detail_preserved=true"
+  fi
+fi
 start_live_feed_keepalive
 if [[ "$HEAVY_REQUESTED" == "1" ]]; then
   emit_live_feed_keepalive "0"

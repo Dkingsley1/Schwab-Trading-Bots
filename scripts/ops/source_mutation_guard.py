@@ -14,14 +14,17 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops import production_excellence_control
-    from scripts.ops.long_runtime_common import load_json
+    from scripts.ops.long_runtime_common import load_json, write_payload
 else:
     from . import production_excellence_control
-    from .long_runtime_common import load_json
+    from .long_runtime_common import load_json, write_payload
 
 
 DEFAULT_CANDIDATE_CONFIG_PATH = (
     PROJECT_ROOT / "config" / "production_excellence_v1.json"
+)
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "source_mutation_guard_latest.json"
 )
 DEFAULT_PROTECTED_PATHS = (
     ".github/workflows/ci_guardrails.yml",
@@ -32,6 +35,7 @@ DEFAULT_PROTECTED_PATHS = (
     "core/collector_capability_routing.py",
     "core/capability_materialization.py",
     "core/bot_profitability_scalability.py",
+    "core/sleeve_scalability_selector.py",
     "core/hierarchical_ensemble.py",
     "core/master_grandmaster_evidence.py",
     "core/regime_taxonomy.py",
@@ -123,7 +127,6 @@ DEFAULT_PROTECTED_PATHS = (
     "docs/architecture/BOT_ORGANIZATION.md",
     "docs/architecture/COLLECTOR_CAPABILITY_ROUTING.md",
     "docs/architecture/MASTER_GRANDMASTER_EVIDENCE_V2.md",
-    "docs/pycharm/distributed_cell_architecture_latest.md",
     "master_bot_registry.json",
 )
 
@@ -135,13 +138,19 @@ def iso_now() -> str:
 def git_status(
     project_root: Path, protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS
 ) -> tuple[list[str], str]:
-    cmd = ["git", "status", "--porcelain", "--", *protected_paths]
+    cmd = ["git", "status", "--porcelain", "--untracked-files=all"]
     proc = subprocess.run(
         cmd, cwd=project_root, text=True, capture_output=True, check=False
     )
     if proc.returncode != 0:
         return [], (proc.stderr or proc.stdout or "git status failed").strip()
-    return [line for line in proc.stdout.splitlines() if line.strip()], ""
+    protected = {str(path).replace("\\", "/") for path in protected_paths}
+    entries = [line for line in proc.stdout.splitlines() if line.strip()]
+    return [
+        entry
+        for entry in entries
+        if any(path in protected for path in _entry_paths(entry))
+    ], ""
 
 
 def _entry_paths(entry: str) -> list[str]:
@@ -210,6 +219,15 @@ def _candidate_acceptance(
             }
             for scope, paths in scope_files.items()
         }
+        for scope, row in _as_dict(state.get("scope_fingerprints")).items():
+            scope_paths.setdefault(str(scope), set()).update(
+                str(path) for path in _as_dict(_as_dict(row).get("file_manifest"))
+            )
+        last_change = _as_dict(state.get("last_change"))
+        for scope, row in _as_dict(last_change.get("scope_changes")).items():
+            scope_paths.setdefault(str(scope), set()).update(
+                str(path) for path in _as_list(_as_dict(row).get("changed_files"))
+            )
         coverage: dict[str, list[str]] = {}
         for entry in dirty_entries:
             paths = _entry_paths(entry)
@@ -245,6 +263,7 @@ def _candidate_acceptance(
                     else False
                 ),
                 "entry_scope_coverage": coverage,
+                "source_coverage": current.get("source_coverage", {}),
                 "config_path": str(config_path),
                 "state_path": str(state_path),
                 "event_path": str(event_path),
@@ -273,18 +292,77 @@ def _candidate_acceptance(
     return result
 
 
+def _as_dict(raw: Any) -> dict[str, Any]:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _as_list(raw: Any) -> list[Any]:
+    return raw if isinstance(raw, list) else []
+
+
+def _candidate_protected_paths(
+    project_root: Path,
+    config: dict[str, Any],
+) -> tuple[str, ...]:
+    generated_policy = (
+        production_excellence_control.candidate_generated_artifact_policy(
+            project_root, config
+        )
+    )
+    exclusions = {
+        str(path) for path in _as_list(generated_policy.get("excluded_paths"))
+    }
+    paths = set(DEFAULT_PROTECTED_PATHS)
+    for scope_files in production_excellence_control.candidate_scope_files(
+        project_root, config
+    ).values():
+        paths.update(
+            str(path.relative_to(project_root)).replace("\\", "/")
+            for path in scope_files
+        )
+    state_path, _ = production_excellence_control._candidate_paths(project_root, config)
+    state = load_json(state_path)
+    for row in _as_dict(state.get("scope_fingerprints")).values():
+        paths.update(str(path) for path in _as_dict(_as_dict(row).get("file_manifest")))
+    paths.update(
+        str(path)
+        for path in _as_list(_as_dict(state.get("last_change")).get("changed_files"))
+    )
+    return tuple(sorted(path for path in paths if path and path not in exclusions))
+
+
 def build_payload(
     project_root: Path,
-    protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS,
+    protected_paths: tuple[str, ...] | None = None,
     *,
     candidate_config_path: Path | None = None,
 ) -> dict[str, Any]:
-    observed_dirty_entries, error = git_status(
-        project_root, protected_paths=protected_paths
-    )
     config_path = (
         candidate_config_path
         or project_root / "config" / DEFAULT_CANDIDATE_CONFIG_PATH.name
+    )
+    config = load_json(config_path)
+    generated_policy = (
+        production_excellence_control.candidate_generated_artifact_policy(
+            project_root, config
+        )
+        if config
+        else {}
+    )
+    generated_exclusions = {
+        str(path) for path in _as_list(generated_policy.get("excluded_paths"))
+    }
+    effective_protected_paths = (
+        tuple(path for path in protected_paths if path not in generated_exclusions)
+        if protected_paths is not None
+        else (
+            _candidate_protected_paths(project_root, config)
+            if config
+            else DEFAULT_PROTECTED_PATHS
+        )
+    )
+    observed_dirty_entries, error = git_status(
+        project_root, protected_paths=effective_protected_paths
     )
     candidate = _candidate_acceptance(
         project_root, observed_dirty_entries, config_path=config_path
@@ -309,7 +387,7 @@ def build_payload(
         "overall_status": "ready" if ok else "blocked",
         "check": "source_mutation_guard",
         "project_root": str(project_root),
-        "protected_paths": list(protected_paths),
+        "protected_paths": list(effective_protected_paths),
         "dirty_count": len(dirty_entries),
         "dirty_entries": dirty_entries,
         "observed_dirty_count": len(observed_dirty_entries),
@@ -323,6 +401,14 @@ def build_payload(
             "canonical_source_updates_require_explicit_operator_intent": True,
             "explicitly_accepted_candidate_fingerprints_are_not_runtime_mutations": True,
             "post_acceptance_drift_and_unscoped_changes_remain_blocking": True,
+            "candidate_scope_paths_are_discovered_dynamically": True,
+            "accepted_manifest_paths_preserve_deleted_file_detection": True,
+            "all_repository_status_is_filtered_in_process_to_avoid_path_argument_limits": True,
+            "generated_runtime_outputs_are_owned_by_exact_policy_paths": bool(
+                generated_policy.get("ready", False)
+            ),
+            "generated_runtime_outputs_remain_freshness_owned_not_source_owned": True,
+            "generated_artifact_policy": generated_policy,
         },
     }
 
@@ -340,9 +426,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--json", action="store_true", help="Print machine-readable JSON."
     )
+    parser.add_argument("--out-file", type=Path, default=DEFAULT_OUT_PATH)
     args = parser.parse_args(argv)
 
     payload = build_payload(Path(args.project_root).resolve())
+    write_payload(args.out_file, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True, indent=2))
     else:

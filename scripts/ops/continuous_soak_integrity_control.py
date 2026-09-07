@@ -19,7 +19,9 @@ if __package__ in {None, ""}:
         parse_iso_utc,
         write_payload,
     )
+    from scripts.ops.candidate_scope_validation import evaluate_scope_validation
 else:
+    from .candidate_scope_validation import evaluate_scope_validation
     from .long_runtime_common import (
         PROJECT_ROOT,
         iso_now,
@@ -225,7 +227,7 @@ def _historical_soak_evidence(
         return {
             "available": False,
             "source_path": str(event_path),
-            "policy": "historical candidate time remains visible but never substitutes for the current clean 720-hour window",
+            "policy": "historical candidate time remains visible but never substitutes for current scope-aware candidate validation",
         }
 
     valid_events = []
@@ -319,7 +321,7 @@ def _historical_soak_evidence(
         "historical_time_preserved": True,
         "counts_toward_current_clean_720_hours": False,
         "candidate_event_timeline_is_runtime_heartbeat_proof": False,
-        "policy": "preserve pre-reset time as segmented historical wall-clock evidence; only the current unchanged candidate window can satisfy the clean 720-hour promotion contract",
+        "policy": "preserve pre-reset time as segmented historical wall-clock evidence; only current unchanged per-scope windows can satisfy the scope-aware promotion contract",
     }
 
 
@@ -426,10 +428,10 @@ def build_payload(
             and "changed_scopes" in production_source,
         ),
         (
-            "04_full_720_hour_contract",
-            "A clean completion requires the full 720 hours",
-            "required_hours" in production_source
-            and "thirty_day_window" in production_source,
+            "04_scope_aware_validation_contract",
+            "Candidate validation is tiered by changed scope and verified market sessions",
+            "evaluate_scope_validation" in production_source
+            and "scope_aware_validation_complete" in production_source,
         ),
         (
             "05_unattended_runtime_gate",
@@ -537,6 +539,19 @@ def build_payload(
         project_root,
         current_time=current_time,
     )
+    production_config = load_json(
+        project_root / "config" / "production_excellence_v1.json"
+    )
+    candidate_config = _as_dict(production_config.get("candidate"))
+    scope_validation = evaluate_scope_validation(
+        project_root,
+        production_config,
+        scope_windows_started_utc=windows,
+        required_scopes=_as_list(candidate_config.get("soak_scopes")),
+        candidate_ready=candidate_ready,
+        now=current_time,
+        maintenance_windows=planned_maintenance_windows,
+    )
     clean_maintenance_excluded_hours = _maintenance_overlap_hours(
         planned_maintenance_windows,
         window_start=clean_start,
@@ -558,7 +573,10 @@ def build_payload(
     capacity_ready = bool(control_ready and all(runtime_checks.values()))
     control_score = 100.0 * implemented_count / max(len(control_rows), 1)
     runtime_score = 100.0 * runtime_ready_count / max(len(runtime_checks), 1)
-    elapsed_score = min(100.0 * credited_clean_window_elapsed_hours / 720.0, 100.0)
+    legacy_elapsed_score = min(
+        100.0 * credited_clean_window_elapsed_hours / 720.0, 100.0
+    )
+    elapsed_score = _as_float(scope_validation.get("score"), legacy_elapsed_score)
     raw_event_path = str(
         chain.get("path") or "governance/evidence/production_candidate_events.jsonl"
     )
@@ -684,8 +702,22 @@ def build_payload(
         "main_soak_planned_maintenance_excluded_hours": round(
             main_maintenance_excluded_hours, 6
         ),
-        "elapsed_evidence_grade": _grade(elapsed_score, complete=elapsed_complete),
+        "elapsed_evidence_grade": _grade(
+            elapsed_score,
+            complete=bool(
+                scope_validation.get("scope_aware_validation_complete", False)
+            ),
+        ),
         "elapsed_evidence_score": round(elapsed_score, 3),
+        "scope_validation_grade": scope_validation.get("grade", "F"),
+        "scope_validation_score": scope_validation.get("score", 0.0),
+        "scope_aware_validation_complete": bool(
+            scope_validation.get("scope_aware_validation_complete", False)
+        ),
+        "promotion_elapsed_complete": bool(
+            scope_validation.get("promotion_elapsed_complete", False)
+        ),
+        "scope_validation": scope_validation,
         "clean_window_started_utc": clean_start.isoformat() if clean_start else "",
         "clean_window_elapsed_hours": round(credited_clean_window_elapsed_hours, 6),
         "observed_window_elapsed_hours": round(observed_window_elapsed_hours, 6),
@@ -713,10 +745,18 @@ def build_payload(
         "runtime_checks": runtime_checks,
         "blockers": [key for key, value in runtime_checks.items() if not value]
         + [row["control_id"] for row in control_rows if not row["implemented"]],
+        "promotion_blockers": [
+            f"scope_validation_pending:{scope}"
+            for scope in _as_list(scope_validation.get("blocking_scopes"))
+        ],
         "grading_contract": {
             "control_A_plus_is_hardening_only": True,
             "operational_A_plus_means_capacity_to_run_unattended": True,
-            "elapsed_A_plus_requires_720_clean_hours": True,
+            "elapsed_A_plus_requires_scope_policy_completion": True,
+            "material_strategy_risk_and_execution_scopes_still_require_720_hours": True,
+            "legacy_clean_720_hour_field_is_compatibility_evidence": True,
+            "scope_policy_requires_elapsed_hours_and_completed_market_sessions": True,
+            "unknown_scopes_fail_closed_at_material_trading_tier": True,
             "restart_or_accepted_change_resets_credit": True,
             "planned_host_maintenance_is_an_explicit_restart_exception": True,
             "planned_maintenance_preserves_pre_event_credit": True,

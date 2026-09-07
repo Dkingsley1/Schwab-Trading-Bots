@@ -27,7 +27,7 @@ The comparison is associational. Market regime, source availability, and interve
 
 ## Soak Contract
 
-The cumulative main-soak counter includes accepted historical segments and planned-maintenance accounting. It measures accumulated developmental exposure, not uninterrupted runtime and not live-promotion credit. Only the current candidate's clean forward window can satisfy the separate 720-hour gate.
+The cumulative main-soak counter includes accepted historical segments and planned-maintenance accounting. It measures accumulated developmental exposure, not uninterrupted runtime and not live-promotion credit. Only the current candidate's per-scope forward windows can satisfy the scope-aware promotion policy; strategy, execution, and risk remain subject to the full 720-hour tier.
 
 Use:
 

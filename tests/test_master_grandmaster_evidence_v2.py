@@ -18,7 +18,6 @@ from scripts.ops import (
     source_mutation_guard,
 )
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 8, 11, 16, 0, tzinfo=timezone.utc)
 TIMESTAMP = NOW.isoformat()
@@ -34,7 +33,9 @@ def _policy() -> dict:
 
 def _organization_policy() -> dict:
     return json.loads(
-        (PROJECT_ROOT / "config" / "bot_organization_v1.json").read_text(encoding="utf-8")
+        (PROJECT_ROOT / "config" / "bot_organization_v1.json").read_text(
+            encoding="utf-8"
+        )
     )
 
 
@@ -186,6 +187,14 @@ def _synthesize(inputs: dict | None = None) -> dict:
 def test_policy_is_shadow_only_and_fails_closed_on_authority() -> None:
     policy = _policy()
     assert validate_policy(policy) == []
+    assert (
+        policy["coordination_success_needs"]["master_bot"]["view"]
+        == "per_sleeve_local_optimizer_and_evidence_curator"
+    )
+    assert (
+        policy["coordination_success_needs"]["grandmaster_bot"]["view"]
+        == "cross_sleeve_allocator_referee_and_policy_coordinator"
+    )
 
     unsafe = copy.deepcopy(policy)
     unsafe["safety_contract"]["direct_live_order_authority"] = True
@@ -193,6 +202,17 @@ def test_policy_is_shadow_only_and_fails_closed_on_authority() -> None:
         "master_grandmaster_safety_direct_live_order_authority_must_be_false"
         in validate_policy(unsafe)
     )
+
+    unsafe_success = copy.deepcopy(policy)
+    unsafe_success["coordination_success_needs"]["authority"]["can_submit_order"] = True
+    unsafe_success["coordination_success_needs"]["master_bot"]["needs"][0][
+        "success_signal"
+    ] = ""
+    errors = validate_policy(unsafe_success)
+    assert (
+        "master_grandmaster_success_authority_can_submit_order_must_be_false" in errors
+    )
+    assert "master_grandmaster_master_bot_success_need_fields_missing" in errors
 
 
 def test_synthesis_separates_paper_coordination_from_live_evidence() -> None:
@@ -208,9 +228,26 @@ def test_synthesis_separates_paper_coordination_from_live_evidence() -> None:
     assert "independent_execution_evidence_ready" in result["promotion_blockers"]
     assert result["sleeve_master_count"] == 2
     assert all(row["status"] == "ready_shadow" for row in result["sleeve_masters"])
+    success = result["coordination_success_needs"]
+    assert success["master_bot"]["need_count"] == 6
+    assert success["grandmaster_bot"]["need_count"] == 6
+    assert "sleeve_strategy_taxonomy" in success["master_bot"]["need_ids"]
+    assert (
+        "cross_sleeve_correlation_and_exposure_map"
+        in success["grandmaster_bot"]["need_ids"]
+    )
+    contract = result["operating_contract"]
+    assert contract["complete"] is True
+    assert contract["domain"] == "master_grandmaster_coordination"
+    assert "automatic_live_promotion" in contract["blocked_authority"]
+    assert "profitability_evidence_ready" in contract["evidence_missing"]
+    assert contract["hardening"]["master_needs"]
+    assert contract["hardening"]["grandmaster_needs"]
 
 
-def test_runtime_pressure_holds_coordination_without_corrupting_structural_grade() -> None:
+def test_runtime_pressure_holds_coordination_without_corrupting_structural_grade() -> (
+    None
+):
     inputs = _inputs()
     inputs["runtime_throttle"]["ok"] = False
     inputs["runtime_throttle"]["overall_status"] = "degraded"
@@ -228,9 +265,7 @@ def test_runtime_pressure_holds_coordination_without_corrupting_structural_grade
 
 def test_stale_required_hierarchy_fails_closed() -> None:
     inputs = _inputs()
-    inputs["bot_hierarchy"]["timestamp_utc"] = (
-        NOW - timedelta(days=2)
-    ).isoformat()
+    inputs["bot_hierarchy"]["timestamp_utc"] = (NOW - timedelta(days=2)).isoformat()
 
     result = _synthesize(inputs)
 
@@ -292,7 +327,10 @@ def test_output_is_deterministic_and_has_no_execution_authority() -> None:
     assert first["authority"]["order_payload_created"] is False
     assert first["authority"]["automatic_promotion_authority"] is False
     assert first["grand_master"]["automatic_live_promotion_allowed"] is False
-    assert all(row["authority"]["live_order_authority"] is False for row in first["sleeve_masters"])
+    assert all(
+        row["authority"]["live_order_authority"] is False
+        for row in first["sleeve_masters"]
+    )
 
 
 def test_control_build_is_path_isolated_and_does_not_write(tmp_path: Path) -> None:
@@ -305,7 +343,9 @@ def test_control_build_is_path_isolated_and_does_not_write(tmp_path: Path) -> No
     policy_path = tmp_path / "master_policy.json"
     organization_policy_path = tmp_path / "organization_policy.json"
     policy_path.write_text(json.dumps(_policy()), encoding="utf-8")
-    organization_policy_path.write_text(json.dumps(_organization_policy()), encoding="utf-8")
+    organization_policy_path.write_text(
+        json.dumps(_organization_policy()), encoding="utf-8"
+    )
     packet_out = tmp_path / "packets.json"
 
     health, catalog = master_grandmaster_evidence_control.build_payload(
@@ -331,9 +371,10 @@ def test_control_build_is_path_isolated_and_does_not_write(tmp_path: Path) -> No
     assert "sleeve_masters" not in health
     assert catalog["sleeve_master_count"] == 2
     assert len(catalog["sleeve_masters"]) == 2
-    assert health["publication_receipt"]["receipt_sha256"] == catalog[
-        "publication_receipt_sha256"
-    ]
+    assert (
+        health["publication_receipt"]["receipt_sha256"]
+        == catalog["publication_receipt_sha256"]
+    )
     assert not packet_out.exists()
 
 
@@ -349,7 +390,9 @@ def test_repository_build_covers_every_organized_bot() -> None:
 
 
 def test_repository_wiring_requires_fresh_owned_evidence() -> None:
-    refresh_steps = {row["name"]: row for row in runtime_artifact_refresh._step_specs(PROJECT_ROOT)}
+    refresh_steps = {
+        row["name"]: row for row in runtime_artifact_refresh._step_specs(PROJECT_ROOT)
+    }
     freshness = artifact_freshness_slo._artifact_contract(PROJECT_ROOT)
     dashboard = runtime_gate_dashboard._artifact_config(PROJECT_ROOT)
     ownership = json.loads(
@@ -357,18 +400,24 @@ def test_repository_wiring_requires_fresh_owned_evidence() -> None:
             encoding="utf-8"
         )
     )
-    owned_resources = {str(row.get("resource_path") or "") for row in ownership["controls"]}
+    owned_resources = {
+        str(row.get("resource_path") or "") for row in ownership["controls"]
+    }
     master_step = refresh_steps["master_grandmaster_evidence_v2"]
     freshness_step = refresh_steps["artifact_freshness_slo_post_master"]
 
     assert "profitability_evidence_firewall" in master_step["depends_on"]
-    assert "runtime_throttle_control_post_settlement_verified" in master_step["depends_on"]
+    assert (
+        "runtime_throttle_control_post_settlement_verified" in master_step["depends_on"]
+    )
     assert freshness_step["depends_on"] == [
         "master_grandmaster_evidence_v2",
         "control_surface_ownership",
         "system_role_contract",
     ]
-    step_names = [row["name"] for row in runtime_artifact_refresh._step_specs(PROJECT_ROOT)]
+    step_names = [
+        row["name"] for row in runtime_artifact_refresh._step_specs(PROJECT_ROOT)
+    ]
     assert step_names.index("master_grandmaster_evidence_v2") < step_names.index(
         "artifact_freshness_slo_post_master"
     )
@@ -382,13 +431,22 @@ def test_repository_wiring_requires_fresh_owned_evidence() -> None:
     assert "artifact_freshness_slo_post_master" in profitability_scope
     assert freshness["master_grandmaster_evidence_v2"]["required"] is True
     assert dashboard["master_grandmaster_evidence_v2"]["required"] is True
-    assert "core/master_grandmaster_evidence.py" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
+    assert (
+        "core/master_grandmaster_evidence.py"
+        in source_mutation_guard.DEFAULT_PROTECTED_PATHS
+    )
     assert (
         "scripts/ops/master_grandmaster_evidence_control.py"
         in source_mutation_guard.DEFAULT_PROTECTED_PATHS
     )
-    assert "governance/health/master_grandmaster_evidence_v2_latest.json" in owned_resources
-    assert "governance/master_grandmaster/evidence_packets_v2_latest.json" in owned_resources
+    assert (
+        "governance/health/master_grandmaster_evidence_v2_latest.json"
+        in owned_resources
+    )
+    assert (
+        "governance/master_grandmaster/evidence_packets_v2_latest.json"
+        in owned_resources
+    )
 
 
 def test_dashboard_summary_preserves_authority_and_evidence_distinctions() -> None:

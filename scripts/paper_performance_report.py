@@ -204,11 +204,16 @@ def _sync_profitability_control(
     source_contract = control.get("paper_performance_input_contract")
     source_contract = source_contract if isinstance(source_contract, dict) else {}
     current_hash = _file_sha256(performance_path)
+    usable_for_grade = bool(source_contract.get("usable_for_profitability_grade", False))
+    qualification_blockers = list(source_contract.get("blockers") or [])
+    evidence_pending_only = qualification_blockers == ["paper_performance_has_no_execution_evidence"]
     synchronized = bool(
         rc == 0
         and current_hash
         and current_hash == performance_hash
-        and source_contract.get("usable_for_profitability_grade", False)
+        and source_contract.get("source_fresh", False)
+        and source_contract.get("source_stable_during_read", False)
+        and (usable_for_grade or evidence_pending_only)
         and str(source_contract.get("sha256") or "") == current_hash
     )
     result.update(
@@ -217,12 +222,19 @@ def _sync_profitability_control(
             "ok": synchronized,
             "overall_status": "ready" if synchronized else "degraded",
             "attempted": True,
-            "reason": "hash_bound" if synchronized else "profitability_generation_sync_failed",
+            "reason": (
+                "hash_bound" if synchronized and usable_for_grade
+                else "hash_bound_evidence_pending" if synchronized
+                else "profitability_generation_sync_failed"
+            ),
+            "publication_verified": synchronized,
+            "qualification_ready": synchronized and usable_for_grade,
+            "qualification_blockers": qualification_blockers,
             "return_code": rc,
             "duration_seconds": round(time.monotonic() - started, 3),
             "paper_performance_sha256_after": current_hash,
             "profitability_source_sha256": str(source_contract.get("sha256") or ""),
-            "source_usable_for_grade": bool(source_contract.get("usable_for_profitability_grade", False)),
+            "source_usable_for_grade": usable_for_grade,
             "stdout_tail": stdout_tail,
             "stderr_tail": stderr_tail,
         }
@@ -2724,6 +2736,34 @@ def render_paper_performance_graphs(
     }
 
 
+def _render_bundle_storage_unavailable(
+    *,
+    exc: OSError,
+    daily_chart_path: Path,
+    weekly_chart_path: Path,
+    monthly_chart_path: Path,
+    quarterly_chart_path: Path,
+    sleeves_chart_path: Path,
+) -> dict[str, Any]:
+    return {
+        "available": False,
+        "mode": "render_bundle_storage_unavailable",
+        "error": f"{type(exc).__name__}:{exc}",
+        "daily_png": "",
+        "weekly_png": "",
+        "monthly_png": "",
+        "quarterly_png": "",
+        "sleeves_png": "",
+        "intended_paths": {
+            "daily_png": str(daily_chart_path),
+            "weekly_png": str(weekly_chart_path),
+            "monthly_png": str(monthly_chart_path),
+            "quarterly_png": str(quarterly_chart_path),
+            "sleeves_png": str(sleeves_chart_path),
+        },
+    }
+
+
 def render_paper_performance_markdown(payload: dict[str, Any]) -> str:
     day = payload.get("day") if isinstance(payload.get("day"), dict) else {}
     week = payload.get("week") if isinstance(payload.get("week"), dict) else {}
@@ -3082,35 +3122,53 @@ def main() -> int:
             "detail": "skipped_json_only",
         }
     else:
-        md_path.parent.mkdir(parents=True, exist_ok=True)
-        html_path.parent.mkdir(parents=True, exist_ok=True)
-        pdf_path.parent.mkdir(parents=True, exist_ok=True)
-        payload["graphs"] = render_paper_performance_graphs(
-            payload,
-            daily_chart_path=daily_chart_path,
-            weekly_chart_path=weekly_chart_path,
-            monthly_chart_path=monthly_chart_path,
-            quarterly_chart_path=quarterly_chart_path,
-            sleeves_chart_path=sleeves_chart_path,
-        )
-        generated_utc = str(payload.get("timestamp_utc") or _utc_now().isoformat())
-        md_text = render_paper_performance_markdown(payload)
-        html_text = render_paper_performance_html(payload, source_path=out_path, generated_utc=generated_utc)
-        md_path.write_text(md_text, encoding="utf-8")
-        html_path.write_text(html_text, encoding="utf-8")
-        if pdf_path.exists():
-            pdf_path.unlink()
-        pdf_ok, pdf_detail = _render_pdf_from_html(
-            html_path,
-            pdf_path,
-            allow_gui_renderer=bool(args.allow_gui_pdf_renderer),
-        )
-        payload["pdf"] = {
-            "available": bool(pdf_ok),
-            "html_report_path": str(html_path),
-            "pdf_path": str(pdf_path),
-            "detail": str(pdf_detail),
-        }
+        try:
+            md_path.parent.mkdir(parents=True, exist_ok=True)
+            html_path.parent.mkdir(parents=True, exist_ok=True)
+            pdf_path.parent.mkdir(parents=True, exist_ok=True)
+            payload["graphs"] = render_paper_performance_graphs(
+                payload,
+                daily_chart_path=daily_chart_path,
+                weekly_chart_path=weekly_chart_path,
+                monthly_chart_path=monthly_chart_path,
+                quarterly_chart_path=quarterly_chart_path,
+                sleeves_chart_path=sleeves_chart_path,
+            )
+            generated_utc = str(payload.get("timestamp_utc") or _utc_now().isoformat())
+            md_text = render_paper_performance_markdown(payload)
+            html_text = render_paper_performance_html(
+                payload, source_path=out_path, generated_utc=generated_utc
+            )
+            md_path.write_text(md_text, encoding="utf-8")
+            html_path.write_text(html_text, encoding="utf-8")
+            if pdf_path.exists():
+                pdf_path.unlink()
+            pdf_ok, pdf_detail = _render_pdf_from_html(
+                html_path,
+                pdf_path,
+                allow_gui_renderer=bool(args.allow_gui_pdf_renderer),
+            )
+            payload["pdf"] = {
+                "available": bool(pdf_ok),
+                "html_report_path": str(html_path),
+                "pdf_path": str(pdf_path),
+                "detail": str(pdf_detail),
+            }
+        except OSError as exc:
+            payload["graphs"] = _render_bundle_storage_unavailable(
+                exc=exc,
+                daily_chart_path=daily_chart_path,
+                weekly_chart_path=weekly_chart_path,
+                monthly_chart_path=monthly_chart_path,
+                quarterly_chart_path=quarterly_chart_path,
+                sleeves_chart_path=sleeves_chart_path,
+            )
+            payload["pdf"] = {
+                "available": False,
+                "html_report_path": "",
+                "pdf_path": str(pdf_path),
+                "detail": f"render_bundle_storage_unavailable:{type(exc).__name__}:{exc}",
+            }
     canonical_performance_path = PROJECT_ROOT / "governance" / "health" / "paper_performance_latest.json"
     sync_result: dict[str, Any] = {
         "ok": True,

@@ -28,6 +28,15 @@ INVALID_VALUES = {
 
 KeychainReader = Callable[[str, str], str]
 
+MANAGED_RUNTIME_REQUIRED_ENV = "SCHWAB_MANAGED_RUNTIME_REQUIRED"
+MANAGED_RUNTIME_ATTESTED_ENV = "SCHWAB_MANAGED_RUNTIME_ATTESTED"
+MANAGED_RUNTIME_SOURCE_ENV = "SCHWAB_MANAGED_RUNTIME_SOURCE"
+MANAGED_RUNTIME_SOURCES = {
+    "load_runtime_env",
+    "opsctl",
+    "managed_launcher",
+}
+
 
 def _enabled(value: object, *, default: bool = True) -> bool:
     text = str(value or "").strip().lower()
@@ -38,6 +47,48 @@ def _enabled(value: object, *, default: bool = True) -> bool:
 
 def credential_value_ready(value: object) -> bool:
     return str(value or "").strip() not in INVALID_VALUES
+
+
+def managed_schwab_runtime_status(
+    env: Mapping[str, str] | None = None,
+    *,
+    require_by_default: bool = False,
+) -> dict[str, object]:
+    """Return a redacted attestation for the Schwab credential execution path."""
+    values = env if env is not None else os.environ
+    required = _enabled(
+        values.get(MANAGED_RUNTIME_REQUIRED_ENV, "1" if require_by_default else "0"),
+        default=require_by_default,
+    )
+    attested = _enabled(
+        values.get(MANAGED_RUNTIME_ATTESTED_ENV, "0"),
+        default=False,
+    )
+    source = str(values.get(MANAGED_RUNTIME_SOURCE_ENV, "") or "").strip().lower()
+    source_valid = source in MANAGED_RUNTIME_SOURCES
+    ready = bool((not required) or (attested and source_valid))
+    return {
+        "required": required,
+        "attested": attested,
+        "source": source,
+        "source_valid": source_valid,
+        "ready": ready,
+        "secret_material_present": False,
+    }
+
+
+def enforce_managed_schwab_runtime(
+    env: Mapping[str, str] | None = None,
+    *,
+    require_by_default: bool = False,
+) -> dict[str, object]:
+    status = managed_schwab_runtime_status(
+        env,
+        require_by_default=require_by_default,
+    )
+    if not bool(status["ready"]):
+        raise RuntimeError("schwab_managed_runtime_attestation_required")
+    return status
 
 
 def _read_keychain_secret(service: str, account: str) -> str:

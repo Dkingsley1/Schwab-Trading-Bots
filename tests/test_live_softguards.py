@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,6 +35,8 @@ def _reset_paper_profitability_guard_cache() -> None:
 
 
 def _allow_production_order_firewall(monkeypatch) -> None:
+    monkeypatch.setenv("SCHWAB_ACCOUNT_HASH", "redacted-test-account-hash")
+    monkeypatch.setenv("SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER", "0")
     unscoped_from_env = base_src.LiveRiskConfig.from_env
     monkeypatch.setattr(
         base_src.LiveRiskConfig,
@@ -86,6 +89,61 @@ def _write_paper_profitability_control(
         encoding="utf-8",
     )
     _reset_paper_profitability_guard_cache()
+
+
+def _write_paper_evidence_collection_controls(tmp_path: Path) -> None:
+    config = tmp_path / "config"
+    config.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "policy_id": "paper_evidence_collection_controls_v1",
+        "enabled": True,
+        "paper_only": True,
+        "live_execution_allowed": False,
+        "defaults": {
+            "enabled": True,
+            "mode": "paper_evidence_collection",
+            "allowed_guard_reasons": [
+                "paper_profitability_entry_policy_block",
+                "paper_profitability_clean_profile_evidence_block",
+            ],
+            "allowed_entry_policy_blockers": [
+                "predicted_edge_lower_bound_unknown",
+                "liquidity_unknown",
+                "session_quality_unknown",
+            ],
+            "allowed_clean_gate_failures": [
+                "event_catalyst_confirmation_unknown",
+                "portfolio_conflict_clearance_unknown",
+                "session_quality_unknown",
+                "independent_evidence_channel_floor_not_met",
+            ],
+            "minimum_model_score_edge_over_threshold": 0.02,
+            "minimum_known_core_channels": 4,
+            "hard_min_tradeability_norm": 0.5,
+            "hard_min_execution_fitness_norm": 0.5,
+            "hard_min_source_quality_norm": 0.4,
+            "hard_min_liquidity_norm": 0.4,
+            "hard_max_spread_bps": 35.0,
+            "hard_max_quote_age_ms": 5000.0,
+            "hard_max_overlap_pressure_norm": 0.74,
+            "hard_max_conflict_pressure_norm": 0.8,
+            "max_entries_per_symbol_day": 8,
+            "new_entry_cooldown_seconds": 180,
+            "force_trade_allowed": False,
+            "loss_recovery_size_increase_allowed": False,
+            "profitability_claim_allowed": False,
+        },
+        "profiles": {
+            "day_trading": {
+                "max_entries_per_symbol_day": 10,
+                "new_entry_cooldown_seconds": 120,
+            }
+        },
+    }
+    (config / "paper_evidence_collection_controls_v1.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
 
 
 def _write_staged_promotion_cohort(tmp_path: Path) -> None:
@@ -228,9 +286,9 @@ def test_operator_stop_flag_path_triggers_softguard(monkeypatch, tmp_path: Path)
     assert trader._operator_stop_enabled() is True
 
 
-def test_discover_live_account_hash_populates_hash_from_account_numbers(monkeypatch):
+def test_shadow_discovers_account_hash_for_read_only_snapshot(monkeypatch):
     monkeypatch.delenv("SCHWAB_ACCOUNT_HASH", raising=False)
-    trader = _mk_trader("live")
+    trader = _mk_trader("shadow")
     trader.client = _AccountNumbersClient()
 
     discovered = trader._discover_live_account_hash(force=True)
@@ -240,13 +298,13 @@ def test_discover_live_account_hash_populates_hash_from_account_numbers(monkeypa
     assert trader.client.get_account_numbers_calls == 1
 
 
-def test_live_fetch_accounts_payload_prefers_account_hash_endpoint_when_discovered(
+def test_shadow_fetch_accounts_payload_prefers_account_hash_endpoint_when_discovered(
     monkeypatch,
 ):
     monkeypatch.delenv("SCHWAB_ACCOUNT_HASH", raising=False)
     monkeypatch.delenv("LIVE_ACCOUNTS_SNAPSHOT_ALLOW_GLOBAL_FALLBACK", raising=False)
     monkeypatch.delenv("LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED", raising=False)
-    trader = _mk_trader("live")
+    trader = _mk_trader("shadow")
     trader.client = _AccountNumbersClient()
 
     out = trader._live_fetch_accounts_payload()
@@ -762,6 +820,62 @@ def test_live_lane_startup_halts_on_unknown_submit_without_broker_id(tmp_path: P
     assert result["ok"] is False
     assert result["remaining_ambiguous_count"] == 1
     assert ledger.get("decision-unknown-startup")["state"] == "submit_unknown"
+    assert Path(trader.global_halt_flag_path).exists()
+
+
+def test_live_schwab_account_hash_is_never_auto_discovered(monkeypatch) -> None:
+    monkeypatch.delenv("SCHWAB_ACCOUNT_HASH", raising=False)
+    monkeypatch.setenv("SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER", "1")
+    trader = _mk_trader("live")
+
+    class DiscoveryClient:
+        calls = 0
+
+        def get_account_numbers(self):
+            self.calls += 1
+            return _DummyResponse(
+                200,
+                [{"accountNumber": "1234", "hashValue": "provider-hash-value"}],
+            )
+
+    trader.client = DiscoveryClient()
+
+    assert trader.live_account_hash_auto_discover is False
+    assert trader._discover_live_account_hash(force=True) == ""
+    assert trader.client.calls == 0
+
+
+def test_full_order_inventory_blocks_untracked_active_broker_order(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SCHWAB_ACCOUNT_HASH", "redacted-test-account-hash")
+    monkeypatch.setenv("SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER", "0")
+    trader = _mk_trader("live")
+    trader.project_root = str(tmp_path)
+    trader.global_halt_flag_path = str(
+        tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
+    )
+    monkeypatch.setattr(
+        trader,
+        "_live_fetch_orders_snapshot",
+        lambda: {
+            "ok": True,
+            "orders_payload": [{"orderId": "manual-broker-order", "status": "WORKING"}],
+        },
+    )
+
+    result = trader.reconcile_durable_live_orders(
+        interrupted_stale_seconds=0.0,
+        full_account_scan=True,
+    )
+
+    assert result["ok"] is False
+    assert result["full_account_scan"]["untracked_active_order_count"] == 1
+    assert any(
+        item == "untracked_active_broker_order:manual-broker-order"
+        for item in result["blockers"]
+    )
     assert Path(trader.global_halt_flag_path).exists()
 
 
@@ -1306,6 +1420,83 @@ def test_paper_profitability_guard_allows_weak_profile_sell_reduction(
     assert out["paper_order"]["position_qty"] == 0.0
 
 
+def test_paper_evidence_collection_override_preserves_weak_profile_quarantine(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "0")
+    _write_paper_profitability_control(tmp_path, weak_profile="day_trading")
+    _write_paper_evidence_collection_controls(tmp_path)
+
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+    trader.set_mode("paper")
+    trader.execution_enabled = True
+    trader.market_data_only = False
+
+    out = trader.execute_decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=1.0,
+        model_score=0.68,
+        threshold=0.62,
+        features={
+            "last_price": 500.0,
+            "market_micro_tradeability_score_norm": 0.90,
+            "execution_fitness_norm": 0.90,
+            "source_quality_norm": 0.90,
+            "liquidity_quality_norm": 0.90,
+            "session_quality_norm": 0.90,
+            "spread_bps": 5.0,
+            "quote_age_ms": 250.0,
+        },
+        gates={"model_gate": True, "market_data_ok": True},
+        reasons=["unit_test"],
+        strategy="alpha",
+        metadata={"source_profile": "day_trading"},
+    )
+
+    assert out.get("status") == "PAPER_PROFITABILITY_GUARD_BLOCKED"
+    assert (
+        out["live_guard_decision"]["reason"]
+        == "paper_profitability_weak_profile_new_entry_block"
+    )
+
+
+def test_paper_evidence_collection_controls_relax_turnover_for_sampling(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("PAPER_MAX_NEW_ENTRIES_PER_SYMBOL_DAY", "2")
+    monkeypatch.setenv("PAPER_NEW_ENTRY_COOLDOWN_SECONDS", "300")
+    _write_paper_evidence_collection_controls(tmp_path)
+    trader = object.__new__(BaseTrader)
+    trader.mode = "paper"
+    trader.project_root = str(tmp_path)
+    trader.profile = "day_trading"
+    trader._paper_trade_activity = {
+        "day_trading|spy": {
+            "day_utc": "2026-09-04",
+            "entries_today": 3,
+            "last_entry_utc": "2026-09-04T14:00:00+00:00",
+            "last_entry_action": "BUY",
+        }
+    }
+
+    blocked, reason, details = trader._paper_turnover_new_entry_blocked(
+        exposure={"increases_exposure": True, "crosses_through_flat": False},
+        profile="day_trading",
+        symbol="SPY",
+        action="BUY",
+        now_utc=datetime(2026, 9, 4, 14, 2, 1, tzinfo=timezone.utc),
+    )
+
+    assert blocked is False
+    assert reason == "paper_turnover_guard_clear"
+    assert details["max_entries_per_symbol_day"] == 10
+    assert details["new_entry_cooldown_seconds"] == 120
+    assert details["paper_evidence_collection_controls"]["active"] is True
+
+
 def test_paper_profitability_guard_blocks_declared_policy_failure_without_recovery_control(
     tmp_path: Path,
 ) -> None:
@@ -1450,6 +1641,111 @@ def test_paper_profitability_guard_enforces_declared_clean_sleeve_evidence(
     assert "source_quality_unknown" in details["failures"]
     assert allowed is False
     assert allowed_reason == "clean_profile_evidence_gate_passed"
+
+
+def test_paper_evidence_collection_override_allows_auxiliary_clean_gate_gaps(
+    tmp_path: Path,
+) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "raw_profitability_a_recovery_contract": {
+            "active": True,
+            "weak_profiles": [],
+            "runtime_enforcement": {"block_new_entries_on_weak_profiles": True},
+        },
+        "raw_profitability_improvement_contract": {
+            "active": True,
+            "runtime_enforcement": {"block_new_entries_on_weak_profiles": True},
+            "clean_sleeve_strict_buy_gate_contract": {
+                "active": True,
+                "enforced": True,
+                "min_quality_gate_norm": 0.72,
+                "min_tradeability_norm": 0.58,
+                "min_execution_fitness_norm": 0.58,
+                "min_cross_asset_confirmation_norm": 0.56,
+                "max_overlap_pressure_norm": 0.58,
+                "min_independent_evidence_channels": 7,
+                "block_when_spread_regime_unknown": True,
+            },
+        },
+    }
+    (health / "paper_runtime_profitability_controls_latest.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    _write_paper_evidence_collection_controls(tmp_path)
+    _reset_paper_profitability_guard_cache()
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+
+    blocked, reason, details = trader._paper_profitability_new_entry_blocked(
+        symbol="SPY",
+        action="BUY",
+        quantity=1.0,
+        metadata={
+            "source_profile": "day_trading",
+            "session": "regular",
+            "model_score": 0.68,
+            "decision_threshold": 0.62,
+        },
+        features={
+            "last_price": 500.0,
+            "source_quality_norm": 0.90,
+            "tradeability_norm": 0.90,
+            "execution_fitness_norm": 0.90,
+            "cross_asset_confirmation_norm": 0.90,
+            "overlap_pressure_norm": 0.10,
+            "spread_bps": 5.0,
+            "quote_age_ms": 250.0,
+            "liquidity_quality_norm": 0.90,
+        },
+        strategy="alpha",
+    )
+
+    assert blocked is False
+    assert reason == "paper_evidence_collection_override_allowed"
+    collection = details["paper_evidence_collection"]
+    assert collection["paper_only"] is True
+    assert collection["live_execution_allowed"] is False
+    assert "event_catalyst_confirmation_unknown" in collection["relaxed_failures"]
+
+
+def test_paper_evidence_collection_override_does_not_allow_stale_quotes(
+    tmp_path: Path,
+) -> None:
+    _write_paper_evidence_collection_controls(tmp_path)
+    _reset_paper_profitability_guard_cache()
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+
+    blocked, reason, details = trader._paper_profitability_new_entry_blocked(
+        symbol="SPY",
+        action="BUY",
+        quantity=1.0,
+        metadata={
+            "source_profile": "day_trading",
+            "model_score": 0.68,
+            "decision_threshold": 0.62,
+        },
+        features={
+            "profitability_strict_evidence_required": True,
+            "last_price": 500.0,
+            "market_micro_tradeability_score_norm": 0.90,
+            "execution_fitness_norm": 0.90,
+            "source_quality_norm": 0.90,
+            "liquidity_quality_norm": 0.90,
+            "session_quality_norm": 0.90,
+            "spread_bps": 5.0,
+            "quote_age_ms": 9000.0,
+        },
+        strategy="alpha",
+    )
+
+    assert blocked is True
+    assert reason == "paper_profitability_entry_policy_block"
+    collection = details["paper_evidence_collection"]
+    assert collection["status"] == "hard_or_unapproved_failure"
+    assert any("quote_age_ms" in item for item in collection["hard_failures"])
 
 
 def test_paper_profitability_guard_enforces_profile_strategy_quarantine(

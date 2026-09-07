@@ -8,7 +8,11 @@ from scripts.ops import paper_live_data_standard as src
 def _write_registry(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"summary": {"active_bots": 0}, "sub_bots": rows}, ensure_ascii=True, indent=2),
+        json.dumps(
+            {"summary": {"active_bots": 0}, "sub_bots": rows},
+            ensure_ascii=True,
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
@@ -20,7 +24,10 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _write_profitability_weak_profiles(project_root: Path, profiles: list[str]) -> None:
     _write_json(
-        project_root / "governance" / "health" / "paper_runtime_profitability_controls_latest.json",
+        project_root
+        / "governance"
+        / "health"
+        / "paper_runtime_profitability_controls_latest.json",
         {
             "raw_profitability_a_recovery_contract": {
                 "active": True,
@@ -43,7 +50,9 @@ def _write_profitability_weak_profiles(project_root: Path, profiles: list[str]) 
     )
 
 
-def test_paper_live_data_standard_keeps_legacy_paper_and_new_collecting(tmp_path: Path) -> None:
+def test_paper_live_data_standard_keeps_legacy_paper_and_new_collecting(
+    tmp_path: Path,
+) -> None:
     registry_path = tmp_path / "master_bot_registry.json"
     _write_registry(
         registry_path,
@@ -127,27 +136,47 @@ def test_paper_live_data_standard_keeps_legacy_paper_and_new_collecting(tmp_path
     assert by_id["ready_new_paper"]["paper_standard_cohort"] == "standard_promoted"
     assert by_id["ready_new_paper"]["paper_execution_authority"] is True
     assert by_id["new_collector"]["paper_live_data_enabled"] is False
-    assert by_id["new_collector"]["promotion_blocked_until"] == "paper_live_data_standard_met"
+    assert (
+        by_id["new_collector"]["promotion_blocked_until"]
+        == "paper_live_data_standard_met"
+    )
     assert by_id["brain_refinery_v26_restored_probation"]["active"] is True
-    assert by_id["brain_refinery_v26_restored_probation"]["lifecycle_state"] == "paper_live_data"
-    assert by_id["brain_refinery_v26_restored_probation"]["paper_standard_cohort"] == "legacy_bootstrap"
-    assert by_id["brain_refinery_v26_restored_probation"]["paper_probation_authority"] is True
+    assert (
+        by_id["brain_refinery_v26_restored_probation"]["lifecycle_state"]
+        == "paper_live_data"
+    )
+    assert (
+        by_id["brain_refinery_v26_restored_probation"]["paper_standard_cohort"]
+        == "legacy_bootstrap"
+    )
+    assert (
+        by_id["brain_refinery_v26_restored_probation"]["paper_probation_authority"]
+        is True
+    )
     assert by_id["deleted_bot"]["active"] is False
     assert by_id["deleted_bot"]["paper_standard_status"] == "deleted_preserved"
     assert all(row.get("direct_execution_allowed") is False for row in projected)
     assert all(row.get("live_trading_enabled") is not True for row in projected)
 
 
-def test_paper_live_data_standard_apply_updates_registry_summary_and_backup(tmp_path: Path) -> None:
+def test_paper_live_data_standard_apply_updates_registry_summary_and_backup(
+    tmp_path: Path,
+) -> None:
     registry_path = tmp_path / "master_bot_registry.json"
-    out_path = tmp_path / "governance" / "health" / "paper_live_data_standard_latest.json"
+    out_path = (
+        tmp_path / "governance" / "health" / "paper_live_data_standard_latest.json"
+    )
     override_path = tmp_path / "config" / ".env.paper_live_data_standard_override"
     backup_dir = tmp_path / "governance" / "lifecycle"
     _write_registry(
         registry_path,
         [
             {"bot_id": "legacy_active", "active": True, "lifecycle_state": "active"},
-            {"bot_id": "new_collector", "active": True, "lifecycle_state": "data_collection_only"},
+            {
+                "bot_id": "new_collector",
+                "active": True,
+                "lifecycle_state": "data_collection_only",
+            },
         ],
     )
 
@@ -173,24 +202,45 @@ def test_paper_live_data_standard_apply_updates_registry_summary_and_backup(tmp_
     override_text = override_path.read_text(encoding="utf-8")
     assert "PAPER_LIVE_DATA_STANDARD_ENABLED=1" in override_text
     assert "PAPER_MIRROR_ALL_ACTIVE_SUB_BOTS=0" in override_text
-    assert "PAPER_EXECUTION_AUTHORITY_VERSION=paper_execution_authority_v2" in override_text
+    assert (
+        "PAPER_EXECUTION_AUTHORITY_VERSION=paper_execution_authority_v2"
+        in override_text
+    )
     assert "ALLOW_ORDER_EXECUTION=0" in override_text
     assert health["counts_after"]["paper_live_data_enabled_bots"] == 1
 
 
-def test_paper_live_data_standard_canonical_apply_writes_candidate_by_default(tmp_path: Path, monkeypatch) -> None:
+def test_paper_live_data_standard_canonical_apply_writes_candidate_by_default(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.delenv("PAPER_LIVE_DATA_ALLOW_SOURCE_REGISTRY_WRITE", raising=False)
     registry_path = tmp_path / "master_bot_registry.json"
-    out_path = tmp_path / "governance" / "health" / "paper_live_data_standard_latest.json"
+    out_path = (
+        tmp_path / "governance" / "health" / "paper_live_data_standard_latest.json"
+    )
     override_path = tmp_path / "config" / ".env.paper_live_data_standard_override"
-    candidate_path = tmp_path / "governance" / "health" / "paper_live_data_standard_registry_candidate_latest.json"
-    guard_path = tmp_path / "governance" / "health" / "paper_live_data_standard_source_write_guard_latest.json"
+    candidate_path = (
+        tmp_path
+        / "governance"
+        / "health"
+        / "paper_live_data_standard_registry_candidate_latest.json"
+    )
+    guard_path = (
+        tmp_path
+        / "governance"
+        / "health"
+        / "paper_live_data_standard_source_write_guard_latest.json"
+    )
     monkeypatch.setattr(src, "SOURCE_REGISTRY_PATH", registry_path)
     _write_registry(
         registry_path,
         [
             {"bot_id": "legacy_active", "active": True, "lifecycle_state": "active"},
-            {"bot_id": "new_collector", "active": True, "lifecycle_state": "data_collection_only"},
+            {
+                "bot_id": "new_collector",
+                "active": True,
+                "lifecycle_state": "data_collection_only",
+            },
         ],
     )
     original = registry_path.read_text(encoding="utf-8")
@@ -210,24 +260,196 @@ def test_paper_live_data_standard_canonical_apply_writes_candidate_by_default(tm
     guard = json.loads(guard_path.read_text(encoding="utf-8"))
 
     assert registry_path.read_text(encoding="utf-8") == original
-    assert candidate["summary"]["paper_live_data_standard_version"] == src.STANDARD_VERSION
+    assert (
+        candidate["summary"]["paper_live_data_standard_version"] == src.STANDARD_VERSION
+    )
     assert guard["source_write_blocked"] is True
-    assert guard["candidate_sha256"] == hashlib.sha256(candidate_path.read_bytes()).hexdigest()
-    assert guard["source_sha256"] == hashlib.sha256(registry_path.read_bytes()).hexdigest()
+    assert (
+        guard["candidate_sha256"]
+        == hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+    )
+    assert (
+        guard["source_sha256"] == hashlib.sha256(registry_path.read_bytes()).hexdigest()
+    )
     assert applied["apply_result"]["registry_source_write_blocked"] is True
     assert applied["apply_result"]["candidate_registry_path"] == str(candidate_path)
     assert override_path.exists()
     assert out_path.exists()
 
 
-def test_paper_live_data_standard_keeps_coinbase_paper_probation_when_profiles_are_weak(tmp_path: Path) -> None:
+def test_paper_live_data_standard_reconcile_summary_only_updates_stale_counts(
+    tmp_path: Path,
+) -> None:
+    registry_path = tmp_path / "master_bot_registry.json"
+    out_path = (
+        tmp_path / "governance" / "health" / "paper_live_data_standard_latest.json"
+    )
+    receipt_path = (
+        tmp_path
+        / "governance"
+        / "health"
+        / "paper_live_data_standard_summary_reconcile_latest.json"
+    )
+    rows = [
+        {
+            "bot_id": "legacy_bootstrap_ready",
+            "bot_role": "signal_sub_bot",
+            "active": True,
+            "lifecycle_state": "paper_live_data",
+            "data_collection_active": True,
+            "paper_standard_cohort": src.BOOTSTRAP_COHORT,
+            "paper_standard_status": "paper_live_data_enabled",
+            "paper_live_data_enabled": True,
+            "paper_trading_enabled": True,
+            "paper_trade_enabled": True,
+            "paper_execution_allowed": True,
+            "paper_execution_authority": False,
+            "paper_probation_authority": True,
+            "paper_probation_requalification_allowed": True,
+            "test_accuracy": 0.61,
+            "quality_score": 0.61,
+            "direct_execution_allowed": False,
+            "live_trading_enabled": False,
+        },
+        {
+            "bot_id": "collector_ready",
+            "bot_role": "signal_sub_bot",
+            "active": True,
+            "lifecycle_state": "data_collection_only",
+            "data_collection_active": True,
+            "paper_standard_cohort": src.COLLECTION_COHORT,
+            "paper_standard_status": "collecting_only_until_standard_met",
+            "paper_live_data_enabled": False,
+            "paper_trading_enabled": False,
+            "paper_trade_enabled": False,
+            "paper_execution_allowed": False,
+            "paper_execution_authority": False,
+            "paper_probation_authority": False,
+            "direct_execution_allowed": False,
+            "live_trading_enabled": False,
+            "training_excluded": True,
+            "exclude_from_training": True,
+        },
+    ]
+    _write_registry(registry_path, rows)
+    original_rows = json.loads(registry_path.read_text(encoding="utf-8"))["sub_bots"]
+
+    payload = src.build_payload(tmp_path, registry_path=registry_path)
+    reconciled = src.reconcile_registry_summary_from_payload(
+        tmp_path,
+        payload,
+        registry_path=registry_path,
+        out_path=out_path,
+        backup_dir=tmp_path / "governance" / "lifecycle",
+        receipt_path=receipt_path,
+        allow_source_registry_write=True,
+    )
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    health = json.loads(out_path.read_text(encoding="utf-8"))
+
+    assert reconciled["apply_result"]["mode"] == "summary_reconcile"
+    assert reconciled["apply_result"]["summary_only"] is True
+    assert registry["sub_bots"] == original_rows
+    assert registry["summary"]["active_bots"] == 2
+    assert registry["summary"]["legacy_bootstrap_paper_bots"] == 1
+    assert registry["summary"]["collection_until_standard_bots"] == 1
+    assert (
+        registry["summary"]["paper_live_data_standard_version"] == src.STANDARD_VERSION
+    )
+    assert receipt["ok"] is True
+    assert receipt["summary_only"] is True
+    assert receipt["sub_bots_rewritten"] is False
+    assert health["summary_reconciliation"]["ok"] is True
+    assert "projected_registry" not in health
+
+    second = src.reconcile_registry_summary_from_payload(
+        tmp_path,
+        src.build_payload(tmp_path, registry_path=registry_path),
+        registry_path=registry_path,
+        out_path=out_path,
+        backup_dir=tmp_path / "governance" / "lifecycle",
+        receipt_path=receipt_path,
+        allow_source_registry_write=True,
+    )
+    second_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert second["summary_reconciliation"]["overall_status"] == "ready_no_changes"
+    assert second_receipt["changed_field_count"] == 0
+
+
+def test_paper_live_data_standard_reconcile_summary_respects_source_guard(
+    tmp_path: Path, monkeypatch
+) -> None:
+    registry_path = tmp_path / "master_bot_registry.json"
+    receipt_path = (
+        tmp_path
+        / "governance"
+        / "health"
+        / "paper_live_data_standard_summary_reconcile_latest.json"
+    )
+    monkeypatch.setattr(src, "SOURCE_REGISTRY_PATH", registry_path)
+    _write_registry(
+        registry_path,
+        [
+            {
+                "bot_id": "legacy_bootstrap_ready",
+                "bot_role": "signal_sub_bot",
+                "active": True,
+                "lifecycle_state": "paper_live_data",
+                "data_collection_active": True,
+                "paper_standard_cohort": src.BOOTSTRAP_COHORT,
+                "paper_standard_status": "paper_live_data_enabled",
+                "paper_live_data_enabled": True,
+                "paper_trading_enabled": True,
+                "paper_trade_enabled": True,
+                "paper_execution_allowed": True,
+                "paper_execution_authority": False,
+                "paper_probation_authority": True,
+                "paper_probation_requalification_allowed": True,
+                "test_accuracy": 0.61,
+                "quality_score": 0.61,
+                "direct_execution_allowed": False,
+                "live_trading_enabled": False,
+            }
+        ],
+    )
+    original = registry_path.read_text(encoding="utf-8")
+
+    payload = src.build_payload(tmp_path, registry_path=registry_path)
+    reconciled = src.reconcile_registry_summary_from_payload(
+        tmp_path,
+        payload,
+        registry_path=registry_path,
+        out_path=tmp_path
+        / "governance"
+        / "health"
+        / "paper_live_data_standard_latest.json",
+        backup_dir=tmp_path / "governance" / "lifecycle",
+        receipt_path=receipt_path,
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+
+    assert registry_path.read_text(encoding="utf-8") == original
+    assert receipt["ok"] is False
+    assert receipt["overall_status"] == "blocked_source_write_guard"
+    assert receipt["source_write_blocked"] is True
+    assert reconciled["apply_result"]["applied"] is False
+
+
+def test_paper_live_data_standard_keeps_coinbase_paper_probation_when_profiles_are_weak(
+    tmp_path: Path,
+) -> None:
     registry_path = tmp_path / "master_bot_registry.json"
     override_path = tmp_path / "config" / ".env.paper_live_data_standard_override"
     _write_registry(
         registry_path,
         [
             {"bot_id": "legacy_active", "active": True, "lifecycle_state": "active"},
-            {"bot_id": "new_collector", "active": True, "lifecycle_state": "data_collection_only"},
+            {
+                "bot_id": "new_collector",
+                "active": True,
+                "lifecycle_state": "data_collection_only",
+            },
         ],
     )
     _write_profitability_weak_profiles(
@@ -240,13 +462,20 @@ def test_paper_live_data_standard_keeps_coinbase_paper_probation_when_profiles_a
         tmp_path,
         payload,
         registry_path=registry_path,
-        out_path=tmp_path / "governance" / "health" / "paper_live_data_standard_latest.json",
+        out_path=tmp_path
+        / "governance"
+        / "health"
+        / "paper_live_data_standard_latest.json",
         override_path=override_path,
         backup_dir=tmp_path / "governance" / "lifecycle",
     )
 
     override_text = override_path.read_text(encoding="utf-8")
-    schwab_line = next(line for line in override_text.splitlines() if line.startswith("SCHWAB_TOP_BOT_PAPER_TRADING_PROFILES="))
+    schwab_line = next(
+        line
+        for line in override_text.splitlines()
+        if line.startswith("SCHWAB_TOP_BOT_PAPER_TRADING_PROFILES=")
+    )
     assert "volatility" in schwab_line
     assert "default" not in schwab_line
     assert "bond" not in schwab_line
@@ -254,24 +483,40 @@ def test_paper_live_data_standard_keeps_coinbase_paper_probation_when_profiles_a
     assert "COINBASE_TOP_BOT_PAPER_TRADING_TOP_N=8" in override_text
     assert "COINBASE_TOP_BOT_PAPER_TRADING_PROFILES=default" in override_text
     assert "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_TOP_N=6" in override_text
-    assert "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES=crypto_futures" in override_text
+    assert (
+        "COINBASE_FUTURES_TOP_BOT_PAPER_TRADING_PROFILES=crypto_futures"
+        in override_text
+    )
     assert "COINBASE_PAPER_PROBATION_ENABLED=1" in override_text
-    assert "COINBASE_PAPER_PROBATIONARY_PROFILES=default,crypto_futures" in override_text
-    assert "PAPER_PROFITABILITY_WEAK_PROFILES=bond,crypto_futures,default,fx,options_on_futures" in override_text
+    assert (
+        "COINBASE_PAPER_PROBATIONARY_PROFILES=default,crypto_futures" in override_text
+    )
+    assert (
+        "PAPER_PROFITABILITY_WEAK_PROFILES=bond,crypto_futures,default,fx,options_on_futures"
+        in override_text
+    )
     assert "PAPER_SOAK_SPECIALIZED_ALLOWLIST_BYPASS_FANOUT=0" in override_text
     assert "RUN_ALL_SLEEVES_WITH_SPECIALIZED_SLEEVES=1" in override_text
     assert "RUN_ALL_SLEEVES_SPECIALIZED_PROFILE_ALLOWLIST=volatility" in override_text
 
 
-def test_paper_live_data_standard_preview_writes_health_without_registry_change(tmp_path: Path) -> None:
+def test_paper_live_data_standard_preview_writes_health_without_registry_change(
+    tmp_path: Path,
+) -> None:
     registry_path = tmp_path / "master_bot_registry.json"
-    out_path = tmp_path / "governance" / "health" / "paper_live_data_standard_latest.json"
+    out_path = (
+        tmp_path / "governance" / "health" / "paper_live_data_standard_latest.json"
+    )
     override_path = tmp_path / "config" / ".env.paper_live_data_standard_override"
     _write_registry(
         registry_path,
         [
             {"bot_id": "legacy_active", "active": True, "lifecycle_state": "active"},
-            {"bot_id": "new_collector", "active": True, "lifecycle_state": "data_collection_only"},
+            {
+                "bot_id": "new_collector",
+                "active": True,
+                "lifecycle_state": "data_collection_only",
+            },
         ],
     )
     original = registry_path.read_text(encoding="utf-8")

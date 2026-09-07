@@ -15,22 +15,12 @@ if str(_PROJECT_ROOT_FOR_IMPORTS) not in sys.path:
 
 from core.ml_backend_contract import detect_installed_backends, resolve_backend_contract
 from core.bot_profitability_scalability import LazyModelCache
+from core.mlx_runtime_guard import mlx_modules
 
-_MLX_IMPORT_ERROR: Optional[Exception] = None
-_MLX_AVAILABLE = False
-try:
-    import mlx.core as mx
-    import mlx.nn as nn
-    import mlx.optimizers as optim
+mx, nn, optim, _MLX_IMPORT_ERROR = mlx_modules()
+_MLX_AVAILABLE = mx is not None and nn is not None and optim is not None
 
-    _MLX_AVAILABLE = True
-except Exception as exc:
-    mx = None  # type: ignore[assignment]
-    nn = None  # type: ignore[assignment]
-    optim = None  # type: ignore[assignment]
-    _MLX_IMPORT_ERROR = exc
-
-from runtime_training_common import (
+from core.runtime_training_common import (
     RuntimeConfidenceBuilder,
     RuntimeFeatureBuilder,
     RuntimeLabelBuilder,

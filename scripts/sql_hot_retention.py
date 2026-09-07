@@ -25,9 +25,13 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 
 def _connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=30000")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+    except sqlite3.DatabaseError:
+        conn.close()
+        raise
     return conn
 
 
@@ -318,6 +322,7 @@ def _prune_archive_storage(
     rows_pruned_by_db: dict[str, int] = {}
     deleted_archive_files: list[str] = []
     vacuumed_archive_dbs: list[str] = []
+    errors: dict[str, str] = {}
     cold_export = {
         "enabled": bool(cold_export_root),
         "root": str(cold_export_root) if cold_export_root else "",
@@ -331,7 +336,11 @@ def _prune_archive_storage(
 
     for path in _archive_db_candidates(archive_db=archive_db, archive_root=archive_root):
         if archive_root is not None and path.parent == archive_root and _archive_file_fully_before_cutoff(path, cutoff_dt):
-            row_count = _count_archive_rows(path)
+            try:
+                row_count = _count_archive_rows(path)
+            except sqlite3.DatabaseError as exc:
+                errors[str(path)] = str(exc)
+                continue
             if cold_export_root is not None:
                 export_target = _export_output_path(path, cold_export_root=cold_export_root, cold_export_format=cold_export_format)
                 try:
@@ -354,7 +363,11 @@ def _prune_archive_storage(
                 rows_pruned_by_db[str(path)] = int(row_count)
             continue
 
-        conn = _connect(path)
+        try:
+            conn = _connect(path)
+        except sqlite3.DatabaseError as exc:
+            errors[str(path)] = str(exc)
+            continue
         remaining_rows = 0
         removed_rows = 0
         try:
@@ -373,6 +386,10 @@ def _prune_archive_storage(
                 if archive_prune_vacuum and remaining_rows > 0:
                     conn.execute("VACUUM")
                     vacuumed_archive_dbs.append(str(path))
+        except sqlite3.DatabaseError as exc:
+            conn.rollback()
+            errors[str(path)] = str(exc)
+            continue
         finally:
             conn.close()
 
@@ -389,6 +406,7 @@ def _prune_archive_storage(
         "deleted_archive_files": sorted(set(deleted_archive_files)),
         "vacuumed_archive_dbs": sorted(set(vacuumed_archive_dbs)),
         "cold_archive_export": cold_export,
+        "errors": errors,
     }
 
 
@@ -517,7 +535,7 @@ def main() -> int:
             src.commit()
             total_moved += len(rows)
 
-        if args.vacuum and total_moved > 0:
+        if args.vacuum and src.execute("PRAGMA freelist_count").fetchone()[0] > 0:
             src.execute("VACUUM")
 
         skip_remaining_count = bool(args.skip_remaining_count) or (
@@ -564,6 +582,7 @@ def main() -> int:
         "archive_rows_by_db": archive_rows_by_db,
         "cutoff_utc": cutoff,
         "archive_pruning": archive_pruning,
+        "ok": not bool(archive_pruning.get("errors") or archive_pruning.get("cold_archive_export", {}).get("errors")),
     }
 
     if args.json:
@@ -580,7 +599,7 @@ def main() -> int:
             )
         )
 
-    return 0
+    return 0 if out["ok"] else 2
 
 
 if __name__ == "__main__":

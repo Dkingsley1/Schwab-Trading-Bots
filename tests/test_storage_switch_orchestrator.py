@@ -11,6 +11,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import storage_switch_orchestrator as src
 
 
+def test_mode_match_never_accepts_split_brain_as_completed_switch() -> None:
+    assert src._mode_matches_target("local_fallback_split_brain", "local") is False
+    assert src._mode_matches_target("local_fallback", "local") is True
+    assert src._mode_matches_target("external_curated", "external") is True
+
+
 def test_build_payload_quiesce_only_stops_and_switches_without_restart(
     tmp_path: Path, monkeypatch
 ) -> None:

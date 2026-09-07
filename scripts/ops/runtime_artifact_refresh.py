@@ -14,6 +14,7 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
+    from core.operating_contracts import build_operating_contract
     from core.runtime_python import resolve_runtime_python
     from scripts.ops.artifact_generation_lock import (
         PAPER_PROFITABILITY_LOCK_ENV,
@@ -27,6 +28,7 @@ if __package__ in {None, ""}:
     )
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    from core.operating_contracts import build_operating_contract
     from core.runtime_python import resolve_runtime_python
     from .artifact_generation_lock import (
         PAPER_PROFITABILITY_LOCK_ENV,
@@ -64,8 +66,10 @@ REFRESH_SCOPE_ROOTS: dict[str, tuple[str, ...]] = {
         "profitability_self_assessment",
         "alpha_generation_control",
         "alpha_concept_report_verified",
+        "strategy_market_fit_infrabot_verified",
         "sleeve_alpha_toolbox_verified",
         "bot_profitability_scalability_control",
+        "sleeve_scalability_selector",
         "artifact_freshness_slo_post_master",
     ),
     "training-profitability": (
@@ -80,14 +84,17 @@ REFRESH_SCOPE_ROOTS: dict[str, tuple[str, ...]] = {
         "profitability_self_assessment",
         "alpha_generation_control",
         "alpha_concept_report_verified",
+        "strategy_market_fit_infrabot_verified",
         "sleeve_alpha_toolbox_verified",
         "bot_profitability_scalability_control",
+        "sleeve_scalability_selector",
         "artifact_freshness_slo_post_master",
     ),
 }
 PAPER_SOAK_MANAGED_STEPS = {
     "alpha_generation_control",
     "alpha_concept_report_verified",
+    "strategy_market_fit_infrabot_verified",
     "sleeve_alpha_toolbox_verified",
     "training_lineage_manifest",
     "training_quality_control",
@@ -121,6 +128,7 @@ PAPER_SOAK_MANAGED_STEPS = {
     "profitability_evidence_firewall",
     "profitability_hardening_control",
     "bot_profitability_scalability_control",
+    "sleeve_scalability_selector",
     "production_readiness_control",
     "production_excellence_control",
     "continuous_soak_integrity_control",
@@ -494,6 +502,20 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "trading_behavior_drill_program",
+            "payload_path": project_root
+            / "governance"
+            / "research"
+            / "trading_behavior_drill_program_latest.json",
+            "cmd": [
+                str(PY),
+                str(ops_root / "trading_behavior_drill_program.py"),
+                "--json",
+            ],
+            "timeout_sec": 180,
+            "depends_on": ["paper_performance"],
+        },
+        {
             "name": "paper_profitability_control",
             "payload_path": health_root / "paper_profitability_control_latest.json",
             "additional_payload_paths": [
@@ -506,6 +528,7 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
                 "--json",
             ],
             "timeout_sec": 180,
+            "depends_on": ["paper_performance", "trading_behavior_drill_program"],
         },
         {
             "name": "profitability_hardening_control",
@@ -896,6 +919,28 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "cmd": [str(PY), str(ops_root / "account_position_study.py"), "--json"],
         },
         {
+            "name": "account_policy_context",
+            "payload_path": health_root / "account_policy_context_latest.json",
+            "cmd": [str(PY), str(ops_root / "account_policy_context.py"), "--json"],
+            "depends_on": ["account_position_study"],
+        },
+        {
+            "name": "schwab_broker_boundary_control",
+            "payload_path": health_root / "schwab_broker_boundary_control_latest.json",
+            "cmd": [
+                str(ops_root / "opsctl.sh"),
+                "schwab-broker-boundary",
+                "--apply",
+                "--notify",
+                "--json",
+            ],
+            "depends_on": [
+                "schwab_account_snapshot_refresh",
+                "account_position_study",
+                "account_policy_context",
+            ],
+        },
+        {
             "name": "position_opportunity_watch",
             "payload_path": health_root / "position_opportunity_watch_latest.json",
             "cmd": [str(PY), str(ops_root / "position_opportunity_watch.py"), "--json"],
@@ -1024,6 +1069,17 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "payload_path": health_root / "live_order_ledger_control_latest.json",
             "cmd": [str(PY), str(ops_root / "live_order_ledger_control.py"), "--json"],
             "timeout_sec": 60,
+        },
+        {
+            "name": "live_canary_graduation",
+            "payload_path": health_root / "live_canary_graduation_latest.json",
+            "cmd": [
+                str(PY),
+                str(ops_root / "live_canary_graduation.py"),
+                "--json",
+            ],
+            "timeout_sec": 60,
+            "depends_on": ["live_order_ledger_control"],
         },
         {
             "name": "live_execution_rehearsal_control",
@@ -1639,10 +1695,21 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "source_mutation_guard_verified",
+            "payload_path": health_root / "source_mutation_guard_latest.json",
+            "cmd": [
+                str(PY),
+                str(ops_root / "source_mutation_guard.py"),
+                "--json",
+            ],
+            "timeout_sec": 180,
+        },
+        {
             "name": "system_drift_registry_verified",
             "payload_path": health_root / "system_drift_registry_latest.json",
             "cmd": [str(PY), str(ops_root / "system_drift_registry.py"), "--json"],
             "timeout_sec": 180,
+            "depends_on": ["source_mutation_guard_verified"],
         },
         {
             "name": "codex_project_guard_verified",
@@ -3297,6 +3364,20 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "depends_on": ["paper_performance_verified"],
         },
         {
+            "name": "trading_behavior_drill_program_verified",
+            "payload_path": project_root
+            / "governance"
+            / "research"
+            / "trading_behavior_drill_program_latest.json",
+            "cmd": [
+                str(PY),
+                str(ops_root / "trading_behavior_drill_program.py"),
+                "--json",
+            ],
+            "timeout_sec": 180,
+            "depends_on": ["paper_performance_verified"],
+        },
+        {
             "name": "paper_profitability_control_verified",
             "payload_path": health_root / "paper_profitability_control_latest.json",
             "additional_payload_paths": [
@@ -3309,7 +3390,10 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
                 "--json",
             ],
             "timeout_sec": 180,
-            "depends_on": ["paper_performance_verified"],
+            "depends_on": [
+                "paper_performance_verified",
+                "trading_behavior_drill_program_verified",
+            ],
         },
         {
             "name": "counterfactual_replay_verified",
@@ -3539,6 +3623,23 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
                 "feature_store_manifest_verified",
                 "runtime_throttle_control_post_settlement_verified",
                 "profitability_evidence_firewall",
+            ],
+        },
+        {
+            "name": "sleeve_scalability_selector",
+            "payload_path": health_root / "sleeve_scalability_selector_latest.json",
+            "cmd": [
+                str(PY),
+                str(ops_root / "sleeve_scalability_selector.py"),
+                "--json",
+            ],
+            "timeout_sec": 90,
+            "depends_on": [
+                "bot_profitability_scalability_control",
+                "live_canary_graduation",
+                "account_position_study",
+                "profitability_evidence_firewall",
+                "paper_execution_calibration_verified",
             ],
         },
         {
@@ -3781,6 +3882,28 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             ],
         },
         {
+            "name": "strategy_market_fit_infrabot_verified",
+            "payload_path": health_root / "strategy_market_fit_infrabot_latest.json",
+            "additional_payload_paths": [
+                project_root
+                / "governance"
+                / "research"
+                / "strategy_shadow_challenger_cohort_latest.json"
+            ],
+            "cmd": [
+                str(PY),
+                str(ops_root / "strategy_market_fit_infrabot.py"),
+                "--force",
+                "--json",
+            ],
+            "timeout_sec": 180,
+            "depends_on": [
+                "sleeve_strategy_specialization_verified",
+                "alpha_generation_control",
+                "alpha_concept_report_verified",
+            ],
+        },
+        {
             "name": "sleeve_alpha_toolbox_verified",
             "payload_path": project_root
             / "governance"
@@ -3855,6 +3978,7 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
                 "profitability_self_assessment",
                 "alpha_generation_control",
                 "alpha_concept_report_verified",
+                "strategy_market_fit_infrabot_verified",
                 "sleeve_alpha_toolbox_verified",
                 "authoritative_systems_control",
                 "research_data_platform_control",
@@ -3992,6 +4116,69 @@ def _annotate_epoch(path: Path, spec: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _refresh_failure_operating_contract(
+    spec: dict[str, Any],
+    *,
+    why: str,
+    evidence_missing: list[str],
+    artifact_path: Path,
+    producer_rc: int | None = None,
+    stale_source_rejected: bool = False,
+    dependency_epoch_rejected: bool = False,
+) -> dict[str, Any]:
+    producer = str(spec.get("name") or "runtime_artifact_refresh").strip()
+    status = "degraded" if bool(spec.get("optional", False)) else "blocked"
+    command = [str(item) for item in spec.get("cmd", []) if str(item).strip()]
+    return build_operating_contract(
+        contract_id=f"{producer}_refresh_failure_contract_v1",
+        owner=producer,
+        domain="runtime_artifact_refresh",
+        status=status,
+        why=why,
+        safe_authority=[
+            "publish_failure_envelope",
+            "preserve_prior_artifact_lineage",
+            "retry_ordered_refresh_after_dependencies_clear",
+        ],
+        blocked_authority=[
+            "serving_rejected_artifact_as_current_truth",
+            "downstream_runtime_decision_from_rejected_epoch",
+            "paper_order_submission_from_rejected_artifact",
+            "live_order_submission_from_rejected_artifact",
+            "model_promotion_from_rejected_artifact",
+            "profitability_claim_from_rejected_artifact",
+        ],
+        evidence_missing=evidence_missing,
+        release_conditions=[
+            "all_current_epoch_dependencies_publish_successfully",
+            "producer_publishes_current_cycle_artifact",
+            "artifact_evidence_epoch_matches_refresh_epoch",
+            "ordered_refresh_rerun_after_upstream_repair",
+        ],
+        next_commands=[command] if command else [],
+        definition_gaps=[
+            ("upstream_dependency_epoch_gap" if dependency_epoch_rejected else ""),
+            "producer_current_cycle_publication_gap" if stale_source_rejected else "",
+        ],
+        measurement={
+            "producer": producer,
+            "producer_rc": producer_rc,
+            "artifact_path": str(artifact_path),
+            "missing_current_epoch_dependency_count": len(evidence_missing),
+            "dependency_epoch_rejected": dependency_epoch_rejected,
+            "stale_source_rejected": stale_source_rejected,
+        },
+        hardening={
+            "failure_envelope_is_current_artifact": True,
+            "downstream_consumers_must_treat_as_blocked": not bool(
+                spec.get("optional", False)
+            ),
+            "automatic_execution_authority": False,
+            "ordered_epoch_required": True,
+        },
+    )
+
+
 def _dependency_failure_result(
     spec: dict[str, Any], missing_dependencies: list[str]
 ) -> dict[str, Any]:
@@ -4019,9 +4206,29 @@ def _dependency_failure_result(
             "repair the failed upstream evidence producer and rerun the ordered refresh epoch"
         ],
         "evidence_epoch": _evidence_epoch_payload(spec),
+        "operating_contract": _refresh_failure_operating_contract(
+            spec,
+            why="dependency_epoch_rejected",
+            evidence_missing=missing_dependencies,
+            artifact_path=payload_path,
+            dependency_epoch_rejected=True,
+        ),
     }
+    envelope["refresh_operating_contract"] = envelope["operating_contract"]
     for path in paths:
-        write_payload(path, {**envelope, "artifact_path": str(path)})
+        path_envelope = dict(envelope)
+        path_envelope["artifact_path"] = str(path)
+        path_envelope["operating_contract"] = _refresh_failure_operating_contract(
+            spec,
+            why="dependency_epoch_rejected",
+            evidence_missing=missing_dependencies,
+            artifact_path=path,
+            dependency_epoch_rejected=True,
+        )
+        path_envelope["refresh_operating_contract"] = path_envelope[
+            "operating_contract"
+        ]
+        write_payload(path, path_envelope)
     return {
         "cmd": list(spec.get("cmd") or []),
         "rc": 2,
@@ -4132,7 +4339,18 @@ def _run_spec_with_freshness(
                     "inspect the producer stderr and restore current-cycle publication before trusting this artifact"
                 ],
                 "evidence_epoch": _evidence_epoch_payload(spec),
+                "operating_contract": _refresh_failure_operating_contract(
+                    spec,
+                    why="stale_source_rejected",
+                    evidence_missing=[str(stale_path)],
+                    artifact_path=stale_path,
+                    producer_rc=int(result.get("rc", 1)),
+                    stale_source_rejected=True,
+                ),
             }
+            failure_envelope["refresh_operating_contract"] = failure_envelope[
+                "operating_contract"
+            ]
             failure_envelope_path = _write_refresh_failure_envelope(
                 stale_path, failure_envelope
             )

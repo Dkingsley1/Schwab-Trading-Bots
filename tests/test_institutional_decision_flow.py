@@ -23,7 +23,6 @@ from shadow_research.institutional_decision_flow.evaluator import (
 from shadow_research.institutional_decision_flow.runner import load_recent_decisions
 from shadow_research.institutional_decision_flow.launchd import LABEL, build_plist
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -164,7 +163,10 @@ def test_qualified_shadow_candidate_never_receives_order_authority() -> None:
     assert result["decision_trace"]["data_route"]["paper_ready"] is True
     assert result["decision_trace"]["data_route"]["quality_norm"] == 0.94
     assert result["decision_trace"]["data_route"]["research_data_metadata_only"] is True
-    assert result["decision_trace"]["data_route"]["research_data_execution_authority"] is False
+    assert (
+        result["decision_trace"]["data_route"]["research_data_execution_authority"]
+        is False
+    )
     assert len(result["ingestion_route"]["decision_route_receipt_sha256"]) == 64
     assert result["authority"] == {
         "changes_active_action": False,
@@ -190,8 +192,14 @@ def test_protected_hold_keeps_guard_attribution_and_fails_risk_stage() -> None:
     assert result["classification"] == "protected_hold"
     assert result["protected_hold"] is True
     assert result["active_guard_categories"] == ["risk", "portfolio"]
-    assert result["active_guard_reasons"] == ["portfolio_risk_engine_qty_capped_to_zero"]
-    risk_stage = next(stage for stage in result["stages"] if stage["stage_id"] == "08_non_bypassable_risk")
+    assert result["active_guard_reasons"] == [
+        "portfolio_risk_engine_qty_capped_to_zero"
+    ]
+    risk_stage = next(
+        stage
+        for stage in result["stages"]
+        if stage["stage_id"] == "08_non_bypassable_risk"
+    )
     assert risk_stage["passed"] is False
 
 
@@ -226,7 +234,9 @@ def test_report_is_deterministic_and_changes_no_active_decisions() -> None:
     policy = load_policy()
     rows = [_decision_row(), _decision_row(message_id="message-2", symbol="VIG")]
     first = build_report(rows, policy, generated_at_utc="2026-08-18T16:10:00+00:00")
-    second = build_report(reversed(rows), policy, generated_at_utc="2026-08-18T16:10:00+00:00")
+    second = build_report(
+        reversed(rows), policy, generated_at_utc="2026-08-18T16:10:00+00:00"
+    )
 
     assert first["report_id"] == second["report_id"]
     assert first["soak_contract"]["active_action_change_count"] == 0
@@ -260,7 +270,9 @@ def test_policy_rejects_non_monotonic_active_control(tmp_path: Path) -> None:
         load_policy(path)
 
 
-def test_active_control_passes_fully_qualified_paper_order_without_size_increase() -> None:
+def test_active_control_passes_fully_qualified_paper_order_without_size_increase() -> (
+    None
+):
     policy = load_policy()
     evaluation = evaluate_decision(_decision_row(), policy)
 
@@ -369,12 +381,14 @@ def test_active_control_never_resurrects_hold_or_reverses_direction() -> None:
         evaluation=evaluation,
         policy=policy,
     )
-    reverse_action, reverse_quantity, reverse_metadata = apply_paper_decision_flow_control(
-        target_mode="paper",
-        current_action="SELL",
-        quantity=10.0,
-        evaluation=evaluation,
-        policy=policy,
+    reverse_action, reverse_quantity, reverse_metadata = (
+        apply_paper_decision_flow_control(
+            target_mode="paper",
+            current_action="SELL",
+            quantity=10.0,
+            evaluation=evaluation,
+            policy=policy,
+        )
     )
 
     assert (hold_action, hold_quantity) == ("HOLD", 0.0)
@@ -410,22 +424,23 @@ def test_sleeve_resolver_selects_distinct_versioned_policy_families() -> None:
     assert dividend_receipt["policy_family_id"] == "long_horizon_income"
     assert intraday_receipt["policy_family_id"] == "intraday_momentum"
     assert macro_receipt["policy_family_id"] == "macro_rates_fx"
-    assert dividend_receipt["resolved_policy_sha256"] != intraday_receipt[
-        "resolved_policy_sha256"
-    ]
-    assert dividend_policy["component_weights"] != intraday_policy[
-        "component_weights"
-    ]
-    assert intraday_policy["market_quality"]["latency_ceiling_ms"] < macro_policy[
-        "market_quality"
-    ]["latency_ceiling_ms"]
+    assert (
+        dividend_receipt["resolved_policy_sha256"]
+        != intraday_receipt["resolved_policy_sha256"]
+    )
+    assert dividend_policy["component_weights"] != intraday_policy["component_weights"]
+    assert (
+        intraday_policy["market_quality"]["latency_ceiling_ms"]
+        < macro_policy["market_quality"]["latency_ceiling_ms"]
+    )
     assert dividend_receipt["paper_live_policy_parity"] is True
     assert dividend_receipt["strategy_definition_complete"] is True
     assert intraday_receipt["decision_horizon"] == "seconds_to_hours"
     assert macro_receipt["portfolio_role"] == "macro_carry_duration_and_currency_alpha"
-    assert dividend_receipt["decision_playbook_sha256"] != intraday_receipt[
-        "decision_playbook_sha256"
-    ]
+    assert (
+        dividend_receipt["decision_playbook_sha256"]
+        != intraday_receipt["decision_playbook_sha256"]
+    )
     assert dividend_policy["decision_playbook"]["paper_live_same_thesis"] is True
     assert dividend_policy["decision_playbook"]["stage_priority"][0]["stage_id"] == (
         "07_portfolio_fit"
@@ -448,26 +463,30 @@ def test_default_crypto_domain_uses_digital_asset_policy() -> None:
     assert resolved["resolved_sleeve_policy"] == receipt
 
 
-def test_profile_strategy_override_distinguishes_dividend_capture_from_core_income() -> None:
+def test_profile_strategy_override_distinguishes_dividend_capture_from_core_income() -> (
+    None
+):
     policy = load_policy()
     dividend_policy, dividend_receipt = resolve_sleeve_policy("dividend", policy)
-    capture_policy, capture_receipt = resolve_sleeve_policy(
-        "dividend_capture", policy
-    )
+    capture_policy, capture_receipt = resolve_sleeve_policy("dividend_capture", policy)
 
-    assert dividend_policy["strategy_definition"]["decision_horizon"] == "weeks_to_years"
+    assert (
+        dividend_policy["strategy_definition"]["decision_horizon"] == "weeks_to_years"
+    )
     assert capture_policy["strategy_definition"]["decision_horizon"] == (
         "days_around_ex_dividend_event"
     )
     assert capture_policy["strategy_definition"]["primary_edge"] == (
         "net_dividend_after_price_drop_tax_cost_and_recovery"
     )
-    assert dividend_receipt["strategy_definition_sha256"] != capture_receipt[
-        "strategy_definition_sha256"
-    ]
-    assert dividend_receipt["strategy_variant_id"] != capture_receipt[
-        "strategy_variant_id"
-    ]
+    assert (
+        dividend_receipt["strategy_definition_sha256"]
+        != capture_receipt["strategy_definition_sha256"]
+    )
+    assert (
+        dividend_receipt["strategy_variant_id"]
+        != capture_receipt["strategy_variant_id"]
+    )
 
 
 def test_collect_only_lifecycle_keeps_specialization_but_is_not_executable() -> None:
@@ -528,7 +547,9 @@ def test_policy_rejects_weak_live_quantitative_evidence_contract(
         load_policy(path)
 
 
-def test_missing_quantitative_evidence_remains_visible_without_overblocking_paper() -> None:
+def test_missing_quantitative_evidence_remains_visible_without_overblocking_paper() -> (
+    None
+):
     policy = load_policy()
     evaluation = evaluate_decision(
         _decision_row(quantitative_evidence=None),
@@ -549,7 +570,9 @@ def test_missing_quantitative_evidence_remains_visible_without_overblocking_pape
     assert evaluation["quantitative_evidence"]["explicit_adverse"] is False
 
 
-def test_candidate_bound_profitability_artifacts_build_direct_quantitative_evidence() -> None:
+def test_candidate_bound_profitability_artifacts_build_direct_quantitative_evidence() -> (
+    None
+):
     candidate_id = "pc-candidate-g63"
     performance = {
         "profitability_evidence_window": {
@@ -779,9 +802,9 @@ def test_explicit_adverse_quantitative_evidence_downsizes_paper() -> None:
 
     assert (action, quantity) == ("BUY", 2.5)
     assert metadata["disposition"] == "adverse_quantitative_evidence_downsize"
-    assert "tail_survival" in evaluation["quantitative_evidence"][
-        "critical_adverse_axes"
-    ]
+    assert (
+        "tail_survival" in evaluation["quantitative_evidence"]["critical_adverse_axes"]
+    )
 
 
 def test_live_control_fails_closed_on_proxy_only_quantitative_evidence() -> None:
@@ -827,9 +850,10 @@ def test_long_only_strategy_blocks_flat_account_sell_transition() -> None:
 
     assert evaluation["action_semantics"]["semantic"] == "enter_short"
     assert evaluation["action_semantics"]["ready"] is False
-    assert "short_entry_forbidden_by_strategy_definition" in evaluation[
-        "action_semantics"
-    ]["reasons"]
+    assert (
+        "short_entry_forbidden_by_strategy_definition"
+        in evaluation["action_semantics"]["reasons"]
+    )
 
 
 def test_live_control_uses_same_policy_and_requires_full_qualification() -> None:
@@ -954,9 +978,7 @@ def test_execution_guard_revalidates_receipt_for_paper_and_live() -> None:
         policy=disabled_live_policy,
     )
     assert disabled_live_guard["allow_execute"] is False
-    assert "decision_flow_live_control_not_authorized" in disabled_live_guard[
-        "reasons"
-    ]
+    assert "decision_flow_live_control_not_authorized" in disabled_live_guard["reasons"]
 
     tampered = deepcopy(intent)
     tampered["metadata"]["institutional_decision_flow"]["evaluation"][
@@ -974,7 +996,7 @@ def test_execution_guard_revalidates_receipt_for_paper_and_live() -> None:
     tampered_receipt = deepcopy(intent)
     tampered_receipt["metadata"]["institutional_decision_flow"]["policy_receipt"][
         "strategy_definition_sha256"
-    ] = "0" * 64
+    ] = ("0" * 64)
     tampered_receipt_guard = evaluate_execution_policy_guard(
         intent=tampered_receipt,
         target_mode="live",
@@ -989,7 +1011,7 @@ def test_execution_guard_revalidates_receipt_for_paper_and_live() -> None:
     tampered_playbook = deepcopy(intent)
     tampered_playbook["metadata"]["institutional_decision_flow"]["policy_receipt"][
         "decision_playbook_sha256"
-    ] = "0" * 64
+    ] = ("0" * 64)
     tampered_playbook_guard = evaluate_execution_policy_guard(
         intent=tampered_playbook,
         target_mode="live",
@@ -1057,8 +1079,14 @@ def test_runtime_evidence_lookup_uses_unconditionally_initialized_profile() -> N
         encoding="utf-8"
     )
 
-    assert 'current_profile = (_shadow_profile_name() or "default").strip().lower()' in source
-    assert '"quantitative_evidence": _profile_quantitative_evidence(current_profile)' in source
+    assert (
+        'current_profile = (_shadow_profile_name() or "default").strip().lower()'
+        in source
+    )
+    assert (
+        '"quantitative_evidence": _profile_quantitative_evidence(current_profile)'
+        in source
+    )
     assert "_profile_quantitative_evidence(profile)" not in source
     assert "long_term_profile = current_profile" in source
 
@@ -1074,25 +1102,40 @@ def test_recent_decision_reader_is_bounded_and_deduplicated(tmp_path: Path) -> N
     ]
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
 
-    loaded = load_recent_decisions(tmp_path, max_rows=10, tail_bytes_per_file=1024 * 1024)
+    loaded = load_recent_decisions(
+        tmp_path, max_rows=10, tail_bytes_per_file=1024 * 1024
+    )
 
     assert len(loaded) == 2
     assert {row["message_id"] for row in loaded} == {"same", "unique"}
 
 
-def test_shadow_research_sources_are_outside_candidate_fingerprint_scopes() -> None:
-    config = json.loads((PROJECT_ROOT / "config" / "production_excellence_v1.json").read_text(encoding="utf-8"))
+def test_shadow_research_sources_use_non_soak_advisory_candidate_scope() -> None:
+    config = json.loads(
+        (PROJECT_ROOT / "config" / "production_excellence_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
     scopes = config["candidate"]["scope_globs"]
 
-    included = {
+    advisory = {
         str(path.relative_to(PROJECT_ROOT))
-        for patterns in scopes.values()
-        for path in _scope_files(PROJECT_ROOT, patterns)
+        for path in _scope_files(PROJECT_ROOT, scopes["research_advisory"])
+    }
+    evidence_scopes = set(config["candidate"]["soak_scopes"]) | set(
+        config["candidate"]["profitability_scopes"]
+    )
+    evidence_included = {
+        str(path.relative_to(PROJECT_ROOT))
+        for scope in evidence_scopes
+        for path in _scope_files(PROJECT_ROOT, scopes[scope])
     }
 
-    assert not any(path.startswith("shadow_research/") for path in included)
-    assert "core/institutional_decision_flow.py" in included
-    assert "config/institutional_decision_flow_v1.json" in included
+    assert advisory
+    assert all(path.startswith("shadow_research/") for path in advisory)
+    assert not any(path.startswith("shadow_research/") for path in evidence_included)
+    assert "core/institutional_decision_flow.py" in evidence_included
+    assert "config/institutional_decision_flow_v1.json" in evidence_included
 
 
 def test_launchd_sidecar_is_bounded_background_read_only() -> None:
@@ -1102,7 +1145,10 @@ def test_launchd_sidecar_is_bounded_background_read_only() -> None:
     assert payload["StartInterval"] == 300
     assert payload["Nice"] == 15
     assert payload["LowPriorityIO"] is True
-    assert payload["EnvironmentVariables"]["INSTITUTIONAL_DECISION_FLOW_AUTHORITY"] == "shadow_read_only"
+    assert (
+        payload["EnvironmentVariables"]["INSTITUTIONAL_DECISION_FLOW_AUTHORITY"]
+        == "shadow_read_only"
+    )
     joined = " ".join(payload["ProgramArguments"])
     assert "institutional_decision_flow.runner" in joined
     assert "chrome" not in joined.lower()

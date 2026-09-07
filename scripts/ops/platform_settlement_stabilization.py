@@ -13,9 +13,9 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, status_rank, write_payload
+    from scripts.ops.long_runtime_common import PROJECT_ROOT, evidence_freshness, iso_now, load_json, status_rank, write_payload
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, status_rank, write_payload
+    from .long_runtime_common import PROJECT_ROOT, evidence_freshness, iso_now, load_json, status_rank, write_payload
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "platform_settlement_stabilization_latest.json"
@@ -161,6 +161,7 @@ def _queue_decay_meter(project_root: Path, previous: dict[str, Any]) -> dict[str
 
 def _writer_single_primary_contract(project_root: Path) -> dict[str, Any]:
     intelligence = _health(project_root, "writer_process_intelligence_latest.json")
+    freshness = evidence_freshness(intelligence)
     writer_health = _as_dict(intelligence.get("writer_health"))
     lane_contract = _as_dict(writer_health.get("shard_writer_lane_contract"))
     primary_merge_writer_count = max(
@@ -171,7 +172,8 @@ def _writer_single_primary_contract(project_root: Path) -> dict[str, Any]:
     active_child_writer_count = _safe_int(writer_health.get("active_child_writer_count"), 0)
     lock_held = _bool(writer_health.get("writer_lock_held"))
     single_primary_merge_writer = bool(
-        _bool(lane_contract.get("single_primary_merge_writer"))
+        freshness["fresh"]
+        and _bool(lane_contract.get("single_primary_merge_writer"))
         and primary_merge_writer_count <= 1
         and sqlite_primary_writer_count <= 1
         and lock_held
@@ -179,6 +181,7 @@ def _writer_single_primary_contract(project_root: Path) -> dict[str, Any]:
     return {
         "overall_status": str(intelligence.get("overall_status") or "missing"),
         "single_primary_merge_writer": single_primary_merge_writer,
+        "source_freshness": freshness,
         "primary_merge_writer_count": primary_merge_writer_count,
         "sqlite_primary_writer_count": sqlite_primary_writer_count,
         "active_child_writer_count": active_child_writer_count,
@@ -204,6 +207,13 @@ def _single_writer_guard(project_root: Path, queue: dict[str, Any]) -> dict[str,
     )
     running = 1 if (wrapper_chain_only or guarded_single_writer_chain) else raw_running
     queue_active = _bool(queue.get("queue_backpressure_active"))
+    source_freshness = {
+        "process_watchdog": evidence_freshness(process),
+        "backpressure_drainer_fleet": evidence_freshness(drainer),
+    }
+    if raw_running > 1 and (writer_active or lock_held):
+        source_freshness["writer_process_intelligence"] = writer_contract["source_freshness"]
+    unavailable = [name for name, freshness in source_freshness.items() if not freshness["fresh"]]
     status = "ready"
     if running > 1:
         status = "blocked"
@@ -211,6 +221,13 @@ def _single_writer_guard(project_root: Path, queue: dict[str, Any]) -> dict[str,
         status = "needs_work"
     elif queue_active and not (writer_active or lock_held or _bool(queue.get("progress_observed"))):
         status = "watch"
+    if unavailable and status != "blocked":
+        status = "needs_work"
+    refresh_commands = {
+        "process_watchdog": "process-watchdog",
+        "backpressure_drainer_fleet": "backpressure-drainers",
+        "writer_process_intelligence": "writer-process-intelligence",
+    }
     return {
         "overall_status": status,
         "sql_link_writer_running_count": running,
@@ -221,8 +238,11 @@ def _single_writer_guard(project_root: Path, queue: dict[str, Any]) -> dict[str,
         "writer_active": writer_active,
         "writer_lock_held": lock_held,
         "queue_backpressure_active": queue_active,
+        "source_freshness": source_freshness,
+        "unverified_sources": unavailable,
+        "evidence_status": "evidence_unavailable" if unavailable else "current",
         "assigned_infrabots": INFRA_ASSIGNMENTS["single_writer_guard"],
-        "recommended_commands": [
+        "recommended_commands": [["./scripts/ops/opsctl.sh", refresh_commands[name], "--json"] for name in unavailable] if unavailable else [
             ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--apply", "--poll-seconds", "20", "--wait-timeout-seconds", "60", "--command-timeout-seconds", "120", "--maintenance-force", "--json"],
             ["./scripts/ops/opsctl.sh", "backpressure-drainers", "--json"],
         ],

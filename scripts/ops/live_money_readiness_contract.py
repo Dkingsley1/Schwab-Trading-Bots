@@ -124,7 +124,7 @@ A_PLUS_REMEDIATION = {
     "promotion_packet": "keep the signed, hash-complete, exactly replayable promotion packet current",
     "source_verification": "keep every required source verified, fresh, and above the A+ confidence floor",
     "health_gates": "complete the clean window without stale, blocked-rate, restart, ingestion, SQL, or storage hard gates",
-    "continuous_soak": "complete the clean 720-hour window while capacity, intake enforcement, and backlog controls remain A+",
+    "continuous_soak": "complete every current scope's elapsed-time and XNYS-session tier while capacity, intake enforcement, and backlog controls remain A+",
     "training_runtime": "prove serial isolated training, immutable serving bundles, current candidates, and safe resource admission at A+",
     "live_runtime_release": "preserve paper/live separation, read-only live staging, and operator-controlled release authority",
     "live_readiness_smoke": "keep deterministic smoke, kill-switch, account, order-budget, and rollback checks at A+",
@@ -918,10 +918,21 @@ def build_payload(
         and soak_integrity.get("operational_capacity_ready", False)
         and str(soak_integrity.get("operational_capacity_grade") or "").strip().upper() in {"A+", "A++"}
     )
-    soak_elapsed_complete = bool(soak_integrity.get("clean_720_hours_complete", False)) if soak_integrity else True
+    scope_validation_available = bool(
+        soak_integrity and "scope_aware_validation_complete" in soak_integrity
+    )
+    soak_elapsed_complete = (
+        bool(soak_integrity.get("scope_aware_validation_complete", False))
+        if scope_validation_available
+        else bool(soak_integrity.get("clean_720_hours_complete", False))
+        if soak_integrity
+        else True
+    )
     soak_elapsed_grade = (
         _normalize_grade(
-            soak_integrity.get("elapsed_evidence_grade"),
+            soak_integrity.get("scope_validation_grade")
+            if scope_validation_available
+            else soak_integrity.get("elapsed_evidence_grade"),
             ok=soak_elapsed_complete,
         )
         if soak_integrity
@@ -1103,7 +1114,7 @@ def build_payload(
         ),
         _section(
             "continuous_soak",
-            title="30-Day Continuous-Soak Evidence",
+            title="Scope-Aware Continuous-Soak Evidence",
             grade=soak_contract_grade,
             ready=bool(
                 soak_contract_soak_ready
@@ -1131,6 +1142,23 @@ def build_payload(
                 "clean_window_elapsed_hours": soak_integrity.get("clean_window_elapsed_hours"),
                 "observed_window_elapsed_hours": soak_integrity.get("observed_window_elapsed_hours"),
                 "clean_720_hours_complete": soak_integrity.get("clean_720_hours_complete", False),
+                "validation_mode": (
+                    "scope_aware_elapsed_and_xnys_sessions"
+                    if scope_validation_available
+                    else "legacy_uniform_720_hour_fallback"
+                ),
+                "scope_aware_validation_complete": bool(
+                    soak_integrity.get("scope_aware_validation_complete", False)
+                ),
+                "scope_validation_grade": soak_integrity.get(
+                    "scope_validation_grade"
+                ),
+                "scope_validation_score": soak_integrity.get(
+                    "scope_validation_score"
+                ),
+                "scope_validation_blocking_scopes": _as_dict(
+                    soak_integrity.get("scope_validation")
+                ).get("blocking_scopes", []),
                 "historical_segmented_wall_clock_hours": soak_history.get(
                     "historical_segmented_wall_clock_hours"
                 ),

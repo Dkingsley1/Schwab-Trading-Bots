@@ -1,4 +1,52 @@
 import scripts.sqlite_performance_maintenance as maint
+from pathlib import Path
+
+
+def test_vacuum_temp_candidates_never_probe_protected_volume(tmp_path, monkeypatch):
+    original_exists = Path.exists
+
+    def checked_exists(path):
+        assert not str(path).startswith("/Volumes/VIDEO")
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", checked_exists)
+    candidates = maint._vacuum_temp_dir_candidates(tmp_path / "db.sqlite3", tmp_path)
+    assert all(source != "video_volume_tmpdir" for _, source in candidates)
+
+
+def test_vacuum_temp_selection_rejects_protected_path_before_io(tmp_path, monkeypatch):
+    protected = Path("/Volumes/VIDEO/sqlite_tmp")
+    monkeypatch.setattr(maint, "_vacuum_temp_dir_candidates", lambda *args: [(protected, "explicit")])
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("protected volume must not be probed")
+
+    monkeypatch.setattr(Path, "mkdir", unexpected)
+    monkeypatch.setattr(Path, "resolve", unexpected)
+    result = maint._select_vacuum_temp_dir(db_path=tmp_path / "db.sqlite3", project_root=tmp_path, db_size_gb=1)
+    assert result["selected"] is False
+    assert result["candidate_evaluations"][0]["reason"] == "protected_volume"
+
+
+def test_vacuum_temp_selection_rejects_symlink_to_protected_volume(tmp_path):
+    link = tmp_path / "media_alias"
+    link.symlink_to("/Volumes/VIDEO", target_is_directory=True)
+    assert maint._protected_storage_path(link)
+
+
+def test_sqlite_maintenance_owned_hold_allows_checkpoint(tmp_path, monkeypatch):
+    import sqlite3
+    from core.runtime_maintenance import MAINTENANCE_HOLD_TOKEN_ENV
+
+    db = tmp_path / "test.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE evidence (id INTEGER PRIMARY KEY)")
+    out = tmp_path / "maintenance.json"
+    monkeypatch.setattr(maint, "maintenance_hold_snapshot", lambda root: {"active": True, "valid": True, "token": "test-owner-token"})
+    monkeypatch.setenv(MAINTENANCE_HOLD_TOKEN_ENV, "test-owner-token")
+    monkeypatch.setattr(maint.sys, "argv", ["maintenance", "--db", str(db), "--out-file", str(out), "--checkpoint-only", "--json"])
+    assert maint.main() == 0
+    assert maint._read_json(out)["current_step"] == "complete"
 
 
 def test_sqlite_maintenance_hold_exits_before_opening_database(tmp_path, monkeypatch) -> None:

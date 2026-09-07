@@ -65,7 +65,14 @@ def test_paper_execution_lane_pauses_when_runtime_guard_blocks_consumer(tmp_path
     health_path = tmp_path / "governance" / "health" / "execution_lane_paper_latest.json"
     payload = json.loads(health_path.read_text(encoding="utf-8"))
     assert payload["auth_ok"] is True
-    assert payload["auth_error"] == "paper_execution_paused_for_runtime_pressure"
+    assert payload["auth_error"] == ""
+    assert payload["execution_safety_hold"] == {
+        "active": True,
+        "reason": "paper_execution_paused_for_runtime_pressure",
+        "source": "execution_lane_runtime_control",
+    }
+    assert payload["accepting_new_exposure"] is False
+    assert payload["execution_plumbing_status"] == "resident_runtime_safety_hold"
     assert heartbeat_calls == ["execution_lane_paused"]
 
 

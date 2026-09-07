@@ -158,6 +158,42 @@ def _cleanup_consumer_state(conn: sqlite3.Connection, *, cutoff: str, limit: int
     return len(rowids)
 
 
+def _cleanup_processing_claims(
+    conn: sqlite3.Connection, *, cutoff: str, limit: int, dry_run: bool
+) -> int:
+    """Prune old terminal claims only after their source message is gone.
+
+    Processing and ambiguous claims are execution recovery evidence and are never
+    removed automatically.
+    """
+
+    if not _table_exists(conn, "channel_processing_claims"):
+        return 0
+    rows = conn.execute(
+        """
+        SELECT pc.rowid
+        FROM channel_processing_claims pc
+        LEFT JOIN channel_messages m
+          ON m.channel = pc.channel AND m.message_id = pc.message_id
+        WHERE m.id IS NULL
+          AND pc.state IN ('completed', 'dead_lettered', 'replay_suppressed')
+          AND pc.updated_at < ?
+        ORDER BY pc.updated_at ASC
+        LIMIT ?
+        """,
+        (cutoff, limit),
+    ).fetchall()
+    if dry_run or not rows:
+        return len(rows)
+
+    rowids = [int(row[0]) for row in rows]
+    marks = ",".join("?" for _ in rowids)
+    conn.execute(
+        f"DELETE FROM channel_processing_claims WHERE rowid IN ({marks})", rowids
+    )
+    return len(rowids)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prune safely acknowledged rows from bot_channel_queue SQLite.")
     parser.add_argument("--db", default=str(DEFAULT_QUEUE_DB))
@@ -182,6 +218,14 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=50000)
     parser.add_argument("--max-rows", type=int, default=0, help="Maximum rows to delete in one pass (0 = unlimited).")
     parser.add_argument("--cleanup-consumer-state-days", type=int, default=30)
+    parser.add_argument(
+        "--processing-claim-days",
+        type=int,
+        default=int(
+            float(os.getenv("SQL_QUEUE_RETENTION_PROCESSING_CLAIM_DAYS", "90") or 90)
+        ),
+        help="Retain terminal idempotency claims after source-message pruning.",
+    )
     parser.add_argument("--prune-orphans", action="store_true", help="Also prune orphan channels with no consumer state.")
     parser.add_argument("--orphan-days", type=int, default=45)
     parser.add_argument("--dry-run", action="store_true")
@@ -227,6 +271,15 @@ def main() -> int:
         consumer_state_cutoff = (
             _now_utc() - timedelta(days=max(int(args.cleanup_consumer_state_days), max(int(args.acked_days), 1)))
         ).isoformat()
+        processing_claim_cutoff = (
+            _now_utc()
+            - timedelta(
+                days=max(
+                    int(args.processing_claim_days),
+                    max(int(args.acked_days), 1),
+                )
+            )
+        ).isoformat()
         orphan_cutoff = (_now_utc() - timedelta(days=max(int(args.orphan_days), 1))).isoformat()
         batch_size = max(int(args.batch_size), 1000)
         max_rows = max(int(args.max_rows), 0)
@@ -235,6 +288,7 @@ def main() -> int:
         deleted_orphan_rows = 0
         deleted_rows_total = 0
         deleted_consumer_state_rows = 0
+        deleted_processing_claim_rows = 0
         channels_touched: set[str] = set()
 
         while True:
@@ -297,6 +351,15 @@ def main() -> int:
         if deleted_consumer_state_rows > 0 and not args.dry_run:
             conn.commit()
 
+        deleted_processing_claim_rows = _cleanup_processing_claims(
+            conn,
+            cutoff=processing_claim_cutoff,
+            limit=cleanup_limit,
+            dry_run=bool(args.dry_run),
+        )
+        if deleted_processing_claim_rows > 0 and not args.dry_run:
+            conn.commit()
+
         if args.vacuum and deleted_rows_total > 0 and not args.dry_run:
             _full_vacuum_with_incremental_mode(conn)
         elif deleted_rows_total > 0 and not args.dry_run and int(args.incremental_vacuum_pages) > 0:
@@ -321,6 +384,8 @@ def main() -> int:
         "pressure_acked_hours": float(args.pressure_acked_hours),
         "cleanup_consumer_state_days": int(args.cleanup_consumer_state_days),
         "consumer_state_cutoff_utc": consumer_state_cutoff,
+        "processing_claim_days": int(args.processing_claim_days),
+        "processing_claim_cutoff_utc": processing_claim_cutoff,
         "prune_orphans": bool(args.prune_orphans),
         "orphan_days": int(args.orphan_days),
         "orphan_cutoff_utc": orphan_cutoff,
@@ -341,6 +406,7 @@ def main() -> int:
         "deleted_acked_rows": int(deleted_acked_rows),
         "deleted_orphan_rows": int(deleted_orphan_rows),
         "deleted_consumer_state_rows": int(deleted_consumer_state_rows),
+        "deleted_processing_claim_rows": int(deleted_processing_claim_rows),
         "deleted_rows_total": int(deleted_rows_total),
         "channels_touched": sorted(ch for ch in channels_touched if ch),
     }

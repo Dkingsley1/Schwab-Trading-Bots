@@ -272,6 +272,13 @@ def adapter_conformance_report(
                 account_reference="contract-test", order_id="contract-order"
             )
         ),
+        "supports_order_list": bool(
+            adapter.orders_snapshot_candidates(
+                account_reference="contract-test",
+                max_results=10,
+                lookback_days=1,
+            )
+        ),
     }
     method_mismatches = [
         key

@@ -2,10 +2,11 @@ import json
 import os
 from datetime import datetime
 
-import mlx.core as mx
-import mlx.nn as nn
-import mlx.optimizers as optim
 import numpy as np
+
+from core.mlx_runtime_guard import require_mlx
+
+mx, nn, optim = require_mlx()
 
 
 def ema(x, span):

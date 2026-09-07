@@ -86,6 +86,51 @@ def test_shared_snapshot_preserves_last_good_across_failed_refresh(tmp_path) -> 
     assert last_good["fetched"]["account_count"] == 1
 
 
+def test_shared_snapshot_redacts_account_credentials_and_is_owner_only(
+    tmp_path,
+) -> None:
+    fetched = {
+        "ok": True,
+        "accessToken": "secret-access-token",
+        "payload": {
+            "accounts": [
+                {
+                    "_broker_account": {
+                        "account_number_tail": "6789",
+                        "account_reference_present": True,
+                        "account_reference": "secret-account-hash",
+                    },
+                    "securitiesAccount": {
+                        "accountNumber": "123456789",
+                        "hashValue": "secret-account-hash",
+                        "positions": [],
+                    },
+                }
+            ]
+        },
+    }
+
+    assert loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path), broker="schwab", fetched=fetched
+    )
+    cache_path = loop._broker_truth_shared_snapshot_cache_path(
+        str(tmp_path), "schwab"
+    )
+    raw = cache_path.read_text(encoding="utf-8")
+    payload = json.loads(raw)
+
+    assert "123456789" not in raw
+    assert "secret-account-hash" not in raw
+    assert "secret-access-token" not in raw
+    assert payload["redaction"]["raw_account_number_emitted"] is False
+    assert (
+        payload["fetched"]["payload"]["accounts"][0]["_broker_account"]
+        ["account_number_tail"]
+        == "6789"
+    )
+    assert cache_path.stat().st_mode & 0o077 == 0
+
+
 def test_shared_snapshot_serves_bounded_last_good_only_in_collection_mode(
     tmp_path, monkeypatch
 ) -> None:
@@ -296,6 +341,8 @@ def test_fetch_broker_truth_snapshot_v2_tracks_balance_orders_and_deltas(tmp_pat
     assert v2["order_truth"]["filled_order_count"] == 1
     assert v2["order_truth"]["pending_order_count"] == 1
     assert v2["paper_ledger_delta"]["delta_symbol_count"] == 1
+    assert v2["account_identity"]["redacted_account_markers"] == ["****6789"]
+    assert "123456789" not in json.dumps(v2)
 
 
 def test_clear_critical_alert_latest_removes_matching_broker_truth_alert(tmp_path, monkeypatch) -> None:

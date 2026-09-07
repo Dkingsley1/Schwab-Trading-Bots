@@ -5,8 +5,11 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from core.institutional_decision_flow import evaluate_execution_policy_guard
 from core.sleeve_strategy_specialization import (
+    ECONOMIC_RUNTIME_STATES,
     FORBIDDEN_AUTHORITY,
     attach_strategy_specialization,
     extract_current_regime,
@@ -18,6 +21,7 @@ from core.sleeve_strategy_specialization import (
     resolve_strategy_contract,
     strategy_regime_assessment,
     strategy_specialization_guard_reasons,
+    validate_policy,
 )
 from scripts.paper_performance_report import (
     _candidate_strategy_post_cost_daily_series,
@@ -32,11 +36,12 @@ from scripts.sleeve_strategy_specialization_report import (
     build_payload,
 )
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _bound_performance(strategy_rows: list[dict[str, object]] | None = None) -> dict[str, object]:
+def _bound_performance(
+    strategy_rows: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     return {
         "timestamp_utc": "2026-08-18T20:00:00+00:00",
         "profitability_evidence_window": {
@@ -52,23 +57,130 @@ def _bound_performance(strategy_rows: list[dict[str, object]] | None = None) -> 
     }
 
 
-def test_all_active_catalog_strategies_and_additions_have_complete_unique_contracts() -> None:
+def test_all_active_catalog_strategies_and_additions_have_complete_unique_contracts() -> (
+    None
+):
     policy = load_policy()
     contracts = materialize_strategy_contracts(policy=policy)
 
     assert len(contracts) == 879
     assert len({row["sleeve_id"] for row in contracts.values()}) == 111
     assert sum(row["source_kind"] == "catalog" for row in contracts.values()) == 771
-    assert sum(row["source_kind"] == "curated_addition" for row in contracts.values()) == 108
+    assert (
+        sum(row["source_kind"] == "curated_addition" for row in contracts.values())
+        == 108
+    )
     assert all(row["contract_complete"] for row in contracts.values())
-    assert len({row["contract_receipt_sha256"] for row in contracts.values()}) == len(contracts)
+    assert len({row["contract_receipt_sha256"] for row in contracts.values()}) == len(
+        contracts
+    )
     assert not any(
         bool(row["authority"].get(key, False))
         for row in contracts.values()
         for key in FORBIDDEN_AUTHORITY
     )
     assert all(row["strategy_definition"] for row in contracts.values())
+    assert all(row["measurement_parameters"] for row in contracts.values())
+    assert not any(
+        row["measurement_parameters"].get("automatic_live_promotion_allowed", False)
+        for row in contracts.values()
+    )
+    assert not any(
+        row["measurement_parameters"]
+        .get("uncertainty_policy", {})
+        .get("may_relax_live_money_gate", False)
+        for row in contracts.values()
+    )
+    assert all(
+        row["measurement_parameters"]["sleeve_id"] == row["sleeve_id"]
+        for row in contracts.values()
+    )
     assert all(row["library_tier"] == "hot_catalog" for row in contracts.values())
+    assert all(
+        row["economic_context_policy"]["contract_id"] == "sleeve_economic_context_v1"
+        for row in contracts.values()
+    )
+
+
+def test_sleeve_measurement_parameters_cover_policy_and_fail_closed() -> None:
+    policy = load_policy()
+
+    assert set(policy["objective_measurement_parameters"]) == set(
+        policy["objective_classes"]
+    )
+    assert set(policy["sleeve_measurement_parameters"]) == set(policy["sleeves"])
+    assert (
+        policy["measurement_parameter_defaults"]["uncertainty_policy"][
+            "treat_missing_evidence_as"
+        ]
+        == "unknown_not_bad"
+    )
+    assert (
+        policy["sleeve_measurement_parameters"]["market_making_liquidity"][
+            "maximum_latency_ms"
+        ]
+        < policy["sleeve_measurement_parameters"]["swing_aggressive"][
+            "maximum_latency_ms"
+        ]
+    )
+
+    missing_sleeve = deepcopy(policy)
+    del missing_sleeve["sleeve_measurement_parameters"]["equity_core"]
+    with pytest.raises(ValueError, match="lacks sleeve-specific measurement"):
+        validate_policy(missing_sleeve)
+
+    unsafe = deepcopy(policy)
+    unsafe["measurement_parameter_defaults"]["automatic_live_promotion_allowed"] = True
+    with pytest.raises(ValueError, match="automatic live promotion"):
+        validate_policy(unsafe)
+
+    missing_safety_default = deepcopy(policy)
+    del missing_safety_default["measurement_parameter_defaults"][
+        "automatic_live_promotion_allowed"
+    ]
+    with pytest.raises(
+        ValueError, match="measurement parameter defaults are incomplete"
+    ):
+        validate_policy(missing_safety_default)
+
+    unsafe_relaxation = deepcopy(policy)
+    unsafe_relaxation["measurement_parameter_defaults"]["uncertainty_policy"][
+        "may_relax_live_money_gate"
+    ] = True
+    with pytest.raises(ValueError, match="relax live-money gates"):
+        validate_policy(unsafe_relaxation)
+
+
+def test_economic_context_source_of_truth_is_complete_and_fail_closed() -> None:
+    policy = load_policy()
+    economic = policy["economic_context_source_of_truth"]
+    scope = economic["scope"]
+    objectives = policy["objective_classes"]
+
+    assert economic["contract_id"] == "sleeve_economic_context_v1"
+    assert set(economic["runtime_states"]) == ECONOMIC_RUNTIME_STATES
+    assert scope["positive_contextual_economic_value_required_before_capital"] is True
+    assert scope["simultaneous_sleeve_profitability_required"] is False
+    assert scope["profitability_guaranteed"] is False
+    assert all(
+        row["positive_contextual_value_required_for_activation"] is True
+        for objective, row in objectives.items()
+        if objective != "control_only"
+    )
+    assert (
+        objectives["control_only"]["positive_contextual_value_required_for_activation"]
+        is False
+    )
+    assert all(row["economic_value_type"] for row in objectives.values())
+    assert all(row["activation_evidence_rule"] for row in objectives.values())
+    assert not any(economic["authority"].values())
+
+    weakened = deepcopy(policy)
+    weakened["economic_context_source_of_truth"]["scope"][
+        "profitability_guaranteed"
+    ] = True
+    with pytest.raises(ValueError, match="forbidden claim"):
+        validate_policy(weakened)
 
 
 def test_full_library_is_exactly_12000_balanced_and_runtime_cold() -> None:
@@ -83,8 +195,14 @@ def test_full_library_is_exactly_12000_balanced_and_runtime_cold() -> None:
     assert len(counts) == 111
     assert min(counts.values()) == 108
     assert max(counts.values()) == 109
-    assert sum(row["library_tier"] == "cold_research" for row in library.values()) == 11121
+    assert (
+        sum(row["library_tier"] == "cold_research" for row in library.values()) == 11121
+    )
     assert all(row["contract_complete"] for row in library.values())
+    assert all(row["measurement_parameters"] for row in library.values())
+    assert "objective_derived_for_manifest_sleeve" in {
+        row["measurement_parameters"]["parameter_source"] for row in library.values()
+    }
     assert not any(
         bool(row["authority"].get(key, False))
         for row in library.values()
@@ -185,7 +303,9 @@ def test_runtime_regime_context_falls_back_to_fresh_control_plane_and_expires(
     assert stale["fresh"] is False
 
 
-def test_contract_materialization_and_counterfactual_ranking_are_deterministic() -> None:
+def test_contract_materialization_and_counterfactual_ranking_are_deterministic() -> (
+    None
+):
     policy = load_policy()
     first = materialize_strategy_contracts(policy=policy)
     second = materialize_strategy_contracts(policy=deepcopy(policy))
@@ -197,7 +317,9 @@ def test_contract_materialization_and_counterfactual_ranking_are_deterministic()
         "dividend", features, policy=policy
     )
     assert all(row["strategy_id"] in first for row in ranking)
-    assert all(first[row["strategy_id"]]["library_tier"] == "hot_catalog" for row in ranking)
+    assert all(
+        first[row["strategy_id"]]["library_tier"] == "hot_catalog" for row in ranking
+    )
 
 
 def test_broad_master_is_not_falsely_credited_to_a_named_strategy() -> None:
@@ -228,7 +350,9 @@ def test_default_crypto_context_resolves_to_crypto_spot_contract() -> None:
 
     receipt = metadata["strategy_specialization"]
     assert receipt["profile"] == "crypto_spot"
-    assert receipt["selected_strategy_id"] == "sleeve::crypto_spot::ensemble_champion::v1"
+    assert (
+        receipt["selected_strategy_id"] == "sleeve::crypto_spot::ensemble_champion::v1"
+    )
     assert receipt["objective_class"] == "digital_asset_alpha"
 
 
@@ -249,9 +373,15 @@ def test_objectives_do_not_force_fake_profit_on_control_hedge_or_cash_sleeves() 
     assert infrastructure["risk_budget"] == "zero_trading_risk"
     assert infrastructure["shorting_policy"] == "forbidden"
     assert hedge["objective_class"] == "hedge_utility"
-    assert hedge["objective_scorecard"]["primary_metric"] == "drawdown_reduction_per_carry_cost"
+    assert (
+        hedge["objective_scorecard"]["primary_metric"]
+        == "drawdown_reduction_per_carry_cost"
+    )
     assert cash["objective_class"] == "capital_preservation"
-    assert cash["objective_scorecard"]["primary_metric"] == "risk_adjusted_opportunity_cost_bps"
+    assert (
+        cash["objective_scorecard"]["primary_metric"]
+        == "risk_adjusted_opportunity_cost_bps"
+    )
 
 
 def test_attachment_preserves_action_quantity_and_has_no_authority() -> None:
@@ -277,10 +407,17 @@ def test_attachment_preserves_action_quantity_and_has_no_authority() -> None:
     assert specialization["quantity_observed"] == 2.5
     assert specialization["action_or_quantity_mutated"] is False
     assert not any(specialization["authority"].values())
+    assert specialization["measurement_parameters"]["sleeve_id"] == "swing_aggressive"
+    assert (
+        specialization["contract_receipt"]["measurement_parameters"]["parameter_source"]
+        == "explicit_sleeve_specific"
+    )
     assert len(specialization["counterfactual_ranking"]) == 3
 
 
-def test_live_requires_contract_and_candidate_while_legacy_paper_stays_compatible() -> None:
+def test_live_requires_contract_and_candidate_while_legacy_paper_stays_compatible() -> (
+    None
+):
     intent = {
         "action": "BUY",
         "quantity": 1.0,
@@ -305,7 +442,9 @@ def test_live_requires_contract_and_candidate_while_legacy_paper_stays_compatibl
     assert strategy_specialization_guard_reasons(attached, require_candidate=True) == []
 
 
-def test_paper_performance_prefers_contract_identity_and_emits_strategy_series() -> None:
+def test_paper_performance_prefers_contract_identity_and_emits_strategy_series() -> (
+    None
+):
     strategy_id = "sleeve::equity_core::ensemble_champion::v1"
     rows = [
         {
@@ -359,7 +498,9 @@ def test_paper_performance_prefers_contract_identity_and_emits_strategy_series()
     assert latest[0]["independent_symbol_count"] == 2
 
 
-def test_report_is_candidate_bound_and_uses_objective_aware_lifecycle(tmp_path: Path) -> None:
+def test_report_is_candidate_bound_and_uses_objective_aware_lifecycle(
+    tmp_path: Path,
+) -> None:
     policy = load_policy()
     policy_path = tmp_path / "policy.json"
     performance_path = tmp_path / "performance.json"
@@ -386,9 +527,7 @@ def test_report_is_candidate_bound_and_uses_objective_aware_lifecycle(tmp_path: 
             },
         },
     ]
-    performance_path.write_text(
-        json.dumps(_bound_performance(rows)), encoding="utf-8"
-    )
+    performance_path.write_text(json.dumps(_bound_performance(rows)), encoding="utf-8")
 
     payload, contracts = build_payload(
         PROJECT_ROOT,
@@ -400,10 +539,47 @@ def test_report_is_candidate_bound_and_uses_objective_aware_lifecycle(tmp_path: 
 
     assert payload["ok"] is True
     assert payload["contract_coverage"]["grade"] == "A+"
+    assert (
+        payload["economic_context_source_of_truth"]["contract_id"]
+        == "sleeve_economic_context_v1"
+    )
     assert payload["candidate_binding"]["bound"] is True
-    assert by_id["sleeve::equity_core::trend_follow::v1"]["lifecycle"] == "validated_candidate"
-    assert by_id["sleeve::short_bias_hedge::beta_hedge_efficiency::v1"]["lifecycle"] == "probation"
-    assert by_id["sleeve::infrastructure_risk::margin_guard::v1"]["lifecycle"] == "control_only"
+    assert (
+        payload["measurement_parameter_summary"]["all_explicit_sleeves_parameterized"]
+        is True
+    )
+    assert (
+        payload["measurement_parameter_summary"]["sleeve_specific_parameter_count"]
+        == 30
+    )
+    assert (
+        by_id["sleeve::equity_core::trend_follow::v1"]["lifecycle"]
+        == "validated_candidate"
+    )
+    assert (
+        by_id["sleeve::equity_core::trend_follow::v1"]["measurement_parameters"][
+            "minimum_validation_samples"
+        ]
+        == 120
+    )
+    assert (
+        by_id["sleeve::short_bias_hedge::beta_hedge_efficiency::v1"]["lifecycle"]
+        == "probation"
+    )
+    assert (
+        by_id["sleeve::infrastructure_risk::margin_guard::v1"]["lifecycle"]
+        == "control_only"
+    )
+    assert (
+        by_id["sleeve::equity_core::trend_follow::v1"]["economic_value_type"]
+        == "standalone_post_cost_alpha"
+    )
+    assert (
+        by_id["sleeve::infrastructure_risk::margin_guard::v1"][
+            "positive_contextual_value_required_for_activation"
+        ]
+        is False
+    )
     assert contracts["contract_count"] == 879
     assert not any(payload["authority_contract"].values())
 
@@ -419,10 +595,7 @@ def test_report_is_candidate_bound_and_uses_objective_aware_lifecycle(tmp_path: 
     assert library["library_contract"]["cold_strategy_count"] == 11121
     assert library["library_contract"]["minimum_strategies_per_sleeve"] == 108
     assert library["library_contract"]["maximum_strategies_per_sleeve"] == 109
-    assert (
-        library["regime_activation_summary"]["cold_activation_eligible_count"]
-        == 0
-    )
+    assert library["regime_activation_summary"]["cold_activation_eligible_count"] == 0
 
     families = build_family_payload(
         PROJECT_ROOT,
@@ -455,7 +628,10 @@ def test_report_is_candidate_bound_and_uses_objective_aware_lifecycle(tmp_path: 
     ]
     assert len(cold_families) == 1110
     assert all(len(row["supported_conditions"]) == 12 for row in cold_families)
-    assert all(row["family_evidence"]["evidence_pooling_allowed"] is False for row in cold_families)
+    assert all(
+        row["family_evidence"]["evidence_pooling_allowed"] is False
+        for row in cold_families
+    )
     lineage = [
         child["strategy_id"]
         for family in families["families"]
@@ -466,9 +642,7 @@ def test_report_is_candidate_bound_and_uses_objective_aware_lifecycle(tmp_path: 
 
 def test_quality_assessment_never_calls_missing_evidence_bad() -> None:
     policy = load_policy()
-    contract = resolve_strategy_contract(
-        "equity_core", "trend_follow", policy=policy
-    )
+    contract = resolve_strategy_contract("equity_core", "trend_follow", policy=policy)
 
     unknown = _quality_assessment(
         contract,

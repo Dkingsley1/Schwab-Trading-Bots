@@ -43,6 +43,7 @@ from core.live_execution_envelope import (
     file_sha256,
 )
 from core.live_canary_allowlist import evaluate_live_canary_allowlist
+from core.live_canary_preflight import evaluate_live_canary_preflight
 from core.live_order_ledger import LiveOrderLedger
 from core.order_intent import (
     build_order_intent_evidence,
@@ -76,6 +77,7 @@ from core.brokers import (
     normalize_broker_name,
 )
 from core.brokers.capability_contract import evaluate_order_request
+from core.brokers.shared_rate_limiter import acquire_broker_rate_limit
 
 from core.accountability import (
     current_correlation,
@@ -165,6 +167,9 @@ _PAPER_PROFITABILITY_GUARD_CACHE: Dict[str, Any] = {
     "payload": {},
 }
 _PAPER_PROFITABILITY_GUARD_POLL_SECONDS = 2.0
+_PAPER_EVIDENCE_COLLECTION_CONTROLS_PATH = (
+    "config/paper_evidence_collection_controls_v1.json"
+)
 
 
 def _parse_env_override_file(path: Path) -> Dict[str, str]:
@@ -368,6 +373,11 @@ class BaseTrader:
             "supports_account_discovery"
         ):
             self.live_account_hash_auto_discover = True
+        if (
+            str(mode or "").strip().lower() == "live"
+            and str(self.broker_name or "").strip().lower() == "schwab"
+        ):
+            self.live_account_hash_auto_discover = False
         self.live_accounts_snapshot_allow_global_fallback = (
             os.getenv("LIVE_ACCOUNTS_SNAPSHOT_ALLOW_GLOBAL_FALLBACK", "0").strip()
             == "1"
@@ -636,6 +646,374 @@ class BaseTrader:
         cache["payload"] = dict(payload)
         return payload
 
+    def _paper_evidence_collection_controls(self) -> Dict[str, Any]:
+        path_override = os.getenv("PAPER_EVIDENCE_COLLECTION_CONTROLS_PATH", "").strip()
+        path = (
+            Path(path_override)
+            if path_override
+            else Path(_PAPER_EVIDENCE_COLLECTION_CONTROLS_PATH)
+        )
+        project_root = Path(getattr(self, "project_root", os.getcwd()))
+        resolved = path if path.is_absolute() else project_root / path
+        try:
+            with resolved.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        env_override = (
+            os.getenv("PAPER_EVIDENCE_COLLECTION_RELAXED_ENABLED", "").strip().lower()
+        )
+        if env_override in {"0", "false", "no", "off"}:
+            return {}
+        if env_override in {"1", "true", "yes", "on"}:
+            payload["enabled"] = True
+        if not bool(payload.get("enabled", False)):
+            return {}
+        if payload.get("paper_only") is not True:
+            return {}
+        if payload.get("live_execution_allowed") is not False:
+            return {}
+        payload["_control_artifact_path"] = str(resolved)
+        return payload
+
+    def _paper_evidence_collection_profile_policy(self, profile: str) -> Dict[str, Any]:
+        controls = self._paper_evidence_collection_controls()
+        if not controls:
+            return {}
+        defaults = (
+            controls.get("defaults")
+            if isinstance(controls.get("defaults"), dict)
+            else {}
+        )
+        profiles = (
+            controls.get("profiles")
+            if isinstance(controls.get("profiles"), dict)
+            else {}
+        )
+        profile_key = str(profile or "default").strip().lower() or "default"
+        raw_profile = profiles.get(profile_key)
+        if raw_profile is None:
+            raw_profile = profiles.get("default")
+        if raw_profile is None:
+            raw_profile = {}
+        if not isinstance(raw_profile, dict):
+            return {}
+        merged: Dict[str, Any] = dict(defaults)
+        merged.update(raw_profile)
+        if not bool(merged.get("enabled", True)):
+            return {}
+        if str(merged.get("mode") or "paper_evidence_collection").strip().lower() in {
+            "disabled",
+            "live",
+        }:
+            return {}
+        merged["_profile"] = profile_key
+        merged["_policy_id"] = str(controls.get("policy_id") or "")
+        merged["_control_artifact_path"] = str(
+            controls.get("_control_artifact_path") or ""
+        )
+        return merged
+
+    def _paper_evidence_value(
+        self,
+        evidence: Dict[str, Any],
+        *keys: str,
+    ) -> Tuple[Optional[float], bool]:
+        for key in keys:
+            if key not in evidence or evidence.get(key) in {None, ""}:
+                continue
+            value = self._as_float(evidence.get(key), float("nan"))
+            if isfinite(value):
+                return value, True
+        return None, False
+
+    def _paper_policy_float(
+        self,
+        policy: Dict[str, Any],
+        key: str,
+        default: float,
+    ) -> float:
+        value = self._as_float(policy.get(key), default)
+        return value if isfinite(value) else default
+
+    def _paper_policy_int(
+        self,
+        policy: Dict[str, Any],
+        key: str,
+        default: int,
+    ) -> int:
+        try:
+            return int(self._paper_policy_float(policy, key, float(default)))
+        except Exception:
+            return int(default)
+
+    def _paper_collection_blocker_allowed(
+        self,
+        blocker: str,
+        allowed_patterns: list[str],
+    ) -> bool:
+        text = str(blocker or "").strip().lower()
+        if not text:
+            return True
+        for raw in allowed_patterns:
+            pattern = str(raw or "").strip().lower()
+            if not pattern:
+                continue
+            if pattern.endswith("*") and text.startswith(pattern[:-1]):
+                return True
+            if text == pattern or text.startswith(f"{pattern}="):
+                return True
+        return False
+
+    def _paper_evidence_collection_override(
+        self,
+        *,
+        guard_gate: str,
+        guard_reason: str,
+        guard_details: Dict[str, Any],
+        profile: str,
+        symbol: str,
+        action: str,
+        quantity: float,
+        strategy: str,
+        metadata: Optional[Dict[str, Any]],
+        features: Optional[Dict[str, Any]],
+        entry_policy: Optional[Dict[str, Any]] = None,
+        failures: Optional[list[str]] = None,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        policy = self._paper_evidence_collection_profile_policy(profile)
+        if not policy:
+            return False, {"status": "inactive"}
+        if self.mode != "paper":
+            return False, {"status": "not_paper_mode"}
+        if bool(policy.get("force_trade_allowed", False)):
+            return False, {"status": "policy_rejected_force_trade_allowed"}
+        if bool(policy.get("loss_recovery_size_increase_allowed", False)):
+            return False, {"status": "policy_rejected_loss_recovery_size_increase"}
+        if bool(policy.get("live_execution_allowed", False)):
+            return False, {"status": "policy_rejected_live_execution_allowed"}
+
+        allowed_reasons = [
+            str(item or "").strip().lower()
+            for item in policy.get("allowed_guard_reasons", [])
+            if str(item or "").strip()
+        ]
+        if allowed_reasons and str(guard_reason or "").strip().lower() not in set(
+            allowed_reasons
+        ):
+            return False, {
+                "status": "guard_reason_not_relaxable",
+                "guard_reason": guard_reason,
+            }
+
+        evidence: Dict[str, Any] = {}
+        evidence.update(features if isinstance(features, dict) else {})
+        evidence.update(metadata if isinstance(metadata, dict) else {})
+        observed = (
+            guard_details.get("observed")
+            if isinstance(guard_details.get("observed"), dict)
+            else {}
+        )
+        evidence.update(
+            {key: value for key, value in observed.items() if value is not None}
+        )
+        exposure = (
+            guard_details.get("exposure_change")
+            if isinstance(guard_details.get("exposure_change"), dict)
+            else self._paper_exposure_change_details(
+                symbol=symbol,
+                action=action,
+                quantity=quantity,
+                metadata=metadata,
+            )
+        )
+        if not bool(exposure.get("increases_exposure", False)):
+            return False, {"status": "not_new_exposure"}
+        if bool(exposure.get("crosses_through_flat", False)):
+            return False, {"status": "same_order_reversal_remains_blocked"}
+
+        score, score_known = self._paper_evidence_value(
+            evidence, "model_score", "decision_model_score"
+        )
+        threshold, threshold_known = self._paper_evidence_value(
+            evidence, "decision_threshold", "threshold", "model_threshold"
+        )
+        minimum_edge = max(
+            self._paper_policy_float(
+                policy,
+                "minimum_model_score_edge_over_threshold",
+                0.02,
+            ),
+            0.0,
+        )
+        if not score_known or not threshold_known or score is None or threshold is None:
+            return False, {"status": "model_score_or_threshold_missing"}
+        model_edge = float(score - threshold)
+        if model_edge < minimum_edge:
+            return False, {
+                "status": "model_score_edge_below_collection_floor",
+                "model_score_edge": round(model_edge, 6),
+                "minimum_model_score_edge_over_threshold": round(minimum_edge, 6),
+            }
+
+        value_specs = {
+            "tradeability_norm": (
+                (
+                    "market_micro_tradeability_score_norm",
+                    "tradeability_norm",
+                    "tradeability_score",
+                ),
+                "hard_min_tradeability_norm",
+                0.50,
+                "min",
+            ),
+            "execution_fitness_norm": (
+                (
+                    "execution_fitness_norm",
+                    "fill_quality_norm",
+                    "modeled_fill_quality_norm",
+                ),
+                "hard_min_execution_fitness_norm",
+                0.50,
+                "min",
+            ),
+            "source_quality_norm": (
+                ("news_source_quality_norm", "source_quality_norm"),
+                "hard_min_source_quality_norm",
+                0.40,
+                "min",
+            ),
+            "liquidity_quality_norm": (
+                (
+                    "liquidity_quality_norm",
+                    "market_micro_liquidity_norm",
+                    "depth_quality_norm",
+                ),
+                "hard_min_liquidity_norm",
+                0.40,
+                "min",
+            ),
+            "spread_bps": (
+                ("spread_bps", "model_spread_bps"),
+                "hard_max_spread_bps",
+                35.0,
+                "max",
+            ),
+            "quote_age_ms": (("quote_age_ms",), "hard_max_quote_age_ms", 5000.0, "max"),
+            "overlap_pressure_norm": (
+                (
+                    "core_portfolio_overlap_pressure_norm",
+                    "portfolio_overlap_pressure_norm",
+                    "overlap_pressure_norm",
+                ),
+                "hard_max_overlap_pressure_norm",
+                0.74,
+                "max",
+            ),
+            "conflict_pressure_norm": (
+                ("cross_bot_conflict_norm", "allocation_conflict_norm"),
+                "hard_max_conflict_pressure_norm",
+                0.80,
+                "max",
+            ),
+        }
+        known: Dict[str, float] = {}
+        hard_failures: list[str] = []
+        for name, (keys, policy_key, default, direction) in value_specs.items():
+            value, value_known = self._paper_evidence_value(evidence, *keys)
+            if not value_known or value is None:
+                continue
+            known[name] = round(float(value), 6)
+            limit = self._paper_policy_float(policy, policy_key, float(default))
+            if direction == "min" and value < limit:
+                hard_failures.append(f"{name}={value:.3f}<{limit:.3f}")
+            if direction == "max" and value > limit:
+                hard_failures.append(f"{name}={value:.3f}>{limit:.3f}")
+
+        reference_price, reference_known = self._paper_evidence_value(
+            evidence, "reference_price", "last_price", "price", "mark_price"
+        )
+        if not reference_known or reference_price is None or reference_price <= 0.0:
+            hard_failures.append("reference_price_missing_or_nonpositive")
+
+        session = (
+            str(evidence.get("session") or evidence.get("market_session") or "unknown")
+            .strip()
+            .lower()
+        )
+        if session in {"premarket", "after_hours", "overnight"} and not bool(
+            evidence.get("extended_session_validated", False)
+        ):
+            hard_failures.append("extended_session_not_independently_validated")
+
+        minimum_channels = max(
+            self._paper_policy_int(policy, "minimum_known_core_channels", 4), 1
+        )
+        if len(known) < minimum_channels:
+            hard_failures.append(f"known_core_channels={len(known)}<{minimum_channels}")
+
+        entry_blockers = (
+            entry_policy.get("blockers")
+            if isinstance(entry_policy, dict)
+            and isinstance(entry_policy.get("blockers"), list)
+            else []
+        )
+        effective_failures = [str(item) for item in (failures or []) if str(item)]
+        if not effective_failures:
+            effective_failures = [str(item) for item in entry_blockers if str(item)]
+
+        allowed_patterns = [
+            str(item or "")
+            for item in policy.get(
+                (
+                    "allowed_clean_gate_failures"
+                    if str(guard_reason or "")
+                    == "paper_profitability_clean_profile_evidence_block"
+                    else "allowed_entry_policy_blockers"
+                ),
+                [],
+            )
+            if str(item or "").strip()
+        ]
+        disallowed_failures = [
+            item
+            for item in effective_failures
+            if not self._paper_collection_blocker_allowed(item, allowed_patterns)
+        ]
+        if hard_failures or disallowed_failures:
+            return False, {
+                "status": "hard_or_unapproved_failure",
+                "hard_failures": hard_failures,
+                "disallowed_failures": disallowed_failures,
+                "known_core_channels": len(known),
+                "known": known,
+            }
+
+        return True, {
+            "status": "allowed",
+            "guard_gate": guard_gate,
+            "guard_reason": guard_reason,
+            "profile": str(profile or "default"),
+            "strategy": str(strategy or ""),
+            "symbol": str(symbol or "").upper(),
+            "action": str(action or "").upper(),
+            "model_score_edge": round(model_edge, 6),
+            "minimum_model_score_edge_over_threshold": round(minimum_edge, 6),
+            "known_core_channels": len(known),
+            "minimum_known_core_channels": minimum_channels,
+            "known": known,
+            "relaxed_failures": sorted(set(effective_failures)),
+            "policy_id": str(policy.get("_policy_id") or ""),
+            "policy_path": str(policy.get("_control_artifact_path") or ""),
+            "paper_only": True,
+            "live_execution_allowed": False,
+            "force_trade_allowed": False,
+            "loss_recovery_size_increase_allowed": False,
+            "profitability_claim_allowed": False,
+        }
+
     def _paper_profitability_new_entry_blocked(
         self,
         *,
@@ -714,9 +1092,7 @@ class BaseTrader:
                 if declared_policy_valid
                 else False
             )
-            if not declared_policy_allowed or not bool(
-                evaluated_entry_policy.get("allowed", False)
-            ):
+            if not declared_policy_allowed:
                 return (
                     True,
                     "paper_profitability_entry_policy_block",
@@ -735,6 +1111,50 @@ class BaseTrader:
                         "policy": "declared entry-policy failures are fail-closed for new exposure even when recovery controls are inactive",
                     },
                 )
+            if not bool(evaluated_entry_policy.get("allowed", False)):
+                guard_details = {
+                    "guard_gate": "paper_profitability_entry_policy",
+                    "source_profile": source_profile,
+                    "declared_entry_policy_valid": declared_policy_valid,
+                    "declared_entry_policy": declared_entry_policy,
+                    "evaluated_entry_policy": evaluated_entry_policy,
+                    "valuation": valuation,
+                    "exposure_change": exposure,
+                    "policy": "declared entry-policy allowance must still clear local paper safety gates unless a paper-only evidence collection override applies",
+                }
+                collection_allowed, collection_details = (
+                    self._paper_evidence_collection_override(
+                        guard_gate="paper_profitability_entry_policy",
+                        guard_reason="paper_profitability_entry_policy_block",
+                        guard_details=guard_details,
+                        profile=source_profile,
+                        symbol=symbol,
+                        action=action,
+                        quantity=quantity,
+                        strategy=strategy,
+                        metadata=metadata_payload,
+                        features=features,
+                        entry_policy=evaluated_entry_policy,
+                    )
+                )
+                if collection_allowed:
+                    return (
+                        False,
+                        "paper_evidence_collection_override_allowed",
+                        {
+                            "guard_gate": "paper_evidence_collection_override",
+                            "source_profile": source_profile,
+                            "original_guard": guard_details,
+                            "paper_evidence_collection": collection_details,
+                            "policy": "paper-only evidence collection may sample candidate-bound entries that clear hard safety floors while promotion evidence remains blocked",
+                        },
+                    )
+                guard_details["paper_evidence_collection"] = collection_details
+                return (
+                    True,
+                    "paper_profitability_entry_policy_block",
+                    guard_details,
+                )
 
         if evaluated_entry_policy is None:
             entry_evidence: Dict[str, Any] = {}
@@ -745,17 +1165,46 @@ class BaseTrader:
                 features=entry_evidence,
             )
         if not bool(evaluated_entry_policy.get("allowed", False)):
+            guard_details = {
+                "guard_gate": "paper_profitability_entry_policy",
+                "source_profile": source_profile,
+                "entry_policy": evaluated_entry_policy,
+                "valuation": valuation,
+                "exposure_change": exposure,
+                "policy": "the local profitability entry policy always applies, including while generated recovery artifacts are absent or refreshing",
+            }
+            collection_allowed, collection_details = (
+                self._paper_evidence_collection_override(
+                    guard_gate="paper_profitability_entry_policy",
+                    guard_reason="paper_profitability_entry_policy_block",
+                    guard_details=guard_details,
+                    profile=source_profile,
+                    symbol=symbol,
+                    action=action,
+                    quantity=quantity,
+                    strategy=strategy,
+                    metadata=metadata_payload,
+                    features=features,
+                    entry_policy=evaluated_entry_policy,
+                )
+            )
+            if collection_allowed:
+                return (
+                    False,
+                    "paper_evidence_collection_override_allowed",
+                    {
+                        "guard_gate": "paper_evidence_collection_override",
+                        "source_profile": source_profile,
+                        "original_guard": guard_details,
+                        "paper_evidence_collection": collection_details,
+                        "policy": "paper-only evidence collection may sample candidate-bound entries that clear hard safety floors while promotion evidence remains blocked",
+                    },
+                )
+            guard_details["paper_evidence_collection"] = collection_details
             return (
                 True,
                 "paper_profitability_entry_policy_block",
-                {
-                    "guard_gate": "paper_profitability_entry_policy",
-                    "source_profile": source_profile,
-                    "entry_policy": evaluated_entry_policy,
-                    "valuation": valuation,
-                    "exposure_change": exposure,
-                    "policy": "the local profitability entry policy always applies, including while generated recovery artifacts are absent or refreshing",
-                },
+                guard_details,
             )
 
         control = self._paper_profitability_control_payload()
@@ -871,17 +1320,46 @@ class BaseTrader:
             )
         entry_policy = evaluated_entry_policy
         if not bool(entry_policy.get("allowed", False)):
+            guard_details = {
+                "guard_gate": "paper_profitability_entry_policy",
+                "source_profile": source_profile,
+                "entry_policy": entry_policy,
+                "valuation": valuation,
+                "exposure_change": exposure,
+                "policy": "new exposure must clear execution quality, regime fit, and portfolio overlap budgets",
+            }
+            collection_allowed, collection_details = (
+                self._paper_evidence_collection_override(
+                    guard_gate="paper_profitability_entry_policy",
+                    guard_reason="paper_profitability_entry_policy_block",
+                    guard_details=guard_details,
+                    profile=source_profile or "default",
+                    symbol=symbol,
+                    action=action,
+                    quantity=quantity,
+                    strategy=strategy,
+                    metadata=metadata_payload,
+                    features=features,
+                    entry_policy=entry_policy,
+                )
+            )
+            if collection_allowed:
+                return (
+                    False,
+                    "paper_evidence_collection_override_allowed",
+                    {
+                        "guard_gate": "paper_evidence_collection_override",
+                        "source_profile": source_profile,
+                        "original_guard": guard_details,
+                        "paper_evidence_collection": collection_details,
+                        "policy": "paper-only evidence collection may sample candidate-bound entries that clear hard safety floors while promotion evidence remains blocked",
+                    },
+                )
+            guard_details["paper_evidence_collection"] = collection_details
             return (
                 True,
                 "paper_profitability_entry_policy_block",
-                {
-                    "guard_gate": "paper_profitability_entry_policy",
-                    "source_profile": source_profile,
-                    "entry_policy": entry_policy,
-                    "valuation": valuation,
-                    "exposure_change": exposure,
-                    "policy": "new exposure must clear execution quality, regime fit, and portfolio overlap budgets",
-                },
+                guard_details,
             )
 
         clean_gate = raw_improvement.get("clean_sleeve_strict_buy_gate_contract")
@@ -1017,31 +1495,63 @@ class BaseTrader:
         if channel_count < minimum_channels:
             failures.append("independent_evidence_channel_floor_not_met")
         if failures:
+            guard_details = {
+                "guard_gate": "paper_profitability_clean_profile_evidence",
+                "source_profile": source_profile,
+                "strategy": strategy_key,
+                "failures": sorted(set(failures)),
+                "independent_evidence_channel_count": channel_count,
+                "minimum_independent_evidence_channels": minimum_channels,
+                "observed": {
+                    "quality_gate_norm": quality,
+                    "tradeability_norm": tradeability,
+                    "execution_fitness_norm": execution_fitness,
+                    "cross_asset_confirmation_norm": confirmation,
+                    "overlap_pressure_norm": overlap,
+                    "spread_bps": spread_bps,
+                    "event_catalyst_confirmation_norm": event_confirmation,
+                    "portfolio_conflict_clearance_norm": conflict_clearance,
+                    "session_quality_norm": session_quality,
+                    "session": session,
+                },
+                "thresholds": thresholds,
+                "exposure_change": exposure,
+                "policy": "clean sleeves may open paper exposure only when every declared point-in-time evidence gate is actually present and passes",
+            }
+            collection_allowed, collection_details = (
+                self._paper_evidence_collection_override(
+                    guard_gate="paper_profitability_clean_profile_evidence",
+                    guard_reason="paper_profitability_clean_profile_evidence_block",
+                    guard_details=guard_details,
+                    profile=source_profile or "default",
+                    symbol=symbol,
+                    action=action,
+                    quantity=quantity,
+                    strategy=strategy,
+                    metadata=metadata_payload,
+                    features=features,
+                    entry_policy=entry_policy,
+                    failures=sorted(set(failures)),
+                )
+            )
+            if collection_allowed:
+                return (
+                    False,
+                    "paper_evidence_collection_override_allowed",
+                    {
+                        "guard_gate": "paper_evidence_collection_override",
+                        "source_profile": source_profile,
+                        "strategy": strategy_key,
+                        "original_guard": guard_details,
+                        "paper_evidence_collection": collection_details,
+                        "policy": "paper-only evidence collection may sample candidate-bound clean sleeves with missing auxiliary proof channels while promotion evidence remains blocked",
+                    },
+                )
+            guard_details["paper_evidence_collection"] = collection_details
             return (
                 True,
                 "paper_profitability_clean_profile_evidence_block",
-                {
-                    "guard_gate": "paper_profitability_clean_profile_evidence",
-                    "source_profile": source_profile,
-                    "strategy": strategy_key,
-                    "failures": sorted(set(failures)),
-                    "independent_evidence_channel_count": channel_count,
-                    "minimum_independent_evidence_channels": minimum_channels,
-                    "observed": {
-                        "quality_gate_norm": quality,
-                        "tradeability_norm": tradeability,
-                        "execution_fitness_norm": execution_fitness,
-                        "cross_asset_confirmation_norm": confirmation,
-                        "overlap_pressure_norm": overlap,
-                        "spread_bps": spread_bps,
-                        "event_catalyst_confirmation_norm": event_confirmation,
-                        "portfolio_conflict_clearance_norm": conflict_clearance,
-                        "session_quality_norm": session_quality,
-                        "session": session,
-                    },
-                    "thresholds": thresholds,
-                    "policy": "clean sleeves may open paper exposure only when every declared point-in-time evidence gate is actually present and passes",
-                },
+                guard_details,
             )
         return (
             False,
@@ -1325,6 +1835,22 @@ class BaseTrader:
         cooldown_seconds = max(
             float(os.getenv("PAPER_NEW_ENTRY_COOLDOWN_SECONDS", "300") or 300), 0.0
         )
+        collection_policy: Dict[str, Any] = {}
+        if str(getattr(self, "mode", "") or "").strip().lower() == "paper":
+            collection_policy = self._paper_evidence_collection_profile_policy(profile)
+        if collection_policy:
+            policy_max_entries = self._paper_policy_int(
+                collection_policy,
+                "max_entries_per_symbol_day",
+                max_entries,
+            )
+            max_entries = max(max_entries, policy_max_entries, 1)
+            policy_cooldown = self._paper_policy_float(
+                collection_policy,
+                "new_entry_cooldown_seconds",
+                cooldown_seconds,
+            )
+            cooldown_seconds = max(min(cooldown_seconds, policy_cooldown), 0.0)
         reversal_cooldown_seconds = max(
             float(os.getenv("PAPER_REVERSAL_COOLDOWN_SECONDS", "1800") or 1800),
             cooldown_seconds,
@@ -1343,6 +1869,18 @@ class BaseTrader:
             "reversal_cooldown_seconds": reversal_cooldown_seconds,
             "exposure_change": exposure,
         }
+        if collection_policy:
+            details["paper_evidence_collection_controls"] = {
+                "active": True,
+                "policy_id": str(collection_policy.get("_policy_id") or ""),
+                "policy_path": str(
+                    collection_policy.get("_control_artifact_path") or ""
+                ),
+                "max_entries_per_symbol_day": max_entries,
+                "new_entry_cooldown_seconds": cooldown_seconds,
+                "paper_only": True,
+                "live_execution_allowed": False,
+            }
         if (
             bool(exposure.get("crosses_through_flat", False))
             and not allow_same_order_reversal
@@ -1591,6 +2129,24 @@ class BaseTrader:
                 continue
             discovery_state["attempted"] = True
             discovery_state["method"] = str(method_name)
+            rate_limit = acquire_broker_rate_limit(
+                project_root=self.project_root,
+                broker=self.broker_name,
+                operation="get_account_numbers",
+            )
+            discovery_state["rate_limit"] = rate_limit
+            if not bool(rate_limit.get("allowed", True)):
+                discovery_state.update(
+                    {
+                        "failure_class": "provider_rate_limited",
+                        "error": "broker_rate_limit_budget_exhausted",
+                        "retryable": True,
+                        "retry_after_seconds": float(
+                            rate_limit.get("retry_after_seconds", 0.0) or 0.0
+                        ),
+                    }
+                )
+                break
             try:
                 response = fn(*args, **kwargs)
                 status_code = self._as_int(getattr(response, "status_code", 0), 0)
@@ -1663,6 +2219,11 @@ class BaseTrader:
         return [row.to_dict() for row in self.fetch_connected_accounts()]
 
     def _discover_live_account_hash(self, *, force: bool = False) -> str:
+        if (
+            str(self.mode or "").strip().lower() == "live"
+            and str(self.broker_name or "").strip().lower() == "schwab"
+        ):
+            return str(self.live_account_hash or "").strip()
         if self.client is None:
             return str(self.live_account_hash or "").strip()
         if not self._supports_broker_capability("supports_account_discovery"):
@@ -1801,7 +2362,10 @@ class BaseTrader:
                     requested_browser=requested_browser,
                 )
             )
-            if not self.live_account_hash:
+            if not self.live_account_hash and not (
+                str(self.mode or "").strip().lower() == "live"
+                and str(self.broker_name or "").strip().lower() == "schwab"
+            ):
                 self._discover_live_account_hash(force=True)
             self._log_auth_event(
                 event="auth_success",
@@ -3240,6 +3804,33 @@ class BaseTrader:
                         pass
 
                 started = time.time()
+                rate_limit = acquire_broker_rate_limit(
+                    project_root=self.project_root,
+                    broker=self.broker_name,
+                    operation=operation,
+                )
+                if not bool(rate_limit.get("allowed", True)):
+                    details = {"rate_limit": rate_limit, **(context or {})}
+                    self._log_live_guard_event(
+                        event=operation,
+                        status="blocked",
+                        reason="broker_rate_limit_budget_exhausted",
+                        details=details,
+                    )
+                    return {
+                        "ok": False,
+                        "operation": operation,
+                        "error": "broker_rate_limit_budget_exhausted",
+                        "retryable": True,
+                        "rate_limited": True,
+                        "retry_after_seconds": float(
+                            rate_limit.get("retry_after_seconds", 0.0) or 0.0
+                        ),
+                        "attempts_made": max(attempt - 1, 0),
+                        "max_attempts": max_attempts,
+                        "retry_contract": retry_contract,
+                        "rate_limit": rate_limit,
+                    }
                 try:
                     response = fn(*args, **kwargs)
                     status_code = self._as_int(getattr(response, "status_code", 0), 0)
@@ -3262,6 +3853,7 @@ class BaseTrader:
                         "attempts_made": attempt,
                         "max_attempts": max_attempts,
                         "retry_contract": retry_contract,
+                        "rate_limit": rate_limit,
                     }
                     order_id = self._extract_order_id(response)
                     if order_id:
@@ -3277,6 +3869,7 @@ class BaseTrader:
                             "attempt": attempt,
                             "attempts_made": attempt,
                             "max_attempts": max_attempts,
+                            "rate_limit": rate_limit,
                             **(context or {}),
                         },
                     )
@@ -4642,6 +5235,7 @@ class BaseTrader:
         self,
         *,
         interrupted_stale_seconds: float = 5.0,
+        full_account_scan: bool = False,
     ) -> Dict[str, Any]:
         """Rebuild broker-order truth before the live lane accepts new work."""
         ledger = self._durable_live_order_ledger()
@@ -4650,6 +5244,90 @@ class BaseTrader:
         )
         reconciled: List[Dict[str, Any]] = []
         blockers: List[str] = list(startup_recovery.get("errors") or [])
+        order_inventory: Dict[str, Any] = {
+            "required": bool(full_account_scan),
+            "ok": not full_account_scan,
+            "order_count": 0,
+            "active_order_count": 0,
+            "untracked_active_order_count": 0,
+            "untracked_active_orders": [],
+        }
+
+        if full_account_scan:
+            fetched_inventory = self._live_fetch_orders_snapshot()
+            order_inventory["fetch"] = {
+                key: fetched_inventory.get(key)
+                for key in (
+                    "ok",
+                    "operation",
+                    "error",
+                    "status_code",
+                    "attempts_made",
+                    "max_attempts",
+                    "latency_ms",
+                    "rate_limited",
+                    "retry_after_seconds",
+                )
+                if key in fetched_inventory
+            }
+            if not bool(fetched_inventory.get("ok", False)):
+                blockers.append(
+                    "broker_order_inventory_fetch_failed:"
+                    + str(fetched_inventory.get("error") or "unknown")
+                )
+            else:
+                inventory_rows = self._extract_order_rows_from_payload(
+                    fetched_inventory.get("orders_payload")
+                )
+                terminal_statuses = {
+                    "FILLED",
+                    "EXECUTED",
+                    "CANCELED",
+                    "CANCELLED",
+                    "REJECTED",
+                    "EXPIRED",
+                }
+                active_rows: List[Dict[str, Any]] = []
+                untracked: List[Dict[str, Any]] = []
+                for inventory_row in inventory_rows:
+                    broker_order_id = str(
+                        inventory_row.get("orderId")
+                        or inventory_row.get("order_id")
+                        or ""
+                    ).strip()
+                    status = self._order_status(inventory_row)
+                    if not broker_order_id or status in terminal_statuses:
+                        continue
+                    active_rows.append(inventory_row)
+                    if not ledger.get_by_broker_order_id(broker_order_id):
+                        untracked.append(
+                            {
+                                "broker_order_id": broker_order_id,
+                                "status": status,
+                            }
+                        )
+                order_inventory.update(
+                    {
+                        "ok": not untracked,
+                        "order_count": len(inventory_rows),
+                        "active_order_count": len(active_rows),
+                        "untracked_active_order_count": len(untracked),
+                        "untracked_active_orders": untracked[:20],
+                    }
+                )
+                if untracked:
+                    blockers.extend(
+                        "untracked_active_broker_order:"
+                        + str(item.get("broker_order_id") or "")
+                        for item in untracked
+                    )
+                    self._engage_global_halt(
+                        reason="untracked_active_broker_orders_detected",
+                        details={
+                            "count": len(untracked),
+                            "orders": untracked[:20],
+                        },
+                    )
 
         for row in ledger.unresolved():
             intent_id = str(row.get("intent_id") or "")
@@ -4779,6 +5457,7 @@ class BaseTrader:
             "remaining_ambiguous_count": len(remaining_ambiguous),
             "blockers": blockers,
             "new_live_intents_allowed": not blockers,
+            "full_account_scan": order_inventory,
             "policy": "reconstruct durable broker truth before consuming any new live intent",
         }
 
@@ -4816,6 +5495,18 @@ class BaseTrader:
         # The mock adapter never reaches a broker and is used to exercise PAPER
         # execution contracts. Every real broker still passes the live firewall.
         real_broker = str(self.broker_name or "").strip().lower() != "mock"
+        account_binding = self.broker_adapter.validate_live_account_reference(
+            order_request.account_reference
+        )
+        if real_broker and not bool(account_binding.get("ok", False)):
+            return {
+                "ok": False,
+                "operation": "place_order",
+                "error": str(
+                    account_binding.get("reason") or "live_account_reference_invalid"
+                ),
+                "account_binding": account_binding,
+            }
         capability_contract = evaluate_order_request(
             self.broker_name,
             order_request.to_dict(),
@@ -4831,6 +5522,21 @@ class BaseTrader:
                 "order_request": order_request.to_dict(),
             }
         canary_contract = evaluate_live_canary_allowlist(self.project_root)
+        account_snapshot = dict(account_snapshot_evidence or {})
+        if real_broker and str(action or "").strip().upper() in {
+            "BUY",
+            "BUY_TO_OPEN",
+            "SELL",
+            "SELL_TO_CLOSE",
+        }:
+            account_snapshot["live_canary_preflight_receipt"] = (
+                evaluate_live_canary_preflight(
+                    self.project_root,
+                    symbol=symbol,
+                    action=action,
+                    account_reference=self.live_account_hash,
+                )
+            )
         live_policy_path = (
             Path(self.project_root) / "config" / "production_readiness_control_v1.json"
         )
@@ -4840,7 +5546,7 @@ class BaseTrader:
             candidate_id=str(canary_contract.get("current_candidate_id") or ""),
             broker=self.broker_name,
             account_reference=self.live_account_hash,
-            account_snapshot_evidence=account_snapshot_evidence or {},
+            account_snapshot_evidence=account_snapshot,
             policy_sha256=file_sha256(live_policy_path),
             ttl_seconds=max(
                 float(os.getenv("LIVE_EXECUTION_ENVELOPE_TTL_SECONDS", "15") or 15.0),
@@ -5174,6 +5880,86 @@ class BaseTrader:
         ).to_dict()
         return out
 
+    def _live_fetch_orders_snapshot(
+        self,
+        *,
+        max_results: int = 500,
+        lookback_days: int = 60,
+    ) -> Dict[str, Any]:
+        if not self._supports_broker_capability("supports_order_list"):
+            return self._unsupported_broker_operation(
+                "get_orders_snapshot", "supports_order_list"
+            )
+        account_binding = self.broker_adapter.validate_live_account_reference(
+            self.live_account_hash
+        )
+        if str(self.broker_name or "").strip().lower() != "mock" and not bool(
+            account_binding.get("ok", False)
+        ):
+            return {
+                "ok": False,
+                "operation": "get_orders_snapshot",
+                "error": str(
+                    account_binding.get("reason") or "live_account_reference_invalid"
+                ),
+                "account_binding": account_binding,
+            }
+        out = self._invoke_client_candidates(
+            operation="get_orders_snapshot",
+            candidates=self.broker_adapter.orders_snapshot_candidates(
+                account_reference=self.live_account_hash,
+                max_results=max_results,
+                lookback_days=lookback_days,
+            ),
+            context={
+                "account_hash_configured": bool(self.live_account_hash),
+                "max_results": max(int(max_results), 1),
+                "lookback_days": max(int(lookback_days), 1),
+            },
+        )
+        if not out.get("ok"):
+            return out
+        payload = self._coerce_json_obj_or_list(out.get("response"))
+        out["orders_payload"] = payload
+        out["order_count"] = len(self._extract_order_rows_from_payload(payload))
+        return out
+
+    def _extract_order_rows_from_payload(self, payload: Any) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def _walk(node: Any) -> None:
+            if isinstance(node, list):
+                for child in node:
+                    _walk(child)
+                return
+            if not isinstance(node, dict):
+                return
+            order_id = str(node.get("orderId") or node.get("order_id") or "").strip()
+            if (
+                order_id
+                and order_id not in seen
+                and any(key in node for key in ("status", "orderStatus", "state"))
+            ):
+                seen.add(order_id)
+                rows.append(dict(node))
+            for key in (
+                "orders",
+                "orderStrategies",
+                "childOrderStrategies",
+                "linkedOrders",
+            ):
+                _walk(node.get(key))
+            securities = node.get("securitiesAccount")
+            if isinstance(securities, dict):
+                _walk(securities)
+            accounts = node.get("accounts")
+            if isinstance(accounts, list):
+                _walk(accounts)
+
+        _walk(payload)
+        return rows
+
     def _order_status(self, payload: Dict[str, Any]) -> str:
         for key in ("status", "orderStatus", "state"):
             raw = payload.get(key)
@@ -5496,10 +6282,23 @@ class BaseTrader:
 
     def _live_fetch_connected_accounts_payload(self) -> Dict[str, Any]:
         accounts = self.fetch_connected_accounts()
+        discovery_state = dict(
+            getattr(self, "_connected_account_discovery_state", {}) or {}
+        )
+        transport_telemetry: Dict[str, Any] = {
+            "discovery_attempted": bool(discovery_state.get("attempted", False)),
+            "discovery_request_ok": bool(discovery_state.get("request_ok", False)),
+            "account_snapshot_requests": 0,
+            "account_snapshot_successes": 0,
+            "account_snapshot_failures": 0,
+            "retry_count": 0,
+            "rate_limited_count": 0,
+            "max_latency_ms": 0.0,
+            "status_codes": list(discovery_state.get("status_codes") or []),
+            "partial_response": False,
+        }
         if not accounts:
-            discovery = dict(
-                getattr(self, "_connected_account_discovery_state", {}) or {}
-            )
+            discovery = discovery_state
             failure_class = str(discovery.get("failure_class") or "").strip()
             error_by_class = {
                 "provider_unavailable": "account_discovery_provider_unavailable",
@@ -5529,6 +6328,7 @@ class BaseTrader:
                 "provider_failure_class": failure_class,
                 "retryable": bool(discovery.get("retryable", False)),
                 "account_discovery": discovery,
+                "transport_telemetry": transport_telemetry,
             }
 
         account_payloads: List[Dict[str, Any]] = []
@@ -5548,7 +6348,23 @@ class BaseTrader:
                     "account_snapshot_mode": "connected_account_aggregate",
                 },
             )
+            transport_telemetry["account_snapshot_requests"] += 1
+            attempts_made = self._as_int(out.get("attempts_made", 0), 0)
+            transport_telemetry["retry_count"] += max(attempts_made - 1, 0)
+            transport_telemetry["max_latency_ms"] = max(
+                float(transport_telemetry["max_latency_ms"]),
+                self._as_float(out.get("latency_ms", 0.0), 0.0),
+            )
+            status_code = self._as_int(out.get("status_code", 0), 0)
+            if status_code and status_code not in transport_telemetry["status_codes"]:
+                transport_telemetry["status_codes"].append(status_code)
+            if (
+                bool(out.get("rate_limited", False))
+                or str(out.get("error") or "") == "broker_rate_limit_budget_exhausted"
+            ):
+                transport_telemetry["rate_limited_count"] += 1
             if not bool(out.get("ok", False)):
+                transport_telemetry["account_snapshot_failures"] += 1
                 failures.append(
                     {
                         "account_number_tail": (
@@ -5567,6 +6383,7 @@ class BaseTrader:
                     }
                 )
                 continue
+            transport_telemetry["account_snapshot_successes"] += 1
             payload = self._coerce_json_obj_or_list(out.get("response"))
             account_payload = (
                 dict(payload) if isinstance(payload, dict) else {"payload": payload}
@@ -5585,7 +6402,9 @@ class BaseTrader:
             "failed_account_count": len(failures),
             "partial": bool(failures),
             "failures": failures[:10],
+            "transport_telemetry": transport_telemetry,
         }
+        transport_telemetry["partial_response"] = bool(failures)
         return {
             "ok": bool(account_payloads),
             "payload": aggregate_payload,
@@ -5612,6 +6431,7 @@ class BaseTrader:
                 [self._as_int(row.get("soft_fail_grace", 0), 0) for row in failures]
                 or [0]
             ),
+            "transport_telemetry": transport_telemetry,
         }
 
     def _live_fetch_accounts_payload(self) -> Dict[str, Any]:
@@ -5642,7 +6462,14 @@ class BaseTrader:
             candidates=_snapshot_candidates(),
             context={"account_hash_configured": bool(self.live_account_hash)},
         )
-        if (not out.get("ok")) and self.live_account_hash:
+        if (
+            (not out.get("ok"))
+            and self.live_account_hash
+            and not (
+                str(self.mode or "").strip().lower() == "live"
+                and str(self.broker_name or "").strip().lower() == "schwab"
+            )
+        ):
             status_code = self._as_int(out.get("status_code", 0), 0)
             if status_code in {401, 403, 404}:
                 previous_hash = str(self.live_account_hash)
@@ -6064,6 +6891,8 @@ class BaseTrader:
             md["iter_id"] = corr["iter_id"]
         if not str(md.get("decision_id") or "").strip():
             md["decision_id"] = str(uuid.uuid4())
+        md.setdefault("model_score", float(model_score))
+        md.setdefault("decision_threshold", float(threshold))
         if not str(md.get("parent_decision_id") or "").strip():
             snap = str(md.get("snapshot_id") or "").strip()
             if snap:
@@ -6187,6 +7016,11 @@ class BaseTrader:
             )
 
         def intent_evidence_for(risk_decision: Dict[str, Any]) -> Dict[str, Any]:
+            live_quote_snapshot = (
+                md.get("_live_quote_snapshot")
+                if isinstance(md.get("_live_quote_snapshot"), dict)
+                else None
+            )
             return build_order_intent_evidence(
                 decision_id=str(decision_entry.get("decision_id") or ""),
                 symbol=symbol,
@@ -6195,7 +7029,11 @@ class BaseTrader:
                 strategy=strategy,
                 asset_type=str(md.get("asset_type") or "EQUITY"),
                 limit_price=self._as_float(md.get("limit_price"), 0.0),
-                quote_snapshot=compact_quote_snapshot(features, md),
+                quote_snapshot=(
+                    live_quote_snapshot
+                    if live_quote_snapshot is not None
+                    else compact_quote_snapshot(features, md)
+                ),
                 expected_fill=intent_expected_fill,
                 risk_decision=risk_decision,
             )
@@ -6784,17 +7622,145 @@ class BaseTrader:
                         )
                         return result
 
+                configured_asset_type = str(md.get("asset_type") or "").strip().upper()
+                if configured_asset_type:
+                    asset_type = configured_asset_type
+                elif isinstance(md.get("options_plan"), dict):
+                    asset_type = "OPTION"
+                elif isinstance(md.get("futures_plan"), dict):
+                    asset_type = "FUTURE"
+                else:
+                    asset_type = "EQUITY"
                 ref_price = intent_reference_price
+                if asset_type == "EQUITY":
+                    live_quote = self._fetch_live_quote(symbol=symbol)
+                    quote_snapshot = (
+                        live_quote.get("quote_snapshot")
+                        if isinstance(live_quote.get("quote_snapshot"), dict)
+                        else {}
+                    )
+                    bid_price = self._as_float(quote_snapshot.get("bid_price"), 0.0)
+                    ask_price = self._as_float(quote_snapshot.get("ask_price"), 0.0)
+                    last_price = self._as_float(quote_snapshot.get("last_price"), 0.0)
+                    mark_price = self._as_float(quote_snapshot.get("mark_price"), 0.0)
+                    if (
+                        not bool(live_quote.get("ok", False))
+                        or bid_price <= 0.0
+                        or ask_price < bid_price
+                    ):
+                        status = "LIVE_GUARD_BLOCKED"
+                        reason = "fresh_broker_quote_unavailable"
+                        guard_payload = {
+                            "gate": "live_quote_preflight",
+                            "reason": reason,
+                            "details": {
+                                "symbol": str(symbol).upper(),
+                                "broker": str(self.broker_name or "").lower(),
+                                "quote_operation_ok": bool(live_quote.get("ok", False)),
+                                "bid_present": bid_price > 0.0,
+                                "ask_present": ask_price > 0.0,
+                            },
+                        }
+                        self._log_softguard_event(
+                            event="live_quote_preflight",
+                            status="blocked",
+                            reason=reason,
+                            details=guard_payload["details"],
+                        )
+                        result = {
+                            "status": status,
+                            "mode": self.mode,
+                            "decision": decision_entry,
+                            "live_guard_decision": guard_payload,
+                            "live_guard": self.live_guard.snapshot(),
+                        }
+                        self._emit_decision_explanation(
+                            status=status,
+                            decision_entry=decision_entry,
+                            safety=safety,
+                        )
+                        return result
+                    captured_at = datetime.now(timezone.utc).isoformat()
+                    midpoint = (bid_price + ask_price) / 2.0
+                    spread_bps = (
+                        ((ask_price - bid_price) / midpoint) * 10000.0
+                        if midpoint > 0.0
+                        else 0.0
+                    )
+                    ref_price = mark_price or last_price or midpoint
+                    live_quote_evidence = {
+                        "timestamp_utc": captured_at,
+                        "last_price": last_price or ref_price,
+                        "bid_price": bid_price,
+                        "ask_price": ask_price,
+                        "spread_bps": spread_bps,
+                        "quote_age_ms": 0.0,
+                        "source_provider": str(self.broker_name or "").strip().lower(),
+                        "source_venue": (
+                            "schwab_trader_api"
+                            if str(self.broker_name or "").strip().lower() == "schwab"
+                            else str(self.broker_name or "").strip().lower()
+                        ),
+                    }
+                    live_quote_evidence["snapshot_id"] = canonical_payload_sha256(
+                        live_quote_evidence
+                    )
+                    md["_live_quote_snapshot"] = live_quote_evidence
+                    intent_model_inputs = self._paper_execution_model_inputs(
+                        symbol=symbol,
+                        features=features,
+                        metadata=md,
+                    )
+                    intent_expected_fill = self.live_guard.model_expected_fill(
+                        action=action,
+                        reference_price=ref_price,
+                        quantity=quantity,
+                        spread_bps=spread_bps,
+                        volatility_1m=float(
+                            intent_model_inputs.get("volatility_1m", 0.0)
+                        ),
+                        latency_ms=float(intent_model_inputs.get("latency_ms", 120.0)),
+                        bid_size=float(intent_model_inputs.get("bid_size", 1000.0)),
+                        ask_size=float(intent_model_inputs.get("ask_size", 1000.0)),
+                    )
+
                 limit_price = self._as_float(md.get("limit_price"), 0.0)
+                if asset_type == "EQUITY" and limit_price <= 0.0:
+                    status = "LIVE_GUARD_BLOCKED"
+                    guard_payload = {
+                        "gate": "live_limit_order_contract",
+                        "reason": "live_limit_price_required",
+                        "details": {
+                            "symbol": str(symbol).upper(),
+                            "asset_type": asset_type,
+                            "market_orders_allowed": False,
+                        },
+                    }
+                    self._log_softguard_event(
+                        event="live_limit_order_contract",
+                        status="blocked",
+                        reason="live_limit_price_required",
+                        details=guard_payload["details"],
+                    )
+                    result = {
+                        "status": status,
+                        "mode": self.mode,
+                        "decision": decision_entry,
+                        "live_guard_decision": guard_payload,
+                        "live_guard": self.live_guard.snapshot(),
+                    }
+                    self._emit_decision_explanation(
+                        status=status,
+                        decision_entry=decision_entry,
+                        safety=safety,
+                    )
+                    return result
                 intended_price = self._intended_live_execution_price(
                     action=action,
                     limit_price=limit_price,
                     reference_price=ref_price,
                     metadata=md,
                     features=features,
-                )
-                asset_type = (
-                    str(md.get("asset_type") or "EQUITY").strip().upper() or "EQUITY"
                 )
                 prepared_order = self._prepare_live_order(
                     symbol=symbol,

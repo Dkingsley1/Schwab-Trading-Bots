@@ -13,13 +13,29 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from scripts.ops.long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        load_json,
+        ordered_unique,
+        write_payload,
+    )
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        load_json,
+        ordered_unique,
+        write_payload,
+    )
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "backlog_pcore_accelerator_latest.json"
-DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.backlog_pcore_accelerator_override"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "backlog_pcore_accelerator_latest.json"
+)
+DEFAULT_OVERRIDE_PATH = (
+    PROJECT_ROOT / "config" / ".env.backlog_pcore_accelerator_override"
+)
 BACKLOG_GREEN_AGE_SECONDS = 900.0
 
 
@@ -79,16 +95,86 @@ def _status(payload: dict[str, Any], default: str = "missing") -> str:
     return default
 
 
-def _storage_metrics(storage: dict[str, Any], governor: dict[str, Any]) -> dict[str, Any]:
+def _bounded_tree_size(path: Path, *, max_files: int = 10000) -> dict[str, Any]:
+    files = 0
+    size_bytes = 0
+    errors = 0
+    truncated = False
+    if not path.exists():
+        return {
+            "path": str(path),
+            "exists": False,
+            "size_bytes": 0,
+            "size_gb": 0.0,
+            "size_kind": "complete",
+            "files_counted": 0,
+            "truncated": False,
+            "errors": 0,
+        }
+    for root, _, names in os.walk(path):
+        root_path = Path(root)
+        for name in names:
+            if files >= max_files:
+                truncated = True
+                return {
+                    "path": str(path),
+                    "exists": True,
+                    "size_bytes": int(size_bytes),
+                    "size_gb": round(float(size_bytes) / (1024**3), 3),
+                    "size_kind": "lower_bound",
+                    "files_counted": int(files),
+                    "truncated": bool(truncated),
+                    "errors": int(errors),
+                }
+            candidate = root_path / name
+            try:
+                if candidate.is_symlink():
+                    continue
+                size_bytes += int(candidate.stat().st_size)
+                files += 1
+            except Exception:
+                errors += 1
+    return {
+        "path": str(path),
+        "exists": True,
+        "size_bytes": int(size_bytes),
+        "size_gb": round(float(size_bytes) / (1024**3), 3),
+        "size_kind": "complete",
+        "files_counted": int(files),
+        "truncated": bool(truncated),
+        "errors": int(errors),
+    }
+
+
+def _storage_metrics(
+    storage: dict[str, Any], governor: dict[str, Any]
+) -> dict[str, Any]:
     governor_storage = _as_dict(governor.get("storage_metrics"))
     backpressure = _as_dict(storage.get("backpressure"))
     stale = _as_dict(storage.get("stale_pending_locator"))
-    oldest_sources = _as_list(governor_storage.get("oldest_sources")) or _as_list(stale.get("oldest_sources"))
-    core = _safe_int(governor_storage.get("core_pending_lines"), _safe_int(backpressure.get("core_pending_lines"), 0))
-    total = _safe_int(governor_storage.get("total_pending_lines"), _safe_int(backpressure.get("total_pending_lines"), 0))
+    oldest_sources = _as_list(governor_storage.get("oldest_sources")) or _as_list(
+        stale.get("oldest_sources")
+    )
+    core = _safe_int(
+        governor_storage.get("core_pending_lines"),
+        _safe_int(backpressure.get("core_pending_lines"), 0),
+    )
+    total = _safe_int(
+        governor_storage.get("total_pending_lines"),
+        _safe_int(backpressure.get("total_pending_lines"), 0),
+    )
     overlay = _safe_int(governor_storage.get("overlay_pending_lines"), 0)
-    oldest_age = _safe_float(governor_storage.get("oldest_pending_age_seconds"), _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0))
-    target = _safe_int(governor_storage.get("target_pending_lines"), _safe_int(backpressure.get("pending_lines_threshold"), 15000)) or 15000
+    oldest_age = _safe_float(
+        governor_storage.get("oldest_pending_age_seconds"),
+        _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0),
+    )
+    target = (
+        _safe_int(
+            governor_storage.get("target_pending_lines"),
+            _safe_int(backpressure.get("pending_lines_threshold"), 15000),
+        )
+        or 15000
+    )
     line_green = core <= target and total <= max(target, core)
     age_green = oldest_age <= BACKLOG_GREEN_AGE_SECONDS
     overlay_green = overlay <= target if overlay > 0 else True
@@ -117,7 +203,9 @@ def _storage_accelerator_contract(storage_payload: dict[str, Any]) -> dict[str, 
 
 
 def _writer_state(writer: dict[str, Any]) -> dict[str, Any]:
-    return _as_dict(writer.get("writer_state_before")) or _as_dict(writer.get("writer_state_after_wait"))
+    return _as_dict(writer.get("writer_state_before")) or _as_dict(
+        writer.get("writer_state_after_wait")
+    )
 
 
 def _writer_active(writer: dict[str, Any], writer_intel: dict[str, Any]) -> bool:
@@ -127,31 +215,49 @@ def _writer_active(writer: dict[str, Any], writer_intel: dict[str, Any]) -> bool
         state.get("active", False)
         or state.get("running", False)
         or health.get("active", False)
-        or str(health.get("state") or "") in {"active_progressing", "stale_progress", "stalled"}
+        or str(health.get("state") or "")
+        in {"active_progressing", "stale_progress", "stalled"}
     )
 
 
 def _process_topology(writer_intel: dict[str, Any]) -> dict[str, Any]:
     topology = _as_dict(writer_intel.get("process_topology"))
     return {
-        "sql_link_writer_running_count": _safe_int(topology.get("sql_link_writer_running_count"), 1),
-        "raw_sql_link_writer_running_count": _safe_int(topology.get("raw_sql_link_writer_running_count"), 1),
-        "duplicate_sql_writer_processes": bool(topology.get("duplicate_sql_writer_processes", False)),
-        "process_watchdog_status": str(topology.get("process_watchdog_status") or "unknown"),
-        "process_fanout_status": str(topology.get("process_fanout_status") or "unknown"),
+        "sql_link_writer_running_count": _safe_int(
+            topology.get("sql_link_writer_running_count"), 1
+        ),
+        "raw_sql_link_writer_running_count": _safe_int(
+            topology.get("raw_sql_link_writer_running_count"), 1
+        ),
+        "duplicate_sql_writer_processes": bool(
+            topology.get("duplicate_sql_writer_processes", False)
+        ),
+        "process_watchdog_status": str(
+            topology.get("process_watchdog_status") or "unknown"
+        ),
+        "process_fanout_status": str(
+            topology.get("process_fanout_status") or "unknown"
+        ),
     }
 
 
-def _host_lane_contract(governor: dict[str, Any], memory: dict[str, Any]) -> dict[str, Any]:
+def _host_lane_contract(
+    governor: dict[str, Any], memory: dict[str, Any]
+) -> dict[str, Any]:
     lanes = _as_dict(governor.get("host_lane_budget"))
     allocation = _as_dict(lanes.get("p_core_allocation_contract"))
     widening = _as_dict(lanes.get("p_core_widening_controller"))
     governor_memory = _as_dict(widening.get("memory_pressure_controller"))
     memory_class = _as_dict(memory.get("classification"))
     observer = _as_dict(memory.get("observer_overhead"))
-    p_workers = _safe_int(lanes.get("selected_p_core_preprocess_workers"), _safe_int(memory_class.get("recommended_p_core_worker_cap"), 1))
+    p_workers = _safe_int(
+        lanes.get("selected_p_core_preprocess_workers"),
+        _safe_int(memory_class.get("recommended_p_core_worker_cap"), 1),
+    )
     p_workers = max(p_workers, 1)
-    memory_status = str(governor_memory.get("status") or memory_class.get("status") or "unknown")
+    memory_status = str(
+        governor_memory.get("status") or memory_class.get("status") or "unknown"
+    )
     primary_lanes = _safe_int(lanes.get("primary_compute_lanes"), 1)
     env_max_lanes = _safe_int(os.getenv("SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES"), 0)
     env_workers = max(
@@ -169,11 +275,19 @@ def _host_lane_contract(governor: dict[str, Any], memory: dict[str, Any]) -> dic
     memory_relief = memory_status in {"hard_relief", "swap_relief"}
     if env_workers > 0:
         if memory_relief:
-            p_workers = min(max(p_workers, min(env_workers, 3)), max(memory_cap, 1), child_lane_cap)
+            p_workers = min(
+                max(p_workers, min(env_workers, 3)), max(memory_cap, 1), child_lane_cap
+            )
         else:
             p_workers = min(max(p_workers, env_workers), child_lane_cap)
-    reserve_target = _safe_int(os.getenv("BACKLOG_PCORE_USER_APP_RESERVE_TARGET"), _safe_int(allocation.get("user_app_reserved_p_cores"), 0))
-    e_spillover = _safe_int(os.getenv("BACKLOG_ECORE_SPILLOVER_WORKERS"), _safe_int(lanes.get("efficiency_core_spillover"), 0))
+    reserve_target = _safe_int(
+        os.getenv("BACKLOG_PCORE_USER_APP_RESERVE_TARGET"),
+        _safe_int(allocation.get("user_app_reserved_p_cores"), 0),
+    )
+    e_spillover = _safe_int(
+        os.getenv("BACKLOG_ECORE_SPILLOVER_WORKERS"),
+        _safe_int(lanes.get("efficiency_core_spillover"), 0),
+    )
     return {
         "primary_compute_lanes": primary_lanes,
         "effective_p_core_budget": p_core_budget,
@@ -183,27 +297,50 @@ def _host_lane_contract(governor: dict[str, Any], memory: dict[str, Any]) -> dic
         "efficiency_core_total": _safe_int(lanes.get("efficiency_core_total"), 0),
         "memory_status": memory_status,
         "memory_worker_cap": memory_cap,
-        "full_p_core_budget_requested": _env_flag("BACKLOG_PCORE_USE_FULL_PERFORMANCE_CORE_BUDGET"),
+        "full_p_core_budget_requested": _env_flag(
+            "BACKLOG_PCORE_USE_FULL_PERFORMANCE_CORE_BUDGET"
+        ),
         "elastic_reserve_loan_enabled": _env_flag("BACKLOG_PCORE_ELASTIC_RESERVE_LOAN"),
-        "memory_allocation_only_compression": bool(governor_memory.get("allocation_only_compression", False)),
-        "memory_safe_to_widen": bool(_as_dict(memory.get("reopen_gate")).get("safe_to_widen_p_core_workers", False)),
+        "memory_allocation_only_compression": bool(
+            governor_memory.get("allocation_only_compression", False)
+        ),
+        "memory_safe_to_widen": bool(
+            _as_dict(memory.get("reopen_gate")).get(
+                "safe_to_widen_p_core_workers", False
+            )
+        ),
         "observer_overhead_active": bool(observer.get("active", False)),
-        "policy": str(lanes.get("policy") or "performance_core_primary_single_writer_with_user_app_reserve"),
+        "policy": str(
+            lanes.get("policy")
+            or "performance_core_primary_single_writer_with_user_app_reserve"
+        ),
     }
 
 
-def _sleeve_pump_contract(host_lanes: dict[str, Any], storage: dict[str, Any]) -> dict[str, Any]:
+def _sleeve_pump_contract(
+    host_lanes: dict[str, Any], storage: dict[str, Any]
+) -> dict[str, Any]:
     enabled = _env_flag("BACKLOG_SLEEVE_PUMP_ENABLED")
-    p_workers = max(_safe_int(host_lanes.get("selected_p_core_preprocess_workers"), 1), 1)
+    p_workers = max(
+        _safe_int(host_lanes.get("selected_p_core_preprocess_workers"), 1), 1
+    )
     per_sleeve_workers = max(_safe_int(os.getenv("BACKLOG_SLEEVE_PUMP_WORKERS"), 1), 1)
-    max_active_sleeves = max(_safe_int(os.getenv("BACKLOG_SLEEVE_PUMP_MAX_ACTIVE_SLEEVES"), p_workers), 1)
+    max_active_sleeves = max(
+        _safe_int(os.getenv("BACKLOG_SLEEVE_PUMP_MAX_ACTIVE_SLEEVES"), p_workers), 1
+    )
     active_slots = max(1, min(max_active_sleeves, p_workers))
     oldest_sources = _as_list(storage.get("oldest_sources"))
     hot_source_count = len(oldest_sources)
     return {
         "enabled": enabled,
-        "policy": str(os.getenv("BACKLOG_SLEEVE_PUMP_POLICY") or "per_sleeve_hotness_weighted_pcore_preprocess_single_writer_merge"),
-        "share_policy": str(os.getenv("BACKLOG_SLEEVE_PUMP_SHARE_POLICY") or "hot_sleeves_first_then_round_robin"),
+        "policy": str(
+            os.getenv("BACKLOG_SLEEVE_PUMP_POLICY")
+            or "per_sleeve_hotness_weighted_pcore_preprocess_single_writer_merge"
+        ),
+        "share_policy": str(
+            os.getenv("BACKLOG_SLEEVE_PUMP_SHARE_POLICY")
+            or "hot_sleeves_first_then_round_robin"
+        ),
         "p_core_shared_preprocess_workers": int(p_workers),
         "per_sleeve_pump_workers": int(per_sleeve_workers),
         "max_active_sleeves_per_wave": int(max_active_sleeves),
@@ -216,8 +353,14 @@ def _sleeve_pump_contract(host_lanes: dict[str, Any], storage: dict[str, Any]) -
             "BACKLOG_SLEEVE_PUMP_ENABLED": "1" if enabled else "0",
             "BACKLOG_SLEEVE_PUMP_WORKERS": str(per_sleeve_workers),
             "BACKLOG_SLEEVE_PUMP_MAX_ACTIVE_SLEEVES": str(max_active_sleeves),
-            "BACKLOG_SLEEVE_PUMP_POLICY": str(os.getenv("BACKLOG_SLEEVE_PUMP_POLICY") or "per_sleeve_hotness_weighted_pcore_preprocess_single_writer_merge"),
-            "BACKLOG_SLEEVE_PUMP_SHARE_POLICY": str(os.getenv("BACKLOG_SLEEVE_PUMP_SHARE_POLICY") or "hot_sleeves_first_then_round_robin"),
+            "BACKLOG_SLEEVE_PUMP_POLICY": str(
+                os.getenv("BACKLOG_SLEEVE_PUMP_POLICY")
+                or "per_sleeve_hotness_weighted_pcore_preprocess_single_writer_merge"
+            ),
+            "BACKLOG_SLEEVE_PUMP_SHARE_POLICY": str(
+                os.getenv("BACKLOG_SLEEVE_PUMP_SHARE_POLICY")
+                or "hot_sleeves_first_then_round_robin"
+            ),
             "SQL_LINK_SERVICE_SLEEVE_PUMP_ENABLED": "1" if enabled else "0",
             "SQL_LINK_SERVICE_SLEEVE_PUMP_WORKERS": str(per_sleeve_workers),
             "SQL_LINK_SERVICE_SLEEVE_PUMP_MAX_ACTIVE_SLEEVES": str(max_active_sleeves),
@@ -231,18 +374,34 @@ def _sleeve_pump_contract(host_lanes: dict[str, Any], storage: dict[str, Any]) -
 
 
 def _single_writer_tuning_contract() -> dict[str, Any]:
-    merge_seconds = max(_safe_int(os.getenv("SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"), 60), 1)
+    merge_seconds = max(
+        _safe_int(os.getenv("SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"), 60), 1
+    )
     hot_batch = max(_safe_int(os.getenv("SQL_LINK_SERVICE_HOT_BATCH_SIZE"), 120000), 1)
-    queue_batch = max(_safe_int(os.getenv("SQL_LINK_SERVICE_QUEUE_BATCH_SIZE"), 80000), 1)
-    sqlite_timeout = max(_safe_int(os.getenv("SQL_LINK_SERVICE_SQLITE_TIMEOUT"), 300), 1)
+    queue_batch = max(
+        _safe_int(os.getenv("SQL_LINK_SERVICE_QUEUE_BATCH_SIZE"), 80000), 1
+    )
+    sqlite_timeout = max(
+        _safe_int(os.getenv("SQL_LINK_SERVICE_SQLITE_TIMEOUT"), 300), 1
+    )
     lock_retries = max(_safe_int(os.getenv("SQL_LINK_SERVICE_LOCK_RETRIES"), 200), 1)
     cache_kb = max(_safe_int(os.getenv("SQLITE_CACHE_SIZE_KB"), 0), 0)
     mmap_allowed = _env_flag("SQLITE_ALLOW_MMAP", False)
     ops_mmap_allowed = _env_flag("BOT_OPS_SQLITE_ALLOW_MMAP", False)
-    mmap_mb = max(_safe_int(os.getenv("SQLITE_MMAP_SIZE_MB"), 0), 0) if mmap_allowed else 0
-    ops_mmap_mb = max(_safe_int(os.getenv("BOT_OPS_SQLITE_MMAP_SIZE_MB"), 0), 0) if ops_mmap_allowed else 0
-    wal_threshold = _safe_float(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB"), 2.0)
-    wal_growth = _safe_float(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB"), 1.5)
+    mmap_mb = (
+        max(_safe_int(os.getenv("SQLITE_MMAP_SIZE_MB"), 0), 0) if mmap_allowed else 0
+    )
+    ops_mmap_mb = (
+        max(_safe_int(os.getenv("BOT_OPS_SQLITE_MMAP_SIZE_MB"), 0), 0)
+        if ops_mmap_allowed
+        else 0
+    )
+    wal_threshold = _safe_float(
+        os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB"), 2.0
+    )
+    wal_growth = _safe_float(
+        os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB"), 1.5
+    )
     return {
         "enabled": True,
         "policy": "one_heavier_sqlite_merge_writer_with_parallel_p_core_preprocess",
@@ -251,50 +410,103 @@ def _single_writer_tuning_contract() -> dict[str, Any]:
         "merge_max_seconds_per_cycle": int(merge_seconds),
         "sqlite_timeout_seconds": int(sqlite_timeout),
         "sqlite_lock_retries": int(lock_retries),
-        "sqlite_lock_retry_delay_seconds": _safe_float(os.getenv("SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS"), 0.5),
+        "sqlite_lock_retry_delay_seconds": _safe_float(
+            os.getenv("SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS"), 0.5
+        ),
         "hot_batch_size": int(hot_batch),
-        "hot_max_rows": max(_safe_int(os.getenv("SQL_LINK_SERVICE_HOT_MAX_ROWS"), 1000000), 1),
+        "hot_max_rows": max(
+            _safe_int(os.getenv("SQL_LINK_SERVICE_HOT_MAX_ROWS"), 1000000), 1
+        ),
         "queue_batch_size": int(queue_batch),
         "wal_checkpoint": {
             "enabled": _env_flag("SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT", True),
             "threshold_gb": round(wal_threshold, 3),
             "trigger_growth_gb": round(wal_growth, 3),
-            "trigger_rows": max(_safe_int(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_ROWS"), 750000), 1),
-            "min_interval_seconds": max(_safe_int(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_MIN_INTERVAL_SECONDS"), 900), 1),
+            "trigger_rows": max(
+                _safe_int(
+                    os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_ROWS"), 750000
+                ),
+                1,
+            ),
+            "min_interval_seconds": max(
+                _safe_int(
+                    os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_MIN_INTERVAL_SECONDS"),
+                    900,
+                ),
+                1,
+            ),
             "mode": str(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE") or "auto"),
         },
         "sqlite_memory": {
             "cache_size_kb": int(cache_kb),
             "mmap_size_mb": int(mmap_mb),
             "mmap_enabled": bool(mmap_allowed and mmap_mb > 0),
-            "wal_autocheckpoint_pages": max(_safe_int(os.getenv("SQLITE_WAL_AUTOCHECKPOINT_PAGES"), 0), 0),
-            "ops_cache_size_kb": max(_safe_int(os.getenv("BOT_OPS_SQLITE_CACHE_SIZE_KB"), 0), 0),
+            "wal_autocheckpoint_pages": max(
+                _safe_int(os.getenv("SQLITE_WAL_AUTOCHECKPOINT_PAGES"), 0), 0
+            ),
+            "ops_cache_size_kb": max(
+                _safe_int(os.getenv("BOT_OPS_SQLITE_CACHE_SIZE_KB"), 0), 0
+            ),
             "ops_mmap_size_mb": int(ops_mmap_mb),
             "ops_mmap_enabled": bool(ops_mmap_allowed and ops_mmap_mb > 0),
-            "ops_busy_timeout_ms": max(_safe_int(os.getenv("BOT_OPS_SQLITE_BUSY_TIMEOUT_MS"), 0), 0),
+            "ops_busy_timeout_ms": max(
+                _safe_int(os.getenv("BOT_OPS_SQLITE_BUSY_TIMEOUT_MS"), 0), 0
+            ),
         },
         "control_env": {
             "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": str(merge_seconds),
             "SQL_LINK_SERVICE_SQLITE_TIMEOUT": str(sqlite_timeout),
             "SQL_LINK_SERVICE_LOCK_RETRIES": str(lock_retries),
-            "SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS": str(_safe_float(os.getenv("SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS"), 0.5)),
+            "SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS": str(
+                _safe_float(os.getenv("SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS"), 0.5)
+            ),
             "SQL_LINK_SERVICE_HOT_BATCH_SIZE": str(hot_batch),
-            "SQL_LINK_SERVICE_HOT_MAX_ROWS": str(max(_safe_int(os.getenv("SQL_LINK_SERVICE_HOT_MAX_ROWS"), 1000000), 1)),
+            "SQL_LINK_SERVICE_HOT_MAX_ROWS": str(
+                max(_safe_int(os.getenv("SQL_LINK_SERVICE_HOT_MAX_ROWS"), 1000000), 1)
+            ),
             "SQL_LINK_SERVICE_QUEUE_BATCH_SIZE": str(queue_batch),
-            "SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT": "1" if _env_flag("SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT", True) else "0",
+            "SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT": (
+                "1" if _env_flag("SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT", True) else "0"
+            ),
             "SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB": str(wal_threshold),
             "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB": str(wal_growth),
-            "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_ROWS": str(max(_safe_int(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_ROWS"), 750000), 1)),
-            "SQL_LINK_SERVICE_WAL_CHECKPOINT_MIN_INTERVAL_SECONDS": str(max(_safe_int(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_MIN_INTERVAL_SECONDS"), 900), 1)),
-            "SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE": str(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE") or "auto"),
+            "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_ROWS": str(
+                max(
+                    _safe_int(
+                        os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_ROWS"),
+                        750000,
+                    ),
+                    1,
+                )
+            ),
+            "SQL_LINK_SERVICE_WAL_CHECKPOINT_MIN_INTERVAL_SECONDS": str(
+                max(
+                    _safe_int(
+                        os.getenv(
+                            "SQL_LINK_SERVICE_WAL_CHECKPOINT_MIN_INTERVAL_SECONDS"
+                        ),
+                        900,
+                    ),
+                    1,
+                )
+            ),
+            "SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE": str(
+                os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE") or "auto"
+            ),
             "SQLITE_CACHE_SIZE_KB": str(cache_kb),
             "SQLITE_MMAP_SIZE_MB": str(mmap_mb),
             "SQLITE_ALLOW_MMAP": "1" if mmap_allowed else "0",
-            "SQLITE_WAL_AUTOCHECKPOINT_PAGES": str(max(_safe_int(os.getenv("SQLITE_WAL_AUTOCHECKPOINT_PAGES"), 0), 0)),
-            "BOT_OPS_SQLITE_CACHE_SIZE_KB": str(max(_safe_int(os.getenv("BOT_OPS_SQLITE_CACHE_SIZE_KB"), 0), 0)),
+            "SQLITE_WAL_AUTOCHECKPOINT_PAGES": str(
+                max(_safe_int(os.getenv("SQLITE_WAL_AUTOCHECKPOINT_PAGES"), 0), 0)
+            ),
+            "BOT_OPS_SQLITE_CACHE_SIZE_KB": str(
+                max(_safe_int(os.getenv("BOT_OPS_SQLITE_CACHE_SIZE_KB"), 0), 0)
+            ),
             "BOT_OPS_SQLITE_MMAP_SIZE_MB": str(ops_mmap_mb),
             "BOT_OPS_SQLITE_ALLOW_MMAP": "1" if ops_mmap_allowed else "0",
-            "BOT_OPS_SQLITE_BUSY_TIMEOUT_MS": str(max(_safe_int(os.getenv("BOT_OPS_SQLITE_BUSY_TIMEOUT_MS"), 0), 0)),
+            "BOT_OPS_SQLITE_BUSY_TIMEOUT_MS": str(
+                max(_safe_int(os.getenv("BOT_OPS_SQLITE_BUSY_TIMEOUT_MS"), 0), 0)
+            ),
         },
         "stop_conditions": [
             "WAL growth triggers checkpoint pressure",
@@ -305,8 +517,342 @@ def _single_writer_tuning_contract() -> dict[str, Any]:
     }
 
 
-def _accelerator_lanes(storage: dict[str, Any], host_lanes: dict[str, Any], sleeve_pump: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    p_workers = max(_safe_int(host_lanes.get("selected_p_core_preprocess_workers"), 1), 1)
+def _storage_maintenance_pcore_contract(
+    project_root: Path,
+    *,
+    host_lanes: dict[str, Any],
+    topology: dict[str, Any],
+) -> dict[str, Any]:
+    health = project_root / "governance" / "health"
+    storage_guard = load_json(health / "data_collection_storage_guard_latest.json")
+    raw_compaction = load_json(
+        health / "raw_training_compaction_intelligence_latest.json"
+    )
+    retention = load_json(health / "storage_retention_unison_latest.json")
+    pressure_clearance = load_json(health / "storage_pressure_clearance_latest.json")
+    sqlite_maintenance = load_json(health / "sqlite_maintenance_latest.json")
+    local_reserve_payload = load_json(
+        health / "local_storage_reserve_guard_latest.json"
+    )
+    failback = load_json(health / "storage_failback_sync_latest.json")
+    standby_prune = load_json(health / "storage_standby_prune_latest.json")
+    storage_guard_disk = _as_dict(storage_guard.get("disk"))
+    safe_recovery = _as_dict(storage_guard.get("safe_space_recovery"))
+    raw_summary = _as_dict(raw_compaction.get("raw_summary"))
+    retention_sections = _as_dict(retention.get("sections"))
+    retention_hot_plane = _as_dict(retention_sections.get("hot_plane_compaction"))
+    local_reserve = _as_dict(local_reserve_payload.get("local_storage_reserve"))
+    if not local_reserve:
+        local_reserve = local_reserve_payload
+    local_free_gb = _safe_float(local_reserve.get("free_gb"), 0.0)
+    local_pressure_active = bool(local_reserve.get("pressure_active", False))
+    local_hard_block = bool(
+        local_reserve.get("hard_block", False)
+        or local_reserve.get("emergency_active", False)
+    )
+    local_reserve_deficit_gb = _safe_float(local_reserve.get("reserve_deficit_gb"), 0.0)
+    failback_sqlite_report = _as_dict(failback.get("sqlite_skip_report"))
+    failback_summary = _as_dict(failback_sqlite_report.get("summary"))
+    failback_route_verification = _as_dict(failback.get("route_verification"))
+    if not failback_route_verification:
+        failback_route_verification = _as_dict(
+            failback_sqlite_report.get("route_verification")
+        )
+    active_storage_mode = str(
+        failback.get("certified_mode") or failback.get("mode") or ""
+    ).strip()
+    active_storage_root = str(failback.get("active_root") or "").strip()
+    route_verification_state = str(
+        failback_route_verification.get("verification_state") or ""
+    ).strip()
+    active_local_count = _safe_int(failback_summary.get("active_local_count"), 0)
+    active_external_count = _safe_int(failback_summary.get("active_external_count"), 0)
+    warm_standby_count = _safe_int(failback_summary.get("warm_standby_count"), 0)
+    route_mismatches = _as_list(failback_route_verification.get("mismatches"))
+    route_is_local_fallback = active_storage_mode.startswith("local_fallback")
+    route_is_external_prune_ready = bool(
+        active_storage_mode in {"external", "external_curated"}
+        and route_verification_state in {"ready", "curated_ready"}
+        and not route_mismatches
+        and active_local_count == 0
+    )
+    local_fallback_root = project_root / "local_fallback_storage"
+    local_fallback_size = _bounded_tree_size(local_fallback_root)
+    local_fallback_data_size = _bounded_tree_size(local_fallback_root / "data")
+    local_fallback_shard_size = _bounded_tree_size(
+        local_fallback_root / "data" / "sql_link_shards"
+    )
+    p_workers = max(
+        _safe_int(host_lanes.get("selected_p_core_preprocess_workers"), 1), 1
+    )
+    requested_file_workers = max(
+        _safe_int(os.getenv("BACKLOG_PCORE_STORAGE_COMPACTION_WORKERS"), 0),
+        _safe_int(os.getenv("BOT_RAW_TRAINING_COMPACTION_WORKERS"), 0),
+    )
+    file_workers = min(max(requested_file_workers or min(p_workers, 4), 1), p_workers)
+    free_gb = _safe_float(storage_guard_disk.get("available_gb"), 0.0)
+    scratch_floor_gb = max(
+        _safe_float(
+            os.getenv("BACKLOG_PCORE_STORAGE_COMPACTION_SCRATCH_FLOOR_GB"), 8.0
+        ),
+        0.0,
+    )
+    sqlite_writer_count = max(
+        _safe_int(topology.get("sql_link_writer_running_count"), 1),
+        _safe_int(topology.get("raw_sql_link_writer_running_count"), 1),
+    )
+    duplicate_sqlite_writer = bool(
+        topology.get("duplicate_sql_writer_processes", False)
+    )
+    file_compaction_ready = bool(free_gb >= scratch_floor_gb)
+    sqlite_checkpoint_ready = bool(
+        not duplicate_sqlite_writer and sqlite_writer_count <= 1
+    )
+    raw_candidate_count = _safe_int(raw_summary.get("compression_candidate_count"), 0)
+    raw_candidate_gb = _safe_float(raw_summary.get("compression_candidate_gb"), 0.0)
+    debris_candidate_gb = _safe_float(safe_recovery.get("candidate_gb"), 0.0)
+    hot_plane_status = str(retention_hot_plane.get("status") or "unknown")
+    raw_compaction_command = [
+        "./scripts/ops/opsctl.sh",
+        "raw-training-compaction",
+        "--apply",
+        "--max-files",
+        str(max(_safe_int(os.getenv("BACKLOG_PCORE_RAW_COMPACTION_MAX_FILES"), 50), 1)),
+        "--max-gb",
+        str(
+            max(_safe_float(os.getenv("BACKLOG_PCORE_RAW_COMPACTION_MAX_GB"), 8.0), 0.1)
+        ),
+        "--jumbo-gb",
+        str(
+            max(
+                _safe_float(os.getenv("BACKLOG_PCORE_RAW_COMPACTION_JUMBO_GB"), 7.0),
+                0.1,
+            )
+        ),
+        "--compaction-workers",
+        str(file_workers),
+        "--json",
+    ]
+    lanes = [
+        {
+            "lane": "stateful_failure_debris_recovery",
+            "class": "bounded_metadata_tombstone_delete",
+            "workers": 1,
+            "uses_p_core": False,
+            "writes_files": True,
+            "writes_sqlite": False,
+            "parallel_safe": False,
+            "command": [
+                "./scripts/ops/opsctl.sh",
+                "botlogs-space-recovery",
+                "--apply",
+                "--space-recovery-max-delete-gb",
+                "8",
+                "--space-recovery-target-free-gb",
+                "125",
+                "--json",
+            ],
+            "active_when": "BOT_LOGS free space is below reserve and old corrupt/failover stateful debris is present",
+        },
+        {
+            "lane": "storage_route_failback_reconciliation",
+            "class": "exclusive_route_rehome",
+            "workers": 1,
+            "uses_p_core": False,
+            "writes_files": True,
+            "writes_sqlite": True,
+            "parallel_safe": False,
+            "command": [
+                "./scripts/ops/opsctl.sh",
+                "storage-switch-external",
+                "--no-refresh",
+            ],
+            "active_when": "BOT_LOGS is mounted, local fallback is active, and an explicit route rehome is needed before standby pruning",
+        },
+        {
+            "lane": "verified_local_standby_prune",
+            "class": "exclusive_verified_standby_delete",
+            "workers": 1,
+            "uses_p_core": False,
+            "writes_files": True,
+            "writes_sqlite": False,
+            "parallel_safe": False,
+            "command": [
+                "./scripts/ops/opsctl.sh",
+                "storage-prune-standby",
+                "--apply",
+                "--json",
+            ],
+            "active_when": "external route is certified, active local count is zero, and the soak window has passed",
+        },
+        {
+            "lane": "raw_training_file_compaction",
+            "class": "p_core_file_write_compaction",
+            "workers": int(file_workers),
+            "uses_p_core": True,
+            "writes_files": True,
+            "writes_sqlite": False,
+            "parallel_safe": True,
+            "command": raw_compaction_command,
+            "active_when": "eligible old raw JSONL sources are queued and scratch space is above floor",
+        },
+        {
+            "lane": "cold_archive_file_compaction",
+            "class": "p_core_file_write_compaction",
+            "workers": max(min(file_workers, 2), 1),
+            "uses_p_core": True,
+            "writes_files": True,
+            "writes_sqlite": False,
+            "parallel_safe": True,
+            "command": [
+                "./scripts/ops/opsctl.sh",
+                "cold-archive-compactor",
+                "--apply",
+                "--max-files",
+                "50",
+                "--max-raw-gb",
+                "8",
+                "--coordinate-writer-handoff",
+                "--json",
+            ],
+            "active_when": "cold archive has raw or orphaned gzip work and the writer handoff is coordinated",
+        },
+        {
+            "lane": "sqlite_checkpoint_and_pressure_clearance",
+            "class": "exclusive_sqlite_checkpoint",
+            "workers": 1,
+            "uses_p_core": True,
+            "writes_files": True,
+            "writes_sqlite": True,
+            "parallel_safe": False,
+            "command": [
+                "./scripts/ops/opsctl.sh",
+                "storage-pressure-clearance",
+                "--apply",
+                "--checkpoint-mode",
+                "passive",
+                "--json",
+            ],
+            "active_when": "WAL or storage pressure asks for checkpoint and no duplicate SQLite writer exists",
+        },
+    ]
+    blockers = ordered_unique(
+        [
+            (
+                "storage_compaction_scratch_space_below_floor"
+                if not file_compaction_ready
+                else ""
+            ),
+            (
+                "duplicate_sqlite_writer_blocks_checkpoint"
+                if not sqlite_checkpoint_ready
+                else ""
+            ),
+            "local_hot_storage_hard_block" if local_hard_block else "",
+        ]
+    )
+    route_limiters = ordered_unique(
+        [
+            (
+                "active_local_fallback_route_needs_verified_external_failback_before_standby_prune"
+                if route_is_local_fallback and local_pressure_active
+                else ""
+            ),
+            ("external_route_verification_has_mismatches" if route_mismatches else ""),
+        ]
+    )
+    status = "blocked" if blockers else ("limited" if route_limiters else "ready")
+    return {
+        "enabled": True,
+        "status": status,
+        "mode": "p_core_storage_maintenance_single_sqlite_writer",
+        "file_compaction_workers": int(file_workers),
+        "p_core_workers_available": int(p_workers),
+        "scratch_floor_gb": round(float(scratch_floor_gb), 3),
+        "external_free_gb": round(float(free_gb), 3),
+        "local_free_gb": round(float(local_free_gb), 3),
+        "local_pressure_active": bool(local_pressure_active),
+        "local_reserve_deficit_gb": round(float(local_reserve_deficit_gb), 3),
+        "file_compaction_ready": file_compaction_ready,
+        "sqlite_checkpoint_ready": sqlite_checkpoint_ready,
+        "sqlite_writer_count": int(sqlite_writer_count),
+        "sqlite_write_parallelism": 1,
+        "parallel_sqlite_writes_allowed": False,
+        "raw_compaction_candidate_count": int(raw_candidate_count),
+        "raw_compaction_candidate_gb": round(float(raw_candidate_gb), 3),
+        "stateful_debris_candidate_gb": round(float(debris_candidate_gb), 3),
+        "hot_plane_compaction_status": hot_plane_status,
+        "active_storage_route": {
+            "mode": active_storage_mode,
+            "active_root": active_storage_root,
+            "route_verification_state": route_verification_state,
+            "active_local_count": int(active_local_count),
+            "active_external_count": int(active_external_count),
+            "warm_standby_count": int(warm_standby_count),
+            "route_is_local_fallback": bool(route_is_local_fallback),
+            "route_is_external_prune_ready": bool(route_is_external_prune_ready),
+            "verification_mismatches": route_mismatches,
+            "tracked_local_sqlite_gb": round(
+                float(_safe_int(failback_summary.get("local_bytes_total"), 0))
+                / (1024**3),
+                3,
+            ),
+            "local_fallback_tree": local_fallback_size,
+            "local_fallback_data_tree": local_fallback_data_size,
+            "local_fallback_sql_link_shards": local_fallback_shard_size,
+            "standby_prune_status": _status(standby_prune),
+        },
+        "storage_guard_status": _status(storage_guard),
+        "raw_compaction_status": _status(raw_compaction),
+        "retention_unison_status": _status(retention),
+        "local_reserve_status": _status(local_reserve_payload),
+        "failback_sync_status": _status(failback),
+        "standby_prune_status": _status(standby_prune),
+        "pressure_clearance_status": _status(pressure_clearance),
+        "sqlite_maintenance_status": _status(sqlite_maintenance),
+        "lanes": lanes,
+        "blockers": blockers,
+        "route_limiters": route_limiters,
+        "control_env": {
+            "BACKLOG_PCORE_STORAGE_MAINTENANCE_ENABLED": "1",
+            "BACKLOG_PCORE_STORAGE_COMPACTION_WORKERS": str(file_workers),
+            "BOT_RAW_TRAINING_COMPACTION_WORKERS": str(file_workers),
+            "BACKLOG_PCORE_STORAGE_CHECKPOINT_ENABLED": "1",
+            "BACKLOG_PCORE_STORAGE_SQLITE_PARALLELISM": "1",
+            "BACKLOG_PCORE_STORAGE_SINGLE_WRITER_GUARD": "1",
+            "BACKLOG_PCORE_ACTIVE_STORAGE_MODE": active_storage_mode or "unknown",
+            "BACKLOG_PCORE_LOCAL_STORAGE_PRESSURE": (
+                "1" if local_pressure_active else "0"
+            ),
+            "BACKLOG_PCORE_STORAGE_ROUTE_REHOME_REQUIRED": (
+                "1" if route_is_local_fallback and local_pressure_active else "0"
+            ),
+            "BACKLOG_PCORE_STANDBY_PRUNE_READY": (
+                "1" if route_is_external_prune_ready else "0"
+            ),
+            "SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT": "1",
+            "STORAGE_PRESSURE_CLEARANCE_CHECKPOINT_MODE": "passive",
+        },
+        "stop_conditions": [
+            "external free space falls below scratch floor",
+            "active route remains local fallback while local reserve pressure is active",
+            "duplicate SQLite writer process appears",
+            "memory enters hard relief or swap relief",
+            "checkpoint does not reduce WAL or pressure after a bounded pass",
+            "file compaction reports any verification failure",
+        ],
+        "policy": "P-cores may write independent compacted files and compute checksums; SQLite checkpoint/vacuum stays exclusive through the single-writer storage lane",
+    }
+
+
+def _accelerator_lanes(
+    storage: dict[str, Any],
+    host_lanes: dict[str, Any],
+    sleeve_pump: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    p_workers = max(
+        _safe_int(host_lanes.get("selected_p_core_preprocess_workers"), 1), 1
+    )
     oldest_sources = _as_list(storage.get("oldest_sources"))
     hot_source_count = min(len(oldest_sources), max(p_workers, 1))
     density_workers = max(min(4, p_workers - 1), 1)
@@ -340,39 +886,56 @@ def _accelerator_lanes(storage: dict[str, Any], host_lanes: dict[str, Any], slee
             {
                 "lane": "per_sleeve_pump_scheduler",
                 "class": "p_core_preprocess",
-                "workers": max(min(_safe_int(sleeve.get("selected_active_sleeve_slots"), p_workers), p_workers), 1),
+                "workers": max(
+                    min(
+                        _safe_int(
+                            sleeve.get("selected_active_sleeve_slots"), p_workers
+                        ),
+                        p_workers,
+                    ),
+                    1,
+                ),
                 "writes_sqlite": False,
                 "purpose": "budget hot sleeve queues across P-core preprocess slots before the one merge writer commits rows",
             }
         )
     lanes.extend(
         [
-        {
-            "lane": "oldest_work_catchup_scheduler",
-            "class": "p_core_preprocess",
-            "workers": max(min(hot_source_count, p_workers), 1),
-            "writes_sqlite": False,
-            "purpose": "schedule bounded catch-up waves around the oldest pending work",
-        },
-        {
-            "lane": "sqlite_single_writer",
-            "class": "exclusive_sqlite_writer",
-            "workers": 1,
-            "writes_sqlite": True,
-            "purpose": "perform all SQLite writes through the one lock-owning writer",
-        },
+            {
+                "lane": "oldest_work_catchup_scheduler",
+                "class": "p_core_preprocess",
+                "workers": max(min(hot_source_count, p_workers), 1),
+                "writes_sqlite": False,
+                "purpose": "schedule bounded catch-up waves around the oldest pending work",
+            },
+            {
+                "lane": "sqlite_single_writer",
+                "class": "exclusive_sqlite_writer",
+                "workers": 1,
+                "writes_sqlite": True,
+                "purpose": "perform all SQLite writes through the one lock-owning writer",
+            },
         ]
     )
     return lanes
 
 
-def _wave_policy(storage: dict[str, Any], host_lanes: dict[str, Any], runtime: dict[str, Any], storage_accelerator: dict[str, Any]) -> dict[str, Any]:
-    p_workers = max(_safe_int(host_lanes.get("selected_p_core_preprocess_workers"), 1), 1)
+def _wave_policy(
+    storage: dict[str, Any],
+    host_lanes: dict[str, Any],
+    runtime: dict[str, Any],
+    storage_accelerator: dict[str, Any],
+) -> dict[str, Any]:
+    p_workers = max(
+        _safe_int(host_lanes.get("selected_p_core_preprocess_workers"), 1), 1
+    )
     memory_status = str(host_lanes.get("memory_status") or "unknown")
     runtime_status = _status(runtime)
     accelerator_wave = _as_dict(storage_accelerator.get("catch_up_wave_controller"))
     accelerator_limit = _safe_int(accelerator_wave.get("max_waves"), 0)
-    accelerator_seconds = _safe_int(accelerator_wave.get("max_seconds_per_writer_cycle"), 0)
+    accelerator_seconds = _safe_int(
+        accelerator_wave.get("max_seconds_per_writer_cycle"), 0
+    )
     lock_open = _lock_open_enabled()
     if lock_open:
         max_seconds = 240
@@ -394,12 +957,22 @@ def _wave_policy(storage: dict[str, Any], host_lanes: dict[str, Any], runtime: d
         max_seconds = 35 if p_workers >= 4 else 25
         waves = 3
         mode = "p_core_catch_up"
-    if bool(storage_accelerator.get("enabled", False)) and accelerator_limit > 0 and not lock_open:
+    if (
+        bool(storage_accelerator.get("enabled", False))
+        and accelerator_limit > 0
+        and not lock_open
+    ):
         waves = max(waves, accelerator_limit)
         max_seconds = max(max_seconds, accelerator_seconds)
         mode = str(storage_accelerator.get("mode") or mode)
-    env_wave_limit = _safe_int(os.getenv("BACKLOG_CATCH_UP_WAVE_LIMIT") or os.getenv("WRITER_CYCLE_MAX_CATCH_UP_WAVES"), 0)
-    env_max_seconds = _safe_int(os.getenv("BACKLOG_ACCELERATOR_MAX_SECONDS_PER_CYCLE"), 0)
+    env_wave_limit = _safe_int(
+        os.getenv("BACKLOG_CATCH_UP_WAVE_LIMIT")
+        or os.getenv("WRITER_CYCLE_MAX_CATCH_UP_WAVES"),
+        0,
+    )
+    env_max_seconds = _safe_int(
+        os.getenv("BACKLOG_ACCELERATOR_MAX_SECONDS_PER_CYCLE"), 0
+    )
     if env_wave_limit > 0:
         waves = max(waves, env_wave_limit)
     if env_max_seconds > 0:
@@ -418,7 +991,13 @@ def _wave_policy(storage: dict[str, Any], host_lanes: dict[str, Any], runtime: d
     }
 
 
-def _grade(storage: dict[str, Any], host_lanes: dict[str, Any], writer_active: bool, topology: dict[str, Any], memory: dict[str, Any]) -> dict[str, Any]:
+def _grade(
+    storage: dict[str, Any],
+    host_lanes: dict[str, Any],
+    writer_active: bool,
+    topology: dict[str, Any],
+    memory: dict[str, Any],
+) -> dict[str, Any]:
     score = 0
     reasons: list[str] = []
     if not bool(topology.get("duplicate_sql_writer_processes", False)):
@@ -433,7 +1012,12 @@ def _grade(storage: dict[str, Any], host_lanes: dict[str, Any], writer_active: b
         score += 20
     else:
         reasons.append("oldest pending age not green")
-    if str(host_lanes.get("memory_status") or "") in {"clear", "foreground_headroom", "soft_guard", "soft_memory_guard"}:
+    if str(host_lanes.get("memory_status") or "") in {
+        "clear",
+        "foreground_headroom",
+        "soft_guard",
+        "soft_memory_guard",
+    }:
         score += 15
     else:
         reasons.append("memory still in relief mode")
@@ -467,7 +1051,13 @@ def _grade(storage: dict[str, Any], host_lanes: dict[str, Any], writer_active: b
     }
 
 
-def _decision(storage: dict[str, Any], writer: dict[str, Any], writer_intel: dict[str, Any], host_lanes: dict[str, Any], topology: dict[str, Any]) -> dict[str, Any]:
+def _decision(
+    storage: dict[str, Any],
+    writer: dict[str, Any],
+    writer_intel: dict[str, Any],
+    host_lanes: dict[str, Any],
+    topology: dict[str, Any],
+) -> dict[str, Any]:
     state = _writer_state(writer)
     completed = _safe_int(state.get("completed_shard_count"), 0)
     planned = _safe_int(state.get("planned_shard_count"), 0)
@@ -477,11 +1067,20 @@ def _decision(storage: dict[str, Any], writer: dict[str, Any], writer_intel: dic
     lock_open = _lock_open_enabled()
     if duplicate:
         action = "enforce_single_writer_guard"
-        command = ["./scripts/ops/opsctl.sh", "process-fanout-guard", "--apply", "--json"]
+        command = [
+            "./scripts/ops/opsctl.sh",
+            "process-fanout-guard",
+            "--apply",
+            "--json",
+        ]
         reason = "duplicate SQL writer risk must be cleared before accelerating backlog"
         apply_safe = True
     elif active:
-        action = "observe_active_writer_locked_open" if lock_open else "observe_active_writer"
+        action = (
+            "observe_active_writer_locked_open"
+            if lock_open
+            else "observe_active_writer"
+        )
         command = ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--json"]
         reason = (
             f"writer is active at {completed}/{planned} shards; lock-open accelerators keep preprocessing armed without launching a competing writer"
@@ -491,17 +1090,32 @@ def _decision(storage: dict[str, Any], writer: dict[str, Any], writer_intel: dic
         apply_safe = False
     elif memory_status in {"hard_relief", "swap_relief"}:
         action = "hold_for_memory_relief"
-        command = ["./scripts/ops/opsctl.sh", "memory-pressure-intelligence", "--apply", "--json"]
+        command = [
+            "./scripts/ops/opsctl.sh",
+            "memory-pressure-intelligence",
+            "--apply",
+            "--json",
+        ]
         reason = "memory relief is too strong for new backlog waves"
         apply_safe = True
     elif lock_open:
         action = "locked_open_p_core_drain"
-        command = ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--apply", "--json"]
+        command = [
+            "./scripts/ops/opsctl.sh",
+            "writer-cycle-coordinator",
+            "--apply",
+            "--json",
+        ]
         reason = "operator lock-open policy keeps P-core drainers and accelerators active even when the backlog snapshot is green"
         apply_safe = True
     elif not bool(storage.get("green", False)):
         action = "run_bounded_p_core_catch_up"
-        command = ["./scripts/ops/opsctl.sh", "writer-cycle-coordinator", "--apply", "--json"]
+        command = [
+            "./scripts/ops/opsctl.sh",
+            "writer-cycle-coordinator",
+            "--apply",
+            "--json",
+        ]
         reason = "backlog lines or age are not green; run bounded waves through the single writer"
         apply_safe = True
     else:
@@ -514,11 +1128,21 @@ def _decision(storage: dict[str, Any], writer: dict[str, Any], writer_intel: dic
         "next_command": command,
         "apply_safe": apply_safe,
         "reason": reason,
-        "writer_shards": {"completed": completed, "planned": planned, "step": state.get("current_step", ""), "status": state.get("status", "")},
+        "writer_shards": {
+            "completed": completed,
+            "planned": planned,
+            "step": state.get("current_step", ""),
+            "status": state.get("status", ""),
+        },
     }
 
 
-def _needs(storage: dict[str, Any], decision: dict[str, Any], host_lanes: dict[str, Any], memory: dict[str, Any]) -> list[dict[str, Any]]:
+def _needs(
+    storage: dict[str, Any],
+    decision: dict[str, Any],
+    host_lanes: dict[str, Any],
+    memory: dict[str, Any],
+) -> list[dict[str, Any]]:
     needs: list[dict[str, Any]] = []
     if not bool(storage.get("green", False)):
         oldest = _as_list(storage.get("oldest_sources"))
@@ -526,7 +1150,8 @@ def _needs(storage: dict[str, Any], decision: dict[str, Any], host_lanes: dict[s
         needs.append(
             {
                 "blocker": "backlog_age_or_lines_not_green_for_p_core_acceleration",
-                "exact_file": exact.get("source_rel") or "governance/health/ingestion_storage_control_latest.json",
+                "exact_file": exact.get("source_rel")
+                or "governance/health/ingestion_storage_control_latest.json",
                 "exact_shard": exact.get("shard") or "",
                 "command": decision.get("next_command", []),
                 "expected_impact": "Uses P-core preprocess accelerators to prioritize stale work, then hands one bounded batch to the exclusive SQLite writer.",
@@ -534,13 +1159,21 @@ def _needs(storage: dict[str, Any], decision: dict[str, Any], host_lanes: dict[s
                 "stop_when": "oldest pending age is under 15 minutes and core/overlay pending are below target.",
             }
         )
-    if str(host_lanes.get("memory_status") or "") not in {"clear", "foreground_headroom"}:
+    if str(host_lanes.get("memory_status") or "") not in {
+        "clear",
+        "foreground_headroom",
+    }:
         needs.append(
             {
                 "blocker": "memory_headroom_limits_backlog_p_core_width",
                 "exact_file": "governance/health/memory_pressure_intelligence_latest.json",
                 "exact_shard": "",
-                "command": ["./scripts/ops/opsctl.sh", "memory-pressure-intelligence", "--apply", "--json"],
+                "command": [
+                    "./scripts/ops/opsctl.sh",
+                    "memory-pressure-intelligence",
+                    "--apply",
+                    "--json",
+                ],
                 "expected_impact": "Refreshes the memory gate before widening P-core backlog accelerators.",
                 "risk_level": "low",
                 "stop_when": "memory is clear for two consecutive samples or the cap reaches the benchmark limit.",
@@ -569,8 +1202,13 @@ def _env_lines(payload: dict[str, Any]) -> list[str]:
     sleeve_env = _as_dict(sleeve_pump.get("control_env"))
     writer_tuning = _as_dict(payload.get("single_writer_tuning_contract"))
     writer_env = _as_dict(writer_tuning.get("control_env"))
+    storage_maintenance = _as_dict(payload.get("storage_maintenance_pcore_contract"))
+    storage_maintenance_env = _as_dict(storage_maintenance.get("control_env"))
     lock_open = _lock_open_enabled()
-    accelerator_mode = str(wave.get("mode") or ("locked_open_pcore_wave_9" if lock_open else "p_core_catch_up"))
+    accelerator_mode = str(
+        wave.get("mode")
+        or ("locked_open_pcore_wave_9" if lock_open else "p_core_catch_up")
+    )
     env = {
         "BACKLOG_PCORE_DRAIN_LOCK_OPEN": "1" if lock_open else "0",
         "BACKLOG_ACCELERATOR_LOCK_OPEN": "1" if lock_open else "0",
@@ -580,23 +1218,43 @@ def _env_lines(payload: dict[str, Any]) -> list[str]:
         "BACKLOG_ACCELERATOR_MODE": accelerator_mode,
         "SQL_LINK_SERVICE_CATCH_UP_WAVE": "1",
         "BACKLOG_PCORE_ACCELERATOR_ACTION": str(decision.get("action") or "observe"),
-        "BACKLOG_PCORE_ACCELERATOR_WORKERS": str(host_lanes.get("selected_p_core_preprocess_workers") or 1),
+        "BACKLOG_PCORE_ACCELERATOR_WORKERS": str(
+            host_lanes.get("selected_p_core_preprocess_workers") or 1
+        ),
         "BACKLOG_PCORE_ALLOCATION_ACTIVE": "1",
-        "BACKLOG_PCORE_PREPROCESS_WORKERS": str(host_lanes.get("selected_p_core_preprocess_workers") or 1),
-        "BACKLOG_PCORE_USER_APP_RESERVE": str(host_lanes.get("user_app_reserved_p_cores") or 0),
-        "BACKLOG_ECORE_SPILLOVER_WORKERS": str(host_lanes.get("efficiency_core_spillover") or 0),
-        "BOT_EFFICIENCY_CORE_SPILLOVER_COUNT": str(host_lanes.get("efficiency_core_spillover") or 0),
+        "BACKLOG_PCORE_PREPROCESS_WORKERS": str(
+            host_lanes.get("selected_p_core_preprocess_workers") or 1
+        ),
+        "BACKLOG_PCORE_USER_APP_RESERVE": str(
+            host_lanes.get("user_app_reserved_p_cores") or 0
+        ),
+        "BACKLOG_ECORE_SPILLOVER_WORKERS": str(
+            host_lanes.get("efficiency_core_spillover") or 0
+        ),
+        "BOT_EFFICIENCY_CORE_SPILLOVER_COUNT": str(
+            host_lanes.get("efficiency_core_spillover") or 0
+        ),
         "BACKLOG_SQLITE_WRITER_WORKERS": "1",
         "BACKLOG_ACCELERATOR_SQLITE_PARALLELISM": "1",
         "BACKLOG_CATCH_UP_WAVE_LIMIT": str(wave.get("bounded_wave_limit") or 1),
-        "BACKLOG_ACCELERATOR_MAX_SECONDS_PER_CYCLE": str(wave.get("max_seconds_per_writer_cycle") or 25),
+        "BACKLOG_ACCELERATOR_MAX_SECONDS_PER_CYCLE": str(
+            wave.get("max_seconds_per_writer_cycle") or 25
+        ),
         "BACKLOG_ACCELERATOR_SINGLE_WRITER_GUARD": "1",
-        "BACKLOG_PCORE_USE_FULL_PERFORMANCE_CORE_BUDGET": "1" if host_lanes.get("full_p_core_budget_requested") else "0",
-        "BACKLOG_PCORE_ELASTIC_RESERVE_LOAN": "1" if host_lanes.get("elastic_reserve_loan_enabled") else "0",
-        "BOT_CPU_ALLOCATION_POLICY": str(host_lanes.get("policy") or "performance_core_primary_full_budget_single_writer_with_elastic_user_app_reserve"),
+        "BACKLOG_PCORE_USE_FULL_PERFORMANCE_CORE_BUDGET": (
+            "1" if host_lanes.get("full_p_core_budget_requested") else "0"
+        ),
+        "BACKLOG_PCORE_ELASTIC_RESERVE_LOAN": (
+            "1" if host_lanes.get("elastic_reserve_loan_enabled") else "0"
+        ),
+        "BOT_CPU_ALLOCATION_POLICY": str(
+            host_lanes.get("policy")
+            or "performance_core_primary_full_budget_single_writer_with_elastic_user_app_reserve"
+        ),
     }
     env.update({str(key): str(value) for key, value in sleeve_env.items()})
     env.update({str(key): str(value) for key, value in writer_env.items()})
+    env.update({str(key): str(value) for key, value in storage_maintenance_env.items()})
     return [f"{key}={shlex.quote(value)}" for key, value in env.items()]
 
 
@@ -619,7 +1277,11 @@ def write_outputs(
         override_path.parent.mkdir(parents=True, exist_ok=True)
         override_path.write_text("\n".join(lines), encoding="utf-8")
         applied = True
-    return {"out_path": str(out_path), "override_path": str(override_path), "applied": applied}
+    return {
+        "out_path": str(out_path),
+        "override_path": str(override_path),
+        "applied": applied,
+    }
 
 
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
@@ -638,6 +1300,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     writer_is_active = _writer_active(writer, writer_intel)
     sleeve_pump = _sleeve_pump_contract(host_lanes, storage)
     single_writer_tuning = _single_writer_tuning_contract()
+    storage_maintenance = _storage_maintenance_pcore_contract(
+        project_root,
+        host_lanes=host_lanes,
+        topology=topology,
+    )
     lanes = _accelerator_lanes(storage, host_lanes, sleeve_pump)
     wave = _wave_policy(storage, host_lanes, runtime, storage_accelerator)
     decision = _decision(storage, writer, writer_intel, host_lanes, topology)
@@ -699,6 +1366,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "process_topology": topology,
         "sleeve_pump_contract": sleeve_pump,
         "single_writer_tuning_contract": single_writer_tuning,
+        "storage_maintenance_pcore_contract": storage_maintenance,
         "accelerator_lanes": lanes,
         "wave_policy": wave,
         "decision_packet": decision,
@@ -713,24 +1381,48 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "p_core_accelerators_preprocess_only": True,
             "sqlite_write_parallelism": 1,
             "single_writer_tuned_for_heavier_cycles": True,
+            "p_core_storage_maintenance_enabled": bool(
+                storage_maintenance.get("enabled", False)
+            ),
+            "p_core_file_compaction_workers": _safe_int(
+                storage_maintenance.get("file_compaction_workers"), 1
+            ),
+            "active_storage_mode": str(
+                _as_dict(storage_maintenance.get("active_storage_route")).get("mode")
+                or "unknown"
+            ),
+            "local_storage_pressure": bool(
+                storage_maintenance.get("local_pressure_active", False)
+            ),
+            "storage_route_rehome_required": bool(
+                _as_dict(storage_maintenance.get("control_env")).get(
+                    "BACKLOG_PCORE_STORAGE_ROUTE_REHOME_REQUIRED"
+                )
+                == "1"
+            ),
+            "p_core_accelerators_preprocess_only": False,
+            "p_core_sqlite_accelerators_preprocess_only": True,
             "uses_autonomic_resource_governor": True,
             "uses_memory_pressure_intelligence": True,
             "uses_writer_process_intelligence": True,
             "uses_ingestion_storage_control": True,
             "p_cores_are_primary": True,
             "e_cores_are_spillover_only": True,
-            "full_p_core_budget_available": bool(host_lanes.get("full_p_core_budget_requested", False)),
+            "full_p_core_budget_available": bool(
+                host_lanes.get("full_p_core_budget_requested", False)
+            ),
             "sleeve_pumps_enabled": bool(sleeve_pump.get("enabled", False)),
             "never_touch_protected_volumes": ["/Volumes/VIDEO"],
             "always_armed_accelerators": always_armed,
-            "policy": "accelerate_discovery_priority_and_batch_preparation_not_parallel_sqlite_writes",
+            "policy": "accelerate_discovery_priority_batch_preparation_and_independent_file_compaction_not_parallel_sqlite_writes",
         },
         "recommended_actions": ordered_unique(
             [
                 "let active writer cycles finish before launching another writer",
-                "use P-core workers for stale-source locating, density sampling, shard priority, and catch-up scheduling",
+                "use P-core workers for stale-source locating, density sampling, shard priority, raw-file compaction, and catch-up scheduling",
                 "route hot sleeves through per-sleeve pump slots before the single merge writer commits rows",
                 "keep SQLite writes at one exclusive writer even when accelerators widen",
+                "route checkpoints through storage-pressure-clearance so P-core compute helps without opening a second SQLite writer",
                 "hold training and optional collectors until age, memory, and runtime gates clear",
                 "close or reduce high-overhead observers if observer_overhead is active",
             ]
@@ -739,14 +1431,21 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Coordinate P-core backlog accelerators around the single SQLite writer.")
+    parser = argparse.ArgumentParser(
+        description="Coordinate P-core backlog accelerators around the single SQLite writer."
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--out", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--override", default=str(DEFAULT_OVERRIDE_PATH))
     args = parser.parse_args()
     payload = build_payload(PROJECT_ROOT)
-    result = write_outputs(payload, out_path=Path(args.out), override_path=Path(args.override), apply=args.apply)
+    result = write_outputs(
+        payload,
+        out_path=Path(args.out),
+        override_path=Path(args.override),
+        apply=args.apply,
+    )
     payload["write_result"] = result
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

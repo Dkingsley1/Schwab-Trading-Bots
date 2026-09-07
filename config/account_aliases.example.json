@@ -1,0 +1,25 @@
+{
+  "schema_version": 2,
+  "schwab_accounts": {
+    "tail:0000": {
+      "account_policy_key": "schwab_cash_account_1",
+      "operator_account_label": "Cash Account 1",
+      "operator_account_kind": "cash",
+      "tax_wrapper": "taxable",
+      "tax_treatment": "taxable",
+      "trading_access": "limited_margin",
+      "trading_type": "limited_margin",
+      "borrowing_allowed": false,
+      "cash_only_live_budget": true,
+      "short_stock_allowed": false,
+      "option_access": "covered_only",
+      "existing_positions_authority": "observe_only",
+      "canary_candidate": false,
+      "canary_cap_usd": 0,
+      "allowed_live_routes": [],
+      "operator_verified": true,
+      "verification_source": "operator",
+      "verified_at_utc": "YYYY-MM-DDTHH:MM:SSZ"
+    }
+  }
+}

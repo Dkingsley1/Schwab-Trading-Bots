@@ -12,7 +12,6 @@ from typing import Any, Mapping, Sequence
 
 from core.strategy_validity import default_validity_contract
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = PROJECT_ROOT / "config" / "sleeve_strategy_contracts_v1.json"
 REQUIRED_CONTRACT_FIELDS = (
@@ -39,6 +38,7 @@ REQUIRED_CONTRACT_FIELDS = (
     "shorting_policy",
     "conflict_policy",
     "evidence_policy",
+    "measurement_parameters",
     "validity_contract",
     "lifecycle_policy",
     "runtime_authority",
@@ -54,6 +54,33 @@ FORBIDDEN_AUTHORITY = (
     "can_change_labels",
     "can_grant_promotion",
     "can_submit_live_order",
+)
+ECONOMIC_RUNTIME_STATES = frozenset(
+    {"active", "collect_only", "quarantined", "retired", "control_only"}
+)
+ECONOMIC_ACTIVE_REQUIREMENTS = frozenset(
+    {
+        "current_candidate_binding",
+        "objective_specific_positive_economic_value_after_costs",
+        "objective_specific_benchmark_or_utility_hurdle",
+        "supported_current_market_regime",
+        "fresh_verified_sources",
+        "edge_above_cost_and_uncertainty_margin",
+        "liquidity_and_capacity_headroom",
+        "risk_and_drawdown_clearance",
+        "account_and_route_compatibility",
+        "positive_marginal_portfolio_contribution",
+    }
+)
+ECONOMIC_FORBIDDEN_AUTHORITY = frozenset(
+    {
+        "can_activate_sleeve",
+        "can_allocate_capital",
+        "can_change_quantity",
+        "can_change_risk_limits",
+        "can_submit_paper_order",
+        "can_submit_live_order",
+    }
 )
 MASTER_STRATEGIES = frozenset(
     {
@@ -74,52 +101,173 @@ _REGIME_SOURCE_CACHE: dict[str, tuple[int, int, dict[str, Any]]] = {}
 
 _PLAYBOOK_TEMPLATES: dict[str, dict[str, list[str] | str]] = {
     "trend": {
-        "ideal_regimes": ["persistent_direction", "broad_confirmation", "adequate_liquidity"],
-        "hostile_regimes": ["choppy_range", "crowded_reversal", "gap_without_confirmation"],
-        "required_inputs": ["point_in_time_returns", "trend_strength", "breadth", "volume_and_liquidity"],
-        "failure_modes": ["false_breakout", "late_entry", "trend_crowding", "regime_reversal"],
+        "ideal_regimes": [
+            "persistent_direction",
+            "broad_confirmation",
+            "adequate_liquidity",
+        ],
+        "hostile_regimes": [
+            "choppy_range",
+            "crowded_reversal",
+            "gap_without_confirmation",
+        ],
+        "required_inputs": [
+            "point_in_time_returns",
+            "trend_strength",
+            "breadth",
+            "volume_and_liquidity",
+        ],
+        "failure_modes": [
+            "false_breakout",
+            "late_entry",
+            "trend_crowding",
+            "regime_reversal",
+        ],
     },
     "mean_reversion": {
-        "ideal_regimes": ["stable_relationship", "bounded_range", "temporary_dislocation"],
+        "ideal_regimes": [
+            "stable_relationship",
+            "bounded_range",
+            "temporary_dislocation",
+        ],
         "hostile_regimes": ["structural_break", "persistent_trend", "liquidity_shock"],
-        "required_inputs": ["point_in_time_spread", "normalization_window", "relationship_stability", "cost_and_borrow"],
-        "failure_modes": ["falling_knife", "relationship_break", "slow_convergence", "crowded_exit"],
+        "required_inputs": [
+            "point_in_time_spread",
+            "normalization_window",
+            "relationship_stability",
+            "cost_and_borrow",
+        ],
+        "failure_modes": [
+            "falling_knife",
+            "relationship_break",
+            "slow_convergence",
+            "crowded_exit",
+        ],
     },
     "carry_value": {
         "ideal_regimes": ["stable_funding", "orderly_curve", "adequate_term_premium"],
-        "hostile_regimes": ["funding_shock", "curve_inversion_break", "forced_deleveraging"],
-        "required_inputs": ["carry_or_yield", "roll_down", "funding_and_borrow", "valuation_and_risk"],
-        "failure_modes": ["carry_crash", "value_trap", "funding_reversal", "hidden_duration"],
+        "hostile_regimes": [
+            "funding_shock",
+            "curve_inversion_break",
+            "forced_deleveraging",
+        ],
+        "required_inputs": [
+            "carry_or_yield",
+            "roll_down",
+            "funding_and_borrow",
+            "valuation_and_risk",
+        ],
+        "failure_modes": [
+            "carry_crash",
+            "value_trap",
+            "funding_reversal",
+            "hidden_duration",
+        ],
     },
     "event": {
-        "ideal_regimes": ["verified_event_window", "measurable_surprise", "qualified_liquidity"],
-        "hostile_regimes": ["source_disagreement", "leakage_or_stale_event", "unbounded_gap_risk"],
-        "required_inputs": ["event_timestamp", "point_in_time_consensus", "surprise_measure", "implied_move_and_liquidity"],
-        "failure_modes": ["already_priced_event", "whipsaw", "source_latency", "gap_beyond_risk_budget"],
+        "ideal_regimes": [
+            "verified_event_window",
+            "measurable_surprise",
+            "qualified_liquidity",
+        ],
+        "hostile_regimes": [
+            "source_disagreement",
+            "leakage_or_stale_event",
+            "unbounded_gap_risk",
+        ],
+        "required_inputs": [
+            "event_timestamp",
+            "point_in_time_consensus",
+            "surprise_measure",
+            "implied_move_and_liquidity",
+        ],
+        "failure_modes": [
+            "already_priced_event",
+            "whipsaw",
+            "source_latency",
+            "gap_beyond_risk_budget",
+        ],
     },
     "volatility": {
-        "ideal_regimes": ["observable_surface", "hedgeable_underlier", "priced_volatility_dislocation"],
+        "ideal_regimes": [
+            "observable_surface",
+            "hedgeable_underlier",
+            "priced_volatility_dislocation",
+        ],
         "hostile_regimes": ["surface_staleness", "gap_risk", "unhedgeable_liquidity"],
-        "required_inputs": ["implied_volatility_surface", "realized_volatility", "greeks", "premium_and_hedging_cost"],
-        "failure_modes": ["volatility_regime_jump", "greek_instability", "hedging_cost_overrun", "tail_loss"],
+        "required_inputs": [
+            "implied_volatility_surface",
+            "realized_volatility",
+            "greeks",
+            "premium_and_hedging_cost",
+        ],
+        "failure_modes": [
+            "volatility_regime_jump",
+            "greek_instability",
+            "hedging_cost_overrun",
+            "tail_loss",
+        ],
     },
     "liquidity_execution": {
         "ideal_regimes": ["observable_depth", "bounded_toxicity", "stable_venue_state"],
-        "hostile_regimes": ["quote_fade", "halt_or_reopen", "latency_spike", "thin_book"],
-        "required_inputs": ["quotes_and_depth", "trade_flow", "spread", "latency_and_fill_quality"],
-        "failure_modes": ["adverse_selection", "queue_decay", "impact_underestimate", "inventory_trap"],
+        "hostile_regimes": [
+            "quote_fade",
+            "halt_or_reopen",
+            "latency_spike",
+            "thin_book",
+        ],
+        "required_inputs": [
+            "quotes_and_depth",
+            "trade_flow",
+            "spread",
+            "latency_and_fill_quality",
+        ],
+        "failure_modes": [
+            "adverse_selection",
+            "queue_decay",
+            "impact_underestimate",
+            "inventory_trap",
+        ],
     },
     "risk_control": {
-        "ideal_regimes": ["observable_risk_state", "verified_control_inputs", "recoverable_operation"],
-        "hostile_regimes": ["missing_telemetry", "correlated_failure", "control_loop_instability"],
-        "required_inputs": ["fresh_health_evidence", "risk_limits", "incident_history", "recovery_receipts"],
-        "failure_modes": ["false_positive_halt", "missed_failure", "restart_loop", "stale_clearance"],
+        "ideal_regimes": [
+            "observable_risk_state",
+            "verified_control_inputs",
+            "recoverable_operation",
+        ],
+        "hostile_regimes": [
+            "missing_telemetry",
+            "correlated_failure",
+            "control_loop_instability",
+        ],
+        "required_inputs": [
+            "fresh_health_evidence",
+            "risk_limits",
+            "incident_history",
+            "recovery_receipts",
+        ],
+        "failure_modes": [
+            "false_positive_halt",
+            "missed_failure",
+            "restart_loop",
+            "stale_clearance",
+        ],
     },
     "general": {
         "ideal_regimes": ["contract_supported", "source_verified", "cost_qualified"],
         "hostile_regimes": ["contract_unsupported", "source_unverified", "risk_veto"],
-        "required_inputs": ["point_in_time_features", "source_quality", "cost_estimate", "risk_state"],
-        "failure_modes": ["overfit", "feature_decay", "cost_misspecification", "regime_shift"],
+        "required_inputs": [
+            "point_in_time_features",
+            "source_quality",
+            "cost_estimate",
+            "risk_state",
+        ],
+        "failure_modes": [
+            "overfit",
+            "feature_decay",
+            "cost_misspecification",
+            "regime_shift",
+        ],
     },
 }
 
@@ -139,6 +287,18 @@ def _number(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return float(default)
     return result if math.isfinite(result) else float(default)
+
+
+def _deep_merge_mappings(*sources: Mapping[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for source in sources:
+        for key, value in _mapping(source).items():
+            existing = merged.get(key)
+            if isinstance(existing, Mapping) and isinstance(value, Mapping):
+                merged[key] = _deep_merge_mappings(existing, value)
+            else:
+                merged[key] = deepcopy(value)
+    return merged
 
 
 def _canonical_hash(value: Any) -> str:
@@ -183,6 +343,43 @@ def load_policy(path: Path | None = None) -> dict[str, Any]:
     return policy
 
 
+def _validate_measurement_safety(
+    location: str,
+    parameters: Mapping[str, Any],
+    *,
+    require_focus: bool,
+) -> None:
+    row = _mapping(parameters)
+    uncertainty = _mapping(row.get("uncertainty_policy"))
+    if bool(row.get("automatic_live_promotion_allowed", False)):
+        raise ValueError(f"{location} may not allow automatic live promotion")
+    if bool(row.get("may_allocate_capital", False)):
+        raise ValueError(f"{location} may not allocate capital")
+    if bool(uncertainty.get("may_relax_live_money_gate", False)):
+        raise ValueError(f"{location} may not relax live-money gates")
+    if bool(uncertainty.get("may_allocate_capital", False)):
+        raise ValueError(f"{location} uncertainty policy may not allocate capital")
+    if str(uncertainty.get("treat_missing_evidence_as") or "") not in (
+        "",
+        "unknown_not_bad",
+    ):
+        raise ValueError(f"{location} must treat missing evidence as unknown_not_bad")
+    if require_focus and not list(row.get("measurement_focus") or []):
+        raise ValueError(f"{location} requires measurement_focus")
+    probation_samples = row.get("minimum_probation_samples")
+    validation_samples = row.get("minimum_validation_samples")
+    if probation_samples is not None and int(probation_samples) < 1:
+        raise ValueError(f"{location} has invalid probation sample floor")
+    if validation_samples is not None and int(validation_samples) < 1:
+        raise ValueError(f"{location} has invalid validation sample floor")
+    if (
+        probation_samples is not None
+        and validation_samples is not None
+        and int(validation_samples) < int(probation_samples)
+    ):
+        raise ValueError(f"{location} validation samples below probation samples")
+
+
 def validate_policy(policy: Mapping[str, Any]) -> None:
     if int(policy.get("schema_version") or 0) != 1:
         raise ValueError("strategy specialization policy schema must be version 1")
@@ -203,14 +400,169 @@ def validate_policy(policy: Mapping[str, Any]) -> None:
     if not sleeves:
         raise ValueError("strategy specialization policy defines no sleeves")
     missing_objectives = sorted(
-        {
-            str(_mapping(row).get("objective_class") or "")
-            for row in sleeves.values()
-        }
+        {str(_mapping(row).get("objective_class") or "") for row in sleeves.values()}
         - set(objective_classes)
     )
     if missing_objectives:
         raise ValueError(f"unknown objective classes: {','.join(missing_objectives)}")
+    measurement_defaults = _mapping(policy.get("measurement_parameter_defaults"))
+    if not measurement_defaults:
+        raise ValueError("measurement parameter defaults are missing")
+    required_measurement_default_keys = {
+        "authority",
+        "automatic_live_promotion_allowed",
+        "may_allocate_capital",
+        "minimum_probation_samples",
+        "minimum_validation_samples",
+        "minimum_independent_days",
+        "minimum_independent_symbols",
+        "minimum_independent_fills",
+        "measurement_focus",
+        "uncertainty_policy",
+    }
+    missing_measurement_default_keys = sorted(
+        required_measurement_default_keys - set(measurement_defaults)
+    )
+    if missing_measurement_default_keys:
+        raise ValueError(
+            "measurement parameter defaults are incomplete: "
+            + ",".join(missing_measurement_default_keys)
+        )
+    if (
+        str(measurement_defaults.get("authority") or "")
+        != "measurement_only_no_execution_sizing_allocation_promotion_or_live_authority"
+    ):
+        raise ValueError("measurement parameter defaults have invalid authority")
+    if "candidate_forward_post_cost_expectancy" not in {
+        str(value) for value in measurement_defaults.get("measurement_focus") or []
+    }:
+        raise ValueError("measurement parameter defaults must include post-cost focus")
+    _validate_measurement_safety(
+        "measurement_parameter_defaults",
+        measurement_defaults,
+        require_focus=True,
+    )
+    uncertainty_defaults = _mapping(measurement_defaults.get("uncertainty_policy"))
+    missing_uncertainty_default_keys = sorted(
+        {
+            "treat_missing_evidence_as",
+            "market_uncertainty_response",
+            "may_relax_live_money_gate",
+            "may_allocate_capital",
+        }
+        - set(uncertainty_defaults)
+    )
+    if missing_uncertainty_default_keys:
+        raise ValueError(
+            "measurement uncertainty policy is incomplete: "
+            + ",".join(missing_uncertainty_default_keys)
+        )
+    objective_measurements = _mapping(policy.get("objective_measurement_parameters"))
+    missing_objective_measurements = sorted(
+        set(objective_classes) - set(objective_measurements)
+    )
+    if missing_objective_measurements:
+        raise ValueError(
+            "objective measurement parameters are incomplete: "
+            + ",".join(missing_objective_measurements)
+        )
+    for objective_name, row in objective_measurements.items():
+        _validate_measurement_safety(
+            f"objective_measurement_parameters.{objective_name}",
+            _mapping(row),
+            require_focus=True,
+        )
+    sleeve_measurements = _mapping(policy.get("sleeve_measurement_parameters"))
+    missing_sleeve_measurements = sorted(set(sleeves) - set(sleeve_measurements))
+    if missing_sleeve_measurements:
+        raise ValueError(
+            "policy lacks sleeve-specific measurement parameters: "
+            + ",".join(missing_sleeve_measurements)
+        )
+    unknown_sleeve_measurements = sorted(set(sleeve_measurements) - set(sleeves))
+    if unknown_sleeve_measurements:
+        raise ValueError(
+            "policy has unknown sleeve-specific measurement parameters: "
+            + ",".join(unknown_sleeve_measurements)
+        )
+    for sleeve_name, row in sleeve_measurements.items():
+        _validate_measurement_safety(
+            f"sleeve_measurement_parameters.{sleeve_name}",
+            _mapping(row),
+            require_focus=True,
+        )
+    economic = _mapping(policy.get("economic_context_source_of_truth"))
+    if str(economic.get("contract_id") or "") != "sleeve_economic_context_v1":
+        raise ValueError("economic context source-of-truth contract is missing")
+    economic_scope = _mapping(economic.get("scope"))
+    required_true_scope = (
+        "all_trading_objective_classes_covered",
+        "positive_contextual_economic_value_required_before_capital",
+        "control_only_profitability_not_applicable",
+    )
+    if any(not bool(economic_scope.get(key, False)) for key in required_true_scope):
+        raise ValueError("economic context source-of-truth scope is incomplete")
+    required_false_scope = (
+        "simultaneous_sleeve_activation_required",
+        "simultaneous_sleeve_profitability_required",
+        "profitability_guaranteed",
+    )
+    if any(bool(economic_scope.get(key, True)) for key in required_false_scope):
+        raise ValueError("economic context source-of-truth makes a forbidden claim")
+    economic_states = _mapping(economic.get("runtime_states"))
+    if set(economic_states) != ECONOMIC_RUNTIME_STATES:
+        raise ValueError("economic context runtime states are incomplete")
+    for state, raw_contract in economic_states.items():
+        state_contract = _mapping(raw_contract)
+        may_be_considered = bool(
+            state_contract.get(
+                "may_be_considered_for_capital_by_separate_allocator", False
+            )
+        )
+        if state == "active" and not may_be_considered:
+            raise ValueError("active economic state must remain advisory-eligible")
+        if state != "active" and may_be_considered:
+            raise ValueError("non-active economic state requests capital consideration")
+        if bool(state_contract.get("capital_allocation_authority", True)):
+            raise ValueError("economic runtime state requests allocation authority")
+    if list(economic.get("state_precedence") or []) != [
+        "control_only",
+        "retired",
+        "quarantined",
+        "collect_only",
+        "active",
+    ]:
+        raise ValueError("economic context state precedence is invalid")
+    if not ECONOMIC_ACTIVE_REQUIREMENTS.issubset(
+        {str(value) for value in economic.get("active_requires") or []}
+    ):
+        raise ValueError("economic context active requirements are incomplete")
+    economic_authority = _mapping(economic.get("authority"))
+    if set(economic_authority) != ECONOMIC_FORBIDDEN_AUTHORITY or any(
+        bool(economic_authority.get(key, False)) for key in ECONOMIC_FORBIDDEN_AUTHORITY
+    ):
+        raise ValueError(
+            "economic context source-of-truth requests forbidden authority"
+        )
+    for objective_name, raw_objective in objective_classes.items():
+        objective = _mapping(raw_objective)
+        if not str(objective.get("economic_value_type") or "").strip():
+            raise ValueError(
+                f"objective class lacks economic value type: {objective_name}"
+            )
+        if not str(objective.get("activation_evidence_rule") or "").strip():
+            raise ValueError(
+                f"objective class lacks activation evidence rule: {objective_name}"
+            )
+        contextual_value_required = bool(
+            objective.get("positive_contextual_value_required_for_activation", False)
+        )
+        if objective_name == "control_only" and contextual_value_required:
+            raise ValueError("control-only objective may not claim trading economics")
+        if objective_name != "control_only" and not contextual_value_required:
+            raise ValueError(
+                f"trading objective may not bypass contextual value: {objective_name}"
+            )
     infrastructure = _mapping(sleeves.get("infrastructure_risk"))
     if str(infrastructure.get("objective_class") or "") != "control_only":
         raise ValueError("infrastructure_risk must remain control_only")
@@ -278,7 +630,9 @@ def canonical_profile(
 
 
 def _manifest_path(policy: Mapping[str, Any], project_root: Path) -> Path:
-    source = str(policy.get("source_manifest") or "config/sleeve_strategy_expansion.json")
+    source = str(
+        policy.get("source_manifest") or "config/sleeve_strategy_expansion.json"
+    )
     path = Path(source)
     return path if path.is_absolute() else project_root / path
 
@@ -289,7 +643,9 @@ def _taxonomy_groups(strategy_name: str, policy: Mapping[str, Any]) -> list[str]
     for group, tokens in sorted(_mapping(policy.get("taxonomy")).items()):
         if not isinstance(tokens, Sequence) or isinstance(tokens, (str, bytes)):
             continue
-        if any(_normalize(token) in normalized for token in tokens if _normalize(token)):
+        if any(
+            _normalize(token) in normalized for token in tokens if _normalize(token)
+        ):
             groups.append(_normalize(group))
     return groups or ["general"]
 
@@ -310,9 +666,13 @@ def _taxonomy_rules(groups: Sequence[str], holding_horizon: str) -> dict[str, st
         exit_rule = "exit_on_trend_break_trailing_risk_limit_target_or_time_stop"
     elif "liquidity_execution" in group_set:
         entry = "enter_only_when_quote_depth_toxicity_latency_and_expected_shortfall_are_qualified"
-        exit_rule = "exit_on_inventory_limit_toxicity_shift_liquidity_loss_or_session_boundary"
+        exit_rule = (
+            "exit_on_inventory_limit_toxicity_shift_liquidity_loss_or_session_boundary"
+        )
     else:
-        entry = "enter_only_after_source_quality_signal_regime_cost_and_risk_qualification"
+        entry = (
+            "enter_only_after_source_quality_signal_regime_cost_and_risk_qualification"
+        )
         exit_rule = "exit_on_thesis_break_stop_target_or_regime_invalidation"
     return {
         "entry_rule": entry,
@@ -391,17 +751,128 @@ def _strategy_definition(
 def _derived_objective_class(sleeve_id: str) -> str:
     name = _normalize(sleeve_id)
     rules = (
-        ("control_only", ("infrastructure", "data_plane", "backpressure", "orchestration", "adversarial", "security", "architecture", "alpha_research_os", "data_ingestion", "data_plumbing", "data_confidence", "market_data", "governance", "evidence_court", "execution_safety", "model_risk", "provider_adapter", "runtime_capacity", "halt_recovery", "event_intelligence", "gpu_quant_acceleration", "privacy", "formal_backend", "signal_governance", "xva_counterparty", "uncertainty_robust_control")),
-        ("capital_preservation", ("cash", "capital_preservation", "portfolio_construction", "position_lifecycle", "collateral_margin_liquidity")),
-        ("hedge_utility", ("hedge", "hedging", "tail_risk", "tail_dependency", "black_swan", "risk_parity")),
-        ("volatility_relative_value", ("volatility", "variance", "option", "gamma", "vanna", "volga", "greek", "swaption", "barrier", "lookback", "dispersion")),
-        ("execution_alpha", ("market_making", "order_flow", "microstructure", "high_frequency", "low_latency", "execution_quality", "transaction_cost", "liquidity_regime")),
+        (
+            "control_only",
+            (
+                "infrastructure",
+                "data_plane",
+                "backpressure",
+                "orchestration",
+                "adversarial",
+                "security",
+                "architecture",
+                "alpha_research_os",
+                "data_ingestion",
+                "data_plumbing",
+                "data_confidence",
+                "market_data",
+                "governance",
+                "evidence_court",
+                "execution_safety",
+                "model_risk",
+                "provider_adapter",
+                "runtime_capacity",
+                "halt_recovery",
+                "event_intelligence",
+                "gpu_quant_acceleration",
+                "privacy",
+                "formal_backend",
+                "signal_governance",
+                "xva_counterparty",
+                "uncertainty_robust_control",
+            ),
+        ),
+        (
+            "capital_preservation",
+            (
+                "cash",
+                "capital_preservation",
+                "portfolio_construction",
+                "position_lifecycle",
+                "collateral_margin_liquidity",
+            ),
+        ),
+        (
+            "hedge_utility",
+            (
+                "hedge",
+                "hedging",
+                "tail_risk",
+                "tail_dependency",
+                "black_swan",
+                "risk_parity",
+            ),
+        ),
+        (
+            "volatility_relative_value",
+            (
+                "volatility",
+                "variance",
+                "option",
+                "gamma",
+                "vanna",
+                "volga",
+                "greek",
+                "swaption",
+                "barrier",
+                "lookback",
+                "dispersion",
+            ),
+        ),
+        (
+            "execution_alpha",
+            (
+                "market_making",
+                "order_flow",
+                "microstructure",
+                "high_frequency",
+                "low_latency",
+                "execution_quality",
+                "transaction_cost",
+                "liquidity_regime",
+            ),
+        ),
         ("event_alpha", ("earnings", "event_reaction", "event_driven", "catalyst")),
-        ("basis_relative_value", ("basis", "pricing_model", "synthetic_cdo", "cdo_squared", "cdo_cubed", "structured_product")),
-        ("market_neutral_relative_value", ("statistical_arbitrage", "stat_arb", "pairs", "relative_value", "cross_asset")),
+        (
+            "basis_relative_value",
+            (
+                "basis",
+                "pricing_model",
+                "synthetic_cdo",
+                "cdo_squared",
+                "cdo_cubed",
+                "structured_product",
+            ),
+        ),
+        (
+            "market_neutral_relative_value",
+            (
+                "statistical_arbitrage",
+                "stat_arb",
+                "pairs",
+                "relative_value",
+                "cross_asset",
+            ),
+        ),
         ("digital_asset_alpha", ("crypto", "digital_asset")),
         ("income_total_return", ("dividend", "income")),
-        ("macro_carry_relative_value", ("macro", "rates", "bond", "credit", "commodity", "futures", "fx", "international", "sovereign", "inflation", "repo_securities", "securitized_product")),
+        (
+            "macro_carry_relative_value",
+            (
+                "macro",
+                "rates",
+                "bond",
+                "credit",
+                "commodity",
+                "futures",
+                "fx",
+                "international",
+                "sovereign",
+                "inflation",
+                "repo_securities",
+                "securitized_product",
+            ),
+        ),
     )
     for objective, tokens in rules:
         if any(token in name for token in tokens):
@@ -409,7 +880,9 @@ def _derived_objective_class(sleeve_id: str) -> str:
     return "directional_alpha"
 
 
-def _derived_sleeve_definition(sleeve_id: str, policy: Mapping[str, Any]) -> dict[str, Any]:
+def _derived_sleeve_definition(
+    sleeve_id: str, policy: Mapping[str, Any]
+) -> dict[str, Any]:
     derived = deepcopy(_mapping(policy.get("derived_sleeve_policy")))
     derived.pop("purpose", None)
     objective_class = _derived_objective_class(sleeve_id)
@@ -442,6 +915,35 @@ def _contract_complete(contract: Mapping[str, Any]) -> bool:
     return True
 
 
+def _measurement_parameters(
+    *,
+    sleeve_id: str,
+    objective_class: str,
+    policy: Mapping[str, Any],
+    explicit_sleeve_contract: bool,
+) -> dict[str, Any]:
+    defaults = _mapping(policy.get("measurement_parameter_defaults"))
+    objective_parameters = _mapping(
+        _mapping(policy.get("objective_measurement_parameters")).get(objective_class)
+    )
+    sleeve_parameters = _mapping(
+        _mapping(policy.get("sleeve_measurement_parameters")).get(sleeve_id)
+    )
+    parameters = _deep_merge_mappings(defaults, objective_parameters, sleeve_parameters)
+    parameters["sleeve_id"] = sleeve_id
+    parameters["objective_class"] = objective_class
+    parameters["candidate_binding_required"] = bool(
+        _mapping(policy.get("candidate_binding")).get("required", False)
+    )
+    parameters["parameter_source"] = (
+        "explicit_sleeve_specific"
+        if sleeve_parameters
+        else "objective_derived_for_manifest_sleeve"
+    )
+    parameters["explicit_sleeve_contract"] = explicit_sleeve_contract
+    return parameters
+
+
 def _build_contract(
     *,
     sleeve_id: str,
@@ -457,16 +959,34 @@ def _build_contract(
     overlay_definition: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     defaults = _mapping(policy.get("contract_defaults"))
-    sleeve = _mapping(_mapping(policy.get("sleeves")).get(sleeve_id))
+    sleeves = _mapping(policy.get("sleeves"))
+    sleeve = _mapping(sleeves.get(sleeve_id))
+    explicit_sleeve_contract = bool(sleeve)
     if not sleeve:
         sleeve = _derived_sleeve_definition(sleeve_id, policy)
     objective_class = str(sleeve.get("objective_class") or "directional_alpha")
     objective = _mapping(_mapping(policy.get("objective_classes")).get(objective_class))
+    economic_context = _mapping(policy.get("economic_context_source_of_truth"))
+    economic_scope = _mapping(economic_context.get("scope"))
     groups = _taxonomy_groups(strategy_name, policy)
-    rules = _taxonomy_rules(groups, str(sleeve.get("holding_horizon") or defaults.get("holding_horizon") or ""))
+    rules = _taxonomy_rules(
+        groups,
+        str(sleeve.get("holding_horizon") or defaults.get("holding_horizon") or ""),
+    )
     normalized_strategy = _normalize(strategy_name) or "unknown"
     strategy_id = f"sleeve::{sleeve_id}::{normalized_strategy}::v1"
-    economic_thesis = str(synthetic_description or sleeve.get("economic_thesis") or defaults.get("economic_thesis") or "")
+    economic_thesis = str(
+        synthetic_description
+        or sleeve.get("economic_thesis")
+        or defaults.get("economic_thesis")
+        or ""
+    )
+    measurement_parameters = _measurement_parameters(
+        sleeve_id=sleeve_id,
+        objective_class=objective_class,
+        policy=policy,
+        explicit_sleeve_contract=explicit_sleeve_contract,
+    )
     definition = _strategy_definition(
         sleeve_id=sleeve_id,
         strategy_name=normalized_strategy,
@@ -503,6 +1023,27 @@ def _build_contract(
         "allowed_regimes": ideal_regimes,
         "blocked_regimes": blocked_regimes,
         "objective_scorecard": deepcopy(objective),
+        "economic_context_policy": {
+            "contract_id": str(economic_context.get("contract_id") or ""),
+            "canonical_statement": str(
+                economic_context.get("canonical_statement") or ""
+            ),
+            "positive_contextual_economic_value_required_before_capital": bool(
+                economic_scope.get(
+                    "positive_contextual_economic_value_required_before_capital",
+                    False,
+                )
+            ),
+            "simultaneous_sleeve_profitability_required": bool(
+                economic_scope.get("simultaneous_sleeve_profitability_required", False)
+            ),
+            "profitability_guaranteed": bool(
+                economic_scope.get("profitability_guaranteed", False)
+            ),
+            "runtime_states": list(economic_context.get("state_precedence") or []),
+            "active_requires": list(economic_context.get("active_requires") or []),
+            "capital_allocation_authority": False,
+        },
         "label_definition": (
             "candidate_forward_post_cost_outcome_at_"
             f"{_normalize(sleeve.get('holding_horizon') or defaults.get('holding_horizon')) or 'contract_horizon'}"
@@ -512,7 +1053,9 @@ def _build_contract(
         "candidate_binding_policy": deepcopy(_mapping(policy.get("candidate_binding"))),
         "quality_verdict_policy": {
             "unknown_is_not_bad": bool(
-                _mapping(policy.get("quality_assessment")).get("unknown_is_not_bad", False)
+                _mapping(policy.get("quality_assessment")).get(
+                    "unknown_is_not_bad", False
+                )
             ),
             "good_requires": str(
                 _mapping(policy.get("quality_assessment")).get("good_requires") or ""
@@ -521,6 +1064,7 @@ def _build_contract(
                 _mapping(policy.get("quality_assessment")).get("bad_requires") or ""
             ),
         },
+        "measurement_parameters": measurement_parameters,
         "validity_contract": default_validity_contract(),
         "regime_adaptation_policy": {
             "enabled": bool(
@@ -543,7 +1087,11 @@ def _build_contract(
         "source_manifest_sha256": source_manifest_sha256,
     }
     contract["contract_complete"] = _contract_complete(contract)
-    receipt_payload = {key: value for key, value in contract.items() if key != "contract_receipt_sha256"}
+    receipt_payload = {
+        key: value
+        for key, value in contract.items()
+        if key != "contract_receipt_sha256"
+    }
     contract["contract_receipt_sha256"] = _canonical_hash(receipt_payload)
     return contract
 
@@ -554,7 +1102,9 @@ def materialize_strategy_contracts(
     manifest: Mapping[str, Any] | None = None,
     project_root: Path = PROJECT_ROOT,
 ) -> dict[str, dict[str, Any]]:
-    active_policy = deepcopy(dict(policy)) if isinstance(policy, Mapping) else load_policy()
+    active_policy = (
+        deepcopy(dict(policy)) if isinstance(policy, Mapping) else load_policy()
+    )
     validate_policy(active_policy)
     manifest_path = _manifest_path(active_policy, project_root)
     if isinstance(manifest, Mapping):
@@ -578,8 +1128,12 @@ def materialize_strategy_contracts(
     cached = _MATERIALIZATION_CACHE.get(cache_key)
     if cached is not None:
         return cached
-    allowed_states = {str(value) for value in (active_policy.get("included_runtime_states") or [])}
-    included = {_normalize(value) for value in (active_policy.get("included_sleeves") or [])}
+    allowed_states = {
+        str(value) for value in (active_policy.get("included_runtime_states") or [])
+    }
+    included = {
+        _normalize(value) for value in (active_policy.get("included_sleeves") or [])
+    }
     additions = _mapping(active_policy.get("strategy_additions"))
     contracts: dict[str, dict[str, Any]] = {}
     for raw_sleeve in active_manifest.get("sleeves") or []:
@@ -589,14 +1143,20 @@ def materialize_strategy_contracts(
         runtime_status = str(raw_sleeve.get("runtime_status") or "")
         if runtime_status not in allowed_states and sleeve_id not in included:
             continue
-        manifest_names = [_normalize(value) for value in (raw_sleeve.get("strategies") or [])]
-        addition_names = [_normalize(value) for value in (additions.get(sleeve_id) or [])]
+        manifest_names = [
+            _normalize(value) for value in (raw_sleeve.get("strategies") or [])
+        ]
+        addition_names = [
+            _normalize(value) for value in (additions.get(sleeve_id) or [])
+        ]
         seen: set[str] = set()
         for strategy_name in manifest_names + addition_names:
             if not strategy_name or strategy_name in seen:
                 continue
             seen.add(strategy_name)
-            source_kind = "catalog" if strategy_name in manifest_names else "curated_addition"
+            source_kind = (
+                "catalog" if strategy_name in manifest_names else "curated_addition"
+            )
             contract = _build_contract(
                 sleeve_id=sleeve_id,
                 strategy_name=strategy_name,
@@ -609,9 +1169,7 @@ def materialize_strategy_contracts(
     if len(_MATERIALIZATION_CACHE) >= 4:
         oldest = next(iter(_MATERIALIZATION_CACHE))
         evicted = _MATERIALIZATION_CACHE.pop(oldest, None)
-        stale_index_keys = [
-            key for key in _SLEEVE_INDEX_CACHE if key[0] == id(evicted)
-        ]
+        stale_index_keys = [key for key in _SLEEVE_INDEX_CACHE if key[0] == id(evicted)]
         for key in stale_index_keys:
             _SLEEVE_INDEX_CACHE.pop(key, None)
     _MATERIALIZATION_CACHE[cache_key] = result
@@ -625,7 +1183,9 @@ def materialize_strategy_library(
     project_root: Path = PROJECT_ROOT,
 ) -> dict[str, dict[str, Any]]:
     """Materialize the full cold research library without widening runtime fan-out."""
-    active_policy = deepcopy(dict(policy)) if isinstance(policy, Mapping) else load_policy()
+    active_policy = (
+        deepcopy(dict(policy)) if isinstance(policy, Mapping) else load_policy()
+    )
     validate_policy(active_policy)
     manifest_path = _manifest_path(active_policy, project_root)
     if isinstance(manifest, Mapping):
@@ -676,9 +1236,7 @@ def materialize_strategy_library(
         }
     )
     target_total = int(library_policy.get("target_total_strategies") or 0)
-    minimum_per_sleeve = int(
-        library_policy.get("minimum_strategies_per_sleeve") or 0
-    )
+    minimum_per_sleeve = int(library_policy.get("minimum_strategies_per_sleeve") or 0)
     if not sleeve_ids or target_total < len(sleeve_ids) * minimum_per_sleeve:
         raise ValueError("strategy library target cannot satisfy the sleeve minimum")
     base_target, remainder = divmod(target_total, len(sleeve_ids))
@@ -693,7 +1251,9 @@ def materialize_strategy_library(
             for row in library.values()
             if row.get("sleeve_id") == sleeve_id
         }
-        sleeve_definition = _mapping(_mapping(active_policy.get("sleeves")).get(sleeve_id))
+        sleeve_definition = _mapping(
+            _mapping(active_policy.get("sleeves")).get(sleeve_id)
+        )
         if not sleeve_definition:
             sleeve_definition = _derived_sleeve_definition(sleeve_id, active_policy)
         objective_class = str(
@@ -780,7 +1340,9 @@ def resolve_strategy_contract(
     project_root: Path = PROJECT_ROOT,
     contracts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    active_policy = deepcopy(dict(policy)) if isinstance(policy, Mapping) else load_policy()
+    active_policy = (
+        deepcopy(dict(policy)) if isinstance(policy, Mapping) else load_policy()
+    )
     sleeve_id = canonical_profile(profile, active_policy)
     active_contracts = (
         contracts
@@ -799,7 +1361,9 @@ def resolve_strategy_contract(
     if normalized_strategy == "paper_portfolio_consensus":
         name = "portfolio_consensus"
         source_kind = "synthetic_portfolio_consensus"
-    elif normalized_strategy in MASTER_STRATEGIES or normalized_strategy.startswith("master_"):
+    elif normalized_strategy in MASTER_STRATEGIES or normalized_strategy.startswith(
+        "master_"
+    ):
         name = "ensemble_champion"
         source_kind = "synthetic_ensemble"
     else:
@@ -819,7 +1383,9 @@ def resolve_strategy_contract(
     )
 
 
-def _flatten_numeric_features(value: Any, prefix: str = "", depth: int = 0) -> dict[str, float]:
+def _flatten_numeric_features(
+    value: Any, prefix: str = "", depth: int = 0
+) -> dict[str, float]:
     if depth > 3:
         return {}
     if isinstance(value, Mapping):
@@ -834,15 +1400,31 @@ def _flatten_numeric_features(value: Any, prefix: str = "", depth: int = 0) -> d
     return {prefix: number} if prefix and math.isfinite(number) else {}
 
 
-def _feature_factor_scores(features: Mapping[str, Any]) -> tuple[dict[str, float], float]:
+def _feature_factor_scores(
+    features: Mapping[str, Any],
+) -> tuple[dict[str, float], float]:
     numeric = _flatten_numeric_features(features)
     factor_tokens = {
         "trend": ("momentum", "trend", "relative_strength", "slope", "breakout"),
         "mean_reversion": ("zscore", "deviation", "rsi", "reversion", "spread"),
         "carry_value": ("carry", "yield", "basis", "value", "funding", "roll"),
         "event": ("event", "surprise", "earnings", "news", "macro"),
-        "volatility": ("volatility", "implied", "realized", "skew", "gamma", "variance"),
-        "liquidity_execution": ("spread", "depth", "volume", "liquidity", "imbalance", "vwap"),
+        "volatility": (
+            "volatility",
+            "implied",
+            "realized",
+            "skew",
+            "gamma",
+            "variance",
+        ),
+        "liquidity_execution": (
+            "spread",
+            "depth",
+            "volume",
+            "liquidity",
+            "imbalance",
+            "vwap",
+        ),
         "risk_control": ("drawdown", "risk", "stress", "quality", "source", "fresh"),
     }
     scores: dict[str, float] = {}
@@ -882,9 +1464,7 @@ def extract_current_regime(features: Mapping[str, Any] | None) -> str:
             regime = _normalize(normalized_items.get(key))
             if regime:
                 return regime
-        queue.extend(
-            child for child in value.values() if isinstance(child, Mapping)
-        )
+        queue.extend(child for child in value.values() if isinstance(child, Mapping))
     return ""
 
 
@@ -985,10 +1565,14 @@ def resolve_runtime_regime_context(
         "source_ready": bool(regime and fresh),
         "source_status": str(
             payload.get("overall_status") or payload.get("status") or "unknown"
-        ).strip().lower(),
+        )
+        .strip()
+        .lower(),
         "source_path": str(source_path),
         "source_timestamp_utc": timestamp.isoformat() if timestamp else "",
-        "source_age_seconds": round(age_seconds, 3) if age_seconds is not None else None,
+        "source_age_seconds": (
+            round(age_seconds, 3) if age_seconds is not None else None
+        ),
         "fresh": fresh,
     }
 
@@ -1090,7 +1674,9 @@ def rank_counterfactual_strategies(
     limit: int = 3,
     contracts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    active_policy = deepcopy(dict(policy)) if isinstance(policy, Mapping) else load_policy()
+    active_policy = (
+        deepcopy(dict(policy)) if isinstance(policy, Mapping) else load_policy()
+    )
     sleeve_id = canonical_profile(profile, active_policy)
     active_contracts = (
         contracts
@@ -1128,8 +1714,13 @@ def rank_counterfactual_strategies(
             source_status=str(regime_context.get("source_status") or "missing"),
         )
         matched = [group for group in groups if factor_scores.get(group, 0.0) > 0.0]
-        signal_score = max((factor_scores.get(group, 0.0) for group in groups), default=0.0)
-        tie_break = int(str(contract.get("contract_receipt_sha256") or "0")[:8], 16) / 0xFFFFFFFF
+        signal_score = max(
+            (factor_scores.get(group, 0.0) for group in groups), default=0.0
+        )
+        tie_break = (
+            int(str(contract.get("contract_receipt_sha256") or "0")[:8], 16)
+            / 0xFFFFFFFF
+        )
         relevance_adjustment = {
             "aligned": 0.1,
             "neutral": 0.0,
@@ -1151,11 +1742,15 @@ def rank_counterfactual_strategies(
                 "feature_coverage_ratio": round(coverage, 8),
                 "matched_factors": matched,
                 "regime_assessment": regime_assessment,
-                "contract_receipt_sha256": str(contract.get("contract_receipt_sha256") or ""),
+                "contract_receipt_sha256": str(
+                    contract.get("contract_receipt_sha256") or ""
+                ),
                 "authority": "read_only_counterfactual_no_action_or_sizing_authority",
             }
         )
-    rows.sort(key=lambda row: (-float(row["counterfactual_score"]), str(row["strategy_id"])))
+    rows.sort(
+        key=lambda row: (-float(row["counterfactual_score"]), str(row["strategy_id"]))
+    )
     return rows[: max(int(limit), 0)]
 
 
@@ -1184,7 +1779,9 @@ def attach_strategy_specialization(
     project_root: Path = PROJECT_ROOT,
 ) -> dict[str, Any]:
     md = deepcopy(dict(metadata)) if isinstance(metadata, Mapping) else {}
-    active_policy = deepcopy(dict(policy)) if isinstance(policy, Mapping) else load_policy()
+    active_policy = (
+        deepcopy(dict(policy)) if isinstance(policy, Mapping) else load_policy()
+    )
     resolved_profile = canonical_profile(
         profile or md.get("source_profile") or md.get("profile") or "default",
         active_policy,
@@ -1240,6 +1837,9 @@ def attach_strategy_specialization(
         "objective_class": str(contract.get("objective_class") or ""),
         "contract_complete": bool(contract.get("contract_complete", False)),
         "contract_receipt_sha256": str(contract.get("contract_receipt_sha256") or ""),
+        "measurement_parameters": deepcopy(
+            _mapping(contract.get("measurement_parameters"))
+        ),
         "candidate_id": _candidate_id(md),
         "authority": deepcopy(_mapping(active_policy.get("authority"))),
     }
@@ -1254,6 +1854,9 @@ def attach_strategy_specialization(
         "source_kind": str(contract.get("source_kind") or ""),
         "objective_class": str(contract.get("objective_class") or ""),
         "objective_scorecard": deepcopy(_mapping(contract.get("objective_scorecard"))),
+        "measurement_parameters": deepcopy(
+            _mapping(contract.get("measurement_parameters"))
+        ),
         "strategy_definition": deepcopy(_mapping(contract.get("strategy_definition"))),
         "library_tier": str(contract.get("library_tier") or ""),
         "activation_state": str(contract.get("activation_state") or ""),
@@ -1314,11 +1917,17 @@ def strategy_specialization_guard_reasons(
     return reasons
 
 
-def strategy_id_from_metadata(metadata: Mapping[str, Any] | None, fallback: Any = "unknown") -> str:
+def strategy_id_from_metadata(
+    metadata: Mapping[str, Any] | None, fallback: Any = "unknown"
+) -> str:
     specialization = _mapping(_mapping(metadata).get("strategy_specialization"))
-    return str(
-        specialization.get("selected_strategy_id")
-        or _mapping(_mapping(metadata).get("strategy_contract")).get("strategy_id")
-        or fallback
-        or "unknown"
-    ).strip().lower()
+    return (
+        str(
+            specialization.get("selected_strategy_id")
+            or _mapping(_mapping(metadata).get("strategy_contract")).get("strategy_id")
+            or fallback
+            or "unknown"
+        )
+        .strip()
+        .lower()
+    )

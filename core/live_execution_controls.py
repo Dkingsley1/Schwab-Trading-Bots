@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from typing import Any, Dict, Optional
 from core.runtime_layers import CircuitBreaker
 from core.execution_simulator import simulate_execution
 from core.live_canary_allowlist import evaluate_live_canary_allowlist
+from core.live_canary_preflight import evaluate_live_canary_preflight
 from core.live_execution_envelope import file_sha256, verify_live_execution_envelope
 from core.system_role_contracts import evaluate_component_action
 
@@ -224,6 +226,15 @@ def live_order_replace_allowed(project_root: str | Path) -> bool:
     return bool(policy.get("allow_live_order_replace", False))
 
 
+def _hash_bound_account_reference(value: object) -> bool:
+    reference = str(value or "").strip()
+    if len(reference) < 16 or reference.startswith("****") or "*" in reference:
+        return False
+    if reference.isdigit():
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9._~+-]+", reference))
+
+
 def production_order_firewall_check(
     *,
     project_root: str | Path,
@@ -239,7 +250,7 @@ def production_order_firewall_check(
 ) -> GuardDecision:
     env_map = env if isinstance(env, dict) else dict(os.environ)
     policy, config_path = _load_production_firewall_policy(project_root)
-    canary_contract = evaluate_live_canary_allowlist(project_root)
+    canary_contract = evaluate_live_canary_allowlist(project_root, env=env_map)
     allow_env = str(policy.get("allow_order_execution_env") or "ALLOW_ORDER_EXECUTION")
     market_data_env = str(policy.get("market_data_only_env") or "MARKET_DATA_ONLY")
     market_data_default = bool(policy.get("market_data_only_default", True))
@@ -340,12 +351,57 @@ def production_order_firewall_check(
     max_qty = min(quantity_caps) if quantity_caps else 0.0
     if not risk_reducing_exit and max_qty > 0.0 and qty > max_qty:
         blockers.append("quantity_exceeds_cap")
+    if (
+        not risk_reducing_exit
+        and bool(policy.get("require_whole_share_quantity", False))
+        and abs(qty - round(qty)) > 1e-9
+    ):
+        blockers.append("fractional_quantity_not_allowed")
 
     order_price = 0.0
     try:
         order_price = float((order_spec or {}).get("price") or 0.0)
     except Exception:
         order_price = 0.0
+    order_type = str((order_spec or {}).get("orderType") or "").strip().upper()
+    order_session = str((order_spec or {}).get("session") or "").strip().upper()
+    order_duration = str((order_spec or {}).get("duration") or "").strip().upper()
+    allowed_order_types = {
+        str(item).upper() for item in _string_list(policy.get("allowed_order_types"))
+    }
+    allowed_sessions = {
+        str(item).upper() for item in _string_list(policy.get("allowed_sessions"))
+    }
+    allowed_durations = {
+        str(item).upper() for item in _string_list(policy.get("allowed_durations"))
+    }
+    if (
+        not risk_reducing_exit
+        and allowed_order_types
+        and order_type not in allowed_order_types
+    ):
+        blockers.append("order_type_not_allowed")
+    if (
+        not risk_reducing_exit
+        and allowed_sessions
+        and order_session not in allowed_sessions
+    ):
+        blockers.append("order_session_not_allowed")
+    if (
+        not risk_reducing_exit
+        and allowed_durations
+        and order_duration not in allowed_durations
+    ):
+        blockers.append("order_duration_not_allowed")
+    tick_size = max(float(policy.get("equity_tick_size") or 0.0), 0.0)
+    if (
+        not risk_reducing_exit
+        and order_type == "LIMIT"
+        and order_price > 0.0
+        and tick_size > 0.0
+        and abs((order_price / tick_size) - round(order_price / tick_size)) > 1e-7
+    ):
+        blockers.append("limit_price_tick_invalid")
     if order_price <= 0.0:
         try:
             order_price = max(float(reference_price or 0.0), 0.0)
@@ -425,6 +481,9 @@ def production_order_firewall_check(
     account_reference_present = bool(
         str(env_map.get(account_reference_env) or "").strip()
     )
+    account_reference_hash_bound = _hash_bound_account_reference(
+        env_map.get(account_reference_env)
+    )
     account_auto_discover = _truthy(env_map.get(account_auto_discover_env), True)
     account_reference_pinned = bool(
         account_reference_present and not account_auto_discover
@@ -436,6 +495,53 @@ def production_order_firewall_check(
         and not account_reference_pinned
     ):
         blockers.append("live_account_reference_not_pinned")
+    if (
+        is_new_entry
+        and not risk_reducing_exit
+        and bool(
+            policy.get(
+                "require_hash_account_reference",
+                policy.get("require_pinned_account_reference", True),
+            )
+        )
+        and not account_reference_hash_bound
+    ):
+        blockers.append("live_account_reference_not_hash_bound")
+
+    canary_preflight: dict[str, Any] = {}
+    if (
+        is_new_entry
+        and not risk_reducing_exit
+        and bool(policy.get("require_live_canary_preflight", False))
+    ):
+        canary_preflight = evaluate_live_canary_preflight(
+            project_root,
+            symbol=symbol_key,
+            action=action,
+            account_reference=str(env_map.get(account_reference_env) or ""),
+            env=env_map,
+        )
+        if not bool(canary_preflight.get("ready", False)):
+            blockers.extend(
+                str(item)
+                for item in canary_preflight.get("blockers", [])
+                if str(item)
+            )
+
+    boundary_quarantine: dict[str, Any] = {}
+    boundary_quarantine_path = _project_path(
+        project_root,
+        policy.get("schwab_boundary_quarantine_artifact")
+        or "governance/health/SCHWAB_BROKER_BOUNDARY_QUARANTINE.json",
+    )
+    if bool(policy.get("require_schwab_boundary_clear", True)):
+        try:
+            loaded = json.loads(boundary_quarantine_path.read_text(encoding="utf-8"))
+            boundary_quarantine = loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            boundary_quarantine = {}
+        if bool(boundary_quarantine.get("active", False)):
+            blockers.append("schwab_broker_boundary_quarantine_active")
     if (
         is_new_entry
         and not risk_reducing_exit
@@ -472,6 +578,21 @@ def production_order_firewall_check(
             max_spread_bps=max(float(policy.get("max_spread_bps") or 75.0), 0.0),
             max_future_skew_seconds=max(
                 float(policy.get("max_future_clock_skew_seconds") or 2.0), 0.0
+            ),
+            require_affirmative_risk_decision=bool(
+                policy.get("require_affirmative_risk_decision", False)
+            ),
+            require_quote_provenance=bool(
+                policy.get("require_quote_provenance", False)
+            ),
+            allowed_quote_providers=tuple(
+                _string_list(policy.get("allowed_quote_providers"))
+            ),
+            require_canary_preflight_receipt=bool(
+                policy.get("require_live_canary_preflight", False) and is_new_entry
+            ),
+            expected_account_policy_key=str(
+                canary_preflight.get("account_policy_key") or ""
             ),
         )
         envelope_intent = (
@@ -526,6 +647,13 @@ def production_order_firewall_check(
         "active_halt_flags": active_halt_flags,
         "missing_safety_flags": missing_safety_flags,
         "order_price": float(order_price),
+        "order_type": order_type,
+        "order_session": order_session,
+        "order_duration": order_duration,
+        "allowed_order_types": sorted(allowed_order_types),
+        "allowed_sessions": sorted(allowed_sessions),
+        "allowed_durations": sorted(allowed_durations),
+        "equity_tick_size": float(tick_size),
         "estimated_notional": float(notional),
         "asset_types": asset_types,
         "instructions": effective_instructions,
@@ -541,6 +669,12 @@ def production_order_firewall_check(
         "account_reference_present": account_reference_present,
         "account_auto_discover": account_auto_discover,
         "account_reference_pinned": account_reference_pinned,
+        "account_reference_hash_bound": account_reference_hash_bound,
+        "live_canary_preflight": canary_preflight,
+        "schwab_boundary_quarantine_path": str(boundary_quarantine_path),
+        "schwab_boundary_quarantine_active": bool(
+            boundary_quarantine.get("active", False)
+        ),
         "effective_max_order_quantity": float(max_qty),
         "effective_max_order_notional": float(max_notional),
         "production_excellence_path": str(excellence_path),

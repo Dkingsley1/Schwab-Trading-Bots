@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -145,6 +146,55 @@ def test_support_freeze_blocks_support_profiles_but_not_collection(monkeypatch) 
 
     monkeypatch.setenv("RESOURCE_GUARD_DEFAULT_HONORS_SUPPORT_FREEZE", "0")
     assert resource_guard._support_freeze_blocks_profile("default") is False
+
+
+def test_ignore_support_freeze_still_evaluates_real_resource_pressure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    emit_path = tmp_path / "resource_guard_latest.json"
+    monkeypatch.setattr(
+        resource_guard,
+        "support_maintenance_freeze_contract",
+        lambda *_args, **_kwargs: {
+            "active": True,
+            "reason": "support_maintenance_frozen_for_mac_fluidity",
+        },
+    )
+    monkeypatch.setattr(
+        resource_guard,
+        "build_snapshot",
+        lambda _project_root: {
+            "memory_available_pct": 2.0,
+            "memory_free_pct": 1.0,
+            "swap_used_gb": 32.0,
+            "pages_throttled": 5,
+            "load1_per_core": 4.0,
+            "disk_free_gb": 5.0,
+            "local_disk_free_gb": 5.0,
+            "editing_app_cpu_sum": 0.0,
+        },
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "resource_guard.py",
+            "--project-root",
+            str(tmp_path),
+            "--profile",
+            "refresh",
+            "--ignore-support-freeze",
+            "--emit-path",
+            str(emit_path),
+            "--json",
+        ],
+    )
+
+    assert resource_guard.main() == 2
+    payload = json.loads(emit_path.read_text(encoding="utf-8"))
+    assert payload["resource_guard_ok"] is False
+    assert payload["memory_pressure_state"] == "red"
+    assert payload["resource_guard_reasons"]
 
 
 def test_default_guard_uses_runtime_disk_but_keeps_local_floor(monkeypatch) -> None:

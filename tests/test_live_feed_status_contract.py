@@ -82,7 +82,9 @@ def test_profitability_assessment_row_keeps_history_separate_from_candidate() ->
                         {"action_id": "refresh_candidate_counterfactual_replay"}
                     ],
                 },
-                "next_safe_action": {"blocker": "candidate_post_cost_observations_collecting"},
+                "next_safe_action": {
+                    "blocker": "candidate_post_cost_observations_collecting"
+                },
             },
         }
     )
@@ -214,7 +216,15 @@ def _ready_fixture(project_root: Path) -> Path:
             },
         },
     )
-    _write(health / "paper_400_ramp_latest.json", {"timestamp_utc": STAMP, "overall_status": "ready", "ok": True, "stage": "armed"})
+    _write(
+        health / "paper_400_ramp_latest.json",
+        {
+            "timestamp_utc": STAMP,
+            "overall_status": "ready",
+            "ok": True,
+            "stage": "armed",
+        },
+    )
     _write(
         health / "unattended_soak_readiness_latest.json",
         {
@@ -370,6 +380,54 @@ def test_ready_contract_reports_fresh_consistent_runtime(tmp_path: Path) -> None
     assert strategy["regime_activation_ready"] is False
 
 
+def test_stale_research_evidence_does_not_impersonate_runtime_degradation(
+    tmp_path: Path,
+) -> None:
+    health = _ready_fixture(tmp_path)
+    stale_stamp = "2026-08-01T12:00:00+00:00"
+    _write(tmp_path / "config" / "research_data_platform_v1.json", {})
+    _write(tmp_path / "config" / "institutional_research_extensions_v1.json", {})
+    _write(
+        health / "research_data_platform_control_latest.json",
+        {"timestamp_utc": stale_stamp, "overall_status": "ready_with_evidence_debt"},
+    )
+    _write(
+        health / "institutional_research_extensions_control_latest.json",
+        {"timestamp_utc": stale_stamp, "overall_status": "ready_with_evidence_debt"},
+    )
+
+    payload = contract.build_status_snapshot(tmp_path, now=NOW)
+    lines = contract.format_status_lines(payload)
+    headline = lines[0]
+
+    assert payload["overall_status"] == "ready"
+    assert payload["visibility_status"] == "ready"
+    assert payload["operational_status"] == "ready"
+    assert payload["safe_to_leave_unattended"] is True
+    assert payload["stale_sources"] == []
+    assert payload["evidence_visibility_status"] == "degraded"
+    assert payload["managed_evidence_freshness_debt"] is True
+    assert payload["evidence_stale_sources"] == [
+        "institutional_research_extensions",
+        "research_data_platform",
+    ]
+    assert "status=ready" in headline
+    assert "core_fresh=" in headline
+    assert "evidence_refresh_due=2" in headline
+    evidence_lines = [
+        line
+        for line in lines
+        if line.startswith(
+            ("[research-data-platform]", "[institutional-research-extensions]")
+        )
+    ]
+    assert len(evidence_lines) == 2
+    assert all("status=refresh_due" in line for line in evidence_lines)
+    assert all("artifact_fresh=false" in line for line in evidence_lines)
+    assert all("evidence_only=true" in line for line in evidence_lines)
+    assert all("status=stale" not in line for line in evidence_lines)
+
+
 def test_livefeed_soak_row_preserves_historical_segmented_time(tmp_path: Path) -> None:
     health = _ready_fixture(tmp_path)
     _write(
@@ -412,9 +470,14 @@ def test_livefeed_soak_row_preserves_historical_segmented_time(tmp_path: Path) -
     assert "history_counts_clean=false" in joined
 
 
-def test_livefeed_surfaces_configured_collector_capability_contract(tmp_path: Path) -> None:
+def test_livefeed_surfaces_configured_collector_capability_contract(
+    tmp_path: Path,
+) -> None:
     health = _ready_fixture(tmp_path)
-    _write(tmp_path / "config" / "collector_capability_catalog_v1.json", {"schema_version": 1})
+    _write(
+        tmp_path / "config" / "collector_capability_catalog_v1.json",
+        {"schema_version": 1},
+    )
     _write(
         health / "collector_capability_control_latest.json",
         {
@@ -502,7 +565,9 @@ def test_livefeed_surfaces_configured_collector_capability_contract(tmp_path: Pa
     assert "econ_sources=9" in lines
 
 
-def test_livefeed_separates_economic_sources_from_profitability_evidence(tmp_path: Path) -> None:
+def test_livefeed_separates_economic_sources_from_profitability_evidence(
+    tmp_path: Path,
+) -> None:
     health = _ready_fixture(tmp_path)
     _write(
         tmp_path / "config" / "profitability_self_assessment_v1.json",
@@ -536,7 +601,9 @@ def test_livefeed_separates_economic_sources_from_profitability_evidence(tmp_pat
                 "economic_context_runtime_route_count": 104,
                 "economic_context_selected_source_count": 9,
             },
-            "next_safe_action": {"blocker": "candidate_post_cost_observations_collecting"},
+            "next_safe_action": {
+                "blocker": "candidate_post_cost_observations_collecting"
+            },
             "developmental_soak_learning": {
                 "status": "collecting",
                 "accepted_generation_count": 98,
@@ -567,9 +634,14 @@ def test_livefeed_separates_economic_sources_from_profitability_evidence(tmp_pat
     assert "clean_720h_unchanged=true" in lines
 
 
-def test_livefeed_surfaces_direct_capability_materialization_proofs(tmp_path: Path) -> None:
+def test_livefeed_surfaces_direct_capability_materialization_proofs(
+    tmp_path: Path,
+) -> None:
     _ready_fixture(tmp_path)
-    _write(tmp_path / "config" / "capability_materialization_v1.json", {"schema_version": 1})
+    _write(
+        tmp_path / "config" / "capability_materialization_v1.json",
+        {"schema_version": 1},
+    )
     _write(
         tmp_path
         / "governance"
@@ -609,10 +681,14 @@ def test_livefeed_surfaces_direct_capability_materialization_proofs(tmp_path: Pa
     assert row["grade"] == "A+"
     assert row["direct_proofs"] == row["required_proofs"] == 4
     assert row["contracts"] == 10
-    assert "[capability-materialization]" in "\n".join(contract.format_status_lines(payload))
+    assert "[capability-materialization]" in "\n".join(
+        contract.format_status_lines(payload)
+    )
 
 
-def test_livefeed_surfaces_institutional_capabilities_without_false_source_count_target(tmp_path: Path) -> None:
+def test_livefeed_surfaces_institutional_capabilities_without_false_source_count_target(
+    tmp_path: Path,
+) -> None:
     health = _ready_fixture(tmp_path)
     _write(
         tmp_path / "config" / "institutional_capability_control_v1.json",
@@ -664,9 +740,13 @@ def test_livefeed_surfaces_institutional_capabilities_without_false_source_count
     assert "need_10000=false" in lines
 
 
-def test_managed_throttle_advisory_is_visible_without_false_remediation(tmp_path: Path) -> None:
+def test_managed_throttle_advisory_is_visible_without_false_remediation(
+    tmp_path: Path,
+) -> None:
     health = _ready_fixture(tmp_path)
-    throttle = json.loads((health / "runtime_throttle_control_latest.json").read_text(encoding="utf-8"))
+    throttle = json.loads(
+        (health / "runtime_throttle_control_latest.json").read_text(encoding="utf-8")
+    )
     throttle["overall_status"] = "advisory"
     throttle["soft_cap_advisory_reclassification"] = {
         "active": True,
@@ -681,15 +761,22 @@ def test_managed_throttle_advisory_is_visible_without_false_remediation(tmp_path
 
     assert row["status"] == "advisory"
     assert row["managed_advisory"] is True
-    assert row["policy_reason"] == "full_force_paper_and_research_pressure_is_soak_guarded_advisory"
+    assert (
+        row["policy_reason"]
+        == "full_force_paper_and_research_pressure_is_soak_guarded_advisory"
+    )
     assert row["action"] == "none"
     assert any("[throttle] level=watch status=advisory" in line for line in lines)
     assert any("managed=true" in line and "action=none" in line for line in lines)
 
 
-def test_managed_high_compute_reports_owner_and_zero_paper_impact(tmp_path: Path) -> None:
+def test_managed_high_compute_reports_owner_and_zero_paper_impact(
+    tmp_path: Path,
+) -> None:
     health = _ready_fixture(tmp_path)
-    throttle = json.loads((health / "runtime_throttle_control_latest.json").read_text(encoding="utf-8"))
+    throttle = json.loads(
+        (health / "runtime_throttle_control_latest.json").read_text(encoding="utf-8")
+    )
     throttle.update(
         {
             "overall_status": "advisory",
@@ -736,7 +823,9 @@ def test_managed_high_compute_reports_owner_and_zero_paper_impact(tmp_path: Path
     )
 
 
-def test_fx_auth_cooldown_with_context_fallback_is_managed_and_visible(tmp_path: Path) -> None:
+def test_fx_auth_cooldown_with_context_fallback_is_managed_and_visible(
+    tmp_path: Path,
+) -> None:
     health = _ready_fixture(tmp_path)
     cooldown_until = NOW.timestamp() + 3600
     cooldown = {
@@ -792,14 +881,18 @@ def test_fx_auth_cooldown_with_context_fallback_is_managed_and_visible(tmp_path:
     )
 
 
-def test_fx_realtime_error_storm_without_fallback_blocks_headline(tmp_path: Path) -> None:
+def test_fx_realtime_error_storm_without_fallback_blocks_headline(
+    tmp_path: Path,
+) -> None:
     health = _ready_fixture(tmp_path)
     _write(
         health / "fx_shadow_session_latest.json",
         {
             "timestamp_utc": STAMP,
             "mode": "live_forex_quotes",
-            "session": {"provider": {"enabled": True, "available": True, "reason": "available"}},
+            "session": {
+                "provider": {"enabled": True, "available": True, "reason": "available"}
+            },
         },
     )
     _write(
@@ -819,14 +912,19 @@ def test_fx_realtime_error_storm_without_fallback_blocks_headline(tmp_path: Path
     assert payload["safe_to_leave_unattended"] is False
     assert payload["active_operational_rows"]["fx_provider"] == "blocked"
     assert payload["operator_summary"]["attention_owner"] == "fx_provider"
-    assert payload["operator_summary"]["root_cause"] == "fx_realtime_ingestion_error_rate_high"
+    assert (
+        payload["operator_summary"]["root_cause"]
+        == "fx_realtime_ingestion_error_rate_high"
+    )
     assert payload["operator_summary"]["domain_impact"] == "fx_observations_failed"
     assert payload["operator_summary"]["next_action"] == "fx-provider-fallback"
     assert "impact=fx_observations_failed" in headline
     assert "paper_impact=none" in headline
 
 
-def test_bounded_storage_watch_remains_safe_for_paper_soak_without_false_contradiction(tmp_path: Path) -> None:
+def test_bounded_storage_watch_remains_safe_for_paper_soak_without_false_contradiction(
+    tmp_path: Path,
+) -> None:
     health = _ready_fixture(tmp_path)
     storage_path = health / "ingestion_storage_control_latest.json"
     storage = json.loads(storage_path.read_text(encoding="utf-8"))
@@ -855,13 +953,70 @@ def test_bounded_storage_watch_remains_safe_for_paper_soak_without_false_contrad
     assert payload["rows"]["soak"]["managed_storage_watch"] is True
     assert payload["operational_status"] == "ready"
     assert payload["managed_operational_watches"] == ["storage"]
-    assert any("[storage] level=watch status=watch" in line and "managed=true" in line for line in lines)
-    assert any("[soak] level=ok status=ready" in line and "watch=bounded_backlog" in line for line in lines)
+    assert any(
+        "[storage] level=watch status=watch" in line and "managed=true" in line
+        for line in lines
+    )
+    assert any(
+        "[soak] level=ok status=ready" in line and "watch=bounded_backlog" in line
+        for line in lines
+    )
+
+
+def test_managed_support_pressure_contract_keeps_raw_truth_visible_without_blocking_paper(
+    tmp_path: Path,
+) -> None:
+    health = _ready_fixture(tmp_path)
+    storage_path = health / "ingestion_storage_control_latest.json"
+    storage = json.loads(storage_path.read_text(encoding="utf-8"))
+    storage.update({"overall_status": "ready", "severity": "stable", "pressure_index": 0.034})
+    storage["backpressure"] = {
+        "core_pending_lines": 509,
+        "support_pending_lines": 424465,
+        "deferred_pending_lines": 425392,
+        "total_pending_lines": 425901,
+        "pending_lines_threshold": 15000,
+        "effective_pressure_clear": True,
+        "managed_support_pressure_clear": True,
+        "effective_raw_live_source": "raw_live_backpressure+managed_support_overlay_pressure",
+        "effective_raw_live": {
+            "core_pending_lines": 509,
+            "support_pending_lines": 5000,
+            "deferred_pending_lines": 927,
+            "total_pending_lines": 6436,
+            "oldest_pending_age_seconds": 0.0,
+        },
+        "raw_live": {
+            "core_pending_lines": 509,
+            "support_pending_lines": 424465,
+            "total_pending_lines": 425901,
+        },
+    }
+    storage["storage"] = {"backlog_drain_status": "drain_active"}
+    _write(storage_path, storage)
+
+    payload = contract.build_status_snapshot(tmp_path, now=NOW)
+    row = payload["rows"]["storage"]
+    line = next(
+        item for item in contract.format_status_lines(payload) if item.startswith("[storage]")
+    )
+
+    assert payload["operational_status"] == "ready"
+    assert row["status"] == "watch"
+    assert row["managed_bounded_backlog"] is True
+    assert row["effective_pressure_contract"] is True
+    assert row["total_pending_lines"] == 425901
+    assert row["effective_total_pending_lines"] == 6436
+    assert row["cause"] == "managed_support_backlog"
+    assert "pending=425901" in line
+    assert "effective=6436" in line
 
 
 def test_auth_reconciles_superseded_pre_refresh_warning(tmp_path: Path) -> None:
     health = _ready_fixture(tmp_path)
-    broker = json.loads((health / "broker_readiness_latest.json").read_text(encoding="utf-8"))
+    broker = json.loads(
+        (health / "broker_readiness_latest.json").read_text(encoding="utf-8")
+    )
     broker["warnings"] = ["token_expiring_soon:1400.0"]
     _write(health / "broker_readiness_latest.json", broker)
 
@@ -876,7 +1031,9 @@ def test_auth_reconciles_superseded_pre_refresh_warning(tmp_path: Path) -> None:
 
 def test_auth_blocks_on_fresh_source_conflict(tmp_path: Path) -> None:
     health = _ready_fixture(tmp_path)
-    broker = json.loads((health / "broker_readiness_latest.json").read_text(encoding="utf-8"))
+    broker = json.loads(
+        (health / "broker_readiness_latest.json").read_text(encoding="utf-8")
+    )
     broker["ready_for_open"] = False
     broker["auth_ok"] = False
     _write(health / "broker_readiness_latest.json", broker)
@@ -949,7 +1106,9 @@ def test_runtime_paper_pause_overrides_ready_health_and_ramp(tmp_path: Path) -> 
     assert "paper_impact=paper_blocked" in headline
 
 
-def test_current_storage_recovery_supersedes_old_safe_soak_snapshot(tmp_path: Path) -> None:
+def test_current_storage_recovery_supersedes_old_safe_soak_snapshot(
+    tmp_path: Path,
+) -> None:
     health = _ready_fixture(tmp_path)
     fast = json.loads((health / "health_fast_latest.json").read_text(encoding="utf-8"))
     fast["overall_status"] = "degraded"
@@ -979,7 +1138,9 @@ def test_current_storage_recovery_supersedes_old_safe_soak_snapshot(tmp_path: Pa
             "storage": {"backlog_drain_status": "drain_active"},
         },
     )
-    throttle = json.loads((health / "runtime_throttle_control_latest.json").read_text(encoding="utf-8"))
+    throttle = json.loads(
+        (health / "runtime_throttle_control_latest.json").read_text(encoding="utf-8")
+    )
     throttle["overall_status"] = "degraded"
     throttle["runtime_saturation_governor_v2"]["paper_live_data_policy"] = {
         "paper_execution_allowed": False,
@@ -1002,7 +1163,9 @@ def test_current_storage_recovery_supersedes_old_safe_soak_snapshot(tmp_path: Pa
 
 def test_stale_secondary_auth_source_is_watch_not_false_block(tmp_path: Path) -> None:
     health = _ready_fixture(tmp_path)
-    broker = json.loads((health / "broker_readiness_latest.json").read_text(encoding="utf-8"))
+    broker = json.loads(
+        (health / "broker_readiness_latest.json").read_text(encoding="utf-8")
+    )
     broker["timestamp_utc"] = "2026-08-03T11:00:00+00:00"
     _write(health / "broker_readiness_latest.json", broker)
 
@@ -1030,11 +1193,15 @@ def test_stale_unattended_soak_cannot_publish_walkaway_ready(tmp_path: Path) -> 
     assert payload["headline_status"] == "degraded"
     assert payload["safe_to_leave_unattended"] is False
     assert payload["operator_summary"]["attention_owner"] == "soak"
+    assert payload["operator_summary"]["next_action"] == "unattended-soak-readiness"
+    assert payload["rows"]["soak"]["action"] == "unattended-soak-readiness"
     assert "unattended_soak" in payload["stale_sources"]
     assert "walkaway=false" in headline
 
 
-def test_formatted_lines_expose_cause_recovery_impact_and_action(tmp_path: Path) -> None:
+def test_formatted_lines_expose_cause_recovery_impact_and_action(
+    tmp_path: Path,
+) -> None:
     _ready_fixture(tmp_path)
     payload = contract.build_status_snapshot(tmp_path, now=NOW)
 
@@ -1066,11 +1233,23 @@ def test_formatted_lines_expose_cause_recovery_impact_and_action(tmp_path: Path)
 
 
 def test_exit_code_uses_operational_headline_not_source_visibility() -> None:
-    assert contract.status_exit_code({"overall_status": "ready", "headline_status": "blocked"}) == 2
-    assert contract.status_exit_code({"overall_status": "degraded", "headline_status": "ready"}) == 0
+    assert (
+        contract.status_exit_code(
+            {"overall_status": "ready", "headline_status": "blocked"}
+        )
+        == 2
+    )
+    assert (
+        contract.status_exit_code(
+            {"overall_status": "degraded", "headline_status": "ready"}
+        )
+        == 0
+    )
 
 
-def test_storage_reports_source_attributed_overlay_without_mislabeling_throttle(tmp_path: Path) -> None:
+def test_storage_reports_source_attributed_overlay_without_mislabeling_throttle(
+    tmp_path: Path,
+) -> None:
     health = _ready_fixture(tmp_path)
     storage_path = health / "ingestion_storage_control_latest.json"
     storage = json.loads(storage_path.read_text(encoding="utf-8"))
@@ -1115,9 +1294,73 @@ def test_storage_reports_source_attributed_overlay_without_mislabeling_throttle(
     assert storage_row["raw_grade"] == "A+"
     assert storage_row["overlay_grade"] == "F"
     assert storage_row["stale_source_count"] == 1
-    assert storage_row["oldest_source"].startswith("intraday_aggressive_equities_schwab/")
+    assert storage_row["oldest_source"].startswith(
+        "intraday_aggressive_equities_schwab/"
+    )
     assert storage_row["cause"] == "stale_sql_overlay"
     assert storage_row["impact"] == "strict_live_gate_only"
     assert payload["rows"]["throttle"]["status"] == "ready"
     assert payload["rows"]["throttle"]["cause"] == "strict_storage_backlog"
     assert payload["rows"]["soak"]["effective_safe"] is False
+
+
+def test_strategy_market_fit_is_visible_without_becoming_a_false_paper_blocker(
+    tmp_path: Path,
+) -> None:
+    health = _ready_fixture(tmp_path)
+    _write(tmp_path / "config" / "strategy_market_fit_infrabot_v1.json", {})
+    _write(
+        health / "strategy_market_fit_infrabot_latest.json",
+        {
+            "timestamp_utc": STAMP,
+            "overall_status": "guarded",
+            "evaluation_mode": "full_scan",
+            "catalog_contract": {
+                "evaluated_strategy_count": 12000,
+                "expected_strategy_count": 12000,
+                "unique_strategy_count": 12000,
+                "all_strategies_checked": True,
+                "batch_count": 24,
+            },
+            "challenger_cohort": {
+                "status": "ready",
+                "slot_count": 5,
+                "maximum_slots": 5,
+                "paper_order_authority": False,
+                "live_order_authority": False,
+                "strategies": [
+                    {"cohort_state": "queued_regime_source_not_ready"} for _ in range(5)
+                ],
+            },
+            "candidate_binding": {"candidate_id": "pc-g123", "bound": True},
+            "current_regime": {
+                "current_regime": "mixed_transition",
+                "source_status": "thin",
+                "trusted_for_shadow_admission": False,
+            },
+            "proven_working_strategy_count": 0,
+            "drift": {"detected": False},
+            "cache": {"hit": False},
+            "authority_contract": {
+                "submits_paper_orders": False,
+                "submits_live_orders": False,
+            },
+        },
+    )
+
+    payload = contract.build_status_snapshot(tmp_path, now=NOW)
+    row = payload["rows"]["strategy_market_fit"]
+    joined = "\n".join(contract.format_status_lines(payload))
+
+    assert payload["visibility_status"] == "ready"
+    assert payload["guarded_paper_status"] == "ready"
+    assert row["status"] == "guarded"
+    assert row["checked"] == 12000
+    assert row["all_checked"] is True
+    assert row["cohort_states"] == {"queued_regime_source_not_ready": 5}
+    assert row["authority_violations"] == 0
+    assert row["paper_orders"] is False
+    assert row["live_orders"] is False
+    assert "[strategy-market-fit]" in joined
+    assert "checked=12000/12000" in joined
+    assert "cohort=5/5" in joined

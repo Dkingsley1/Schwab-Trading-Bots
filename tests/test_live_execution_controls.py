@@ -158,7 +158,6 @@ def test_production_firewall_requires_ten_pillar_evidence(tmp_path: Path) -> Non
         order_spec=order_spec,
         env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
     )
-
     assert decision.ok is False
     assert decision.reason == "production_excellence_not_ready"
     assert "production_excellence_not_ready" in decision.details["blockers"]
@@ -185,7 +184,6 @@ def test_production_firewall_fails_closed_when_required_role_contract_is_missing
         order_spec=order_spec,
         env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
     )
-
     assert decision.ok is False
     assert "system_role_contract_live_submit_denied" in decision.details["blockers"]
     assert decision.details["system_role_contract_decision"]["ok"] is False
@@ -454,6 +452,63 @@ def test_production_firewall_requires_pinned_account_reference(tmp_path: Path) -
     assert blocked.ok is False
     assert "live_account_reference_not_pinned" in blocked.details["blockers"]
     assert allowed.ok is True
+
+
+def test_production_firewall_enforces_limit_session_tick_and_whole_share_contract(
+    tmp_path: Path,
+) -> None:
+    order_spec = _write_firewall_fixture(
+        tmp_path, excellence_ready=True, symbols=["AAPL"]
+    )
+    config_path = tmp_path / "config" / "production_readiness_control_v1.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    policy = config["live_execution_risk_firewall"]
+    policy.update(
+        {
+            "allowed_order_types": ["LIMIT"],
+            "allowed_sessions": ["NORMAL"],
+            "allowed_durations": ["DAY"],
+            "require_whole_share_quantity": True,
+            "equity_tick_size": 0.01,
+        }
+    )
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    order_spec.update(
+        {
+            "orderType": "MARKET",
+            "session": "SEAMLESS",
+            "duration": "GOOD_TILL_CANCEL",
+            "price": 10.005,
+        }
+    )
+
+    decision = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="AAPL",
+        action="BUY",
+        quantity=0.5,
+        order_spec=order_spec,
+        env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
+    )
+    tick_spec = json.loads(json.dumps(order_spec))
+    tick_spec.update(
+        {"orderType": "LIMIT", "session": "NORMAL", "duration": "DAY"}
+    )
+    tick_decision = production_order_firewall_check(
+        project_root=tmp_path,
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=tick_spec,
+        env={"ALLOW_ORDER_EXECUTION": "1", "MARKET_DATA_ONLY": "0"},
+    )
+
+    assert decision.ok is False
+    assert "fractional_quantity_not_allowed" in decision.details["blockers"]
+    assert "order_type_not_allowed" in decision.details["blockers"]
+    assert "order_session_not_allowed" in decision.details["blockers"]
+    assert "order_duration_not_allowed" in decision.details["blockers"]
+    assert "limit_price_tick_invalid" in tick_decision.details["blockers"]
 
 
 def test_live_risk_config_cannot_exceed_micro_canary_policy(

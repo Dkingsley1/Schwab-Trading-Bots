@@ -821,11 +821,60 @@ def _canonical_behavior_decision_row(row: Dict[str, Any]) -> Optional[Dict[str, 
         "strategy": "grand_master_bot",
         "action": row.get("master_action") or row.get("master_intent_action") or row.get("action") or "HOLD",
         "quantity": row.get("quantity", portfolio.get("dispatch_qty", 0.0)),
+        "model_score": row.get("model_score", row.get("master_score")),
+        "threshold": row.get("threshold"),
+        "decision": row.get("decision") or row.get("status"),
+        "decision_id": row.get("decision_id") or metadata.get("decision_id"),
+        "log_schema_version": row.get("log_schema_version"),
+        "schema_valid": row.get("schema_valid", True),
+        "candidate_binding": row.get("candidate_binding"),
+        "alpha_evidence_contract": row.get("alpha_evidence_contract"),
+        "cross_sleeve_alpha_contract": row.get("cross_sleeve_alpha_contract"),
+        "data_route": row.get("data_route"),
+        "asset_class": row.get("asset_class"),
+        "routing_lane": row.get("routing_lane"),
         "mode": row.get("mode") or row.get("shadow_profile") or row.get("profile") or row.get("broker") or "",
         "features": features,
         "gates": row.get("gates") or row.get("execution_guard") or {},
+        "reasons": row.get("reasons") or [],
         "metadata": canonical_meta,
     }
+
+
+def _signed_forecast_score(value: Any) -> Optional[float]:
+    """Normalize a probability-like score for ranking diagnostics, never edge bps."""
+    try:
+        score = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(score):
+        return None
+    if 0.0 <= score <= 1.0:
+        return _clamp((2.0 * score) - 1.0, -1.0, 1.0)
+    return _clamp(score, -1.0, 1.0)
+
+
+def _post_cost_decision_outcome(
+    *,
+    action: str,
+    forward_return: float,
+    entry_cost_bps: float,
+    exit_cost_bps: float,
+    fee_bps: float,
+) -> Dict[str, Any]:
+    direction = _direction_for_action(action)
+    directional_return = (
+        float(direction) * float(forward_return) if direction else float(forward_return)
+    )
+    result = post_cost_adjusted_forward_return(
+        action=("BUY" if direction else "HOLD"),
+        forward_return=directional_return,
+        entry_cost_bps=entry_cost_bps,
+        exit_cost_bps=exit_cost_bps,
+        fee_bps=fee_bps,
+    )
+    result["gross_directional_forward_return"] = directional_return if direction else None
+    return result
 
 
 def _role_index(mode_label: str) -> float:
@@ -2750,13 +2799,24 @@ def main() -> int:
         mode_label = str(row.get("mode") or "")
         snapshot_id = str((row.get("metadata") or {}).get("snapshot_id") or "").strip()
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        specialization = metadata.get("strategy_specialization") if isinstance(metadata.get("strategy_specialization"), dict) else {}
+        candidate_binding = row.get("candidate_binding") if isinstance(row.get("candidate_binding"), dict) else {}
+        alpha_evidence_contract = row.get("alpha_evidence_contract") if isinstance(row.get("alpha_evidence_contract"), dict) else {}
+        cross_sleeve_alpha_contract = row.get("cross_sleeve_alpha_contract") if isinstance(row.get("cross_sleeve_alpha_contract"), dict) else {}
+        data_route = row.get("data_route") if isinstance(row.get("data_route"), dict) else {}
         candidate_id = str(
             metadata.get("production_candidate_id")
             or metadata.get("candidate_id")
+            or row.get("production_candidate_id")
             or ""
         ).strip()
         candidate_generation = max(
-            int(_to_float(metadata.get("production_candidate_generation"), 0.0)),
+            int(_to_float(
+                metadata.get("production_candidate_generation")
+                or row.get("production_candidate_generation")
+                or candidate_binding.get("generation"),
+                0.0,
+            )),
             0,
         )
 
@@ -2773,9 +2833,27 @@ def main() -> int:
                 "snapshot_id": snapshot_id,
                 "production_candidate_id": candidate_id,
                 "production_candidate_generation": candidate_generation,
+                "candidate_binding": candidate_binding,
+                "source_strategy": str(row.get("strategy") or ""),
+                "profile": str(specialization.get("profile") or row.get("profile") or mode_label or ""),
+                "sleeve_id": str(specialization.get("sleeve_id") or cross_sleeve_alpha_contract.get("sleeve") or ""),
+                "selected_strategy_id": str(specialization.get("selected_strategy_id") or ""),
+                "selected_strategy_name": str(specialization.get("selected_strategy_name") or ""),
+                "strategy_source_kind": str(specialization.get("source_kind") or ""),
+                "model_score": (_to_float(row.get("model_score"), 0.0) if row.get("model_score") is not None else None),
+                "signed_forecast_score": _signed_forecast_score(row.get("model_score")),
+                "threshold": (_to_float(row.get("threshold"), 0.0) if row.get("threshold") is not None else None),
+                "decision": str(row.get("decision") or ""),
+                "decision_id": str(row.get("decision_id") or metadata.get("decision_id") or ""),
+                "log_schema_version": int(_to_float(row.get("log_schema_version"), 0.0)),
+                "schema_valid": bool(row.get("schema_valid", True)),
+                "asset_class": str(row.get("asset_class") or data_route.get("asset_class") or ""),
+                "routing_lane": str(row.get("routing_lane") or data_route.get("routing_lane") or ""),
+                "alpha_evidence_contract": alpha_evidence_contract,
                 "features": features,
                 "last_price": last_price,
                 "gates": row.get("gates") or {},
+                "reasons": list(row.get("reasons") or []),
             }
         )
 
@@ -2878,13 +2956,17 @@ def main() -> int:
                 _to_float(paper_snapshot.get("mean_entry_cost_bps"), 0.0),
                 minimum_entry_cost_bps,
             )
-            post_cost = post_cost_adjusted_forward_return(
+            post_cost = _post_cost_decision_outcome(
                 action=base["action"],
                 forward_return=forward_return,
                 entry_cost_bps=(observed_entry_cost_bps if post_cost_labels_enabled else 0.0),
                 exit_cost_bps=(default_exit_cost_bps if post_cost_labels_enabled else 0.0),
                 fee_bps=(fee_bps if post_cost_labels_enabled else 0.0),
             )
+            directional_forward_return = _to_float(
+                post_cost.get("gross_directional_forward_return"), forward_return
+            )
+            trade_direction = _direction_for_action(base["action"])
             post_cost_forward_return = _to_float(
                 post_cost.get("post_cost_forward_return"), forward_return
             )
@@ -2978,15 +3060,36 @@ def main() -> int:
                     "timestamp_utc": base["timestamp_utc"],
                     "symbol": symbol,
                     "action": base["action"],
+                    "quantity": round(_to_float(base.get("quantity"), 0.0), 8),
                     "production_candidate_id": base.get("production_candidate_id", ""),
                     "production_candidate_generation": int(
                         base.get("production_candidate_generation", 0) or 0
                     ),
+                    "candidate_binding": dict(base.get("candidate_binding") or {}),
+                    "decision_id": base.get("decision_id", ""),
+                    "decision": base.get("decision", ""),
+                    "source_strategy": base.get("source_strategy", ""),
+                    "profile": base.get("profile", ""),
+                    "sleeve_id": base.get("sleeve_id", ""),
+                    "selected_strategy_id": base.get("selected_strategy_id", ""),
+                    "selected_strategy_name": base.get("selected_strategy_name", ""),
+                    "strategy_source_kind": base.get("strategy_source_kind", ""),
+                    "model_score": base.get("model_score"),
+                    "signed_forecast_score": base.get("signed_forecast_score"),
+                    "forecast_semantics": "centered_probability_or_bounded_signed_score_not_expected_return",
+                    "threshold": base.get("threshold"),
+                    "log_schema_version": int(base.get("log_schema_version", 0) or 0),
+                    "schema_valid": bool(base.get("schema_valid", True)),
+                    "asset_class": base.get("asset_class", ""),
+                    "routing_lane": base.get("routing_lane", ""),
                     "regime": regime,
                     "label": label,
                     "label_confidence": round(label_conf, 6),
                     "label_confidence_proxy": round(label_conf_proxy, 6),
                     "forward_return": round(forward_return, 8),
+                    "gross_directional_forward_return": (
+                        round(directional_forward_return, 8) if trade_direction else None
+                    ),
                     "post_cost_forward_return": round(post_cost_forward_return, 8),
                     "round_trip_cost_bps": round(_to_float(post_cost.get("round_trip_cost_bps"), 0.0), 6),
                     "post_cost_label": bool(post_cost_labels_enabled and base["action"] in {"BUY", "SELL"}),
@@ -3003,6 +3106,24 @@ def main() -> int:
                         for label, outcome in counterfactual_action_outcomes.items()
                     },
                     **path_labels,
+                    "measurement_context": {
+                        key: base["features"].get(key)
+                        for key in (
+                            "last_price", "bid_price", "ask_price", "spread_bps",
+                            "bid_size", "ask_size", "pct_from_close", "mom_5m",
+                            "vol_30m", "expected_slippage_bps", "lag_slippage_bps",
+                            "lag_impact_bps", "lag_fee_bps",
+                            "market_micro_relative_volume_norm",
+                            "market_micro_order_flow_imbalance_norm",
+                            "market_micro_tradeability_score_norm",
+                            "ctx_SPY_pct_from_close", "ctx_QQQ_pct_from_close",
+                            "ctx_IWM_pct_from_close", "ctx_TLT_pct_from_close",
+                            "ctx_UUP_pct_from_close",
+                        )
+                        if key in base["features"]
+                    },
+                    "alpha_evidence_contract": dict(base.get("alpha_evidence_contract") or {}),
+                    "reasons": list(base.get("reasons") or []),
                     "sample_weight": round(max(weight, 0.05), 6),
                     "features": feats,
                 }

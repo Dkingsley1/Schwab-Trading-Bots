@@ -1,11 +1,13 @@
 import hashlib
 import json
 import sqlite3
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+import core.execution_lane_pipeline as execution_pipeline
 from scripts import run_execution_lane as execution_lane_runner
 from core.base_trader import BaseTrader
 from core.channel_queue import ChannelMessage, ChannelQueue, default_queue_db_path
@@ -16,12 +18,19 @@ from core.execution_lane_pipeline import (
     EXECUTION_PROMOTION_CHANNEL,
     EXECUTION_RESULT_CHANNEL,
     configure_trader_for_lane,
+    evaluate_runtime_execution_breaker,
     evaluate_paper_standard_gateway,
     evaluate_live_promotion,
+    execution_child_message_id,
     emit_paper_reconciliation_heartbeat,
     process_execution_intent,
     publish_execution_intent,
+    publish_execution_replay_suppressed,
     update_lane_health,
+)
+from core.execution_contract import (
+    normalize_execution_intent,
+    validate_execution_intent_contract,
 )
 from core.institutional_decision_flow import (
     apply_paper_decision_flow_control,
@@ -331,6 +340,174 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _write_runtime_breaker(
+    project_root: Path, *, active: bool, reasons: list[str]
+) -> None:
+    payload = {
+        "contract_version": "execution_runtime_breaker_v1",
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "launcher_pid": 123,
+        "active": active,
+        "status": "latched" if active else "ready",
+        "reasons": reasons,
+        "source_actionable": True,
+        "latched": active,
+        "breach_streak": 0,
+        "paper_policy": "closure_only" if active else "standard_gates",
+        "live_policy": "blocked" if active else "standard_gates",
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    payload["state_sha256"] = hashlib.sha256(encoded).hexdigest()
+    _write_json(
+        project_root
+        / "governance"
+        / "health"
+        / "execution_runtime_breaker_latest.json",
+        payload,
+    )
+
+
+def test_runtime_breaker_blocks_new_paper_exposure_but_allows_explicit_exit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("EXECUTION_RUNTIME_BREAKER_REQUIRED", "1")
+    _write_runtime_breaker(
+        tmp_path, active=True, reasons=["data_quality_low:65.00"]
+    )
+
+    entry = evaluate_runtime_execution_breaker(
+        project_root=str(tmp_path),
+        intent={"symbol": "SPY", "action": "BUY"},
+        mode="paper",
+    )
+    exit_order = evaluate_runtime_execution_breaker(
+        project_root=str(tmp_path),
+        intent={
+            "symbol": "SPY",
+            "action": "SELL",
+            "metadata": {"position_transition": "exit_long"},
+        },
+        mode="paper",
+    )
+
+    assert entry["allow_execute"] is False
+    assert entry["active"] is True
+    assert entry["primary_reason"] == (
+        "execution_runtime_breaker_active:data_quality_low:65.00"
+    )
+    assert exit_order["allow_execute"] is True
+    assert exit_order["paper_risk_reducing"] is True
+
+
+def test_runtime_breaker_fails_closed_when_required_state_is_tampered(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("EXECUTION_RUNTIME_BREAKER_REQUIRED", "1")
+    _write_runtime_breaker(tmp_path, active=False, reasons=[])
+    path = (
+        tmp_path
+        / "governance"
+        / "health"
+        / "execution_runtime_breaker_latest.json"
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["status"] = "tampered"
+    _write_json(path, payload)
+
+    result = evaluate_runtime_execution_breaker(
+        project_root=str(tmp_path),
+        intent={"symbol": "SPY", "action": "BUY"},
+        mode="paper",
+    )
+
+    assert result["allow_execute"] is False
+    assert result["state_valid"] is False
+    assert "execution_runtime_breaker_receipt_mismatch" in result["reasons"]
+
+
+def test_runtime_breaker_fails_closed_on_type_invalid_but_resealed_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("EXECUTION_RUNTIME_BREAKER_REQUIRED", "1")
+    _write_runtime_breaker(tmp_path, active=False, reasons=[])
+    path = (
+        tmp_path
+        / "governance"
+        / "health"
+        / "execution_runtime_breaker_latest.json"
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.pop("state_sha256", None)
+    payload["active"] = "false"
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    payload["state_sha256"] = hashlib.sha256(encoded).hexdigest()
+    _write_json(path, payload)
+
+    result = evaluate_runtime_execution_breaker(
+        project_root=str(tmp_path),
+        intent={"symbol": "SPY", "action": "BUY"},
+        mode="paper",
+    )
+
+    assert result["allow_execute"] is False
+    assert result["state_valid"] is False
+    assert "execution_runtime_breaker_active_invalid" in result["reasons"]
+
+
+def test_process_execution_intent_surfaces_resident_runtime_hold(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class _NeverExecuteTrader:
+        def execute_decision(self, **_kwargs):
+            raise AssertionError("runtime-held intent reached trader")
+
+    monkeypatch.setenv("EXECUTION_RUNTIME_BREAKER_REQUIRED", "1")
+    monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "0")
+    _write_runtime_breaker(
+        tmp_path, active=True, reasons=["data_quality_low:65.00"]
+    )
+    message = ChannelMessage(
+        id=21,
+        channel=EXECUTION_INTENT_CHANNEL,
+        message_id="runtime-held-21",
+        parent_message_id="",
+        run_id="run-21",
+        iter_id="iter-21",
+        source_path="pytest",
+        payload={
+            "message_id": "runtime-held-21",
+            "intent_kind": "paper_mirror",
+            "symbol": "SPY",
+            "action": "BUY",
+            "quantity": 1.0,
+            "model_score": 0.70,
+            "threshold": 0.55,
+            "strategy": "paper_mirror::eligible_bot",
+            "metadata": {
+                "source_broker": "schwab",
+                "source_profile": "baseline",
+            },
+        },
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    out = process_execution_intent(
+        project_root=str(tmp_path),
+        trader=_NeverExecuteTrader(),
+        mode="paper",
+        message=message,
+    )
+
+    assert out["result"]["result_status"] == "PAPER_RUNTIME_BREAKER_BLOCKED"
+    assert out["result"]["result_reason"] == (
+        "execution_runtime_breaker_active:data_quality_low:65.00"
+    )
+
+
 def _seed_gates(project_root: Path, *, promote_ok: bool, quality_ok: bool) -> None:
     role_contract_source = (
         Path(__file__).resolve().parents[1] / "config" / "system_role_contracts_v1.json"
@@ -543,7 +720,13 @@ def test_publish_execution_intent_enqueues_channel_message(tmp_path: Path) -> No
                 "spread_bps": 2.0,
                 "training_only_feature": 123.0,
             },
-            "metadata": {"snapshot_id": "snap-1"},
+            "metadata": {
+                "snapshot_id": "snap-1",
+                "source_broker": "schwab",
+                "source_profile": "baseline",
+                "shadow_domain": "equities",
+                "runtime_lane": "equity_core",
+            },
         },
     )
 
@@ -567,6 +750,323 @@ def test_publish_execution_intent_enqueues_channel_message(tmp_path: Path) -> No
     )
     persisted = json.loads(intent_path.read_text(encoding="utf-8").splitlines()[-1])
     assert "training_only_feature" not in persisted["features"]
+    assert persisted["message_id"] == messages[0].payload["message_id"]
+    assert persisted["data_route"] == messages[0].payload["data_route"]
+    assert (
+        persisted["metadata"]["execution_identity"]
+        == messages[0].payload["metadata"]["execution_identity"]
+    )
+    assert validate_execution_intent_contract(messages[0].payload)["valid"] is True
+
+
+def test_channel_processing_claim_is_durable_and_single_owner(tmp_path: Path) -> None:
+    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    message = ChannelMessage(
+        id=17,
+        channel=EXECUTION_INTENT_CHANNEL,
+        message_id="intent-claim-17",
+        parent_message_id="",
+        run_id="run-17",
+        iter_id="iter-17",
+        source_path="pytest",
+        payload={"message_id": "intent-claim-17"},
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    first = queue.claim_message_processing(
+        consumer="execution_lane_paper",
+        channel=EXECUTION_INTENT_CHANNEL,
+        message=message,
+    )
+    duplicate = queue.claim_message_processing(
+        consumer="execution_lane_paper",
+        channel=EXECUTION_INTENT_CHANNEL,
+        message=message,
+    )
+    finalized = queue.finalize_message_processing(
+        consumer="execution_lane_paper",
+        channel=EXECUTION_INTENT_CHANNEL,
+        message=message,
+        state="completed",
+        outcome_status="PAPER_EXECUTED",
+        outcome_message_id="result-17",
+    )
+    after_finalization = queue.claim_message_processing(
+        consumer="execution_lane_paper",
+        channel=EXECUTION_INTENT_CHANNEL,
+        message=message,
+    )
+    stats = queue.processing_claim_stats(
+        consumer="execution_lane_paper",
+        channel=EXECUTION_INTENT_CHANNEL,
+    )
+
+    assert first["claimed"] is True
+    assert duplicate["claimed"] is False
+    assert duplicate["state"] == "processing"
+    assert finalized["state"] == "completed"
+    assert after_finalization["claimed"] is False
+    assert after_finalization["state"] == "completed"
+    assert after_finalization["outcome_message_id"] == "result-17"
+    assert stats["state_counts"] == {"completed": 1}
+
+
+def test_processing_claim_stats_uses_bounded_read_connection(
+    tmp_path: Path, monkeypatch
+) -> None:
+    queue = ChannelQueue(tmp_path / "queue.sqlite3")
+    monkeypatch.setattr(
+        queue,
+        "_connect",
+        lambda: (_ for _ in ()).throw(AssertionError("writer connection used")),
+    )
+
+    stats = queue.processing_claim_stats(
+        consumer="execution_lane_paper", channel=EXECUTION_INTENT_CHANNEL
+    )
+
+    assert stats["total"] == 0
+
+
+def test_channel_cursor_ack_never_moves_backwards(tmp_path: Path) -> None:
+    queue = ChannelQueue(default_queue_db_path(tmp_path))
+
+    queue.ack_through(
+        consumer="execution_lane_paper",
+        channel=EXECUTION_INTENT_CHANNEL,
+        last_id=20,
+        last_message_id="intent-20",
+    )
+    queue.ack_through(
+        consumer="execution_lane_paper",
+        channel=EXECUTION_INTENT_CHANNEL,
+        last_id=10,
+        last_message_id="intent-10",
+    )
+
+    state = queue.consumer_state(
+        consumer="execution_lane_paper",
+        channel=EXECUTION_INTENT_CHANNEL,
+    )
+    assert state["last_id"] == 20
+    assert state["last_message_id"] == "intent-20"
+
+
+def test_execution_child_message_ids_are_deterministic_and_route_distinct() -> None:
+    result_id = execution_child_message_id(
+        "execution-result", source_message_id="intent-1", mode="paper"
+    )
+    promotion_id = execution_child_message_id(
+        "execution-promotion", source_message_id="intent-1", mode="paper"
+    )
+    promoted_id = execution_child_message_id(
+        "execution-promoted", source_message_id="intent-1", mode="live"
+    )
+
+    assert result_id == execution_child_message_id(
+        "execution-result", source_message_id="intent-1", mode="paper"
+    )
+    assert len({"intent-1", result_id, promotion_id, promoted_id}) == 4
+
+
+def test_replay_suppression_publishes_a_durable_result(tmp_path: Path) -> None:
+    message = ChannelMessage(
+        id=21,
+        channel=EXECUTION_INTENT_CHANNEL,
+        message_id="intent-replay-21",
+        parent_message_id="",
+        run_id="run-21",
+        iter_id="iter-21",
+        source_path="pytest",
+        payload={
+            "message_id": "intent-replay-21",
+            "intent_kind": "paper_mirror",
+            "symbol": "SPY",
+            "action": "BUY",
+            "quantity": 1.0,
+            "strategy": "paper_mirror::signal_a",
+            "metadata": {
+                "source_broker": "schwab",
+                "source_profile": "baseline",
+            },
+        },
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    published = publish_execution_replay_suppressed(
+        project_root=str(tmp_path),
+        mode="paper",
+        message=message,
+        prior_claim={"state": "processing"},
+    )
+    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    rows = queue.read_from_cursor(
+        consumer="pytest-replay",
+        channel=EXECUTION_RESULT_CHANNEL,
+        limit=10,
+    )
+
+    assert published["parent_message_id"] == "intent-replay-21"
+    assert len(rows) == 1
+    assert rows[0].payload["result_status"] == "PAPER_REPLAY_SUPPRESSED"
+    assert rows[0].payload["result_reason"] == (
+        "prior_execution_outcome_ambiguous_replay_suppressed"
+    )
+
+
+def test_successful_promotion_uses_distinct_child_id_and_reaches_live_queue(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class _PaperTrader:
+        def execute_decision(self, **_kwargs):
+            return {"status": "PAPER_EXECUTED"}
+
+    monkeypatch.setattr(
+        execution_pipeline,
+        "component_action_guard",
+        lambda *_args, **_kwargs: nullcontext({"ok": True}),
+    )
+    monkeypatch.setattr(
+        execution_pipeline,
+        "evaluate_live_promotion",
+        lambda **_kwargs: {"promote_ok": True, "reasons": []},
+    )
+    message = ChannelMessage(
+        id=31,
+        channel=EXECUTION_INTENT_CHANNEL,
+        message_id="intent-promote-31",
+        parent_message_id="",
+        run_id="run-31",
+        iter_id="iter-31",
+        source_path="pytest",
+        payload={
+            "message_id": "intent-promote-31",
+            "intent_kind": "paper_mirror",
+            "source_mode": "shadow",
+            "target_mode": "paper",
+            "symbol": "SPY",
+            "action": "BUY",
+            "quantity": 1.0,
+            "model_score": 0.70,
+            "threshold": 0.55,
+            "strategy": "paper_mirror::signal_a",
+            "metadata": {
+                "bot_id": "signal_a",
+                "source_broker": "schwab",
+                "source_profile": "baseline",
+                "production_candidate_id": "candidate-31",
+            },
+        },
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    out = process_execution_intent(
+        project_root=str(tmp_path),
+        trader=_PaperTrader(),
+        mode="paper",
+        message=message,
+    )
+    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    result_rows = queue.read_from_cursor(
+        consumer="pytest-results-31", channel=EXECUTION_RESULT_CHANNEL, limit=10
+    )
+    promotion_rows = queue.read_from_cursor(
+        consumer="pytest-promotions-31",
+        channel=EXECUTION_PROMOTION_CHANNEL,
+        limit=10,
+    )
+    promoted_rows = queue.read_from_cursor(
+        consumer="pytest-promoted-31",
+        channel=EXECUTION_PROMOTED_CHANNEL,
+        limit=10,
+    )
+
+    child_ids = {
+        result_rows[0].message_id,
+        promotion_rows[0].message_id,
+        promoted_rows[0].message_id,
+    }
+    assert out["result"]["result_status"] == "PAPER_EXECUTED"
+    assert len(result_rows) == len(promotion_rows) == len(promoted_rows) == 1
+    assert "intent-promote-31" not in child_ids
+    assert len(child_ids) == 3
+    assert promoted_rows[0].parent_message_id == "intent-promote-31"
+    assert promoted_rows[0].payload["target_mode"] == "live"
+
+
+def test_execution_contract_detects_economic_payload_tampering() -> None:
+    intent = normalize_execution_intent(
+        {
+            "message_id": "intent-contract-1",
+            "target_mode": "paper",
+            "intent_kind": "paper_mirror",
+            "symbol": "SPY",
+            "action": "BUY",
+            "quantity": 1.0,
+            "model_score": 0.72,
+            "threshold": 0.55,
+            "features": {"last_price": 500.0},
+            "gates": {"risk_limit_ok": True},
+            "reasons": ["qualified"],
+            "strategy": "paper_mirror::signal_a",
+            "metadata": {
+                "source_broker": "schwab",
+                "source_profile": "baseline",
+            },
+        },
+        force_reseal=True,
+    )
+    tampered = {**intent, "quantity": 10.0}
+
+    verdict = validate_execution_intent_contract(tampered)
+
+    assert verdict["valid"] is False
+    assert "execution_identity_receipt_mismatch" in verdict["reasons"]
+    assert "execution_identity_quantity_mismatch" in verdict["reasons"]
+
+
+def test_execution_consumer_rejects_queue_payload_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    class _NeverExecuteTrader:
+        def execute_decision(self, **_kwargs):
+            raise AssertionError("tampered intent reached trader")
+
+    message = ChannelMessage(
+        id=9,
+        channel=EXECUTION_INTENT_CHANNEL,
+        message_id="queue-message-9",
+        parent_message_id="",
+        run_id="run-9",
+        iter_id="iter-9",
+        source_path="pytest",
+        payload={
+            "message_id": "different-payload-message",
+            "intent_kind": "paper_mirror",
+            "symbol": "SPY",
+            "action": "BUY",
+            "quantity": 1.0,
+            "strategy": "paper_mirror::signal_a",
+            "metadata": {
+                "source_broker": "schwab",
+                "source_profile": "baseline",
+            },
+        },
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    out = process_execution_intent(
+        project_root=str(tmp_path),
+        trader=_NeverExecuteTrader(),
+        mode="paper",
+        message=message,
+    )
+
+    assert out["result"]["result_status"] == "PAPER_INTENT_CONTRACT_BLOCKED"
+    assert (
+        "channel_binding_message_id_mismatch"
+        in out["result"]["intent_contract"]["reasons"]
+    )
 
 
 def test_publish_execution_intent_retries_locked_queue(
@@ -604,6 +1104,65 @@ def test_publish_execution_intent_retries_locked_queue(
     assert len(messages) == 1
 
 
+def test_execution_lane_contains_poison_message_and_publishes_dead_letter(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(execution_lane_runner, "PROJECT_ROOT", tmp_path)
+
+    def fail_processing(**_kwargs):
+        raise ValueError("malformed execution payload")
+
+    monkeypatch.setattr(
+        execution_lane_runner, "process_execution_intent", fail_processing
+    )
+    message = ChannelMessage(
+        id=7,
+        channel=EXECUTION_INTENT_CHANNEL,
+        message_id="poison-intent-7",
+        parent_message_id="",
+        run_id="run-poison",
+        iter_id="iter-poison",
+        source_path="pytest",
+        payload={
+            "message_id": "poison-intent-7",
+            "intent_kind": "paper_mirror",
+            "symbol": "SPY",
+            "action": "BUY",
+            "quantity": 1.0,
+            "strategy": "paper_mirror::signal_a",
+            "metadata": {
+                "source_broker": "schwab",
+                "source_profile": "baseline",
+            },
+        },
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    handled = execution_lane_runner._process_execution_message_safely(
+        trader=object(),
+        mode="paper",
+        message=message,
+        queue_db_override="",
+    )
+
+    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    results = queue.read_from_cursor(
+        consumer="pytest_dead_letter", channel=EXECUTION_RESULT_CHANNEL, limit=10
+    )
+    audit_paths = list(
+        (tmp_path / "governance" / "events").glob(
+            "execution_lane_consumer_failures_*.jsonl"
+        )
+    )
+    assert handled is False
+    assert len(results) == 1
+    assert results[0].payload["result_status"] == "PAPER_CONSUMER_ERROR_BLOCKED"
+    assert results[0].payload["result"]["recovery_action"] == (
+        "dead_letter_ack_and_continue"
+    )
+    assert len(audit_paths) == 1
+
+
 def test_evaluate_live_promotion_respects_existing_gate_truth(tmp_path: Path) -> None:
     _seed_gates(tmp_path, promote_ok=False, quality_ok=False)
 
@@ -625,7 +1184,7 @@ def test_evaluate_live_promotion_respects_existing_gate_truth(tmp_path: Path) ->
     assert "promotion_quality_gate_blocked" in out["reasons"]
 
 
-def test_direct_live_execution_fails_closed_without_sleeve_policy_receipt(
+def test_direct_live_execution_fails_closed_on_identity_before_broker_submit(
     tmp_path: Path,
 ) -> None:
     trader = BaseTrader(
@@ -663,15 +1222,16 @@ def test_direct_live_execution_fails_closed_without_sleeve_policy_receipt(
         message=message,
     )
 
-    assert out["result"]["result_status"] == "LIVE_DECISION_FLOW_BLOCKED"
-    assert out["result"]["decision_flow_guard"]["allow_execute"] is False
+    assert out["result"]["result_status"] == "LIVE_INTENT_CONTRACT_BLOCKED"
+    assert out["result"]["intent_contract"]["valid"] is False
     assert (
-        "decision_flow_metadata_missing"
-        in out["result"]["decision_flow_guard"]["reasons"]
+        "live_execution_candidate_identity_missing"
+        in out["result"]["intent_contract"]["reasons"]
     )
+    assert out["result"]["execution_actor_type"] == "hierarchical_master"
 
 
-def test_process_execution_intent_paper_emits_result_and_promoted_message(
+def test_process_execution_intent_paper_executes_but_never_promotes_master_directly(
     tmp_path: Path,
 ) -> None:
     _seed_gates(tmp_path, promote_ok=True, quality_ok=True)
@@ -764,9 +1324,12 @@ def test_process_execution_intent_paper_emits_result_and_promoted_message(
     assert out["result"]["result_status"] == "PAPER_EXECUTED"
     assert len(result_rows) == 1
     assert len(promotion_rows) == 1
-    assert promotion_rows[0].payload["promotion"]["promote_ok"] is True
-    assert len(promoted_rows) == 1
-    assert promoted_rows[0].payload["target_mode"] == "live"
+    assert promotion_rows[0].payload["promotion"]["promote_ok"] is False
+    assert (
+        "hierarchical_master_direct_live_promotion_forbidden"
+        in promotion_rows[0].payload["promotion"]["reasons"]
+    )
+    assert len(promoted_rows) == 0
 
 
 def test_process_execution_intent_blocks_promotion_on_stale_realism_fill(
@@ -1093,6 +1656,36 @@ def test_paper_standard_gateway_does_not_authorize_virtual_name_patterns(
     assert gateway["allow_execute"] is False
     assert gateway["virtual_allowed"] is False
     assert gateway["reasons"] == ["paper_standard_bot_missing_from_registry"]
+
+
+def test_paper_standard_gateway_reports_master_as_orchestration_only(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("PAPER_LIVE_DATA_STANDARD_ENABLED", "1")
+
+    gateway = evaluate_paper_standard_gateway(
+        project_root=str(tmp_path),
+        intent={
+            "message_id": "grand-master-observation",
+            "intent_kind": "master",
+            "symbol": "SPY",
+            "action": "SELL",
+            "quantity": 1.0,
+            "strategy": "grand_master_bot",
+            "metadata": {
+                "layer": "grand_master",
+                "source_broker": "schwab",
+                "source_profile": "baseline",
+            },
+        },
+    )
+
+    assert gateway["allow_execute"] is False
+    assert gateway["actor_type"] == "hierarchical_master"
+    assert gateway["authority_model"] == "orchestration_only"
+    assert gateway["reasons"] == [
+        "paper_standard_hierarchical_master_must_delegate_to_portfolio_consensus"
+    ]
 
 
 def test_paper_standard_gateway_validates_consensus_constituents(
@@ -1446,6 +2039,31 @@ def test_update_lane_health_skips_queue_stats_by_default(
     )
     assert payload["pending_rows_unknown"] is True
     assert payload["stale"] is False
+
+
+def test_update_lane_health_reports_idle_ready_before_first_eligible_intent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "0")
+    monkeypatch.delenv("EXECUTION_RUNTIME_BREAKER_REQUIRED", raising=False)
+
+    update_lane_health(
+        project_root=str(tmp_path),
+        mode="paper",
+        processed_count=0,
+        queue_channel=EXECUTION_INTENT_CHANNEL,
+        auth_ok=True,
+    )
+
+    payload = json.loads(
+        (
+            tmp_path / "governance" / "health" / "execution_lane_paper_latest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert payload["result_activity_status"] == "idle_waiting_for_eligible_intent"
+    assert payload["execution_plumbing_status"] == "idle_ready_waiting_for_intent"
+    assert payload["execution_consumer_resident"] is True
+    assert payload["accepting_new_exposure"] is True
 
 
 def test_update_lane_health_reports_stale_skip_only_result_activity(

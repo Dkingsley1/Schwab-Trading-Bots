@@ -37,6 +37,14 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _decode_details(raw: Any) -> Dict[str, Any]:
+    try:
+        value = json.loads(str(raw or "{}"))
+    except Exception:
+        return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _local_queue_root(project_root: str | Path) -> Path:
     configured = str(os.getenv("BOT_CHANNEL_QUEUE_LOCAL_ROOT", "") or "").strip()
     if configured:
@@ -109,7 +117,11 @@ class ChannelQueue:
                     """
                     SELECT name
                     FROM sqlite_master
-                    WHERE type='table' AND name IN ('channel_messages', 'channel_consumer_state')
+                    WHERE type='table' AND name IN (
+                        'channel_messages',
+                        'channel_consumer_state',
+                        'channel_processing_claims'
+                    )
                     """
                 ).fetchall()
             finally:
@@ -121,7 +133,11 @@ class ChannelQueue:
         except sqlite3.DatabaseError as exc:
             self._quarantine_corrupt_db(str(exc))
             return False
-        return {str(row[0] or "") for row in rows} >= {"channel_messages", "channel_consumer_state"}
+        return {str(row[0] or "") for row in rows} >= {
+            "channel_messages",
+            "channel_consumer_state",
+            "channel_processing_claims",
+        }
 
     def _quarantine_corrupt_db(self, reason: str) -> None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
@@ -187,6 +203,15 @@ class ChannelQueue:
             conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
+    def _read_connect(self, *, timeout_seconds: float = 1.0) -> sqlite3.Connection:
+        """Open a bounded read path without renegotiating SQLite journal mode."""
+
+        timeout = min(max(float(timeout_seconds), 0.05), 5.0)
+        conn = sqlite3.connect(str(self.db_path), timeout=timeout)
+        conn.execute(f"PRAGMA busy_timeout={max(int(timeout * 1000), 50)}")
+        conn.execute("PRAGMA query_only=ON")
+        return conn
+
     def _ensure_schema(self) -> None:
         conn = self._connect()
         try:
@@ -218,10 +243,32 @@ class ChannelQueue:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS channel_processing_claims (
+                    consumer TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    message_row_id INTEGER NOT NULL DEFAULT 0,
+                    state TEXT NOT NULL,
+                    claimed_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    finalized_at TEXT NOT NULL DEFAULT '',
+                    outcome_status TEXT NOT NULL DEFAULT '',
+                    outcome_message_id TEXT NOT NULL DEFAULT '',
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    PRIMARY KEY (consumer, channel, message_id)
+                )
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_messages_channel_id ON channel_messages(channel, id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_messages_created_at ON channel_messages(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_consumer_state_channel ON channel_consumer_state(channel, last_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_consumer_state_updated_at ON channel_consumer_state(updated_at)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_channel_processing_claims_state_updated "
+                "ON channel_processing_claims(consumer, channel, state, updated_at)"
+            )
             conn.commit()
         finally:
             conn.close()
@@ -406,9 +453,17 @@ class ChannelQueue:
                 VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(consumer, channel)
                 DO UPDATE SET
-                    last_id=excluded.last_id,
-                    last_message_id=excluded.last_message_id,
-                    updated_at=excluded.updated_at
+                    last_id=MAX(channel_consumer_state.last_id, excluded.last_id),
+                    last_message_id=CASE
+                        WHEN excluded.last_id >= channel_consumer_state.last_id
+                        THEN excluded.last_message_id
+                        ELSE channel_consumer_state.last_message_id
+                    END,
+                    updated_at=CASE
+                        WHEN excluded.last_id >= channel_consumer_state.last_id
+                        THEN excluded.updated_at
+                        ELSE channel_consumer_state.updated_at
+                    END
                 """,
                 (cons, ch, max(int(last_id), 0), str(last_message_id or ""), _now_utc()),
             )
@@ -421,6 +476,204 @@ class ChannelQueue:
             return
         last = messages[-1]
         self.ack_through(consumer=consumer, channel=channel, last_id=int(last.id), last_message_id=str(last.message_id))
+
+    def claim_message_processing(
+        self,
+        *,
+        consumer: str,
+        channel: str,
+        message: ChannelMessage,
+    ) -> Dict[str, Any]:
+        """Durably claim an intent before any execution side effect occurs."""
+
+        cons = str(consumer or "").strip()
+        ch = str(channel or "").strip()
+        message_id = str(message.message_id or "").strip()
+        if not cons or not ch or not message_id:
+            raise ValueError("consumer, channel, and message_id are required")
+
+        now = _now_utc()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                """
+                SELECT message_row_id, state, claimed_at, updated_at, finalized_at,
+                       outcome_status, outcome_message_id, details_json
+                FROM channel_processing_claims
+                WHERE consumer=? AND channel=? AND message_id=?
+                """,
+                (cons, ch, message_id),
+            ).fetchone()
+            if existing is not None:
+                conn.commit()
+                return {
+                    "claimed": False,
+                    "consumer": cons,
+                    "channel": ch,
+                    "message_id": message_id,
+                    "message_row_id": int(existing[0] or 0),
+                    "state": str(existing[1] or ""),
+                    "claimed_at": str(existing[2] or ""),
+                    "updated_at": str(existing[3] or ""),
+                    "finalized_at": str(existing[4] or ""),
+                    "outcome_status": str(existing[5] or ""),
+                    "outcome_message_id": str(existing[6] or ""),
+                    "details": _decode_details(existing[7]),
+                }
+            conn.execute(
+                """
+                INSERT INTO channel_processing_claims(
+                    consumer, channel, message_id, message_row_id, state,
+                    claimed_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'processing', ?, ?)
+                """,
+                (cons, ch, message_id, max(int(message.id), 0), now, now),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return {
+            "claimed": True,
+            "consumer": cons,
+            "channel": ch,
+            "message_id": message_id,
+            "message_row_id": max(int(message.id), 0),
+            "state": "processing",
+            "claimed_at": now,
+            "updated_at": now,
+            "finalized_at": "",
+            "outcome_status": "",
+            "outcome_message_id": "",
+            "details": {},
+        }
+
+    def finalize_message_processing(
+        self,
+        *,
+        consumer: str,
+        channel: str,
+        message: ChannelMessage,
+        state: str,
+        outcome_status: str = "",
+        outcome_message_id: str = "",
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        cons = str(consumer or "").strip()
+        ch = str(channel or "").strip()
+        message_id = str(message.message_id or "").strip()
+        state_text = str(state or "").strip().lower()
+        allowed_states = {
+            "completed",
+            "dead_lettered",
+            "outcome_ambiguous",
+            "replay_suppressed",
+        }
+        if not cons or not ch or not message_id:
+            raise ValueError("consumer, channel, and message_id are required")
+        if state_text not in allowed_states:
+            raise ValueError(f"unsupported processing claim state: {state_text}")
+
+        now = _now_utc()
+        details_json = json.dumps(
+            dict(details or {}), ensure_ascii=True, separators=(",", ":")
+        )
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                """
+                UPDATE channel_processing_claims
+                SET state=?, updated_at=?, finalized_at=?, outcome_status=?,
+                    outcome_message_id=?, details_json=?
+                WHERE consumer=? AND channel=? AND message_id=?
+                """,
+                (
+                    state_text,
+                    now,
+                    now,
+                    str(outcome_status or ""),
+                    str(outcome_message_id or ""),
+                    details_json,
+                    cons,
+                    ch,
+                    message_id,
+                ),
+            )
+            if int(cursor.rowcount or 0) != 1:
+                raise KeyError(f"processing claim not found: {cons}:{ch}:{message_id}")
+            conn.commit()
+        finally:
+            conn.close()
+        return {
+            "consumer": cons,
+            "channel": ch,
+            "message_id": message_id,
+            "message_row_id": max(int(message.id), 0),
+            "state": state_text,
+            "updated_at": now,
+            "finalized_at": now,
+            "outcome_status": str(outcome_status or ""),
+            "outcome_message_id": str(outcome_message_id or ""),
+            "details": dict(details or {}),
+        }
+
+    def processing_claim_stats(self, *, consumer: str, channel: str) -> Dict[str, Any]:
+        cons = str(consumer or "").strip()
+        ch = str(channel or "").strip()
+        if not cons or not ch:
+            return {"consumer": cons, "channel": ch, "total": 0, "state_counts": {}}
+        try:
+            timeout_seconds = float(
+                os.getenv("BOT_CHANNEL_QUEUE_HEALTH_READ_TIMEOUT_SECONDS", "1") or 1
+            )
+        except Exception:
+            timeout_seconds = 1.0
+        conn = self._read_connect(timeout_seconds=timeout_seconds)
+        try:
+            rows = conn.execute(
+                """
+                SELECT state, COUNT(*)
+                FROM channel_processing_claims
+                WHERE consumer=? AND channel=?
+                GROUP BY state
+                """,
+                (cons, ch),
+            ).fetchall()
+            latest = conn.execute(
+                """
+                SELECT message_id, message_row_id, state, updated_at, outcome_status
+                FROM channel_processing_claims
+                WHERE consumer=? AND channel=?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (cons, ch),
+            ).fetchone()
+        finally:
+            conn.close()
+        state_counts = {str(row[0] or "unknown"): int(row[1] or 0) for row in rows}
+        return {
+            "consumer": cons,
+            "channel": ch,
+            "total": sum(state_counts.values()),
+            "state_counts": state_counts,
+            "processing": int(state_counts.get("processing", 0)),
+            "ambiguous": int(state_counts.get("outcome_ambiguous", 0)),
+            "latest": (
+                {
+                    "message_id": str(latest[0] or ""),
+                    "message_row_id": int(latest[1] or 0),
+                    "state": str(latest[2] or ""),
+                    "updated_at": str(latest[3] or ""),
+                    "outcome_status": str(latest[4] or ""),
+                }
+                if latest
+                else {}
+            ),
+        }
 
     def consumer_state(self, *, consumer: str, channel: str) -> Dict[str, Any]:
         cons = str(consumer or "").strip()

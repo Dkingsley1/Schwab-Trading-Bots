@@ -457,21 +457,35 @@ def build_payload(
         spec = _as_dict(policy_engines.get(engine_id))
         inputs = _empty_inputs(engine_id)
         source = "missing_candidate_measurement_input"
+        evidence_class = "missing"
+        economic_grade_eligible = False
         if engine_id == "hierarchical_bayesian_skill" and returns_by_profile:
             inputs = {"returns_by_group": returns_by_profile}
             source = "paper_performance_candidate_post_cost_daily_series"
+            evidence_class = "candidate_bound_post_cost_daily_series"
+            economic_grade_eligible = True
         elif bool(input_binding.get("bound")):
             supplied = _as_dict(raw_measurements.get(engine_id))
             supplied_inputs = _as_dict(supplied.get("inputs")) or supplied
             if supplied_inputs:
                 inputs = supplied_inputs
                 source = "candidate_bound_alpha_concept_inputs"
+                evidence_class = str(
+                    supplied.get("evidence_class") or "candidate_bound_unspecified"
+                )
+                economic_grade_eligible = bool(
+                    supplied.get("economic_grade_eligible", False)
+                )
         if engine_id == "sequential_change_point_stability" and returns_by_profile:
             inputs = {"values_by_group": returns_by_profile}
             source = "paper_performance_candidate_post_cost_daily_series"
+            evidence_class = "candidate_bound_post_cost_daily_series"
+            economic_grade_eligible = True
         elif engine_id == "residual_redundancy_graph" and returns_by_profile:
             inputs = {"returns_by_group": returns_by_profile}
             source = "paper_performance_candidate_post_cost_daily_series"
+            evidence_class = "candidate_bound_post_cost_daily_series"
+            economic_grade_eligible = True
         try:
             result = MEASUREMENT_FUNCTIONS[engine_id](
                 **inputs, **_engine_parameters(spec)
@@ -488,6 +502,8 @@ def build_payload(
         result["engine_id"] = engine_id
         result["concept_ids"] = list(spec.get("concept_ids") or [])
         result["input_source"] = source
+        result["input_evidence_class"] = evidence_class
+        result["economic_grade_eligible"] = bool(economic_grade_eligible)
         result["candidate_bound"] = bool(binding.get("bound")) and (
             source == "paper_performance_candidate_post_cost_daily_series"
             or bool(input_binding.get("bound"))
@@ -523,6 +539,7 @@ def build_payload(
     )
     economic_support_count = sum(
         bool(measurements[engine_id].get("passes", False))
+        and bool(measurements[engine_id].get("economic_grade_eligible", False))
         for engine_id in economic_engine_ids
     )
     implementation_score = 100.0 * implemented_engine_count / len(ENGINE_IDS)
@@ -540,7 +557,12 @@ def build_payload(
         and int(catalog_summary["owner_present_count"])
         == int(catalog_summary["concept_count"])
     )
-    ok = bool(structural_ready and binding.get("bound"))
+    measurement_input_acceptable = bool(
+        not measurement_inputs or input_binding.get("bound")
+    )
+    ok = bool(
+        structural_ready and binding.get("bound") and measurement_input_acceptable
+    )
     timestamp = _utc(generated_at_utc) or datetime.now(timezone.utc)
     receipt_material = {
         "candidate_binding": binding,
@@ -552,6 +574,8 @@ def build_payload(
     }
     receipt = _canonical_hash(receipt_material)
     blockers = list(binding.get("blockers") or [])
+    if measurement_inputs and not bool(input_binding.get("bound")):
+        blockers.extend(input_binding.get("blockers") or [])
     if not structural_ready:
         blockers.append("alpha_concept_structural_contract_incomplete")
     return {
@@ -638,7 +662,7 @@ def build_payload(
             "implementation_a_plus": "all declared estimators exist and are structurally routed; it is not economic evidence",
             "catalog_a_plus": "all finite architecture-specific concepts have a declared local owner; it is not universal coverage or proof",
             "candidate_evidence": "only identity-matched post-cutoff inputs can make an estimator available",
-            "economic_support": "only a passing estimator with mature candidate evidence counts; active-learning priority never counts as alpha support",
+            "economic_support": "only a passing estimator backed by candidate-bound post-cost trade or fill evidence counts; counterfactual forecast paths and active-learning priority never count as alpha support",
             "profitability_guaranteed": False,
             "live_execution_authority": False,
         },
@@ -724,6 +748,12 @@ def main() -> int:
         "--markdown-file",
         default="exports/reports/operator/alpha_concept_report_latest.md",
     )
+    parser.add_argument(
+        "--refresh-inputs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Refresh strict candidate-bound measurement inputs before reporting.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     root = Path(args.project_root).expanduser().resolve()
@@ -736,6 +766,23 @@ def main() -> int:
         out_path = root / out_path
     if not markdown_path.is_absolute():
         markdown_path = root / markdown_path
+    if args.refresh_inputs:
+        if __package__ in {None, ""}:
+            from scripts.ops.alpha_concept_input_materializer import (
+                build_payload as build_input_payload,
+            )
+        else:
+            from .alpha_concept_input_materializer import (
+                build_payload as build_input_payload,
+            )
+
+        input_payload = build_input_payload(root)
+        policy = load_json(config_path)
+        input_path = root / str(
+            _as_dict(policy.get("candidate_binding")).get("measurement_inputs_path")
+            or "governance/research/alpha_concept_inputs_latest.json"
+        )
+        write_payload(input_path, input_payload)
     payload = build_payload(root, config_path=config_path)
     write_payload(out_path, payload)
     markdown_path.parent.mkdir(parents=True, exist_ok=True)

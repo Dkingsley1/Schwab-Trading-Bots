@@ -3,6 +3,35 @@
   "policy_id": "control_surface_ownership_v1",
   "controls": [
     {
+      "control_id": "production_candidate_state",
+      "resource_path": "governance/runtime/production_candidate_state.json",
+      "owner_source": "scripts/ops/production_excellence_control.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "production-excellence", "--apply", "--accept-candidate-change", "--change-reason", "Operator-reviewed source change acceptance", "--json"],
+      "owner_marker": "production_candidate_state.json",
+      "mutation_mode": "operator_reviewed_atomic_state",
+      "coordination": "file_lock",
+      "lock_path": "governance/locks/paper_profitability_generation.lock"
+    },
+    {
+      "control_id": "production_candidate_event_chain",
+      "resource_path": "governance/evidence/production_candidate_events.jsonl",
+      "owner_source": "scripts/ops/production_excellence_control.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "production-excellence", "--apply", "--accept-candidate-change", "--change-reason", "Operator-reviewed source change acceptance", "--json"],
+      "owner_marker": "production_candidate_events.jsonl",
+      "mutation_mode": "operator_reviewed_append_only",
+      "coordination": "file_lock",
+      "lock_path": "governance/locks/paper_profitability_generation.lock"
+    },
+    {
+      "control_id": "source_mutation_guard_evidence",
+      "resource_path": "governance/health/source_mutation_guard_latest.json",
+      "owner_source": "scripts/ops/source_mutation_guard.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "source-mutation-guard", "--json"],
+      "owner_marker": "source_mutation_guard_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
       "control_id": "local_storage_reserve_override",
       "resource_path": "config/.env.local_storage_reserve_override",
       "owner_source": "scripts/ops/local_storage_reserve_guard.py",
@@ -77,6 +106,34 @@
       "owner_marker": "profitability_evidence_firewall_latest.json",
       "mutation_mode": "atomic_snapshot",
       "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "profitability_adversarial_drill_evidence",
+      "resource_path": "governance/research/profitability_adversarial_drill_latest.json",
+      "owner_source": "scripts/ops/profitability_adversarial_drill.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "profitability-adversarial-drill", "--json"],
+      "owner_marker": "profitability_adversarial_drill_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "paper_behavior_intervention_drill_evidence",
+      "resource_path": "governance/research/paper_behavior_intervention_drill_latest.json",
+      "owner_source": "scripts/ops/paper_behavior_intervention_drill.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "paper-behavior-intervention-drill", "--json"],
+      "owner_marker": "paper_behavior_intervention_drill_latest.json",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "paper_profitability_runtime_control",
+      "resource_path": "governance/health/paper_runtime_profitability_controls_latest.json",
+      "owner_source": "scripts/ops/paper_profitability_control.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--apply", "--json"],
+      "owner_marker": "paper_runtime_profitability_controls_latest.json",
+      "mutation_mode": "single_writer_atomic_snapshot",
+      "coordination": "file_lock",
+      "lock_path": "governance/locks/paper_profitability_generation.lock"
     },
     {
       "control_id": "artifact_freshness_slo",
@@ -339,6 +396,126 @@
       ],
       "owner_marker": "sleeve_strategy_families_latest.json",
       "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "trading_behavior_drill_program_evidence",
+      "resource_path": "governance/research/trading_behavior_drill_program_latest.json",
+      "owner_source": "scripts/ops/trading_behavior_drill_program.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "trading-behavior-drill-program",
+        "--json"
+      ],
+      "owner_marker": "trading_behavior_drill_program_latest.json",
+      "mutation_mode": "single_writer_atomic_snapshot",
+      "coordination": "file_lock",
+      "lock_path": "governance/locks/trading_behavior_drill_program.lock"
+    },
+    {
+      "control_id": "live_canary_operator_attestation",
+      "resource_path": "governance/runtime/live_canary_operator_attestation.json",
+      "owner_source": "scripts/ops/live_canary_preflight.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "live-canary-preflight",
+        "--json"
+      ],
+      "owner_marker": "live_canary_operator_attestation.json",
+      "mutation_mode": "explicit_operator_atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "live_canary_candidate_allowlist",
+      "resource_path": "governance/runtime/live_canary_allowlist.json",
+      "owner_source": "scripts/ops/live_canary_preflight.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "live-canary-preflight",
+        "--json"
+      ],
+      "owner_marker": "live_canary_allowlist.json",
+      "mutation_mode": "explicit_operator_atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "schwab_account_hash_keychain_sync_health",
+      "resource_path": "governance/health/schwab_account_hash_keychain_sync_latest.json",
+      "owner_source": "scripts/ops/schwab_account_hash_keychain_sync.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "schwab-account-hash-sync",
+        "--json"
+      ],
+      "owner_marker": "schwab_account_hash_keychain_sync_latest.json",
+      "mutation_mode": "redacted_atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "live_canary_connected_dress_rehearsal_health",
+      "resource_path": "governance/health/live_canary_dress_rehearsal_latest.json",
+      "owner_source": "scripts/ops/live_canary_dress_rehearsal.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "live-canary-dress-rehearsal",
+        "--json"
+      ],
+      "owner_marker": "live_canary_dress_rehearsal_latest.json",
+      "mutation_mode": "redacted_atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "live_canary_graduation_health",
+      "resource_path": "governance/health/live_canary_graduation_latest.json",
+      "owner_source": "scripts/ops/live_canary_graduation.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "live-canary-graduation",
+        "--json"
+      ],
+      "owner_marker": "live_canary_graduation_latest.json",
+      "mutation_mode": "redacted_atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "live_canary_closeout_health",
+      "resource_path": "governance/health/live_canary_closeout_latest.json",
+      "owner_source": "scripts/ops/live_canary_closeout.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "live-canary-closeout",
+        "--json"
+      ],
+      "owner_marker": "live_canary_closeout_latest.json",
+      "mutation_mode": "redacted_atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "live_canary_closeout_receipts",
+      "resource_path": "governance/evidence/live_canary_closeout_receipts.jsonl",
+      "owner_source": "scripts/ops/live_canary_closeout.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "live-canary-closeout",
+        "--capture",
+        "--json"
+      ],
+      "owner_marker": "live_canary_closeout_receipts.jsonl",
+      "mutation_mode": "redacted_append_only_evidence",
+      "coordination": "file_lock",
+      "lock_path": "governance/evidence/live_canary_closeout_receipts.jsonl"
+    },
+    {
+      "control_id": "sleeve_scalability_selector_health",
+      "resource_path": "governance/health/sleeve_scalability_selector_latest.json",
+      "owner_source": "scripts/ops/sleeve_scalability_selector.py",
+      "owner_command": [
+        "./scripts/ops/opsctl.sh",
+        "sleeve-scalability-selector",
+        "--json"
+      ],
+      "owner_marker": "sleeve_scalability_selector_latest.json",
+      "mutation_mode": "advisory_atomic_snapshot",
       "coordination": "atomic_replace"
     }
   ],

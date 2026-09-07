@@ -28,7 +28,7 @@ The system publishes counts, not a blended readiness percentage. A strong operat
 | `r01` | Shortlist one to three strong sleeves | profitability-firewall qualified sleeves only |
 | `r02` | Record every experiment | append-only signed ledger and exact replay |
 | `r03` | Require positive post-cost expectancy | sufficient candidate observations and a positive clustered lower bound |
-| `r04` | Complete the soak before canarying | headline cumulative soak includes accepted reset segments; canary clearance still requires the separate unchanged-candidate 720-hour window and canary milestones |
+| `r04` | Complete candidate validation before canarying | headline cumulative soak includes accepted reset segments; canary clearance still requires every current scope's elapsed-time and completed-XNYS-session tier, the separate seven-day sustained-all-gates interlock, and all canary milestones; material trading scopes retain 720 hours |
 | `r05` | Measure paper/live divergence | candidate-bound live samples within declared limits |
 | `r06` | Predetermine scaling and rollback | fixed stages, caps, clean windows, and operator release |
 | `r07` | Publish a labeled tear sheet | candidate evidence under a paper/hypothetical disclosure |

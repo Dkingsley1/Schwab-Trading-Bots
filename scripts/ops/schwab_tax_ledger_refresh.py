@@ -17,16 +17,17 @@ if __package__ in {None, ""}:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.brokers.schwab.common import build_schwab_trader, fetch_account_rows, resp_json
     from scripts.ops.long_runtime_common import load_json, write_payload
-    from scripts.ops.trading_tax_estimator import _account_tax_treatments
+    from scripts.ops.trading_tax_estimator import _account_tax_treatments, _tax_treatment
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     from scripts.brokers.schwab.common import build_schwab_trader, fetch_account_rows, resp_json
     from .long_runtime_common import load_json, write_payload
-    from .trading_tax_estimator import _account_tax_treatments
+    from .trading_tax_estimator import _account_tax_treatments, _tax_treatment
 
 
 DEFAULT_PROFILE_PATH = PROJECT_ROOT / "config" / "trading_tax_profile.json"
 DEFAULT_ACCOUNT_CONTEXT_PATH = PROJECT_ROOT / "governance" / "health" / "account_policy_context_latest.json"
+DEFAULT_ACCOUNT_ALIAS_PATH = PROJECT_ROOT / "config" / "account_aliases.json"
 DEFAULT_STATUS_PATH = PROJECT_ROOT / "governance" / "health" / "schwab_tax_ledger_refresh_latest.json"
 WINDOW_DAYS = 59
 
@@ -67,6 +68,31 @@ def _timestamp(raw: Any) -> str | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat()
+
+
+def _account_alias_tax_treatments(account_aliases: dict[str, Any]) -> dict[str, str]:
+    scoped = _dict(account_aliases.get("schwab_accounts")) or account_aliases
+    treatments: dict[str, str] = {}
+    for key, raw in scoped.items():
+        alias = _dict(raw)
+        treatment = _tax_treatment(alias.get("tax_treatment"))
+        if treatment == "unknown":
+            continue
+        candidates = {
+            str(key or "").strip(),
+            str(alias.get("account_policy_key") or "").strip(),
+            str(alias.get("operator_account_label") or "").strip(),
+            str(alias.get("account_label") or "").strip(),
+            str(alias.get("account_number_tail") or "").strip(),
+            str(alias.get("account_reference_tail") or "").strip(),
+        }
+        key_text = str(key or "").strip()
+        if ":" in key_text:
+            candidates.add(key_text.split(":", 1)[1])
+        for candidate in candidates:
+            if candidate:
+                treatments[candidate] = treatment
+    return treatments
 
 
 def _quiet_auth(trader: Any) -> Any:
@@ -333,6 +359,7 @@ def refresh(
     tax_year: int,
     profile_path: Path,
     account_context_path: Path,
+    account_alias_path: Path,
     out_path: Path,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
@@ -349,6 +376,7 @@ def refresh(
     profile = load_json(profile_path)
     account_context = load_json(account_context_path)
     treatments = _account_tax_treatments(profile, account_context)
+    alias_treatments = _account_alias_tax_treatments(load_json(account_alias_path))
     old_env = {
         "ALLOW_ORDER_EXECUTION": os.environ.get("ALLOW_ORDER_EXECUTION"),
         "MARKET_DATA_ONLY": os.environ.get("MARKET_DATA_ONLY"),
@@ -372,7 +400,10 @@ def refresh(
         for index, account in enumerate(accounts):
             account_tail = str(account.get("account_number") or "").strip()[-4:]
             account_label = f"account_{index + 1}_{account_tail}" if account_tail else f"account_{index + 1}"
-            treatment = treatments.get(account_label, "unknown")
+            treatment = treatments.get(
+                account_label,
+                alias_treatments.get(account_tail, "unknown"),
+            )
             rows, failures = fetch_year_transactions(
                 client,
                 str(account.get("account_hash") or ""),
@@ -458,6 +489,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tax-year", type=int, default=year)
     parser.add_argument("--profile", default=str(DEFAULT_PROFILE_PATH))
     parser.add_argument("--account-context", default=str(DEFAULT_ACCOUNT_CONTEXT_PATH))
+    parser.add_argument("--account-aliases", default=str(DEFAULT_ACCOUNT_ALIAS_PATH))
     parser.add_argument("--out-file", default="")
     parser.add_argument("--max-age-seconds", type=float, default=21600.0)
     parser.add_argument("--force", action="store_true")
@@ -515,6 +547,7 @@ def main(argv: list[str] | None = None) -> int:
         tax_year=int(args.tax_year),
         profile_path=Path(args.profile).expanduser(),
         account_context_path=Path(args.account_context).expanduser(),
+        account_alias_path=Path(args.account_aliases).expanduser(),
         out_path=out_path,
     )
     if args.json:

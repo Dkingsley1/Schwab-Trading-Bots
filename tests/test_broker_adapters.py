@@ -7,6 +7,7 @@ from core.brokers import (
     available_broker_names_for_role,
     build_broker_adapter,
 )
+from core.brokers.schwab import SchwabBrokerAdapter
 from tests.broker_contract import assert_broker_adapter_contract
 
 
@@ -119,3 +120,14 @@ def test_base_trader_role_selection_and_mock_adapter_flow(monkeypatch):
     assert placed["ok"] is True
     assert placed["order_result"]["ok"] is True
     assert placed["order_request"]["account_reference"] == "mock-account"
+
+
+def test_schwab_live_account_reference_requires_hash_not_suffix() -> None:
+    adapter = SchwabBrokerAdapter()
+
+    assert adapter.validate_live_account_reference("****2831")["ok"] is False
+    assert adapter.validate_live_account_reference("2831")["ok"] is False
+    assert (
+        adapter.validate_live_account_reference("redacted-test-account-hash")["ok"]
+        is True
+    )

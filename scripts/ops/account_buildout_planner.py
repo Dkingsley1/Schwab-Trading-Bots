@@ -425,12 +425,30 @@ def evaluate(
         label = str(account.get("account_label") or "").strip()
         scoped_policy = _policy_for_account(active_policy, label)
         state = _account_position_state(study, label)
+        account_truth = _dict(account.get("account_capability_truth"))
+        classification = _dict(account_truth.get("operator_classification"))
+        classification_complete = bool(
+            classification.get("classification_complete", False)
+        )
+        borrowing_allowed = bool(
+            classification.get(
+                "borrowing_allowed", account.get("borrowing_allowed", False)
+            )
+        )
+        margin_expansion_requested = bool(
+            scoped_policy.get("allow_margin_expansion", False)
+        )
+        margin_expansion_allowed = bool(
+            margin_expansion_requested
+            and classification_complete
+            and borrowing_allowed
+        )
         equity = max(_safe_float(account.get("liquidation_value"), account.get("equity", 0.0)), 0.0)
         cash = max(_safe_float(account.get("cash_balance"), 0.0), 0.0)
         available = max(_safe_float(account.get("available_funds"), 0.0), 0.0)
         flags = _dict(account.get("flags"))
         reserve = equity * _clamp_fraction(scoped_policy.get("cash_reserve_fraction"), 0.1)
-        funding_base = max(cash, available) if bool(scoped_policy.get("allow_margin_expansion", False)) else cash
+        funding_base = max(cash, available) if margin_expansion_allowed else cash
         cash_capacity = max(funding_base - reserve, 0.0)
         gross_cap_notional = equity * effective_gross
         gross_headroom = max(gross_cap_notional - _safe_float(state.get("gross_market_value"), 0.0), 0.0)
@@ -442,13 +460,23 @@ def evaluate(
             account_holds.append("account_closing_only")
         if bool(flags.get("in_margin_call", False)):
             account_holds.append("account_in_margin_call")
+        if not classification_complete:
+            account_holds.append("operator_account_classification_incomplete")
+        if margin_expansion_requested and not margin_expansion_allowed:
+            account_holds.append("margin_expansion_blocked_by_account_capability")
         if gross_headroom <= 0.0:
             account_holds.append("existing_exposure_at_or_above_effective_gross_cap")
         if cash_capacity <= 0.0:
             account_holds.append("cash_reserve_or_cash_balance_leaves_no_addition_capacity")
 
         account_action_start = len(actions)
-        additions_allowed = can_plan and equity > 0.0 and not flags.get("closing_only") and not flags.get("in_margin_call")
+        additions_allowed = (
+            can_plan
+            and classification_complete
+            and equity > 0.0
+            and not flags.get("closing_only")
+            and not flags.get("in_margin_call")
+        )
         buy_weights = {
             symbol: _safe_float(signal.get("net_strength"), 0.0)
             for symbol, signal in signals.items()
@@ -573,6 +601,20 @@ def evaluate(
                 "account_label": label,
                 "operator_account_label": account.get("operator_account_label"),
                 "account_type": account.get("account_type"),
+                "provider_account_type": account.get("account_type"),
+                "operator_account_kind": classification.get(
+                    "account_kind", account.get("operator_account_kind", "unknown")
+                ),
+                "operator_trading_type": classification.get(
+                    "trading_access", account.get("operator_trading_type", "unknown")
+                ),
+                "tax_wrapper": classification.get(
+                    "tax_wrapper", account.get("tax_wrapper", "unknown")
+                ),
+                "classification_complete": classification_complete,
+                "borrowing_allowed": borrowing_allowed,
+                "margin_expansion_requested": margin_expansion_requested,
+                "margin_expansion_allowed": margin_expansion_allowed,
                 "liquidation_value": round(equity, 4),
                 "cash_balance": round(cash, 4),
                 "current_gross_position_market_value": round(_safe_float(state.get("gross_market_value"), 0.0), 4),
@@ -675,6 +717,9 @@ def evaluate(
             "account_size_agnostic_fractional_sizing": True,
             "arbitrary_existing_position_count_supported": True,
             "empty_accounts_supported": True,
+            "provider_margin_type_never_grants_borrowing": True,
+            "limited_margin_uses_cash_capacity_only": True,
+            "unclassified_accounts_are_observation_only": True,
             "existing_exposure_consumes_headroom": True,
             "gross_and_symbol_caps_are_hard_planning_limits": True,
             "stale_inputs_emit_no_action_plan": True,

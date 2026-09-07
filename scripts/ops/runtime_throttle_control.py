@@ -85,6 +85,11 @@ BOUNDED_WRITER_SUPPORT_CPU_THRESHOLD = 90.0
 BOUNDED_WRITER_SUPPORT_SAMPLING_HYSTERESIS_RATIO = 1.05
 BOUNDED_WRITER_SUPPORT_HYSTERESIS_MAX_HOST_SATURATION = 50.0
 BOUNDED_WRITER_SUPPORT_HYSTERESIS_MAX_WRITER_CPU = 110.0
+BOUNDED_PROTECTED_LANE_CPU_THRESHOLD = 125.0
+MACOS_SUPPORT_MIX_MAX_HOST_SATURATION = 62.0
+MACOS_SUPPORT_MIX_MAX_SYSTEM_CPU = 180.0
+MACOS_SUPPORT_MIX_MAX_SUPPORT_CPU = 160.0
+MACOS_SUPPORT_MIX_MAX_BOT_OWNED_CPU = 220.0
 FULL_FORCE_PAPER_BOT_FLOOR = 650
 FULL_FORCE_PAPER_CAPACITY_TARGET = 700
 PRESSURE_ONLY_PAPER_RAMP_BLOCKERS = {
@@ -2106,6 +2111,36 @@ def _soft_cap_low_pressure_advisory(
         and not thermal_warning_active
         and not performance_warning_active
     )
+    support_system_mix_guarded_advisory = bool(
+        overall_status == "degraded"
+        and throttle_profile in {"soft_cap", "sustain"}
+        and compute_pressure_level in {"normal", "elevated"}
+        and memory_pressure_level == "normal"
+        and storage_ready_for_runtime_advisory
+        and bool(live_read_only)
+        and paper_execution_allowed
+        and not paper_execution_paused
+        and paper_ramp_armed
+        and system_hot
+        and bool(host_pressure_attribution.get("external_pressure_dominant", False))
+        and not bool(
+            host_pressure_attribution.get("bot_owned_pressure_dominant", False)
+        )
+        and bool(host_pressure_attribution.get("support_jobs_hot", False))
+        and bool(host_pressure_attribution.get("support_hot_low_priority", False))
+        and system_cpu <= MACOS_SUPPORT_MIX_MAX_SYSTEM_CPU
+        and support_cpu <= MACOS_SUPPORT_MIX_MAX_SUPPORT_CPU
+        and bot_owned_cpu <= MACOS_SUPPORT_MIX_MAX_BOT_OWNED_CPU
+        and protected_cpu < 20.0
+        and operator_cpu < 35.0
+        and saturation_score < MACOS_SUPPORT_MIX_MAX_HOST_SATURATION
+        and not bool(host_pressure_attribution.get("paper_execution_hot", False))
+        and not bool(host_pressure_attribution.get("research_training_hot", False))
+        and not bool(host_pressure_attribution.get("storage_writer_hot", False))
+        and not protected_work_hot
+        and not thermal_warning_active
+        and not performance_warning_active
+    )
     plain_storage_clear_guarded_ready = bool(
         str(storage_severity or "").strip().lower()
         not in {"high", "critical", "blocked"}
@@ -2179,6 +2214,32 @@ def _soft_cap_low_pressure_advisory(
         and bot_owned_cpu <= 180.0
         and protected_cpu < 20.0
         and operator_cpu < 35.0
+        and saturation_score < 50.0
+        and not bool(host_pressure_attribution.get("support_jobs_hot", False))
+        and not bool(host_pressure_attribution.get("paper_execution_hot", False))
+        and not bool(host_pressure_attribution.get("research_training_hot", False))
+        and not protected_work_hot
+        and not thermal_warning_active
+        and not performance_warning_active
+    )
+    bounded_writer_with_quiet_protected_lane_guarded_ready = bool(
+        overall_status == "degraded"
+        and throttle_profile in {"soft_cap", "sustain"}
+        and compute_pressure_level == "normal"
+        and memory_pressure_level == "normal"
+        and storage_ready_for_runtime_advisory
+        and plain_storage_clear_guarded_ready
+        and bool(live_read_only)
+        and paper_execution_allowed
+        and not paper_execution_paused
+        and paper_ramp_armed
+        and bool(host_pressure_attribution.get("storage_writer_hot", False))
+        and storage_writer_cpu <= 110.0
+        and protected_cpu <= 75.0
+        and bot_owned_cpu <= 180.0
+        and operator_cpu < 35.0
+        and interactive_cpu < 60.0
+        and system_cpu <= 180.0
         and saturation_score < 50.0
         and not bool(host_pressure_attribution.get("support_jobs_hot", False))
         and not bool(host_pressure_attribution.get("paper_execution_hot", False))
@@ -2458,8 +2519,7 @@ def _soft_cap_low_pressure_advisory(
         and memory_pressure_level == "normal"
         and storage_ready_for_runtime_advisory
         and bool(live_read_only)
-        and protected_work_hot
-        and protected_cpu <= 75.0
+        and 0.0 < protected_cpu <= BOUNDED_PROTECTED_LANE_CPU_THRESHOLD
         and bot_owned_cpu <= max(95.0, protected_cpu + 25.0)
         and operator_cpu < 30.0
         and saturation_score < 62.0
@@ -2470,9 +2530,40 @@ def _soft_cap_low_pressure_advisory(
         and not thermal_warning_active
         and not performance_warning_active
     )
+    bounded_read_only_capacity_envelope_guarded_ready = bool(
+        overall_status == "degraded"
+        and throttle_profile in {"soft_cap", "sustain"}
+        and compute_pressure_level == "normal"
+        and memory_pressure_level == "normal"
+        and storage_ready_for_runtime_advisory
+        and (plain_storage_clear_guarded_ready or overlay_runtime_relief_active)
+        and bool(live_read_only)
+        and paper_execution_allowed
+        and not paper_execution_paused
+        and paper_ramp_armed
+        and 0.0 < bot_owned_cpu <= 220.0
+        and protected_cpu <= BOUNDED_PROTECTED_LANE_CPU_THRESHOLD
+        and storage_writer_cpu <= 110.0
+        and support_cpu <= 80.0
+        and research_cpu < 35.0
+        and paper_cpu < 35.0
+        and operator_cpu < 35.0
+        and interactive_cpu < 60.0
+        and system_cpu <= 180.0
+        and saturation_score < 50.0
+        and (
+            not bool(host_pressure_attribution.get("support_jobs_hot", False))
+            or bool(host_pressure_attribution.get("support_hot_low_priority", False))
+        )
+        and not bool(host_pressure_attribution.get("paper_execution_hot", False))
+        and not bool(host_pressure_attribution.get("research_training_hot", False))
+        and not thermal_warning_active
+        and not performance_warning_active
+    )
     runtime_ready_guarded = bool(
         storage_writer_cooling_guarded_ready
         or storage_writer_burst_complete_guarded_ready
+        or bounded_writer_with_quiet_protected_lane_guarded_ready
         or bounded_writer_with_support_guarded_ready
         or bounded_writer_with_paper_shadow_guarded_ready
         or full_force_paper_ramp_guarded_ready
@@ -2481,6 +2572,7 @@ def _soft_cap_low_pressure_advisory(
         or support_throttle_pending_guarded_ready
         or support_low_priority_guarded_ready
         or bounded_protected_lane_guarded_ready
+        or bounded_read_only_capacity_envelope_guarded_ready
         or (
             overall_status == "degraded"
             and (
@@ -2522,6 +2614,7 @@ def _soft_cap_low_pressure_advisory(
             or foreground_system_guarded
             or support_low_priority_guarded
             or support_throttle_pending_guarded
+            or support_system_mix_guarded_advisory
             or research_low_priority_guarded
             or operator_observability_guarded
             or operator_observability_high_compute_guarded
@@ -2534,6 +2627,7 @@ def _soft_cap_low_pressure_advisory(
             or runtime_ready_guarded
             or storage_writer_cooling_guarded_ready
             or storage_writer_burst_complete_guarded_ready
+            or bounded_writer_with_quiet_protected_lane_guarded_ready
             or support_throttle_pending_guarded_ready
             or support_low_priority_guarded_ready
             or bounded_writer_with_support_guarded_ready
@@ -2542,6 +2636,7 @@ def _soft_cap_low_pressure_advisory(
             or bounded_bot_owned_runtime_guarded_ready
             or bounded_writer_support_protected_guarded_ready
             or bounded_protected_lane_guarded_ready
+            or bounded_read_only_capacity_envelope_guarded_ready
         )
         and (
             memory_pressure_level == "normal"
@@ -2559,6 +2654,7 @@ def _soft_cap_low_pressure_advisory(
             or foreground_system_guarded
             or support_low_priority_guarded
             or support_throttle_pending_guarded
+            or support_system_mix_guarded_advisory
             or research_low_priority_guarded
             or operator_observability_high_compute_guarded
             or paper_lane_low_priority_guarded
@@ -2568,6 +2664,7 @@ def _soft_cap_low_pressure_advisory(
             or external_high_compute_guarded
             or storage_writer_cooling_guarded_ready
             or storage_writer_burst_complete_guarded_ready
+            or bounded_writer_with_quiet_protected_lane_guarded_ready
             or support_throttle_pending_guarded_ready
             or support_low_priority_guarded_ready
             or bounded_writer_with_support_guarded_ready
@@ -2576,12 +2673,14 @@ def _soft_cap_low_pressure_advisory(
             or bounded_bot_owned_runtime_guarded_ready
             or bounded_writer_support_protected_guarded_ready
             or bounded_protected_lane_guarded_ready
+            or bounded_read_only_capacity_envelope_guarded_ready
         )
         and (
             not protected_work_hot
             or protected_work_guarded
             or bounded_protected_lane_guarded_ready
             or bounded_writer_support_protected_guarded_ready
+            or bounded_read_only_capacity_envelope_guarded_ready
         )
     )
     reason = "soft_cap_still_requires_degraded_posture"
@@ -2635,16 +2734,22 @@ def _soft_cap_low_pressure_advisory(
             reason = "single_bounded_storage_writer_after_green_backpressure_is_guarded_runtime_ready"
         elif storage_writer_burst_complete_guarded_ready:
             reason = "bounded_storage_writer_burst_after_clear_backpressure_is_guarded_runtime_ready"
+        elif bounded_writer_with_quiet_protected_lane_guarded_ready:
+            reason = "bounded_writer_and_quiet_protected_lane_is_guarded_runtime_ready"
         elif support_throttle_pending_guarded_ready:
             reason = "support_throttle_pending_after_green_backpressure_is_guarded_runtime_ready"
         elif support_low_priority_guarded_ready:
             reason = "niced_support_pressure_after_green_backpressure_is_guarded_runtime_ready"
         elif bounded_protected_lane_guarded_ready:
             reason = "bounded_read_only_protected_lane_after_green_backpressure_is_guarded_runtime_ready"
+        elif bounded_read_only_capacity_envelope_guarded_ready:
+            reason = "bounded_read_only_runtime_capacity_envelope_is_guarded_ready"
         else:
             reason = "runtime_pressure_is_guarded_ready"
     elif active and foreground_system_guarded:
         reason = "foreground_and_macos_system_mix_is_guarded_advisory"
+    elif active and support_system_mix_guarded_advisory:
+        reason = "macos_and_niced_support_mix_is_bounded_advisory_not_paper_degradation"
     elif active and support_low_priority_guarded and system_secondary_to_bot_owned:
         reason = "niced_support_maintenance_with_secondary_system_pressure_is_guarded_advisory"
     elif active and support_low_priority_guarded:
@@ -2698,9 +2803,12 @@ def _soft_cap_low_pressure_advisory(
             "max_guarded_ready_protected_cpu_percent": 20.0,
             "max_guarded_ready_operator_cpu_percent": 30.0,
             "max_guarded_ready_full_force_operator_cpu_percent": 45.0,
-            "max_guarded_ready_protected_lane_cpu_percent": 75.0,
+            "max_guarded_ready_protected_lane_cpu_percent": BOUNDED_PROTECTED_LANE_CPU_THRESHOLD,
             "max_guarded_ready_bot_owned_with_protected_lane_cpu_percent": 95.0,
             "max_guarded_ready_bounded_bot_owned_cpu_percent": 220.0,
+            "max_guarded_ready_read_only_envelope_support_cpu_percent": 80.0,
+            "max_guarded_ready_read_only_envelope_storage_writer_cpu_percent": 110.0,
+            "max_guarded_ready_read_only_envelope_host_saturation_score": 50.0,
             "max_guarded_ready_bounded_writer_support_cpu_percent": BOUNDED_WRITER_SUPPORT_CPU_THRESHOLD,
             "max_guarded_ready_bounded_writer_support_hysteresis_cpu_percent": (
                 BOUNDED_WRITER_SUPPORT_CPU_THRESHOLD
@@ -2738,6 +2846,10 @@ def _soft_cap_low_pressure_advisory(
             "max_guarded_niced_support_host_saturation_score": 68.0,
             "max_guarded_niced_support_ready_host_saturation_score": 75.0,
             "max_guarded_niced_support_ready_cpu_percent": 160.0,
+            "max_guarded_macos_support_mix_host_saturation_score": MACOS_SUPPORT_MIX_MAX_HOST_SATURATION,
+            "max_guarded_macos_support_mix_system_cpu_percent": MACOS_SUPPORT_MIX_MAX_SYSTEM_CPU,
+            "max_guarded_macos_support_mix_support_cpu_percent": MACOS_SUPPORT_MIX_MAX_SUPPORT_CPU,
+            "max_guarded_macos_support_mix_bot_owned_cpu_percent": MACOS_SUPPORT_MIX_MAX_BOT_OWNED_CPU,
             "max_guarded_operator_observability_host_saturation_score": 68.0,
             "max_guarded_operator_observability_high_compute_cpu_percent": 100.0,
             "max_guarded_external_cotenant_host_saturation_score": 75.0,
@@ -2777,7 +2889,11 @@ def _soft_cap_low_pressure_advisory(
             "storage_writer_cooling_guarded_ready": storage_writer_cooling_guarded_ready,
             "storage_writer_cooling_guarded_advisory": storage_writer_cooling_guarded_advisory,
             "storage_writer_burst_complete_guarded_ready": storage_writer_burst_complete_guarded_ready,
+            "bounded_writer_with_quiet_protected_lane_guarded_ready": (
+                bounded_writer_with_quiet_protected_lane_guarded_ready
+            ),
             "support_throttle_pending_guarded": support_throttle_pending_guarded,
+            "support_system_mix_guarded_advisory": support_system_mix_guarded_advisory,
             "support_throttle_pending_guarded_ready": support_throttle_pending_guarded_ready,
             "support_low_priority_guarded_ready": support_low_priority_guarded_ready,
             "bounded_writer_with_support_guarded_ready": bounded_writer_with_support_guarded_ready,
@@ -2799,6 +2915,9 @@ def _soft_cap_low_pressure_advisory(
             "bounded_bot_owned_runtime_guarded_ready": bounded_bot_owned_runtime_guarded_ready,
             "bounded_writer_support_protected_guarded_ready": bounded_writer_support_protected_guarded_ready,
             "bounded_protected_lane_guarded_ready": bounded_protected_lane_guarded_ready,
+            "bounded_read_only_capacity_envelope_guarded_ready": (
+                bounded_read_only_capacity_envelope_guarded_ready
+            ),
             "live_read_only": bool(live_read_only),
             "foreground_app_cpu_percent": round(float(interactive_cpu), 3),
             "macos_system_cpu_percent": round(float(system_cpu), 3),
@@ -4469,7 +4588,41 @@ def _apply_paper_execution_pause(candidates: list[dict[str, Any]]) -> dict[str, 
     }
 
 
-def _research_training_pause_requested(payload: dict[str, Any]) -> tuple[bool, str]:
+def _soft_cap_background_pause_requested(
+    payload: dict[str, Any],
+    *,
+    pressure_key: str,
+    start_threshold_env: str,
+    resume_threshold_env: str,
+    previously_paused: bool,
+) -> bool:
+    if str(payload.get("throttle_profile") or "").strip().lower() != "soft_cap":
+        return False
+    attribution = (
+        payload.get("host_pressure_attribution")
+        if isinstance(payload.get("host_pressure_attribution"), dict)
+        else {}
+    )
+    host_score = _safe_float(payload.get("host_saturation_score"), 0.0)
+    if host_score <= 0:
+        host_score = _safe_float(attribution.get("host_saturation_score"), 0.0)
+    start_threshold = _safe_float(os.getenv(start_threshold_env, "50"), 50.0)
+    resume_threshold = min(
+        _safe_float(os.getenv(resume_threshold_env, "42"), 42.0),
+        start_threshold,
+    )
+    if previously_paused:
+        return bool(host_score >= resume_threshold)
+    return bool(
+        attribution.get(pressure_key, False) and host_score >= start_threshold
+    )
+
+
+def _research_training_pause_requested(
+    payload: dict[str, Any],
+    *,
+    previously_paused: bool = False,
+) -> tuple[bool, str]:
     governor = (
         payload.get("runtime_saturation_governor_v2")
         if isinstance(payload.get("runtime_saturation_governor_v2"), dict)
@@ -4494,6 +4647,14 @@ def _research_training_pause_requested(payload: dict[str, Any]) -> tuple[bool, s
     memory = str(payload.get("memory_pressure_level") or "").strip().lower()
     if profile in {"protect_live", "sustain"} or compute == "high" or memory == "high":
         return True, "runtime_host_headroom"
+    if _soft_cap_background_pause_requested(
+        payload,
+        pressure_key="research_training_hot",
+        start_threshold_env="RUNTIME_SOFT_CAP_RESEARCH_PAUSE_SCORE",
+        resume_threshold_env="RUNTIME_SOFT_CAP_RESEARCH_RESUME_SCORE",
+        previously_paused=previously_paused,
+    ):
+        return True, "runtime_soft_cap_research_pressure"
     return False, "runtime_training_ready"
 
 
@@ -4507,8 +4668,11 @@ def _apply_research_training_pause(
     state_path = state_path or (
         project_root / "governance" / "health" / DEFAULT_RESEARCH_PAUSE_STATE_PATH.name
     )
-    pause_requested, reason = _research_training_pause_requested(payload)
     state = load_json(state_path)
+    pause_requested, reason = _research_training_pause_requested(
+        payload,
+        previously_paused=bool(state.get("pause_requested", False)),
+    )
     paused_rows = (
         state.get("paused_processes")
         if isinstance(state.get("paused_processes"), list)
@@ -4675,7 +4839,11 @@ def _apply_research_training_pause(
     }
 
 
-def _support_maintenance_pause_requested(payload: dict[str, Any]) -> tuple[bool, str]:
+def _support_maintenance_pause_requested(
+    payload: dict[str, Any],
+    *,
+    previously_paused: bool = False,
+) -> tuple[bool, str]:
     mac_fluidity = (
         payload.get("mac_fluidity_contract")
         if isinstance(payload.get("mac_fluidity_contract"), dict)
@@ -4683,6 +4851,14 @@ def _support_maintenance_pause_requested(payload: dict[str, Any]) -> tuple[bool,
     )
     if bool(mac_fluidity.get("support_pause_recommended", False)):
         return True, "mac_fluidity_support_pause"
+    if _soft_cap_background_pause_requested(
+        payload,
+        pressure_key="support_jobs_hot",
+        start_threshold_env="RUNTIME_SOFT_CAP_SUPPORT_PAUSE_SCORE",
+        resume_threshold_env="RUNTIME_SOFT_CAP_SUPPORT_RESUME_SCORE",
+        previously_paused=previously_paused,
+    ):
+        return True, "runtime_soft_cap_support_pressure"
     return False, "support_maintenance_ready"
 
 
@@ -4750,8 +4926,11 @@ def _apply_support_maintenance_pause(
     state_path = state_path or (
         project_root / "governance" / "health" / DEFAULT_SUPPORT_PAUSE_STATE_PATH.name
     )
-    pause_requested, reason = _support_maintenance_pause_requested(payload)
     state = load_json(state_path)
+    pause_requested, reason = _support_maintenance_pause_requested(
+        payload,
+        previously_paused=bool(state.get("pause_requested", False)),
+    )
     paused_rows = (
         state.get("paused_processes")
         if isinstance(state.get("paused_processes"), list)

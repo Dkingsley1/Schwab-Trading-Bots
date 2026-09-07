@@ -5,14 +5,23 @@ import json
 import os
 import sqlite3
 import time
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from core.accountability import safe_append_jsonl, safe_write_json_atomic
+from core.accountability import (
+    enrich_log_row,
+    safe_append_jsonl,
+    safe_write_json_atomic,
+)
 from core.channel_queue import ChannelMessage, ChannelQueue, default_queue_db_path
 from core.causal_attribution import build_execution_trace, ensure_trace_context
+from core.execution_contract import (
+    execution_provenance,
+    normalize_execution_intent,
+    validate_execution_intent_contract,
+)
 from core.institutional_decision_flow import evaluate_execution_policy_guard
 from core.profitability_hardening import (
     PAPER_EXECUTION_AUTHORITY_VERSION,
@@ -20,11 +29,12 @@ from core.profitability_hardening import (
 )
 from core.system_role_contracts import RoleAuthorityError, component_action_guard
 
-
 EXECUTION_INTENT_CHANNEL = "execution_intent"
 EXECUTION_RESULT_CHANNEL = "execution_result"
 EXECUTION_PROMOTION_CHANNEL = "execution_promotion"
 EXECUTION_PROMOTED_CHANNEL = "execution_promoted"
+EXECUTION_RUNTIME_BREAKER_VERSION = "execution_runtime_breaker_v1"
+_HEALTH_QUEUE_CACHE: dict[str, ChannelQueue] = {}
 EXECUTION_TRANSPORT_FEATURE_KEYS = frozenset(
     {
         "allocation_conflict_norm",
@@ -58,6 +68,24 @@ EXECUTION_TRANSPORT_FEATURE_KEYS = frozenset(
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def execution_child_message_id(
+    kind: str, *, source_message_id: str, mode: str = ""
+) -> str:
+    """Return a stable, globally unique child identity for one execution intent."""
+
+    kind_text = str(kind or "execution-child").strip().lower().replace("_", "-")
+    mode_text = str(mode or "").strip().lower()
+    source_text = str(source_message_id or "").strip()
+    digest = hashlib.sha256(
+        f"{kind_text}|{mode_text}|{source_text}".encode("utf-8")
+    ).hexdigest()
+    parts = [kind_text]
+    if mode_text:
+        parts.append(mode_text)
+    parts.append(digest)
+    return ":".join(parts)
 
 
 def _parse_ts(raw: Any) -> Optional[datetime]:
@@ -106,6 +134,151 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _paper_risk_reducing_intent(intent: Dict[str, Any]) -> bool:
+    action = str(intent.get("action") or "").strip().upper()
+    if action in {
+        "CLOSE",
+        "BUY_TO_CLOSE",
+        "BUY_TO_COVER",
+        "SELL_TO_CLOSE",
+    }:
+        return True
+    metadata = (
+        intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+    )
+    transition = str(
+        metadata.get("position_transition")
+        or metadata.get("position_effect")
+        or intent.get("position_transition")
+        or ""
+    ).strip().lower()
+    if action == "SELL" and transition in {
+        "close",
+        "closing",
+        "exit_long",
+        "reduce_long",
+        "trim_long",
+    }:
+        return True
+    if action == "BUY" and transition in {
+        "close",
+        "closing",
+        "exit_short",
+        "reduce_short",
+        "cover_short",
+    }:
+        return True
+    return False
+
+
+def evaluate_runtime_execution_breaker(
+    *, project_root: str, intent: Dict[str, Any], mode: str
+) -> Dict[str, Any]:
+    path = (
+        Path(project_root)
+        / "governance"
+        / "health"
+        / "execution_runtime_breaker_latest.json"
+    )
+    state = _read_json(path)
+    required = _env_flag("EXECUTION_RUNTIME_BREAKER_REQUIRED", "0")
+    validation_reasons: list[str] = []
+    if not state:
+        if required:
+            validation_reasons.append("execution_runtime_breaker_state_missing")
+    else:
+        if not isinstance(state.get("active"), bool):
+            validation_reasons.append("execution_runtime_breaker_active_invalid")
+        if not isinstance(state.get("reasons"), list):
+            validation_reasons.append("execution_runtime_breaker_reasons_invalid")
+        if not isinstance(state.get("source_actionable"), bool):
+            validation_reasons.append(
+                "execution_runtime_breaker_source_actionable_invalid"
+            )
+        if not isinstance(state.get("latched"), bool):
+            validation_reasons.append("execution_runtime_breaker_latched_invalid")
+        if str(state.get("contract_version") or "") != EXECUTION_RUNTIME_BREAKER_VERSION:
+            validation_reasons.append("execution_runtime_breaker_version_mismatch")
+        expected_hash = str(state.get("state_sha256") or "")
+        unsigned = dict(state)
+        unsigned.pop("state_sha256", None)
+        actual_hash = hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        if not expected_hash or expected_hash != actual_hash:
+            validation_reasons.append("execution_runtime_breaker_receipt_mismatch")
+        timestamp = _parse_ts(state.get("timestamp_utc"))
+        max_age_seconds = max(
+            _safe_float(
+                os.getenv("EXECUTION_RUNTIME_BREAKER_MAX_AGE_SECONDS", "180"),
+                180.0,
+            ),
+            30.0,
+        )
+        if timestamp is None:
+            validation_reasons.append("execution_runtime_breaker_timestamp_missing")
+        else:
+            signed_age_seconds = (
+                datetime.now(timezone.utc) - timestamp
+            ).total_seconds()
+            max_future_skew_seconds = max(
+                _safe_float(
+                    os.getenv(
+                        "EXECUTION_RUNTIME_BREAKER_MAX_FUTURE_SKEW_SECONDS", "30"
+                    ),
+                    30.0,
+                ),
+                0.0,
+            )
+            if signed_age_seconds < -max_future_skew_seconds:
+                validation_reasons.append(
+                    "execution_runtime_breaker_timestamp_in_future"
+                )
+            elif signed_age_seconds > max_age_seconds:
+                validation_reasons.append("execution_runtime_breaker_state_stale")
+
+    declared_active = (
+        state.get("active", False)
+        if state and isinstance(state.get("active"), bool)
+        else False
+    )
+    effective_active = bool(declared_active or (required and validation_reasons))
+    paper_risk_reducing = bool(
+        str(mode).strip().lower() == "paper" and _paper_risk_reducing_intent(intent)
+    )
+    raw_state_reasons = state.get("reasons", []) if state else []
+    state_reasons = (
+        [str(reason) for reason in raw_state_reasons if str(reason)]
+        if isinstance(raw_state_reasons, list)
+        else []
+    )
+    reasons = list(dict.fromkeys([*validation_reasons, *state_reasons]))
+    allow_execute = bool(not effective_active or paper_risk_reducing)
+    if effective_active and not reasons:
+        reasons = ["execution_runtime_breaker_active"]
+    primary_reason = ""
+    if effective_active:
+        primary_reason = "execution_runtime_breaker_active"
+        if reasons:
+            primary_reason += f":{reasons[0]}"
+    return {
+        "contract_version": EXECUTION_RUNTIME_BREAKER_VERSION,
+        "required": required,
+        "state_present": bool(state),
+        "state_valid": not validation_reasons,
+        "declared_active": declared_active,
+        "active": effective_active,
+        "status": str(state.get("status") or ("missing" if not state else "unknown")),
+        "allow_execute": allow_execute,
+        "paper_risk_reducing": paper_risk_reducing,
+        "primary_reason": primary_reason,
+        "reasons": reasons,
+        "source_path": str(path),
+    }
+
+
 def _write_latest(project_root: str, name: str, payload: Dict[str, Any]) -> None:
     out = Path(project_root) / "governance" / "health" / name
     safe_write_json_atomic(
@@ -116,25 +289,35 @@ def _write_latest(project_root: str, name: str, payload: Dict[str, Any]) -> None
     )
 
 
-def _execution_transport_payload(channel: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _execution_transport_payload(
+    channel: str, payload: Dict[str, Any]
+) -> Dict[str, Any]:
     row = dict(payload or {})
     if str(channel or "") not in {EXECUTION_INTENT_CHANNEL, EXECUTION_PROMOTED_CHANNEL}:
         return row
 
     features = row.get("features") if isinstance(row.get("features"), dict) else {}
-    retained = {key: value for key, value in features.items() if key in EXECUTION_TRANSPORT_FEATURE_KEYS}
-    encoded_features = json.dumps(features, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    retained = {
+        key: value
+        for key, value in features.items()
+        if key in EXECUTION_TRANSPORT_FEATURE_KEYS
+    }
+    encoded_features = json.dumps(
+        features, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    )
     row["features"] = retained
     row["execution_transport"] = {
         "schema_version": 2,
         "compacted": len(retained) < len(features),
         "source_feature_count": len(features),
         "transport_feature_count": len(retained),
-        "source_features_sha256": hashlib.sha256(encoded_features.encode("utf-8")).hexdigest(),
+        "source_features_sha256": hashlib.sha256(
+            encoded_features.encode("utf-8")
+        ).hexdigest(),
         "canonical_evidence_policy": "full_features_remain_in_source_decision_telemetry",
     }
     row["trace_context"] = ensure_trace_context(row)
-    return row
+    return normalize_execution_intent(row, force_reseal=True)
 
 
 def execution_lane_root(project_root: str | Path) -> Path:
@@ -149,25 +332,43 @@ def execution_lane_root(project_root: str | Path) -> Path:
         if external_project:
             external_root = Path(external_project).expanduser()
         else:
-            mount = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
-            project_dir = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot").strip() or "schwab_trading_bot"
+            mount = Path(
+                os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")
+            ).expanduser()
+            project_dir = (
+                os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot").strip()
+                or "schwab_trading_bot"
+            )
             external_root = mount / project_dir
-        if external_root.exists() or _env_flag("EXECUTION_LANE_CREATE_EXTERNAL_ROOT", "1"):
+        if external_root.exists() or _env_flag(
+            "EXECUTION_LANE_CREATE_EXTERNAL_ROOT", "1"
+        ):
             return external_root / "governance" / "execution_lanes"
 
     return root / "governance" / "execution_lanes"
 
 
-def execution_lane_daily_path(project_root: str | Path, stem: str, *, day: str = "") -> str:
+def execution_lane_daily_path(
+    project_root: str | Path, stem: str, *, day: str = ""
+) -> str:
     stamp = str(day or datetime.now(timezone.utc).strftime("%Y%m%d"))
     base = execution_lane_root(project_root)
     return str(base / f"{stem}_{stamp}.jsonl")
 
 
-def _execution_result_evidence(project_root: str, mode: str, now: datetime) -> Dict[str, Any]:
-    max_rows = max(_safe_int(os.getenv("EXECUTION_LANE_HEALTH_RESULT_EVIDENCE_MAX_ROWS", "5000"), 5000), 100)
+def _execution_result_evidence(
+    project_root: str, mode: str, now: datetime
+) -> Dict[str, Any]:
+    max_rows = max(
+        _safe_int(
+            os.getenv("EXECUTION_LANE_HEALTH_RESULT_EVIDENCE_MAX_ROWS", "5000"), 5000
+        ),
+        100,
+    )
     freshness_seconds = max(
-        _safe_float(os.getenv("EXECUTION_LANE_HEALTH_RESULT_FRESH_SECONDS", "900"), 900.0),
+        _safe_float(
+            os.getenv("EXECUTION_LANE_HEALTH_RESULT_FRESH_SECONDS", "900"), 900.0
+        ),
         60.0,
     )
     path = Path(execution_lane_daily_path(project_root, "execution_results"))
@@ -179,9 +380,18 @@ def _execution_result_evidence(project_root: str, mode: str, now: datetime) -> D
         "stale_skip_rows": 0,
         "non_stale_rows": 0,
         "paper_executed_rows": 0,
+        "paper_standard_blocked_rows": 0,
+        "runtime_breaker_blocked_rows": 0,
+        "replay_suppressed_rows": 0,
+        "intent_contract_blocked_rows": 0,
+        "consumer_error_blocked_rows": 0,
+        "status_counts": {},
+        "reason_counts": {},
         "latest_result_status": "",
+        "latest_result_reason": "",
         "latest_result_age_seconds": None,
         "latest_non_stale_status": "",
+        "latest_non_stale_reason": "",
         "latest_non_stale_age_seconds": None,
         "latest_paper_executed_age_seconds": None,
         "freshness_seconds": float(freshness_seconds),
@@ -190,6 +400,7 @@ def _execution_result_evidence(project_root: str, mode: str, now: datetime) -> D
         "historical_stale_skip_only": False,
         "stale_skip_only": False,
         "activity_status": "missing_result_file",
+        "plumbing_status": "missing_result_file",
     }
     if not path.exists() or not path.is_file():
         return evidence
@@ -206,6 +417,8 @@ def _execution_result_evidence(project_root: str, mode: str, now: datetime) -> D
     latest_any_dt: datetime | None = None
     latest_non_stale_dt: datetime | None = None
     latest_executed_dt: datetime | None = None
+    status_counts: Counter[str] = Counter()
+    reason_counts: Counter[str] = Counter()
     mode_text = str(mode or "").strip().lower()
     evidence["rows_scanned"] = len(rows)
     for line in rows:
@@ -220,48 +433,103 @@ def _execution_result_evidence(project_root: str, mode: str, now: datetime) -> D
             continue
         status = str(row.get("result_status") or "").strip().upper()
         result = row.get("result") if isinstance(row.get("result"), dict) else {}
-        result_reason = str(result.get("reason") or row.get("reason") or "").strip().lower()
-        is_stale_skip = bool(status == "STALE_INTENT_SKIPPED" or result_reason == "stale_execution_intent")
+        result_reason = (
+            str(
+                result.get("reason")
+                or row.get("result_reason")
+                or row.get("reason")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        is_stale_skip = bool(
+            status == "STALE_INTENT_SKIPPED"
+            or result_reason == "stale_execution_intent"
+        )
         ts = _parse_ts(row.get("timestamp_utc"))
 
         evidence["mode_rows"] = int(evidence["mode_rows"]) + 1
+        status_counts[status or "UNKNOWN"] += 1
+        if result_reason:
+            reason_counts[result_reason] += 1
         if ts is not None and (latest_any_dt is None or ts >= latest_any_dt):
             latest_any_dt = ts
             evidence["latest_result_status"] = status
+            evidence["latest_result_reason"] = result_reason
         if is_stale_skip:
             evidence["stale_skip_rows"] = int(evidence["stale_skip_rows"]) + 1
             continue
 
         evidence["non_stale_rows"] = int(evidence["non_stale_rows"]) + 1
-        if ts is not None and (latest_non_stale_dt is None or ts >= latest_non_stale_dt):
+        if ts is not None and (
+            latest_non_stale_dt is None or ts >= latest_non_stale_dt
+        ):
             latest_non_stale_dt = ts
             evidence["latest_non_stale_status"] = status
+            evidence["latest_non_stale_reason"] = result_reason
+        if status == "PAPER_STANDARD_BLOCKED":
+            evidence["paper_standard_blocked_rows"] = (
+                int(evidence["paper_standard_blocked_rows"]) + 1
+            )
+        if status.endswith("RUNTIME_BREAKER_BLOCKED"):
+            evidence["runtime_breaker_blocked_rows"] = (
+                int(evidence["runtime_breaker_blocked_rows"]) + 1
+            )
+        if status.endswith("REPLAY_SUPPRESSED"):
+            evidence["replay_suppressed_rows"] = (
+                int(evidence["replay_suppressed_rows"]) + 1
+            )
+        if status.endswith("INTENT_CONTRACT_BLOCKED"):
+            evidence["intent_contract_blocked_rows"] = (
+                int(evidence["intent_contract_blocked_rows"]) + 1
+            )
+        if status.endswith("CONSUMER_ERROR_BLOCKED"):
+            evidence["consumer_error_blocked_rows"] = (
+                int(evidence["consumer_error_blocked_rows"]) + 1
+            )
         if status == "PAPER_EXECUTED":
             evidence["paper_executed_rows"] = int(evidence["paper_executed_rows"]) + 1
-            if ts is not None and (latest_executed_dt is None or ts >= latest_executed_dt):
+            if ts is not None and (
+                latest_executed_dt is None or ts >= latest_executed_dt
+            ):
                 latest_executed_dt = ts
 
     if latest_any_dt is not None:
-        evidence["latest_result_age_seconds"] = round(max((now - latest_any_dt).total_seconds(), 0.0), 3)
+        evidence["latest_result_age_seconds"] = round(
+            max((now - latest_any_dt).total_seconds(), 0.0), 3
+        )
     if latest_non_stale_dt is not None:
-        evidence["latest_non_stale_age_seconds"] = round(max((now - latest_non_stale_dt).total_seconds(), 0.0), 3)
+        evidence["latest_non_stale_age_seconds"] = round(
+            max((now - latest_non_stale_dt).total_seconds(), 0.0), 3
+        )
     if latest_executed_dt is not None:
-        evidence["latest_paper_executed_age_seconds"] = round(max((now - latest_executed_dt).total_seconds(), 0.0), 3)
+        evidence["latest_paper_executed_age_seconds"] = round(
+            max((now - latest_executed_dt).total_seconds(), 0.0), 3
+        )
 
     latest_non_stale_age = evidence["latest_non_stale_age_seconds"]
     latest_executed_age = evidence["latest_paper_executed_age_seconds"]
     evidence["fresh_non_stale_activity"] = bool(
-        latest_non_stale_age is not None and float(latest_non_stale_age) <= freshness_seconds
+        latest_non_stale_age is not None
+        and float(latest_non_stale_age) <= freshness_seconds
     )
     evidence["fresh_paper_executed"] = bool(
-        latest_executed_age is not None and float(latest_executed_age) <= freshness_seconds
+        latest_executed_age is not None
+        and float(latest_executed_age) <= freshness_seconds
     )
     latest_result_age = evidence["latest_result_age_seconds"]
-    evidence["historical_stale_skip_only"] = bool(evidence["stale_skip_rows"] and not evidence["non_stale_rows"])
+    evidence["historical_stale_skip_only"] = bool(
+        evidence["stale_skip_rows"] and not evidence["non_stale_rows"]
+    )
     evidence["stale_skip_only"] = bool(
         evidence["historical_stale_skip_only"]
         and latest_result_age is not None
         and float(latest_result_age) <= freshness_seconds
+    )
+    evidence["status_counts"] = dict(sorted(status_counts.items()))
+    evidence["reason_counts"] = dict(
+        sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))[:32]
     )
     if evidence["fresh_paper_executed"]:
         evidence["activity_status"] = "fresh_paper_executed"
@@ -275,6 +543,32 @@ def _execution_result_evidence(project_root: str, mode: str, now: datetime) -> D
         evidence["activity_status"] = "stale_or_old_paper_activity"
     else:
         evidence["activity_status"] = "no_mode_results"
+    latest_status = str(evidence.get("latest_non_stale_status") or "").upper()
+    latest_reason = str(evidence.get("latest_non_stale_reason") or "").lower()
+    if latest_status.endswith("INTENT_CONTRACT_BLOCKED") or latest_status.endswith(
+        "CONSUMER_ERROR_BLOCKED"
+    ):
+        evidence["plumbing_status"] = "contract_or_consumer_failure"
+    elif latest_status.endswith("REPLAY_SUPPRESSED"):
+        evidence["plumbing_status"] = "replay_safely_suppressed"
+    elif latest_status.endswith("RUNTIME_BREAKER_BLOCKED"):
+        evidence["plumbing_status"] = "resident_runtime_safety_hold"
+    elif (
+        latest_status == "PAPER_STANDARD_BLOCKED"
+        and latest_reason
+        == "paper_standard_hierarchical_master_must_delegate_to_portfolio_consensus"
+    ):
+        evidence["plumbing_status"] = "protected_orchestration_only"
+    elif latest_status == "PAPER_STANDARD_BLOCKED":
+        evidence["plumbing_status"] = "protective_policy_block"
+    elif evidence["fresh_paper_executed"]:
+        evidence["plumbing_status"] = "ready_executed"
+    elif evidence["fresh_non_stale_activity"]:
+        evidence["plumbing_status"] = "ready_non_execution_activity"
+    elif evidence["mode_rows"]:
+        evidence["plumbing_status"] = "idle_or_historical"
+    else:
+        evidence["plumbing_status"] = "no_result_evidence"
     return evidence
 
 
@@ -292,7 +586,10 @@ def _enqueue_channel(
 ) -> str:
     queue = ChannelQueue(queue_db_path(project_root, queue_db_override))
     attempts = max(int(os.getenv("EXECUTION_LANE_QUEUE_ENQUEUE_RETRIES", "8") or 8), 1)
-    base_sleep = max(float(os.getenv("EXECUTION_LANE_QUEUE_ENQUEUE_SLEEP_SECONDS", "0.25") or 0.25), 0.05)
+    base_sleep = max(
+        float(os.getenv("EXECUTION_LANE_QUEUE_ENQUEUE_SLEEP_SECONDS", "0.25") or 0.25),
+        0.05,
+    )
     last_error = ""
     for attempt in range(attempts):
         try:
@@ -336,9 +633,24 @@ def publish_channel_payload(
     stem: str,
     queue_db_override: str = "",
 ) -> Dict[str, Any]:
-    row = _execution_transport_payload(channel, payload)
+    row = dict(payload or {})
     row.setdefault("timestamp_utc", _now_utc())
     out_path = execution_lane_daily_path(project_root, stem)
+    # Generate correlation, route, and message identity before sealing the
+    # execution envelope so the file and queue carry the exact same contract.
+    row = enrich_log_row(
+        row,
+        path_hint=out_path,
+        channel=channel,
+        project_root=project_root,
+    )
+    row = _execution_transport_payload(channel, row)
+    row = enrich_log_row(
+        row,
+        path_hint=out_path,
+        channel=channel,
+        project_root=project_root,
+    )
     safe_append_jsonl(
         out_path,
         row,
@@ -390,6 +702,123 @@ def publish_execution_result(
     )
 
 
+def publish_execution_consumer_failure(
+    *,
+    project_root: str,
+    mode: str,
+    message: ChannelMessage,
+    error: Exception,
+    queue_db_override: str = "",
+) -> Dict[str, Any]:
+    """Dead-letter one poison intent while preserving its complete route identity."""
+
+    bound_intent, binding_reasons = _bind_channel_message(message)
+    intent = normalize_execution_intent(bound_intent)
+    intent_contract = validate_execution_intent_contract(intent, target_mode=mode)
+    _extend_contract_reasons(intent_contract, binding_reasons)
+    normalized_mode = str(mode or "unknown").strip().upper() or "UNKNOWN"
+    recovery_action = (
+        "dead_letter_ack_reconcile_before_next_intent"
+        if normalized_mode == "LIVE"
+        else "dead_letter_ack_and_continue"
+    )
+    result = {
+        "status": f"{normalized_mode}_CONSUMER_ERROR_BLOCKED",
+        "reason": "execution_consumer_exception",
+        "error_type": type(error).__name__,
+        "error": str(error)[:1000],
+        "recovery_action": recovery_action,
+        "retry_safe": False,
+    }
+    payload = {
+        "message_id": execution_child_message_id(
+            "execution-consumer-error",
+            source_message_id=str(message.message_id),
+            mode=str(mode),
+        ),
+        "parent_message_id": str(message.message_id),
+        "timestamp_utc": _now_utc(),
+        "mode": str(mode),
+        **execution_provenance(intent),
+        "consumer": f"execution_lane_{mode}",
+        "intent_channel": str(message.channel),
+        "intent_message_id": str(message.message_id),
+        "intent_created_at": str(message.created_at),
+        "intent": intent,
+        "result_status": result["status"],
+        "result_reason": result["reason"],
+        "result": result,
+        "intent_contract": intent_contract,
+    }
+    return publish_execution_result(
+        project_root=project_root,
+        payload=payload,
+        queue_db_override=queue_db_override,
+    )
+
+
+def publish_execution_replay_suppressed(
+    *,
+    project_root: str,
+    mode: str,
+    message: ChannelMessage,
+    prior_claim: Dict[str, Any],
+    queue_db_override: str = "",
+) -> Dict[str, Any]:
+    """Publish a durable audit when an already-claimed intent is not replayed."""
+
+    bound_intent, binding_reasons = _bind_channel_message(message)
+    intent = normalize_execution_intent(bound_intent)
+    intent_contract = validate_execution_intent_contract(intent, target_mode=mode)
+    _extend_contract_reasons(intent_contract, binding_reasons)
+    normalized_mode = str(mode or "unknown").strip().upper() or "UNKNOWN"
+    prior_state = str(prior_claim.get("state") or "unknown").strip().lower()
+    ambiguous = prior_state in {"processing", "outcome_ambiguous"}
+    reason = (
+        "prior_execution_outcome_ambiguous_replay_suppressed"
+        if ambiguous
+        else "execution_intent_already_processed"
+    )
+    result = {
+        "status": f"{normalized_mode}_REPLAY_SUPPRESSED",
+        "reason": reason,
+        "prior_claim_state": prior_state,
+        "prior_outcome_status": str(prior_claim.get("outcome_status") or ""),
+        "recovery_action": (
+            "reconcile_before_ack"
+            if normalized_mode == "LIVE" and ambiguous
+            else "ack_without_reexecution"
+        ),
+        "retry_safe": False,
+    }
+    payload = {
+        "message_id": execution_child_message_id(
+            "execution-replay-suppressed",
+            source_message_id=str(message.message_id),
+            mode=str(mode),
+        ),
+        "parent_message_id": str(message.message_id),
+        "timestamp_utc": _now_utc(),
+        "mode": str(mode),
+        **execution_provenance(intent),
+        "consumer": f"execution_lane_{mode}",
+        "intent_channel": str(message.channel),
+        "intent_message_id": str(message.message_id),
+        "intent_created_at": str(message.created_at),
+        "intent": intent,
+        "result_status": result["status"],
+        "result_reason": result["reason"],
+        "result": result,
+        "intent_contract": intent_contract,
+        "prior_processing_claim": dict(prior_claim),
+    }
+    return publish_execution_result(
+        project_root=project_root,
+        payload=payload,
+        queue_db_override=queue_db_override,
+    )
+
+
 def publish_execution_promotion(
     *,
     project_root: str,
@@ -431,7 +860,9 @@ def emit_paper_reconciliation_heartbeat(
     reason: str = "execution_lane_heartbeat",
 ) -> float:
     now_mono = time.monotonic()
-    if last_emit_monotonic > 0.0 and (now_mono - float(last_emit_monotonic)) < max(float(min_interval_seconds), 0.0):
+    if last_emit_monotonic > 0.0 and (now_mono - float(last_emit_monotonic)) < max(
+        float(min_interval_seconds), 0.0
+    ):
         return float(last_emit_monotonic)
 
     guard = getattr(trader, "live_guard", None)
@@ -440,21 +871,31 @@ def emit_paper_reconciliation_heartbeat(
     if guard is not None and hasattr(guard, "reconcile_order_lifecycle"):
         try:
             raw = guard.reconcile_order_lifecycle(broker_open_orders=[])
-            reconciliation = dict(raw) if isinstance(raw, dict) else {"ok": False, "raw": raw}
+            reconciliation = (
+                dict(raw) if isinstance(raw, dict) else {"ok": False, "raw": raw}
+            )
             status = "ok" if bool(reconciliation.get("ok", False)) else "mismatch"
         except Exception as exc:
             reconciliation = {"ok": False, "error": str(exc)}
             status = "error"
 
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
-    out_path = Path(project_root) / "governance" / "events" / f"paper_execution_guard_{day}.jsonl"
+    out_path = (
+        Path(project_root)
+        / "governance"
+        / "events"
+        / f"paper_execution_guard_{day}.jsonl"
+    )
     safe_append_jsonl(
         str(out_path),
         {
             "timestamp_utc": _now_utc(),
             "event": "paper_order_lifecycle_reconcile",
             "status": status,
-            "mode": str(getattr(trader, "mode_label", getattr(trader, "mode", "paper")) or "paper"),
+            "mode": str(
+                getattr(trader, "mode_label", getattr(trader, "mode", "paper"))
+                or "paper"
+            ),
             "account_hash": str(getattr(trader, "live_account_hash", "") or ""),
             "details": {
                 "heartbeat": True,
@@ -472,7 +913,9 @@ def emit_paper_reconciliation_heartbeat(
 def _registry_rows(project_root: str) -> dict[str, Dict[str, Any]]:
     registry_path = Path(project_root) / "master_bot_registry.json"
     registry = _read_json(registry_path)
-    rows = registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
+    rows = (
+        registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
+    )
     out: dict[str, Dict[str, Any]] = {}
     for row in rows:
         if not isinstance(row, dict):
@@ -500,9 +943,21 @@ def _paper_standard_registry_rows(
     source_path = root / "master_bot_registry.json"
     source = _read_json(source_path)
     source_rows = _registry_rows(project_root)
-    candidate_path = root / "governance" / "health" / "paper_live_data_standard_registry_candidate_latest.json"
-    guard_path = root / "governance" / "health" / "paper_live_data_standard_source_write_guard_latest.json"
-    health_path = root / "governance" / "health" / "paper_live_data_standard_latest.json"
+    candidate_path = (
+        root
+        / "governance"
+        / "health"
+        / "paper_live_data_standard_registry_candidate_latest.json"
+    )
+    guard_path = (
+        root
+        / "governance"
+        / "health"
+        / "paper_live_data_standard_source_write_guard_latest.json"
+    )
+    health_path = (
+        root / "governance" / "health" / "paper_live_data_standard_latest.json"
+    )
     candidate = _read_json(candidate_path)
     guard = _read_json(guard_path)
     health = _read_json(health_path)
@@ -519,10 +974,16 @@ def _paper_standard_registry_rows(
     if guard and not bool(guard.get("source_write_blocked", False)):
         reasons.append("source_write_guard_not_active")
     guarded_source_path = str(guard.get("source_path") or "").strip()
-    if guarded_source_path and Path(guarded_source_path).resolve() != source_path.resolve():
+    if (
+        guarded_source_path
+        and Path(guarded_source_path).resolve() != source_path.resolve()
+    ):
         reasons.append("source_registry_path_mismatch")
     guarded_candidate_path = str(guard.get("candidate_path") or "").strip()
-    if not guarded_candidate_path or Path(guarded_candidate_path).resolve() != candidate_path.resolve():
+    if (
+        not guarded_candidate_path
+        or Path(guarded_candidate_path).resolve() != candidate_path.resolve()
+    ):
         reasons.append("candidate_registry_path_mismatch")
     source_sha256 = _sha256_file(source_path)
     candidate_sha256 = _sha256_file(candidate_path)
@@ -531,11 +992,17 @@ def _paper_standard_registry_rows(
     if candidate_sha256 != str(guard.get("candidate_sha256") or ""):
         reasons.append("candidate_registry_hash_mismatch")
 
-    summary = candidate.get("summary") if isinstance(candidate.get("summary"), dict) else {}
+    summary = (
+        candidate.get("summary") if isinstance(candidate.get("summary"), dict) else {}
+    )
     if summary.get("paper_live_data_standard_version") != "paper_live_data_standard_v2":
         reasons.append("candidate_registry_version_mismatch")
-    candidate_list = candidate.get("sub_bots") if isinstance(candidate.get("sub_bots"), list) else []
-    source_list = source.get("sub_bots") if isinstance(source.get("sub_bots"), list) else []
+    candidate_list = (
+        candidate.get("sub_bots") if isinstance(candidate.get("sub_bots"), list) else []
+    )
+    source_list = (
+        source.get("sub_bots") if isinstance(source.get("sub_bots"), list) else []
+    )
     source_ids = {
         str(row.get("bot_id") or "").strip()
         for row in source_list
@@ -584,12 +1051,16 @@ def _intent_side(intent: Dict[str, Any]) -> str:
     return str(intent.get("action") or intent.get("side") or "").strip().upper()
 
 
-def _pre_trade_match(rows: list[Dict[str, Any]], *, symbol: str, side: str) -> Dict[str, Any]:
+def _pre_trade_match(
+    rows: list[Dict[str, Any]], *, symbol: str, side: str
+) -> Dict[str, Any]:
     symbol_upper = str(symbol or "").strip().upper()
     side_upper = str(side or "").strip().upper()
     for row in rows:
         row_symbol = str(row.get("symbol") or "").strip().upper()
-        requested_action = str(row.get("requested_action") or row.get("side") or "").strip().upper()
+        requested_action = (
+            str(row.get("requested_action") or row.get("side") or "").strip().upper()
+        )
         approved_action = str(row.get("approved_action") or "").strip().upper()
         if row_symbol != symbol_upper:
             continue
@@ -602,7 +1073,9 @@ def _pre_trade_match(rows: list[Dict[str, Any]], *, symbol: str, side: str) -> D
     return {}
 
 
-def _allocator_match(rows: list[Dict[str, Any]], *, symbol: str, side: str) -> Dict[str, Any]:
+def _allocator_match(
+    rows: list[Dict[str, Any]], *, symbol: str, side: str
+) -> Dict[str, Any]:
     symbol_upper = str(symbol or "").strip().upper()
     side_upper = str(side or "").strip().upper()
     for row in rows:
@@ -626,8 +1099,16 @@ def evaluate_execution_gateway(
     allocator_path, risk_path = _execution_gateway_paths(project_root)
     allocator = _read_json(allocator_path)
     risk_boundary = _read_json(risk_path)
-    approved_rows = allocator.get("approved_intents") if isinstance(allocator.get("approved_intents"), list) else []
-    pre_trade_rows = risk_boundary.get("pre_trade_decisions") if isinstance(risk_boundary.get("pre_trade_decisions"), list) else []
+    approved_rows = (
+        allocator.get("approved_intents")
+        if isinstance(allocator.get("approved_intents"), list)
+        else []
+    )
+    pre_trade_rows = (
+        risk_boundary.get("pre_trade_decisions")
+        if isinstance(risk_boundary.get("pre_trade_decisions"), list)
+        else []
+    )
     symbol = str(intent.get("symbol") or "").strip().upper()
     side = _intent_side(intent)
     allocator_match = _allocator_match(approved_rows, symbol=symbol, side=side)
@@ -676,13 +1157,22 @@ def evaluate_execution_gateway(
 
 
 def _extract_bot_id(intent: Dict[str, Any]) -> str:
-    metadata = intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+    metadata = (
+        intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+    )
+    execution_identity = (
+        metadata.get("execution_identity")
+        if isinstance(metadata.get("execution_identity"), dict)
+        else {}
+    )
     candidates = [
         metadata.get("bot_id"),
         intent.get("bot_id"),
     ]
+    if str(execution_identity.get("actor_type") or "").strip() == "registered_bot":
+        candidates.insert(0, execution_identity.get("actor_id"))
     strategy = str(intent.get("strategy") or "").strip()
-    if "::" in strategy:
+    if strategy.lower().startswith("paper_mirror::"):
         candidates.append(strategy.split("::", 1)[1].strip())
     for raw in candidates:
         bot_id = str(raw or "").strip()
@@ -692,11 +1182,22 @@ def _extract_bot_id(intent: Dict[str, Any]) -> str:
 
 
 def _paper_standard_segment(intent: Dict[str, Any], row: Dict[str, Any]) -> str:
-    metadata = intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+    metadata = (
+        intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+    )
     declared = str(metadata.get("signal_segment") or "").strip().lower()
     if declared in {"core", "options", "futures"}:
         return declared
-    role = str(row.get("bot_role") or metadata.get("bot_role") or intent.get("bot_role") or "").strip().lower()
+    role = (
+        str(
+            row.get("bot_role")
+            or metadata.get("bot_role")
+            or intent.get("bot_role")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     if role == "options_sub_bot":
         return "options"
     if role == "futures_sub_bot":
@@ -704,15 +1205,23 @@ def _paper_standard_segment(intent: Dict[str, Any], row: Dict[str, Any]) -> str:
     return "core"
 
 
-def _paper_registry_authority(row: Dict[str, Any], intent: Dict[str, Any]) -> Dict[str, Any]:
+def _paper_registry_authority(
+    row: Dict[str, Any], intent: Dict[str, Any]
+) -> Dict[str, Any]:
     normalized = dict(row or {})
     materialization = (
         normalized.get("training_label_materialization_contract")
         if isinstance(normalized.get("training_label_materialization_contract"), dict)
         else {}
     )
-    label_contract = normalized.get("label_contract") if isinstance(normalized.get("label_contract"), dict) else {}
-    normalized.setdefault("training_objective_class", materialization.get("objective_class"))
+    label_contract = (
+        normalized.get("label_contract")
+        if isinstance(normalized.get("label_contract"), dict)
+        else {}
+    )
+    normalized.setdefault(
+        "training_objective_class", materialization.get("objective_class")
+    )
     normalized.setdefault(
         "label_family",
         materialization.get("label_family") or label_contract.get("label_family"),
@@ -720,14 +1229,21 @@ def _paper_registry_authority(row: Dict[str, Any], intent: Dict[str, Any]) -> Di
     verdict = evaluate_paper_execution_authority(
         normalized,
         segment=_paper_standard_segment(intent, normalized),
-        minimum_accuracy=max(_safe_float(os.getenv("PAPER_EXECUTION_AUTHORITY_MIN_ACC", "0.56"), 0.56), 0.0),
+        minimum_accuracy=max(
+            _safe_float(os.getenv("PAPER_EXECUTION_AUTHORITY_MIN_ACC", "0.56"), 0.56),
+            0.0,
+        ),
         minimum_quality_score=max(
-            _safe_float(os.getenv("PAPER_EXECUTION_AUTHORITY_MIN_QUALITY", "0.50"), 0.50),
+            _safe_float(
+                os.getenv("PAPER_EXECUTION_AUTHORITY_MIN_QUALITY", "0.50"), 0.50
+            ),
             0.0,
         ),
     )
     reasons = list(verdict.get("reasons") or [])
-    authority_version = str(normalized.get("paper_execution_authority_version") or "").strip()
+    authority_version = str(
+        normalized.get("paper_execution_authority_version") or ""
+    ).strip()
     if authority_version != PAPER_EXECUTION_AUTHORITY_VERSION:
         reasons.append("paper_execution_authority_version_mismatch")
     if bool(normalized.get("direct_execution_allowed", False)):
@@ -740,8 +1256,15 @@ def _paper_registry_authority(row: Dict[str, Any], intent: Dict[str, Any]) -> Di
     return verdict
 
 
-def _candidate_identity_reasons(project_root: str, metadata: Dict[str, Any]) -> list[str]:
-    candidate_state = _read_json(Path(project_root) / "governance" / "runtime" / "production_candidate_state.json")
+def _candidate_identity_reasons(
+    project_root: str, metadata: Dict[str, Any]
+) -> list[str]:
+    candidate_state = _read_json(
+        Path(project_root)
+        / "governance"
+        / "runtime"
+        / "production_candidate_state.json"
+    )
     expected_candidate_id = str(candidate_state.get("candidate_id") or "").strip()
     if not expected_candidate_id:
         return []
@@ -753,18 +1276,29 @@ def _candidate_identity_reasons(project_root: str, metadata: Dict[str, Any]) -> 
     return []
 
 
-def evaluate_paper_standard_gateway(*, project_root: str, intent: Dict[str, Any]) -> Dict[str, Any]:
+def evaluate_paper_standard_gateway(
+    *, project_root: str, intent: Dict[str, Any]
+) -> Dict[str, Any]:
+    intent = normalize_execution_intent(intent)
     enabled = _env_flag("PAPER_LIVE_DATA_STANDARD_ENABLED", "0")
     bot_id = _extract_bot_id(intent)
+    contract = validate_execution_intent_contract(intent, target_mode="paper")
+    actor_type = str(intent.get("execution_actor_type") or "unresolved")
+    actor_id = str(intent.get("execution_actor_id") or "")
     if not enabled:
         return {
             "enabled": False,
             "allow_execute": True,
             "bot_id": bot_id,
+            "actor_type": actor_type,
+            "actor_id": actor_id,
+            "intent_contract": contract,
             "reasons": [],
         }
 
-    metadata = intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+    metadata = (
+        intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+    )
     constituent_ids = sorted(
         {
             str(item or "").strip()
@@ -772,7 +1306,21 @@ def evaluate_paper_standard_gateway(*, project_root: str, intent: Dict[str, Any]
             if str(item or "").strip()
         }
     )
-    is_portfolio_consensus = str(metadata.get("layer") or "").strip().lower() == "paper_portfolio_consensus"
+    is_portfolio_consensus = actor_type == "portfolio_consensus"
+    if actor_type == "hierarchical_master":
+        return {
+            "enabled": True,
+            "allow_execute": False,
+            "bot_id": "",
+            "actor_type": actor_type,
+            "actor_id": actor_id,
+            "authority_model": "orchestration_only",
+            "required_execution_actor": "paper_portfolio_consensus_or_registered_bot",
+            "intent_contract": contract,
+            "reasons": [
+                "paper_standard_hierarchical_master_must_delegate_to_portfolio_consensus"
+            ],
+        }
     if is_portfolio_consensus:
         reasons: list[str] = []
         invalid_ids: list[str] = []
@@ -781,16 +1329,25 @@ def evaluate_paper_standard_gateway(*, project_root: str, intent: Dict[str, Any]
         if not constituent_ids:
             reasons.append("paper_standard_consensus_missing_constituents")
         if len(constituent_ids) < 2:
-            reasons.append("paper_standard_consensus_constituent_count_below_diversity_floor")
-        if _safe_int(metadata.get("constituent_count"), len(constituent_ids)) != len(constituent_ids):
+            reasons.append(
+                "paper_standard_consensus_constituent_count_below_diversity_floor"
+            )
+        if _safe_int(metadata.get("constituent_count"), len(constituent_ids)) != len(
+            constituent_ids
+        ):
             reasons.append("paper_standard_consensus_constituent_count_mismatch")
         if bool(metadata.get("constituent_bot_ids_truncated", False)):
             reasons.append("paper_standard_consensus_constituents_truncated")
-        if str(metadata.get("paper_execution_authority_version") or "") != PAPER_EXECUTION_AUTHORITY_VERSION:
+        if (
+            str(metadata.get("paper_execution_authority_version") or "")
+            != PAPER_EXECUTION_AUTHORITY_VERSION
+        ):
             reasons.append("paper_standard_consensus_authority_version_mismatch")
         if not bool(metadata.get("paper_execution_diversity_ready", False)):
             reasons.append("paper_standard_consensus_diversity_not_ready")
-        distinct_clusters = _safe_int(metadata.get("paper_execution_distinct_correlation_clusters"), 0)
+        distinct_clusters = _safe_int(
+            metadata.get("paper_execution_distinct_correlation_clusters"), 0
+        )
         if distinct_clusters < 2:
             reasons.append("paper_standard_consensus_correlation_diversity_below_floor")
         if distinct_clusters > len(constituent_ids):
@@ -809,7 +1366,11 @@ def evaluate_paper_standard_gateway(*, project_root: str, intent: Dict[str, Any]
         manifest_sha256 = hashlib.sha256(
             json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-        if not manifest or str(metadata.get("paper_execution_cohort_manifest_sha256") or "") != manifest_sha256:
+        if (
+            not manifest
+            or str(metadata.get("paper_execution_cohort_manifest_sha256") or "")
+            != manifest_sha256
+        ):
             reasons.append("paper_standard_consensus_manifest_hash_mismatch")
         if str(manifest.get("policy") or "") != PAPER_EXECUTION_AUTHORITY_VERSION:
             reasons.append("paper_standard_consensus_manifest_policy_mismatch")
@@ -820,13 +1381,15 @@ def evaluate_paper_standard_gateway(*, project_root: str, intent: Dict[str, Any]
         )
         if manifest_ids != constituent_ids:
             reasons.append("paper_standard_consensus_manifest_membership_mismatch")
-        if str(manifest.get("segment") or "").strip().lower() != str(
-            metadata.get("signal_segment") or ""
-        ).strip().lower():
+        if (
+            str(manifest.get("segment") or "").strip().lower()
+            != str(metadata.get("signal_segment") or "").strip().lower()
+        ):
             reasons.append("paper_standard_consensus_manifest_segment_mismatch")
-        if str(manifest.get("profile") or "").strip().lower() != str(
-            metadata.get("source_profile") or ""
-        ).strip().lower():
+        if (
+            str(manifest.get("profile") or "").strip().lower()
+            != str(metadata.get("source_profile") or "").strip().lower()
+        ):
             reasons.append("paper_standard_consensus_manifest_profile_mismatch")
         reasons.extend(_candidate_identity_reasons(project_root, metadata))
         for constituent_id in constituent_ids:
@@ -834,13 +1397,18 @@ def evaluate_paper_standard_gateway(*, project_root: str, intent: Dict[str, Any]
             authority = _paper_registry_authority(registry_row, intent)
             if not bool(authority.get("allowed", False)):
                 invalid_ids.append(constituent_id)
-                authority_failures[constituent_id] = list(authority.get("reasons") or [])
+                authority_failures[constituent_id] = list(
+                    authority.get("reasons") or []
+                )
         if invalid_ids:
             reasons.append("paper_standard_consensus_contains_ineligible_bot")
         return {
             "enabled": True,
             "allow_execute": len(reasons) == 0,
             "bot_id": "paper_portfolio_consensus",
+            "actor_type": actor_type,
+            "actor_id": actor_id,
+            "intent_contract": contract,
             "consensus_constituent_count": len(constituent_ids),
             "consensus_invalid_bot_ids": invalid_ids[:64],
             "consensus_invalid_bot_ids_truncated": len(invalid_ids) > 64,
@@ -853,8 +1421,10 @@ def evaluate_paper_standard_gateway(*, project_root: str, intent: Dict[str, Any]
     registry_row: Dict[str, Any] = {}
     authority: Dict[str, Any] = {}
     registry_rows, registry_provenance = _paper_standard_registry_rows(project_root)
-    if not bot_id:
-        reasons.append("paper_standard_missing_bot_id")
+    if actor_type == "unresolved":
+        reasons.append("paper_standard_execution_actor_unresolved")
+    elif not bot_id:
+        reasons.append("paper_standard_registered_bot_id_missing")
     else:
         registry_row = registry_rows.get(bot_id, {})
         if not registry_row:
@@ -869,9 +1439,18 @@ def evaluate_paper_standard_gateway(*, project_root: str, intent: Dict[str, Any]
         "enabled": True,
         "allow_execute": len(reasons) == 0,
         "bot_id": bot_id,
+        "actor_type": actor_type,
+        "actor_id": actor_id,
+        "intent_contract": contract,
         "virtual_allowed": False,
-        "paper_standard_cohort": str(registry_row.get("paper_standard_cohort") or "") if registry_row else "",
-        "paper_live_data_enabled": bool(registry_row.get("paper_live_data_enabled", False)) if registry_row else None,
+        "paper_standard_cohort": (
+            str(registry_row.get("paper_standard_cohort") or "") if registry_row else ""
+        ),
+        "paper_live_data_enabled": (
+            bool(registry_row.get("paper_live_data_enabled", False))
+            if registry_row
+            else None
+        ),
         "paper_execution_authority": authority,
         "registry_provenance": registry_provenance,
         "reasons": reasons,
@@ -884,11 +1463,36 @@ def evaluate_live_promotion(
     intent: Dict[str, Any],
     paper_result: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    metadata = intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
-    intent_kind = str(intent.get("intent_kind") or metadata.get("intent_kind") or "master").strip().lower()
-    lane = str(metadata.get("runtime_lane") or metadata.get("lane") or "default").strip().lower() or "default"
+    intent = normalize_execution_intent(intent)
+    metadata = (
+        intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+    )
+    intent_kind = (
+        str(intent.get("intent_kind") or metadata.get("intent_kind") or "master")
+        .strip()
+        .lower()
+    )
+    lane = (
+        str(metadata.get("runtime_lane") or metadata.get("lane") or "default")
+        .strip()
+        .lower()
+        or "default"
+    )
     bot_id = _extract_bot_id(intent)
+    actor_type = str(intent.get("execution_actor_type") or "unresolved")
+    actor_id = str(intent.get("execution_actor_id") or "")
     reasons: list[str] = []
+
+    intent_contract = validate_execution_intent_contract(intent, target_mode="live")
+    if not bool(intent_contract.get("valid", False)):
+        reasons.extend(
+            f"intent_contract:{reason}"
+            for reason in (intent_contract.get("reasons") or [])
+        )
+    if actor_type == "hierarchical_master":
+        reasons.append("hierarchical_master_direct_live_promotion_forbidden")
+    elif actor_type == "unresolved":
+        reasons.append("execution_actor_unresolved")
 
     decision_flow_guard = evaluate_execution_policy_guard(
         intent=intent,
@@ -905,21 +1509,45 @@ def evaluate_live_promotion(
         reasons.append("intent_marked_paper_only")
 
     action = str(intent.get("action") or "").strip().upper()
-    if action not in {"BUY", "SELL", "SELL_SHORT", "BUY_TO_COVER", "BUY_TO_OPEN", "BUY_TO_CLOSE", "SELL_TO_OPEN", "SELL_TO_CLOSE", "CLOSE", "ROLL"}:
+    if action not in {
+        "BUY",
+        "SELL",
+        "SELL_SHORT",
+        "BUY_TO_COVER",
+        "BUY_TO_OPEN",
+        "BUY_TO_CLOSE",
+        "SELL_TO_OPEN",
+        "SELL_TO_CLOSE",
+        "CLOSE",
+        "ROLL",
+    }:
         reasons.append("non_trade_action")
 
     if paper_result is not None:
         result_status = str(paper_result.get("status") or "").strip().upper()
         if result_status != "PAPER_EXECUTED":
             reasons.append(f"paper_status_not_executed:{result_status or 'unknown'}")
-        paper_order = paper_result.get("paper_order") if isinstance(paper_result.get("paper_order"), dict) else {}
+        paper_order = (
+            paper_result.get("paper_order")
+            if isinstance(paper_result.get("paper_order"), dict)
+            else {}
+        )
         realism_status = str(paper_order.get("paper_realism_status") or "").strip()
-        filled_quantity = _safe_float(paper_order.get("filled_quantity"), _safe_float(paper_order.get("quantity"), 0.0))
-        if realism_status and realism_status not in {"filled", "full_fill", "partial_fill"}:
+        filled_quantity = _safe_float(
+            paper_order.get("filled_quantity"),
+            _safe_float(paper_order.get("quantity"), 0.0),
+        )
+        if realism_status and realism_status not in {
+            "filled",
+            "full_fill",
+            "partial_fill",
+        }:
             reasons.append(f"paper_realism_not_filled:{realism_status}")
         elif filled_quantity <= 0.0 and result_status == "PAPER_EXECUTED":
             reasons.append("paper_realism_not_filled:zero_fill")
-        min_realism_score = _safe_float(os.getenv("PAPER_REALISM_MIN_PROMOTION_SCORE", "0"), 0.0)
+        min_realism_score = _safe_float(
+            os.getenv("PAPER_REALISM_MIN_PROMOTION_SCORE", "0"), 0.0
+        )
         realism_score = _safe_float(paper_order.get("paper_realism_score"), 100.0)
         if min_realism_score > 0.0 and realism_score < min_realism_score:
             reasons.append("paper_realism_quality_below_threshold")
@@ -932,9 +1560,24 @@ def evaluate_live_promotion(
     if not bool(gateway.get("allow_execute", False)):
         reasons.append("execution_gateway_blocked")
 
-    promotion_gate = _read_json(Path(project_root) / "governance" / "walk_forward" / "promotion_gate_latest.json")
-    lane_gate = _read_json(Path(project_root) / "governance" / "walk_forward" / "lane_promotion_gate_latest.json")
-    quality_gate = _read_json(Path(project_root) / "governance" / "health" / "promotion_quality_gate_latest.json")
+    promotion_gate = _read_json(
+        Path(project_root)
+        / "governance"
+        / "walk_forward"
+        / "promotion_gate_latest.json"
+    )
+    lane_gate = _read_json(
+        Path(project_root)
+        / "governance"
+        / "walk_forward"
+        / "lane_promotion_gate_latest.json"
+    )
+    quality_gate = _read_json(
+        Path(project_root)
+        / "governance"
+        / "health"
+        / "promotion_quality_gate_latest.json"
+    )
 
     if not bool(promotion_gate.get("promote_ok", False)):
         reasons.append("promotion_gate_blocked")
@@ -945,8 +1588,12 @@ def evaluate_live_promotion(
     if not bool(quality_gate.get("ok", False)):
         reasons.append("promotion_quality_gate_blocked")
 
-    lane_payload = lane_gate.get("lanes") if isinstance(lane_gate.get("lanes"), dict) else {}
-    lane_detail = lane_payload.get(lane) if isinstance(lane_payload.get(lane), dict) else {}
+    lane_payload = (
+        lane_gate.get("lanes") if isinstance(lane_gate.get("lanes"), dict) else {}
+    )
+    lane_detail = (
+        lane_payload.get(lane) if isinstance(lane_payload.get(lane), dict) else {}
+    )
     if lane_detail:
         if not bool(lane_detail.get("promote_ok", False)):
             reasons.append(f"lane_blocked:{lane}")
@@ -954,7 +1601,31 @@ def evaluate_live_promotion(
             reasons.append(f"lane_uncovered:{lane}")
 
     registry_row = {}
-    if bot_id:
+    consensus_registry: dict[str, Dict[str, Any]] = {}
+    if actor_type == "portfolio_consensus":
+        constituent_ids = sorted(
+            {
+                str(item or "").strip()
+                for item in metadata.get("constituent_bot_ids", [])
+                if str(item or "").strip()
+            }
+        )
+        registry = _registry_rows(project_root)
+        if not constituent_ids:
+            reasons.append("live_consensus_constituents_missing")
+        for constituent_id in constituent_ids:
+            row = registry.get(constituent_id, {})
+            consensus_registry[constituent_id] = row
+            if not row:
+                reasons.append(f"live_consensus_bot_missing:{constituent_id}")
+                continue
+            if not bool(row.get("active", False)):
+                reasons.append(f"live_consensus_bot_inactive:{constituent_id}")
+            if not bool(row.get("promoted", False)):
+                reasons.append(f"live_consensus_bot_not_promoted:{constituent_id}")
+            if bool(row.get("deleted_from_rotation", False)):
+                reasons.append(f"live_consensus_bot_deleted:{constituent_id}")
+    elif bot_id:
         registry_row = _registry_rows(project_root).get(bot_id, {})
         if not registry_row:
             reasons.append("bot_missing_from_registry")
@@ -963,10 +1634,19 @@ def evaluate_live_promotion(
                 reasons.append("bot_inactive_in_registry")
             if bool(registry_row.get("deleted_from_rotation", False)):
                 reasons.append("bot_deleted_from_rotation")
-            if bool(registry_row.get("training_excluded", False) or registry_row.get("exclude_from_training", False)):
+            if bool(
+                registry_row.get("training_excluded", False)
+                or registry_row.get("exclude_from_training", False)
+            ):
                 reasons.append("bot_training_or_quality_excluded")
-            promotion_status = str(registry_row.get("promotion_status") or "").strip().lower()
-            if promotion_status and promotion_status not in {"live", "live_ready", "promoted"}:
+            promotion_status = (
+                str(registry_row.get("promotion_status") or "").strip().lower()
+            )
+            if promotion_status and promotion_status not in {
+                "live",
+                "live_ready",
+                "promoted",
+            }:
                 reasons.append(f"bot_promotion_status_not_live:{promotion_status}")
             if not bool(registry_row.get("promoted", False)):
                 reasons.append("bot_not_promoted")
@@ -978,6 +1658,8 @@ def evaluate_live_promotion(
         "intent_kind": intent_kind,
         "lane": lane,
         "bot_id": bot_id,
+        "actor_type": actor_type,
+        "actor_id": actor_id,
         "reasons": reasons,
         "gate_snapshot": {
             "promotion_gate": {
@@ -997,11 +1679,28 @@ def evaluate_live_promotion(
         },
         "registry_row": {
             "active": bool(registry_row.get("active", False)) if registry_row else None,
-            "promoted": bool(registry_row.get("promoted", False)) if registry_row else None,
-            "deleted_from_rotation": bool(registry_row.get("deleted_from_rotation", False)) if registry_row else None,
+            "promoted": (
+                bool(registry_row.get("promoted", False)) if registry_row else None
+            ),
+            "deleted_from_rotation": (
+                bool(registry_row.get("deleted_from_rotation", False))
+                if registry_row
+                else None
+            ),
+        },
+        "consensus_registry": {
+            bot_key: {
+                "active": bool(row.get("active", False)) if row else None,
+                "promoted": bool(row.get("promoted", False)) if row else None,
+                "deleted_from_rotation": (
+                    bool(row.get("deleted_from_rotation", False)) if row else None
+                ),
+            }
+            for bot_key, row in consensus_registry.items()
         },
         "execution_gateway": gateway,
         "decision_flow_guard": decision_flow_guard,
+        "intent_contract": intent_contract,
     }
 
 
@@ -1013,8 +1712,12 @@ def configure_trader_for_lane(trader: Any, mode: str) -> Any:
 
 
 def intent_to_decision_kwargs(intent: Dict[str, Any]) -> Dict[str, Any]:
-    metadata = intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
-    features = intent.get("features") if isinstance(intent.get("features"), dict) else {}
+    metadata = (
+        intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+    )
+    features = (
+        intent.get("features") if isinstance(intent.get("features"), dict) else {}
+    )
     gates = intent.get("gates") if isinstance(intent.get("gates"), dict) else {}
     reasons = intent.get("reasons") if isinstance(intent.get("reasons"), list) else []
     return {
@@ -1026,9 +1729,42 @@ def intent_to_decision_kwargs(intent: Dict[str, Any]) -> Dict[str, Any]:
         "features": features,
         "gates": gates,
         "reasons": [str(r) for r in reasons],
-        "strategy": str(intent.get("strategy") or metadata.get("strategy") or "execution_lane"),
+        "strategy": str(
+            intent.get("strategy") or metadata.get("strategy") or "execution_lane"
+        ),
         "metadata": metadata,
     }
+
+
+def _bind_channel_message(message: ChannelMessage) -> tuple[Dict[str, Any], list[str]]:
+    intent = dict(message.payload or {})
+    reasons: list[str] = []
+    bindings = {
+        "message_id": str(message.message_id or "").strip(),
+        "parent_message_id": str(message.parent_message_id or "").strip(),
+        "run_id": str(message.run_id or "").strip(),
+        "iter_id": str(message.iter_id or "").strip(),
+    }
+    for key, transport_value in bindings.items():
+        payload_value = str(intent.get(key) or "").strip()
+        if payload_value and transport_value and payload_value != transport_value:
+            reasons.append(f"channel_binding_{key}_mismatch")
+        elif not payload_value and transport_value:
+            intent[key] = transport_value
+    intent["execution_channel_binding"] = {
+        "channel": str(message.channel or ""),
+        "source_path": str(message.source_path or ""),
+        **bindings,
+    }
+    return intent, reasons
+
+
+def _extend_contract_reasons(contract: Dict[str, Any], reasons: list[str]) -> None:
+    if not reasons:
+        return
+    merged = list(contract.get("reasons") or []) + list(reasons)
+    contract["reasons"] = list(dict.fromkeys(merged))
+    contract["valid"] = False
 
 
 def _annotate_paper_realism(intent: Dict[str, Any], result: Dict[str, Any]) -> None:
@@ -1038,15 +1774,25 @@ def _annotate_paper_realism(intent: Dict[str, Any], result: Dict[str, Any]) -> N
     if not isinstance(paper_order, dict):
         return
 
-    metadata = intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
-    features = intent.get("features") if isinstance(intent.get("features"), dict) else {}
-    asset_class = str(metadata.get("asset_class") or intent.get("asset_class") or "").strip().lower()
+    metadata = (
+        intent.get("metadata") if isinstance(intent.get("metadata"), dict) else {}
+    )
+    features = (
+        intent.get("features") if isinstance(intent.get("features"), dict) else {}
+    )
+    asset_class = (
+        str(metadata.get("asset_class") or intent.get("asset_class") or "")
+        .strip()
+        .lower()
+    )
     quantity = _safe_float(paper_order.get("quantity", intent.get("quantity")), 0.0)
     quote_age_ms = max(
         _safe_float(features.get("quote_age_ms"), 0.0),
         _safe_float(metadata.get("quote_age_ms"), 0.0),
     )
-    max_quote_age_ms = max(_safe_float(os.getenv("PAPER_REALISM_MAX_QUOTE_AGE_MS", "5000"), 5000.0), 100.0)
+    max_quote_age_ms = max(
+        _safe_float(os.getenv("PAPER_REALISM_MAX_QUOTE_AGE_MS", "5000"), 5000.0), 100.0
+    )
 
     if asset_class == "options" and quote_age_ms > max_quote_age_ms:
         paper_order["paper_realism_status"] = "stale_quote_rejected"
@@ -1070,7 +1816,11 @@ def process_execution_intent(
     message: ChannelMessage,
     queue_db_override: str = "",
 ) -> Dict[str, Any]:
-    intent = dict(message.payload or {})
+    bound_intent, binding_reasons = _bind_channel_message(message)
+    intent = normalize_execution_intent(bound_intent)
+    intent_contract = validate_execution_intent_contract(intent, target_mode=mode)
+    _extend_contract_reasons(intent_contract, binding_reasons)
+    provenance = execution_provenance(intent)
     kwargs = intent_to_decision_kwargs(intent)
     decision_flow_guard = evaluate_execution_policy_guard(
         intent=intent,
@@ -1094,10 +1844,34 @@ def process_execution_intent(
         intent=intent,
         mode=mode,
     )
-    if str(mode).strip().lower() == "paper" and not bool(paper_standard_gateway.get("allow_execute", True)):
+    runtime_breaker = evaluate_runtime_execution_breaker(
+        project_root=project_root,
+        intent=intent,
+        mode=mode,
+    )
+    if not bool(intent_contract.get("valid", False)):
+        normalized_mode = str(mode).strip().upper() or "UNKNOWN"
+        result = {
+            "status": f"{normalized_mode}_INTENT_CONTRACT_BLOCKED",
+            "reason": str(
+                (
+                    intent_contract.get("reasons")
+                    or ["execution_intent_contract_invalid"]
+                )[0]
+            ),
+            "intent_contract": intent_contract,
+        }
+    elif str(mode).strip().lower() == "paper" and not bool(
+        paper_standard_gateway.get("allow_execute", True)
+    ):
+        standard_reasons = list(paper_standard_gateway.get("reasons") or [])
         result = {
             "status": "PAPER_STANDARD_BLOCKED",
-            "reason": "paper_live_data_standard_blocked",
+            "reason": str(
+                standard_reasons[0]
+                if standard_reasons
+                else "paper_live_data_standard_blocked"
+            ),
             "paper_standard_gateway": paper_standard_gateway,
         }
     elif bool(decision_flow_guard.get("required", False)) and not bool(
@@ -1109,7 +1883,19 @@ def process_execution_intent(
             "reason": "decision_flow_policy_guard_blocked",
             "decision_flow_guard": decision_flow_guard,
         }
-    elif str(mode).strip().lower() == "live" and not bool(gateway.get("allow_execute", False)):
+    elif not bool(runtime_breaker.get("allow_execute", True)):
+        normalized_mode = str(mode).strip().upper() or "UNKNOWN"
+        result = {
+            "status": f"{normalized_mode}_RUNTIME_BREAKER_BLOCKED",
+            "reason": str(
+                runtime_breaker.get("primary_reason")
+                or "execution_runtime_breaker_active"
+            ),
+            "runtime_execution_breaker": runtime_breaker,
+        }
+    elif str(mode).strip().lower() == "live" and not bool(
+        gateway.get("allow_execute", False)
+    ):
         result = {
             "status": "LIVE_GATEWAY_BLOCKED",
             "reason": "execution_gateway_blocked",
@@ -1117,9 +1903,17 @@ def process_execution_intent(
         }
     else:
         normalized_mode = str(mode).strip().lower()
-        component_id = "paper_execution_gateway" if normalized_mode == "paper" else "live_execution_gateway"
+        component_id = (
+            "paper_execution_gateway"
+            if normalized_mode == "paper"
+            else "live_execution_gateway"
+        )
         action = "paper_submit" if normalized_mode == "paper" else "live_submit"
-        state_domain = "paper_order_submission" if normalized_mode == "paper" else "live_order_submission"
+        state_domain = (
+            "paper_order_submission"
+            if normalized_mode == "paper"
+            else "live_order_submission"
+        )
         try:
             with component_action_guard(
                 project_root,
@@ -1148,18 +1942,28 @@ def process_execution_intent(
     )
 
     result_payload = {
+        "message_id": execution_child_message_id(
+            "execution-result",
+            source_message_id=str(message.message_id),
+            mode=str(mode),
+        ),
+        "parent_message_id": str(message.message_id),
         "timestamp_utc": _now_utc(),
         "mode": str(mode),
+        **provenance,
         "consumer": f"execution_lane_{mode}",
         "intent_channel": str(message.channel),
         "intent_message_id": str(message.message_id),
         "intent_created_at": str(message.created_at),
         "intent": intent,
         "result_status": str(result.get("status") or ""),
+        "result_reason": str(result.get("reason") or ""),
         "result": result,
         "execution_gateway": gateway,
         "paper_standard_gateway": paper_standard_gateway,
+        "runtime_execution_breaker": runtime_breaker,
         "decision_flow_guard": decision_flow_guard,
+        "intent_contract": intent_contract,
         "trace_context": causal_trace["trace_context"],
         "causal_trace": causal_trace,
         "causal_attribution": causal_trace["attribution"],
@@ -1178,7 +1982,14 @@ def process_execution_intent(
             paper_result=result,
         )
         promotion_payload = {
+            "message_id": execution_child_message_id(
+                "execution-promotion",
+                source_message_id=str(message.message_id),
+                mode="paper",
+            ),
+            "parent_message_id": str(message.message_id),
             "timestamp_utc": _now_utc(),
+            **provenance,
             "intent_message_id": str(message.message_id),
             "intent_channel": str(message.channel),
             "intent": intent,
@@ -1186,6 +1997,7 @@ def process_execution_intent(
             "promotion": promotion,
             "execution_gateway": gateway,
             "decision_flow_guard": decision_flow_guard,
+            "intent_contract": intent_contract,
         }
         publish_execution_promotion(
             project_root=project_root,
@@ -1195,6 +2007,11 @@ def process_execution_intent(
         if bool(promotion.get("promote_ok", False)):
             promoted_payload = {
                 **intent,
+                "message_id": execution_child_message_id(
+                    "execution-promoted",
+                    source_message_id=str(message.message_id),
+                    mode="live",
+                ),
                 "timestamp_utc": _now_utc(),
                 "source_intent_message_id": str(message.message_id),
                 "promotion": promotion,
@@ -1222,6 +2039,7 @@ def update_lane_health(
     queue_db_override: str = "",
     auth_ok: Optional[bool] = None,
     auth_error: str = "",
+    hold_reason: str = "",
 ) -> None:
     consumer = f"execution_lane_{mode}"
     now = datetime.now(timezone.utc)
@@ -1234,13 +2052,30 @@ def update_lane_health(
     queue_stats_skip_reason = ""
     queue_stats_error_type = ""
     queue_stats_error = ""
+    processing_claim_stats: dict[str, Any] = {}
+    processing_claim_stats_status = "skipped"
+    processing_claim_stats_error = ""
+
+    queue_path = str(queue_db_path(project_root, queue_db_override))
+    health_queue = _HEALTH_QUEUE_CACHE.get(queue_path)
+    if health_queue is None:
+        try:
+            health_queue = ChannelQueue(queue_path)
+            _HEALTH_QUEUE_CACHE[queue_path] = health_queue
+        except Exception:
+            health_queue = None
 
     if _env_flag("EXECUTION_LANE_HEALTH_QUEUE_STATS_ENABLED", "0"):
         try:
-            q = ChannelQueue(queue_db_path(project_root, queue_db_override))
-            queue_stats = q.queue_stats(channel=queue_channel)
-            consumer_state = q.consumer_state(consumer=consumer, channel=queue_channel)
-            pending_rows = q.pending_count(consumer=consumer, channel=queue_channel)
+            if health_queue is None:
+                raise RuntimeError("execution_health_queue_unavailable")
+            queue_stats = health_queue.queue_stats(channel=queue_channel)
+            consumer_state = health_queue.consumer_state(
+                consumer=consumer, channel=queue_channel
+            )
+            pending_rows = health_queue.pending_count(
+                consumer=consumer, channel=queue_channel
+            )
             queue_stats_available = True
             queue_stats_status = "ready"
         except Exception as exc:
@@ -1252,6 +2087,19 @@ def update_lane_health(
     else:
         pending_rows_unknown = True
         queue_stats_skip_reason = "disabled_for_nonblocking_execution_lane_heartbeat"
+
+    if _env_flag("EXECUTION_LANE_HEALTH_IDEMPOTENCY_STATS_ENABLED", "1"):
+        try:
+            if health_queue is None:
+                raise RuntimeError("execution_health_queue_unavailable")
+            processing_claim_stats = health_queue.processing_claim_stats(
+                consumer=consumer,
+                channel=queue_channel,
+            )
+            processing_claim_stats_status = "ready"
+        except Exception as exc:
+            processing_claim_stats_status = "error"
+            processing_claim_stats_error = f"{type(exc).__name__}:{exc}"
 
     queue_oldest_dt = _parse_ts((queue_stats or {}).get("oldest_created_at"))
     queue_newest_dt = _parse_ts((queue_stats or {}).get("newest_created_at"))
@@ -1271,13 +2119,17 @@ def update_lane_health(
         if consumer_updated_dt is not None
         else None
     )
-    stale_after_seconds = max(int(os.getenv("EXECUTION_LANE_STALE_AFTER_SECONDS", "180") or 180), 30)
+    stale_after_seconds = max(
+        int(os.getenv("EXECUTION_LANE_STALE_AFTER_SECONDS", "180") or 180), 30
+    )
     stale_grace_seconds = 0
     known_pending_rows = 0 if pending_rows_unknown else int(pending_rows)
     if known_pending_rows > 0:
         # Large active queues naturally create short idle gaps between acks; don't
         # label the lane stale while fresh intents are still flowing in.
-        if queue_newest_age_seconds is not None and float(queue_newest_age_seconds) <= max(float(stale_after_seconds), 300.0):
+        if queue_newest_age_seconds is not None and float(
+            queue_newest_age_seconds
+        ) <= max(float(stale_after_seconds), 300.0):
             stale_grace_seconds += int(stale_after_seconds)
         backlog_scale = min(max(known_pending_rows // 25000, 0), 10)
         stale_grace_seconds += int(backlog_scale * 60)
@@ -1298,6 +2150,9 @@ def update_lane_health(
         "queue_stats_skip_reason": queue_stats_skip_reason,
         "queue_stats_error_type": queue_stats_error_type,
         "queue_stats_error": queue_stats_error,
+        "processing_claim_stats_status": processing_claim_stats_status,
+        "processing_claim_stats_error": processing_claim_stats_error,
+        "processing_claim_stats": processing_claim_stats,
         "queue_stats": queue_stats,
         "consumer_state": consumer_state,
         "pending_rows": int(known_pending_rows),
@@ -1313,19 +2168,86 @@ def update_lane_health(
     allocator_path, risk_path = _execution_gateway_paths(project_root)
     allocator = _read_json(allocator_path)
     risk_boundary = _read_json(risk_path)
-    pre_trade_rows = risk_boundary.get("pre_trade_decisions") if isinstance(risk_boundary.get("pre_trade_decisions"), list) else []
+    pre_trade_rows = (
+        risk_boundary.get("pre_trade_decisions")
+        if isinstance(risk_boundary.get("pre_trade_decisions"), list)
+        else []
+    )
     payload["execution_gateway"] = {
         "allocator_ok": bool(allocator.get("ok", False)),
         "risk_boundary_ok": bool(risk_boundary.get("ok", False)),
-        "approved_intents": len(allocator.get("approved_intents") or []) if isinstance(allocator.get("approved_intents"), list) else 0,
+        "approved_intents": (
+            len(allocator.get("approved_intents") or [])
+            if isinstance(allocator.get("approved_intents"), list)
+            else 0
+        ),
         "pre_trade_orders": len(pre_trade_rows),
     }
+    runtime_breaker = evaluate_runtime_execution_breaker(
+        project_root=project_root,
+        intent={"action": "BUY"},
+        mode=mode,
+    )
+    payload["runtime_execution_breaker"] = runtime_breaker
+    normalized_hold_reason = str(hold_reason or "").strip()
+    execution_safety_hold = {
+        "active": bool(normalized_hold_reason),
+        "reason": normalized_hold_reason,
+        "source": (
+            "execution_lane_runtime_control" if normalized_hold_reason else ""
+        ),
+    }
+    payload["execution_safety_hold"] = execution_safety_hold
     result_evidence = _execution_result_evidence(project_root, mode, now)
+    no_result_activity = bool(
+        not result_evidence.get("path_exists")
+        or str(result_evidence.get("activity_status") or "") == "no_mode_results"
+    )
+    if int(processed_count) == 0 and no_result_activity:
+        if bool(runtime_breaker.get("active", False)):
+            result_evidence["activity_status"] = "idle_runtime_safety_hold"
+            result_evidence["plumbing_status"] = "resident_runtime_safety_hold"
+        else:
+            result_evidence["activity_status"] = "idle_waiting_for_eligible_intent"
+            result_evidence["plumbing_status"] = "idle_ready_waiting_for_intent"
     payload["execution_result_evidence"] = result_evidence
-    payload["fresh_non_stale_result_activity"] = bool(result_evidence.get("fresh_non_stale_activity", False))
-    payload["fresh_paper_executed"] = bool(result_evidence.get("fresh_paper_executed", False))
-    payload["stale_skip_only_result_activity"] = bool(result_evidence.get("stale_skip_only", False))
-    payload["result_activity_status"] = str(result_evidence.get("activity_status") or "")
+    payload["fresh_non_stale_result_activity"] = bool(
+        result_evidence.get("fresh_non_stale_activity", False)
+    )
+    payload["fresh_paper_executed"] = bool(
+        result_evidence.get("fresh_paper_executed", False)
+    )
+    payload["stale_skip_only_result_activity"] = bool(
+        result_evidence.get("stale_skip_only", False)
+    )
+    payload["result_activity_status"] = str(
+        result_evidence.get("activity_status") or ""
+    )
+    payload["execution_plumbing_status"] = str(
+        result_evidence.get("plumbing_status") or ""
+    )
+    payload["execution_result_status_counts"] = dict(
+        result_evidence.get("status_counts") or {}
+    )
+    payload["execution_result_reason_counts"] = dict(
+        result_evidence.get("reason_counts") or {}
+    )
+    payload["execution_contract_failures"] = int(
+        result_evidence.get("intent_contract_blocked_rows") or 0
+    )
+    payload["execution_consumer_failures"] = int(
+        result_evidence.get("consumer_error_blocked_rows") or 0
+    )
+    payload["execution_replay_suppressions"] = int(
+        result_evidence.get("replay_suppressed_rows") or 0
+    )
+    payload["execution_consumer_resident"] = True
+    payload["accepting_new_exposure"] = bool(
+        runtime_breaker.get("allow_execute", True)
+        and not execution_safety_hold["active"]
+    )
+    if execution_safety_hold["active"]:
+        payload["execution_plumbing_status"] = "resident_runtime_safety_hold"
     if auth_ok is not None:
         payload["auth_ok"] = bool(auth_ok)
         payload["auth_error"] = str(auth_error or "")

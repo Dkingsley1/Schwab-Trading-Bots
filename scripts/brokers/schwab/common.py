@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from core.base_trader import BaseTrader
 from core.brokers import BrokerCredentials
 from core.brokers.schwab_credentials import (
+    enforce_managed_schwab_runtime,
     resolve_schwab_credentials,
     schwab_credentials_ready,
 )
@@ -40,6 +41,7 @@ def build_schwab_trader(
     require_credentials: bool = True,
     missing_credentials_message: str = "Schwab credentials are required",
 ) -> BaseTrader:
+    enforce_managed_schwab_runtime(require_by_default=True)
     credentials = schwab_credentials_from_env()
     if require_credentials and not credentials_ready(credentials):
         raise RuntimeError(str(missing_credentials_message or "Schwab credentials are required"))

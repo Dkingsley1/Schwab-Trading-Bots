@@ -15,29 +15,48 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from core.runtime_python import resolve_runtime_python
-    from core.storage_mounts import find_target_external_volume, resolve_external_storage
-    from core.storage_target_override import DEFAULT_STORAGE_TARGET_OVERRIDE_PATH, write_storage_target_override
+    from core.storage_mounts import (
+        find_target_external_volume,
+        resolve_external_storage,
+    )
+    from core.storage_target_override import (
+        DEFAULT_STORAGE_TARGET_OVERRIDE_PATH,
+        write_storage_target_override,
+    )
+    from scripts.ops import storage_failback_sync as storage_failback_src
     from scripts.ops import writer_cycle_coordinator as writer_src
-    from scripts.ops.long_runtime_common import payload_age_minutes, write_payload
+    from scripts.ops.long_runtime_common import evidence_freshness, payload_age_minutes, write_payload
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     from core.runtime_python import resolve_runtime_python
-    from core.storage_mounts import find_target_external_volume, resolve_external_storage
-    from core.storage_target_override import DEFAULT_STORAGE_TARGET_OVERRIDE_PATH, write_storage_target_override
+    from core.storage_mounts import (
+        find_target_external_volume,
+        resolve_external_storage,
+    )
+    from core.storage_target_override import (
+        DEFAULT_STORAGE_TARGET_OVERRIDE_PATH,
+        write_storage_target_override,
+    )
+    from scripts.ops import storage_failback_sync as storage_failback_src
     from scripts.ops import writer_cycle_coordinator as writer_src
-    from scripts.ops.long_runtime_common import payload_age_minutes, write_payload
+    from scripts.ops.long_runtime_common import evidence_freshness, payload_age_minutes, write_payload
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_disaster_recovery_latest.json"
-DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "storage_disaster_recovery_state.json"
-DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "storage_disaster_recovery.lock"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "storage_disaster_recovery_latest.json"
+)
+DEFAULT_STATE_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "storage_disaster_recovery_state.json"
+)
+DEFAULT_LOCK_PATH = (
+    PROJECT_ROOT / "governance" / "locks" / "storage_disaster_recovery.lock"
+)
 DEFAULT_RECOVERY_ROOT = Path.home() / "Documents" / "BOT_LOGS_recovery_auto"
 DEFAULT_LOCAL_ROOT = PROJECT_ROOT / "local_fallback_storage"
 DEFAULT_ROUTE_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.storage_override"
@@ -58,7 +77,10 @@ IMPORTANT_FILES: tuple[str, ...] = (
 GIB = float(1024**3)
 LOCAL_MODES = {"local_fallback", "local_fallback_split_brain"}
 EXTERNAL_CERTIFIED_MODES = {"external", "external_curated"}
-EXTERNAL_RECOVERY_MODES = EXTERNAL_CERTIFIED_MODES | {"external_available_unverified", "unknown"}
+EXTERNAL_RECOVERY_MODES = EXTERNAL_CERTIFIED_MODES | {
+    "external_available_unverified",
+    "unknown",
+}
 TRACKED_SQLITE_ROUTES: tuple[str, ...] = (
     "data/jsonl_link.sqlite3",
     "data/bot_channel_queue.sqlite3",
@@ -97,7 +119,13 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _project_dir_from_env() -> str:
-    return str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot") or "schwab_trading_bot").strip() or "schwab_trading_bot"
+    return (
+        str(
+            os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot")
+            or "schwab_trading_bot"
+        ).strip()
+        or "schwab_trading_bot"
+    )
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -112,10 +140,16 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _snapshot_file_manifest(root: Path, copied_paths: list[str]) -> list[dict[str, Any]]:
-    hash_max_bytes = max(_safe_int(os.getenv("BOT_LOGS_RECOVERY_HASH_MAX_BYTES"), 64 * 1024 * 1024), 0)
+def _snapshot_file_manifest(
+    root: Path, copied_paths: list[str]
+) -> list[dict[str, Any]]:
+    hash_max_bytes = max(
+        _safe_int(os.getenv("BOT_LOGS_RECOVERY_HASH_MAX_BYTES"), 64 * 1024 * 1024), 0
+    )
     rows: list[dict[str, Any]] = []
-    for raw in sorted(set(str(item or "").strip() for item in copied_paths if str(item or "").strip())):
+    for raw in sorted(
+        set(str(item or "").strip() for item in copied_paths if str(item or "").strip())
+    ):
         relative = Path(raw)
         if relative.is_absolute() or ".." in relative.parts:
             continue
@@ -129,14 +163,22 @@ def _snapshot_file_manifest(root: Path, copied_paths: list[str]) -> list[dict[st
                 "path": raw,
                 "size_bytes": size,
                 "sha256": digest,
-                "verification_mode": "sha256_and_size" if digest else "size_only_large_file",
+                "verification_mode": (
+                    "sha256_and_size" if digest else "size_only_large_file"
+                ),
             }
         )
     return rows
 
 
-def _verify_snapshot_manifest(latest_root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
-    copied_paths = [str(item or "").strip() for item in manifest.get("copied_paths", []) if str(item or "").strip()]
+def _verify_snapshot_manifest(
+    latest_root: Path, manifest: dict[str, Any]
+) -> dict[str, Any]:
+    copied_paths = [
+        str(item or "").strip()
+        for item in manifest.get("copied_paths", [])
+        if str(item or "").strip()
+    ]
     file_rows = {
         str(row.get("path") or "").strip(): row
         for row in manifest.get("files", [])
@@ -165,7 +207,9 @@ def _verify_snapshot_manifest(latest_root: Path, manifest: dict[str, Any]) -> di
         expected_size = expected.get("size_bytes")
         expected_hash = str(expected.get("sha256") or "")
         actual_size = int(resolved.stat().st_size)
-        size_match = expected_size is None or actual_size == _safe_int(expected_size, -1)
+        size_match = expected_size is None or actual_size == _safe_int(
+            expected_size, -1
+        )
         hash_match = True
         actual_hash = ""
         if expected_hash:
@@ -183,7 +227,9 @@ def _verify_snapshot_manifest(latest_root: Path, manifest: dict[str, Any]) -> di
                 "actual_sha256": actual_hash,
             }
         )
-    ready = bool(copied_paths and not unsafe_paths and not missing_paths and not mismatched_paths)
+    ready = bool(
+        copied_paths and not unsafe_paths and not missing_paths and not mismatched_paths
+    )
     receipt = {
         "copied_path_count": len(copied_paths),
         "checked_path_count": len(checked),
@@ -195,7 +241,9 @@ def _verify_snapshot_manifest(latest_root: Path, manifest: dict[str, Any]) -> di
         "ready": ready,
         **receipt,
         "verification_receipt_sha256": hashlib.sha256(
-            json.dumps(receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            json.dumps(
+                receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
         ).hexdigest(),
         "checked": checked,
         "policy": "every manifest path must resolve inside the promoted snapshot and match recorded size and SHA-256 when present",
@@ -203,7 +251,9 @@ def _verify_snapshot_manifest(latest_root: Path, manifest: dict[str, Any]) -> di
 
 
 def _parse_json_output(text: str) -> dict[str, Any]:
-    for raw in reversed([line.strip() for line in str(text or "").splitlines() if line.strip()]):
+    for raw in reversed(
+        [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    ):
         try:
             payload = json.loads(raw)
         except Exception:
@@ -213,7 +263,9 @@ def _parse_json_output(text: str) -> dict[str, Any]:
     return {}
 
 
-def _run_command(cmd: list[str], *, cwd: Path, timeout_sec: int = 180) -> dict[str, Any]:
+def _run_command(
+    cmd: list[str], *, cwd: Path, timeout_sec: int = 180
+) -> dict[str, Any]:
     started = datetime.now(timezone.utc)
     try:
         proc = subprocess.run(
@@ -230,11 +282,21 @@ def _run_command(cmd: list[str], *, cwd: Path, timeout_sec: int = 180) -> dict[s
         timed_out = False
     except subprocess.TimeoutExpired as exc:
         rc = 124
-        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        stdout = (
+            exc.stdout.decode("utf-8", errors="ignore")
+            if isinstance(exc.stdout, bytes)
+            else str(exc.stdout or "")
+        )
+        stderr = (
+            exc.stderr.decode("utf-8", errors="ignore")
+            if isinstance(exc.stderr, bytes)
+            else str(exc.stderr or "")
+        )
         timed_out = True
 
-    duration_ms = round((datetime.now(timezone.utc) - started).total_seconds() * 1000.0, 3)
+    duration_ms = round(
+        (datetime.now(timezone.utc) - started).total_seconds() * 1000.0, 3
+    )
     return {
         "cmd": list(cmd),
         "rc": rc,
@@ -247,17 +309,30 @@ def _run_command(cmd: list[str], *, cwd: Path, timeout_sec: int = 180) -> dict[s
 
 
 def _probe_storage() -> dict[str, Any]:
-    prefer_external = str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower() not in {
+    prefer_external = str(
+        os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1"
+    ).strip().lower() not in {
         "0",
         "false",
         "no",
         "off",
     }
     if not prefer_external:
-        mount_root = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
-        configured_root = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
-        project_dir = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot") or "schwab_trading_bot").strip()
-        external_root = Path(configured_root).expanduser() if configured_root else mount_root / project_dir
+        mount_root = Path(
+            os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")
+        ).expanduser()
+        configured_root = str(
+            os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or ""
+        ).strip()
+        project_dir = str(
+            os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot")
+            or "schwab_trading_bot"
+        ).strip()
+        external_root = (
+            Path(configured_root).expanduser()
+            if configured_root
+            else mount_root / project_dir
+        )
         return {
             "mount_root": str(mount_root),
             "external_root": str(external_root),
@@ -266,9 +341,15 @@ def _probe_storage() -> dict[str, Any]:
             "candidate_mount_roots": [str(mount_root)],
             "matched_mount_root": "",
             "match_reason": "external_io_probe_skipped_local_hot_storage_policy",
-            "target_volume_device_identifier": str(os.getenv("BOT_LOGS_EXTERNAL_DISK_IDENTIFIER", "") or ""),
-            "target_volume_name": str(os.getenv("BOT_LOGS_EXTERNAL_VOLUME_NAME", "BOT_LOGS") or "BOT_LOGS"),
-            "target_volume_uuid": str(os.getenv("BOT_LOGS_EXTERNAL_VOLUME_UUID", "") or ""),
+            "target_volume_device_identifier": str(
+                os.getenv("BOT_LOGS_EXTERNAL_DISK_IDENTIFIER", "") or ""
+            ),
+            "target_volume_name": str(
+                os.getenv("BOT_LOGS_EXTERNAL_VOLUME_NAME", "BOT_LOGS") or "BOT_LOGS"
+            ),
+            "target_volume_uuid": str(
+                os.getenv("BOT_LOGS_EXTERNAL_VOLUME_UUID", "") or ""
+            ),
             "target_volume_mount_point": "",
             "target_volume_present": False,
             "target_volume_mounted": False,
@@ -287,7 +368,9 @@ def _probe_storage() -> dict[str, Any]:
     target_volume = find_target_external_volume()
     mount_present = bool(mount_root.exists() and mount_root.is_dir())
     external_root_exists = bool(external_root.exists() and external_root.is_dir())
-    external_root_writable = bool(external_root_exists and os.access(external_root, os.W_OK))
+    external_root_writable = bool(
+        external_root_exists and os.access(external_root, os.W_OK)
+    )
 
     if not mount_present:
         if target_volume is not None and not target_volume.is_mounted:
@@ -307,35 +390,59 @@ def _probe_storage() -> dict[str, Any]:
         "mount_root": str(mount_root),
         "external_root": str(external_root),
         "configured_mount_root": str(resolution.configured_mount_root),
-        "configured_project_root": str(resolution.configured_project_root) if resolution.configured_project_root else "",
-        "candidate_mount_roots": [str(path) for path in resolution.candidate_mount_roots],
-        "matched_mount_root": str(resolution.matched_mount_root) if resolution.matched_mount_root else "",
+        "configured_project_root": (
+            str(resolution.configured_project_root)
+            if resolution.configured_project_root
+            else ""
+        ),
+        "candidate_mount_roots": [
+            str(path) for path in resolution.candidate_mount_roots
+        ],
+        "matched_mount_root": (
+            str(resolution.matched_mount_root) if resolution.matched_mount_root else ""
+        ),
         "match_reason": str(resolution.match_reason),
-        "target_volume_device_identifier": str(target_volume.device_identifier) if target_volume else "",
+        "target_volume_device_identifier": (
+            str(target_volume.device_identifier) if target_volume else ""
+        ),
         "target_volume_name": str(target_volume.volume_name) if target_volume else "",
         "target_volume_uuid": str(target_volume.volume_uuid) if target_volume else "",
-        "target_volume_mount_point": str(target_volume.mount_point) if target_volume else "",
+        "target_volume_mount_point": (
+            str(target_volume.mount_point) if target_volume else ""
+        ),
         "target_volume_present": bool(target_volume is not None),
-        "target_volume_mounted": bool(target_volume.is_mounted) if target_volume else False,
+        "target_volume_mounted": (
+            bool(target_volume.is_mounted) if target_volume else False
+        ),
         "mount_present": mount_present,
         "external_root_exists": external_root_exists,
         "external_root_writable": external_root_writable,
-        "external_available": bool(mount_present and external_root_exists and external_root_writable),
+        "external_available": bool(
+            mount_present and external_root_exists and external_root_writable
+        ),
         "external_unavailable_reason": unavailable_reason,
     }
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
     try:
-        Path(os.path.abspath(str(path.expanduser()))).relative_to(Path(os.path.abspath(str(root.expanduser()))))
+        Path(os.path.abspath(str(path.expanduser()))).relative_to(
+            Path(os.path.abspath(str(root.expanduser())))
+        )
     except ValueError:
         return False
     return True
 
 
-def _physical_sqlite_route_mode(project_root: Path, probe: dict[str, Any] | None = None) -> str:
+def _physical_sqlite_route_mode(
+    project_root: Path, probe: dict[str, Any] | None = None
+) -> str:
     live_probe = probe if isinstance(probe, dict) else _probe_storage()
-    local_root = Path(os.getenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(project_root / "local_fallback_storage"))).expanduser()
+    local_root = Path(
+        os.getenv(
+            "BOT_LOGS_LOCAL_FALLBACK_ROOT", str(project_root / "local_fallback_storage")
+        )
+    ).expanduser()
     external_text = str(live_probe.get("external_root") or "").strip()
     external_root = Path(external_text).expanduser() if external_text else None
     families: list[str] = []
@@ -363,19 +470,157 @@ def _physical_sqlite_route_mode(project_root: Path, probe: dict[str, Any] | None
     return ""
 
 
-def _current_storage_mode(project_root: Path, probe: dict[str, Any] | None = None) -> str:
+def _mixed_route_certification(
+    project_root: Path,
+    probe: dict[str, Any],
+) -> dict[str, Any]:
+    external_root_text = str(probe.get("external_root") or "").strip()
+    base = {
+        "physical_mode": "local_fallback_split_brain",
+        "fresh_measurement": True,
+        "ready": False,
+        "certified_mode": "local_fallback_split_brain",
+        "reason": "mixed_route_requires_fresh_verification",
+    }
+    if not bool(probe.get("external_available", False)) or not external_root_text:
+        base["reason"] = "external_route_unavailable"
+        return base
+
+    external_root = Path(external_root_text).expanduser()
+    report = storage_failback_src.build_sqlite_route_verification(
+        project_root,
+        external_root,
+        mode="external",
+        active_root=external_root,
+    )
+    route = report.get("route_verification")
+    route = route if isinstance(route, dict) else {}
+    summary = report.get("summary")
+    summary = summary if isinstance(summary, dict) else {}
+    entries = report.get("entries")
+    entries = entries if isinstance(entries, list) else []
+    tracked_count = int(route.get("tracked_count", 0) or 0)
+    ready_count = int(route.get("ready_count", 0) or 0)
+    verified_count = int(route.get("verified_count", 0) or 0)
+    curated_count = int(route.get("curated_standby_count", 0) or 0)
+    active_local_count = int(summary.get("active_local_count", 0) or 0)
+    active_external_count = int(summary.get("active_external_count", 0) or 0)
+    active_passthrough_count = int(summary.get("active_passthrough_count", 0) or 0)
+    mismatches = [str(item) for item in route.get("mismatches") or []]
+    entry_paths = {
+        str(row.get("relative_path") or "") for row in entries if isinstance(row, dict)
+    }
+    entry_states = {
+        str((row.get("route_verification") or {}).get("state") or "")
+        for row in entries
+        if isinstance(row, dict) and isinstance(row.get("route_verification"), dict)
+    }
+    allowed_states = {
+        "active_external_newer_than_standby",
+        "active_external_queue_fully_acked_standby",
+        "active_local_ready",
+        "active_passthrough",
+        "curated_standby",
+        "verified",
+    }
+    active_rows_ready = all(
+        bool((row.get("active_repo") or {}).get("exists", False))
+        and int((row.get("active_repo") or {}).get("size_bytes", 0) or 0) > 0
+        for row in entries
+        if isinstance(row, dict)
+    )
+    ready = bool(
+        tracked_count == len(TRACKED_SQLITE_ROUTES)
+        and ready_count == tracked_count
+        and verified_count + curated_count >= tracked_count
+        and float(route.get("coverage_ratio", 0.0) or 0.0) >= 1.0
+        and not mismatches
+        and entry_paths == set(TRACKED_SQLITE_ROUTES)
+        and entry_states
+        and entry_states <= allowed_states
+        and active_rows_ready
+        and active_local_count + active_passthrough_count > 0
+        and active_external_count > 0
+        and str(route.get("verification_state") or "") in {"ready", "curated_ready"}
+    )
+    base.update(
+        {
+            "ready": ready,
+            "certified_mode": (
+                "external_curated" if ready else "local_fallback_split_brain"
+            ),
+            "reason": (
+                "fresh_mixed_route_verified"
+                if ready
+                else "fresh_mixed_route_verification_failed"
+            ),
+            "route_verification": route,
+            "summary": summary,
+            "entry_states": sorted(entry_states),
+        }
+    )
+    return base
+
+
+def _current_storage_mode_contract(
+    project_root: Path,
+    probe: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
     physical_mode = _physical_sqlite_route_mode(project_root, probe)
-    if physical_mode:
-        return physical_mode
-    failback = _load_json(project_root / "governance" / "health" / "storage_failback_sync_latest.json")
-    mount_guard = _load_json(project_root / "governance" / "health" / "storage_mount_guard_latest.json")
-    mode = str(failback.get("certified_mode") or failback.get("mode") or mount_guard.get("storage_mode") or "").strip()
-    if mode:
-        return mode
     live_probe = probe if isinstance(probe, dict) else _probe_storage()
+    if physical_mode == "local_fallback_split_brain":
+        contract = _mixed_route_certification(project_root, live_probe)
+        return str(contract.get("certified_mode") or physical_mode), contract
+    if physical_mode:
+        return physical_mode, {
+            "physical_mode": physical_mode,
+            "fresh_measurement": True,
+            "ready": True,
+            "certified_mode": physical_mode,
+            "reason": "uniform_physical_route",
+        }
+    failback = _load_json(
+        project_root / "governance" / "health" / "storage_failback_sync_latest.json"
+    )
+    mount_guard = _load_json(
+        project_root / "governance" / "health" / "storage_mount_guard_latest.json"
+    )
+    mode = str(
+        failback.get("certified_mode")
+        or failback.get("mode")
+        or mount_guard.get("storage_mode")
+        or ""
+    ).strip()
+    if mode:
+        return mode, {
+            "physical_mode": "",
+            "fresh_measurement": False,
+            "ready": mode in (LOCAL_MODES | EXTERNAL_CERTIFIED_MODES),
+            "certified_mode": mode,
+            "reason": "artifact_fallback_no_uniform_physical_route",
+        }
     if bool(live_probe.get("external_available", False)):
-        return "external_available_unverified"
-    return "unknown"
+        return "external_available_unverified", {
+            "physical_mode": "",
+            "fresh_measurement": True,
+            "ready": False,
+            "certified_mode": "external_available_unverified",
+            "reason": "external_available_without_route_certification",
+        }
+    return "unknown", {
+        "physical_mode": "",
+        "fresh_measurement": True,
+        "ready": False,
+        "certified_mode": "unknown",
+        "reason": "route_unknown",
+    }
+
+
+def _current_storage_mode(
+    project_root: Path, probe: dict[str, Any] | None = None
+) -> str:
+    mode, _contract = _current_storage_mode_contract(project_root, probe)
+    return mode
 
 
 def _route_policy(project_root: Path) -> dict[str, Any]:
@@ -385,7 +630,8 @@ def _route_policy(project_root: Path) -> dict[str, Any]:
     except Exception:
         override_body = ""
     local_pinned = any(
-        line.strip().lower() in {
+        line.strip().lower()
+        in {
             "bot_logs_prefer_external=0",
             "bot_logs_prefer_external=false",
             "bot_logs_prefer_external=no",
@@ -396,7 +642,9 @@ def _route_policy(project_root: Path) -> dict[str, Any]:
     return {
         "override_path": str(override_path),
         "local_route_pinned": local_pinned,
-        "automatic_external_failback_enabled": _env_flag("BOT_LOGS_RECOVERY_AUTO_FAILBACK_EXTERNAL", "0"),
+        "automatic_external_failback_enabled": _env_flag(
+            "BOT_LOGS_RECOVERY_AUTO_FAILBACK_EXTERNAL", "0"
+        ),
         "policy": "preserve_explicit_local_route_and_keep_external_as_standby",
     }
 
@@ -408,12 +656,16 @@ def _recovery_selected_paths(local_root: Path) -> list[dict[str, Any]]:
         *((rel_path, "file") for rel_path in IMPORTANT_FILES),
     ):
         src = local_root / rel_path
-        exists = bool(src.exists() and (src.is_dir() if kind == "dir" else src.is_file()))
+        exists = bool(
+            src.exists() and (src.is_dir() if kind == "dir" else src.is_file())
+        )
         try:
             resolved = src.resolve(strict=exists)
         except (OSError, RuntimeError):
             resolved = src.absolute()
-        local_physical_source = bool(exists and _path_is_within(resolved, local_root.resolve()))
+        local_physical_source = bool(
+            exists and _path_is_within(resolved, local_root.resolve())
+        )
         rows.append(
             {
                 "rel_path": rel_path,
@@ -423,7 +675,11 @@ def _recovery_selected_paths(local_root: Path) -> list[dict[str, Any]]:
                 "is_symlink": src.is_symlink(),
                 "exists": exists,
                 "eligible": local_physical_source,
-                "skip_reason": "" if local_physical_source else "missing" if not exists else "outside_local_fallback_root",
+                "skip_reason": (
+                    ""
+                    if local_physical_source
+                    else "missing" if not exists else "outside_local_fallback_root"
+                ),
             }
         )
     return rows
@@ -480,7 +736,9 @@ def _cleanup_snapshot_workspace(recovery_root: Path, *, apply: bool) -> dict[str
 
     for path in staging_roots:
         try:
-            path_bytes = _selected_size_bytes(path, [{"rel_path": ".", "kind": "dir", "eligible": True}])
+            path_bytes = _selected_size_bytes(
+                path, [{"rel_path": ".", "kind": "dir", "eligible": True}]
+            )
             if apply:
                 shutil.rmtree(path)
                 deleted_paths.append(str(path))
@@ -509,9 +767,15 @@ def _writer_quiet_point(
     wait_timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     before = writer_src.writer_state_snapshot(project_root)
-    poll = float(poll_seconds if poll_seconds is not None else os.getenv("BOT_LOGS_RECOVERY_QUIET_POLL_SECONDS", "2.0"))
+    poll = float(
+        poll_seconds
+        if poll_seconds is not None
+        else os.getenv("BOT_LOGS_RECOVERY_QUIET_POLL_SECONDS", "2.0")
+    )
     wait_timeout = float(
-        wait_timeout_seconds if wait_timeout_seconds is not None else os.getenv("BOT_LOGS_RECOVERY_QUIET_WAIT_SECONDS", "90.0")
+        wait_timeout_seconds
+        if wait_timeout_seconds is not None
+        else os.getenv("BOT_LOGS_RECOVERY_QUIET_WAIT_SECONDS", "90.0")
     )
     payload: dict[str, Any] = {
         "attempted": False,
@@ -537,20 +801,32 @@ def _writer_quiet_point(
         poll_seconds=max(float(poll), 0.1),
         wait_timeout_seconds=max(float(wait_timeout), 1.0),
     )
-    final_state = wait.get("final_state") if isinstance(wait.get("final_state"), dict) else before
+    final_state = (
+        wait.get("final_state") if isinstance(wait.get("final_state"), dict) else before
+    )
     payload["wait_for_writer"] = wait
     payload["writer_state_after_wait"] = final_state
-    payload["ok"] = bool(wait.get("completed", False)) and not bool(final_state.get("active", False))
+    payload["ok"] = bool(wait.get("completed", False)) and not bool(
+        final_state.get("active", False)
+    )
     if not payload["ok"]:
         payload["skipped_reason"] = "writer_not_quiet"
     return payload
 
 
-def _mount_target_volume(probe: dict[str, Any], *, apply: bool, state: dict[str, Any], cooldown_seconds: float) -> dict[str, Any]:
+def _mount_target_volume(
+    probe: dict[str, Any],
+    *,
+    apply: bool,
+    state: dict[str, Any],
+    cooldown_seconds: float,
+) -> dict[str, Any]:
     attempted = False
     target_device = str(probe.get("target_volume_device_identifier") or "").strip()
     last_epoch = _safe_float(state.get("last_mount_attempt_epoch"), 0.0)
-    cooldown_remaining = max(last_epoch + max(float(cooldown_seconds), 0.0) - time.time(), 0.0)
+    cooldown_remaining = max(
+        last_epoch + max(float(cooldown_seconds), 0.0) - time.time(), 0.0
+    )
     should_attempt = (
         bool(apply)
         and not bool(probe.get("external_available", False))
@@ -569,15 +845,15 @@ def _mount_target_volume(probe: dict[str, Any], *, apply: bool, state: dict[str,
         payload["skipped_reason"] = (
             "apply_disabled"
             if not apply
-            else "mount_cooldown"
-            if cooldown_remaining > 0.0
-            else "mount_not_needed"
+            else "mount_cooldown" if cooldown_remaining > 0.0 else "mount_not_needed"
         )
         return payload
 
     attempted = True
     state["last_mount_attempt_epoch"] = time.time()
-    result = _run_command(["/usr/sbin/diskutil", "mount", target_device], cwd=PROJECT_ROOT, timeout_sec=60)
+    result = _run_command(
+        ["/usr/sbin/diskutil", "mount", target_device], cwd=PROJECT_ROOT, timeout_sec=60
+    )
     payload.update(
         {
             "attempted": attempted,
@@ -591,8 +867,12 @@ def _mount_target_volume(probe: dict[str, Any], *, apply: bool, state: dict[str,
     return payload
 
 
-def _sync_storage_target_override(project_root: Path, probe: dict[str, Any], *, apply: bool) -> dict[str, Any]:
-    mount_root = str(probe.get("mount_root") or probe.get("configured_mount_root") or "").strip()
+def _sync_storage_target_override(
+    project_root: Path, probe: dict[str, Any], *, apply: bool
+) -> dict[str, Any]:
+    mount_root = str(
+        probe.get("mount_root") or probe.get("configured_mount_root") or ""
+    ).strip()
     override_path = project_root / "config" / ".env.storage_target_override"
     payload = {
         "attempted": False,
@@ -609,7 +889,11 @@ def _sync_storage_target_override(project_root: Path, probe: dict[str, Any], *, 
     result = write_storage_target_override(
         mount_root=mount_root,
         project_dir=_project_dir_from_env(),
-        mount_candidates=tuple(str(item) for item in list(probe.get("candidate_mount_roots") or []) if str(item).strip()),
+        mount_candidates=tuple(
+            str(item)
+            for item in list(probe.get("candidate_mount_roots") or [])
+            if str(item).strip()
+        ),
         volume_name=str(probe.get("target_volume_name") or "").strip(),
         volume_uuid=str(probe.get("target_volume_uuid") or "").strip(),
         disk_identifier=str(probe.get("target_volume_device_identifier") or "").strip(),
@@ -622,7 +906,9 @@ def _sync_storage_target_override(project_root: Path, probe: dict[str, Any], *, 
     }
 
 
-def _switch_storage_mode(project_root: Path, target_mode: str, *, apply: bool) -> dict[str, Any]:
+def _switch_storage_mode(
+    project_root: Path, target_mode: str, *, apply: bool
+) -> dict[str, Any]:
     if not apply:
         return {
             "attempted": False,
@@ -646,7 +932,9 @@ def _switch_storage_mode(project_root: Path, target_mode: str, *, apply: bool) -
         "target_mode": target_mode,
         "rc": int(result.get("rc", 1)),
         "duration_ms": float(result.get("duration_ms", 0.0) or 0.0),
-        "payload": result.get("payload") if isinstance(result.get("payload"), dict) else {},
+        "payload": (
+            result.get("payload") if isinstance(result.get("payload"), dict) else {}
+        ),
         "stdout_tail": str(result.get("stdout_tail") or ""),
         "stderr_tail": str(result.get("stderr_tail") or ""),
     }
@@ -691,7 +979,10 @@ def _copy_file_transactional(
             if compare_existing and dst.exists():
                 src_stat = src.stat()
                 dst_stat = dst.stat()
-                if dst_stat.st_size >= src_stat.st_size and dst_stat.st_mtime >= src_stat.st_mtime:
+                if (
+                    dst_stat.st_size >= src_stat.st_size
+                    and dst_stat.st_mtime >= src_stat.st_mtime
+                ):
                     return "skipped", ""
             dst.parent.mkdir(parents=True, exist_ok=True)
             tmp = dst.parent / f".{dst.name}.storage_recovery_tmp"
@@ -742,13 +1033,17 @@ def _stage_selected_paths(
                     continue
                 rel_child = child.relative_to(source_root)
                 try:
-                    child_is_local = _path_is_within(child.resolve(strict=True), physical_source_root)
+                    child_is_local = _path_is_within(
+                        child.resolve(strict=True), physical_source_root
+                    )
                 except (FileNotFoundError, OSError, RuntimeError):
                     child_is_local = False
                 if not child_is_local:
                     unsafe_skipped_paths.append(str(rel_child))
                     continue
-                state, detail = _copy_file_transactional(child, target_root / rel_child, compare_existing=compare_existing)
+                state, detail = _copy_file_transactional(
+                    child, target_root / rel_child, compare_existing=compare_existing
+                )
                 if state == "copied":
                     copied_paths.append(str(rel_child))
                 elif state == "skipped":
@@ -759,13 +1054,17 @@ def _stage_selected_paths(
                     errors.append(detail)
             continue
         try:
-            src_is_local = _path_is_within(src.resolve(strict=True), physical_source_root)
+            src_is_local = _path_is_within(
+                src.resolve(strict=True), physical_source_root
+            )
         except (FileNotFoundError, OSError, RuntimeError):
             src_is_local = False
         if not src_is_local:
             unsafe_skipped_paths.append(rel_path)
             continue
-        state, detail = _copy_file_transactional(src, dst, compare_existing=compare_existing)
+        state, detail = _copy_file_transactional(
+            src, dst, compare_existing=compare_existing
+        )
         if state == "copied":
             copied_paths.append(rel_path)
         elif state == "skipped":
@@ -803,7 +1102,11 @@ def _backup_sqlite_online(src: Path, dst: Path) -> tuple[bool, str]:
         with sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=5.0) as source:
             with sqlite3.connect(tmp, timeout=5.0) as target:
                 source.backup(target)
-                integrity = str(target.execute("PRAGMA integrity_check").fetchone()[0]).strip().lower()
+                integrity = (
+                    str(target.execute("PRAGMA integrity_check").fetchone()[0])
+                    .strip()
+                    .lower()
+                )
                 if integrity != "ok":
                     raise sqlite3.DatabaseError(f"integrity_check={integrity}")
         os.replace(tmp, dst)
@@ -827,10 +1130,14 @@ def _take_curated_snapshot(
     require_writer_quiet: bool = True,
 ) -> dict[str, Any]:
     selected = _recovery_selected_paths(local_root)
-    available = [row for row in selected if bool(row.get("eligible", row.get("exists", False)))]
+    available = [
+        row for row in selected if bool(row.get("eligible", row.get("exists", False)))
+    ]
     last_epoch = _safe_float(state.get("last_snapshot_epoch"), 0.0)
     latest_root = recovery_root / "latest"
-    cooldown_remaining = max(last_epoch + max(float(cooldown_seconds), 0.0) - time.time(), 0.0)
+    cooldown_remaining = max(
+        last_epoch + max(float(cooldown_seconds), 0.0) - time.time(), 0.0
+    )
     workspace_cleanup = _cleanup_snapshot_workspace(recovery_root, apply=apply)
 
     payload: dict[str, Any] = {
@@ -842,7 +1149,9 @@ def _take_curated_snapshot(
         "available_path_count": int(len(available)),
         "cooldown_remaining_seconds": round(float(cooldown_remaining), 3),
         "workspace_cleanup": workspace_cleanup,
-        "snapshot_mode": "writer_quiet" if require_writer_quiet else "online_sqlite_backup",
+        "snapshot_mode": (
+            "writer_quiet" if require_writer_quiet else "online_sqlite_backup"
+        ),
     }
     if not apply:
         payload["skipped_reason"] = "apply_disabled"
@@ -858,12 +1167,18 @@ def _take_curated_snapshot(
         payload["skipped_reason"] = "snapshot_cooldown_active"
         return payload
 
-    quiet_point = {"attempted": False, "ok": True, "skipped_reason": "online_snapshot_mode"}
+    quiet_point = {
+        "attempted": False,
+        "ok": True,
+        "skipped_reason": "online_snapshot_mode",
+    }
     if require_writer_quiet:
         quiet_point = _writer_quiet_point(project_root, apply=apply)
         if not bool(quiet_point.get("ok", False)):
             payload["quiet_point"] = quiet_point
-            payload["skipped_reason"] = str(quiet_point.get("skipped_reason") or "writer_not_quiet")
+            payload["skipped_reason"] = str(
+                quiet_point.get("skipped_reason") or "writer_not_quiet"
+            )
             return payload
     payload["quiet_point"] = quiet_point
 
@@ -875,7 +1190,9 @@ def _take_curated_snapshot(
         ),
         0.0,
     )
-    headroom_ratio = max(_safe_float(os.getenv("BOT_LOGS_RECOVERY_SNAPSHOT_HEADROOM_RATIO"), 1.10), 1.0)
+    headroom_ratio = max(
+        _safe_float(os.getenv("BOT_LOGS_RECOVERY_SNAPSHOT_HEADROOM_RATIO"), 1.10), 1.0
+    )
     try:
         usage = shutil.disk_usage(recovery_root)
         free_bytes = int(usage.free)
@@ -885,7 +1202,9 @@ def _take_curated_snapshot(
         free_bytes = 0
         capacity_known = False
         capacity_error = f"{type(exc).__name__}:{exc}"
-    required_free_bytes = int((min_free_after_gb * GIB) + (estimated_bytes * headroom_ratio))
+    required_free_bytes = int(
+        (min_free_after_gb * GIB) + (estimated_bytes * headroom_ratio)
+    )
     capacity = {
         "known": capacity_known,
         "free_bytes": free_bytes,
@@ -909,8 +1228,14 @@ def _take_curated_snapshot(
     staging_root.mkdir(parents=True, exist_ok=True)
     stage_rows = available
     if not require_writer_quiet:
-        stage_rows = [row for row in available if str(row.get("rel_path") or "") not in IMPORTANT_FILES]
-    staged = _stage_selected_paths(local_root, staging_root, stage_rows, compare_existing=False)
+        stage_rows = [
+            row
+            for row in available
+            if str(row.get("rel_path") or "") not in IMPORTANT_FILES
+        ]
+    staged = _stage_selected_paths(
+        local_root, staging_root, stage_rows, compare_existing=False
+    )
     if not require_writer_quiet:
         sqlite_src = local_root / "data" / "snapshot_context.sqlite3"
         sqlite_dst = staging_root / "data" / "snapshot_context.sqlite3"
@@ -927,7 +1252,9 @@ def _take_curated_snapshot(
         "source_root": str(local_root),
         "snapshot_root": str(latest_root),
         "staging_root": str(staging_root),
-        "snapshot_mode": "writer_quiet" if require_writer_quiet else "online_sqlite_backup",
+        "snapshot_mode": (
+            "writer_quiet" if require_writer_quiet else "online_sqlite_backup"
+        ),
         "copied_paths": staged["copied_paths"],
         "skipped_paths": staged["skipped_paths"],
         "transient_missing": staged["transient_missing"],
@@ -968,7 +1295,9 @@ def _transactional_curated_restore(
     project_root: Path = PROJECT_ROOT,
 ) -> dict[str, Any]:
     selected = _recovery_selected_paths(source_root)
-    available = [row for row in selected if bool(row.get("eligible", row.get("exists", False)))]
+    available = [
+        row for row in selected if bool(row.get("eligible", row.get("exists", False)))
+    ]
     payload: dict[str, Any] = {
         "attempted": False,
         "ok": False,
@@ -985,9 +1314,13 @@ def _transactional_curated_restore(
     quiet_point = _writer_quiet_point(project_root, apply=apply)
     payload["quiet_point"] = quiet_point
     if not bool(quiet_point.get("ok", False)):
-        payload["skipped_reason"] = str(quiet_point.get("skipped_reason") or "writer_not_quiet")
+        payload["skipped_reason"] = str(
+            quiet_point.get("skipped_reason") or "writer_not_quiet"
+        )
         return payload
-    restored = _stage_selected_paths(source_root, external_root, available, compare_existing=True)
+    restored = _stage_selected_paths(
+        source_root, external_root, available, compare_existing=True
+    )
     payload.update(
         {
             "attempted": True,
@@ -1006,7 +1339,9 @@ def _transactional_curated_restore(
 
 def _active_model_rows(project_root: Path) -> list[dict[str, str]]:
     registry = _load_json(project_root / "master_bot_registry.json")
-    rows = registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
+    rows = (
+        registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
+    )
     active: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for row in rows:
@@ -1024,11 +1359,24 @@ def _active_model_rows(project_root: Path) -> list[dict[str, str]]:
 
 
 def _promotion_model_ids(project_root: Path) -> set[str]:
-    packet = _load_json(project_root / "governance" / "champion_challenger" / "promotion_packet_latest.json")
-    scope = packet.get("promotion_scope") if isinstance(packet.get("promotion_scope"), dict) else {}
+    packet = _load_json(
+        project_root
+        / "governance"
+        / "champion_challenger"
+        / "promotion_packet_latest.json"
+    )
+    scope = (
+        packet.get("promotion_scope")
+        if isinstance(packet.get("promotion_scope"), dict)
+        else {}
+    )
     return {
         str(bot_id or "").strip()
-        for bot_id in (scope.get("trained_bot_ids") if isinstance(scope.get("trained_bot_ids"), list) else [])
+        for bot_id in (
+            scope.get("trained_bot_ids")
+            if isinstance(scope.get("trained_bot_ids"), list)
+            else []
+        )
         if str(bot_id or "").strip()
     }
 
@@ -1064,7 +1412,9 @@ def _configured_external_model_root() -> Path:
     configured = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
     if configured:
         return Path(configured).expanduser() / "models"
-    mount_root = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
+    mount_root = Path(
+        os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")
+    ).expanduser()
     return mount_root / _project_dir_from_env() / "models"
 
 
@@ -1077,14 +1427,23 @@ def _hydrate_local_models(
 ) -> dict[str, Any]:
     source_root = _configured_external_model_root()
     destination_root = local_root / "models"
-    cooldown_seconds = max(_safe_float(os.getenv("BOT_LOGS_MODEL_HYDRATION_COOLDOWN_SECONDS"), 21600.0), 0.0)
-    retry_seconds = max(_safe_float(os.getenv("BOT_LOGS_MODEL_HYDRATION_RETRY_SECONDS"), 300.0), 0.0)
+    cooldown_seconds = max(
+        _safe_float(os.getenv("BOT_LOGS_MODEL_HYDRATION_COOLDOWN_SECONDS"), 21600.0),
+        0.0,
+    )
+    retry_seconds = max(
+        _safe_float(os.getenv("BOT_LOGS_MODEL_HYDRATION_RETRY_SECONDS"), 300.0), 0.0
+    )
     last_epoch = _safe_float(state.get("last_model_hydration_epoch"), 0.0)
     last_ok = bool(state.get("last_model_hydration_ok", False))
-    effective_cooldown_seconds = cooldown_seconds if last_ok else min(cooldown_seconds, retry_seconds)
+    effective_cooldown_seconds = (
+        cooldown_seconds if last_ok else min(cooldown_seconds, retry_seconds)
+    )
     cooldown_remaining = max(last_epoch + effective_cooldown_seconds - time.time(), 0.0)
     rows = _active_model_rows(project_root)
-    missing_rows = [row for row in rows if not (destination_root / row["model_name"]).is_file()]
+    missing_rows = [
+        row for row in rows if not (destination_root / row["model_name"]).is_file()
+    ]
     payload: dict[str, Any] = {
         "attempted": False,
         "ok": not missing_rows,
@@ -1097,7 +1456,9 @@ def _hydrate_local_models(
         "copy_error_count": 0,
         "copied_bytes": 0,
         "cooldown_remaining_seconds": round(cooldown_remaining, 3),
-        "cooldown_basis": "successful_hydration" if last_ok else "incomplete_hydration_retry",
+        "cooldown_basis": (
+            "successful_hydration" if last_ok else "incomplete_hydration_retry"
+        ),
         "retry_seconds": round(retry_seconds, 3),
     }
     if not apply:
@@ -1113,7 +1474,12 @@ def _hydrate_local_models(
         payload["skipped_reason"] = "external_model_source_unavailable"
         return payload
 
-    max_total_bytes = max(int(_safe_float(os.getenv("BOT_LOGS_MODEL_HYDRATION_MAX_BYTES"), float(1024**3))), 0)
+    max_total_bytes = max(
+        int(
+            _safe_float(os.getenv("BOT_LOGS_MODEL_HYDRATION_MAX_BYTES"), float(1024**3))
+        ),
+        0,
+    )
     destination_root.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
     source_missing: list[str] = []
@@ -1141,7 +1507,9 @@ def _hydrate_local_models(
             copied_bytes += size_bytes
         else:
             errors.append(detail or f"{row['bot_id']}:{copy_state}")
-    remaining = [row for row in rows if not (destination_root / row["model_name"]).is_file()]
+    remaining = [
+        row for row in rows if not (destination_root / row["model_name"]).is_file()
+    ]
     hydration_ok = not errors and not remaining
     state["last_model_hydration_ok"] = bool(hydration_ok)
     state["last_model_hydration_missing_after_count"] = len(remaining)
@@ -1162,7 +1530,9 @@ def _hydrate_local_models(
     return payload
 
 
-def _recovery_snapshot_contract(project_root: Path, recovery_root: Path) -> dict[str, Any]:
+def _recovery_snapshot_contract(
+    project_root: Path, recovery_root: Path
+) -> dict[str, Any]:
     manifest_path = recovery_root / "recovery_manifest_latest.json"
     manifest = _load_json(manifest_path)
     latest_root = recovery_root / "latest"
@@ -1171,8 +1541,14 @@ def _recovery_snapshot_contract(project_root: Path, recovery_root: Path) -> dict
         60.0,
     )
     age_minutes = payload_age_minutes(manifest, manifest_path)
-    copied_paths = manifest.get("copied_paths") if isinstance(manifest.get("copied_paths"), list) else []
-    snapshot_db_present = bool((latest_root / "data" / "snapshot_context.sqlite3").is_file())
+    copied_paths = (
+        manifest.get("copied_paths")
+        if isinstance(manifest.get("copied_paths"), list)
+        else []
+    )
+    snapshot_db_present = bool(
+        (latest_root / "data" / "snapshot_context.sqlite3").is_file()
+    )
     manifest_clean = bool(manifest and not list(manifest.get("errors") or []))
     snapshot_fresh = bool(age_minutes is not None and age_minutes <= max_age_minutes)
     manifest_verification = _verify_snapshot_manifest(latest_root, manifest)
@@ -1181,7 +1557,11 @@ def _recovery_snapshot_contract(project_root: Path, recovery_root: Path) -> dict
     content = _load_json(content_path)
     content_age = payload_age_minutes(content, content_path)
     content_fresh = bool(content_age is not None and content_age <= 24.0 * 60.0)
-    content_ready = bool(content_fresh and content.get("ok", False) and str(content.get("manifest_hash") or ""))
+    content_ready = bool(
+        content_fresh
+        and content.get("ok", False)
+        and str(content.get("manifest_hash") or "")
+    )
     blockers = []
     if not latest_root.is_dir():
         blockers.append("recovery_snapshot_missing")
@@ -1200,7 +1580,9 @@ def _recovery_snapshot_contract(project_root: Path, recovery_root: Path) -> dict
         "blockers": blockers,
         "manifest_path": str(manifest_path),
         "latest_snapshot_root": str(latest_root),
-        "age_minutes": round(float(age_minutes), 3) if age_minutes is not None else None,
+        "age_minutes": (
+            round(float(age_minutes), 3) if age_minutes is not None else None
+        ),
         "max_age_minutes": max_age_minutes,
         "manifest_clean": manifest_clean,
         "copied_path_count": len(copied_paths),
@@ -1209,7 +1591,9 @@ def _recovery_snapshot_contract(project_root: Path, recovery_root: Path) -> dict
         "content_store": {
             "path": str(content_path),
             "ready": content_ready,
-            "age_minutes": round(float(content_age), 3) if content_age is not None else None,
+            "age_minutes": (
+                round(float(content_age), 3) if content_age is not None else None
+            ),
             "manifest_hash": str(content.get("manifest_hash") or ""),
         },
     }
@@ -1225,8 +1609,12 @@ def _durability_contract(
 ) -> dict[str, Any]:
     snapshot = _recovery_snapshot_contract(project_root, recovery_root)
     models = _model_route_contract(project_root, local_root)
-    hot_path_ready = bool(probe.get("hot_storage_available", False) or current_mode in LOCAL_MODES)
-    local_route_certified = bool(current_mode in LOCAL_MODES and route_policy.get("local_route_pinned", False))
+    hot_path_ready = bool(
+        probe.get("hot_storage_available", False) or current_mode in LOCAL_MODES
+    )
+    local_route_certified = bool(
+        current_mode in LOCAL_MODES and route_policy.get("local_route_pinned", False)
+    )
     blockers = []
     if not hot_path_ready:
         blockers.append("local_hot_path_unavailable")
@@ -1237,10 +1625,14 @@ def _durability_contract(
         blockers.append("promotion_model_artifacts_missing_from_local_route")
     return {
         "ready": not blockers,
-        "status": "ready_local_durable" if not blockers else "degraded_local_durability",
+        "status": (
+            "ready_local_durable" if not blockers else "degraded_local_durability"
+        ),
         "blockers": list(dict.fromkeys(blockers)),
         "hot_path_ready": hot_path_ready,
-        "external_required_for_hot_path": bool(probe.get("external_required_for_hot_path", False)),
+        "external_required_for_hot_path": bool(
+            probe.get("external_required_for_hot_path", False)
+        ),
         "local_route_certified": local_route_certified,
         "recovery_snapshot": snapshot,
         "model_route": models,
@@ -1256,41 +1648,69 @@ def _recovery_objectives(
     rto_target_seconds: float | None = None,
 ) -> dict[str, Any]:
     rpo_target = max(
-        float(rpo_target_minutes)
-        if rpo_target_minutes is not None
-        else _safe_float(os.getenv("BOT_RECOVERY_RPO_TARGET_MINUTES"), 720.0),
+        (
+            float(rpo_target_minutes)
+            if rpo_target_minutes is not None
+            else _safe_float(os.getenv("BOT_RECOVERY_RPO_TARGET_MINUTES"), 720.0)
+        ),
         1.0,
     )
     rto_target = max(
-        float(rto_target_seconds)
-        if rto_target_seconds is not None
-        else _safe_float(os.getenv("BOT_RECOVERY_RTO_TARGET_SECONDS"), 30.0),
+        (
+            float(rto_target_seconds)
+            if rto_target_seconds is not None
+            else _safe_float(os.getenv("BOT_RECOVERY_RTO_TARGET_SECONDS"), 30.0)
+        ),
         0.1,
     )
-    snapshot = durability.get("recovery_snapshot") if isinstance(durability.get("recovery_snapshot"), dict) else {}
+    snapshot = (
+        durability.get("recovery_snapshot")
+        if isinstance(durability.get("recovery_snapshot"), dict)
+        else {}
+    )
     snapshot_age = snapshot.get("age_minutes")
-    snapshot_age_value = _safe_float(snapshot_age, -1.0) if snapshot_age is not None else None
+    snapshot_age_value = (
+        _safe_float(snapshot_age, -1.0) if snapshot_age is not None else None
+    )
     manifest_verification = (
         snapshot.get("snapshot_manifest_verification")
         if isinstance(snapshot.get("snapshot_manifest_verification"), dict)
         else {}
     )
     manifest_verified = bool(manifest_verification.get("ready", False))
-    rpo_met = bool(snapshot_age_value is not None and snapshot_age_value <= rpo_target and manifest_verified)
+    rpo_met = bool(
+        snapshot_age_value is not None
+        and snapshot_age_value >= 0.0
+        and snapshot_age_value <= rpo_target
+        and manifest_verified
+    )
 
-    harness_path = project_root / "governance" / "health" / "production_recovery_drill_harness_latest.json"
+    harness_path = (
+        project_root
+        / "governance"
+        / "health"
+        / "production_recovery_drill_harness_latest.json"
+    )
     harness = _load_json(harness_path)
-    harness_age = payload_age_minutes(harness, harness_path) if harness else None
-    harness_fresh = bool(harness_age is not None and harness_age <= 7.0 * 24.0 * 60.0)
-    recovery_slo = harness.get("recovery_slo") if isinstance(harness.get("recovery_slo"), dict) else {}
+    harness_freshness = evidence_freshness(harness, max_age_minutes=7.0 * 24.0 * 60.0)
+    harness_age = harness_freshness["age_minutes"]
+    harness_fresh = harness_freshness["fresh"]
+    recovery_slo = (
+        harness.get("recovery_slo")
+        if isinstance(harness.get("recovery_slo"), dict)
+        else {}
+    )
     observed_rto = _safe_float(recovery_slo.get("max_observed_recovery_seconds"), -1.0)
-    rto_met = bool(
+    control_drill_met = bool(
         harness_fresh
         and harness.get("ok", False)
         and recovery_slo.get("met", False)
         and observed_rto >= 0.0
         and observed_rto <= rto_target
     )
+    # This producer exercises isolated controls, not a production-sized restore.
+    # Its timing cannot satisfy the platform RTO regardless of its reported grade.
+    rto_met = False
     blockers = []
     if not manifest_verified:
         blockers.append("recovery_manifest_not_verified")
@@ -1300,15 +1720,20 @@ def _recovery_objectives(
         blockers.append("recovery_drill_evidence_stale_or_missing")
     if not rto_met:
         blockers.append("recovery_time_objective_not_met")
+        blockers.append("production_restore_evidence_not_implemented")
     receipt_input = {
         "snapshot_manifest": str(snapshot.get("manifest_path") or ""),
         "snapshot_age_minutes": snapshot_age_value,
         "snapshot_verification": manifest_verification,
         "harness_run_sha256": str(harness.get("run_sha256") or ""),
+        "control_drill_met": control_drill_met,
+        "production_restore_verified": False,
         "targets": {"rpo_minutes": rpo_target, "rto_seconds": rto_target},
     }
     receipt = hashlib.sha256(
-        json.dumps(receipt_input, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            receipt_input, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
     ).hexdigest()
     return {
         "ready": not blockers,
@@ -1320,10 +1745,22 @@ def _recovery_objectives(
         },
         "rto": {
             "target_seconds": rto_target,
-            "observed_max_recovery_seconds": observed_rto if observed_rto >= 0.0 else None,
-            "drill_age_minutes": round(float(harness_age), 3) if harness_age is not None else None,
+            "observed_max_recovery_seconds": None,
+            "drill_age_minutes": (
+                round(float(harness_age), 3) if harness_age is not None else None
+            ),
             "drill_fresh": harness_fresh,
             "met": rto_met,
+            "evidence_scope": "full_platform_restore_not_verified",
+        },
+        "control_drill": {
+            "evidence_scope": "isolated_non_destructive",
+            "reported_evidence_class": str(harness.get("evidence_class") or "unspecified"),
+            "reported_simulation_only": harness.get("simulation_only"),
+            "observed_max_recovery_seconds": observed_rto if observed_rto >= 0.0 else None,
+            "freshness": harness_freshness,
+            "met": control_drill_met,
+            "grants_production_restore_credit": False,
         },
         "manifest_verified": manifest_verified,
         "blockers": blockers,
@@ -1342,28 +1779,54 @@ def _recommended_actions(
 ) -> list[str]:
     actions: list[str] = []
     if not bool(probe.get("external_available", False)):
-        actions.append("keep BOT_LOGS routed to local fallback until the target APFS volume is mounted and writable again")
-        if bool(probe.get("target_volume_present", False)) and not bool(probe.get("target_volume_mounted", False)):
-            actions.append("let the storage disaster recovery bot keep attempting exact-volume remounts for the configured BOT_LOGS target")
-        actions.append("maintain the curated internal BOT_LOGS recovery mirror so governance, decisions, exports, and models stay recoverable")
+        actions.append(
+            "keep BOT_LOGS routed to local fallback until the target APFS volume is mounted and writable again"
+        )
+        if bool(probe.get("target_volume_present", False)) and not bool(
+            probe.get("target_volume_mounted", False)
+        ):
+            actions.append(
+                "let the storage disaster recovery bot keep attempting exact-volume remounts for the configured BOT_LOGS target"
+            )
+        actions.append(
+            "maintain the curated internal BOT_LOGS recovery mirror so governance, decisions, exports, and models stay recoverable"
+        )
     if current_mode == "external_available_unverified":
-        actions.append("refresh the storage failback artifacts if you want the route controller to certify the rebuilt BOT_LOGS volume as the active live SQLite route")
+        actions.append(
+            "refresh the storage failback artifacts if you want the route controller to certify the rebuilt BOT_LOGS volume as the active live SQLite route"
+        )
     if current_mode in LOCAL_MODES:
         if bool(route_policy.get("local_route_pinned", False)):
-            actions.append("keep the verified local hot route pinned; use an explicit certified storage switch when an external live route is wanted")
+            actions.append(
+                "keep the verified local hot route pinned; use an explicit certified storage switch when an external live route is wanted"
+            )
         elif not bool(route_policy.get("automatic_external_failback_enabled", False)):
-            actions.append("keep the local hot route until an operator explicitly certifies an external failback")
+            actions.append(
+                "keep the local hot route until an operator explicitly certifies an external failback"
+            )
     durability = durability or {}
     for blocker in durability.get("blockers") or []:
         if blocker == "recovery_snapshot_stale":
-            actions.append("refresh the bounded local recovery snapshot at the next writer quiet point")
+            actions.append(
+                "refresh the bounded local recovery snapshot at the next writer quiet point"
+            )
         elif blocker == "immutable_control_plane_evidence_not_current":
-            actions.append("refresh the content-addressed control-plane evidence manifest")
+            actions.append(
+                "refresh the content-addressed control-plane evidence manifest"
+            )
         elif blocker == "promotion_model_artifacts_missing_from_local_route":
-            actions.append("hydrate every promoted model artifact onto the pinned local route before live consideration")
-    model_route = durability.get("model_route") if isinstance(durability.get("model_route"), dict) else {}
+            actions.append(
+                "hydrate every promoted model artifact onto the pinned local route before live consideration"
+            )
+    model_route = (
+        durability.get("model_route")
+        if isinstance(durability.get("model_route"), dict)
+        else {}
+    )
     if bool(model_route.get("paper_collection_model_gaps_advisory", False)):
-        actions.append("retrain or restore missing paper-only model artifacts before those bots enter promotion scope")
+        actions.append(
+            "retrain or restore missing paper-only model artifacts before those bots enter promotion scope"
+        )
     return actions
 
 
@@ -1375,9 +1838,15 @@ def _overall_status(
 ) -> str:
     if current_mode in LOCAL_MODES:
         return "ready" if bool((durability or {}).get("ready", False)) else "degraded"
-    if bool(probe.get("external_available", False)) and current_mode in EXTERNAL_CERTIFIED_MODES:
+    if (
+        bool(probe.get("external_available", False))
+        and current_mode in EXTERNAL_CERTIFIED_MODES
+    ):
         return "ready"
-    if bool(probe.get("external_available", False)) and current_mode == "external_available_unverified":
+    if (
+        bool(probe.get("external_available", False))
+        and current_mode == "external_available_unverified"
+    ):
         return "degraded"
     if bool(probe.get("external_available", False)):
         return "degraded"
@@ -1417,8 +1886,12 @@ def build_payload(
     state = _load_json(state_path)
     route_policy = _route_policy(project_root)
     initial_probe = _probe_storage()
-    current_mode = _current_storage_mode(project_root, probe=initial_probe)
-    local_root = Path(os.getenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(DEFAULT_LOCAL_ROOT))).expanduser()
+    current_mode, initial_sqlite_route_contract = _current_storage_mode_contract(
+        project_root, probe=initial_probe
+    )
+    local_root = Path(
+        os.getenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(DEFAULT_LOCAL_ROOT))
+    ).expanduser()
     snapshot_workspace_cleanup = _cleanup_snapshot_workspace(recovery_root, apply=apply)
 
     mount_attempt = _mount_target_volume(
@@ -1429,7 +1902,9 @@ def build_payload(
     )
 
     probe_after_mount = _probe_storage()
-    current_mode_after_mount = _current_storage_mode(project_root, probe=probe_after_mount)
+    current_mode_after_mount = _current_storage_mode(
+        project_root, probe=probe_after_mount
+    )
 
     switch_local = {
         "attempted": False,
@@ -1437,9 +1912,13 @@ def build_payload(
         "target_mode": "local",
         "skipped_reason": "not_required",
     }
-    if (not bool(probe_after_mount.get("external_available", False))) and current_mode_after_mount not in LOCAL_MODES:
+    if (
+        not bool(probe_after_mount.get("external_available", False))
+    ) and current_mode_after_mount not in LOCAL_MODES:
         switch_local = _switch_storage_mode(project_root, "local", apply=apply)
-        current_mode_after_mount = _current_storage_mode(project_root, probe=probe_after_mount)
+        current_mode_after_mount = _current_storage_mode(
+            project_root, probe=probe_after_mount
+        )
 
     model_hydration = {
         "attempted": False,
@@ -1469,7 +1948,10 @@ def build_payload(
         if pinned_local_route:
             effective_snapshot_cooldown = max(
                 effective_snapshot_cooldown,
-                _safe_float(os.getenv("BOT_LOGS_LOCAL_PINNED_SNAPSHOT_COOLDOWN_SECONDS"), 43200.0),
+                _safe_float(
+                    os.getenv("BOT_LOGS_LOCAL_PINNED_SNAPSHOT_COOLDOWN_SECONDS"),
+                    43200.0,
+                ),
             )
         snapshot = _take_curated_snapshot(
             local_root,
@@ -1482,14 +1964,22 @@ def build_payload(
         )
 
     probe_after_snapshot = _probe_storage()
-    current_mode_after_snapshot = _current_storage_mode(project_root, probe=probe_after_snapshot)
+    current_mode_after_snapshot = _current_storage_mode(
+        project_root, probe=probe_after_snapshot
+    )
 
     curated_restore = {
         "attempted": False,
         "ok": False,
         "skipped_reason": "not_required",
     }
-    if bool(probe_after_snapshot.get("external_available", False)) and current_mode_after_snapshot in (LOCAL_MODES | EXTERNAL_RECOVERY_MODES):
+    restore_source_modes = LOCAL_MODES | {
+        "external_available_unverified",
+        "unknown",
+    }
+    if bool(probe_after_snapshot.get("external_available", False)) and (
+        current_mode_after_snapshot in restore_source_modes
+    ):
         source_root = recovery_root / "latest"
         if not source_root.exists():
             source_root = local_root
@@ -1506,17 +1996,22 @@ def build_payload(
         "target_mode": "external",
         "skipped_reason": "not_required",
     }
-    external_failback_allowed = bool(route_policy.get("automatic_external_failback_enabled", False)) and not bool(
-        route_policy.get("local_route_pinned", False)
-    )
+    external_failback_allowed = bool(
+        route_policy.get("automatic_external_failback_enabled", False)
+    ) and not bool(route_policy.get("local_route_pinned", False))
     if (
         bool(probe_after_snapshot.get("external_available", False))
         and current_mode_after_snapshot in (LOCAL_MODES | EXTERNAL_RECOVERY_MODES)
         and external_failback_allowed
     ):
         restore_external = _switch_storage_mode(project_root, "external", apply=apply)
-        current_mode_after_snapshot = _current_storage_mode(project_root, probe=probe_after_snapshot)
-    elif bool(probe_after_snapshot.get("external_available", False)) and current_mode_after_snapshot in LOCAL_MODES:
+        current_mode_after_snapshot = _current_storage_mode(
+            project_root, probe=probe_after_snapshot
+        )
+    elif (
+        bool(probe_after_snapshot.get("external_available", False))
+        and current_mode_after_snapshot in LOCAL_MODES
+    ):
         restore_external["skipped_reason"] = (
             "local_route_pinned"
             if bool(route_policy.get("local_route_pinned", False))
@@ -1524,15 +2019,28 @@ def build_payload(
         )
 
     final_probe = _probe_storage()
-    final_mode = _current_storage_mode(project_root, probe=final_probe)
-    target_override = _sync_storage_target_override(project_root, final_probe, apply=apply)
+    final_mode, final_sqlite_route_contract = _current_storage_mode_contract(
+        project_root, probe=final_probe
+    )
+    target_override = _sync_storage_target_override(
+        project_root, final_probe, apply=apply
+    )
 
     finder_sync = {
         "attempted": False,
         "ok": False,
         "skipped_reason": "not_required",
     }
-    if any(bool(step.get("attempted", False)) for step in (mount_attempt, switch_local, snapshot, curated_restore, restore_external)) or bool(target_override.get("changed", False)):
+    if any(
+        bool(step.get("attempted", False))
+        for step in (
+            mount_attempt,
+            switch_local,
+            snapshot,
+            curated_restore,
+            restore_external,
+        )
+    ) or bool(target_override.get("changed", False)):
         finder_sync = _sync_finder_shortcuts(project_root, apply=apply)
 
     durability = _durability_contract(
@@ -1553,12 +2061,16 @@ def build_payload(
         "overall_status": overall_status,
         "ok": overall_status != "blocked",
         "current_storage_mode": final_mode,
+        "initial_sqlite_route_contract": initial_sqlite_route_contract,
+        "sqlite_route_contract": final_sqlite_route_contract,
         "route_policy": route_policy,
         "local_fallback_root": str(local_root),
         "recovery_root": str(recovery_root),
         "storage_probe": final_probe,
         "initial_storage_probe": initial_probe,
-        "recommended_actions": _recommended_actions(final_probe, final_mode, route_policy, durability),
+        "recommended_actions": _recommended_actions(
+            final_probe, final_mode, route_policy, durability
+        ),
         "mount_attempt": mount_attempt,
         "switch_local": switch_local,
         "recovery_snapshot": snapshot,
@@ -1572,11 +2084,24 @@ def build_payload(
         "automation_contract": {
             "launchd_label": "com.dankingsley.storage_disaster_recovery",
             "run_command": "./scripts/ops/opsctl.sh storage-disaster-recovery --apply --json",
-            "interval_seconds": max(int(float(os.getenv("BOT_LOGS_RECOVERY_AUTO_INTERVAL_SECONDS", "300") or 300)), 60),
+            "interval_seconds": max(
+                int(
+                    float(
+                        os.getenv("BOT_LOGS_RECOVERY_AUTO_INTERVAL_SECONDS", "300")
+                        or 300
+                    )
+                ),
+                60,
+            ),
             "enabled_by_default": True,
             "automatic_external_failback_enabled_by_default": False,
             "pinned_local_online_snapshot_cooldown_seconds": max(
-                int(_safe_float(os.getenv("BOT_LOGS_LOCAL_PINNED_SNAPSHOT_COOLDOWN_SECONDS"), 43200.0)),
+                int(
+                    _safe_float(
+                        os.getenv("BOT_LOGS_LOCAL_PINNED_SNAPSHOT_COOLDOWN_SECONDS"),
+                        43200.0,
+                    )
+                ),
                 3600,
             ),
             "pinned_local_online_snapshot_uses_sqlite_backup_api": True,
@@ -1591,15 +2116,36 @@ def build_payload(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Auto-recover BOT_LOGS routing and curate a recovery mirror when the external APFS volume disappears.")
-    parser.add_argument("--apply", action="store_true", help="Attempt mount, route-switch, finder-sync, and recovery snapshot actions.")
+    parser = argparse.ArgumentParser(
+        description="Auto-recover BOT_LOGS routing and curate a recovery mirror when the external APFS volume disappears."
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Attempt mount, route-switch, finder-sync, and recovery snapshot actions.",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_PATH))
     parser.add_argument("--lock-file", default=str(DEFAULT_LOCK_PATH))
-    parser.add_argument("--recovery-root", default=str(Path(os.getenv("BOT_LOGS_RECOVERY_AUTO_ROOT", str(DEFAULT_RECOVERY_ROOT))).expanduser()))
-    parser.add_argument("--mount-cooldown-seconds", type=float, default=float(os.getenv("BOT_LOGS_RECOVERY_MOUNT_COOLDOWN_SECONDS", "120")))
-    parser.add_argument("--snapshot-cooldown-seconds", type=float, default=float(os.getenv("BOT_LOGS_RECOVERY_SNAPSHOT_COOLDOWN_SECONDS", "3600")))
+    parser.add_argument(
+        "--recovery-root",
+        default=str(
+            Path(
+                os.getenv("BOT_LOGS_RECOVERY_AUTO_ROOT", str(DEFAULT_RECOVERY_ROOT))
+            ).expanduser()
+        ),
+    )
+    parser.add_argument(
+        "--mount-cooldown-seconds",
+        type=float,
+        default=float(os.getenv("BOT_LOGS_RECOVERY_MOUNT_COOLDOWN_SECONDS", "120")),
+    )
+    parser.add_argument(
+        "--snapshot-cooldown-seconds",
+        type=float,
+        default=float(os.getenv("BOT_LOGS_RECOVERY_SNAPSHOT_COOLDOWN_SECONDS", "3600")),
+    )
     args = parser.parse_args()
 
     lock_handle, owner = _acquire_singleton_lock(Path(args.lock_file).expanduser())

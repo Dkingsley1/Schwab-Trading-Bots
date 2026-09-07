@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 from core.live_execution_envelope import (
@@ -10,7 +11,13 @@ from core.order_intent import build_order_intent_evidence, canonical_payload_sha
 NOW = datetime(2026, 8, 24, 16, 0, 0, tzinfo=timezone.utc)
 
 
-def _intent(*, quote_time: datetime = NOW, spread_bps: float = 5.0) -> dict:
+def _intent(
+    *,
+    quote_time: datetime = NOW,
+    spread_bps: float = 5.0,
+    risk_ok: bool = True,
+    source_provider: str = "",
+) -> dict:
     return build_order_intent_evidence(
         decision_id="decision-1",
         symbol="SPY",
@@ -26,9 +33,10 @@ def _intent(*, quote_time: datetime = NOW, spread_bps: float = 5.0) -> dict:
             "ask_price": 100.02,
             "spread_bps": spread_bps,
             "quote_age_ms": 0.0,
+            "source_provider": source_provider,
         },
         expected_fill={"expected_fill_price": 100.0, "partial_fill_ratio": 1.0},
-        risk_decision={"ok": True, "gate": "pre_trade", "reason": "ok", "details": {}},
+        risk_decision={"ok": risk_ok, "gate": "pre_trade", "reason": "ok", "details": {}},
     )
 
 
@@ -202,6 +210,93 @@ def test_live_execution_envelope_rejects_stale_account_snapshot() -> None:
 
     assert result["ok"] is False
     assert "account_snapshot_is_stale" in result["blockers"]
+
+
+def test_live_execution_envelope_requires_approved_risk_and_quote_provenance() -> None:
+    result = verify_live_execution_envelope(
+        _envelope(intent=_intent(risk_ok=False)),
+        expected_candidate_id="pc-candidate-g100",
+        expected_account_reference="account-secret",
+        now_utc=NOW,
+        require_affirmative_risk_decision=True,
+        require_quote_provenance=True,
+        allowed_quote_providers=("schwab",),
+    )
+
+    assert result["ok"] is False
+    assert "order_intent_risk_decision_not_approved" in result["blockers"]
+    assert "quote_source_provider_missing" in result["blockers"]
+
+
+def test_live_execution_envelope_binds_ready_canary_preflight_receipt() -> None:
+    account_hash = hashlib.sha256(b"account-secret").hexdigest()
+    envelope = build_live_execution_envelope(
+        intent_evidence=_intent(source_provider="schwab"),
+        order_request=_request(),
+        candidate_id="pc-candidate-g100",
+        broker="schwab",
+        account_reference="account-secret",
+        account_snapshot_evidence={
+            "broker_position_snapshot_sha256": "a" * 64,
+            "broker_position_snapshot_captured_at_utc": NOW.isoformat(),
+            "live_canary_preflight_receipt": {
+                "ready": True,
+                "receipt_sha256": "c" * 64,
+                "account_policy_key": "schwab_cash_account_1",
+                "account_reference_sha256": account_hash,
+            },
+        },
+        policy_sha256="b" * 64,
+        created_at_utc=NOW,
+    )
+
+    result = verify_live_execution_envelope(
+        envelope,
+        expected_candidate_id="pc-candidate-g100",
+        expected_account_reference="account-secret",
+        now_utc=NOW,
+        require_affirmative_risk_decision=True,
+        require_quote_provenance=True,
+        allowed_quote_providers=("schwab",),
+        require_canary_preflight_receipt=True,
+        expected_account_policy_key="schwab_cash_account_1",
+    )
+
+    assert result["ok"] is True
+
+
+def test_live_execution_envelope_rejects_wrong_preflight_account() -> None:
+    envelope = build_live_execution_envelope(
+        intent_evidence=_intent(source_provider="schwab"),
+        order_request=_request(),
+        candidate_id="pc-candidate-g100",
+        broker="schwab",
+        account_reference="account-secret",
+        account_snapshot_evidence={
+            "broker_position_snapshot_sha256": "a" * 64,
+            "broker_position_snapshot_captured_at_utc": NOW.isoformat(),
+            "live_canary_preflight_receipt": {
+                "ready": True,
+                "receipt_sha256": "c" * 64,
+                "account_policy_key": "schwab_cash_account_1",
+                "account_reference_sha256": "d" * 64,
+            },
+        },
+        policy_sha256="b" * 64,
+        created_at_utc=NOW,
+    )
+
+    result = verify_live_execution_envelope(
+        envelope,
+        expected_candidate_id="pc-candidate-g100",
+        expected_account_reference="account-secret",
+        now_utc=NOW,
+        require_canary_preflight_receipt=True,
+        expected_account_policy_key="schwab_cash_account_1",
+    )
+
+    assert result["ok"] is False
+    assert "live_canary_preflight_account_reference_mismatch" in result["blockers"]
 
 
 def test_mutating_broker_operations_are_one_shot_after_dispatch() -> None:

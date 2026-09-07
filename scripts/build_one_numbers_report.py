@@ -951,6 +951,24 @@ def _logical_raw_jsonl_paths(project_root: Path, day: str, bucket: str) -> list[
     return sorted(logical_paths.values())
 
 
+def _canonical_decision_channel_paths(project_root: Path, day: str) -> list[Path]:
+    logical_paths: dict[str, Path] = {}
+    for root in _one_numbers_source_scan_roots(project_root):
+        channel_root = root / "governance" / "channels" / "decision"
+        if not channel_root.exists():
+            continue
+        for path in channel_root.glob(f"*/decision_{day}.jsonl*"):
+            if not (path.name.endswith(".jsonl") or path.name.endswith(".jsonl.gz")):
+                continue
+            key = str(path)[:-3] if path.name.endswith(".gz") else str(path)
+            current = logical_paths.get(key)
+            if current is None or (
+                current.name.endswith(".gz") and not path.name.endswith(".gz")
+            ):
+                logical_paths[key] = path
+    return sorted(logical_paths.values())
+
+
 def _iter_raw_jsonl_tail_rows(path: Path, *, max_bytes: int = 2 * 1024 * 1024):
     if path.name.endswith(".gz"):
         yield from _iter_raw_jsonl_rows(path)
@@ -983,7 +1001,14 @@ def _raw_decision_freshness_snapshot(
     timestamps: list[tuple[str]] = []
     latest_timestamp = ""
     latest_dt: datetime | None = None
-    logical_paths = _logical_raw_jsonl_paths(project_root, day, "decision")
+    logical_paths = list(_logical_raw_jsonl_paths(project_root, day, "decision"))
+    known_paths = {str(path.resolve()) for path in logical_paths}
+    for path in _canonical_decision_channel_paths(project_root, day):
+        resolved = str(path.resolve())
+        if resolved not in known_paths:
+            logical_paths.append(path)
+            known_paths.add(resolved)
+    logical_paths.sort()
     for path in logical_paths:
         for row in _iter_raw_jsonl_tail_rows(path):
             sampled_row_count += 1

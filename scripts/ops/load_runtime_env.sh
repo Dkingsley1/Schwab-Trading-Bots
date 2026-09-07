@@ -73,9 +73,9 @@ for candidate in \
   "$PROJECT_ROOT/config/.env.apple_silicon_override" \
   "$PROJECT_ROOT/config/.env.host_profile_override" \
   "$PROJECT_ROOT/config/.env.memory_efficiency_override" \
-  "$PROJECT_ROOT/config/.env.runtime_resource_guard_override" \
   "$PROJECT_ROOT/config/.env.python314_runtime_override" \
   "$PROJECT_ROOT/config/.env.pressure_relief_override" \
+  "$PROJECT_ROOT/config/.env.runtime_resource_guard_override" \
   "$PROJECT_ROOT/config/.env.guard_intelligence_override" \
   "$PROJECT_ROOT/config/.env.process_fanout_guard_override" \
   "$PROJECT_ROOT/config/.env.super_intelligence_override" \
@@ -159,6 +159,10 @@ fill_secret_from_keychain() {
 export SCHWAB_KEYCHAIN_FALLBACK_ENABLED="${SCHWAB_KEYCHAIN_FALLBACK_ENABLED:-1}"
 export SCHWAB_KEYCHAIN_RUNTIME_RESOLUTION_ENABLED="${SCHWAB_KEYCHAIN_RUNTIME_RESOLUTION_ENABLED:-1}"
 export SCHWAB_STRIP_SECRET_ENV_WHEN_KEYCHAIN_READY="${SCHWAB_STRIP_SECRET_ENV_WHEN_KEYCHAIN_READY:-1}"
+export SCHWAB_MANAGED_RUNTIME_REQUIRED="${SCHWAB_MANAGED_RUNTIME_REQUIRED:-1}"
+export SCHWAB_MANAGED_RUNTIME_ATTESTED=1
+export SCHWAB_MANAGED_RUNTIME_SOURCE=load_runtime_env
+export BROKER_SHARED_RATE_LIMIT_ENABLED="${BROKER_SHARED_RATE_LIMIT_ENABLED:-1}"
 export SCHWAB_API_KEY_KEYCHAIN_SERVICE="${SCHWAB_API_KEY_KEYCHAIN_SERVICE:-schwab_trading_bot/SCHWAB_API_KEY}"
 export SCHWAB_SECRET_KEYCHAIN_SERVICE="${SCHWAB_SECRET_KEYCHAIN_SERVICE:-schwab_trading_bot/SCHWAB_SECRET}"
 export SCHWAB_REDIRECT_KEYCHAIN_SERVICE="${SCHWAB_REDIRECT_KEYCHAIN_SERVICE:-schwab_trading_bot/SCHWAB_REDIRECT}"
@@ -179,6 +183,58 @@ if [[ "${SCHWAB_KEYCHAIN_FALLBACK_ENABLED:l}" != "0" && "${SCHWAB_KEYCHAIN_FALLB
   fi
   unset _schwab_keychain_api_key _schwab_keychain_secret
 fi
+
+# Account hashes are opaque broker routing references. Keep them in Keychain,
+# map them only through operator-verified account policy slots, and never place
+# them in tracked config or runtime health artifacts.
+export SCHWAB_ROTH_ACCOUNT_HASH_KEYCHAIN_SERVICE="${SCHWAB_ROTH_ACCOUNT_HASH_KEYCHAIN_SERVICE:-schwab_trading_bot/SCHWAB_ROTH_ACCOUNT_HASH}"
+export SCHWAB_ROTH_IRA_ACCOUNT_HASH_KEYCHAIN_SERVICE="${SCHWAB_ROTH_IRA_ACCOUNT_HASH_KEYCHAIN_SERVICE:-schwab_trading_bot/SCHWAB_ROTH_IRA_ACCOUNT_HASH}"
+export SCHWAB_CASH_ACCOUNT_1_HASH_KEYCHAIN_SERVICE="${SCHWAB_CASH_ACCOUNT_1_HASH_KEYCHAIN_SERVICE:-schwab_trading_bot/SCHWAB_CASH_ACCOUNT_1_HASH}"
+export SCHWAB_TAXABLE_ACCOUNT_1_HASH_KEYCHAIN_SERVICE="${SCHWAB_TAXABLE_ACCOUNT_1_HASH_KEYCHAIN_SERVICE:-schwab_trading_bot/SCHWAB_TAXABLE_ACCOUNT_1_HASH}"
+export SCHWAB_CASH_ACCOUNT_2_HASH_KEYCHAIN_SERVICE="${SCHWAB_CASH_ACCOUNT_2_HASH_KEYCHAIN_SERVICE:-schwab_trading_bot/SCHWAB_CASH_ACCOUNT_2_HASH}"
+export SCHWAB_TAXABLE_ACCOUNT_2_HASH_KEYCHAIN_SERVICE="${SCHWAB_TAXABLE_ACCOUNT_2_HASH_KEYCHAIN_SERVICE:-schwab_trading_bot/SCHWAB_TAXABLE_ACCOUNT_2_HASH}"
+if [[ "${SCHWAB_KEYCHAIN_FALLBACK_ENABLED:l}" != "0" && "${SCHWAB_KEYCHAIN_FALLBACK_ENABLED:l}" != "false" && "${SCHWAB_KEYCHAIN_FALLBACK_ENABLED:l}" != "no" && "${SCHWAB_KEYCHAIN_FALLBACK_ENABLED:l}" != "off" ]]; then
+  fill_secret_from_keychain "SCHWAB_ROTH_ACCOUNT_HASH" "$SCHWAB_ROTH_ACCOUNT_HASH_KEYCHAIN_SERVICE"
+  fill_secret_from_keychain "SCHWAB_ROTH_IRA_ACCOUNT_HASH" "$SCHWAB_ROTH_IRA_ACCOUNT_HASH_KEYCHAIN_SERVICE"
+  fill_secret_from_keychain "SCHWAB_CASH_ACCOUNT_1_HASH" "$SCHWAB_CASH_ACCOUNT_1_HASH_KEYCHAIN_SERVICE"
+  fill_secret_from_keychain "SCHWAB_TAXABLE_ACCOUNT_1_HASH" "$SCHWAB_TAXABLE_ACCOUNT_1_HASH_KEYCHAIN_SERVICE"
+  fill_secret_from_keychain "SCHWAB_CASH_ACCOUNT_2_HASH" "$SCHWAB_CASH_ACCOUNT_2_HASH_KEYCHAIN_SERVICE"
+  fill_secret_from_keychain "SCHWAB_TAXABLE_ACCOUNT_2_HASH" "$SCHWAB_TAXABLE_ACCOUNT_2_HASH_KEYCHAIN_SERVICE"
+fi
+
+_schwab_canary_plan_path="$PROJECT_ROOT/config/live_canary_micro_policy_v1.json"
+_schwab_canary_plan_policy_key=""
+if [[ -f "$_schwab_canary_plan_path" ]]; then
+  if command -v jq >/dev/null 2>&1; then
+    _schwab_canary_plan_policy_key="$(jq -er '.account_policy_key | select(type == "string" and length > 0)' "$_schwab_canary_plan_path" 2>/dev/null || true)"
+  else
+    for _schwab_json_python in "$PROJECT_ROOT/.venv314/bin/python" /usr/bin/python3; do
+      [[ -x "$_schwab_json_python" ]] || continue
+      _schwab_canary_plan_policy_key="$("$_schwab_json_python" -c 'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")).get("account_policy_key", ""); print(value if isinstance(value, str) else "")' "$_schwab_canary_plan_path" 2>/dev/null || true)"
+      [[ -n "$_schwab_canary_plan_policy_key" ]] && break
+    done
+  fi
+fi
+export SCHWAB_LIVE_ACCOUNT_POLICY_KEY="$_schwab_canary_plan_policy_key"
+export SCHWAB_LIVE_ACCOUNT_POLICY_SOURCE=canary_plan
+if [[ "$PROFILE" == "live" ]]; then
+  unset SCHWAB_ACCOUNT_HASH SCHWAB_ACCOUNT_HASH_SOURCE
+  case "$SCHWAB_LIVE_ACCOUNT_POLICY_KEY" in
+    schwab_roth_ira_primary)
+      export SCHWAB_ACCOUNT_HASH="${SCHWAB_ROTH_ACCOUNT_HASH:-${SCHWAB_ROTH_IRA_ACCOUNT_HASH:-}}"
+      ;;
+    schwab_cash_account_1)
+      export SCHWAB_ACCOUNT_HASH="${SCHWAB_CASH_ACCOUNT_1_HASH:-${SCHWAB_TAXABLE_ACCOUNT_1_HASH:-}}"
+      ;;
+    schwab_cash_account_2)
+      export SCHWAB_ACCOUNT_HASH="${SCHWAB_CASH_ACCOUNT_2_HASH:-${SCHWAB_TAXABLE_ACCOUNT_2_HASH:-}}"
+      ;;
+  esac
+  if [[ -n "${SCHWAB_ACCOUNT_HASH:-}" ]]; then
+    export SCHWAB_ACCOUNT_HASH_SOURCE=policy_bound_keychain
+  fi
+fi
+unset _schwab_canary_plan_path _schwab_canary_plan_policy_key _schwab_json_python
 
 # Safe defaults and startup self-heal for empty symbol groups.
 export BOT_RUNTIME_PROFILE="$PROFILE"
@@ -328,7 +384,11 @@ export OPS_WATCHDOG_REFRESH_MAX_AGE_SECONDS="${OPS_WATCHDOG_REFRESH_MAX_AGE_SECO
 export OPS_WATCHDOG_BACKPRESSURE_MAX_AGE_SECONDS="${OPS_WATCHDOG_BACKPRESSURE_MAX_AGE_SECONDS:-180}"
 export OPS_WATCHDOG_DIVERGENCE_MAX_AGE_SECONDS="${OPS_WATCHDOG_DIVERGENCE_MAX_AGE_SECONDS:-300}"
 export OPS_WATCHDOG_LAUNCHD_INTERVAL_SECONDS="${OPS_WATCHDOG_LAUNCHD_INTERVAL_SECONDS:-180}"
-export SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER="${SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER:-1}"
+if [[ "$PROFILE" == "live" ]]; then
+  export SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER="${SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER:-0}"
+else
+  export SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER="${SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER:-1}"
+fi
 export LIVE_ACCOUNTS_SNAPSHOT_ALLOW_GLOBAL_FALLBACK="${LIVE_ACCOUNTS_SNAPSHOT_ALLOW_GLOBAL_FALLBACK:-0}"
 export LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED="${LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED:-1}"
 export BROKER_TRUTH_SHARED_SNAPSHOT_MAX_AGE_SECONDS="${BROKER_TRUTH_SHARED_SNAPSHOT_MAX_AGE_SECONDS:-15}"

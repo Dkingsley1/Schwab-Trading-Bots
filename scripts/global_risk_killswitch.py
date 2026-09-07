@@ -35,7 +35,7 @@ def _load(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding='utf-8'))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -45,14 +45,14 @@ def _first_non_empty(paths: List[Path]) -> Tuple[dict, str]:
         payload = _load(p)
         if payload:
             return payload, str(p)
-    return {}, ''
+    return {}, ""
 
 
 def _clearance_state(payload: dict) -> str:
-    clearance_plan = payload.get('clearance_plan')
+    clearance_plan = payload.get("clearance_plan")
     if isinstance(clearance_plan, dict):
-        return str(clearance_plan.get('clearance_state') or '').strip().lower()
-    return ''
+        return str(clearance_plan.get("clearance_state") or "").strip().lower()
+    return ""
 
 
 def _active_hard_gates(payload: dict[str, Any]) -> list[str]:
@@ -63,14 +63,23 @@ def _active_hard_gates(payload: dict[str, Any]) -> list[str]:
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
-    return str(os.getenv(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+    return str(os.getenv(name, default) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _execution_expected() -> bool:
-    return _truthy_env("ALLOW_ORDER_EXECUTION", "0") and not _truthy_env("MARKET_DATA_ONLY", "1")
+    return _truthy_env("ALLOW_ORDER_EXECUTION", "0") and not _truthy_env(
+        "MARKET_DATA_ONLY", "1"
+    )
 
 
-def _snapshot_relative_age_seconds(payload: dict[str, Any], age_key: str) -> float | None:
+def _snapshot_relative_age_seconds(
+    payload: dict[str, Any], age_key: str
+) -> float | None:
     raw_age = payload.get(age_key)
     if raw_age is None or str(raw_age).strip() == "":
         return None
@@ -81,18 +90,29 @@ def _snapshot_relative_age_seconds(payload: dict[str, Any], age_key: str) -> flo
     if age_at_report < 0.0:
         return None
 
-    generated_raw = payload.get("generated_utc") or payload.get("timestamp_utc") or payload.get("as_of_utc")
+    generated_raw = (
+        payload.get("generated_utc")
+        or payload.get("timestamp_utc")
+        or payload.get("as_of_utc")
+    )
     try:
         generated_at = datetime.fromisoformat(str(generated_raw).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
     if generated_at.tzinfo is None:
         generated_at = generated_at.replace(tzinfo=timezone.utc)
-    report_age = max((datetime.now(timezone.utc) - generated_at.astimezone(timezone.utc)).total_seconds(), 0.0)
+    report_age = max(
+        (
+            datetime.now(timezone.utc) - generated_at.astimezone(timezone.utc)
+        ).total_seconds(),
+        0.0,
+    )
     return round(age_at_report + report_age, 3)
 
 
-def _raw_stream_ages(project_root: Path, *, now_utc: datetime) -> tuple[float | None, float | None]:
+def _raw_stream_ages(
+    project_root: Path, *, now_utc: datetime
+) -> tuple[float | None, float | None]:
     try:
         from scripts import build_one_numbers_report as one_numbers_report
 
@@ -109,8 +129,12 @@ def _raw_stream_ages(project_root: Path, *, now_utc: datetime) -> tuple[float | 
         ]
         decision_day = max(decision_days, default=requested_day)
         governance_day = max(governance_days, default=requested_day)
-        decision = one_numbers_report._raw_decision_freshness_snapshot(project_root, decision_day)
-        governance = one_numbers_report._raw_governance_snapshot(project_root, governance_day)
+        decision = one_numbers_report._raw_decision_freshness_snapshot(
+            project_root, decision_day
+        )
+        governance = one_numbers_report._raw_governance_snapshot(
+            project_root, governance_day
+        )
         decision_age = one_numbers_report._timestamp_age_seconds(
             decision.get("latest_timestamp"), now_utc=now_utc
         )
@@ -119,7 +143,7 @@ def _raw_stream_ages(project_root: Path, *, now_utc: datetime) -> tuple[float | 
         )
     except Exception:
         return None, None
-    missing_age = 10 ** 9
+    missing_age = 10**9
     return (
         None if decision_age >= missing_age else float(decision_age),
         None if governance_age >= missing_age else float(governance_age),
@@ -129,7 +153,9 @@ def _raw_stream_ages(project_root: Path, *, now_utc: datetime) -> tuple[float | 
 def _current_backpressure_is_clear(payload: dict[str, Any]) -> bool:
     if not payload:
         return False
-    pending = int(payload.get("pending_lines_total", payload.get("pending_lines", 0)) or 0)
+    pending = int(
+        payload.get("pending_lines_total", payload.get("pending_lines", 0)) or 0
+    )
     threshold = int(payload.get("pending_lines_threshold", 15000) or 15000)
     return (
         not bool(payload.get("overload", False))
@@ -143,15 +169,36 @@ def _current_backpressure_is_clear(payload: dict[str, Any]) -> bool:
 def _effective_storage_backpressure(storage_control: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(storage_control, dict) or not storage_control:
         return {"authoritative": False}
-    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
-    effective = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
-    data_integrity = storage_control.get("data_integrity") if isinstance(storage_control.get("data_integrity"), dict) else {}
-    source = str(backpressure.get("effective_raw_live_source") or effective.get("source") or "").strip()
+    backpressure = (
+        storage_control.get("backpressure")
+        if isinstance(storage_control.get("backpressure"), dict)
+        else {}
+    )
+    effective = (
+        backpressure.get("effective_raw_live")
+        if isinstance(backpressure.get("effective_raw_live"), dict)
+        else {}
+    )
+    data_integrity = (
+        storage_control.get("data_integrity")
+        if isinstance(storage_control.get("data_integrity"), dict)
+        else {}
+    )
+    source = str(
+        backpressure.get("effective_raw_live_source") or effective.get("source") or ""
+    ).strip()
     storage_ready = bool(
         str(storage_control.get("overall_status") or "").strip().lower() == "ready"
         and str(storage_control.get("severity") or "").strip().lower() == "stable"
     )
-    overlay_clear = bool(backpressure.get("overlay_pressure_clear", False) or source == "fresh_empty_sql_ingestion_overlay")
+    managed_support_clear = bool(
+        backpressure.get("managed_support_pressure_clear", False)
+    )
+    effective_pressure_clear = bool(backpressure.get("effective_pressure_clear", False))
+    overlay_clear = bool(
+        backpressure.get("overlay_pressure_clear", False)
+        or source == "fresh_empty_sql_ingestion_overlay"
+    )
     data_clean = bool(
         int(data_integrity.get("sql_overlay_invalid_lines", 0) or 0) <= 0
         and int(data_integrity.get("sql_overlay_oversize_payloads", 0) or 0) <= 0
@@ -159,16 +206,40 @@ def _effective_storage_backpressure(storage_control: dict[str, Any]) -> dict[str
     )
     authoritative = bool(
         storage_ready
-        and bool(backpressure.get("overlay_adjusted", False))
-        and overlay_clear
+        and (
+            (bool(backpressure.get("overlay_adjusted", False)) and overlay_clear)
+            or (effective_pressure_clear and managed_support_clear)
+        )
         and data_clean
     )
-    total = int(float(effective.get("total_pending_lines", backpressure.get("total_pending_lines", 0)) or 0))
-    core = int(float(effective.get("core_pending_lines", backpressure.get("core_pending_lines", total)) or 0))
-    oldest = float(effective.get("oldest_pending_age_seconds", backpressure.get("oldest_pending_age_seconds", 0.0)) or 0.0)
+    total = int(
+        float(
+            effective.get(
+                "total_pending_lines", backpressure.get("total_pending_lines", 0)
+            )
+            or 0
+        )
+    )
+    core = int(
+        float(
+            effective.get(
+                "core_pending_lines", backpressure.get("core_pending_lines", total)
+            )
+            or 0
+        )
+    )
+    oldest = float(
+        effective.get(
+            "oldest_pending_age_seconds",
+            backpressure.get("oldest_pending_age_seconds", 0.0),
+        )
+        or 0.0
+    )
     return {
         "authoritative": authoritative,
         "source": source or "ingestion_storage_control_effective_raw_live",
+        "effective_pressure_clear": effective_pressure_clear,
+        "managed_support_pressure_clear": managed_support_clear,
         "core_pending_lines": core,
         "total_pending_lines": total,
         "oldest_pending_age_seconds": round(oldest, 3),
@@ -182,7 +253,9 @@ def _watchdog_restart_storm_recovered(payload: dict[str, Any]) -> bool:
     rows = payload.get("status")
     if not isinstance(rows, list):
         return False
-    by_name = {str(row.get("name") or "").strip(): row for row in rows if isinstance(row, dict)}
+    by_name = {
+        str(row.get("name") or "").strip(): row for row in rows if isinstance(row, dict)
+    }
     for storm in storms:
         if not isinstance(storm, dict):
             return False
@@ -192,7 +265,9 @@ def _watchdog_restart_storm_recovered(payload: dict[str, Any]) -> bool:
         row = by_name.get(name)
         if not isinstance(row, dict):
             return False
-        running_count = int(row.get("running", 0) or 0) + int(row.get("alt_running", 0) or 0)
+        running_count = int(row.get("running", 0) or 0) + int(
+            row.get("alt_running", 0) or 0
+        )
         process_live = bool(row.get("process_live", False))
         heartbeat_ok = bool(row.get("heartbeat_ok", row.get("heartbeat_fresh", False)))
         if running_count <= 0 or not process_live or not heartbeat_ok:
@@ -226,7 +301,9 @@ def _watchdog_restart_storm_isolation(
         if not name:
             continue
         quarantinable = bool(storm.get("quarantinable", False))
-        blocks_execution_clear = bool(storm.get("blocks_execution_clear", not quarantinable))
+        blocks_execution_clear = bool(
+            storm.get("blocks_execution_clear", not quarantinable)
+        )
         if quarantinable and not blocks_execution_clear and not execution_expected:
             isolated_targets.append(name)
         else:
@@ -237,7 +314,11 @@ def _watchdog_restart_storm_isolation(
         "execution_blocking_count": len(execution_blocking_targets),
         "isolated_targets": sorted(isolated_targets),
         "execution_blocking_targets": sorted(execution_blocking_targets),
-        "safe_to_clear_when_not_executing": bool(isolated_targets and not execution_blocking_targets and not execution_expected),
+        "safe_to_clear_when_not_executing": bool(
+            isolated_targets
+            and not execution_blocking_targets
+            and not execution_expected
+        ),
         "execution_expected": bool(execution_expected),
         "policy": "read_only_collection_restart_storms_may_be_quarantined_only_while_order_execution_is_off",
     }
@@ -246,7 +327,9 @@ def _watchdog_restart_storm_isolation(
 def _backpressure_pressure_ratio(payload: dict[str, Any]) -> float:
     if not payload:
         return 0.0
-    pending = float(payload.get("pending_lines_total", payload.get("pending_lines", 0)) or 0.0)
+    pending = float(
+        payload.get("pending_lines_total", payload.get("pending_lines", 0)) or 0.0
+    )
     threshold = float(payload.get("pending_lines_threshold", 15000) or 15000.0)
     return max(pending, 0.0) / max(threshold, 1.0)
 
@@ -263,11 +346,20 @@ def _classify_hard_gates(
     stale: list[str] = []
     backpressure_clear = _current_backpressure_is_clear(backpressure)
     backpressure_ratio = _backpressure_pressure_ratio(backpressure)
-    severe_backpressure_ratio = float(os.getenv("GLOBAL_KILL_BACKPRESSURE_SEVERE_RATIO", "2.0"))
-    live_degrade_to_halt = _truthy_env("GLOBAL_KILL_DEGRADE_TO_HALT_ON_LIVE_EXECUTION", "1")
+    severe_backpressure_ratio = float(
+        os.getenv("GLOBAL_KILL_BACKPRESSURE_SEVERE_RATIO", "2.0")
+    )
+    live_degrade_to_halt = _truthy_env(
+        "GLOBAL_KILL_DEGRADE_TO_HALT_ON_LIVE_EXECUTION", "1"
+    )
     recoverable = {
         gate.strip()
-        for gate in str(os.getenv("GLOBAL_KILL_RECOVERABLE_HEALTH_GATES", ",".join(sorted(RECOVERABLE_HEALTH_GATES)))).split(",")
+        for gate in str(
+            os.getenv(
+                "GLOBAL_KILL_RECOVERABLE_HEALTH_GATES",
+                ",".join(sorted(RECOVERABLE_HEALTH_GATES)),
+            )
+        ).split(",")
         if gate.strip()
     }
     for gate in hard_gate_names:
@@ -275,7 +367,10 @@ def _classify_hard_gates(
             continue
         elif gate == "ingestion_backpressure_overload" and backpressure_clear:
             stale.append(gate)
-        elif gate == "ingestion_backpressure_overload" and backpressure_ratio >= severe_backpressure_ratio:
+        elif (
+            gate == "ingestion_backpressure_overload"
+            and backpressure_ratio >= severe_backpressure_ratio
+        ):
             critical.append(gate)
         elif execution_expected and live_degrade_to_halt and gate in recoverable:
             critical.append(gate)
@@ -370,7 +465,9 @@ def _operator_status_line(
 
 
 def _parse_json_output(text: str) -> dict[str, Any]:
-    for raw in reversed([line.strip() for line in str(text or "").splitlines() if line.strip()]):
+    for raw in reversed(
+        [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    ):
         try:
             payload = json.loads(raw)
         except Exception:
@@ -383,10 +480,22 @@ def _parse_json_output(text: str) -> dict[str, Any]:
 def _clear_blocker_steps() -> list[tuple[str, list[str]]]:
     ops_root = PROJECT_ROOT / "scripts" / "ops"
     return [
-        ("process_watchdog", [str(PY), str(ops_root / "process_watchdog.py"), "--json"]),
-        ("auth_lease_manager", [str(PY), str(ops_root / "auth_lease_manager.py"), "--json"]),
-        ("data_plane_recovery_controller", [str(PY), str(ops_root / "data_plane_recovery_controller.py"), "--json"]),
-        ("live_runtime_separation_control", [str(PY), str(ops_root / "live_runtime_separation_control.py"), "--json"]),
+        (
+            "process_watchdog",
+            [str(PY), str(ops_root / "process_watchdog.py"), "--json"],
+        ),
+        (
+            "auth_lease_manager",
+            [str(PY), str(ops_root / "auth_lease_manager.py"), "--json"],
+        ),
+        (
+            "data_plane_recovery_controller",
+            [str(PY), str(ops_root / "data_plane_recovery_controller.py"), "--json"],
+        ),
+        (
+            "live_runtime_separation_control",
+            [str(PY), str(ops_root / "live_runtime_separation_control.py"), "--json"],
+        ),
     ]
 
 
@@ -407,8 +516,16 @@ def _attempt_clear_blockers(*, timeout_sec: int) -> list[dict[str, Any]]:
             rc = int(proc.returncode)
             timed_out = False
         except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-            stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+            stdout = (
+                exc.stdout.decode("utf-8", errors="ignore")
+                if isinstance(exc.stdout, bytes)
+                else str(exc.stdout or "")
+            )
+            stderr = (
+                exc.stderr.decode("utf-8", errors="ignore")
+                if isinstance(exc.stderr, bytes)
+                else str(exc.stderr or "")
+            )
             rc = 124
             timed_out = True
         payload = _parse_json_output(stdout)
@@ -420,46 +537,87 @@ def _attempt_clear_blockers(*, timeout_sec: int) -> list[dict[str, Any]]:
                 "timed_out": timed_out,
                 "payload": payload,
                 "stdout_tail": "\n".join(stdout.splitlines()[-6:]),
-                "stderr_tail": "\n".join(stderr.splitlines()[-6:]) or ("timeout" if timed_out else ""),
+                "stderr_tail": "\n".join(stderr.splitlines()[-6:])
+                or ("timeout" if timed_out else ""),
             }
         )
     return attempts
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='Account-level global risk kill-switch.')
-    parser.add_argument('--max-blocked-rate', type=float, default=float(os.getenv('GLOBAL_KILL_BLOCKED_RATE_MAX', '0.45')))
-    parser.add_argument('--max-abs-pnl-proxy', type=float, default=float(os.getenv('GLOBAL_KILL_ABS_PNL_PROXY_MAX', '0.03')))
-    parser.add_argument('--max-stale-windows', type=int, default=int(os.getenv('GLOBAL_KILL_STALE_WINDOWS_MAX', '2')))
-    parser.add_argument('--max-watchdog-restarts', type=int, default=int(os.getenv('GLOBAL_KILL_WATCHDOG_RESTARTS_MAX', '5')))
-    parser.add_argument('--auto-clear', action='store_true')
-    parser.add_argument('--clear-blockers', action='store_true', help='Refresh blocker artifacts before reevaluating safe-clear readiness.')
-    parser.add_argument('--json', action='store_true', help='Emit JSON; retained for opsctl wrapper consistency.')
-    parser.add_argument('--exit-zero', action='store_true', help='Return 0 after writing the diagnostic payload.')
-    parser.add_argument(
-        '--clear-blocker-timeout-seconds',
-        type=int,
-        default=int(os.getenv('GLOBAL_KILL_CLEAR_BLOCKER_STEP_TIMEOUT_SECONDS', '10')),
-        help='Maximum seconds for each blocker refresh step.',
+    parser = argparse.ArgumentParser(
+        description="Account-level global risk kill-switch."
     )
-    parser.add_argument('--status-only', action='store_true', help='Evaluate and report halt posture without mutating halt flags.')
+    parser.add_argument(
+        "--max-blocked-rate",
+        type=float,
+        default=float(os.getenv("GLOBAL_KILL_BLOCKED_RATE_MAX", "0.45")),
+    )
+    parser.add_argument(
+        "--max-abs-pnl-proxy",
+        type=float,
+        default=float(os.getenv("GLOBAL_KILL_ABS_PNL_PROXY_MAX", "0.03")),
+    )
+    parser.add_argument(
+        "--max-stale-windows",
+        type=int,
+        default=int(os.getenv("GLOBAL_KILL_STALE_WINDOWS_MAX", "2")),
+    )
+    parser.add_argument(
+        "--max-watchdog-restarts",
+        type=int,
+        default=int(os.getenv("GLOBAL_KILL_WATCHDOG_RESTARTS_MAX", "5")),
+    )
+    parser.add_argument("--auto-clear", action="store_true")
+    parser.add_argument(
+        "--clear-blockers",
+        action="store_true",
+        help="Refresh blocker artifacts before reevaluating safe-clear readiness.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON; retained for opsctl wrapper consistency.",
+    )
+    parser.add_argument(
+        "--exit-zero",
+        action="store_true",
+        help="Return 0 after writing the diagnostic payload.",
+    )
+    parser.add_argument(
+        "--clear-blocker-timeout-seconds",
+        type=int,
+        default=int(os.getenv("GLOBAL_KILL_CLEAR_BLOCKER_STEP_TIMEOUT_SECONDS", "10")),
+        help="Maximum seconds for each blocker refresh step.",
+    )
+    parser.add_argument(
+        "--status-only",
+        action="store_true",
+        help="Evaluate and report halt posture without mutating halt flags.",
+    )
     args = parser.parse_args()
 
     blocker_refresh_attempts: list[dict[str, Any]] = []
     if args.clear_blockers:
-        blocker_refresh_attempts = _attempt_clear_blockers(timeout_sec=int(args.clear_blocker_timeout_seconds))
+        blocker_refresh_attempts = _attempt_clear_blockers(
+            timeout_sec=int(args.clear_blocker_timeout_seconds)
+        )
 
     one, one_src = _first_non_empty(
         [
-            PROJECT_ROOT / 'governance' / 'health' / 'one_numbers_latest.json',
-            PROJECT_ROOT / 'exports' / 'one_numbers' / 'one_numbers_summary.json',
-            PROJECT_ROOT / 'exports' / 'one_numbers' / 'latest' / 'one_numbers_summary.json',
+            PROJECT_ROOT / "governance" / "health" / "one_numbers_latest.json",
+            PROJECT_ROOT / "exports" / "one_numbers" / "one_numbers_summary.json",
+            PROJECT_ROOT
+            / "exports"
+            / "one_numbers"
+            / "latest"
+            / "one_numbers_summary.json",
         ]
     )
-    health_root = PROJECT_ROOT / 'governance' / 'health'
+    health_root = PROJECT_ROOT / "governance" / "health"
     halt_flag = health_root / "GLOBAL_TRADING_HALT.flag"
     operator_stop_flag = health_root / "OPERATOR_STOP.flag"
-    health = _load(health_root / 'health_gates_latest.json')
+    health = _load(health_root / "health_gates_latest.json")
     hard_gate_names = _active_hard_gates(health)
     backpressure = _load(health_root / "ingestion_backpressure_latest.json")
     storage_control = _load(health_root / "ingestion_storage_control_latest.json")
@@ -471,29 +629,50 @@ def main() -> int:
             "line_pressure": False,
             "file_pressure": False,
             "age_pressure": False,
-            "pending_lines": int(effective_backpressure.get("core_pending_lines", 0) or 0),
-            "pending_lines_total": int(effective_backpressure.get("total_pending_lines", 0) or 0),
-            "oldest_pending_age_seconds": float(effective_backpressure.get("oldest_pending_age_seconds", 0.0) or 0.0),
+            "pending_lines": int(
+                effective_backpressure.get("core_pending_lines", 0) or 0
+            ),
+            "pending_lines_total": int(
+                effective_backpressure.get("total_pending_lines", 0) or 0
+            ),
+            "oldest_pending_age_seconds": float(
+                effective_backpressure.get("oldest_pending_age_seconds", 0.0) or 0.0
+            ),
             "storage_control_override": effective_backpressure,
         }
-    auth = _load(health_root / 'auth_lease_manager_latest.json')
-    data_plane = _load(health_root / 'data_plane_recovery_controller_latest.json')
-    watchdog = _load(health_root / 'process_watchdog_latest.json')
-    runtime = _load(health_root / 'live_runtime_separation_control_latest.json')
+    auth = _load(health_root / "auth_lease_manager_latest.json")
+    data_plane = _load(health_root / "data_plane_recovery_controller_latest.json")
+    watchdog = _load(health_root / "process_watchdog_latest.json")
+    runtime = _load(health_root / "live_runtime_separation_control_latest.json")
     quant_model = _load(health_root / "quant_model_control_latest.json")
     execution_expected = _execution_expected()
-    live_lane_running = bool((runtime.get("live_plane") or {}).get("live_lane_running", False)) if isinstance(runtime.get("live_plane"), dict) else False
+    live_lane_running = (
+        bool((runtime.get("live_plane") or {}).get("live_lane_running", False))
+        if isinstance(runtime.get("live_plane"), dict)
+        else False
+    )
     operator_stop_active = operator_stop_flag.exists()
     halt_latched_before = halt_flag.exists()
     global_halt_payload_before = _load(halt_flag) if halt_latched_before else {}
-    operator_stop_payload = _load(operator_stop_flag) if operator_stop_flag.exists() else {}
+    operator_stop_payload = (
+        _load(operator_stop_flag) if operator_stop_flag.exists() else {}
+    )
 
-    blocked_rate = float(one.get('combined_blocked_rate', 0.0) or 0.0)
-    pnl_proxy = float(one.get('combined_pnl_proxy', one.get('crypto_pnl_proxy', 0.0) or 0.0) or 0.0)
-    stale = int(one.get('decision_stale_windows_4h', one.get('decision_stale_windows', 0) or 0) or 0)
-    restarts = int(one.get('watchdog_restarts', 0) or 0)
-    current_decision_age_seconds = _snapshot_relative_age_seconds(one, "decision_last_age_sec")
-    current_governance_age_seconds = _snapshot_relative_age_seconds(one, "governance_last_age_sec")
+    blocked_rate = float(one.get("combined_blocked_rate", 0.0) or 0.0)
+    pnl_proxy = float(
+        one.get("combined_pnl_proxy", one.get("crypto_pnl_proxy", 0.0) or 0.0) or 0.0
+    )
+    stale = int(
+        one.get("decision_stale_windows_4h", one.get("decision_stale_windows", 0) or 0)
+        or 0
+    )
+    restarts = int(one.get("watchdog_restarts", 0) or 0)
+    current_decision_age_seconds = _snapshot_relative_age_seconds(
+        one, "decision_last_age_sec"
+    )
+    current_governance_age_seconds = _snapshot_relative_age_seconds(
+        one, "governance_last_age_sec"
+    )
     decision_stale_grace_seconds = max(
         float(one.get("data_quality_decision_stale_grace_seconds", 120.0) or 120.0),
         1.0,
@@ -512,24 +691,36 @@ def main() -> int:
         ),
         1.0,
     )
-    decision_freshness_limit_seconds = max(decision_stale_grace_seconds, current_stream_max_age_seconds)
-    governance_freshness_limit_seconds = max(governance_stale_grace_seconds, current_stream_max_age_seconds)
+    decision_freshness_limit_seconds = max(
+        decision_stale_grace_seconds, current_stream_max_age_seconds
+    )
+    governance_freshness_limit_seconds = max(
+        governance_stale_grace_seconds, current_stream_max_age_seconds
+    )
     decision_freshness_source = "one_numbers_snapshot"
     governance_freshness_source = "one_numbers_snapshot"
-    if stale > args.max_stale_windows and not execution_expected and (
-        current_decision_age_seconds is None
-        or current_decision_age_seconds > decision_freshness_limit_seconds
-        or current_governance_age_seconds is None
-        or current_governance_age_seconds > governance_freshness_limit_seconds
+    if (
+        stale > args.max_stale_windows
+        and not execution_expected
+        and (
+            current_decision_age_seconds is None
+            or current_decision_age_seconds > decision_freshness_limit_seconds
+            or current_governance_age_seconds is None
+            or current_governance_age_seconds > governance_freshness_limit_seconds
+        )
     ):
-        raw_decision_age, raw_governance_age = _raw_stream_ages(PROJECT_ROOT, now_utc=datetime.now(timezone.utc))
+        raw_decision_age, raw_governance_age = _raw_stream_ages(
+            PROJECT_ROOT, now_utc=datetime.now(timezone.utc)
+        )
         if raw_decision_age is not None and (
-            current_decision_age_seconds is None or raw_decision_age < current_decision_age_seconds
+            current_decision_age_seconds is None
+            or raw_decision_age < current_decision_age_seconds
         ):
             current_decision_age_seconds = raw_decision_age
             decision_freshness_source = "raw_jsonl_tail"
         if raw_governance_age is not None and (
-            current_governance_age_seconds is None or raw_governance_age < current_governance_age_seconds
+            current_governance_age_seconds is None
+            or raw_governance_age < current_governance_age_seconds
         ):
             current_governance_age_seconds = raw_governance_age
             governance_freshness_source = "raw_jsonl_tail"
@@ -544,29 +735,32 @@ def main() -> int:
 
     reasons = []
     if blocked_rate > args.max_blocked_rate:
-        reasons.append(f'blocked_rate>{args.max_blocked_rate}')
+        reasons.append(f"blocked_rate>{args.max_blocked_rate}")
     if abs(pnl_proxy) > args.max_abs_pnl_proxy:
-        reasons.append(f'abs_pnl_proxy>{args.max_abs_pnl_proxy}')
+        reasons.append(f"abs_pnl_proxy>{args.max_abs_pnl_proxy}")
     if stale > args.max_stale_windows and not recovered_historical_stale_windows:
-        reasons.append(f'stale_windows>{args.max_stale_windows}')
+        reasons.append(f"stale_windows>{args.max_stale_windows}")
     if restarts > args.max_watchdog_restarts:
-        reasons.append(f'watchdog_restarts>{args.max_watchdog_restarts}')
+        reasons.append(f"watchdog_restarts>{args.max_watchdog_restarts}")
     critical_hard_gates, degraded_hard_gates, stale_hard_gates = _classify_hard_gates(
         hard_gate_names,
         backpressure,
         execution_expected=execution_expected,
         recovered_historical_stale_windows=recovered_historical_stale_windows,
     )
-    if bool(health.get('hard_gate_triggered', False)) and critical_hard_gates:
-        reasons.append('health_hard_gate_triggered')
+    if bool(health.get("hard_gate_triggered", False)) and critical_hard_gates:
+        reasons.append("health_hard_gate_triggered")
 
-    auth_state = str(auth.get('lease_state', '') or '').strip().lower()
-    write_failures = int(data_plane.get('write_failure_count', 0) or 0)
-    snapshot_failures = int(data_plane.get('account_snapshot_failure_count', 0) or 0)
-    queue_depth = int(data_plane.get('queue_depth', 0) or 0)
+    auth_state = str(auth.get("lease_state", "") or "").strip().lower()
+    write_failures = int(data_plane.get("write_failure_count", 0) or 0)
+    snapshot_failures = int(data_plane.get("account_snapshot_failure_count", 0) or 0)
+    queue_depth = int(data_plane.get("queue_depth", 0) or 0)
     if bool(effective_backpressure.get("authoritative", False)):
-        queue_depth = min(queue_depth, int(effective_backpressure.get("total_pending_lines", queue_depth) or 0))
-    restart_storms = len(watchdog.get('restart_storms') or [])
+        queue_depth = min(
+            queue_depth,
+            int(effective_backpressure.get("total_pending_lines", queue_depth) or 0),
+        )
+    restart_storms = len(watchdog.get("restart_storms") or [])
     restart_storm_recovered = _watchdog_restart_storm_recovered(watchdog)
     restart_storm_isolation = _watchdog_restart_storm_isolation(
         watchdog,
@@ -575,43 +769,55 @@ def main() -> int:
     clearance_state = _clearance_state(runtime)
     clear_blockers = []
     if operator_stop_active:
-        clear_blockers.append('operator_stop_active')
-    if auth_state == 'critical':
-        clear_blockers.append('auth_lease_critical')
+        clear_blockers.append("operator_stop_active")
+    if auth_state == "critical":
+        clear_blockers.append("auth_lease_critical")
     degraded_clear_blockers = []
     if restart_storms > 0:
         if restart_storm_recovered:
-            degraded_clear_blockers.append('restart_storm_recovered_waiting_settle')
-        elif bool(restart_storm_isolation.get('safe_to_clear_when_not_executing', False)):
-            degraded_clear_blockers.append('restart_storm_isolated_read_only_collection')
+            degraded_clear_blockers.append("restart_storm_recovered_waiting_settle")
+        elif bool(
+            restart_storm_isolation.get("safe_to_clear_when_not_executing", False)
+        ):
+            degraded_clear_blockers.append(
+                "restart_storm_isolated_read_only_collection"
+            )
         else:
-            clear_blockers.append('restart_storm_active')
+            clear_blockers.append("restart_storm_active")
     if snapshot_failures > 0:
         if execution_expected:
-            clear_blockers.append('account_snapshot_recovery_pending')
+            clear_blockers.append("account_snapshot_recovery_pending")
         else:
-            degraded_clear_blockers.append('account_snapshot_recovery_pending')
+            degraded_clear_blockers.append("account_snapshot_recovery_pending")
     if write_failures > 0:
-        clear_blockers.append('write_path_recovery_pending')
+        clear_blockers.append("write_path_recovery_pending")
     if queue_depth >= 10000:
         if _current_backpressure_is_clear(backpressure) and not execution_expected:
-            degraded_clear_blockers.append('queue_depth_recovered_waiting_backlog_drain')
+            degraded_clear_blockers.append(
+                "queue_depth_recovered_waiting_backlog_drain"
+            )
         else:
-            clear_blockers.append('queue_backpressure_active')
+            clear_blockers.append("queue_backpressure_active")
     if clearance_state and clearance_state not in THAW_SAFE_RUNTIME_STATES:
-        runtime_blocker = f'runtime_clearance={clearance_state}'
+        runtime_blocker = f"runtime_clearance={clearance_state}"
         if execution_expected:
             clear_blockers.append(runtime_blocker)
         else:
             degraded_clear_blockers.append(runtime_blocker)
-    quant_features = quant_model.get("features") if isinstance(quant_model.get("features"), dict) else {}
-    quant_resource_pressure = float(quant_features.get("quant_model_resource_pressure_norm", 0.0) or 0.0)
+    quant_features = (
+        quant_model.get("features")
+        if isinstance(quant_model.get("features"), dict)
+        else {}
+    )
+    quant_resource_pressure = float(
+        quant_features.get("quant_model_resource_pressure_norm", 0.0) or 0.0
+    )
     quant_status = str(quant_model.get("overall_status") or "").strip().lower()
     if quant_resource_pressure >= 0.80 or quant_status == "degraded":
         degraded_clear_blockers.append("quant_model_resource_pressure")
 
     now = datetime.now(timezone.utc).isoformat()
-    action = 'none'
+    action = "none"
     clear_ready = not reasons and not clear_blockers
     expansion_pressure_score = _expansion_pressure_score(
         degraded_hard_gates=degraded_hard_gates,
@@ -631,31 +837,39 @@ def main() -> int:
 
     halt_required = bool(reasons)
     if reasons and args.auto_clear:
-        action = 'clear_blocked' if halt_latched_before else 'halt_required_unlatched'
+        action = "clear_blocked" if halt_latched_before else "halt_required_unlatched"
     elif reasons and not args.status_only:
         halt_flag.parent.mkdir(parents=True, exist_ok=True)
         write_halt_flag_atomic(
             halt_flag,
-            {'timestamp_utc': now, 'reason': 'global_risk_killswitch', 'details': reasons},
+            {
+                "timestamp_utc": now,
+                "reason": "global_risk_killswitch",
+                "details": reasons,
+            },
             project_root=str(PROJECT_ROOT),
-            source='global_risk_killswitch',
+            source="global_risk_killswitch",
         )
-        action = 'halt_set'
+        action = "halt_set"
     elif reasons and args.status_only:
-        action = 'halt_would_set'
+        action = "halt_would_set"
     elif args.auto_clear and halt_flag.exists():
         if clear_ready:
             if args.status_only:
-                action = 'halt_would_clear'
+                action = "halt_would_clear"
             else:
                 halt_flag.unlink()
-                action = 'halt_cleared'
+                action = "halt_cleared"
         else:
-            action = 'clear_blocked'
+            action = "clear_blocked"
 
     halt_latched_after = halt_flag.exists()
     global_halt_payload_after = _load(halt_flag) if halt_latched_after else {}
-    legacy_halt_state = 'active' if halt_latched_after else 'clear_ready' if clear_ready else 'clear_blocked'
+    legacy_halt_state = (
+        "active"
+        if halt_latched_after
+        else "clear_ready" if clear_ready else "clear_blocked"
+    )
     halt_posture = _halt_posture(
         halt_latched=halt_latched_after,
         halt_required=halt_required,
@@ -675,170 +889,280 @@ def main() -> int:
     )
 
     payload = {
-        'timestamp_utc': now,
-        'action': action,
-        'halt': halt_latched_after,
-        'halt_state': legacy_halt_state,
-        'halt_posture': halt_posture,
-        'halt_latched': halt_latched_after,
-        'halt_latched_before': halt_latched_before,
-        'halt_required': halt_required,
-        'would_rehalt': bool(halt_required and not halt_latched_after),
-        'status_line': status_line,
-        'clear_ready': clear_ready,
-        'clear_blockers': clear_blockers,
-        'clear_blocker_refresh_attempts': blocker_refresh_attempts,
-        'operator_stop': operator_stop_active,
-        'operator_stop_payload': operator_stop_payload,
-        'global_halt_payload': global_halt_payload_after,
-        'previous_global_halt_payload': global_halt_payload_before,
-        'hard_gate_names': hard_gate_names,
-        'critical_hard_gate_names': critical_hard_gates,
-        'degraded_hard_gate_names': degraded_hard_gates,
-        'stale_hard_gate_names': stale_hard_gates,
-        'advisory_evidence': [
+        "timestamp_utc": now,
+        "action": action,
+        "halt": halt_latched_after,
+        "halt_state": legacy_halt_state,
+        "halt_posture": halt_posture,
+        "halt_latched": halt_latched_after,
+        "halt_latched_before": halt_latched_before,
+        "halt_required": halt_required,
+        "would_rehalt": bool(halt_required and not halt_latched_after),
+        "status_line": status_line,
+        "clear_ready": clear_ready,
+        "clear_blockers": clear_blockers,
+        "clear_blocker_refresh_attempts": blocker_refresh_attempts,
+        "operator_stop": operator_stop_active,
+        "operator_stop_payload": operator_stop_payload,
+        "global_halt_payload": global_halt_payload_after,
+        "previous_global_halt_payload": global_halt_payload_before,
+        "hard_gate_names": hard_gate_names,
+        "critical_hard_gate_names": critical_hard_gates,
+        "degraded_hard_gate_names": degraded_hard_gates,
+        "stale_hard_gate_names": stale_hard_gates,
+        "advisory_evidence": [
             evidence
             for evidence in [
-                'recovered_historical_stale_windows' if recovered_historical_stale_windows else '',
+                (
+                    "recovered_historical_stale_windows"
+                    if recovered_historical_stale_windows
+                    else ""
+                ),
             ]
             if evidence
         ],
-        'degraded_clear_blockers': degraded_clear_blockers,
-        'halt_pressure': {
-            'required': halt_required,
-            'reasons': reasons,
-            'critical_hard_gates': critical_hard_gates,
-            'degraded_hard_gates': degraded_hard_gates,
-            'stale_hard_gates': stale_hard_gates,
+        "degraded_clear_blockers": degraded_clear_blockers,
+        "halt_pressure": {
+            "required": halt_required,
+            "reasons": reasons,
+            "critical_hard_gates": critical_hard_gates,
+            "degraded_hard_gates": degraded_hard_gates,
+            "stale_hard_gates": stale_hard_gates,
         },
-        'safe_clear': {
-            'ready': clear_ready,
-            'hard_blockers': clear_blockers,
-            'degraded_blockers': degraded_clear_blockers,
-            'operator_stop': operator_stop_active,
+        "safe_clear": {
+            "ready": clear_ready,
+            "hard_blockers": clear_blockers,
+            "degraded_blockers": degraded_clear_blockers,
+            "operator_stop": operator_stop_active,
         },
-        'operating_mode': operating_mode,
-        'expansion_pressure_score': expansion_pressure_score,
-        'sleeve_throttle_recommended': bool(degraded_hard_gates or stale_hard_gates or degraded_clear_blockers),
-        'read_only_commands': [
-            ['./scripts/ops/opsctl.sh', 'feed', '--source', 'all', '--include-decisions'],
-            ['./scripts/ops/opsctl.sh', 'global-halt-status', '--json'],
+        "operating_mode": operating_mode,
+        "expansion_pressure_score": expansion_pressure_score,
+        "sleeve_throttle_recommended": bool(
+            degraded_hard_gates or stale_hard_gates or degraded_clear_blockers
+        ),
+        "read_only_commands": [
+            [
+                "./scripts/ops/opsctl.sh",
+                "feed",
+                "--source",
+                "all",
+                "--include-decisions",
+            ],
+            ["./scripts/ops/opsctl.sh", "global-halt-status", "--json"],
         ],
-        'control_commands': {
-            'status': ['./scripts/ops/opsctl.sh', 'global-halt-status', '--json'],
-            'refresh_blockers': ['./scripts/ops/opsctl.sh', 'global-halt-refresh', '--json'],
-            'safe_auto_clear': ['./scripts/ops/opsctl.sh', 'global-halt-auto-clear', '--json'],
-            'manual_clear_all_halts': ['./scripts/ops/opsctl.sh', 'clear-all-halts', '--json'],
-            'operator_release': ['./scripts/ops/opsctl.sh', 'operator-release', '--json'],
+        "control_commands": {
+            "status": ["./scripts/ops/opsctl.sh", "global-halt-status", "--json"],
+            "refresh_blockers": [
+                "./scripts/ops/opsctl.sh",
+                "global-halt-refresh",
+                "--json",
+            ],
+            "safe_auto_clear": [
+                "./scripts/ops/opsctl.sh",
+                "global-halt-auto-clear",
+                "--json",
+            ],
+            "manual_clear_all_halts": [
+                "./scripts/ops/opsctl.sh",
+                "clear-all-halts",
+                "--json",
+            ],
+            "operator_release": [
+                "./scripts/ops/opsctl.sh",
+                "operator-release",
+                "--json",
+            ],
         },
-        'source_files': {
-            'one_numbers': one_src,
-            'health_gates': str(health_root / 'health_gates_latest.json'),
-            'auth_lease_manager': str(health_root / 'auth_lease_manager_latest.json'),
-            'data_plane_recovery_controller': str(health_root / 'data_plane_recovery_controller_latest.json'),
-            'process_watchdog': str(health_root / 'process_watchdog_latest.json'),
-            'live_runtime_separation_control': str(health_root / 'live_runtime_separation_control_latest.json'),
-            'quant_model_control': str(health_root / 'quant_model_control_latest.json'),
-            'operator_stop_flag': str(operator_stop_flag),
+        "source_files": {
+            "one_numbers": one_src,
+            "health_gates": str(health_root / "health_gates_latest.json"),
+            "auth_lease_manager": str(health_root / "auth_lease_manager_latest.json"),
+            "data_plane_recovery_controller": str(
+                health_root / "data_plane_recovery_controller_latest.json"
+            ),
+            "process_watchdog": str(health_root / "process_watchdog_latest.json"),
+            "live_runtime_separation_control": str(
+                health_root / "live_runtime_separation_control_latest.json"
+            ),
+            "quant_model_control": str(health_root / "quant_model_control_latest.json"),
+            "operator_stop_flag": str(operator_stop_flag),
         },
-        'reasons': reasons,
-        'metrics': {
-            'blocked_rate': blocked_rate,
-            'pnl_proxy': pnl_proxy,
-            'stale_windows': stale,
-            'current_decision_age_seconds': current_decision_age_seconds,
-            'current_governance_age_seconds': current_governance_age_seconds,
-            'decision_stale_grace_seconds': decision_stale_grace_seconds,
-            'governance_stale_grace_seconds': governance_stale_grace_seconds,
-            'current_stream_max_age_seconds': current_stream_max_age_seconds,
-            'decision_freshness_limit_seconds': decision_freshness_limit_seconds,
-            'governance_freshness_limit_seconds': governance_freshness_limit_seconds,
-            'decision_freshness_source': decision_freshness_source,
-            'governance_freshness_source': governance_freshness_source,
-            'recovered_historical_stale_windows': recovered_historical_stale_windows,
-            'historical_stale_window_policy': 'advisory_only_after_current_freshness_recovers_while_live_execution_is_disabled',
-            'watchdog_restarts': restarts,
-            'restart_storms': restart_storms,
-            'restart_storm_recovered': restart_storm_recovered,
-            'restart_storm_isolation': restart_storm_isolation,
-            'operator_stop_active': operator_stop_active,
-            'auth_state': auth_state,
-            'write_failure_count': write_failures,
-            'account_snapshot_failure_count': snapshot_failures,
-            'queue_depth': queue_depth,
-            'raw_queue_depth': int(data_plane.get('raw_queue_depth', queue_depth) or 0),
-            'queue_depth_source': str(data_plane.get('queue_depth_source') or ""),
-            'storage_backpressure_override': effective_backpressure,
-            'runtime_clearance_state': clearance_state,
-            'execution_expected': execution_expected,
-            'live_lane_running': live_lane_running,
-            'current_backpressure_clear': _current_backpressure_is_clear(backpressure),
-            'backpressure_pressure_ratio': round(_backpressure_pressure_ratio(backpressure), 4),
-            'quant_model_status': quant_status,
-            'quant_model_resource_pressure': round(quant_resource_pressure, 4),
+        "reasons": reasons,
+        "metrics": {
+            "blocked_rate": blocked_rate,
+            "pnl_proxy": pnl_proxy,
+            "stale_windows": stale,
+            "current_decision_age_seconds": current_decision_age_seconds,
+            "current_governance_age_seconds": current_governance_age_seconds,
+            "decision_stale_grace_seconds": decision_stale_grace_seconds,
+            "governance_stale_grace_seconds": governance_stale_grace_seconds,
+            "current_stream_max_age_seconds": current_stream_max_age_seconds,
+            "decision_freshness_limit_seconds": decision_freshness_limit_seconds,
+            "governance_freshness_limit_seconds": governance_freshness_limit_seconds,
+            "decision_freshness_source": decision_freshness_source,
+            "governance_freshness_source": governance_freshness_source,
+            "recovered_historical_stale_windows": recovered_historical_stale_windows,
+            "historical_stale_window_policy": "advisory_only_after_current_freshness_recovers_while_live_execution_is_disabled",
+            "watchdog_restarts": restarts,
+            "restart_storms": restart_storms,
+            "restart_storm_recovered": restart_storm_recovered,
+            "restart_storm_isolation": restart_storm_isolation,
+            "operator_stop_active": operator_stop_active,
+            "auth_state": auth_state,
+            "write_failure_count": write_failures,
+            "account_snapshot_failure_count": snapshot_failures,
+            "queue_depth": queue_depth,
+            "raw_queue_depth": int(data_plane.get("raw_queue_depth", queue_depth) or 0),
+            "queue_depth_source": str(data_plane.get("queue_depth_source") or ""),
+            "storage_backpressure_override": effective_backpressure,
+            "runtime_clearance_state": clearance_state,
+            "execution_expected": execution_expected,
+            "live_lane_running": live_lane_running,
+            "current_backpressure_clear": _current_backpressure_is_clear(backpressure),
+            "backpressure_pressure_ratio": round(
+                _backpressure_pressure_ratio(backpressure), 4
+            ),
+            "quant_model_status": quant_status,
+            "quant_model_resource_pressure": round(quant_resource_pressure, 4),
         },
-        'recommended_actions': [
+        "recommended_actions": [
             action_text
             for action_text in [
-                'keep GLOBAL_TRADING_HALT engaged until write-path recovery pressure is clear' if write_failures > 0 else '',
-                'keep live execution read-only until account snapshot recovery pressure is clear' if snapshot_failures > 0 and execution_expected else '',
-                'run expansion pressure in degraded/throttled collection mode while recoverable health gates clear' if degraded_hard_gates or stale_hard_gates or degraded_clear_blockers else '',
-                'retain recovered historical stale windows as soak evidence without blocking current paper operation' if recovered_historical_stale_windows else '',
-                'reduce sleeve fanout or collector cadence until expansion pressure score falls below 0.35' if expansion_pressure_score >= 0.35 and not reasons else '',
-                'run quant-model-control and memory-efficiency before clearing if quant resource pressure is elevated' if quant_resource_pressure >= 0.80 else '',
-                'allow halt clear while recovered restart storms settle; keep watching process heartbeats' if restart_storms > 0 and restart_storm_recovered else '',
-                'keep isolated read-only restart storms quarantined; do not widen or enable live execution until they settle' if bool(restart_storm_isolation.get('safe_to_clear_when_not_executing', False)) else '',
-                'do not clear the halt while execution-impacting restart storms are still active' if restart_storms > 0 and not restart_storm_recovered and not bool(restart_storm_isolation.get('safe_to_clear_when_not_executing', False)) else '',
-                'release OPERATOR_STOP before attempting a safe global halt clear' if operator_stop_active else '',
-                'refresh broker auth before clearing if auth lease is critical' if auth_state == 'critical' else '',
-                'wait for runtime clearance to return to a thaw-safe state before clearing the halt' if clearance_state and clearance_state not in THAW_SAFE_RUNTIME_STATES and execution_expected else '',
+                (
+                    "keep GLOBAL_TRADING_HALT engaged until write-path recovery pressure is clear"
+                    if write_failures > 0 and (halt_latched_after or halt_required)
+                    else ""
+                ),
+                (
+                    "keep live lane read-only while write-path recovery pressure clears"
+                    if write_failures > 0 and not (halt_latched_after or halt_required)
+                    else ""
+                ),
+                (
+                    "keep live execution read-only until account snapshot recovery pressure is clear"
+                    if snapshot_failures > 0 and execution_expected
+                    else ""
+                ),
+                (
+                    "run expansion pressure in degraded/throttled collection mode while recoverable health gates clear"
+                    if degraded_hard_gates
+                    or stale_hard_gates
+                    or degraded_clear_blockers
+                    else ""
+                ),
+                (
+                    "retain recovered historical stale windows as soak evidence without blocking current paper operation"
+                    if recovered_historical_stale_windows
+                    else ""
+                ),
+                (
+                    "reduce sleeve fanout or collector cadence until expansion pressure score falls below 0.35"
+                    if expansion_pressure_score >= 0.35 and not reasons
+                    else ""
+                ),
+                (
+                    "run quant-model-control and memory-efficiency before clearing if quant resource pressure is elevated"
+                    if quant_resource_pressure >= 0.80
+                    else ""
+                ),
+                (
+                    "allow halt clear while recovered restart storms settle; keep watching process heartbeats"
+                    if restart_storms > 0 and restart_storm_recovered
+                    else ""
+                ),
+                (
+                    "keep isolated read-only restart storms quarantined; do not widen or enable live execution until they settle"
+                    if bool(
+                        restart_storm_isolation.get(
+                            "safe_to_clear_when_not_executing", False
+                        )
+                    )
+                    else ""
+                ),
+                (
+                    "do not clear the halt while execution-impacting restart storms are still active"
+                    if restart_storms > 0
+                    and not restart_storm_recovered
+                    and not bool(
+                        restart_storm_isolation.get(
+                            "safe_to_clear_when_not_executing", False
+                        )
+                    )
+                    else ""
+                ),
+                (
+                    "release OPERATOR_STOP before attempting a safe global halt clear"
+                    if operator_stop_active
+                    else ""
+                ),
+                (
+                    "refresh broker auth before clearing if auth lease is critical"
+                    if auth_state == "critical"
+                    else ""
+                ),
+                (
+                    "wait for runtime clearance to return to a thaw-safe state before clearing the halt"
+                    if clearance_state
+                    and clearance_state not in THAW_SAFE_RUNTIME_STATES
+                    and execution_expected
+                    else ""
+                ),
             ]
             if action_text
         ],
     }
     recommended_commands: list[list[str]] = []
+
     def add_command(command: list[str]) -> None:
         if command not in recommended_commands:
             recommended_commands.append(command)
 
     if operator_stop_active:
-        add_command(['./scripts/ops/opsctl.sh', 'operator-release', '--json'])
-    if auth_state in {'warning', 'critical'}:
-        add_command(['./scripts/ops/opsctl.sh', 'token-refresh', '--json'])
+        add_command(["./scripts/ops/opsctl.sh", "operator-release", "--json"])
+    if auth_state in {"warning", "critical"}:
+        add_command(["./scripts/ops/opsctl.sh", "token-refresh", "--json"])
     if write_failures > 0 or queue_depth >= 10000:
-        add_command(['./scripts/ops/opsctl.sh', 'external-backlog-drain', '--json'])
+        add_command(["./scripts/ops/opsctl.sh", "external-backlog-drain", "--json"])
     if snapshot_failures > 0:
-        add_command(['./scripts/ops/opsctl.sh', 'token-refresh', '--json'])
+        add_command(["./scripts/ops/opsctl.sh", "token-refresh", "--json"])
     if hard_gate_names:
-        add_command(['./scripts/ops/opsctl.sh', 'ingestion-storage-control', '--json'])
-        add_command(['./scripts/ops/opsctl.sh', 'collector-contracts', '--json'])
-    if quant_resource_pressure >= 0.35 or quant_status in {'watch', 'degraded', 'needs_data'}:
-        add_command(['./scripts/ops/opsctl.sh', 'quant-model-control', '--json'])
+        add_command(["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"])
+        add_command(["./scripts/ops/opsctl.sh", "collector-contracts", "--json"])
+    if quant_resource_pressure >= 0.35 or quant_status in {
+        "watch",
+        "degraded",
+        "needs_data",
+    }:
+        add_command(["./scripts/ops/opsctl.sh", "quant-model-control", "--json"])
     if quant_resource_pressure >= 0.65:
-        add_command(['./scripts/ops/opsctl.sh', 'memory-efficiency', '--apply', '--json'])
-    add_command(['./scripts/ops/opsctl.sh', 'global-halt-auto-clear', '--json'])
-    payload['recommended_commands'] = recommended_commands
+        add_command(
+            ["./scripts/ops/opsctl.sh", "memory-efficiency", "--apply", "--json"]
+        )
+    add_command(["./scripts/ops/opsctl.sh", "global-halt-auto-clear", "--json"])
+    payload["recommended_commands"] = recommended_commands
 
     # Observability side effects: write latest snapshot + append event stream.
     # These are evidence artifacts and must never prevent the command from emitting JSON.
     io_errors: list[str] = []
-    out = PROJECT_ROOT / 'governance' / 'health' / 'global_killswitch_latest.json'
+    out = PROJECT_ROOT / "governance" / "health" / "global_killswitch_latest.json"
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
+        out.write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8"
+        )
     except (OSError, PermissionError) as e:
         io_errors.append(f"write_latest_failed:{out}:{type(e).__name__}:{e}")
 
-    events = PROJECT_ROOT / 'governance' / 'watchdog' / 'global_killswitch_events.jsonl'
+    events = PROJECT_ROOT / "governance" / "watchdog" / "global_killswitch_events.jsonl"
     try:
         events.parent.mkdir(parents=True, exist_ok=True)
-        with events.open('a', encoding='utf-8') as f:
-            f.write(json.dumps(payload, ensure_ascii=True) + '\n')
+        with events.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
     except (OSError, PermissionError) as e:
         io_errors.append(f"append_events_failed:{events}:{type(e).__name__}:{e}")
 
     if io_errors:
-        payload['io_errors'] = io_errors
+        payload["io_errors"] = io_errors
 
     print(json.dumps(payload, ensure_ascii=True))
     if args.exit_zero:
@@ -850,5 +1174,5 @@ def main() -> int:
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(main())

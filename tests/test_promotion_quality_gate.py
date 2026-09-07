@@ -10,6 +10,11 @@ if str(PROJECT_ROOT) not in sys.path:
 import scripts.promotion_quality_gate as promotion_quality_gate
 
 
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
 def test_promotion_quality_gate_resolves_stale_daily_verify_failures_from_fresher_artifacts() -> None:
     ok, failed_checks, details = promotion_quality_gate.evaluate_quality(
         {"promote_ok": True, "considered_bots": 5, "fail_share": 0.2},
@@ -66,6 +71,157 @@ def test_promotion_quality_gate_ignores_recovered_incomplete_daily_verify_run() 
     assert details["daily_verify_ok"] is True
     assert details["daily_verify_unresolved_failed_checks"] == []
     assert details["daily_verify_resolved_failed_checks"] == ["incomplete_run_recovered"]
+
+
+def test_promotion_quality_gate_main_writes_operating_contract(
+    tmp_path: Path, monkeypatch
+) -> None:
+    files = {
+        "promotion": tmp_path / "promotion.json",
+        "daily": tmp_path / "daily.json",
+        "graduation": tmp_path / "graduation.json",
+        "owner": tmp_path / "owner.json",
+        "admission": tmp_path / "admission.json",
+        "leak": tmp_path / "leak.json",
+        "replay": tmp_path / "replay.json",
+        "replay_hash": tmp_path / "replay_hash.json",
+        "feature_store": tmp_path / "feature_store.json",
+        "schema": tmp_path / "schema.json",
+        "golden": tmp_path / "golden.json",
+        "cohort": tmp_path / "cohort.json",
+        "probation": tmp_path / "probation.json",
+        "reconciliation": tmp_path / "reconciliation.json",
+        "paper_reconciliation": tmp_path / "paper_reconciliation.json",
+        "paper_truth": tmp_path / "paper_truth.json",
+        "paper_calibration": tmp_path / "paper_calibration.json",
+        "promotion_packet": tmp_path / "promotion_packet.json",
+        "snapshot": tmp_path / "snapshot.json",
+        "divergence": tmp_path / "divergence.json",
+        "freshness": tmp_path / "freshness.json",
+        "nightly": tmp_path / "nightly.json",
+        "state": tmp_path / "state.json",
+        "db": tmp_path / "db.json",
+        "queue": tmp_path / "queue.json",
+        "resource": tmp_path / "resource.json",
+        "out": tmp_path / "promotion_quality_gate_latest.json",
+    }
+    _write_json(
+        files["promotion"],
+        {"promote_ok": False, "considered_bots": 1, "fail_share": 0.0},
+    )
+    _write_json(files["daily"], {"ok": True, "failed_checks": []})
+    for key in (
+        "graduation",
+        "owner",
+        "admission",
+        "leak",
+        "replay",
+        "replay_hash",
+        "schema",
+        "golden",
+        "cohort",
+        "probation",
+        "reconciliation",
+        "paper_reconciliation",
+        "snapshot",
+        "divergence",
+        "freshness",
+        "nightly",
+        "state",
+        "db",
+        "queue",
+        "resource",
+    ):
+        _write_json(files[key], {"ok": True})
+    _write_json(
+        files["feature_store"],
+        {
+            "ok": True,
+            "strict_ok": True,
+            "point_in_time_contract": {"complete": True},
+            "contract_hashes": {"dataset_manifest_sha256": "a" * 64},
+        },
+    )
+    _write_json(files["paper_truth"], {"ok": True, "promotion_ready": True})
+    _write_json(
+        files["paper_calibration"],
+        {"ok": True, "independent_evidence_ready": True},
+    )
+    _write_json(files["promotion_packet"], {"ok": True})
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "promotion_quality_gate.py",
+            "--promotion-gate-file",
+            str(files["promotion"]),
+            "--daily-verify-file",
+            str(files["daily"]),
+            "--graduation-file",
+            str(files["graduation"]),
+            "--bot-support-owner-file",
+            str(files["owner"]),
+            "--new-bot-admission-file",
+            str(files["admission"]),
+            "--leak-overfit-file",
+            str(files["leak"]),
+            "--replay-file",
+            str(files["replay"]),
+            "--replay-hash-registry-file",
+            str(files["replay_hash"]),
+            "--feature-store-manifest",
+            str(files["feature_store"]),
+            "--schema-compatibility-file",
+            str(files["schema"]),
+            "--golden-replay-file",
+            str(files["golden"]),
+            "--cohort-drift-file",
+            str(files["cohort"]),
+            "--probation-guard-file",
+            str(files["probation"]),
+            "--reconciliation-file",
+            str(files["reconciliation"]),
+            "--paper-reconciliation-file",
+            str(files["paper_reconciliation"]),
+            "--paper-execution-truth-layer-file",
+            str(files["paper_truth"]),
+            "--paper-execution-calibration-file",
+            str(files["paper_calibration"]),
+            "--promotion-packet-file",
+            str(files["promotion_packet"]),
+            "--snapshot-coverage-file",
+            str(files["snapshot"]),
+            "--data-source-divergence-file",
+            str(files["divergence"]),
+            "--artifact-freshness-file",
+            str(files["freshness"]),
+            "--nightly-resilience-file",
+            str(files["nightly"]),
+            "--state-snapshot-drill-file",
+            str(files["state"]),
+            "--db-integrity-file",
+            str(files["db"]),
+            "--execution-queue-stress-file",
+            str(files["queue"]),
+            "--resource-guard-file",
+            str(files["resource"]),
+            "--out-file",
+            str(files["out"]),
+            "--json",
+        ],
+    )
+
+    assert promotion_quality_gate.main() == 2
+    payload = json.loads(files["out"].read_text(encoding="utf-8"))
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["promotion_ready"] is False
+    assert payload["recommended_actions"]
+    assert payload["operating_contract"]["complete"] is True
+    assert "automatic_live_promotion" in payload["operating_contract"][
+        "blocked_authority"
+    ]
 
 
 def test_promotion_quality_gate_requires_feature_manifest_packet_and_probation_guards() -> None:

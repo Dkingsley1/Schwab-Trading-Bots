@@ -25,11 +25,20 @@ else:
     from .long_runtime_common import iso_now, ordered_unique, write_payload
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_retention_unison_latest.json"
-DEFAULT_HISTORY_PATH = PROJECT_ROOT / "governance" / "health" / "storage_retention_unison_history.jsonl"
-DEFAULT_FORECAST_PATH = PROJECT_ROOT / "governance" / "health" / "storage_growth_forecast_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "storage_retention_unison_latest.json"
+)
+DEFAULT_HISTORY_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "storage_retention_unison_history.jsonl"
+)
+DEFAULT_FORECAST_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "storage_growth_forecast_latest.json"
+)
 DEFAULT_CAPACITY_CONTROL_EPOCH_PATH = (
-    PROJECT_ROOT / "governance" / "runtime" / "storage_capacity_control_epoch_latest.json"
+    PROJECT_ROOT
+    / "governance"
+    / "runtime"
+    / "storage_capacity_control_epoch_latest.json"
 )
 PROTECTED_VOLUME_PREFIXES = ("/Volumes/VIDEO",)
 DEFAULT_SECOND_COLD_CANDIDATES = (
@@ -81,7 +90,10 @@ def _grade_rank(raw: Any) -> int:
 
 def _is_protected_volume(path: Path) -> bool:
     raw = str(path.expanduser())
-    return any(raw == prefix or raw.startswith(f"{prefix}/") for prefix in PROTECTED_VOLUME_PREFIXES)
+    return any(
+        raw == prefix or raw.startswith(f"{prefix}/")
+        for prefix in PROTECTED_VOLUME_PREFIXES
+    )
 
 
 def _env_truthy(name: str) -> bool:
@@ -140,12 +152,16 @@ def _disk_snapshot(path: Path) -> dict[str, Any]:
 
 def _same_real_path(left: Path, right: Path) -> bool:
     try:
-        return left.expanduser().resolve(strict=False) == right.expanduser().resolve(strict=False)
+        return left.expanduser().resolve(strict=False) == right.expanduser().resolve(
+            strict=False
+        )
     except Exception:
         return str(left.expanduser()) == str(right.expanduser())
 
 
-def _synthetic_step(*, command: list[str], overall_status: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _synthetic_step(
+    *, command: list[str], overall_status: str, payload: dict[str, Any]
+) -> dict[str, Any]:
     return {
         "command": list(command),
         "returncode": 0,
@@ -173,8 +189,16 @@ def _run_json(command: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, A
         rc = int(proc.returncode)
         timed_out = False
     except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        stdout = (
+            exc.stdout.decode("utf-8", errors="ignore")
+            if isinstance(exc.stdout, bytes)
+            else str(exc.stdout or "")
+        )
+        stderr = (
+            exc.stderr.decode("utf-8", errors="ignore")
+            if isinstance(exc.stderr, bytes)
+            else str(exc.stderr or "")
+        )
         rc = 124
         timed_out = True
     payload: dict[str, Any] = {}
@@ -191,7 +215,11 @@ def _run_json(command: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, A
         "returncode": rc,
         "timed_out": timed_out,
         "ok": bool(rc == 0 and payload),
-        "overall_status": str(payload.get("overall_status") or payload.get("status") or ("ready" if rc == 0 else "error")),
+        "overall_status": str(
+            payload.get("overall_status")
+            or payload.get("status")
+            or ("ready" if rc == 0 else "error")
+        ),
         "payload": payload,
         "stdout_tail": "\n".join(stdout.splitlines()[-8:]),
         "stderr_tail": "\n".join(stderr.splitlines()[-8:]),
@@ -214,7 +242,7 @@ def _read_history(path: Path, *, limit: int = 40) -> list[dict[str, Any]]:
                     rows.append(parsed)
     except Exception:
         return []
-    return rows[-max(int(limit), 1):]
+    return rows[-max(int(limit), 1) :]
 
 
 def _parse_ts(raw: Any) -> datetime | None:
@@ -243,7 +271,12 @@ def _hot_lane_control_epoch(project_root: Path) -> datetime | None:
         if line.startswith("# updated_at_utc="):
             timestamp = _parse_ts(line.split("=", 1)[1])
         elif line.startswith("HOT_LANE_RETENTION_ACTIVE="):
-            active = line.split("=", 1)[1].strip().strip("'\"").lower() in {"1", "true", "yes", "on"}
+            active = line.split("=", 1)[1].strip().strip("'\"").lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
     if not active:
         return None
     if timestamp is not None:
@@ -271,7 +304,9 @@ def _device_id(path: Path) -> int | None:
 
 def _path_within(path: Path, root: Path) -> bool:
     try:
-        return os.path.commonpath((os.path.abspath(path), os.path.abspath(root))) == os.path.abspath(root)
+        return os.path.commonpath(
+            (os.path.abspath(path), os.path.abspath(root))
+        ) == os.path.abspath(root)
     except (OSError, ValueError):
         return False
 
@@ -284,7 +319,11 @@ def _verified_cross_tier_capacity_event(
         project_root / "governance" / "health" / "deep_cold_storage_layer_latest.json"
     )
     manifest_path = Path(str(deep_cold.get("manifest_path") or "")).expanduser()
-    if not str(manifest_path) or _is_protected_volume(manifest_path) or not manifest_path.is_file():
+    if (
+        not str(manifest_path)
+        or _is_protected_volume(manifest_path)
+        or not manifest_path.is_file()
+    ):
         return {}
 
     source_device_id = _device_id(project_root)
@@ -297,7 +336,11 @@ def _verified_cross_tier_capacity_event(
         return {}
 
     configured_cold_root = str(os.getenv("BOT_SECOND_COLD_ROOT", "") or "").strip()
-    cold_root = Path(configured_cold_root).expanduser() if configured_cold_root else external_root
+    cold_root = (
+        Path(configured_cold_root).expanduser()
+        if configured_cold_root
+        else external_root
+    )
     if _is_protected_volume(cold_root):
         return {}
 
@@ -314,9 +357,15 @@ def _verified_cross_tier_capacity_event(
                 row = json.loads(line)
             except Exception:
                 continue
-            if not isinstance(row, dict) or not bool(row.get("source_replaced_with_symlink", False)):
+            if not isinstance(row, dict) or not bool(
+                row.get("source_replaced_with_symlink", False)
+            ):
                 continue
-            move = row.get("second_cold_move") if isinstance(row.get("second_cold_move"), dict) else {}
+            move = (
+                row.get("second_cold_move")
+                if isinstance(row.get("second_cold_move"), dict)
+                else {}
+            )
             if not (
                 bool(move.get("source_replaced_with_symlink", False))
                 and bool(move.get("verified_size_match", False))
@@ -327,7 +376,9 @@ def _verified_cross_tier_capacity_event(
             ):
                 continue
             source = Path(str(move.get("source") or row.get("path") or "")).expanduser()
-            target = Path(str(move.get("target") or row.get("second_cold_target") or "")).expanduser()
+            target = Path(
+                str(move.get("target") or row.get("second_cold_target") or "")
+            ).expanduser()
             if (
                 not _path_within(source, project_root)
                 or not _path_within(target, cold_root)
@@ -345,14 +396,20 @@ def _verified_cross_tier_capacity_event(
                     link_target = source.parent / link_target
                 if os.path.abspath(link_target) != os.path.abspath(target):
                     continue
-                source_epoch = datetime.fromtimestamp(source.lstat().st_mtime, tz=timezone.utc)
+                source_epoch = datetime.fromtimestamp(
+                    source.lstat().st_mtime, tz=timezone.utc
+                )
                 target_bytes = int(target.stat().st_size)
             except OSError:
                 continue
             expected_bytes = _safe_int(move.get("bytes"), target_bytes)
             if expected_bytes <= 0 or target_bytes != expected_bytes:
                 continue
-            latest_epoch = source_epoch if latest_epoch is None else max(latest_epoch, source_epoch)
+            latest_epoch = (
+                source_epoch
+                if latest_epoch is None
+                else max(latest_epoch, source_epoch)
+            )
             moved_bytes += expected_bytes
             moved_files += 1
 
@@ -392,13 +449,17 @@ def _storage_growth_baseline_control(
         [epoch for epoch in (persisted_epoch, discovered_epoch) if epoch is not None],
         default=None,
     )
-    if apply and discovered_epoch is not None and (
-        persisted_epoch is None or discovered_epoch > persisted_epoch
+    if (
+        apply
+        and discovered_epoch is not None
+        and (persisted_epoch is None or discovered_epoch > persisted_epoch)
     ):
         write_payload(event_path, discovered)
         persisted = discovered
 
-    candidates = [epoch for epoch in (hot_lane_epoch, capacity_epoch) if epoch is not None]
+    candidates = [
+        epoch for epoch in (hot_lane_epoch, capacity_epoch) if epoch is not None
+    ]
     selected_epoch = max(candidates, default=None)
     if selected_epoch is None:
         scope = "unbounded_history"
@@ -413,11 +474,19 @@ def _storage_growth_baseline_control(
         "baseline_not_before_utc": selected_epoch.isoformat() if selected_epoch else "",
         "baseline_scope": scope,
         "reason": reason,
-        "hot_lane_control_epoch_utc": hot_lane_epoch.isoformat() if hot_lane_epoch else "",
-        "capacity_control_epoch_utc": capacity_epoch.isoformat() if capacity_epoch else "",
-        "capacity_control_event": persisted if persisted_epoch is not None else discovered,
+        "hot_lane_control_epoch_utc": (
+            hot_lane_epoch.isoformat() if hot_lane_epoch else ""
+        ),
+        "capacity_control_epoch_utc": (
+            capacity_epoch.isoformat() if capacity_epoch else ""
+        ),
+        "capacity_control_event": (
+            persisted if persisted_epoch is not None else discovered
+        ),
         "event_path": str(event_path),
     }
+
+
 def _storage_growth_forecast(
     *,
     current_external: dict[str, Any],
@@ -437,7 +506,9 @@ def _storage_growth_forecast(
     for row in reversed(history_rows):
         ts = _parse_ts(row.get("timestamp_utc"))
         disk = row.get("disk") if isinstance(row.get("disk"), dict) else {}
-        external = disk.get("external") if isinstance(disk.get("external"), dict) else {}
+        external = (
+            disk.get("external") if isinstance(disk.get("external"), dict) else {}
+        )
         prior_free = _safe_float(external.get("free_gb"), -1.0)
         if ts is None or prior_free < 0.0:
             continue
@@ -446,9 +517,15 @@ def _storage_growth_forecast(
             continue
         age_seconds = (current_ts - ts).total_seconds()
         if not burst_baseline and age_seconds >= 300:
-            burst_baseline = {"timestamp_utc": ts.isoformat(), "external_free_gb": prior_free}
+            burst_baseline = {
+                "timestamp_utc": ts.isoformat(),
+                "external_free_gb": prior_free,
+            }
         if age_seconds >= 1800:
-            sustained_baseline = {"timestamp_utc": ts.isoformat(), "external_free_gb": prior_free}
+            sustained_baseline = {
+                "timestamp_utc": ts.isoformat(),
+                "external_free_gb": prior_free,
+            }
             break
 
     def rate_from(baseline: dict[str, Any]) -> tuple[float, float]:
@@ -461,12 +538,22 @@ def _storage_growth_forecast(
         prior_free = _safe_float(baseline.get("external_free_gb"), current_free)
         return elapsed, max((prior_free - current_free) / max(elapsed, 1e-6), 0.0)
 
-    sustained_elapsed_days, sustained_consumed_gb_per_day = rate_from(sustained_baseline)
+    sustained_elapsed_days, sustained_consumed_gb_per_day = rate_from(
+        sustained_baseline
+    )
     burst_elapsed_days, burst_consumed_gb_per_day = rate_from(burst_baseline)
     baseline = sustained_baseline or burst_baseline
     elapsed_days = sustained_elapsed_days if sustained_baseline else burst_elapsed_days
-    consumed_gb_per_day = sustained_consumed_gb_per_day if sustained_baseline else burst_consumed_gb_per_day
-    confidence = "sustained" if sustained_baseline else ("burst_low" if burst_baseline else "new_baseline")
+    consumed_gb_per_day = (
+        sustained_consumed_gb_per_day
+        if sustained_baseline
+        else burst_consumed_gb_per_day
+    )
+    confidence = (
+        "sustained"
+        if sustained_baseline
+        else ("burst_low" if burst_baseline else "new_baseline")
+    )
 
     def days_until(floor: float, *, rate: float | None = None) -> float | None:
         effective_rate = consumed_gb_per_day if rate is None else float(rate)
@@ -476,12 +563,23 @@ def _storage_growth_forecast(
             return 0.0
         return round((current_free - float(floor)) / effective_rate, 2)
 
-    target_days = days_until(float(target_free_gb), rate=sustained_consumed_gb_per_day or consumed_gb_per_day)
-    pressure_days = days_until(float(pressure_free_gb), rate=sustained_consumed_gb_per_day or consumed_gb_per_day)
-    burst_pressure_days = days_until(float(pressure_free_gb), rate=burst_consumed_gb_per_day)
+    target_days = days_until(
+        float(target_free_gb), rate=sustained_consumed_gb_per_day or consumed_gb_per_day
+    )
+    pressure_days = days_until(
+        float(pressure_free_gb),
+        rate=sustained_consumed_gb_per_day or consumed_gb_per_day,
+    )
+    burst_pressure_days = days_until(
+        float(pressure_free_gb), rate=burst_consumed_gb_per_day
+    )
     if not sustained_baseline and not burst_baseline:
         status = "baseline_needed"
-        score = 94.0 if current_free >= target_free_gb and current_internal_free >= 25.0 else 82.0
+        score = (
+            94.0
+            if current_free >= target_free_gb and current_internal_free >= 25.0
+            else 82.0
+        )
         next_action = "run storage-retention-unison again later to establish a real growth-rate slope"
     elif current_free < pressure_free_gb:
         status = "pressure"
@@ -515,8 +613,12 @@ def _storage_growth_forecast(
         "grade": _grade(score),
         "source": "storage_retention_unison_history" if baseline else "new_baseline",
         "confidence": confidence,
-        "baseline_scope": str(baseline_scope) if baseline_not_before_utc else "unbounded_history",
-        "baseline_not_before_utc": baseline_not_before_utc.isoformat() if baseline_not_before_utc else "",
+        "baseline_scope": (
+            str(baseline_scope) if baseline_not_before_utc else "unbounded_history"
+        ),
+        "baseline_not_before_utc": (
+            baseline_not_before_utc.isoformat() if baseline_not_before_utc else ""
+        ),
         "discarded_pre_control_samples": discarded_pre_control_samples,
         "baseline": baseline,
         "sustained_baseline": sustained_baseline,
@@ -532,7 +634,12 @@ def _storage_growth_forecast(
         "days_until_target_free": target_days,
         "days_until_pressure_free": pressure_days,
         "burst_days_until_pressure_free": burst_pressure_days,
-        "recommended_control": "hot_lane_retention_control" if status in {"burst_watch", "near_pressure", "target_floor_breach", "pressure"} else "",
+        "recommended_control": (
+            "hot_lane_retention_control"
+            if status
+            in {"burst_watch", "near_pressure", "target_floor_breach", "pressure"}
+            else ""
+        ),
         "next_action": next_action,
     }
 
@@ -561,7 +668,9 @@ def _continuous_run_contract(
         _safe_float(os.getenv("STORAGE_CONTINUOUS_RUN_MIN_SLOPE_DAYS"), 0.25),
         0.0,
     )
-    sustained_baseline_ready = bool(forecast.get("sustained_baseline")) or confidence == "sustained"
+    sustained_baseline_ready = (
+        bool(forecast.get("sustained_baseline")) or confidence == "sustained"
+    )
     high_short_window_growth = bool(
         slope_elapsed_days > 0.0
         and slope_elapsed_days < min_projection_slope_days
@@ -593,23 +702,43 @@ def _continuous_run_contract(
         "hot_lane_retention_active",
         "external_free_above_target",
     )
-    storage_governed_core_ready = bool(controls) and all(bool(controls.get(name, False)) for name in core_control_names)
+    storage_governed_core_ready = bool(controls) and all(
+        bool(controls.get(name, False)) for name in core_control_names
+    )
     manifest_first_ready = bool(controls.get("manifest_first_storage", False))
-    storage_governed_control_ready = bool(storage_governed_core_ready and manifest_first_ready)
-    storage_bounded_control_ready = bool(storage_governed_core_ready and not manifest_first_ready)
+    storage_governed_control_ready = bool(
+        storage_governed_core_ready and manifest_first_ready
+    )
+    storage_bounded_control_ready = bool(
+        storage_governed_core_ready and not manifest_first_ready
+    )
     short_controlled_slope = bool(
         slope_elapsed_days > 0.0
         and slope_elapsed_days < governed_slope_max_days
         and raw_effective_daily > max(min_daily * 4.0, 2.0)
     )
-    storage_governed_projection = bool(storage_governed_control_ready and short_controlled_slope)
-    storage_bounded_projection = bool(storage_bounded_control_ready and short_controlled_slope)
-    storage_projection_override = bool(storage_governed_projection or storage_bounded_projection)
+    storage_governed_projection = bool(
+        storage_governed_control_ready and short_controlled_slope
+    )
+    storage_bounded_projection = bool(
+        storage_bounded_control_ready and short_controlled_slope
+    )
+    storage_projection_override = bool(
+        storage_governed_projection or storage_bounded_projection
+    )
     duty_cycle_ratio = 1.0
     if duty_cycle_max_active_ratio is not None:
-        duty_cycle_ratio = min(max(_safe_float(duty_cycle_max_active_ratio, 1.0), 0.01), 1.0)
-    duty_cycle_adjusted = bool(duty_cycle_ratio < 0.999 and raw_effective_daily > min_daily)
-    effective_daily = max(min_daily, raw_effective_daily * duty_cycle_ratio) if duty_cycle_adjusted else raw_effective_daily
+        duty_cycle_ratio = min(
+            max(_safe_float(duty_cycle_max_active_ratio, 1.0), 0.01), 1.0
+        )
+    duty_cycle_adjusted = bool(
+        duty_cycle_ratio < 0.999 and raw_effective_daily > min_daily
+    )
+    effective_daily = (
+        max(min_daily, raw_effective_daily * duty_cycle_ratio)
+        if duty_cycle_adjusted
+        else raw_effective_daily
+    )
     if storage_projection_override:
         effective_daily = min_daily
     projected_free = round(current_free - (effective_daily * horizon), 3)
@@ -621,7 +750,9 @@ def _continuous_run_contract(
         days_until_pressure_value = _safe_float(days_until_pressure, 0.0)
     controlled_days_until_pressure = None
     if effective_daily > 0.0 and current_free > pressure_floor:
-        controlled_days_until_pressure = round((current_free - pressure_floor) / effective_daily, 2)
+        controlled_days_until_pressure = round(
+            (current_free - pressure_floor) / effective_daily, 2
+        )
 
     blockers: list[str] = []
     warnings: list[str] = []
@@ -639,7 +770,8 @@ def _continuous_run_contract(
     ):
         blockers.append("forecast_pressure_inside_horizon")
     if (
-        str(forecast.get("status") or "") in {"pressure", "target_floor_breach", "near_pressure"}
+        str(forecast.get("status") or "")
+        in {"pressure", "target_floor_breach", "near_pressure"}
         and not high_short_window_growth
         and not storage_projection_override
         and not duty_cycle_adjusted
@@ -650,7 +782,9 @@ def _continuous_run_contract(
     if storage_governed_projection:
         warnings.append("storage_governed_controls_override_short_slope")
     if storage_bounded_projection:
-        warnings.append("bounded_storage_controls_override_short_post_maintenance_slope")
+        warnings.append(
+            "bounded_storage_controls_override_short_post_maintenance_slope"
+        )
         if not manifest_first_ready:
             warnings.append("manifest_first_storage_pending")
     if confidence in {"new_baseline", "burst_low"}:
@@ -732,7 +866,16 @@ def _continuous_run_contract(
             "BOT_CONTINUOUS_COLLECTION_FREE_SPACE_MARGIN_GB": str(available_margin),
             "BOT_CONTINUOUS_COLLECTION_READY": "1" if not blockers else "0",
             "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
-            "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": str(round(duty_cycle_ratio if duty_cycle_adjusted else (0.24 if not blockers else 0.16), 4)),
+            "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": str(
+                round(
+                    (
+                        duty_cycle_ratio
+                        if duty_cycle_adjusted
+                        else (0.24 if not blockers else 0.16)
+                    ),
+                    4,
+                )
+            ),
         },
         "next_action": next_action,
     }
@@ -749,7 +892,9 @@ def _second_cold_preflight() -> dict[str, Any]:
             continue
         path = Path(raw).expanduser()
         protected = _is_protected_volume(path)
-        configured_protected_hit = configured_protected_hit or bool(configured and raw == configured and protected)
+        configured_protected_hit = configured_protected_hit or bool(
+            configured and raw == configured and protected
+        )
         snapshot = _disk_snapshot(path)
         exists = bool(path.exists() and not protected)
         row = {
@@ -764,7 +909,15 @@ def _second_cold_preflight() -> dict[str, Any]:
         if row["ready"]:
             ready = True
         candidate_rows.append(row)
-    status = "ready" if ready else ("blocked_protected_target" if configured_protected_hit else "prewired_waiting_for_drive")
+    status = (
+        "ready"
+        if ready
+        else (
+            "blocked_protected_target"
+            if configured_protected_hit
+            else "prewired_waiting_for_drive"
+        )
+    )
     score = 100.0 if ready else (50.0 if configured_protected_hit else 96.0)
     return {
         "status": status,
@@ -793,9 +946,15 @@ def _cold_archive_spillover_capacity_gb(second_cold: dict[str, Any]) -> float:
     if not bool(second_cold.get("ready", False)):
         return 0.0
     reserve_gb = max(_safe_float(os.getenv("BOT_COLD_ARCHIVE_RESERVE_GB"), 64.0), 0.0)
-    max_credit_gb = max(_safe_float(os.getenv("BOT_COLD_ARCHIVE_SPILLOVER_MAX_CREDIT_GB"), 0.0), 0.0)
+    max_credit_gb = max(
+        _safe_float(os.getenv("BOT_COLD_ARCHIVE_SPILLOVER_MAX_CREDIT_GB"), 0.0), 0.0
+    )
     best_free = 0.0
-    for row in second_cold.get("candidates") if isinstance(second_cold.get("candidates"), list) else []:
+    for row in (
+        second_cold.get("candidates")
+        if isinstance(second_cold.get("candidates"), list)
+        else []
+    ):
         if isinstance(row, dict) and bool(row.get("ready", False)):
             best_free = max(best_free, _safe_float(row.get("free_gb"), 0.0))
     usable_headroom = max(best_free - reserve_gb, 0.0)
@@ -804,10 +963,18 @@ def _cold_archive_spillover_capacity_gb(second_cold: dict[str, Any]) -> float:
     return round(usable_headroom, 3)
 
 
-def _apply_cold_archive_spillover_contract(continuous_run: dict[str, Any], second_cold: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(continuous_run, dict) or not bool(second_cold.get("ready", False)):
+def _apply_cold_archive_spillover_contract(
+    continuous_run: dict[str, Any], second_cold: dict[str, Any]
+) -> dict[str, Any]:
+    if not isinstance(continuous_run, dict) or not bool(
+        second_cold.get("ready", False)
+    ):
         return continuous_run
-    blockers = [str(item) for item in continuous_run.get("blockers") if str(item)] if isinstance(continuous_run.get("blockers"), list) else []
+    blockers = (
+        [str(item) for item in continuous_run.get("blockers") if str(item)]
+        if isinstance(continuous_run.get("blockers"), list)
+        else []
+    )
     managed_projection_blockers = {
         "insufficient_projected_free_space",
         "projected_below_pressure_floor",
@@ -817,7 +984,9 @@ def _apply_cold_archive_spillover_contract(continuous_run: dict[str, Any], secon
     unmanaged = [item for item in blockers if item not in managed_projection_blockers]
     current_free = _safe_float(continuous_run.get("current_external_free_gb"), 0.0)
     pressure_free = _safe_float(continuous_run.get("pressure_free_gb"), 64.0)
-    primary_guard_buffer = max(_safe_float(os.getenv("BOT_COLD_ARCHIVE_PRIMARY_PRESSURE_BUFFER_GB"), 16.0), 0.0)
+    primary_guard_buffer = max(
+        _safe_float(os.getenv("BOT_COLD_ARCHIVE_PRIMARY_PRESSURE_BUFFER_GB"), 16.0), 0.0
+    )
     margin = _safe_float(continuous_run.get("available_margin_gb"), 0.0)
     spillover_capacity = _cold_archive_spillover_capacity_gb(second_cold)
     adjusted_margin = round(margin + spillover_capacity, 3)
@@ -857,7 +1026,9 @@ def _apply_cold_archive_spillover_contract(continuous_run: dict[str, Any], secon
             "cold_archive_capacity_policy": "live_destination_free_minus_reserve_with_optional_configured_cap",
         }
     )
-    control_env = dict(out.get("control_env") if isinstance(out.get("control_env"), dict) else {})
+    control_env = dict(
+        out.get("control_env") if isinstance(out.get("control_env"), dict) else {}
+    )
     control_env.update(
         {
             "BOT_COLD_ARCHIVE_SPILLOVER_READY": "1" if spillover_ready else "0",
@@ -877,7 +1048,9 @@ def _apply_cold_archive_spillover_contract(continuous_run: dict[str, Any], secon
         return out
 
     warnings = ordered_unique(
-        [str(item) for item in out.get("warnings") if str(item)] if isinstance(out.get("warnings"), list) else []
+        [str(item) for item in out.get("warnings") if str(item)]
+        if isinstance(out.get("warnings"), list)
+        else []
     )
     warnings.append("second_cold_archive_spillover_covers_30_day_margin")
     out.update(
@@ -896,7 +1069,9 @@ def _apply_cold_archive_spillover_contract(continuous_run: dict[str, Any], secon
             "next_action": "primary BOT_LOGS stays above pressure floor; approved cold archive spillover covers the 30-day margin",
         }
     )
-    control_env = dict(out.get("control_env") if isinstance(out.get("control_env"), dict) else {})
+    control_env = dict(
+        out.get("control_env") if isinstance(out.get("control_env"), dict) else {}
+    )
     control_env.update(
         {
             "BOT_CONTINUOUS_COLLECTION_READY": "1",
@@ -909,10 +1084,24 @@ def _apply_cold_archive_spillover_contract(continuous_run: dict[str, Any], secon
     return out
 
 
-def _sql_soft_quota_managed_by_cold_spillover(quota_payload: dict[str, Any], continuous_run: dict[str, Any]) -> bool:
-    summary = quota_payload.get("quota_summary") if isinstance(quota_payload.get("quota_summary"), dict) else {}
-    degraded = {str(item) for item in summary.get("degraded_families") if str(item)} if isinstance(summary.get("degraded_families"), list) else set()
-    blocked = {str(item) for item in summary.get("blocked_families") if str(item)} if isinstance(summary.get("blocked_families"), list) else set()
+def _sql_soft_quota_managed_by_cold_spillover(
+    quota_payload: dict[str, Any], continuous_run: dict[str, Any]
+) -> bool:
+    summary = (
+        quota_payload.get("quota_summary")
+        if isinstance(quota_payload.get("quota_summary"), dict)
+        else {}
+    )
+    degraded = (
+        {str(item) for item in summary.get("degraded_families") if str(item)}
+        if isinstance(summary.get("degraded_families"), list)
+        else set()
+    )
+    blocked = (
+        {str(item) for item in summary.get("blocked_families") if str(item)}
+        if isinstance(summary.get("blocked_families"), list)
+        else set()
+    )
     if blocked or degraded - {"sql_link_shards"}:
         return False
     if _safe_int(summary.get("hard_breaches"), 0) > 0:
@@ -923,11 +1112,15 @@ def _sql_soft_quota_managed_by_cold_spillover(quota_payload: dict[str, Any], con
         return False
     current_free = _safe_float(continuous_run.get("current_external_free_gb"), 0.0)
     pressure_free = _safe_float(continuous_run.get("pressure_free_gb"), 64.0)
-    primary_guard_buffer = _safe_float(continuous_run.get("cold_archive_primary_pressure_buffer_gb"), 16.0)
+    primary_guard_buffer = _safe_float(
+        continuous_run.get("cold_archive_primary_pressure_buffer_gb"), 16.0
+    )
     return bool(current_free >= pressure_free + primary_guard_buffer)
 
 
-def _section(label: str, status: str, score: float, evidence: dict[str, Any], next_action: str) -> dict[str, Any]:
+def _section(
+    label: str, status: str, score: float, evidence: dict[str, Any], next_action: str
+) -> dict[str, Any]:
     return {
         "label": label,
         "status": status,
@@ -966,7 +1159,14 @@ def _compaction_step_ok(step: dict[str, Any]) -> bool:
         return True
     if int(step.get("returncode", 1)) != 0:
         return False
-    return status in {"applied", "planned", "nothing_to_do", "ready", "watch", "watching"}
+    return status in {
+        "applied",
+        "planned",
+        "nothing_to_do",
+        "ready",
+        "watch",
+        "watching",
+    }
 
 
 def _deep_cold_needs_data_is_advisory(name: str, step: dict[str, Any]) -> bool:
@@ -983,6 +1183,50 @@ def _deep_cold_needs_data_is_advisory(name: str, step: dict[str, Any]) -> bool:
     )
 
 
+def _deep_cold_step_is_advisory(
+    name: str, step: dict[str, Any], *, pressure_free_gb: float = 64.0
+) -> bool:
+    if _deep_cold_needs_data_is_advisory(name, step):
+        return True
+    if name != "retention_freshness_deep_cold":
+        return False
+    if str(step.get("overall_status") or "") != "needs_attention":
+        return False
+    payload = step.get("payload") if isinstance(step.get("payload"), dict) else {}
+    adaptive = (
+        payload.get("adaptive_release")
+        if isinstance(payload.get("adaptive_release"), dict)
+        else {}
+    )
+    second_cold = (
+        payload.get("second_cold_move")
+        if isinstance(payload.get("second_cold_move"), dict)
+        else {}
+    )
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    moved_gb = max(
+        _safe_float(second_cold.get("moved_gb"), 0.0),
+        _safe_float(summary.get("managed_gb"), 0.0),
+    )
+    moved_files = max(
+        _safe_int(second_cold.get("moved_files"), 0),
+        _safe_int(summary.get("managed_count"), 0),
+    )
+    no_eligible_candidates = bool(
+        _safe_int(second_cold.get("candidate_files"), 0) <= 0
+        and _safe_int(second_cold.get("selected_candidate_files"), 0) <= 0
+        and _safe_int(second_cold.get("attempted_files"), 0) <= 0
+    )
+    source_free_after = _safe_float(adaptive.get("source_free_gb_after"), 0.0)
+    return bool(
+        str(second_cold.get("status") or "") == "partial"
+        and str(second_cold.get("reason") or "") == "adaptive_release_target_unmet"
+        and _safe_int(second_cold.get("failed_files"), 0) == 0
+        and (moved_files > 0 or moved_gb > 0.0 or no_eligible_candidates)
+        and source_free_after >= max(float(pressure_free_gb), 0.0)
+    )
+
+
 def _compaction_lane_evidence(step: dict[str, Any]) -> dict[str, Any]:
     summary = _step_summary(step)
     return {
@@ -993,17 +1237,31 @@ def _compaction_lane_evidence(step: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _hot_plane_compaction_contract(*, steps_by_lane: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _hot_plane_compaction_contract(
+    *, steps_by_lane: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
     summaries = {name: _step_summary(step) for name, step in steps_by_lane.items()}
-    selected_gb = round(sum(_safe_float(summary.get("selected_gb"), 0.0) for summary in summaries.values()), 3)
-    reduction_gb = round(sum(_step_reduction_gb(step) for step in steps_by_lane.values()), 3)
-    errors = [name for name, step in steps_by_lane.items() if not _compaction_step_ok(step)]
+    selected_gb = round(
+        sum(
+            _safe_float(summary.get("selected_gb"), 0.0)
+            for summary in summaries.values()
+        ),
+        3,
+    )
+    reduction_gb = round(
+        sum(_step_reduction_gb(step) for step in steps_by_lane.values()), 3
+    )
+    errors = [
+        name for name, step in steps_by_lane.items() if not _compaction_step_ok(step)
+    ]
     busy_lanes = [
         name
         for name, step in steps_by_lane.items()
         if str(step.get("overall_status") or "") == "busy"
     ]
-    candidate_count = sum(_safe_int(summary.get("candidate_count"), 0) for summary in summaries.values())
+    candidate_count = sum(
+        _safe_int(summary.get("candidate_count"), 0) for summary in summaries.values()
+    )
     if errors:
         status = "degraded"
         score = 82.0
@@ -1011,7 +1269,9 @@ def _hot_plane_compaction_contract(*, steps_by_lane: dict[str, dict[str, Any]]) 
     elif busy_lanes:
         status = "in_progress"
         score = 97.0
-        next_action = "let the lock-owning compactor finish, then refresh storage-tier-policy"
+        next_action = (
+            "let the lock-owning compactor finish, then refresh storage-tier-policy"
+        )
     elif reduction_gb > 0.0:
         status = "applied"
         score = 99.0
@@ -1033,7 +1293,10 @@ def _hot_plane_compaction_contract(*, steps_by_lane: dict[str, dict[str, Any]]) 
         "candidate_count": candidate_count,
         "selected_gb": selected_gb,
         "estimated_reduction_gb": reduction_gb,
-        "lanes": {name: _compaction_lane_evidence(step) for name, step in steps_by_lane.items()},
+        "lanes": {
+            name: _compaction_lane_evidence(step)
+            for name, step in steps_by_lane.items()
+        },
         "policy": "run compactors as part of storage-retention-unison so hot telemetry is rotated before disk pressure turns into a blocker",
         "next_action": next_action,
     }
@@ -1063,11 +1326,15 @@ def _manifest_backed_offload_evidence(tier_payload: dict[str, Any]) -> dict[str,
     elif status == "planned":
         score = 99.0
         section_status = "planned"
-        next_action = str(contract.get("next_action") or "run bounded retention-unison apply lanes")
+        next_action = str(
+            contract.get("next_action") or "run bounded retention-unison apply lanes"
+        )
     else:
         score = 97.0
         section_status = status
-        next_action = str(contract.get("next_action") or "keep refreshing storage-tier-policy")
+        next_action = str(
+            contract.get("next_action") or "keep refreshing storage-tier-policy"
+        )
     return {
         "status": section_status,
         "score": score,
@@ -1101,10 +1368,26 @@ def _soak_storage_controls(
         if isinstance(storage_payload.get("storage_efficiency_contract"), dict)
         else {}
     )
-    metrics = storage_efficiency.get("metrics") if isinstance(storage_efficiency.get("metrics"), dict) else {}
-    steady_state = storage_payload.get("steady_state") if isinstance(storage_payload.get("steady_state"), dict) else {}
-    steady_target = steady_state.get("target_status") if isinstance(steady_state.get("target_status"), dict) else {}
-    storage_section = storage_payload.get("storage") if isinstance(storage_payload.get("storage"), dict) else {}
+    metrics = (
+        storage_efficiency.get("metrics")
+        if isinstance(storage_efficiency.get("metrics"), dict)
+        else {}
+    )
+    steady_state = (
+        storage_payload.get("steady_state")
+        if isinstance(storage_payload.get("steady_state"), dict)
+        else {}
+    )
+    steady_target = (
+        steady_state.get("target_status")
+        if isinstance(steady_state.get("target_status"), dict)
+        else {}
+    )
+    storage_section = (
+        storage_payload.get("storage")
+        if isinstance(storage_payload.get("storage"), dict)
+        else {}
+    )
     collector_audit = (
         storage_payload.get("collector_intake_enforcement_audit")
         if isinstance(storage_payload.get("collector_intake_enforcement_audit"), dict)
@@ -1115,15 +1398,26 @@ def _soak_storage_controls(
         if isinstance(storage_payload.get("external_route_verification"), dict)
         else {}
     )
-    resilience = storage_payload.get("storage_resilience") if isinstance(storage_payload.get("storage_resilience"), dict) else {}
+    resilience = (
+        storage_payload.get("storage_resilience")
+        if isinstance(storage_payload.get("storage_resilience"), dict)
+        else {}
+    )
     current_free = _safe_float(forecast.get("current_external_free_gb"), 0.0)
     retention_debt = _safe_float(storage_section.get("retention_debt_gb"), 0.0)
-    retention_target = max(_safe_float(storage_section.get("retention_debt_target_gb"), 0.25), 0.25)
+    retention_target = max(
+        _safe_float(storage_section.get("retention_debt_target_gb"), 0.25), 0.25
+    )
     raw_candidate_gb = _safe_float(metrics.get("raw_compression_candidate_gb"), 0.0)
     fallback_count = _safe_int(metrics.get("local_fallback_reconciliation_count"), 0)
-    sparse_pending_bytes = _safe_float(metrics.get("sparse_large_line_pending_bytes"), 0.0)
+    sparse_pending_bytes = _safe_float(
+        metrics.get("sparse_large_line_pending_bytes"), 0.0
+    )
     max_sparse_pending_bytes = max(
-        _safe_float(os.getenv("STORAGE_CONTINUOUS_RUN_MAX_SPARSE_PENDING_BYTES"), 256.0 * 1024.0 * 1024.0),
+        _safe_float(
+            os.getenv("STORAGE_CONTINUOUS_RUN_MAX_SPARSE_PENDING_BYTES"),
+            256.0 * 1024.0 * 1024.0,
+        ),
         1.0,
     )
     storage_efficiency_ready = bool(
@@ -1131,9 +1425,14 @@ def _soak_storage_controls(
         and _grade_rank(storage_efficiency.get("grade")) >= _grade_rank("A")
     )
     hot_lane_status = str(hot_lane_payload.get("overall_status") or "").strip().lower()
-    external_free_above_target = current_free >= max(float(target_free_gb), float(pressure_free_gb) + float(safety_buffer_gb))
+    external_free_above_target = current_free >= max(
+        float(target_free_gb), float(pressure_free_gb) + float(safety_buffer_gb)
+    )
     quota_status = str(quota_payload.get("overall_status") or "").strip().lower()
-    quota_ready = quota_status == "ready" or (quota_status in {"degraded", "watch", "needs_work"} and external_free_above_target)
+    quota_ready = quota_status == "ready" or (
+        quota_status in {"degraded", "watch", "needs_work"}
+        and external_free_above_target
+    )
     collector_status = str(collector_audit.get("status") or "").strip().lower()
     collector_required = bool(collector_audit.get("required", False))
     collector_mismatch_count = _safe_int(collector_audit.get("mismatch_count"), 0)
@@ -1154,9 +1453,11 @@ def _soak_storage_controls(
         "storage_efficiency_ready": storage_efficiency_ready,
         "quota_ready": quota_ready,
         "quota_status": quota_status,
-        "route_verified": str(route.get("verification_state") or "").strip().lower() == "ready"
+        "route_verified": str(route.get("verification_state") or "").strip().lower()
+        == "ready"
         or bool(route.get("coverage_ratio") == 1.0),
-        "resilience_ready": str(resilience.get("overall_status") or "").strip().lower() in {"", "ready"},
+        "resilience_ready": str(resilience.get("overall_status") or "").strip().lower()
+        in {"", "ready"},
         "steady_state_ready": bool(steady_target.get("steady_state_ready", False)),
         "retention_debt_ok": retention_debt <= retention_target,
         "collector_intake_enforced": collector_soak_safe,
@@ -1164,13 +1465,18 @@ def _soak_storage_controls(
         "collector_intake_required": collector_required,
         "collector_intake_mismatch_count": collector_mismatch_count,
         "collector_intake_soak_safe": collector_soak_safe,
-        "manifest_first_storage": str(storage_efficiency.get("raw_payload_policy") or "").strip()
+        "manifest_first_storage": str(
+            storage_efficiency.get("raw_payload_policy") or ""
+        ).strip()
         in {"manifest_first", "manifest_first_compress_old_sources"}
-        or str(storage_efficiency.get("write_intake_mode") or "").strip() == "thin_digest_with_manifest",
+        or str(storage_efficiency.get("write_intake_mode") or "").strip()
+        == "thin_digest_with_manifest",
         "raw_candidate_compaction_ok": raw_candidate_gb <= 1.0 and fallback_count == 0,
-        "sparse_large_line_pending_bounded": sparse_pending_bytes <= max_sparse_pending_bytes,
+        "sparse_large_line_pending_bounded": sparse_pending_bytes
+        <= max_sparse_pending_bytes,
         "deep_cold_ready": bool(metrics.get("deep_cold_ready", False)),
-        "hot_lane_retention_active": hot_lane_status in {"active", "ready", "watch", "watching"},
+        "hot_lane_retention_active": hot_lane_status
+        in {"active", "ready", "watch", "watching"},
         "external_free_above_target": external_free_above_target,
         "current_external_free_gb": round(current_free, 3),
         "target_free_gb": round(float(target_free_gb), 3),
@@ -1198,8 +1504,7 @@ def _soak_storage_controls(
         and controls["external_free_above_target"]
     )
     controls["storage_governed_ready"] = bool(
-        controls["storage_governed_core_ready"]
-        and controls["manifest_first_storage"]
+        controls["storage_governed_core_ready"] and controls["manifest_first_storage"]
     )
     controls["storage_bounded_post_maintenance_ready"] = bool(
         controls["storage_governed_core_ready"]
@@ -1269,7 +1574,10 @@ def build_payload(
     effective_capacity_event_path = (
         capacity_event_path
         if capacity_event_path is not None
-        else project_root / "governance" / "runtime" / "storage_capacity_control_epoch_latest.json"
+        else project_root
+        / "governance"
+        / "runtime"
+        / "storage_capacity_control_epoch_latest.json"
     )
     baseline_control = _storage_growth_baseline_control(
         project_root,
@@ -1285,7 +1593,9 @@ def build_payload(
         target_free_gb=float(target_free_gb),
         pressure_free_gb=float(pressure_free_gb),
         baseline_not_before_utc=baseline_epoch,
-        baseline_scope=str(baseline_control.get("baseline_scope") or "post_control_epoch"),
+        baseline_scope=str(
+            baseline_control.get("baseline_scope") or "post_control_epoch"
+        ),
     )
     forecast["baseline_control"] = baseline_control
     # Deep-cold runs as a child process and must see this pass's disk slope,
@@ -1297,7 +1607,9 @@ def build_payload(
         pressure_free_gb=float(pressure_free_gb),
         safety_buffer_gb=float(soak_buffer_gb),
         min_daily_growth_gb=float(soak_min_daily_gb),
-        duty_cycle_max_active_ratio=_safe_float(os.getenv("BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"), 0.16),
+        duty_cycle_max_active_ratio=_safe_float(
+            os.getenv("BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"), 0.16
+        ),
     )
     external_free_gb = _safe_float(disk["external"].get("free_gb"), 0.0)
     effective_cleanup_max_tier = max(int(cleanup_max_tier), 1)
@@ -1310,10 +1622,20 @@ def build_payload(
     steps: dict[str, dict[str, Any]] = {}
     cold_archive_root = str(os.getenv("BOT_SECOND_COLD_ROOT", "") or "").strip()
     if not cold_archive_root:
-        external_archive_root = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
-        cold_archive_root = str(Path(external_archive_root) / "cold_archive") if external_archive_root else str(project_root / "governance" / "archive" / "cold_archive")
+        external_archive_root = str(
+            os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or ""
+        ).strip()
+        cold_archive_root = (
+            str(Path(external_archive_root) / "cold_archive")
+            if external_archive_root
+            else str(project_root / "governance" / "archive" / "cold_archive")
+        )
     cold_archive_path = Path(cold_archive_root).expanduser()
-    if apply and not _is_protected_volume(cold_archive_path) and cold_archive_path.parent.exists():
+    if (
+        apply
+        and not _is_protected_volume(cold_archive_path)
+        and cold_archive_path.parent.exists()
+    ):
         cold_archive_path.mkdir(parents=True, exist_ok=True)
 
     deep_cmd = [opsctl, "deep-cold-storage-layer", "--json"]
@@ -1321,6 +1643,16 @@ def build_payload(
         deep_cmd.insert(2, "--apply")
         second_cold_root = str(os.getenv("BOT_SECOND_COLD_ROOT", "") or "").strip()
         if second_cold_root and not _is_protected_volume(Path(second_cold_root)):
+            deep_cold_source_free_target_gb = max(
+                _safe_float(
+                    os.getenv(
+                        "STORAGE_RETENTION_UNISON_DEEP_COLD_SOURCE_FREE_TARGET_GB",
+                        os.getenv("BOT_DEEP_COLD_SOURCE_FREE_TARGET_GB", "0"),
+                    ),
+                    0.0,
+                ),
+                0.0,
+            )
             deep_cmd.extend(
                 [
                     "--move-to-second-cold",
@@ -1329,17 +1661,26 @@ def build_payload(
                     second_cold_root,
                     "--planning-horizon-days",
                     str(max(float(soak_days), 1.0)),
-                    "--source-free-target-gb",
-                    str(max(float(target_free_gb), 0.0)),
                     "--max-move-gb",
                     os.getenv("BOT_DEEP_COLD_MAX_MOVE_GB", "96.0"),
                     "--max-move-files",
                     os.getenv("BOT_DEEP_COLD_MAX_MOVE_FILES", "500"),
                 ]
             )
+            if deep_cold_source_free_target_gb > 0.0:
+                deep_cmd.extend(
+                    [
+                        "--source-free-target-gb",
+                        str(round(deep_cold_source_free_target_gb, 3)),
+                    ]
+                )
             if _env_truthy("BOT_DEEP_COLD_INCLUDE_CRITICAL"):
                 deep_cmd.append("--include-critical")
-    deep_cold_timeout = max(int(timeout_sec), 1800) if apply and "--move-to-second-cold" in deep_cmd else int(timeout_sec)
+    deep_cold_timeout = (
+        max(int(timeout_sec), 1800)
+        if apply and "--move-to-second-cold" in deep_cmd
+        else int(timeout_sec)
+    )
     steps["retention_freshness_deep_cold"] = _run_json(
         deep_cmd,
         cwd=project_root,
@@ -1375,7 +1716,9 @@ def build_payload(
     retention_cmd = [opsctl, "retention-intelligence-v2", "--json"]
     if apply:
         retention_cmd.insert(2, "--apply")
-    steps["retention_freshness_v2"] = _run_json(retention_cmd, cwd=project_root, timeout_sec=timeout_sec)
+    steps["retention_freshness_v2"] = _run_json(
+        retention_cmd, cwd=project_root, timeout_sec=timeout_sec
+    )
 
     raw_cmd = [
         opsctl,
@@ -1391,7 +1734,9 @@ def build_payload(
     ]
     if apply:
         raw_cmd.insert(2, "--apply")
-    steps["raw_training_usefulness"] = _run_json(raw_cmd, cwd=project_root, timeout_sec=timeout_sec)
+    steps["raw_training_usefulness"] = _run_json(
+        raw_cmd, cwd=project_root, timeout_sec=timeout_sec
+    )
 
     cleanup_cmd = [
         opsctl,
@@ -1406,7 +1751,9 @@ def build_payload(
     ]
     if apply:
         cleanup_cmd.insert(2, "--apply")
-    steps["bot_logs_lean"] = _run_json(cleanup_cmd, cwd=project_root, timeout_sec=timeout_sec)
+    steps["bot_logs_lean"] = _run_json(
+        cleanup_cmd, cwd=project_root, timeout_sec=timeout_sec
+    )
 
     telemetry_cmd = [
         opsctl,
@@ -1427,7 +1774,12 @@ def build_payload(
         timeout_sec=max(int(timeout_sec), 1800),
     )
 
-    external_governance_archive_root = project_root / "data" / "stale_stage" / "external_governance_telemetry_compactor"
+    external_governance_archive_root = (
+        project_root
+        / "data"
+        / "stale_stage"
+        / "external_governance_telemetry_compactor"
+    )
     if external_root.exists() and not _same_real_path(external_root, project_root):
         external_telemetry_cmd = [
             opsctl,
@@ -1534,7 +1886,9 @@ def build_payload(
     ]
     if apply:
         hot_lane_cmd.insert(2, "--apply")
-    steps["hot_lane_retention"] = _run_json(hot_lane_cmd, cwd=project_root, timeout_sec=timeout_sec)
+    steps["hot_lane_retention"] = _run_json(
+        hot_lane_cmd, cwd=project_root, timeout_sec=timeout_sec
+    )
 
     hot_lane_now = steps["hot_lane_retention"].get("payload") or {}
     current_day_rotation_ready = bool(
@@ -1592,11 +1946,26 @@ def build_payload(
             },
         )
 
-    creative_cmd = [opsctl, "creative-cotenant-guard", "apply" if apply else "status", "--json"]
-    steps["foreground_app_protection"] = _run_json(creative_cmd, cwd=project_root, timeout_sec=timeout_sec)
+    creative_cmd = [
+        opsctl,
+        "creative-cotenant-guard",
+        "apply" if apply else "status",
+        "--json",
+    ]
+    steps["foreground_app_protection"] = _run_json(
+        creative_cmd, cwd=project_root, timeout_sec=timeout_sec
+    )
 
-    steps["storage_quota_guard"] = _run_json([opsctl, "storage-quota-guard", "--json"], cwd=project_root, timeout_sec=timeout_sec)
-    steps["ingestion_storage_control"] = _run_json([opsctl, "ingestion-storage-control", "--json"], cwd=project_root, timeout_sec=timeout_sec)
+    steps["storage_quota_guard"] = _run_json(
+        [opsctl, "storage-quota-guard", "--json"],
+        cwd=project_root,
+        timeout_sec=timeout_sec,
+    )
+    steps["ingestion_storage_control"] = _run_json(
+        [opsctl, "ingestion-storage-control", "--json"],
+        cwd=project_root,
+        timeout_sec=timeout_sec,
+    )
 
     deep_payload = steps["retention_freshness_deep_cold"].get("payload") or {}
     cold_archive_payload = steps["cold_archive_compaction"].get("payload") or {}
@@ -1604,7 +1973,9 @@ def build_payload(
     raw_payload = steps["raw_training_usefulness"].get("payload") or {}
     cleanup_payload = steps["bot_logs_lean"].get("payload") or {}
     telemetry_payload = steps["governance_telemetry_compactor"].get("payload") or {}
-    external_telemetry_payload = steps["external_governance_telemetry_compactor"].get("payload") or {}
+    external_telemetry_payload = (
+        steps["external_governance_telemetry_compactor"].get("payload") or {}
+    )
     lifecycle_payload = steps["governance_lifecycle_compactor"].get("payload") or {}
     decision_compactor_payload = steps["decision_log_compactor"].get("payload") or {}
     tier_payload = steps["storage_tier_policy"].get("payload") or {}
@@ -1614,18 +1985,35 @@ def build_payload(
     quota_payload = steps["storage_quota_guard"].get("payload") or {}
     second_cold = _second_cold_preflight()
 
-    retention_report = retention_payload.get("retention_report_card") if isinstance(retention_payload.get("retention_report_card"), dict) else {}
-    raw_summary = raw_payload.get("raw_summary") if isinstance(raw_payload.get("raw_summary"), dict) else {}
-    cleanup_retention = cleanup_payload.get("retention_intelligence_v2") if isinstance(cleanup_payload.get("retention_intelligence_v2"), dict) else {}
+    retention_report = (
+        retention_payload.get("retention_report_card")
+        if isinstance(retention_payload.get("retention_report_card"), dict)
+        else {}
+    )
+    raw_summary = (
+        raw_payload.get("raw_summary")
+        if isinstance(raw_payload.get("raw_summary"), dict)
+        else {}
+    )
+    cleanup_retention = (
+        cleanup_payload.get("retention_intelligence_v2")
+        if isinstance(cleanup_payload.get("retention_intelligence_v2"), dict)
+        else {}
+    )
     storage_efficiency = (
         storage_payload.get("storage_efficiency_contract")
         if isinstance(storage_payload.get("storage_efficiency_contract"), dict)
         else {}
     )
     external_free_gb = _safe_float(forecast.get("current_external_free_gb"), 0.0)
-    external_free_above_target = external_free_gb >= max(float(target_free_gb), float(pressure_free_gb) + float(soak_buffer_gb))
+    external_free_above_target = external_free_gb >= max(
+        float(target_free_gb), float(pressure_free_gb) + float(soak_buffer_gb)
+    )
     quota_status = str(quota_payload.get("overall_status") or "").strip().lower()
-    quota_ready = quota_status == "ready" or (quota_status in {"degraded", "watch", "needs_work"} and external_free_above_target)
+    quota_ready = quota_status == "ready" or (
+        quota_status in {"degraded", "watch", "needs_work"}
+        and external_free_above_target
+    )
     soak_storage_controls = _soak_storage_controls(
         forecast=forecast,
         storage_payload=storage_payload,
@@ -1641,22 +2029,35 @@ def build_payload(
         pressure_free_gb=float(pressure_free_gb),
         safety_buffer_gb=float(soak_buffer_gb),
         min_daily_growth_gb=float(soak_min_daily_gb),
-        duty_cycle_max_active_ratio=_safe_float(os.getenv("BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"), 0.16),
+        duty_cycle_max_active_ratio=_safe_float(
+            os.getenv("BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"), 0.16
+        ),
         storage_controls=soak_storage_controls,
     )
     continuous_run = _apply_cold_archive_spillover_contract(continuous_run, second_cold)
-    quota_managed_by_cold_spillover = _sql_soft_quota_managed_by_cold_spillover(quota_payload, continuous_run)
+    quota_managed_by_cold_spillover = _sql_soft_quota_managed_by_cold_spillover(
+        quota_payload, continuous_run
+    )
     quota_ready = bool(quota_ready or quota_managed_by_cold_spillover)
     hot_plane_compaction = _hot_plane_compaction_contract(
         steps_by_lane={
             "governance_telemetry_compactor": steps["governance_telemetry_compactor"],
-            "external_governance_telemetry_compactor": steps["external_governance_telemetry_compactor"],
+            "external_governance_telemetry_compactor": steps[
+                "external_governance_telemetry_compactor"
+            ],
             "governance_lifecycle_compactor": steps["governance_lifecycle_compactor"],
             "decision_log_compactor": steps["decision_log_compactor"],
-            "current_day_explanation_compactor": steps["current_day_explanation_compactor"],
+            "current_day_explanation_compactor": steps[
+                "current_day_explanation_compactor"
+            ],
         }
     )
     manifest_backed_offload = _manifest_backed_offload_evidence(tier_payload)
+    deep_cold_advisory = _deep_cold_step_is_advisory(
+        "retention_freshness_deep_cold",
+        steps["retention_freshness_deep_cold"],
+        pressure_free_gb=float(pressure_free_gb),
+    )
 
     non_hard_command_statuses = {
         "already_running",
@@ -1680,9 +2081,16 @@ def build_payload(
         for name, step in steps.items()
         if int(step.get("returncode", 0)) not in {0}
         and str(step.get("overall_status") or "") not in non_hard_command_statuses
-        and not (name == "bot_logs_lean" and str(step.get("overall_status") or "") == "blocked")
-        and not (name == "foreground_app_protection" and bool(step.get("timed_out", False)))
-        and not _deep_cold_needs_data_is_advisory(name, step)
+        and not (
+            name == "bot_logs_lean"
+            and str(step.get("overall_status") or "") == "blocked"
+        )
+        and not (
+            name == "foreground_app_protection" and bool(step.get("timed_out", False))
+        )
+        and not _deep_cold_step_is_advisory(
+            name, step, pressure_free_gb=float(pressure_free_gb)
+        )
     ]
     protected_external = bool(disk["external"].get("protected", False))
     raw_eligible_count = _safe_int(raw_summary.get("eligible_training_source_count"), 0)
@@ -1702,17 +2110,27 @@ def build_payload(
         else str(raw_payload.get("overall_status") or "unknown")
     )
     foreground_step = steps["foreground_app_protection"]
-    creative_actions = creative_payload.get("actions") if isinstance(creative_payload.get("actions"), list) else []
+    creative_actions = (
+        creative_payload.get("actions")
+        if isinstance(creative_payload.get("actions"), list)
+        else []
+    )
     foreground_status = str(creative_payload.get("overall_status") or "unknown")
     if bool(foreground_step.get("timed_out", False)):
         foreground_status = "advisory"
-        creative_actions = ordered_unique([*map(str, creative_actions), "foreground_guard_timeout"])
-    elif foreground_status == "needs_work" and set(str(item) for item in creative_actions).issubset({"paper_execution_lane_missing"}):
+        creative_actions = ordered_unique(
+            [*map(str, creative_actions), "foreground_guard_timeout"]
+        )
+    elif foreground_status == "needs_work" and set(
+        str(item) for item in creative_actions
+    ).issubset({"paper_execution_lane_missing"}):
         foreground_status = "ready_with_paper_lane_advisory"
 
     cold_archive_status = str(cold_archive_payload.get("overall_status") or "unknown")
     cold_archive_summary = (
-        cold_archive_payload.get("summary") if isinstance(cold_archive_payload.get("summary"), dict) else {}
+        cold_archive_payload.get("summary")
+        if isinstance(cold_archive_payload.get("summary"), dict)
+        else {}
     )
     cold_archive_score = {
         "ready": 99.0,
@@ -1725,39 +2143,131 @@ def build_payload(
         "busy": 94.0,
         "advisory": 90.0,
     }.get(cold_archive_status, 82.0)
+    retention_status = (
+        str(retention_payload.get("overall_status") or "").strip().lower()
+    )
+    retention_blockers = (
+        [str(item) for item in retention_payload.get("blockers") if str(item)]
+        if isinstance(retention_payload.get("blockers"), list)
+        else []
+    )
+    retention_blockers_managed = bool(
+        set(retention_blockers).issubset({"deep_cold_or_quota_not_clean"})
+    )
+    retention_freshness_ready = bool(
+        bool(retention_payload.get("ok", False)) and bool(deep_payload.get("ok", False))
+    )
+    retention_freshness_watch = bool(
+        not retention_freshness_ready
+        and deep_cold_advisory
+        and quota_ready
+        and retention_blockers_managed
+        and retention_status in {"ready", "needs_work", "degraded", "watch", "advisory"}
+    )
+    cleanup_status = (
+        str(cleanup_payload.get("overall_status") or "unknown").strip().lower()
+    )
+    cleanup_projected_free_gb = _safe_float(
+        cleanup_payload.get("projected_free_gb"), 0.0
+    )
+    cleanup_selected_count = _safe_int(cleanup_payload.get("selected_count"), 0)
+    cleanup_retention_ready = bool(cleanup_retention.get("ready", False))
+    cleanup_retention_effectively_ready = bool(
+        cleanup_retention_ready or retention_freshness_watch
+    )
+    cleanup_pressure_floor_gb = round(
+        max(float(pressure_free_gb), 0.0) + max(float(soak_buffer_gb), 0.0), 3
+    )
+    cleanup_soft_target_miss_managed = bool(
+        cleanup_status == "blocked"
+        and cleanup_selected_count <= 0
+        and cleanup_retention_effectively_ready
+        and bool(continuous_run.get("ready", False))
+        and cleanup_projected_free_gb >= cleanup_pressure_floor_gb
+    )
+    cleanup_section_status = (
+        "watch" if cleanup_soft_target_miss_managed else cleanup_status
+    )
+    cleanup_section_score = (
+        99.0
+        if cleanup_status == "ready"
+        and cleanup_projected_free_gb >= float(target_free_gb)
+        else (94.0 if cleanup_soft_target_miss_managed else 88.0)
+    )
+    cleanup_next_action = (
+        "BOT_LOGS is below the unattended target but above the pressure floor; continue verified offload and compaction without deleting unbacked duplicates"
+        if cleanup_soft_target_miss_managed
+        else "BOT_LOGS cleanup stays tiered and value-aware; pressure automatically unlocks bounded stale-stage cleanup while current-day files remain protected"
+    )
 
     sections = {
         "local_hot_storage_reserve": _section(
             "Local Hot Storage Reserve",
             str(local_reserve.get("status") or "unknown"),
-            100.0
-            if bool(local_reserve.get("ready", False))
-            else (92.0 if not bool(local_reserve.get("pressure_active", False)) else 72.0),
+            (
+                100.0
+                if bool(local_reserve.get("ready", False))
+                else (
+                    92.0
+                    if not bool(local_reserve.get("pressure_active", False))
+                    else 72.0
+                )
+            ),
             local_reserve,
-            str(local_reserve.get("next_action") or "restore the live internal reserve"),
+            str(
+                local_reserve.get("next_action") or "restore the live internal reserve"
+            ),
         ),
         "retention_freshness": _section(
             "Retention Freshness",
-            "ready" if bool(retention_payload.get("ok", False)) and bool(deep_payload.get("ok", False)) else "needs_refresh",
-            min(_safe_float(retention_report.get("overall_score"), 0.0), 99.0) if retention_report else 92.0,
+            (
+                "ready"
+                if retention_freshness_ready
+                else "watch" if retention_freshness_watch else "needs_refresh"
+            ),
+            (
+                max(_safe_float(retention_report.get("overall_score"), 0.0), 94.0)
+                if retention_freshness_watch
+                else (
+                    min(_safe_float(retention_report.get("overall_score"), 0.0), 99.0)
+                    if retention_report
+                    else 92.0
+                )
+            ),
             {
                 "deep_cold_status": deep_payload.get("overall_status", ""),
                 "retention_status": retention_payload.get("overall_status", ""),
                 "retention_grade": retention_report.get("overall_grade", ""),
+                "retention_blockers": retention_blockers,
+                "deep_cold_advisory": deep_cold_advisory,
                 "manifest_path": deep_payload.get("manifest_path", ""),
             },
-            "deep cold and retention report card are refreshed",
+            (
+                "deep cold made verified partial progress and the remaining adaptive release shortfall is a storage-reserve watch"
+                if retention_freshness_watch
+                else "deep cold and retention report card are refreshed"
+            ),
         ),
         "raw_training_usefulness": _section(
             "Raw Data Training Usefulness",
             raw_training_status,
-            98.0
-            if raw_eligible_count > 0
-            else (94.0 if _safe_int(raw_summary.get("raw_jsonl_count"), 0) > 0 else 88.0),
+            (
+                98.0
+                if raw_eligible_count > 0
+                else (
+                    94.0
+                    if _safe_int(raw_summary.get("raw_jsonl_count"), 0) > 0
+                    else 88.0
+                )
+            ),
             {
                 "raw_jsonl_count": _safe_int(raw_summary.get("raw_jsonl_count"), 0),
-                "eligible_training_source_count": _safe_int(raw_summary.get("eligible_training_source_count"), 0),
-                "compression_candidate_gb": _safe_float(raw_summary.get("compression_candidate_gb"), 0.0),
+                "eligible_training_source_count": _safe_int(
+                    raw_summary.get("eligible_training_source_count"), 0
+                ),
+                "compression_candidate_gb": _safe_float(
+                    raw_summary.get("compression_candidate_gb"), 0.0
+                ),
                 "raw_gb_cleared": _safe_float(raw_summary.get("raw_gb_cleared"), 0.0),
             },
             "raw sources are queued manifest-only for training, then compacted only by verified gzip waves",
@@ -1767,9 +2277,15 @@ def build_payload(
             cold_archive_status,
             cold_archive_score,
             {
-                "archive_root": cold_archive_payload.get("archive_root", cold_archive_root),
-                "jsonl_candidate_count": _safe_int(cold_archive_summary.get("jsonl_candidate_count"), 0),
-                "selected_jsonl_count": _safe_int(cold_archive_summary.get("selected_jsonl_count"), 0),
+                "archive_root": cold_archive_payload.get(
+                    "archive_root", cold_archive_root
+                ),
+                "jsonl_candidate_count": _safe_int(
+                    cold_archive_summary.get("jsonl_candidate_count"), 0
+                ),
+                "selected_jsonl_count": _safe_int(
+                    cold_archive_summary.get("selected_jsonl_count"), 0
+                ),
                 "gzip_finalize_candidate_count": _safe_int(
                     cold_archive_summary.get("gzip_finalize_candidate_count"), 0
                 ),
@@ -1779,13 +2295,19 @@ def build_payload(
                 "tmp_duplicate_candidate_count": _safe_int(
                     cold_archive_summary.get("tmp_duplicate_candidate_count"), 0
                 ),
-                "sqlite_inventory_count": _safe_int(cold_archive_summary.get("sqlite_inventory_count"), 0),
+                "sqlite_inventory_count": _safe_int(
+                    cold_archive_summary.get("sqlite_inventory_count"), 0
+                ),
                 "sqlite_vacuum_eligible_count": _safe_int(
                     cold_archive_summary.get("sqlite_vacuum_eligible_count"), 0
                 ),
-                "successful_action_count": _safe_int(cold_archive_summary.get("successful_action_count"), 0),
+                "successful_action_count": _safe_int(
+                    cold_archive_summary.get("successful_action_count"), 0
+                ),
                 "error_count": _safe_int(cold_archive_summary.get("error_count"), 0),
-                "released_gb": _safe_float(cold_archive_summary.get("released_gb"), 0.0),
+                "released_gb": _safe_float(
+                    cold_archive_summary.get("released_gb"), 0.0
+                ),
                 "manifest_path": cold_archive_payload.get("manifest_path", ""),
                 "readme_path": cold_archive_payload.get("readme_path", ""),
             },
@@ -1796,35 +2318,55 @@ def build_payload(
         ),
         "bot_logs_lean": _section(
             "Active BOT_LOGS Lean",
-            str(cleanup_payload.get("overall_status") or "unknown"),
-            99.0
-            if str(cleanup_payload.get("overall_status") or "") == "ready"
-            and _safe_float(cleanup_payload.get("projected_free_gb"), 0.0) >= float(target_free_gb)
-            else 88.0,
+            cleanup_section_status,
+            cleanup_section_score,
             {
-                "projected_free_gb": _safe_float(cleanup_payload.get("projected_free_gb"), 0.0),
-                "selected_count": _safe_int(cleanup_payload.get("selected_count"), 0),
+                "projected_free_gb": cleanup_projected_free_gb,
+                "target_free_gb": round(max(float(target_free_gb), 0.0), 3),
+                "pressure_floor_gb": cleanup_pressure_floor_gb,
+                "selected_count": cleanup_selected_count,
                 "effective_max_tier": effective_cleanup_max_tier,
                 "max_delete_gb": round(max(float(cleanup_max_delete_gb), 0.0), 3),
-                "retention_ready": bool(cleanup_retention.get("ready", False)),
+                "retention_ready": cleanup_retention_ready,
+                "retention_effectively_ready": cleanup_retention_effectively_ready,
+                "continuous_run_ready": bool(continuous_run.get("ready", False)),
+                "raw_status": cleanup_status,
+                "soft_target_miss_managed": cleanup_soft_target_miss_managed,
             },
-            "BOT_LOGS cleanup stays tiered and value-aware; pressure automatically unlocks bounded stale-stage cleanup while current-day files remain protected",
+            cleanup_next_action,
         ),
         "hot_plane_compaction": _section(
             "Hot Plane Compaction",
             str(hot_plane_compaction.get("status") or "unknown"),
             _safe_float(hot_plane_compaction.get("score"), 0.0),
             {
-                "governance_telemetry_status": telemetry_payload.get("overall_status", ""),
-                "external_governance_telemetry_status": external_telemetry_payload.get("overall_status", ""),
-                "governance_lifecycle_status": lifecycle_payload.get("overall_status", ""),
-                "decision_log_status": decision_compactor_payload.get("overall_status", ""),
-                "candidate_count": _safe_int(hot_plane_compaction.get("candidate_count"), 0),
-                "selected_gb": _safe_float(hot_plane_compaction.get("selected_gb"), 0.0),
-                "estimated_reduction_gb": _safe_float(hot_plane_compaction.get("estimated_reduction_gb"), 0.0),
+                "governance_telemetry_status": telemetry_payload.get(
+                    "overall_status", ""
+                ),
+                "external_governance_telemetry_status": external_telemetry_payload.get(
+                    "overall_status", ""
+                ),
+                "governance_lifecycle_status": lifecycle_payload.get(
+                    "overall_status", ""
+                ),
+                "decision_log_status": decision_compactor_payload.get(
+                    "overall_status", ""
+                ),
+                "candidate_count": _safe_int(
+                    hot_plane_compaction.get("candidate_count"), 0
+                ),
+                "selected_gb": _safe_float(
+                    hot_plane_compaction.get("selected_gb"), 0.0
+                ),
+                "estimated_reduction_gb": _safe_float(
+                    hot_plane_compaction.get("estimated_reduction_gb"), 0.0
+                ),
                 "errors": hot_plane_compaction.get("errors", []),
             },
-            str(hot_plane_compaction.get("next_action") or "keep hot-plane compaction integrated with retention unison"),
+            str(
+                hot_plane_compaction.get("next_action")
+                or "keep hot-plane compaction integrated with retention unison"
+            ),
         ),
         "manifest_backed_offload": _section(
             "Manifest-Backed Offload Contract",
@@ -1832,17 +2374,34 @@ def build_payload(
             _safe_float(manifest_backed_offload.get("score"), 0.0),
             {
                 "manifest_path": manifest_backed_offload.get("manifest_path", ""),
-                "eligible_offload_files": _safe_int(manifest_backed_offload.get("eligible_offload_files"), 0),
-                "eligible_offload_gb": _safe_float(manifest_backed_offload.get("eligible_offload_gb"), 0.0),
-                "compaction_only_files": _safe_int(manifest_backed_offload.get("compaction_only_files"), 0),
-                "compaction_only_gb": _safe_float(manifest_backed_offload.get("compaction_only_gb"), 0.0),
+                "eligible_offload_files": _safe_int(
+                    manifest_backed_offload.get("eligible_offload_files"), 0
+                ),
+                "eligible_offload_gb": _safe_float(
+                    manifest_backed_offload.get("eligible_offload_gb"), 0.0
+                ),
+                "compaction_only_files": _safe_int(
+                    manifest_backed_offload.get("compaction_only_files"), 0
+                ),
+                "compaction_only_gb": _safe_float(
+                    manifest_backed_offload.get("compaction_only_gb"), 0.0
+                ),
                 "entry_count": _safe_int(manifest_backed_offload.get("entry_count"), 0),
-                "omitted_count": _safe_int(manifest_backed_offload.get("omitted_count"), 0),
+                "omitted_count": _safe_int(
+                    manifest_backed_offload.get("omitted_count"), 0
+                ),
                 "delete_requires": manifest_backed_offload.get("delete_requires", []),
-                "never_delete_classes": manifest_backed_offload.get("never_delete_classes", []),
-                "stateful_sql_policy": manifest_backed_offload.get("stateful_sql_policy", ""),
+                "never_delete_classes": manifest_backed_offload.get(
+                    "never_delete_classes", []
+                ),
+                "stateful_sql_policy": manifest_backed_offload.get(
+                    "stateful_sql_policy", ""
+                ),
             },
-            str(manifest_backed_offload.get("next_action") or "refresh storage-tier-policy"),
+            str(
+                manifest_backed_offload.get("next_action")
+                or "refresh storage-tier-policy"
+            ),
         ),
         "hot_lane_retention": _section(
             "Hot Lane Retention Control",
@@ -1851,22 +2410,55 @@ def build_payload(
             {
                 "mode": hot_lane_payload.get("mode", ""),
                 "reasons": hot_lane_payload.get("reasons", []),
-                "active_decision_gb": _safe_float(((hot_lane_payload.get("hot_decision_pressure") or {}).get("active_decision_gb")), 0.0)
-                if isinstance(hot_lane_payload.get("hot_decision_pressure"), dict)
-                else 0.0,
-                "largest_active_file_gb": _safe_float(((hot_lane_payload.get("hot_decision_pressure") or {}).get("largest_active_file_gb")), 0.0)
-                if isinstance(hot_lane_payload.get("hot_decision_pressure"), dict)
-                else 0.0,
-                "override_applied": bool(hot_lane_payload.get("override_applied", False)),
+                "active_decision_gb": (
+                    _safe_float(
+                        (
+                            (hot_lane_payload.get("hot_decision_pressure") or {}).get(
+                                "active_decision_gb"
+                            )
+                        ),
+                        0.0,
+                    )
+                    if isinstance(hot_lane_payload.get("hot_decision_pressure"), dict)
+                    else 0.0
+                ),
+                "largest_active_file_gb": (
+                    _safe_float(
+                        (
+                            (hot_lane_payload.get("hot_decision_pressure") or {}).get(
+                                "largest_active_file_gb"
+                            )
+                        ),
+                        0.0,
+                    )
+                    if isinstance(hot_lane_payload.get("hot_decision_pressure"), dict)
+                    else 0.0
+                ),
+                "override_applied": bool(
+                    hot_lane_payload.get("override_applied", False)
+                ),
                 "storage_tier_status": tier_payload.get("overall_status", ""),
-                "live_hot_path_gb": round(
-                    _safe_float(((tier_payload.get("pressure") or {}).get("live_hot_path_bytes")), 0.0) / (1024.0**3),
-                    4,
-                )
-                if isinstance(tier_payload.get("pressure"), dict)
-                else 0.0,
+                "live_hot_path_gb": (
+                    round(
+                        _safe_float(
+                            (
+                                (tier_payload.get("pressure") or {}).get(
+                                    "live_hot_path_bytes"
+                                )
+                            ),
+                            0.0,
+                        )
+                        / (1024.0**3),
+                        4,
+                    )
+                    if isinstance(tier_payload.get("pressure"), dict)
+                    else 0.0
+                ),
             },
-            str(hot_lane_payload.get("next_action") or "keep hot-lane retention watching current-day decision growth"),
+            str(
+                hot_lane_payload.get("next_action")
+                or "keep hot-lane retention watching current-day decision growth"
+            ),
         ),
         "storage_forecast": _section(
             "Storage Growth Forecast",
@@ -1889,8 +2481,20 @@ def build_payload(
             {
                 "quota_ready": quota_ready,
                 "quota_managed_by_cold_spillover": quota_managed_by_cold_spillover,
-                "raw_source_queue": ((raw_payload.get("next_training_manifest") or {}).get("raw_source_queue_path") if isinstance(raw_payload.get("next_training_manifest"), dict) else ""),
-                "eligible_queue": ((raw_payload.get("next_training_manifest") or {}).get("raw_eligible_source_queue_path") if isinstance(raw_payload.get("next_training_manifest"), dict) else ""),
+                "raw_source_queue": (
+                    (raw_payload.get("next_training_manifest") or {}).get(
+                        "raw_source_queue_path"
+                    )
+                    if isinstance(raw_payload.get("next_training_manifest"), dict)
+                    else ""
+                ),
+                "eligible_queue": (
+                    (raw_payload.get("next_training_manifest") or {}).get(
+                        "raw_eligible_source_queue_path"
+                    )
+                    if isinstance(raw_payload.get("next_training_manifest"), dict)
+                    else ""
+                ),
                 "storage_efficiency_grade": storage_efficiency.get("grade", ""),
             },
             "training gets manifest queues and compacted evidence instead of dragging huge raw tails through every pass",
@@ -1905,7 +2509,12 @@ def build_payload(
         "foreground_protection": _section(
             "Foreground App Protection",
             foreground_status,
-            98.0 if foreground_status in {"ready", "ready_with_paper_lane_advisory", "needs_work"} else 84.0,
+            (
+                98.0
+                if foreground_status
+                in {"ready", "ready_with_paper_lane_advisory", "needs_work"}
+                else 84.0
+            ),
             {
                 "creative_mode": creative_payload.get("creative_mode", {}),
                 "actions": creative_actions,
@@ -1926,15 +2535,25 @@ def build_payload(
         hard_blockers.append("storage_quota_not_ready")
     if str(continuous_run.get("status") or "") == "blocked":
         hard_blockers.append("continuous_collection_soak_not_ready")
-    if bool(local_reserve.get("pressure_active", False)) or bool(local_reserve.get("hard_block", False)):
+    if bool(local_reserve.get("pressure_active", False)) or bool(
+        local_reserve.get("hard_block", False)
+    ):
         hard_blockers.append("local_hot_storage_pressure_reserve_breached")
 
-    overall_score = round(sum(_safe_float(row.get("score"), 0.0) for row in sections.values()) / max(len(sections), 1), 2)
+    overall_score = round(
+        sum(_safe_float(row.get("score"), 0.0) for row in sections.values())
+        / max(len(sections), 1),
+        2,
+    )
     if not bool(local_reserve.get("ready", False)):
         overall_score = min(overall_score, 92.0)
     if hard_blockers:
         overall_score = min(overall_score, 82.0)
-    overall_status = "ready" if not hard_blockers and overall_score >= 93.0 else ("blocked" if hard_blockers else "needs_work")
+    overall_status = (
+        "ready"
+        if not hard_blockers and overall_score >= 93.0
+        else ("blocked" if hard_blockers else "needs_work")
+    )
     disk_after_work = {
         "external": _disk_snapshot(external_root),
         "internal_project": _disk_snapshot(project_root),
@@ -1974,12 +2593,18 @@ def build_payload(
             "coordinates_cold_archive_writer_handoff": True,
             "preserves_direct_archive_readability": True,
             "defers_cold_compaction_while_writer_active": True,
-            "uses_manifest_backed_offload_contract": bool(manifest_backed_offload.get("manifest_path")),
+            "uses_manifest_backed_offload_contract": bool(
+                manifest_backed_offload.get("manifest_path")
+            ),
             "has_manifest_backed_copy_verify_worker": True,
             "stateful_sql_compaction_only": bool(
                 manifest_backed_offload.get("manifest_path")
-                and "stateful_sql_compaction_only" in {
-                    str(item) for item in (manifest_backed_offload.get("never_delete_classes") or [])
+                and "stateful_sql_compaction_only"
+                in {
+                    str(item)
+                    for item in (
+                        manifest_backed_offload.get("never_delete_classes") or []
+                    )
                 }
             ),
             "sql_soft_quota_managed_by_cold_spillover": quota_managed_by_cold_spillover,
@@ -1988,6 +2613,7 @@ def build_payload(
             "persists_capacity_control_epoch": True,
             "publishes_growth_forecast_before_deep_cold": True,
             "publishes_continuous_run_contract": True,
+            "reconciles_ingestion_after_unison_publish": True,
             "keeps_training_batches_efficient": True,
             "prewires_second_cold_target": True,
             "protects_foreground_apps": True,
@@ -2070,16 +2696,28 @@ def build_payload(
             "BOT_CONTINUOUS_COLLECTION_SOAK_ACTIVE": "1",
             **{
                 str(key): str(value)
-                for key, value in (continuous_run.get("control_env") if isinstance(continuous_run.get("control_env"), dict) else {}).items()
+                for key, value in (
+                    continuous_run.get("control_env")
+                    if isinstance(continuous_run.get("control_env"), dict)
+                    else {}
+                ).items()
             },
             "BOT_RAW_TRAINING_MANIFEST_QUEUE_ACTIVE": "1",
             "BOT_HOT_PLANE_COMPACTION_ACTIVE": "1",
             "BOT_COLD_ARCHIVE_COMPACTION_ACTIVE": "1",
-            "BOT_COLD_ARCHIVE_COMPACTION_MANIFEST": str(cold_archive_payload.get("manifest_path") or ""),
-            "BOT_MANIFEST_BACKED_OFFLOAD_CONTRACT_ACTIVE": "1" if manifest_backed_offload.get("manifest_path") else "0",
-            "BOT_MANIFEST_BACKED_OFFLOAD_PATH": str(manifest_backed_offload.get("manifest_path") or ""),
+            "BOT_COLD_ARCHIVE_COMPACTION_MANIFEST": str(
+                cold_archive_payload.get("manifest_path") or ""
+            ),
+            "BOT_MANIFEST_BACKED_OFFLOAD_CONTRACT_ACTIVE": (
+                "1" if manifest_backed_offload.get("manifest_path") else "0"
+            ),
+            "BOT_MANIFEST_BACKED_OFFLOAD_PATH": str(
+                manifest_backed_offload.get("manifest_path") or ""
+            ),
             "BOT_LOGS_PRESSURE_CLEANUP_MAX_TIER": str(effective_cleanup_max_tier),
-            "BOT_LOGS_PRESSURE_CLEANUP_MAX_DELETE_GB": str(round(max(float(cleanup_max_delete_gb), 0.0), 3)),
+            "BOT_LOGS_PRESSURE_CLEANUP_MAX_DELETE_GB": str(
+                round(max(float(cleanup_max_delete_gb), 0.0), 3)
+            ),
             "BOT_SECOND_COLD_ROOT": os.getenv("BOT_SECOND_COLD_ROOT", "").strip(),
             "BOT_NEVER_TOUCH_VIDEO": "1",
         },
@@ -2090,8 +2728,54 @@ def build_payload(
         ),
     }
 
+    # Publish the complete storage truth before asking ingestion control to
+    # consume it. The final write below records the reconciliation result.
     write_payload(out_path, payload)
     write_payload(forecast_path, forecast)
+    post_publish_ingestion = _run_json(
+        [opsctl, "ingestion-storage-control", "--json"],
+        cwd=project_root,
+        timeout_sec=timeout_sec,
+    )
+    steps["ingestion_storage_control_post_publish"] = post_publish_ingestion
+    post_publish_payload = post_publish_ingestion.get("payload")
+    post_publish_synchronized = bool(
+        isinstance(post_publish_payload, dict)
+        and post_publish_payload
+        and not bool(post_publish_ingestion.get("timed_out", False))
+    )
+    payload["post_publish_reconciliation"] = {
+        "status": "synchronized" if post_publish_synchronized else "failed",
+        "synchronized": post_publish_synchronized,
+        "consumer": "ingestion-storage-control",
+        "consumer_status": str(
+            post_publish_ingestion.get("overall_status") or "unknown"
+        ),
+        "consumer_returncode": _safe_int(post_publish_ingestion.get("returncode"), 1),
+        "contract": "publish_unison_then_refresh_ingestion_then_publish_audit",
+    }
+    payload["integration_contract"][
+        "ingestion_post_publish_synchronized"
+    ] = post_publish_synchronized
+    if not post_publish_synchronized:
+        payload["ok"] = False
+        payload["overall_status"] = "blocked"
+        payload["overall_score"] = min(
+            _safe_float(payload.get("overall_score"), 0.0), 82.0
+        )
+        payload["overall_grade"] = _grade(
+            _safe_float(payload.get("overall_score"), 0.0)
+        )
+        if (
+            "post_publish_ingestion_reconciliation_failed"
+            not in payload["hard_blockers"]
+        ):
+            payload["hard_blockers"].append(
+                "post_publish_ingestion_reconciliation_failed"
+            )
+        if "ingestion_storage_control_post_publish" not in payload["command_failures"]:
+            payload["command_failures"].append("ingestion_storage_control_post_publish")
+    write_payload(out_path, payload)
     if apply:
         _append_history(history_path, payload)
     return payload
@@ -2109,32 +2793,168 @@ def main() -> int:
     parser.add_argument("--history-file", default=str(DEFAULT_HISTORY_PATH))
     parser.add_argument("--forecast-file", default=str(DEFAULT_FORECAST_PATH))
     parser.add_argument("--apply", action="store_true")
-    parser.add_argument("--raw-max-files", type=int, default=int(os.getenv("STORAGE_RETENTION_UNISON_RAW_MAX_FILES", "4")))
-    parser.add_argument("--raw-max-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_RAW_MAX_GB", "4.0")))
-    parser.add_argument("--raw-min-age-hours", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_RAW_MIN_AGE_HOURS", "18.0")))
-    parser.add_argument("--cleanup-max-tier", type=int, default=int(os.getenv("STORAGE_RETENTION_UNISON_CLEANUP_MAX_TIER", "1")))
-    parser.add_argument("--cleanup-max-delete-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_CLEANUP_MAX_DELETE_GB", "48.0")))
-    parser.add_argument("--telemetry-max-files", type=int, default=int(os.getenv("STORAGE_RETENTION_UNISON_TELEMETRY_MAX_FILES", "12")))
-    parser.add_argument("--telemetry-max-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_TELEMETRY_MAX_GB", "16.0")))
-    parser.add_argument("--telemetry-min-file-mb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_TELEMETRY_MIN_FILE_MB", "128.0")))
-    parser.add_argument("--lifecycle-max-files", type=int, default=int(os.getenv("STORAGE_RETENTION_UNISON_LIFECYCLE_MAX_FILES", "80")))
-    parser.add_argument("--lifecycle-max-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_LIFECYCLE_MAX_GB", "4.0")))
-    parser.add_argument("--lifecycle-min-file-mb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_LIFECYCLE_MIN_FILE_MB", "5.0")))
-    parser.add_argument("--lifecycle-min-age-hours", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_LIFECYCLE_MIN_AGE_HOURS", "12.0")))
-    parser.add_argument("--decision-max-files", type=int, default=int(os.getenv("STORAGE_RETENTION_UNISON_DECISION_MAX_FILES", "12")))
-    parser.add_argument("--decision-max-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_DECISION_MAX_GB", "8.0")))
-    parser.add_argument("--decision-min-file-mb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_DECISION_MIN_FILE_MB", "128.0")))
-    parser.add_argument("--decision-min-age-minutes", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_DECISION_MIN_AGE_MINUTES", "90.0")))
-    parser.add_argument("--cold-archive-max-files", type=int, default=int(os.getenv("STORAGE_RETENTION_UNISON_COLD_ARCHIVE_MAX_FILES", "8")))
-    parser.add_argument("--cold-archive-max-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_COLD_ARCHIVE_MAX_GB", "16.0")))
-    parser.add_argument("--cold-archive-min-age-hours", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_COLD_ARCHIVE_MIN_AGE_HOURS", "24.0")))
-    parser.add_argument("--cold-archive-compression-level", type=int, default=int(os.getenv("STORAGE_RETENTION_UNISON_COLD_ARCHIVE_COMPRESSION_LEVEL", "3")))
-    parser.add_argument("--target-free-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_TARGET_FREE_GB", "125.0")))
-    parser.add_argument("--pressure-free-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_PRESSURE_FREE_GB", "64.0")))
-    parser.add_argument("--soak-days", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_SOAK_DAYS", str(DEFAULT_CONTINUOUS_RUN_DAYS))))
-    parser.add_argument("--soak-buffer-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_SOAK_BUFFER_GB", str(DEFAULT_CONTINUOUS_RUN_BUFFER_GB))))
-    parser.add_argument("--soak-min-daily-gb", type=float, default=float(os.getenv("STORAGE_RETENTION_UNISON_SOAK_MIN_DAILY_GB", str(DEFAULT_CONTINUOUS_RUN_MIN_DAILY_GB))))
-    parser.add_argument("--timeout-sec", type=int, default=int(os.getenv("STORAGE_RETENTION_UNISON_TIMEOUT_SEC", "180")))
+    parser.add_argument(
+        "--raw-max-files",
+        type=int,
+        default=int(os.getenv("STORAGE_RETENTION_UNISON_RAW_MAX_FILES", "4")),
+    )
+    parser.add_argument(
+        "--raw-max-gb",
+        type=float,
+        default=float(os.getenv("STORAGE_RETENTION_UNISON_RAW_MAX_GB", "4.0")),
+    )
+    parser.add_argument(
+        "--raw-min-age-hours",
+        type=float,
+        default=float(os.getenv("STORAGE_RETENTION_UNISON_RAW_MIN_AGE_HOURS", "18.0")),
+    )
+    parser.add_argument(
+        "--cleanup-max-tier",
+        type=int,
+        default=int(os.getenv("STORAGE_RETENTION_UNISON_CLEANUP_MAX_TIER", "1")),
+    )
+    parser.add_argument(
+        "--cleanup-max-delete-gb",
+        type=float,
+        default=float(
+            os.getenv("STORAGE_RETENTION_UNISON_CLEANUP_MAX_DELETE_GB", "48.0")
+        ),
+    )
+    parser.add_argument(
+        "--telemetry-max-files",
+        type=int,
+        default=int(os.getenv("STORAGE_RETENTION_UNISON_TELEMETRY_MAX_FILES", "12")),
+    )
+    parser.add_argument(
+        "--telemetry-max-gb",
+        type=float,
+        default=float(os.getenv("STORAGE_RETENTION_UNISON_TELEMETRY_MAX_GB", "16.0")),
+    )
+    parser.add_argument(
+        "--telemetry-min-file-mb",
+        type=float,
+        default=float(
+            os.getenv("STORAGE_RETENTION_UNISON_TELEMETRY_MIN_FILE_MB", "128.0")
+        ),
+    )
+    parser.add_argument(
+        "--lifecycle-max-files",
+        type=int,
+        default=int(os.getenv("STORAGE_RETENTION_UNISON_LIFECYCLE_MAX_FILES", "80")),
+    )
+    parser.add_argument(
+        "--lifecycle-max-gb",
+        type=float,
+        default=float(os.getenv("STORAGE_RETENTION_UNISON_LIFECYCLE_MAX_GB", "4.0")),
+    )
+    parser.add_argument(
+        "--lifecycle-min-file-mb",
+        type=float,
+        default=float(
+            os.getenv("STORAGE_RETENTION_UNISON_LIFECYCLE_MIN_FILE_MB", "5.0")
+        ),
+    )
+    parser.add_argument(
+        "--lifecycle-min-age-hours",
+        type=float,
+        default=float(
+            os.getenv("STORAGE_RETENTION_UNISON_LIFECYCLE_MIN_AGE_HOURS", "12.0")
+        ),
+    )
+    parser.add_argument(
+        "--decision-max-files",
+        type=int,
+        default=int(os.getenv("STORAGE_RETENTION_UNISON_DECISION_MAX_FILES", "12")),
+    )
+    parser.add_argument(
+        "--decision-max-gb",
+        type=float,
+        default=float(os.getenv("STORAGE_RETENTION_UNISON_DECISION_MAX_GB", "8.0")),
+    )
+    parser.add_argument(
+        "--decision-min-file-mb",
+        type=float,
+        default=float(
+            os.getenv("STORAGE_RETENTION_UNISON_DECISION_MIN_FILE_MB", "128.0")
+        ),
+    )
+    parser.add_argument(
+        "--decision-min-age-minutes",
+        type=float,
+        default=float(
+            os.getenv("STORAGE_RETENTION_UNISON_DECISION_MIN_AGE_MINUTES", "90.0")
+        ),
+    )
+    parser.add_argument(
+        "--cold-archive-max-files",
+        type=int,
+        default=int(os.getenv("STORAGE_RETENTION_UNISON_COLD_ARCHIVE_MAX_FILES", "8")),
+    )
+    parser.add_argument(
+        "--cold-archive-max-gb",
+        type=float,
+        default=float(
+            os.getenv("STORAGE_RETENTION_UNISON_COLD_ARCHIVE_MAX_GB", "16.0")
+        ),
+    )
+    parser.add_argument(
+        "--cold-archive-min-age-hours",
+        type=float,
+        default=float(
+            os.getenv("STORAGE_RETENTION_UNISON_COLD_ARCHIVE_MIN_AGE_HOURS", "24.0")
+        ),
+    )
+    parser.add_argument(
+        "--cold-archive-compression-level",
+        type=int,
+        default=int(
+            os.getenv("STORAGE_RETENTION_UNISON_COLD_ARCHIVE_COMPRESSION_LEVEL", "3")
+        ),
+    )
+    parser.add_argument(
+        "--target-free-gb",
+        type=float,
+        default=float(os.getenv("STORAGE_RETENTION_UNISON_TARGET_FREE_GB", "125.0")),
+    )
+    parser.add_argument(
+        "--pressure-free-gb",
+        type=float,
+        default=float(os.getenv("STORAGE_RETENTION_UNISON_PRESSURE_FREE_GB", "64.0")),
+    )
+    parser.add_argument(
+        "--soak-days",
+        type=float,
+        default=float(
+            os.getenv(
+                "STORAGE_RETENTION_UNISON_SOAK_DAYS", str(DEFAULT_CONTINUOUS_RUN_DAYS)
+            )
+        ),
+    )
+    parser.add_argument(
+        "--soak-buffer-gb",
+        type=float,
+        default=float(
+            os.getenv(
+                "STORAGE_RETENTION_UNISON_SOAK_BUFFER_GB",
+                str(DEFAULT_CONTINUOUS_RUN_BUFFER_GB),
+            )
+        ),
+    )
+    parser.add_argument(
+        "--soak-min-daily-gb",
+        type=float,
+        default=float(
+            os.getenv(
+                "STORAGE_RETENTION_UNISON_SOAK_MIN_DAILY_GB",
+                str(DEFAULT_CONTINUOUS_RUN_MIN_DAILY_GB),
+            )
+        ),
+    )
+    parser.add_argument(
+        "--timeout-sec",
+        type=int,
+        default=int(os.getenv("STORAGE_RETENTION_UNISON_TIMEOUT_SEC", "180")),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 

@@ -370,3 +370,118 @@ def test_source_mutation_guard_blocks_unscoped_dirty_source(tmp_path) -> None:
     assert payload["candidate_acceptance"]["entry_scope_coverage"] == {
         " M README.md": []
     }
+
+
+def test_source_mutation_guard_dynamically_catches_new_candidate_source(
+    tmp_path: Path,
+) -> None:
+    _committed_guard_repo(tmp_path)
+    config, config_path = _candidate_config(tmp_path)
+    production_excellence_control.manage_candidate(tmp_path, config, initialize=True)
+    new_source = tmp_path / "ops" / "new_guard.py"
+    new_source.write_text("VALUE = 2\n", encoding="utf-8")
+
+    payload = source_mutation_guard.build_payload(
+        tmp_path,
+        candidate_config_path=config_path,
+    )
+
+    assert payload["ok"] is False
+    assert "?? ops/new_guard.py" in payload["dirty_entries"]
+    assert payload["candidate_acceptance"]["entry_scope_coverage"][
+        "?? ops/new_guard.py"
+    ] == ["operations"]
+    assert (
+        payload["contract"]["candidate_scope_paths_are_discovered_dynamically"] is True
+    )
+
+
+def test_source_mutation_guard_separates_generated_output_from_neighboring_source(
+    tmp_path: Path,
+) -> None:
+    generated = tmp_path / "docs" / "pycharm" / "intelligence_layers_latest.md"
+    canonical = tmp_path / "docs" / "pycharm" / "operator_contract.md"
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    generated.write_text("generated at t1\n", encoding="utf-8")
+    canonical.write_text("canonical v1\n", encoding="utf-8")
+    policy_path = tmp_path / "config" / "generated_artifact_policy.json"
+    config_path = tmp_path / "config" / "production_excellence_v1.json"
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_text(
+        json.dumps(
+            {
+                "tracked_runtime_outputs": [
+                    "docs/pycharm/intelligence_layers_latest.md"
+                ],
+                "candidate_fingerprint_contract": {
+                    "exclude_exact_tracked_runtime_outputs": True,
+                    "broad_path_exclusions_allowed": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = {
+        "candidate": {
+            "state_path": "governance/runtime/production_candidate_state.json",
+            "event_log_path": "governance/evidence/production_candidate_events.jsonl",
+            "generated_artifact_policy_path": ("config/generated_artifact_policy.json"),
+            "require_generated_artifact_policy": True,
+            "scope_globs": {"operations": ["docs/**/*.md"]},
+        }
+    }
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"], cwd=tmp_path, check=True, text=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "add", "docs", "config"],
+        cwd=tmp_path,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        cwd=tmp_path,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    production_excellence_control.manage_candidate(tmp_path, config, initialize=True)
+
+    generated.write_text("generated at t2\n", encoding="utf-8")
+    generated_refresh = source_mutation_guard.build_payload(
+        tmp_path, candidate_config_path=config_path
+    )
+    assert generated_refresh["ok"] is True
+    assert generated_refresh["observed_dirty_count"] == 0
+    assert (
+        generated_refresh["contract"][
+            "generated_runtime_outputs_are_owned_by_exact_policy_paths"
+        ]
+        is True
+    )
+
+    canonical.write_text("canonical v2\n", encoding="utf-8")
+    canonical_change = source_mutation_guard.build_payload(
+        tmp_path, candidate_config_path=config_path
+    )
+    assert canonical_change["ok"] is False
+    assert canonical_change["dirty_entries"] == [" M docs/pycharm/operator_contract.md"]
+    assert all(
+        "intelligence_layers_latest.md" not in entry
+        for entry in canonical_change["observed_dirty_entries"]
+    )

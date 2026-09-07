@@ -270,6 +270,9 @@ def _status(payload: dict[str, Any], default: str = "missing") -> str:
 
 def _guarded_paper_management_context(health_root: Path) -> dict[str, Any]:
     dashboard = _load_json(health_root / "runtime_gate_dashboard_latest.json")
+    health_fast = _load_json(health_root / "health_fast_latest.json")
+    soak = _load_json(health_root / "unattended_soak_readiness_latest.json")
+    paper_guard = _load_json(health_root / "runtime_paper_regression_guard_latest.json")
     overall = (
         dashboard.get("overall")
         if isinstance(dashboard.get("overall"), dict)
@@ -294,7 +297,7 @@ def _guarded_paper_management_context(health_root: Path) -> dict[str, Any]:
     )
     health_fast_status = str(context.get("health_fast_status") or "").strip().lower()
     paper_stage = str(context.get("paper_stage") or "").strip().lower()
-    enabled = bool(
+    dashboard_contract_enabled = bool(
         overall.get("ok", False)
         and dashboard_status in {"ok", "ready"}
         and bool(context.get("soak_ready", False))
@@ -302,14 +305,91 @@ def _guarded_paper_management_context(health_root: Path) -> dict[str, Any]:
         and paper_stage in {"armed", "ready", "paper_armed"}
         and health_fast_status in {"ready", "ok"}
     )
+
+    operational = (
+        health_fast.get("operational_readiness")
+        if isinstance(health_fast.get("operational_readiness"), dict)
+        else {}
+    )
+    guarded_paper = (
+        operational.get("guarded_paper")
+        if isinstance(operational.get("guarded_paper"), dict)
+        else {}
+    )
+    live_execution = (
+        operational.get("live_execution")
+        if isinstance(operational.get("live_execution"), dict)
+        else {}
+    )
+    authoritative_health_status = (
+        str(health_fast.get("overall_status") or health_fast.get("status") or "")
+        .strip()
+        .lower()
+    )
+    authoritative_soak_status = (
+        str(soak.get("overall_status") or soak.get("status") or "").strip().lower()
+    )
+    authoritative_paper_guard_status = (
+        str(paper_guard.get("overall_status") or paper_guard.get("status") or "")
+        .strip()
+        .lower()
+    )
+    authoritative_guarded_paper_status = (
+        str(guarded_paper.get("status") or "").strip().lower()
+    )
+    authoritative_live_execution_status = (
+        str(live_execution.get("status") or "").strip().lower()
+    )
+    authoritative_paper_stage = (
+        str(
+            guarded_paper.get("paper_ramp_stage")
+            or paper_guard.get("paper_stage")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    authoritative_contract_enabled = bool(
+        health_fast
+        and soak
+        and paper_guard
+        and bool(health_fast.get("ok", False))
+        and authoritative_health_status in {"ready", "guarded_ready"}
+        and bool(guarded_paper.get("ok", False))
+        and authoritative_guarded_paper_status in GUARDED_PAPER_READY_STATUSES
+        and authoritative_paper_stage in {"armed", "ready", "paper_armed"}
+        and authoritative_live_execution_status
+        in {"blocked_read_only", "locked", "read_only", "disabled"}
+        and bool(soak.get("ok", False))
+        and authoritative_soak_status == "ready"
+        and bool(paper_guard.get("ok", False))
+        and authoritative_paper_guard_status == "ready"
+    )
+    enabled = bool(dashboard_contract_enabled or authoritative_contract_enabled)
+    managed_by = (
+        "runtime_gate_dashboard"
+        if dashboard_contract_enabled
+        else (
+            "authoritative_guarded_paper_contract"
+            if authoritative_contract_enabled
+            else "none"
+        )
+    )
     return {
         "enabled": enabled,
-        "managed_by": "runtime_gate_dashboard",
+        "managed_by": managed_by,
+        "dashboard_contract_enabled": dashboard_contract_enabled,
+        "authoritative_contract_enabled": authoritative_contract_enabled,
         "dashboard_status": dashboard_status,
-        "soak_status": str(context.get("soak_status") or "").strip().lower(),
-        "soak_grade": str(context.get("soak_grade") or ""),
-        "paper_stage": paper_stage,
-        "health_fast_status": health_fast_status,
+        "soak_status": str(context.get("soak_status") or authoritative_soak_status)
+        .strip()
+        .lower(),
+        "soak_grade": str(context.get("soak_grade") or soak.get("overall_grade") or ""),
+        "paper_guard_status": authoritative_paper_guard_status,
+        "guarded_paper_status": authoritative_guarded_paper_status,
+        "live_execution_status": authoritative_live_execution_status,
+        "paper_stage": paper_stage or authoritative_paper_stage,
+        "health_fast_status": health_fast_status or authoritative_health_status,
         "raw_attention": _ordered_unique(
             overall.get("raw_attention")
             if isinstance(overall.get("raw_attention"), list)
@@ -692,6 +772,17 @@ def _surface_matrix(
             status_metadata.update(
                 {
                     "guarded_paper_context_enabled": True,
+                    "guarded_paper_context_managed_by": str(
+                        guarded_paper_context.get("managed_by") or ""
+                    ),
+                    "dashboard_contract_enabled": bool(
+                        guarded_paper_context.get("dashboard_contract_enabled", False)
+                    ),
+                    "authoritative_contract_enabled": bool(
+                        guarded_paper_context.get(
+                            "authoritative_contract_enabled", False
+                        )
+                    ),
                     "soak_grade": str(guarded_paper_context.get("soak_grade") or ""),
                     "paper_stage": str(guarded_paper_context.get("paper_stage") or ""),
                     "health_fast_status": str(

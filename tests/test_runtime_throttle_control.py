@@ -4471,6 +4471,305 @@ def test_runtime_throttle_bounds_niced_support_and_writer_sampling_hysteresis() 
     )
 
 
+def test_runtime_throttle_marks_bounded_writer_and_quiet_protected_lane_ready() -> None:
+    attribution = {
+        "foreground_app_cpu_percent": 24.0,
+        "macos_system_cpu_percent": 72.0,
+        "operator_observability_cpu_percent": 0.0,
+        "protected_live_or_macro_cpu_percent": 36.0,
+        "bot_owned_cpu_percent": 82.0,
+        "throttle_candidate_support_cpu_percent": 0.0,
+        "storage_writer_cpu_percent": 46.0,
+        "paper_execution_cpu_percent": 0.0,
+        "research_training_cpu_percent": 0.0,
+        "external_pressure_dominant": False,
+        "bot_owned_pressure_dominant": True,
+        "support_jobs_hot": False,
+        "paper_execution_hot": False,
+        "research_training_hot": False,
+        "storage_writer_hot": True,
+        "protected_work_hot": False,
+    }
+
+    ready = src._soft_cap_low_pressure_advisory(
+        overall_status="degraded",
+        throttle_profile="soft_cap",
+        saturation_score=39.0,
+        compute_pressure_level="normal",
+        memory_pressure_level="normal",
+        storage_pressure_index=0.0,
+        storage_fresh_overflow=True,
+        thermal_warning_active=False,
+        performance_warning_active=False,
+        host_pressure_attribution=attribution,
+        live_read_only=True,
+        storage_severity="stable",
+        storage_core_pending_lines=0,
+        storage_total_pending_lines=0,
+        storage_pending_threshold=15000,
+        storage_oldest_pending_age_seconds=0.0,
+        storage_oldest_age_threshold_seconds=240.0,
+        storage_overlay_relief={"bounded": True},
+        paper_execution_policy={
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+            "armed": True,
+            "ok": True,
+        },
+        full_force_paper_required=True,
+    )
+
+    assert ready["to_status"] == "ready"
+    assert ready["reason"] == (
+        "bounded_writer_and_quiet_protected_lane_is_guarded_runtime_ready"
+    )
+    assert ready["measurements"][
+        "bounded_writer_with_quiet_protected_lane_guarded_ready"
+    ] is True
+
+    attribution["protected_live_or_macro_cpu_percent"] = 75.1
+    over_limit = src._soft_cap_low_pressure_advisory(
+        **{
+            "overall_status": "degraded",
+            "throttle_profile": "soft_cap",
+            "saturation_score": 39.0,
+            "compute_pressure_level": "normal",
+            "memory_pressure_level": "normal",
+            "storage_pressure_index": 0.0,
+            "storage_fresh_overflow": True,
+            "thermal_warning_active": False,
+            "performance_warning_active": False,
+            "host_pressure_attribution": attribution,
+            "live_read_only": True,
+            "storage_severity": "stable",
+            "storage_core_pending_lines": 0,
+            "storage_total_pending_lines": 0,
+            "storage_pending_threshold": 15000,
+            "storage_oldest_pending_age_seconds": 0.0,
+            "storage_oldest_age_threshold_seconds": 240.0,
+            "storage_overlay_relief": {"bounded": True},
+            "paper_execution_policy": {
+                "paper_execution_allowed": True,
+                "pause_paper_execution": False,
+                "armed": True,
+                "ok": True,
+            },
+            "full_force_paper_required": True,
+        }
+    )
+    assert over_limit["measurements"][
+        "bounded_writer_with_quiet_protected_lane_guarded_ready"
+    ] is False
+
+
+def test_runtime_throttle_marks_single_core_protected_lane_ready() -> None:
+    attribution = {
+        "foreground_app_cpu_percent": 10.0,
+        "macos_system_cpu_percent": 70.0,
+        "operator_observability_cpu_percent": 0.0,
+        "protected_live_or_macro_cpu_percent": 101.0,
+        "bot_owned_cpu_percent": 104.5,
+        "throttle_candidate_support_cpu_percent": 0.0,
+        "storage_writer_cpu_percent": 0.0,
+        "paper_execution_cpu_percent": 0.0,
+        "research_training_cpu_percent": 3.5,
+        "external_pressure_dominant": False,
+        "bot_owned_pressure_dominant": True,
+        "support_jobs_hot": False,
+        "paper_execution_hot": False,
+        "research_training_hot": False,
+        "storage_writer_hot": False,
+        "protected_work_hot": True,
+    }
+    kwargs = {
+        "overall_status": "degraded",
+        "throttle_profile": "soft_cap",
+        "saturation_score": 38.8,
+        "compute_pressure_level": "normal",
+        "memory_pressure_level": "normal",
+        "storage_pressure_index": 0.0,
+        "storage_fresh_overflow": True,
+        "thermal_warning_active": False,
+        "performance_warning_active": False,
+        "host_pressure_attribution": attribution,
+        "live_read_only": True,
+        "storage_severity": "stable",
+        "storage_core_pending_lines": 0,
+        "storage_total_pending_lines": 0,
+        "storage_pending_threshold": 15000,
+        "storage_oldest_pending_age_seconds": 0.0,
+        "storage_oldest_age_threshold_seconds": 240.0,
+        "storage_overlay_relief": {"bounded": True},
+        "paper_execution_policy": {
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+            "armed": True,
+            "ok": True,
+        },
+        "full_force_paper_required": True,
+    }
+
+    ready = src._soft_cap_low_pressure_advisory(**kwargs)
+
+    assert ready["to_status"] == "ready"
+    assert ready["reason"] == (
+        "bounded_read_only_protected_lane_after_green_backpressure_is_guarded_runtime_ready"
+    )
+    assert ready["measurements"]["bounded_protected_lane_guarded_ready"] is True
+
+    attribution["protected_live_or_macro_cpu_percent"] = 39.0
+    attribution["bot_owned_cpu_percent"] = 42.5
+    attribution["protected_work_hot"] = False
+    quiet_lane = src._soft_cap_low_pressure_advisory(**kwargs)
+
+    assert quiet_lane["to_status"] == "ready"
+    assert quiet_lane["measurements"]["bounded_protected_lane_guarded_ready"] is True
+
+    attribution["protected_live_or_macro_cpu_percent"] = 125.1
+    attribution["bot_owned_cpu_percent"] = 128.6
+    attribution["protected_work_hot"] = True
+    over_limit = src._soft_cap_low_pressure_advisory(**kwargs)
+
+    assert over_limit["measurements"]["bounded_protected_lane_guarded_ready"] is False
+
+
+def test_runtime_throttle_marks_bounded_read_only_capacity_envelope_ready() -> None:
+    attribution = {
+        "foreground_app_cpu_percent": 28.0,
+        "macos_system_cpu_percent": 36.0,
+        "operator_observability_cpu_percent": 0.0,
+        "protected_live_or_macro_cpu_percent": 54.5,
+        "bot_owned_cpu_percent": 94.0,
+        "throttle_candidate_support_cpu_percent": 39.5,
+        "storage_writer_cpu_percent": 0.0,
+        "paper_execution_cpu_percent": 0.0,
+        "research_training_cpu_percent": 0.0,
+        "external_pressure_dominant": False,
+        "bot_owned_pressure_dominant": True,
+        "system_secondary_to_bot_owned": True,
+        "system_cotenant_hot": True,
+        "support_jobs_hot": True,
+        "support_hot_low_priority": True,
+        "paper_execution_hot": False,
+        "research_training_hot": False,
+        "storage_writer_hot": False,
+        "protected_work_hot": True,
+    }
+    kwargs = {
+        "overall_status": "degraded",
+        "throttle_profile": "soft_cap",
+        "saturation_score": 35.9,
+        "compute_pressure_level": "normal",
+        "memory_pressure_level": "normal",
+        "storage_pressure_index": 0.0,
+        "storage_fresh_overflow": True,
+        "thermal_warning_active": False,
+        "performance_warning_active": False,
+        "host_pressure_attribution": attribution,
+        "live_read_only": True,
+        "storage_severity": "stable",
+        "storage_core_pending_lines": 0,
+        "storage_total_pending_lines": 0,
+        "storage_pending_threshold": 15000,
+        "storage_oldest_pending_age_seconds": 0.0,
+        "storage_oldest_age_threshold_seconds": 240.0,
+        "storage_overlay_relief": {"bounded": True},
+        "paper_execution_policy": {
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+            "armed": True,
+            "ok": True,
+        },
+        "full_force_paper_required": True,
+    }
+
+    ready = src._soft_cap_low_pressure_advisory(**kwargs)
+
+    assert ready["to_status"] == "ready"
+    assert ready["reason"] == (
+        "bounded_read_only_runtime_capacity_envelope_is_guarded_ready"
+    )
+    assert ready["measurements"][
+        "bounded_read_only_capacity_envelope_guarded_ready"
+    ] is True
+
+    attribution["support_hot_low_priority"] = False
+    unsafe_priority = src._soft_cap_low_pressure_advisory(**kwargs)
+
+    assert unsafe_priority["measurements"][
+        "bounded_read_only_capacity_envelope_guarded_ready"
+    ] is False
+
+
+def test_runtime_throttle_manages_bounded_macos_and_niced_support_mix() -> None:
+    attribution = {
+        "foreground_app_cpu_percent": 24.43,
+        "macos_system_cpu_percent": 159.643,
+        "operator_observability_cpu_percent": 0.0,
+        "protected_live_or_macro_cpu_percent": 3.49,
+        "bot_owned_cpu_percent": 195.127,
+        "throttle_candidate_support_cpu_percent": 157.713,
+        "storage_writer_cpu_percent": 33.924,
+        "paper_execution_cpu_percent": 0.0,
+        "research_training_cpu_percent": 0.0,
+        "system_cotenant_hot": True,
+        "external_pressure_dominant": True,
+        "bot_owned_pressure_dominant": False,
+        "support_jobs_hot": True,
+        "support_hot_low_priority": True,
+        "paper_execution_hot": False,
+        "research_training_hot": False,
+        "storage_writer_hot": False,
+        "protected_work_hot": False,
+    }
+    kwargs = {
+        "overall_status": "degraded",
+        "throttle_profile": "soft_cap",
+        "saturation_score": 50.47,
+        "compute_pressure_level": "normal",
+        "memory_pressure_level": "normal",
+        "storage_pressure_index": 0.0,
+        "storage_fresh_overflow": True,
+        "thermal_warning_active": False,
+        "performance_warning_active": False,
+        "host_pressure_attribution": attribution,
+        "live_read_only": True,
+        "storage_severity": "stable",
+        "storage_core_pending_lines": 0,
+        "storage_total_pending_lines": 0,
+        "storage_pending_threshold": 15000,
+        "storage_oldest_pending_age_seconds": 0.0,
+        "storage_oldest_age_threshold_seconds": 240.0,
+        "storage_overlay_relief": {"bounded": True},
+        "paper_execution_policy": {
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+            "armed": True,
+            "ok": True,
+        },
+        "full_force_paper_required": True,
+    }
+
+    advisory = src._soft_cap_low_pressure_advisory(**kwargs)
+
+    assert advisory["active"] is True
+    assert advisory["to_status"] == "advisory"
+    assert (
+        advisory["reason"]
+        == "macos_and_niced_support_mix_is_bounded_advisory_not_paper_degradation"
+    )
+    assert advisory["measurements"]["support_system_mix_guarded_advisory"] is True
+
+    attribution["throttle_candidate_support_cpu_percent"] = 160.01
+    over_limit = src._soft_cap_low_pressure_advisory(
+        **{**kwargs, "host_pressure_attribution": attribution}
+    )
+
+    assert over_limit["active"] is False
+    assert over_limit["to_status"] == "degraded"
+    assert over_limit["measurements"]["support_system_mix_guarded_advisory"] is False
+
+
 def test_runtime_throttle_keeps_bounded_elevated_full_force_paper_guarded_ready() -> (
     None
 ):
@@ -8910,6 +9209,58 @@ def test_runtime_throttle_pauses_all_hot_research_candidates_up_to_limit(
     assert result["attempted_count"] == 3
     assert result["successful_count"] == 3
     assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == [101, 102, 103]
+
+
+def test_soft_cap_background_pressure_pauses_with_hysteresis() -> None:
+    hot = {
+        "throttle_profile": "soft_cap",
+        "host_saturation_score": 53.0,
+        "host_pressure_attribution": {
+            "host_saturation_score": 53.0,
+            "support_jobs_hot": True,
+            "research_training_hot": True,
+        },
+    }
+
+    assert src._support_maintenance_pause_requested(hot) == (
+        True,
+        "runtime_soft_cap_support_pressure",
+    )
+    assert src._research_training_pause_requested(hot) == (
+        True,
+        "runtime_soft_cap_research_pressure",
+    )
+
+    cooling = {
+        "throttle_profile": "soft_cap",
+        "host_saturation_score": 45.0,
+        "host_pressure_attribution": {
+            "host_saturation_score": 45.0,
+            "support_jobs_hot": False,
+            "research_training_hot": False,
+        },
+    }
+    assert src._support_maintenance_pause_requested(
+        cooling, previously_paused=True
+    )[0] is True
+    assert src._research_training_pause_requested(
+        cooling, previously_paused=True
+    )[0] is True
+
+    cooled = {
+        **cooling,
+        "host_saturation_score": 39.0,
+        "host_pressure_attribution": {
+            **cooling["host_pressure_attribution"],
+            "host_saturation_score": 39.0,
+        },
+    }
+    assert src._support_maintenance_pause_requested(
+        cooled, previously_paused=True
+    )[0] is False
+    assert src._research_training_pause_requested(
+        cooled, previously_paused=True
+    )[0] is False
 
 
 def test_runtime_throttle_keeps_live_soak_shadow_loops_running_for_mac_fluidity_watch(

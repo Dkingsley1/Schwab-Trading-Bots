@@ -248,6 +248,7 @@ def _build_live_money_canary_milestones(
     production_readiness: dict[str, Any],
     use_mode_compliance: dict[str, Any],
     commercial_readiness: dict[str, Any],
+    continuous_soak: dict[str, Any],
 ) -> list[dict[str, Any]]:
     definitions = _as_list(config.get("live_money_canary_milestones")) or [dict(row) for row in DEFAULT_CANARY_MILESTONES]
     by_id = {str(gate.get("gate_id") or ""): gate for gate in gates}
@@ -311,26 +312,68 @@ def _build_live_money_canary_milestones(
         definition = _as_dict(raw_definition)
         milestone_id = str(definition.get("milestone_id") or "")
         if milestone_id == "m01_continuous_soak_no_hard_blockers":
+            scope_policy_available = "scope_aware_validation_complete" in continuous_soak
+            scope_validation_ready = bool(
+                continuous_soak.get("scope_aware_validation_complete", False)
+            )
+            legacy_soak_ready = bool(
+                _safe_float(sustained.get("sustained_ready_hours"), 0.0)
+                >= min_soak_hours
+            )
+            soak_evidence_ready = (
+                scope_validation_ready if scope_policy_available else legacy_soak_ready
+            )
+            definition = {
+                **definition,
+                "title": (
+                    "Scope-Aware Candidate Validation With No Hard Blockers"
+                    if scope_policy_available
+                    else definition.get("title")
+                ),
+                "description": (
+                    "Every changed candidate scope completes its configured elapsed-time and XNYS-session tier before live-money canary consideration."
+                    if scope_policy_available
+                    else definition.get("description")
+                ),
+            }
             ready = bool(
                 health_fast
                 and health_status == "ready"
                 and strict_clear
                 and _status(guarded_paper.get("status")) == "ready"
-                and _safe_float(sustained.get("sustained_ready_hours"), 0.0) >= min_soak_hours
+                and soak_evidence_ready
             )
             blockers = [
                 "health_fast_missing" if not health_fast else "",
                 "strict_all_clear_not_true" if health_fast and not strict_clear else "",
                 "guarded_paper_not_ready" if guarded_paper and _status(guarded_paper.get("status")) != "ready" else "",
+                "scope_aware_candidate_validation_pending"
+                if scope_policy_available and not scope_validation_ready
+                else "",
                 f"continuous_soak_below_{int(min_soak_hours)}h"
-                if _safe_float(sustained.get("sustained_ready_hours"), 0.0) < min_soak_hours
+                if not scope_policy_available and not legacy_soak_ready
                 else "",
             ]
             evidence = {
                 "health_status": health_status or "unknown",
                 "strict_all_clear": strict_clear,
                 "guarded_paper_status": guarded_paper.get("status"),
-                "required_soak_hours": min_soak_hours,
+                "validation_mode": (
+                    "scope_aware_elapsed_and_xnys_sessions"
+                    if scope_policy_available
+                    else "legacy_uniform_elapsed_fallback"
+                ),
+                "scope_aware_validation_complete": scope_validation_ready,
+                "scope_validation_grade": continuous_soak.get(
+                    "scope_validation_grade"
+                ),
+                "scope_validation_score": continuous_soak.get(
+                    "scope_validation_score"
+                ),
+                "scope_validation_blocking_scopes": _as_dict(
+                    continuous_soak.get("scope_validation")
+                ).get("blocking_scopes", []),
+                "legacy_required_soak_hours": min_soak_hours,
                 "sustained_ready_hours": sustained.get("sustained_ready_hours"),
                 "continuous_all_gates_ready_since_utc": sustained.get("continuous_all_gates_ready_since_utc"),
             }
@@ -433,11 +476,24 @@ def _build_live_money_canary_milestones(
                 "sleeve_paper_trading_continuity": by_id.get("sleeve_paper_trading_continuity", {}),
             }
         elif milestone_id == "m08_microscopic_canary_plan":
-            ready = bool(live_canary_control and canary_weight > 0.0 and canary_weight <= max_initial_weight)
+            preflight_enforced = bool(
+                live_canary_control.get("live_canary_preflight_enforced", False)
+            )
+            preflight_ready = bool(
+                not preflight_enforced
+                or live_canary_control.get("live_canary_preflight_ready", False)
+            )
+            ready = bool(
+                live_canary_control
+                and canary_weight > 0.0
+                and canary_weight <= max_initial_weight
+                and preflight_ready
+            )
             blockers = [
                 "live_canary_control_missing" if not live_canary_control else "",
                 "canary_weight_not_positive" if live_canary_control and canary_weight <= 0.0 else "",
                 f"initial_canary_weight_above_{max_initial_weight:.4f}" if canary_weight > max_initial_weight else "",
+                "live_canary_preflight_not_ready" if not preflight_ready else "",
             ]
             evidence = {
                 "recommended_mode": live_canary_control.get("recommended_mode"),
@@ -446,6 +502,11 @@ def _build_live_money_canary_milestones(
                 "effective_canary_weight": canary_weight,
                 "max_initial_live_canary_weight": max_initial_weight,
                 "canary_weight_ok": bool(canary_weight > 0.0 and canary_weight <= max_initial_weight),
+                "live_canary_preflight_ready": preflight_ready,
+                "live_canary_preflight_enforced": preflight_enforced,
+                "live_canary_preflight": live_canary_control.get(
+                    "live_canary_preflight", {}
+                ),
             }
         elif milestone_id == "m09_explainable_trade_permission":
             previous_ready = all(prior_milestones.values()) if prior_milestones else False
@@ -629,6 +690,9 @@ def build_payload(
     production_readiness = load_json(health / "production_readiness_control_latest.json")
     use_mode_compliance = load_json(health / "use_mode_compliance_guard_latest.json")
     commercial_readiness = load_json(health / "commercial_readiness_control_latest.json")
+    continuous_soak = load_json(
+        health / "continuous_soak_integrity_control_latest.json"
+    )
 
     raw_grade = _grade(
         paper_profit.get("raw_profitability_grade")
@@ -1029,6 +1093,7 @@ def build_payload(
         production_readiness=production_readiness,
         use_mode_compliance=use_mode_compliance,
         commercial_readiness=commercial_readiness,
+        continuous_soak=continuous_soak,
     )
     require_milestones = bool(config.get("require_live_money_canary_milestones", True))
     required_milestones_ready = all(
@@ -1078,6 +1143,7 @@ def build_payload(
             "clear use-mode and commercial boundary",
             "clear seven-section commercial readiness framework",
             "all gates sustained before live canary money",
+            "scope-aware candidate validation complete before live canary money",
         ],
         "milestone_bar": [str(item.get("title") or item.get("milestone_id")) for item in milestones],
         "gate_count": len(gates),
@@ -1091,6 +1157,18 @@ def build_payload(
             if bool(milestone.get("required", True)) and bool(milestone.get("ready", False))
         ),
         "required_live_money_canary_milestones_ready": required_milestones_ready,
+        "scope_aware_candidate_validation": {
+            "available": "scope_aware_validation_complete" in continuous_soak,
+            "ready": bool(
+                continuous_soak.get("scope_aware_validation_complete", False)
+            ),
+            "grade": continuous_soak.get("scope_validation_grade"),
+            "score": continuous_soak.get("scope_validation_score"),
+            "blocking_scopes": _as_dict(
+                continuous_soak.get("scope_validation")
+            ).get("blocking_scopes", []),
+            "live_execution_authority": False,
+        },
         "require_live_money_canary_milestones": require_milestones,
         "blocked_milestones": [
             milestone["milestone_id"]

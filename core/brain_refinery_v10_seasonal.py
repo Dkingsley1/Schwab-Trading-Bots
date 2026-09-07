@@ -1,5 +1,6 @@
-import mlx.core as mx
-import mlx.nn as nn
+from core.mlx_runtime_guard import require_mlx
+
+mx, nn, _ = require_mlx()
 import numpy as np
 import json
 from datetime import datetime

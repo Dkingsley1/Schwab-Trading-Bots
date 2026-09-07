@@ -83,10 +83,170 @@ def _write_decision_context_mesh(root: Path, timestamp_utc: str) -> None:
 def test_free_equity_reference_refresh_command_is_bounded(tmp_path: Path) -> None:
     command = svr._refresh_command_for_source(tmp_path, "free_equity_reference_context")
 
-    assert command[:2] == [str(tmp_path / "scripts" / "ops" / "opsctl.sh"), "free-equity-reference-sync"]
+    assert command[:2] == [
+        str(tmp_path / "scripts" / "ops" / "opsctl.sh"),
+        "free-equity-reference-sync",
+    ]
     assert command[command.index("--max-symbols") + 1] == "40"
     assert command[command.index("--timeout") + 1] == "2.5"
     assert command[command.index("--max-runtime-seconds") + 1] == "45"
+
+
+def test_refresh_commands_order_aggregate_dependencies_first(tmp_path: Path) -> None:
+    rows = [
+        {
+            "source_id": "decision_context_mesh",
+            "evidence": {
+                "failed_source_ids": ["extended_quant_context", "sec_edgar_context"]
+            },
+        },
+        {
+            "source_id": "extended_quant_context",
+            "verification_status": svr.STATUS_SINGLE_UNVERIFIED,
+            "fresh": False,
+            "ok": False,
+        },
+        {
+            "source_id": "sec_edgar_context",
+            "verification_status": svr.STATUS_SINGLE_UNVERIFIED,
+            "fresh": False,
+            "ok": False,
+        },
+    ]
+
+    commands, dependencies = svr._build_refresh_commands(
+        tmp_path,
+        rows,
+        ["decision_context_mesh"],
+    )
+
+    assert [command[1] for command in commands] == [
+        "extended-quant-sync",
+        "sec-edgar-sync",
+        "decision-context-sync",
+        "source-verification",
+    ]
+    assert dependencies == {
+        "decision_context_mesh": ["extended_quant_context", "sec_edgar_context"]
+    }
+
+
+def test_refresh_commands_release_aggregate_after_dependencies_recover(
+    tmp_path: Path,
+) -> None:
+    rows = [
+        {
+            "source_id": "decision_context_mesh",
+            "evidence": {"failed_source_ids": ["extended_quant_context"]},
+        },
+        {
+            "source_id": "extended_quant_context",
+            "verification_status": svr.STATUS_SINGLE_VERIFIED,
+            "fresh": True,
+            "ok": True,
+        },
+    ]
+
+    commands, dependencies = svr._build_refresh_commands(
+        tmp_path,
+        rows,
+        ["decision_context_mesh"],
+    )
+
+    assert [command[1] for command in commands] == [
+        "decision-context-sync",
+        "source-verification",
+    ]
+    assert dependencies == {}
+
+
+def test_source_verification_contains_context_debt_when_decision_critical_ready() -> (
+    None
+):
+    contract = svr._source_containment_contract(
+        all_verified=False,
+        evidence_complete=False,
+        decision_critical_sources_ready=True,
+        decision_critical_blockers=[],
+        decision_context_debt=["decision_context_mesh"],
+        optional_enrichment_debt=[],
+        degraded_sources=["decision_context_mesh"],
+        low_confidence_sources=["decision_context_mesh"],
+    )
+
+    assert contract["status"] == "contained_context_debt"
+    assert contract["context_debt_only"] is True
+    assert contract["paper_runtime_blocking"] is False
+    assert contract["live_promotion_blocking"] is True
+
+
+def test_source_verification_blocks_runtime_when_decision_critical_fails() -> None:
+    contract = svr._source_containment_contract(
+        all_verified=False,
+        evidence_complete=False,
+        decision_critical_sources_ready=False,
+        decision_critical_blockers=["market_quote_profiles"],
+        decision_context_debt=[],
+        optional_enrichment_debt=[],
+        degraded_sources=["market_quote_profiles"],
+        low_confidence_sources=["market_quote_profiles"],
+    )
+
+    assert contract["status"] == "decision_critical_blocked"
+    assert contract["paper_runtime_blocking"] is True
+
+
+def test_source_verification_rejects_collector_payload_pair_drift(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    now = datetime.now(timezone.utc)
+    health_path = tmp_path / "governance" / "health" / "extended.json"
+    payload_path = tmp_path / "exports" / "external_context" / "extended.json"
+    _write_json(health_path, {"timestamp_utc": now.isoformat(), "ok": True})
+    _write_json(
+        payload_path,
+        {"timestamp_utc": (now - timedelta(hours=2)).isoformat(), "rows": [1]},
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "collector_contracts_latest.json",
+        {"timestamp_utc": now.isoformat()},
+    )
+    monkeypatch.setattr(
+        svr.collector_contracts_src,
+        "COLLECTOR_SPECS",
+        [
+            {
+                "name": "extended_quant_context",
+                "health_path": health_path,
+                "payload_path": payload_path,
+                "freshness_minutes": 30,
+            }
+        ],
+    )
+    row = svr._row(
+        source_id="extended_quant_context",
+        title="Extended",
+        category="cross_asset_data",
+        verification_status=svr.STATUS_SINGLE_VERIFIED,
+        verification_mode="single_source_health",
+        artifact_path=health_path,
+        artifact_timestamp=now,
+        age_hours=0.0,
+        fresh=True,
+        ok=True,
+        notes=[],
+        evidence={},
+    )
+
+    contract = svr._apply_artifact_pair_contract([row], tmp_path, now)
+
+    assert contract["status"] == "drifted"
+    assert contract["drifted_sources"] == ["extended_quant_context"]
+    assert row["verification_status"] == svr.STATUS_SINGLE_UNVERIFIED
+    assert row["fresh"] is False
+    assert row["ok"] is False
+    assert row["evidence"]["artifact_pair_contract"]["payload_fresh"] is False
 
 
 def _write_fed_2026_stress_scenario_files(root: Path) -> None:
@@ -126,16 +286,62 @@ def _write_fed_2026_stress_scenario_files(root: Path) -> None:
             },
             "usage_policy": {"direct_execution_allowed": False},
             "stress_modules": [
-                {"module_id": "fed_2026_equity_crash_volatility_spike", "primary_series": ["dow_jones_total_stock_market_index"], "internal_feature_keys": ["fed_2026_equity_crash_vol_spike_norm"]},
-                {"module_id": "fed_2026_corporate_credit_spread_blowout", "primary_series": ["bbb_corporate_yield"], "internal_feature_keys": ["fed_2026_credit_spread_blowout_norm"]},
-                {"module_id": "fed_2026_housing_price_shock", "primary_series": ["house_price_index"], "internal_feature_keys": ["fed_2026_housing_price_shock_norm"]},
-                {"module_id": "fed_2026_commercial_real_estate_shock", "primary_series": ["commercial_real_estate_price_index"], "internal_feature_keys": ["fed_2026_cre_price_shock_norm"]},
-                {"module_id": "fed_2026_unemployment_recession_shock", "primary_series": ["unemployment_rate"], "internal_feature_keys": ["fed_2026_unemployment_recession_norm"]},
-                {"module_id": "fed_2026_global_recession_deflation_shock", "primary_series": ["euro_area_real_gdp_growth"], "internal_feature_keys": ["fed_2026_global_recession_deflation_norm"]},
-                {"module_id": "fed_2026_commodity_inflation_shock", "primary_series": ["cpi_inflation_rate"], "internal_feature_keys": ["fed_2026_commodity_inflation_shock_norm"]},
-                {"module_id": "fed_2026_treasury_yield_shock", "primary_series": ["ten_year_treasury_yield"], "internal_feature_keys": ["fed_2026_treasury_yield_shock_norm"]},
-                {"module_id": "fed_2026_us_dollar_stress", "primary_series": ["euro_area_usd_per_euro"], "internal_feature_keys": ["fed_2026_usd_stress_norm"]},
-                {"module_id": "fed_2026_counterparty_default_contagion_shock", "primary_series": ["market_volatility_index"], "internal_feature_keys": ["fed_2026_counterparty_default_contagion_norm"]},
+                {
+                    "module_id": "fed_2026_equity_crash_volatility_spike",
+                    "primary_series": ["dow_jones_total_stock_market_index"],
+                    "internal_feature_keys": ["fed_2026_equity_crash_vol_spike_norm"],
+                },
+                {
+                    "module_id": "fed_2026_corporate_credit_spread_blowout",
+                    "primary_series": ["bbb_corporate_yield"],
+                    "internal_feature_keys": ["fed_2026_credit_spread_blowout_norm"],
+                },
+                {
+                    "module_id": "fed_2026_housing_price_shock",
+                    "primary_series": ["house_price_index"],
+                    "internal_feature_keys": ["fed_2026_housing_price_shock_norm"],
+                },
+                {
+                    "module_id": "fed_2026_commercial_real_estate_shock",
+                    "primary_series": ["commercial_real_estate_price_index"],
+                    "internal_feature_keys": ["fed_2026_cre_price_shock_norm"],
+                },
+                {
+                    "module_id": "fed_2026_unemployment_recession_shock",
+                    "primary_series": ["unemployment_rate"],
+                    "internal_feature_keys": ["fed_2026_unemployment_recession_norm"],
+                },
+                {
+                    "module_id": "fed_2026_global_recession_deflation_shock",
+                    "primary_series": ["euro_area_real_gdp_growth"],
+                    "internal_feature_keys": [
+                        "fed_2026_global_recession_deflation_norm"
+                    ],
+                },
+                {
+                    "module_id": "fed_2026_commodity_inflation_shock",
+                    "primary_series": ["cpi_inflation_rate"],
+                    "internal_feature_keys": [
+                        "fed_2026_commodity_inflation_shock_norm"
+                    ],
+                },
+                {
+                    "module_id": "fed_2026_treasury_yield_shock",
+                    "primary_series": ["ten_year_treasury_yield"],
+                    "internal_feature_keys": ["fed_2026_treasury_yield_shock_norm"],
+                },
+                {
+                    "module_id": "fed_2026_us_dollar_stress",
+                    "primary_series": ["euro_area_usd_per_euro"],
+                    "internal_feature_keys": ["fed_2026_usd_stress_norm"],
+                },
+                {
+                    "module_id": "fed_2026_counterparty_default_contagion_shock",
+                    "primary_series": ["market_volatility_index"],
+                    "internal_feature_keys": [
+                        "fed_2026_counterparty_default_contagion_norm"
+                    ],
+                },
             ],
         },
     )
@@ -174,7 +380,11 @@ def _write_fed_2026_stress_scenario_files(root: Path) -> None:
                 "quant_fed_2026_credit_spread_blowout_norm",
                 "fed_2026_source_plumbing_map",
             ],
-            "governance_targets": ["source_verification", "point_in_time_event_store", "replay_hash_registry"],
+            "governance_targets": [
+                "source_verification",
+                "point_in_time_event_store",
+                "replay_hash_registry",
+            ],
         },
     )
 
@@ -267,7 +477,10 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
         },
     )
     _write_json(
-        tmp_path / "exports" / "external_context" / "central_bank_liquidity_latest.json",
+        tmp_path
+        / "exports"
+        / "external_context"
+        / "central_bank_liquidity_latest.json",
         {
             "timestamp_utc": fresh_ts,
             "coverage": {
@@ -312,7 +525,10 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
         },
     )
     _write_json(
-        tmp_path / "exports" / "external_context" / "global_central_bank_context_latest.json",
+        tmp_path
+        / "exports"
+        / "external_context"
+        / "global_central_bank_context_latest.json",
         {
             "timestamp_utc": fresh_ts,
             "contract": {
@@ -337,11 +553,16 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
                 "future_observation_selected": False,
                 "source_failures": [],
             },
-            "global_features": {key: 0.5 for key in svr.GLOBAL_CENTRAL_BANK_FEATURE_KEYS},
+            "global_features": {
+                key: 0.5 for key in svr.GLOBAL_CENTRAL_BANK_FEATURE_KEYS
+            },
         },
     )
     _write_json(
-        tmp_path / "exports" / "external_context" / "central_bank_cross_source_latest.json",
+        tmp_path
+        / "exports"
+        / "external_context"
+        / "central_bank_cross_source_latest.json",
         {
             "timestamp_utc": fresh_ts,
             "contract": {
@@ -367,12 +588,17 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
                 "soft_conflict_count": 0,
                 "future_observation_selected": False,
             },
-            "global_features": {key: 0.5 for key in svr.CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS},
+            "global_features": {
+                key: 0.5 for key in svr.CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS
+            },
             "routing": {"symbol_to_bank_ids": {"FXE": ["european_central_bank"]}},
         },
     )
     _write_json(
-        tmp_path / "governance" / "health" / "free_equity_reference_context_latest.json",
+        tmp_path
+        / "governance"
+        / "health"
+        / "free_equity_reference_context_latest.json",
         {
             "timestamp_utc": fresh_ts,
             "ok": True,
@@ -385,7 +611,10 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
         },
     )
     _write_json(
-        tmp_path / "governance" / "health" / "schwab_education_context_sync_latest.json",
+        tmp_path
+        / "governance"
+        / "health"
+        / "schwab_education_context_sync_latest.json",
         {
             "timestamp_utc": fresh_ts,
             "ok": True,
@@ -440,7 +669,10 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
             "tracked_symbols": 23,
             "sources": {
                 "cftc_cot": {"ok": True},
-                "nyfed_sofr": {"ok": True, "averages_error": "HTTP Error 400: Bad Request"},
+                "nyfed_sofr": {
+                    "ok": True,
+                    "averages_error": "HTTP Error 400: Bad Request",
+                },
                 "cboe": {"ok": True},
                 "nasdaq_threshold": {"ok": True},
             },
@@ -457,7 +689,10 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
             "countries": ["USA", "CHN", "JPN", "DEU", "GBR"],
             "sources": {
                 "treasury_debt_to_penny": {"ok": True, "record_date": "2026-06-11"},
-                "treasury_avg_interest_rates": {"ok": True, "record_date": "2026-05-31"},
+                "treasury_avg_interest_rates": {
+                    "ok": True,
+                    "record_date": "2026-05-31",
+                },
                 "world_bank_indicators": {
                     "ok": True,
                     "lastupdated": "2026-04-08",
@@ -472,7 +707,10 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
         },
     )
     _write_json(
-        tmp_path / "governance" / "health" / "public_financial_context_sync_latest.json",
+        tmp_path
+        / "governance"
+        / "health"
+        / "public_financial_context_sync_latest.json",
         {
             "timestamp_utc": fresh_ts,
             "ok": True,
@@ -523,7 +761,11 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
             "coverage_ratio": 0.224,
             "ok_source_count": 5,
             "source_count": 6,
-            "source_counts": {"Yahoo Finance": 330, "CoinDesk": 44, "Schwab Network": 46},
+            "source_counts": {
+                "Yahoo Finance": 330,
+                "CoinDesk": 44,
+                "Schwab Network": 46,
+            },
             "sources": {
                 "yahoo_finance_symbol_rss": {"ok": True},
                 "coindesk": {"ok": True},
@@ -547,45 +789,106 @@ def test_build_source_verification_payload_classifies_sources(tmp_path: Path) ->
 
     rows = {row["source_id"]: row for row in payload["sources"]}
     assert rows["market_quote_profiles"]["verification_status"] == "cross_verified"
-    assert "cross_profile_residual_offenders=1" in rows["market_quote_profiles"]["notes"]
+    assert (
+        "cross_profile_residual_offenders=1" in rows["market_quote_profiles"]["notes"]
+    )
     assert rows["options_context_mesh"]["verification_status"] == "cross_verified"
-    assert "polygon_unusual_whales_options_context" in rows["options_context_mesh"]["aliases"]
+    assert (
+        "polygon_unusual_whales_options_context"
+        in rows["options_context_mesh"]["aliases"]
+    )
     assert rows["options_context_mesh"]["source_confidence_score"] > 0.8
     assert rows["macro_crossstack"]["verification_status"] == "cross_verified"
     assert rows["crypto_market_context"]["verification_status"] == "cross_verified"
-    assert rows["free_equity_reference_context"]["verification_status"] == "single_source_verified"
+    assert (
+        rows["free_equity_reference_context"]["verification_status"]
+        == "single_source_verified"
+    )
     assert rows["public_macro_feeds"]["verification_status"] == "single_source_verified"
-    assert rows["official_macro_context"]["verification_status"] == "single_source_verified"
-    assert rows["central_bank_liquidity_context"]["verification_status"] == "single_source_verified"
-    assert rows["central_bank_liquidity_context"]["evidence"]["required_coverage_ratio"] == 1.0
-    assert rows["global_central_bank_context"]["verification_status"] == "single_source_verified"
+    assert (
+        rows["official_macro_context"]["verification_status"]
+        == "single_source_verified"
+    )
+    assert (
+        rows["central_bank_liquidity_context"]["verification_status"]
+        == "single_source_verified"
+    )
+    assert (
+        rows["central_bank_liquidity_context"]["evidence"]["required_coverage_ratio"]
+        == 1.0
+    )
+    assert (
+        rows["global_central_bank_context"]["verification_status"]
+        == "single_source_verified"
+    )
     assert rows["global_central_bank_context"]["evidence"]["registry_bank_count"] == 32
-    assert rows["central_bank_cross_source_context"]["verification_status"] == "single_source_verified"
-    assert rows["central_bank_cross_source_context"]["evidence"]["synchronized_ready_bank_count"] == 32
+    assert (
+        rows["central_bank_cross_source_context"]["verification_status"]
+        == "single_source_verified"
+    )
+    assert (
+        rows["central_bank_cross_source_context"]["evidence"][
+            "synchronized_ready_bank_count"
+        ]
+        == 32
+    )
     assert rows["decision_context_mesh"]["verification_status"] == "cross_verified"
     assert rows["decision_context_mesh"]["evidence"]["plane_count"] == 12
     assert rows["schwab_symbol_news"]["verification_status"] == "single_source_verified"
-    assert rows["ticker_news_context"]["verification_status"] == "single_source_verified"
-    assert rows["public_policy_context"]["verification_status"] == "single_source_verified"
+    assert (
+        rows["ticker_news_context"]["verification_status"] == "single_source_verified"
+    )
+    assert (
+        rows["public_policy_context"]["verification_status"] == "single_source_verified"
+    )
     assert rows["public_policy_context"]["evidence"]["world_bank_value_count"] == 25
-    assert rows["public_financial_context"]["verification_status"] == "single_source_verified"
+    assert (
+        rows["public_financial_context"]["verification_status"]
+        == "single_source_verified"
+    )
     assert rows["public_financial_context"]["evidence"]["total_sources"] == 5
     assert rows["public_financial_context"]["evidence"]["capability_count"] == 13
     assert rows["public_financial_context"]["evidence"]["taxonomy_ok"] is True
-    assert rows["fed_2026_supervisory_stress_scenario"]["verification_status"] == "single_source_verified"
-    assert rows["fed_2026_supervisory_stress_scenario"]["evidence"]["internal_feature_count"] >= 3
-    assert rows["fed_2026_supervisory_stress_scenario"]["evidence"]["stress_module_count"] == 10
-    assert rows["fed_2026_supervisory_stress_scenario"]["evidence"]["stress_module_map_count"] == 10
+    assert (
+        rows["fed_2026_supervisory_stress_scenario"]["verification_status"]
+        == "single_source_verified"
+    )
+    assert (
+        rows["fed_2026_supervisory_stress_scenario"]["evidence"][
+            "internal_feature_count"
+        ]
+        >= 3
+    )
+    assert (
+        rows["fed_2026_supervisory_stress_scenario"]["evidence"]["stress_module_count"]
+        == 10
+    )
+    assert (
+        rows["fed_2026_supervisory_stress_scenario"]["evidence"][
+            "stress_module_map_count"
+        ]
+        == 10
+    )
     assert payload["source_confidence_summary"]["low_confidence_source_count"] == 0
     assert payload["source_runtime_contract"]["decision_critical_sources_ready"] is True
     assert payload["source_runtime_contract"]["decision_critical_blockers"] == []
+    contract = payload["operating_contract"]
+    assert contract["complete"] is True
+    assert contract["status"] in {"clear", "all_sources_verified"}
+    assert "source_confidence_override" in contract["blocked_authority"]
 
 
-def test_build_source_verification_payload_marks_stale_sources_unverified(tmp_path: Path) -> None:
+def test_build_source_verification_payload_marks_stale_sources_unverified(
+    tmp_path: Path,
+) -> None:
     stale_ts = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
     _write_json(
         tmp_path / "governance" / "health" / "data_source_divergence_latest.json",
-        {"timestamp_utc": stale_ts, "ok": True, "cross_profile": {"ok": True, "offenders": []}},
+        {
+            "timestamp_utc": stale_ts,
+            "ok": True,
+            "cross_profile": {"ok": True, "offenders": []},
+        },
     )
     _write_json(
         tmp_path / "governance" / "health" / "options_flow_context_sync_latest.json",
@@ -597,11 +900,25 @@ def test_build_source_verification_payload_marks_stale_sources_unverified(tmp_pa
     )
     _write_json(
         tmp_path / "governance" / "health" / "crypto_market_context_sync_latest.json",
-        {"timestamp_utc": stale_ts, "ok": False, "ok_source_count": 1, "source_count": 7, "compared_assets": 0},
+        {
+            "timestamp_utc": stale_ts,
+            "ok": False,
+            "ok_source_count": 1,
+            "source_count": 7,
+            "compared_assets": 0,
+        },
     )
     _write_json(
-        tmp_path / "governance" / "health" / "free_equity_reference_context_latest.json",
-        {"timestamp_utc": stale_ts, "ok": False, "symbols_with_reference": 0, "sources": {"yahoo_chart": {"ok": False}}},
+        tmp_path
+        / "governance"
+        / "health"
+        / "free_equity_reference_context_latest.json",
+        {
+            "timestamp_utc": stale_ts,
+            "ok": False,
+            "symbols_with_reference": 0,
+            "sources": {"yahoo_chart": {"ok": False}},
+        },
     )
     _write_json(
         tmp_path / "exports" / "external_feeds" / "latest_status.json",
@@ -609,10 +926,17 @@ def test_build_source_verification_payload_marks_stale_sources_unverified(tmp_pa
     )
     _write_json(
         tmp_path / "governance" / "health" / "official_macro_context_sync_latest.json",
-        {"timestamp_utc": stale_ts, "ok": False, "sources": {"treasury": {"ok": False}}},
+        {
+            "timestamp_utc": stale_ts,
+            "ok": False,
+            "sources": {"treasury": {"ok": False}},
+        },
     )
     _write_json(
-        tmp_path / "governance" / "health" / "schwab_education_context_sync_latest.json",
+        tmp_path
+        / "governance"
+        / "health"
+        / "schwab_education_context_sync_latest.json",
         {
             "timestamp_utc": stale_ts,
             "ok": False,
@@ -623,31 +947,69 @@ def test_build_source_verification_payload_marks_stale_sources_unverified(tmp_pa
     )
     _write_json(
         tmp_path / "governance" / "health" / "fx_market_context_sync_latest.json",
-        {"timestamp_utc": stale_ts, "ok": False, "ok_source_count": 0, "source_count": 2, "official_pairs": 0, "proxy_symbols_observed": 0, "proxy_agreement_norm": 0.0},
+        {
+            "timestamp_utc": stale_ts,
+            "ok": False,
+            "ok_source_count": 0,
+            "source_count": 2,
+            "official_pairs": 0,
+            "proxy_symbols_observed": 0,
+            "proxy_agreement_norm": 0.0,
+        },
     )
     _write_json(
         tmp_path / "governance" / "health" / "market_micro_sync_latest.json",
-        {"timestamp_utc": stale_ts, "ok": False, "sources": {"local_micro": {"ok": False}}},
+        {
+            "timestamp_utc": stale_ts,
+            "ok": False,
+            "sources": {"local_micro": {"ok": False}},
+        },
     )
     _write_json(
         tmp_path / "governance" / "health" / "sec_edgar_sync_latest.json",
-        {"timestamp_utc": stale_ts, "ok": False, "ticker_map_ok": False, "error_count": 1},
+        {
+            "timestamp_utc": stale_ts,
+            "ok": False,
+            "ticker_map_ok": False,
+            "error_count": 1,
+        },
     )
     _write_json(
         tmp_path / "governance" / "health" / "extended_quant_context_sync_latest.json",
-        {"timestamp_utc": stale_ts, "ok": False, "sources": {"cftc_cot": {"ok": False}}},
+        {
+            "timestamp_utc": stale_ts,
+            "ok": False,
+            "sources": {"cftc_cot": {"ok": False}},
+        },
     )
 
     payload = svr.build_source_verification_payload(tmp_path)
 
     assert payload["overall"]["all_verified"] is False
     assert payload["overall"]["counts"]["single_source_unverified"] == 21
-    assert payload["source_runtime_contract"]["decision_critical_sources_ready"] is False
-    assert "market_quote_profiles" in payload["source_runtime_contract"]["decision_critical_blockers"]
-    assert "schwab_education_context" in payload["source_runtime_contract"]["optional_enrichment_debt"]
+    assert (
+        payload["source_runtime_contract"]["decision_critical_sources_ready"] is False
+    )
+    assert (
+        "market_quote_profiles"
+        in payload["source_runtime_contract"]["decision_critical_blockers"]
+    )
+    assert (
+        "schwab_education_context"
+        in payload["source_runtime_contract"]["optional_enrichment_debt"]
+    )
+    contract = payload["operating_contract"]
+    assert contract["status"] == "decision_critical_blocked"
+    assert "market_quote_profiles" in contract["evidence_missing"]
+    assert (
+        "paper_decision_when_decision_critical_source_blocked"
+        in contract["blocked_authority"]
+    )
 
 
-def test_build_source_verification_payload_treats_export_only_options_flow_as_unverified(tmp_path: Path) -> None:
+def test_build_source_verification_payload_treats_export_only_options_flow_as_unverified(
+    tmp_path: Path,
+) -> None:
     fresh_ts = datetime.now(timezone.utc).isoformat()
     _write_json(
         tmp_path / "governance" / "health" / "options_flow_context_sync_latest.json",
@@ -660,7 +1022,10 @@ def test_build_source_verification_payload_treats_export_only_options_flow_as_un
             "symbols_with_chain": 0,
             "symbols_with_metrics": 1,
             "coverage_score": 0.45,
-            "coverage": {"polygon_backbone_ok": False, "context_profile": "unusual_whales_overlay_only"},
+            "coverage": {
+                "polygon_backbone_ok": False,
+                "context_profile": "unusual_whales_overlay_only",
+            },
             "sources": {
                 "polygon": {"ok": False, "errors": ["polygon_api_key_missing"]},
                 "unusual_whales_api": {"ok": False},
@@ -669,14 +1034,18 @@ def test_build_source_verification_payload_treats_export_only_options_flow_as_un
         },
     )
 
-    row = svr._options_flow_row(tmp_path / "governance" / "health", datetime.now(timezone.utc))
+    row = svr._options_flow_row(
+        tmp_path / "governance" / "health", datetime.now(timezone.utc)
+    )
 
     assert row["verification_status"] == "single_source_unverified"
     assert "context_profile=unusual_whales_overlay_only" in row["notes"]
     assert row["evidence"]["polygon_backbone_ok"] is False
 
 
-def test_build_source_verification_payload_accepts_polygon_primary_options_flow_without_overlay(tmp_path: Path) -> None:
+def test_build_source_verification_payload_accepts_polygon_primary_options_flow_without_overlay(
+    tmp_path: Path,
+) -> None:
     fresh_ts = datetime.now(timezone.utc).isoformat()
     _write_json(
         tmp_path / "governance" / "health" / "options_flow_context_sync_latest.json",
@@ -689,23 +1058,44 @@ def test_build_source_verification_payload_accepts_polygon_primary_options_flow_
             "symbols_with_chain": 1,
             "symbols_with_metrics": 1,
             "coverage_score": 0.9,
-            "coverage": {"polygon_backbone_ok": True, "context_profile": "polygon_primary_only"},
+            "coverage": {
+                "polygon_backbone_ok": True,
+                "context_profile": "polygon_primary_only",
+            },
             "sources": {
-                "polygon": {"ok": True, "required": True, "contract_participates": True},
-                "unusual_whales_api": {"ok": False, "required": False, "expected": False, "contract_participates": False},
-                "unusual_whales_export": {"ok": False, "required": False, "expected": False, "contract_participates": False},
+                "polygon": {
+                    "ok": True,
+                    "required": True,
+                    "contract_participates": True,
+                },
+                "unusual_whales_api": {
+                    "ok": False,
+                    "required": False,
+                    "expected": False,
+                    "contract_participates": False,
+                },
+                "unusual_whales_export": {
+                    "ok": False,
+                    "required": False,
+                    "expected": False,
+                    "contract_participates": False,
+                },
             },
         },
     )
 
-    row = svr._options_flow_row(tmp_path / "governance" / "health", datetime.now(timezone.utc))
+    row = svr._options_flow_row(
+        tmp_path / "governance" / "health", datetime.now(timezone.utc)
+    )
 
     assert row["verification_status"] == "single_source_verified"
     assert "context_profile=polygon_primary_only" not in row["notes"]
     assert row["evidence"]["unusual_whales_expected"] is False
 
 
-def test_options_flow_verification_accepts_intentionally_unconfigured_optional_credentials(tmp_path: Path) -> None:
+def test_options_flow_verification_accepts_intentionally_unconfigured_optional_credentials(
+    tmp_path: Path,
+) -> None:
     fresh_ts = datetime.now(timezone.utc).isoformat()
     _write_json(
         tmp_path / "governance" / "health" / "options_flow_context_sync_latest.json",
@@ -719,8 +1109,18 @@ def test_options_flow_verification_accepts_intentionally_unconfigured_optional_c
             "symbols_with_chain": 0,
             "symbols_with_metrics": 0,
             "sources": {
-                "polygon": {"ok": False, "required": True, "expected": True, "contract_participates": True},
-                "unusual_whales_api": {"ok": False, "required": False, "expected": False, "contract_participates": False},
+                "polygon": {
+                    "ok": False,
+                    "required": True,
+                    "expected": True,
+                    "contract_participates": True,
+                },
+                "unusual_whales_api": {
+                    "ok": False,
+                    "required": False,
+                    "expected": False,
+                    "contract_participates": False,
+                },
                 "unusual_whales_export": {
                     "ok": False,
                     "required": False,
@@ -732,7 +1132,9 @@ def test_options_flow_verification_accepts_intentionally_unconfigured_optional_c
         },
     )
 
-    row = svr._options_flow_row(tmp_path / "governance" / "health", datetime.now(timezone.utc))
+    row = svr._options_flow_row(
+        tmp_path / "governance" / "health", datetime.now(timezone.utc)
+    )
 
     assert row["verification_status"] == "single_source_verified"
     assert row["ok"] is True
@@ -741,7 +1143,9 @@ def test_options_flow_verification_accepts_intentionally_unconfigured_optional_c
     assert svr._row_has_actionable_notes(row) is False
 
 
-def test_options_flow_verification_accepts_free_option_chain_profile(tmp_path: Path) -> None:
+def test_options_flow_verification_accepts_free_option_chain_profile(
+    tmp_path: Path,
+) -> None:
     fresh_ts = datetime.now(timezone.utc).isoformat()
     _write_json(
         tmp_path / "governance" / "health" / "options_flow_context_sync_latest.json",
@@ -759,16 +1163,35 @@ def test_options_flow_verification_accepts_free_option_chain_profile(tmp_path: P
                 "polygon_backbone_ok": False,
             },
             "sources": {
-                "polygon": {"ok": False, "required": True, "expected": True, "contract_participates": True},
-                "yahoo_options_chain": {"ok": True, "symbol_count": 2, "contract_participates": True},
+                "polygon": {
+                    "ok": False,
+                    "required": True,
+                    "expected": True,
+                    "contract_participates": True,
+                },
+                "yahoo_options_chain": {
+                    "ok": True,
+                    "symbol_count": 2,
+                    "contract_participates": True,
+                },
                 "cboe_delayed_options": {"ok": False, "contract_participates": True},
-                "unusual_whales_api": {"ok": False, "expected": False, "contract_participates": False},
-                "unusual_whales_export": {"ok": False, "expected": False, "contract_participates": False},
+                "unusual_whales_api": {
+                    "ok": False,
+                    "expected": False,
+                    "contract_participates": False,
+                },
+                "unusual_whales_export": {
+                    "ok": False,
+                    "expected": False,
+                    "contract_participates": False,
+                },
             },
         },
     )
 
-    row = svr._options_flow_row(tmp_path / "governance" / "health", datetime.now(timezone.utc))
+    row = svr._options_flow_row(
+        tmp_path / "governance" / "health", datetime.now(timezone.utc)
+    )
 
     assert row["verification_status"] == "single_source_verified"
     assert row["evidence"]["free_options_chain_ok"] is True
@@ -788,7 +1211,9 @@ def test_cross_verified_crypto_source_warnings_are_not_actionable() -> None:
     assert svr._row_has_actionable_notes(row) is False
 
 
-def test_crypto_cross_verification_uses_market_sources_not_optional_news_sources(tmp_path: Path) -> None:
+def test_crypto_cross_verification_uses_market_sources_not_optional_news_sources(
+    tmp_path: Path,
+) -> None:
     fresh_ts = datetime.now(timezone.utc).isoformat()
     _write_json(
         tmp_path / "governance" / "health" / "crypto_market_context_sync_latest.json",
@@ -827,7 +1252,9 @@ def test_crypto_cross_verification_uses_market_sources_not_optional_news_sources
     assert svr._row_has_actionable_notes(row) is False
 
 
-def test_build_source_verification_payload_tolerates_one_partial_source_for_macro_and_micro(tmp_path: Path) -> None:
+def test_build_source_verification_payload_tolerates_one_partial_source_for_macro_and_micro(
+    tmp_path: Path,
+) -> None:
     fresh_ts = datetime.now(timezone.utc).isoformat()
     _write_json(
         tmp_path / "governance" / "health" / "official_macro_context_sync_latest.json",
@@ -859,8 +1286,12 @@ def test_build_source_verification_payload_tolerates_one_partial_source_for_macr
         },
     )
 
-    macro_row = svr._official_macro_row(tmp_path / "governance" / "health", datetime.now(timezone.utc))
-    micro_row = svr._market_micro_row(tmp_path / "governance" / "health", datetime.now(timezone.utc))
+    macro_row = svr._official_macro_row(
+        tmp_path / "governance" / "health", datetime.now(timezone.utc)
+    )
+    micro_row = svr._market_micro_row(
+        tmp_path / "governance" / "health", datetime.now(timezone.utc)
+    )
 
     assert macro_row["verification_status"] == "single_source_verified"
     assert "partial_sources=6/7" in macro_row["notes"]
@@ -868,7 +1299,9 @@ def test_build_source_verification_payload_tolerates_one_partial_source_for_macr
     assert "partial_sources=3/4" in micro_row["notes"]
 
 
-def test_market_micro_verification_accepts_nasdaq_when_finra_is_degraded(tmp_path: Path) -> None:
+def test_market_micro_verification_accepts_nasdaq_when_finra_is_degraded(
+    tmp_path: Path,
+) -> None:
     fresh_ts = datetime.now(timezone.utc).isoformat()
     _write_json(
         tmp_path / "governance" / "health" / "market_micro_sync_latest.json",
@@ -884,14 +1317,18 @@ def test_market_micro_verification_accepts_nasdaq_when_finra_is_degraded(tmp_pat
         },
     )
 
-    micro_row = svr._market_micro_row(tmp_path / "governance" / "health", datetime.now(timezone.utc))
+    micro_row = svr._market_micro_row(
+        tmp_path / "governance" / "health", datetime.now(timezone.utc)
+    )
 
     assert micro_row["verification_status"] == "single_source_verified"
     assert micro_row["evidence"]["critical_sources"]["external_micro_reference"] is True
     assert micro_row["evidence"]["critical_sources"]["finra_short_volume"] is False
 
 
-def test_market_micro_verification_accepts_market_closed_local_micro_fallback(tmp_path: Path) -> None:
+def test_market_micro_verification_accepts_market_closed_local_micro_fallback(
+    tmp_path: Path,
+) -> None:
     sunday_utc = datetime(2026, 5, 24, 15, 30, tzinfo=timezone.utc)
     _write_json(
         tmp_path / "governance" / "health" / "market_micro_sync_latest.json",
@@ -902,7 +1339,11 @@ def test_market_micro_verification_accepts_market_closed_local_micro_fallback(tm
                 "local_micro": {"ok": False, "symbol_count": 0},
                 "treasury_auctions": {"ok": True, "rows": 12},
                 "finra_short_volume": {"ok": True, "symbol_count": 392},
-                "nasdaq_trade_halts": {"ok": True, "rows": 0, "contract_participates": False},
+                "nasdaq_trade_halts": {
+                    "ok": True,
+                    "rows": 0,
+                    "contract_participates": False,
+                },
             },
         },
     )
@@ -915,7 +1356,9 @@ def test_market_micro_verification_accepts_market_closed_local_micro_fallback(tm
     assert micro_row["evidence"]["effective_ok_sources"] == 3
 
 
-def test_market_micro_verification_accepts_holiday_pause_fallback(tmp_path: Path) -> None:
+def test_market_micro_verification_accepts_holiday_pause_fallback(
+    tmp_path: Path,
+) -> None:
     holiday_utc = datetime(2026, 5, 25, 17, 30, tzinfo=timezone.utc)
     _write_json(
         tmp_path / "governance" / "health" / "market_micro_sync_latest.json",
@@ -926,12 +1369,19 @@ def test_market_micro_verification_accepts_holiday_pause_fallback(tmp_path: Path
                 "local_micro": {"ok": False, "symbol_count": 0},
                 "treasury_auctions": {"ok": True, "rows": 12},
                 "finra_short_volume": {"ok": True, "symbol_count": 392},
-                "nasdaq_trade_halts": {"ok": True, "rows": 0, "contract_participates": False},
+                "nasdaq_trade_halts": {
+                    "ok": True,
+                    "rows": 0,
+                    "contract_participates": False,
+                },
             },
         },
     )
     _write_json(
-        tmp_path / "governance" / "health" / "data_ingress_latest_default_equities_schwab.json",
+        tmp_path
+        / "governance"
+        / "health"
+        / "data_ingress_latest_default_equities_schwab.json",
         {
             "timestamp_utc": holiday_utc.isoformat(),
             "loop_state": "paused_session_gate",
@@ -946,7 +1396,9 @@ def test_market_micro_verification_accepts_holiday_pause_fallback(tmp_path: Path
     assert micro_row["evidence"]["holiday_pause_observed"] is True
 
 
-def test_fx_market_verification_accepts_holiday_official_rate_fallback(tmp_path: Path) -> None:
+def test_fx_market_verification_accepts_holiday_official_rate_fallback(
+    tmp_path: Path,
+) -> None:
     holiday_utc = datetime(2026, 5, 25, 17, 30, tzinfo=timezone.utc)
     _write_json(
         tmp_path / "governance" / "health" / "fx_market_context_sync_latest.json",
@@ -961,7 +1413,10 @@ def test_fx_market_verification_accepts_holiday_official_rate_fallback(tmp_path:
         },
     )
     _write_json(
-        tmp_path / "governance" / "health" / "data_ingress_latest_default_equities_schwab.json",
+        tmp_path
+        / "governance"
+        / "health"
+        / "data_ingress_latest_default_equities_schwab.json",
         {
             "timestamp_utc": holiday_utc.isoformat(),
             "loop_state": "paused_session_gate",
@@ -977,7 +1432,9 @@ def test_fx_market_verification_accepts_holiday_official_rate_fallback(tmp_path:
     assert svr._row_has_actionable_notes(fx_row) is False
 
 
-def test_fx_market_verification_counts_official_sources_when_skip_payload_has_null_totals(tmp_path: Path) -> None:
+def test_fx_market_verification_counts_official_sources_when_skip_payload_has_null_totals(
+    tmp_path: Path,
+) -> None:
     market_open_utc = datetime(2026, 6, 23, 16, 0, tzinfo=timezone.utc)
     _write_json(
         tmp_path / "governance" / "health" / "fx_market_context_sync_latest.json",
@@ -1006,7 +1463,9 @@ def test_fx_market_verification_counts_official_sources_when_skip_payload_has_nu
     assert svr._row_has_actionable_notes(fx_row) is False
 
 
-def test_public_macro_feeds_use_official_macro_as_authoritative_fallback(tmp_path: Path) -> None:
+def test_public_macro_feeds_use_official_macro_as_authoritative_fallback(
+    tmp_path: Path,
+) -> None:
     fresh_ts = datetime.now(timezone.utc).isoformat()
     _write_json(
         tmp_path / "exports" / "external_feeds" / "latest_status.json",
@@ -1040,16 +1499,29 @@ def test_public_macro_feeds_use_official_macro_as_authoritative_fallback(tmp_pat
     assert row["ok"] is True
     assert "partial_sources=1/4" in row["notes"]
     assert "official_macro_context_verified_partial_public_feeds" in row["notes"]
-    assert row["evidence"]["official_macro_context_verified_partial_public_feeds"] is True
+    assert (
+        row["evidence"]["official_macro_context_verified_partial_public_feeds"] is True
+    )
     assert row["evidence"]["raw_public_ok_sources"] == 1
     assert row["evidence"]["raw_public_total_sources"] == 4
-    assert row["evidence"]["effective_ok_sources"] >= row["evidence"]["official_macro_min_ok_sources_required"]
-    assert row["evidence"]["effective_ok_sources"] > row["evidence"]["raw_public_ok_sources"]
-    assert row["evidence"]["effective_total_sources"] >= row["evidence"]["effective_ok_sources"]
+    assert (
+        row["evidence"]["effective_ok_sources"]
+        >= row["evidence"]["official_macro_min_ok_sources_required"]
+    )
+    assert (
+        row["evidence"]["effective_ok_sources"]
+        > row["evidence"]["raw_public_ok_sources"]
+    )
+    assert (
+        row["evidence"]["effective_total_sources"]
+        >= row["evidence"]["effective_ok_sources"]
+    )
     assert svr._row_has_actionable_notes(row) is False
 
 
-def test_public_policy_context_accepts_partial_world_bank_with_treasury_policy_core(tmp_path: Path) -> None:
+def test_public_policy_context_accepts_partial_world_bank_with_treasury_policy_core(
+    tmp_path: Path,
+) -> None:
     fresh_ts = datetime.now(timezone.utc).isoformat()
     _write_json(
         tmp_path / "governance" / "health" / "public_policy_context_sync_latest.json",
@@ -1060,7 +1532,10 @@ def test_public_policy_context_accepts_partial_world_bank_with_treasury_policy_c
             "countries": ["USA", "CHN", "JPN", "DEU", "GBR"],
             "sources": {
                 "treasury_debt_to_penny": {"ok": True, "record_date": "2026-06-18"},
-                "treasury_avg_interest_rates": {"ok": True, "record_date": "2026-05-31"},
+                "treasury_avg_interest_rates": {
+                    "ok": True,
+                    "record_date": "2026-05-31",
+                },
                 "world_bank_indicators": {
                     "ok": False,
                     "indicator_count": 5,
@@ -1077,7 +1552,9 @@ def test_public_policy_context_accepts_partial_world_bank_with_treasury_policy_c
         },
     )
 
-    row = svr._public_policy_context_row(tmp_path / "governance" / "health", datetime.now(timezone.utc))
+    row = svr._public_policy_context_row(
+        tmp_path / "governance" / "health", datetime.now(timezone.utc)
+    )
 
     assert row["verification_status"] == "single_source_verified"
     assert row["ok"] is True

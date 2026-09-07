@@ -467,6 +467,71 @@ def test_live_canary_readiness_contract_blocks_until_live_money_milestones_clear
     assert "continuous_soak_below_720h" in milestone["blockers"]
 
 
+def test_live_canary_milestone_prefers_scope_aware_validation_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "project"
+    out_path = (
+        project_root
+        / "governance"
+        / "health"
+        / "live_canary_readiness_contract_latest.json"
+    )
+    _seed_ready_artifacts(project_root)
+    _write_json(
+        project_root
+        / "governance"
+        / "health"
+        / "continuous_soak_integrity_control_latest.json",
+        {
+            "scope_aware_validation_complete": True,
+            "scope_validation_grade": "A+",
+            "scope_validation_score": 100.0,
+            "scope_validation": {"blocking_scopes": []},
+            "clean_720_hours_complete": False,
+            "live_execution_authority": False,
+        },
+    )
+    monkeypatch.setattr(
+        src.source_mutation_guard,
+        "build_payload",
+        lambda _root: {
+            "ok": True,
+            "overall_status": "ready",
+            "dirty_count": 0,
+            "dirty_entries": [],
+        },
+    )
+    monkeypatch.setattr(
+        src.production_flow_smoke,
+        "build_payload",
+        lambda _root: {"ok": True, "overall_status": "ready", "failed_checks": []},
+    )
+    _write_json(
+        out_path,
+        {
+            "overall_status": "blocked",
+            "continuous_all_gates_ready_since_utc": (
+                datetime.now(timezone.utc) - timedelta(hours=170)
+            ).isoformat(),
+        },
+    )
+
+    payload = src.build_payload(project_root, out_path=out_path)
+    milestone = next(
+        row
+        for row in payload["live_money_canary_milestones"]
+        if row["milestone_id"] == "m01_continuous_soak_no_hard_blockers"
+    )
+
+    assert milestone["ready"] is True
+    assert milestone["evidence"]["validation_mode"] == (
+        "scope_aware_elapsed_and_xnys_sessions"
+    )
+    assert payload["scope_aware_candidate_validation"]["ready"] is True
+    assert payload["sustained_window"]["sustained_window_met"] is True
+
+
 def test_live_canary_readiness_contract_blocks_oversized_initial_canary_weight(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     out_path = project_root / "governance" / "health" / "live_canary_readiness_contract_latest.json"

@@ -14,7 +14,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -47,7 +46,9 @@ PY = _resolve_child_python()
 LINK_SCRIPT = PROJECT_ROOT / "scripts" / "link_jsonl_to_sql.py"
 HOT_RETENTION_SCRIPT = PROJECT_ROOT / "scripts" / "sql_hot_retention.py"
 QUEUE_RETENTION_SCRIPT = PROJECT_ROOT / "scripts" / "sql_queue_retention.py"
-SQLITE_MAINTENANCE_SCRIPT = PROJECT_ROOT / "scripts" / "sqlite_performance_maintenance.py"
+SQLITE_MAINTENANCE_SCRIPT = (
+    PROJECT_ROOT / "scripts" / "sqlite_performance_maintenance.py"
+)
 LOCAL_FALLBACK_ROOT = PROJECT_ROOT / "local_fallback_storage"
 PRIMARY_DB_PATH = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
 QUEUE_DB_PATH = Path(
@@ -67,11 +68,16 @@ EVENT_ROOT = PROJECT_ROOT / "governance" / "events"
 LATEST_HEALTH = HEALTH_ROOT / "sql_link_service_latest.json"
 PROGRESS_HEALTH = HEALTH_ROOT / "sql_link_service_progress_latest.json"
 REQUEST_PATH = HEALTH_ROOT / "sql_link_service_request_latest.json"
+REQUEST_CONSUMED_PATH = HEALTH_ROOT / "sql_link_service_request_consumed_latest.json"
 MAINTENANCE_STATE_PATH = HEALTH_ROOT / "sql_link_service_maintenance_state.json"
 INTEGRITY_MARKER_ROOT = HEALTH_ROOT / "sql_link_integrity"
 SWAP_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.swap_pressure_override"
-RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.runtime_resource_guard_override"
-PRESSURE_RELIEF_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.pressure_relief_override"
+RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH = (
+    PROJECT_ROOT / "config" / ".env.runtime_resource_guard_override"
+)
+PRESSURE_RELIEF_OVERRIDE_PATH = (
+    PROJECT_ROOT / "config" / ".env.pressure_relief_override"
+)
 
 _RUNTIME_MIN_POSITIVE_KEYS = {
     "BACKLOG_PCORE_PREPROCESS_WORKERS",
@@ -120,13 +126,17 @@ def _is_broken_symlink(path: Path) -> bool:
 
 def _routed_or_local_fallback_path(path: Path) -> Path:
     candidate = Path(path).expanduser()
-    force_local = str(os.getenv("SQL_LINK_SERVICE_FORCE_LOCAL_FALLBACK", "0") or "0").strip().lower() in {
+    force_local = str(
+        os.getenv("SQL_LINK_SERVICE_FORCE_LOCAL_FALLBACK", "0") or "0"
+    ).strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
-    prefer_external = str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower() not in {
+    prefer_external = str(
+        os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1"
+    ).strip().lower() not in {
         "0",
         "false",
         "no",
@@ -138,7 +148,9 @@ def _routed_or_local_fallback_path(path: Path) -> Path:
 
 
 QUEUE_DB_PATH = _routed_or_local_fallback_path(QUEUE_DB_PATH)
-SHARD_DB_ROOT = _routed_or_local_fallback_path(PROJECT_ROOT / "data" / "sql_link_shards")
+SHARD_DB_ROOT = _routed_or_local_fallback_path(
+    PROJECT_ROOT / "data" / "sql_link_shards"
+)
 
 
 def _ensure_directory(path: Path) -> None:
@@ -168,14 +180,23 @@ def _load_env_file(path: Path) -> dict[str, str]:
     return out
 
 
-def _retention_maintenance_paused_for_swap(*, override_path: Path | None = None) -> tuple[bool, dict[str, str]]:
+def _retention_maintenance_paused_for_swap(
+    *, override_path: Path | None = None
+) -> tuple[bool, dict[str, str]]:
     override = override_path or SWAP_OVERRIDE_PATH
     effective = dict(os.environ)
     effective.update(_load_env_file(override))
     tier = str(effective.get("SWAP_PRESSURE_TIER", "")).strip()
-    paused = str(effective.get("RETENTION_MAINTENANCE_PAUSED_FOR_SWAP", "0")).strip() == "1"
-    heavy_paused = str(effective.get("SWAP_PRESSURE_HEAVY_RESEARCH_PAUSED", "0")).strip() == "1"
-    return bool(paused or heavy_paused or tier in {"pause_research", "survival"}), effective
+    paused = (
+        str(effective.get("RETENTION_MAINTENANCE_PAUSED_FOR_SWAP", "0")).strip() == "1"
+    )
+    heavy_paused = (
+        str(effective.get("SWAP_PRESSURE_HEAVY_RESEARCH_PAUSED", "0")).strip() == "1"
+    )
+    return (
+        bool(paused or heavy_paused or tier in {"pause_research", "survival"}),
+        effective,
+    )
 
 
 def _swap_pause_details(env: dict[str, str]) -> dict[str, object]:
@@ -188,7 +209,9 @@ def _swap_pause_details(env: dict[str, str]) -> dict[str, object]:
 
 
 def _queue_retention_inline_vacuum_enabled() -> bool:
-    return str(os.getenv("SQL_LINK_SERVICE_QUEUE_VACUUM_INLINE_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    return str(
+        os.getenv("SQL_LINK_SERVICE_QUEUE_VACUUM_INLINE_ENABLED", "0")
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _queue_retention_inline_max_rows(default: int) -> int:
@@ -197,7 +220,9 @@ def _queue_retention_inline_max_rows(default: int) -> int:
 
 
 def _queue_retention_timeout_seconds() -> int:
-    return max(int(os.getenv("SQL_LINK_SERVICE_QUEUE_RETENTION_TIMEOUT_SECONDS", "45")), 5)
+    return max(
+        int(os.getenv("SQL_LINK_SERVICE_QUEUE_RETENTION_TIMEOUT_SECONDS", "45")), 5
+    )
 
 
 JSONL_COLUMNS = [
@@ -736,15 +761,21 @@ def _db_size_gb(path: Path) -> float:
             freelist_row = conn.execute("PRAGMA freelist_count").fetchone()
         finally:
             conn.close()
-        page_size = int(page_size_row[0] if page_size_row and page_size_row[0] is not None else 0)
-        page_count = int(page_count_row[0] if page_count_row and page_count_row[0] is not None else 0)
-        freelist_count = int(freelist_row[0] if freelist_row and freelist_row[0] is not None else 0)
+        page_size = int(
+            page_size_row[0] if page_size_row and page_size_row[0] is not None else 0
+        )
+        page_count = int(
+            page_count_row[0] if page_count_row and page_count_row[0] is not None else 0
+        )
+        freelist_count = int(
+            freelist_row[0] if freelist_row and freelist_row[0] is not None else 0
+        )
         live_page_bytes = max(page_count - freelist_count, 0) * max(page_size, 0)
         if live_page_bytes > 0:
             logical_bytes = min(logical_bytes, float(live_page_bytes))
     except Exception:
         pass
-    return logical_bytes / (1024.0 ** 3)
+    return logical_bytes / (1024.0**3)
 
 
 def _filesystem_free_gb(path: Path) -> float:
@@ -767,21 +798,31 @@ def _retention_safety_contract(
     hard_overage_gb: float | None = None,
 ) -> dict[str, object]:
     target = max(
-        float(target_free_gb)
-        if target_free_gb is not None
-        else _as_float(os.getenv("SQL_LINK_SERVICE_RETENTION_RESERVE_TARGET_GB"), 125.0),
+        (
+            float(target_free_gb)
+            if target_free_gb is not None
+            else _as_float(
+                os.getenv("SQL_LINK_SERVICE_RETENTION_RESERVE_TARGET_GB"), 125.0
+            )
+        ),
         0.0,
     )
     multiple = max(
-        float(hard_multiple)
-        if hard_multiple is not None
-        else _as_float(os.getenv("SQL_LINK_SERVICE_RETENTION_FORCE_MULTIPLE"), 2.0),
+        (
+            float(hard_multiple)
+            if hard_multiple is not None
+            else _as_float(os.getenv("SQL_LINK_SERVICE_RETENTION_FORCE_MULTIPLE"), 2.0)
+        ),
         1.0,
     )
     overage = max(
-        float(hard_overage_gb)
-        if hard_overage_gb is not None
-        else _as_float(os.getenv("SQL_LINK_SERVICE_RETENTION_FORCE_OVERAGE_GB"), 16.0),
+        (
+            float(hard_overage_gb)
+            if hard_overage_gb is not None
+            else _as_float(
+                os.getenv("SQL_LINK_SERVICE_RETENTION_FORCE_OVERAGE_GB"), 16.0
+            )
+        ),
         0.0,
     )
     hard_size = max(float(max_db_gb) * multiple, float(max_db_gb) + overage)
@@ -805,15 +846,36 @@ def _retention_safety_contract(
     }
 
 
-def _vacuum_capacity_contract(db_path: Path, *, requested: bool, free_gb: float | None = None) -> dict[str, object]:
-    available = _filesystem_free_gb(db_path) if free_gb is None else max(float(free_gb), 0.0)
+def _hot_retention_vacuum_requested(db_path: Path, threshold_gb: float) -> bool:
+    try:
+        physical_gb = db_path.stat().st_size / float(1024**3)
+    except OSError:
+        return False
+    reclaimable_gb = max(physical_gb - _db_size_gb(db_path), 0.0)
+    # Retention uses live pages; compaction must include already freed pages.
+    return bool(
+        physical_gb >= max(float(threshold_gb), 0.0)
+        and reclaimable_gb >= max(0.25, physical_gb * 0.08)
+    )
+
+
+def _vacuum_capacity_contract(
+    db_path: Path, *, requested: bool, free_gb: float | None = None
+) -> dict[str, object]:
+    available = (
+        _filesystem_free_gb(db_path) if free_gb is None else max(float(free_gb), 0.0)
+    )
     physical_gb = 0.0
     try:
         physical_gb = float(db_path.stat().st_size) / float(1024**3)
     except Exception:
         pass
-    reserve_gb = max(_as_float(os.getenv("SQL_LINK_SERVICE_VACUUM_MIN_FREE_AFTER_GB"), 32.0), 0.0)
-    overhead = max(_as_float(os.getenv("SQL_LINK_SERVICE_VACUUM_TEMP_OVERHEAD_RATIO"), 1.10), 1.0)
+    reserve_gb = max(
+        _as_float(os.getenv("SQL_LINK_SERVICE_VACUUM_MIN_FREE_AFTER_GB"), 32.0), 0.0
+    )
+    overhead = max(
+        _as_float(os.getenv("SQL_LINK_SERVICE_VACUUM_TEMP_OVERHEAD_RATIO"), 1.10), 1.0
+    )
     required_gb = reserve_gb + physical_gb * overhead
     allowed = bool(requested and available >= required_gb)
     return {
@@ -823,7 +885,9 @@ def _vacuum_capacity_contract(db_path: Path, *, requested: bool, free_gb: float 
         "physical_db_gb": round(physical_gb, 3),
         "required_free_gb": round(required_gb, 3),
         "reserve_after_gb": round(reserve_gb, 3),
-        "blocked_reason": "insufficient_vacuum_headroom" if requested and not allowed else "",
+        "blocked_reason": (
+            "insufficient_vacuum_headroom" if requested and not allowed else ""
+        ),
     }
 
 
@@ -956,7 +1020,10 @@ def _sanitize_request_env_overrides(raw: object) -> dict[str, str]:
             continue
         if name == "SQL_LINK_SERVICE_IGNORE_ACTIVE_REQUEST":
             continue
-        if not (name in allowed_exact or any(name.startswith(prefix) for prefix in allowed_prefixes)):
+        if not (
+            name in allowed_exact
+            or any(name.startswith(prefix) for prefix in allowed_prefixes)
+        ):
             continue
         cleaned[name] = str(value)
     return cleaned
@@ -980,7 +1047,7 @@ def _load_active_request(path: Path = REQUEST_PATH) -> dict[str, object]:
     overrides = _sanitize_request_env_overrides(payload.get("env_overrides"))
     if not overrides:
         return {}
-    return {
+    active_request = {
         "request_kind": str(payload.get("request_kind") or ""),
         "requested_at": str(payload.get("requested_at") or ""),
         "expires_utc": str(payload.get("expires_utc") or ""),
@@ -992,15 +1059,80 @@ def _load_active_request(path: Path = REQUEST_PATH) -> dict[str, object]:
         ),
         "env_overrides": overrides,
     }
+    if _focused_request_consumed(active_request):
+        return {}
+    return active_request
 
 
 def _active_request_signature(request: dict[str, object]) -> tuple[str, str, str, str]:
-    overrides = request.get("env_overrides") if isinstance(request.get("env_overrides"), dict) else {}
+    overrides = (
+        request.get("env_overrides")
+        if isinstance(request.get("env_overrides"), dict)
+        else {}
+    )
     return (
         str(request.get("requested_at") or ""),
         str(request.get("expires_utc") or ""),
         str(request.get("reason") or ""),
         str(overrides.get("SQL_LINK_SERVICE_SHARDS") or ""),
+    )
+
+
+def _focused_request_consumed(request: dict[str, object]) -> bool:
+    if str(request.get("request_kind") or "") != "backpressure_drainer_fleet":
+        return False
+    consumed = _load_json(REQUEST_CONSUMED_PATH)
+    consumed_request = (
+        consumed.get("active_request")
+        if isinstance(consumed.get("active_request"), dict)
+        else {}
+    )
+    if consumed_request and (
+        _active_request_signature(request)
+        == _active_request_signature(consumed_request)
+    ):
+        return True
+    progress = _load_json(PROGRESS_HEALTH)
+    if (
+        not progress
+        or progress.get("running") is not False
+        or str(progress.get("current_step") or "") != "complete"
+    ):
+        return False
+    observed = (
+        progress.get("active_request")
+        if isinstance(progress.get("active_request"), dict)
+        else {}
+    )
+    return bool(
+        _active_request_signature(request)
+        == _active_request_signature(observed)
+    )
+
+
+def _record_consumed_focused_request(
+    request: dict[str, object],
+    *,
+    completed_at_utc: str,
+    merged_rows: int,
+    completed_shards: list[dict[str, object]],
+) -> None:
+    if str(request.get("request_kind") or "") != "backpressure_drainer_fleet":
+        return
+    _write_json(
+        REQUEST_CONSUMED_PATH,
+        {
+            "timestamp_utc": str(completed_at_utc),
+            "request_signature": list(_active_request_signature(request)),
+            "active_request": request,
+            "merged_rows": int(merged_rows),
+            "completed_shards": [
+                str(row.get("name") or "")
+                for row in completed_shards
+                if isinstance(row, dict) and str(row.get("name") or "")
+            ],
+            "policy": "focused fleet requests are one-shot and become replaceable only after a durable completion receipt",
+        },
     )
 
 
@@ -1018,13 +1150,17 @@ def _sleep_until_next_cycle(
         step = min(poll, remaining)
         time.sleep(step)
         remaining -= step
-        current_signature = _active_request_signature(_load_active_request(request_path))
+        current_signature = _active_request_signature(
+            _load_active_request(request_path)
+        )
         if current_signature != initial_signature:
             return "request_changed"
     return "interval_elapsed"
 
 
-def _merge_runtime_control_value(merged: dict[str, str], key: str, value: object) -> None:
+def _merge_runtime_control_value(
+    merged: dict[str, str], key: str, value: object
+) -> None:
     text = str(value)
     if key not in merged:
         merged[key] = text
@@ -1038,17 +1174,29 @@ def _merge_runtime_control_value(merged: dict[str, str], key: str, value: object
 
     current = _number(merged.get(key))
     candidate = _number(text)
-    if key in _RUNTIME_MIN_POSITIVE_KEYS and current is not None and candidate is not None:
+    if (
+        key in _RUNTIME_MIN_POSITIVE_KEYS
+        and current is not None
+        and candidate is not None
+    ):
         positive = [item for item in (current, candidate) if item > 0]
         if positive:
             selected = min(positive)
             merged[key] = str(int(selected)) if selected.is_integer() else str(selected)
             return
-    if key in _RUNTIME_MIN_NONNEGATIVE_KEYS and current is not None and candidate is not None:
+    if (
+        key in _RUNTIME_MIN_NONNEGATIVE_KEYS
+        and current is not None
+        and candidate is not None
+    ):
         selected = min(current, candidate)
         merged[key] = str(int(selected)) if selected.is_integer() else str(selected)
         return
-    if key in _RUNTIME_MAX_NONNEGATIVE_KEYS and current is not None and candidate is not None:
+    if (
+        key in _RUNTIME_MAX_NONNEGATIVE_KEYS
+        and current is not None
+        and candidate is not None
+    ):
         selected = max(current, candidate)
         merged[key] = str(int(selected)) if selected.is_integer() else str(selected)
         return
@@ -1064,7 +1212,11 @@ def _live_runtime_control_overrides() -> dict[str, str]:
 
 
 def _cycle_runtime_overrides(active_request: dict[str, object]) -> dict[str, str]:
-    request_overrides = active_request.get("env_overrides") if isinstance(active_request.get("env_overrides"), dict) else {}
+    request_overrides = (
+        active_request.get("env_overrides")
+        if isinstance(active_request.get("env_overrides"), dict)
+        else {}
+    )
     overrides = {str(key): str(value) for key, value in request_overrides.items()}
     for key, value in _live_runtime_control_overrides().items():
         _merge_runtime_control_value(overrides, key, value)
@@ -1072,7 +1224,11 @@ def _cycle_runtime_overrides(active_request: dict[str, object]) -> dict[str, str
 
 
 def _p_core_drain_contract(active_request: dict[str, object]) -> dict[str, Any]:
-    overrides = active_request.get("env_overrides") if isinstance(active_request.get("env_overrides"), dict) else {}
+    overrides = (
+        active_request.get("env_overrides")
+        if isinstance(active_request.get("env_overrides"), dict)
+        else {}
+    )
     request_contract = (
         active_request.get("p_core_backlog_allocation_contract")
         if isinstance(active_request.get("p_core_backlog_allocation_contract"), dict)
@@ -1080,15 +1236,34 @@ def _p_core_drain_contract(active_request: dict[str, object]) -> dict[str, Any]:
     )
     workers = _as_int(
         overrides.get("BACKLOG_PCORE_PREPROCESS_WORKERS"),
-        _as_int(overrides.get("SQL_LINK_SERVICE_SHARD_WRITER_LANES"), _as_int(overrides.get("SQL_LINK_SERVICE_PREPROCESS_WORKERS"), 0)),
+        _as_int(
+            overrides.get("SQL_LINK_SERVICE_SHARD_WRITER_LANES"),
+            _as_int(overrides.get("SQL_LINK_SERVICE_PREPROCESS_WORKERS"), 0),
+        ),
     )
-    shard_writer_lanes = _as_int(overrides.get("SQL_LINK_SERVICE_SHARD_WRITER_LANES"), workers)
-    max_shard_writer_lanes = _as_int(overrides.get("SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES"), max(shard_writer_lanes, 1))
-    active = str(overrides.get("BACKLOG_PCORE_ALLOCATION_ACTIVE") or request_contract.get("active") or "").lower() in {"1", "true", "yes"}
+    shard_writer_lanes = _as_int(
+        overrides.get("SQL_LINK_SERVICE_SHARD_WRITER_LANES"), workers
+    )
+    max_shard_writer_lanes = _as_int(
+        overrides.get("SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES"),
+        max(shard_writer_lanes, 1),
+    )
+    active = str(
+        overrides.get("BACKLOG_PCORE_ALLOCATION_ACTIVE")
+        or request_contract.get("active")
+        or ""
+    ).lower() in {"1", "true", "yes"}
     return {
         "active": bool(active),
-        "policy": str(request_contract.get("policy") or "p_core_preprocess_single_sql_writer"),
-        "single_writer_only": str(overrides.get("BACKLOG_DRAIN_SINGLE_WRITER_ONLY") or overrides.get("SQL_LINK_SERVICE_SINGLE_WRITER_ONLY") or "0") == "1",
+        "policy": str(
+            request_contract.get("policy") or "p_core_preprocess_single_sql_writer"
+        ),
+        "single_writer_only": str(
+            overrides.get("BACKLOG_DRAIN_SINGLE_WRITER_ONLY")
+            or overrides.get("SQL_LINK_SERVICE_SINGLE_WRITER_ONLY")
+            or "0"
+        )
+        == "1",
         "sqlite_writer_count": 1,
         "primary_merge_writer_count": 1,
         "shard_link_writer_lanes": int(max(shard_writer_lanes, 0)),
@@ -1100,11 +1275,20 @@ def _p_core_drain_contract(active_request: dict[str, object]) -> dict[str, Any]:
             "selected_workers": int(max(workers, 0)),
             "reason": str(overrides.get("BACKLOG_PCORE_BURST_REASON") or ""),
         },
-        "avoid_background_taskpolicy": str(overrides.get("RUNTIME_THROTTLE_USE_TASKPOLICY_BACKGROUND") or "0") != "1",
+        "avoid_background_taskpolicy": str(
+            overrides.get("RUNTIME_THROTTLE_USE_TASKPOLICY_BACKGROUND") or "0"
+        )
+        != "1",
         "training_pcore_gate": {
-            "allowed_when_backlog_green": str(overrides.get("TRAINING_PCORE_ALLOWED_WHEN_BACKLOG_GREEN") or "0") == "1",
+            "allowed_when_backlog_green": str(
+                overrides.get("TRAINING_PCORE_ALLOWED_WHEN_BACKLOG_GREEN") or "0"
+            )
+            == "1",
             "max_workers": _as_int(overrides.get("TRAINING_PCORE_MAX_WORKERS"), 0),
-            "nice_target": _as_int(overrides.get("TRAINING_PCORE_NICE"), _as_int(overrides.get("RUNTIME_THROTTLE_RESEARCH_NICE"), 0)),
+            "nice_target": _as_int(
+                overrides.get("TRAINING_PCORE_NICE"),
+                _as_int(overrides.get("RUNTIME_THROTTLE_RESEARCH_NICE"), 0),
+            ),
         },
     }
 
@@ -1166,7 +1350,11 @@ def _dynamic_env_float(overrides: dict[str, str], name: str, default: float) -> 
 
 
 def _dynamic_env_flag(overrides: dict[str, str], name: str, default: bool) -> bool:
-    raw = str(_dynamic_env_value(overrides, name, "1" if default else "0")).strip().lower()
+    raw = (
+        str(_dynamic_env_value(overrides, name, "1" if default else "0"))
+        .strip()
+        .lower()
+    )
     return raw in {"1", "true", "yes", "on"}
 
 
@@ -1186,8 +1374,14 @@ def _shard_lane_tier(name: str) -> str:
 def _shard_health_snapshot(shard: dict[str, object]) -> dict[str, object]:
     health_path = Path(str(shard.get("health_file") or ""))
     health = _load_json(health_path)
-    sqlite_bucket = health.get("sqlite", {}) if isinstance(health.get("sqlite"), dict) else {}
-    sqlite_json_bucket = health.get("sqlite_json_files", {}) if isinstance(health.get("sqlite_json_files"), dict) else {}
+    sqlite_bucket = (
+        health.get("sqlite", {}) if isinstance(health.get("sqlite"), dict) else {}
+    )
+    sqlite_json_bucket = (
+        health.get("sqlite_json_files", {})
+        if isinstance(health.get("sqlite_json_files"), dict)
+        else {}
+    )
     pending_lines = max(
         _as_int(sqlite_bucket.get("pending_lines"), 0),
         _as_int(health.get("pending_lines"), 0),
@@ -1199,11 +1393,13 @@ def _shard_health_snapshot(shard: dict[str, object]) -> dict[str, object]:
         _as_int(health.get("pending_json_files"), 0),
     )
     inserted_rows = max(
-        _as_int(sqlite_bucket.get("inserted"), 0) + _as_int(sqlite_json_bucket.get("inserted"), 0),
+        _as_int(sqlite_bucket.get("inserted"), 0)
+        + _as_int(sqlite_json_bucket.get("inserted"), 0),
         _as_int(health.get("inserted"), 0),
     )
     dirty_counts = {
-        "invalid": _as_int(sqlite_bucket.get("invalid"), 0) + _as_int(health.get("invalid_lines"), 0),
+        "invalid": _as_int(sqlite_bucket.get("invalid"), 0)
+        + _as_int(health.get("invalid_lines"), 0),
         "oversize_payloads": _as_int(sqlite_bucket.get("oversize_payloads"), 0),
         "ops_write_failures": _as_int(sqlite_bucket.get("ops_write_failures"), 0),
         "json_invalid": _as_int(sqlite_json_bucket.get("invalid"), 0),
@@ -1219,7 +1415,9 @@ def _shard_health_snapshot(shard: dict[str, object]) -> dict[str, object]:
         "dirty_count_total": int(sum(dirty_counts.values())),
         "last_rc": _as_int(health.get("rc"), 0),
         "last_status": str(health.get("overall_status") or health.get("status") or ""),
-        "filters": health.get("filters") if isinstance(health.get("filters"), dict) else {},
+        "filters": (
+            health.get("filters") if isinstance(health.get("filters"), dict) else {}
+        ),
     }
 
 
@@ -1249,17 +1447,25 @@ def _filter_list(raw: object) -> list[str]:
     return _parse_csv(str(raw or ""))
 
 
-def _shard_health_filters_match(shard: dict[str, object], snapshot: dict[str, object]) -> bool:
-    health_filters = snapshot.get("filters") if isinstance(snapshot.get("filters"), dict) else {}
+def _shard_health_filters_match(
+    shard: dict[str, object], snapshot: dict[str, object]
+) -> bool:
+    health_filters = (
+        snapshot.get("filters") if isinstance(snapshot.get("filters"), dict) else {}
+    )
     if not health_filters:
         current = _shard_filters(shard)
-        focused_filters = (
-            _filter_list(current.get("path_contains"))
-            or _filter_list(current.get("path_not_contains"))
+        focused_filters = _filter_list(current.get("path_contains")) or _filter_list(
+            current.get("path_not_contains")
         )
         return not focused_filters
     current = _shard_filters(shard)
-    for key in ("include_streams", "exclude_streams", "path_contains", "path_not_contains"):
+    for key in (
+        "include_streams",
+        "exclude_streams",
+        "path_contains",
+        "path_not_contains",
+    ):
         current_values = _filter_list(current.get(key))
         health_values = _filter_list(health_filters.get(key))
         if current_values or health_values:
@@ -1280,7 +1486,9 @@ def _stale_decision_catch_up_requested(shard: dict[str, object]) -> bool:
     if name not in {"trading", "aggressive_trading", "crypto_trading"}:
         return False
     path_contains = _parse_csv(str(shard.get("path_contains", "") or ""))
-    return any("decision_" in path or "trade_decisions_" in path for path in path_contains)
+    return any(
+        "decision_" in path or "trade_decisions_" in path for path in path_contains
+    )
 
 
 def _fresh_idle_shard_skip_record(
@@ -1296,9 +1504,13 @@ def _fresh_idle_shard_skip_record(
         return None
     if _stale_decision_catch_up_requested(shard):
         return None
-    if name in SENTINEL_SHARDS and not _env_flag("SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS", False):
+    if name in SENTINEL_SHARDS and not _env_flag(
+        "SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS", False
+    ):
         return None
-    if bool(shard.get("heat_promotion_candidate", False)) and not _env_flag("SQL_LINK_SERVICE_SKIP_PROMOTION_IDLE_SHARDS", False):
+    if bool(shard.get("heat_promotion_candidate", False)) and not _env_flag(
+        "SQL_LINK_SERVICE_SKIP_PROMOTION_IDLE_SHARDS", False
+    ):
         return None
     snapshot = _shard_health_snapshot(shard)
     if not bool(snapshot.get("exists", False)):
@@ -1306,10 +1518,15 @@ def _fresh_idle_shard_skip_record(
     if not _shard_health_filters_match(shard, snapshot):
         return None
     age_seconds = _shard_health_age_seconds(snapshot)
-    max_age_seconds = max(_env_float("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", 90.0), 1.0)
+    max_age_seconds = max(
+        _env_float("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", 90.0), 1.0
+    )
     if age_seconds is None or age_seconds > max_age_seconds:
         return None
-    if _as_int(snapshot.get("pending_lines"), 0) > 0 or _as_int(snapshot.get("pending_json_files"), 0) > 0:
+    if (
+        _as_int(snapshot.get("pending_lines"), 0) > 0
+        or _as_int(snapshot.get("pending_json_files"), 0) > 0
+    ):
         return None
     if _as_int(snapshot.get("dirty_count_total"), 0) > 0:
         return None
@@ -1318,8 +1535,14 @@ def _fresh_idle_shard_skip_record(
         return None
     focused_paths = _parse_csv(str(shard.get("path_contains", "") or ""))
     state_payload = _load_json(Path(str(shard.get("state_file") or "")))
-    sqlite_state = state_payload.get("sqlite") if isinstance(state_payload.get("sqlite"), dict) else {}
-    tracked_paths = focused_paths or [str(key) for key, row in sqlite_state.items() if isinstance(row, dict)]
+    sqlite_state = (
+        state_payload.get("sqlite")
+        if isinstance(state_payload.get("sqlite"), dict)
+        else {}
+    )
+    tracked_paths = focused_paths or [
+        str(key) for key, row in sqlite_state.items() if isinstance(row, dict)
+    ]
     if tracked_paths:
         health_timestamp = _parse_iso_utc(snapshot.get("timestamp_utc"))
         for raw_path in tracked_paths:
@@ -1341,7 +1564,11 @@ def _fresh_idle_shard_skip_record(
             except Exception:
                 pass
             state_row = next(
-                (sqlite_state.get(key) for key in state_keys if isinstance(sqlite_state.get(key), dict)),
+                (
+                    sqlite_state.get(key)
+                    for key in state_keys
+                    if isinstance(sqlite_state.get(key), dict)
+                ),
                 None,
             )
             if not isinstance(state_row, dict):
@@ -1356,7 +1583,10 @@ def _fresh_idle_shard_skip_record(
                 return None
             if last_offset > int(source_stat.st_size):
                 return None
-            if health_timestamp is not None and float(source_stat.st_mtime) > health_timestamp.timestamp():
+            if (
+                health_timestamp is not None
+                and float(source_stat.st_mtime) > health_timestamp.timestamp()
+            ):
                 return None
     health_path = Path(str(shard.get("health_file") or ""))
     return {
@@ -1365,7 +1595,11 @@ def _fresh_idle_shard_skip_record(
         "state_file": str(shard.get("state_file") or ""),
         "health_file": str(health_path),
         "filters": _shard_filters(shard),
-        "recovery": {"triggered": False, "skipped": True, "reason": "fresh_idle_health"},
+        "recovery": {
+            "triggered": False,
+            "skipped": True,
+            "reason": "fresh_idle_health",
+        },
         "rc": 0,
         "timed_out": False,
         "timeout_seconds": int(shard_link_timeout_seconds),
@@ -1381,7 +1615,9 @@ def _fresh_idle_shard_skip_record(
     }
 
 
-def _shard_link_priority_score(shard: dict[str, object], *, original_index: int) -> tuple[float, dict[str, object]]:
+def _shard_link_priority_score(
+    shard: dict[str, object], *, original_index: int
+) -> tuple[float, dict[str, object]]:
     name = str(shard.get("name") or "").strip()
     tier = _shard_lane_tier(name)
     health = _shard_health_snapshot(shard)
@@ -1405,7 +1641,9 @@ def _shard_link_priority_score(shard: dict[str, object], *, original_index: int)
     if str(shard.get("merge_priority") or "").strip().lower() == "low":
         score -= 80.0
     raw_live_priority_focus = bool(shard.get("raw_live_priority_focus", False))
-    raw_live_priority_pending_lines = _as_int(shard.get("raw_live_priority_pending_lines"), 0)
+    raw_live_priority_pending_lines = _as_int(
+        shard.get("raw_live_priority_pending_lines"), 0
+    )
     if raw_live_priority_focus:
         score += 6000.0 + min(float(raw_live_priority_pending_lines) / 2.0, 3000.0)
     score -= float(original_index) / 1000.0
@@ -1433,7 +1671,9 @@ def _adaptive_shard_order_enabled() -> bool:
     return _env_flag("SQL_LINK_SERVICE_ADAPTIVE_SHARD_ORDER", True)
 
 
-def _prioritize_shards_for_linking(shards: list[dict[str, object]]) -> tuple[list[dict[str, object]], dict[str, object]]:
+def _prioritize_shards_for_linking(
+    shards: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], dict[str, object]]:
     rows: list[tuple[float, int, dict[str, object], dict[str, object]]] = []
     for idx, shard in enumerate(shards):
         score, metadata = _shard_link_priority_score(shard, original_index=idx)
@@ -1447,7 +1687,12 @@ def _prioritize_shards_for_linking(shards: list[dict[str, object]]) -> tuple[lis
         ordered_rows = sorted(
             rows,
             key=lambda row: (
-                0 if sentinel_first and str(row[2].get("name") or "") in SENTINEL_SHARDS else 1,
+                (
+                    0
+                    if sentinel_first
+                    and str(row[2].get("name") or "") in SENTINEL_SHARDS
+                    else 1
+                ),
                 -float(row[0]),
                 int(row[1]),
             ),
@@ -1465,7 +1710,9 @@ def _prioritize_shards_for_linking(shards: list[dict[str, object]]) -> tuple[lis
     }
 
 
-def _connect_primary_db(primary_db: Path, sqlite_timeout_seconds: int) -> sqlite3.Connection:
+def _connect_primary_db(
+    primary_db: Path, sqlite_timeout_seconds: int
+) -> sqlite3.Connection:
     try:
         return connect_sqlite(
             primary_db,
@@ -1507,19 +1754,38 @@ def _write_service_progress(
     active_shard_links: list[dict[str, object]] | None = None,
 ) -> None:
     primary_db_realpath = str(primary_db.resolve(strict=False))
-    planned_names = [str((row or {}).get("name", "")) for row in (shards or []) if str((row or {}).get("name", "")).strip()]
-    completed_names = [str((row or {}).get("shard", "")) for row in (shard_results or []) if str((row or {}).get("shard", "")).strip()]
+    planned_names = [
+        str((row or {}).get("name", ""))
+        for row in (shards or [])
+        if str((row or {}).get("name", "")).strip()
+    ]
+    completed_names = [
+        str((row or {}).get("shard", ""))
+        for row in (shard_results or [])
+        if str((row or {}).get("shard", "")).strip()
+    ]
     timed_out_names = [
         str((row or {}).get("shard", ""))
         for row in (shard_results or [])
-        if isinstance(row, dict) and bool(row.get("timed_out", False)) and str(row.get("shard") or "").strip()
+        if isinstance(row, dict)
+        and bool(row.get("timed_out", False))
+        and str(row.get("shard") or "").strip()
     ]
     completed_set = set(completed_names)
     pending_names = [name for name in planned_names if name not in completed_set]
     active_links = active_shard_links if isinstance(active_shard_links, list) else []
-    active_names = [str((row or {}).get("shard", "")) for row in active_links if str((row or {}).get("shard", "")).strip()]
+    active_names = [
+        str((row or {}).get("shard", ""))
+        for row in active_links
+        if str((row or {}).get("shard", "")).strip()
+    ]
     max_active_elapsed_seconds = max(
-        [_as_float((row or {}).get("elapsed_seconds"), 0.0) for row in active_links if isinstance(row, dict)] or [0.0]
+        [
+            _as_float((row or {}).get("elapsed_seconds"), 0.0)
+            for row in active_links
+            if isinstance(row, dict)
+        ]
+        or [0.0]
     )
     payload = {
         "timestamp_utc": _now_utc(),
@@ -1552,12 +1818,18 @@ def _write_service_progress(
         "note": str(note or ""),
         "active_request": active_request if isinstance(active_request, dict) else {},
         "shard_link_plan": shard_link_plan if isinstance(shard_link_plan, dict) else {},
-        "shard_writer_lane_contract": shard_writer_lane_contract if isinstance(shard_writer_lane_contract, dict) else _shard_writer_lane_contract(),
+        "shard_writer_lane_contract": (
+            shard_writer_lane_contract
+            if isinstance(shard_writer_lane_contract, dict)
+            else _shard_writer_lane_contract()
+        ),
     }
     _write_json(PROGRESS_HEALTH, payload)
 
 
-def _maintenance_hold_authorized(hold: dict[str, object], *, token: str, once: bool) -> bool:
+def _maintenance_hold_authorized(
+    hold: dict[str, object], *, token: str, once: bool
+) -> bool:
     return bool(once and maintenance_hold_token_authorized(hold, token=token))
 
 
@@ -1673,7 +1945,9 @@ def _shard_parallelism_contract(worker_count: int) -> dict[str, object]:
     }
 
 
-def _active_tier_counts(shards: list[dict[str, object]], running: dict[object, int]) -> dict[str, int]:
+def _active_tier_counts(
+    shards: list[dict[str, object]], running: dict[object, int]
+) -> dict[str, int]:
     counts: dict[str, int] = {}
     for idx in running.values():
         if idx < 0 or idx >= len(shards):
@@ -1699,7 +1973,9 @@ def _pop_next_queued_shard_index(
     active_counts = _active_tier_counts(shards, running)
     for pos, idx in enumerate(queued_indexes):
         tier = _shard_lane_tier(str(shards[idx].get("name") or ""))
-        tier_cap = max(_as_int(tier_lane_caps.get(tier), _as_int(tier_lane_caps.get("warm"), 1)), 1)
+        tier_cap = max(
+            _as_int(tier_lane_caps.get(tier), _as_int(tier_lane_caps.get("warm"), 1)), 1
+        )
         if active_counts.get(tier, 0) < tier_cap:
             return queued_indexes.pop(pos)
     return None
@@ -1718,13 +1994,27 @@ def _shard_writer_lane_contract(
     )
     requested = max(int(requested_workers or default_requested), 1)
     env_cap = _shard_writer_lane_cap()
-    configured_cap = _dynamic_env_int(effective_overrides, "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES", env_cap)
+    configured_cap = _dynamic_env_int(
+        effective_overrides, "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES", env_cap
+    )
     cap = max(1, min(configured_cap if configured_cap > 0 else env_cap, env_cap, 16))
     selected = max(1, min(requested, cap))
     primary_p_cores = max(
-        _dynamic_env_int(effective_overrides, "BOT_PERFORMANCE_CORE_TARGET", _env_int("BOT_PERFORMANCE_CORE_TARGET", 0)),
-        _dynamic_env_int(effective_overrides, "AUTONOMIC_PCORE_SYSTEM_WORKERS", _env_int("AUTONOMIC_PCORE_SYSTEM_WORKERS", 0)),
-        _dynamic_env_int(effective_overrides, "BOT_CPU_PRIMARY_WORKER_BUDGET", _env_int("BOT_CPU_PRIMARY_WORKER_BUDGET", 0)),
+        _dynamic_env_int(
+            effective_overrides,
+            "BOT_PERFORMANCE_CORE_TARGET",
+            _env_int("BOT_PERFORMANCE_CORE_TARGET", 0),
+        ),
+        _dynamic_env_int(
+            effective_overrides,
+            "AUTONOMIC_PCORE_SYSTEM_WORKERS",
+            _env_int("AUTONOMIC_PCORE_SYSTEM_WORKERS", 0),
+        ),
+        _dynamic_env_int(
+            effective_overrides,
+            "BOT_CPU_PRIMARY_WORKER_BUDGET",
+            _env_int("BOT_CPU_PRIMARY_WORKER_BUDGET", 0),
+        ),
     )
     return {
         "requested_shard_writer_lanes": int(requested),
@@ -1734,7 +2024,9 @@ def _shard_writer_lane_contract(
         "sqlite_primary_writer_count": 1,
         "single_primary_merge_writer": True,
         "parallel_child_shard_writers": int(selected),
-        "performance_core_primary": str(os.getenv("BOT_CPU_ALLOCATION_POLICY", "performance_core_primary")).startswith("performance_core"),
+        "performance_core_primary": str(
+            os.getenv("BOT_CPU_ALLOCATION_POLICY", "performance_core_primary")
+        ).startswith("performance_core"),
         "primary_performance_core_budget": int(primary_p_cores),
         "avoid_background_taskpolicy": str(
             _dynamic_env_value(
@@ -1742,8 +2034,13 @@ def _shard_writer_lane_contract(
                 "SQL_LINK_WRITER_BACKGROUND_POLICY",
                 os.getenv("SQL_LINK_WRITER_BACKGROUND_POLICY", "0"),
             )
-        ).strip() != "1",
-        "writer_nice_target": _dynamic_env_int(effective_overrides, "SQL_LINK_WRITER_NICE", _env_int("SQL_LINK_WRITER_NICE", 0)),
+        ).strip()
+        != "1",
+        "writer_nice_target": _dynamic_env_int(
+            effective_overrides,
+            "SQL_LINK_WRITER_NICE",
+            _env_int("SQL_LINK_WRITER_NICE", 0),
+        ),
         "policy": "parallel_shard_child_writers_single_primary_sqlite_merge_writer",
         "smart_shard_parallelism": _shard_parallelism_contract(selected),
         "macos_hard_affinity_note": "macOS does not expose portable hard P-core pinning; lane count, nice/QoS, and taskpolicy controls express the P-core intent.",
@@ -1755,16 +2052,22 @@ def _shard_env_slug(name: object) -> str:
     return "".join(ch if ch.isalnum() else "_" for ch in text).strip("_")
 
 
-def _shard_link_timeout_for_shard(shard: dict[str, object], default_seconds: int) -> int:
+def _shard_link_timeout_for_shard(
+    shard: dict[str, object], default_seconds: int
+) -> int:
     base = max(int(default_seconds), 1)
     shard_slug = _shard_env_slug(shard.get("name"))
     if shard_slug:
-        shard_specific = _env_int(f"SQL_LINK_SERVICE_SHARD_{shard_slug}_TIMEOUT_SECONDS", 0)
+        shard_specific = _env_int(
+            f"SQL_LINK_SERVICE_SHARD_{shard_slug}_TIMEOUT_SECONDS", 0
+        )
         if shard_specific > 0:
             return max(int(shard_specific), 1)
     tier_slug = _shard_env_slug(_shard_lane_tier(str(shard.get("name") or "")))
     if tier_slug:
-        tier_specific = _env_int(f"SQL_LINK_SERVICE_{tier_slug}_SHARD_TIMEOUT_SECONDS", 0)
+        tier_specific = _env_int(
+            f"SQL_LINK_SERVICE_{tier_slug}_SHARD_TIMEOUT_SECONDS", 0
+        )
         if tier_specific > 0:
             return max(int(tier_specific), 1)
     return base
@@ -1797,14 +2100,26 @@ def _active_shard_link_record(
         "lane_tier": lane_tier,
         "elapsed_seconds": round(float(elapsed), 3),
         "timeout_seconds": int(timeout_seconds),
-        "timeout_remaining_seconds": round(max(float(timeout_seconds) - elapsed, 0.0), 3),
+        "timeout_remaining_seconds": round(
+            max(float(timeout_seconds) - elapsed, 0.0), 3
+        ),
         "preprocess_worker_count": int(worker_count),
         "active_shard_count": int(active_count),
-        "tier_active_count": int(tier_active_count if tier_active_count is not None else active_count),
-        "tier_active_limit": int(tier_active_limit if tier_active_limit is not None else max(worker_count, 1)),
-        "smart_parallelism_enabled": bool(_smart_shard_parallelism_enabled() if smart_parallelism_enabled is None else smart_parallelism_enabled),
+        "tier_active_count": int(
+            tier_active_count if tier_active_count is not None else active_count
+        ),
+        "tier_active_limit": int(
+            tier_active_limit if tier_active_limit is not None else max(worker_count, 1)
+        ),
+        "smart_parallelism_enabled": bool(
+            _smart_shard_parallelism_enabled()
+            if smart_parallelism_enabled is None
+            else smart_parallelism_enabled
+        ),
         "queued_shard_count": int(queued_shard_count),
-        "tail_shard": bool(active_count == 1 and queued_shard_count <= 0 and int(total) > 1),
+        "tail_shard": bool(
+            active_count == 1 and queued_shard_count <= 0 and int(total) > 1
+        ),
     }
 
 
@@ -1818,7 +2133,10 @@ def _configured_primary_db_path(raw: str) -> Path:
 def _primary_db_role(primary_db: Path, primary_db_realpath: Path | None = None) -> str:
     raw_path = str(primary_db)
     real_path = str((primary_db_realpath or primary_db).resolve(strict=False))
-    if "/local_fallback_storage/" in raw_path or "/local_fallback_storage/" in real_path:
+    if (
+        "/local_fallback_storage/" in raw_path
+        or "/local_fallback_storage/" in real_path
+    ):
         return "compatibility_cache"
     if primary_db == PRIMARY_DB_PATH:
         return "routed_primary"
@@ -1831,23 +2149,41 @@ def _as_reason_list(raw: object) -> list[str]:
     return [str(item).strip() for item in raw if str(item).strip()]
 
 
-def _load_maintenance_state(path: Path, *, db_size_gb: float, wal_size_gb: float) -> dict[str, object]:
+def _load_maintenance_state(
+    path: Path, *, db_size_gb: float, wal_size_gb: float
+) -> dict[str, object]:
     payload = _load_json(path)
-    wal = payload.get("wal_checkpoint", {}) if isinstance(payload.get("wal_checkpoint"), dict) else {}
-    hot = payload.get("hot_retention", {}) if isinstance(payload.get("hot_retention"), dict) else {}
+    wal = (
+        payload.get("wal_checkpoint", {})
+        if isinstance(payload.get("wal_checkpoint"), dict)
+        else {}
+    )
+    hot = (
+        payload.get("hot_retention", {})
+        if isinstance(payload.get("hot_retention"), dict)
+        else {}
+    )
     return {
         "timestamp_utc": str(payload.get("timestamp_utc") or ""),
         "wal_checkpoint": {
             "last_run_utc": str(wal.get("last_run_utc") or ""),
-            "baseline_db_size_gb": _as_float(wal.get("baseline_db_size_gb"), db_size_gb),
-            "baseline_wal_size_gb": _as_float(wal.get("baseline_wal_size_gb"), wal_size_gb),
+            "baseline_db_size_gb": _as_float(
+                wal.get("baseline_db_size_gb"), db_size_gb
+            ),
+            "baseline_wal_size_gb": _as_float(
+                wal.get("baseline_wal_size_gb"), wal_size_gb
+            ),
             "rows_since_last_run": _as_int(wal.get("rows_since_last_run"), 0),
             "last_trigger_reasons": _as_reason_list(wal.get("last_trigger_reasons")),
         },
         "hot_retention": {
             "last_run_utc": str(hot.get("last_run_utc") or ""),
-            "baseline_db_size_gb": _as_float(hot.get("baseline_db_size_gb"), db_size_gb),
-            "baseline_wal_size_gb": _as_float(hot.get("baseline_wal_size_gb"), wal_size_gb),
+            "baseline_db_size_gb": _as_float(
+                hot.get("baseline_db_size_gb"), db_size_gb
+            ),
+            "baseline_wal_size_gb": _as_float(
+                hot.get("baseline_wal_size_gb"), wal_size_gb
+            ),
             "rows_since_last_run": _as_int(hot.get("rows_since_last_run"), 0),
             "last_trigger_reasons": _as_reason_list(hot.get("last_trigger_reasons")),
         },
@@ -1864,13 +2200,21 @@ def _load_shard_hot_state(
     if not isinstance(buckets, dict):
         buckets = {}
         maintenance_state["shard_hot_retention"] = buckets
-    raw = buckets.get(shard_name, {}) if isinstance(buckets.get(shard_name), dict) else {}
+    raw = (
+        buckets.get(shard_name, {}) if isinstance(buckets.get(shard_name), dict) else {}
+    )
+    has_successful_run = bool(str(raw.get("last_run_utc") or "").strip())
     state = {
         "last_run_utc": str(raw.get("last_run_utc") or ""),
         "last_run_epoch": _as_float(raw.get("last_run_epoch"), 0.0),
         "baseline_db_size_gb": _as_float(raw.get("baseline_db_size_gb"), db_size_gb),
         "rows_since_last_run": _as_int(raw.get("rows_since_last_run"), 0),
         "last_trigger_reasons": _as_reason_list(raw.get("last_trigger_reasons")),
+        "last_moved_rows": _as_int(
+            raw.get("last_moved_rows"),
+            0 if has_successful_run else -1,
+        ),
+        "consecutive_noop_runs": _as_int(raw.get("consecutive_noop_runs"), 0),
     }
     buckets[shard_name] = state
     return state
@@ -1892,7 +2236,9 @@ def _should_skip_low_priority_merge(
     primary_db_size_gb: float,
     skip_threshold_gb: float,
 ) -> tuple[bool, str]:
-    merge_priority = str(shard.get("merge_priority", "normal") or "normal").strip().lower()
+    merge_priority = (
+        str(shard.get("merge_priority", "normal") or "normal").strip().lower()
+    )
     if merge_priority != "low":
         return False, ""
     if float(skip_threshold_gb) <= 0.0:
@@ -1935,7 +2281,9 @@ def _hot_retention_trigger_reasons(
 ) -> list[str]:
     reasons: list[str] = []
     if max_db_gb > 0.0 and db_size_gb >= max_db_gb:
-        reasons.append(f"{'bootstrap_' if not has_successful_run else ''}db_size_gb>={max_db_gb:g}")
+        reasons.append(
+            f"{'bootstrap_' if not has_successful_run else ''}db_size_gb>={max_db_gb:g}"
+        )
     if not has_successful_run:
         return reasons
     if growth_trigger_gb <= 0.0 and row_trigger <= 0:
@@ -1945,6 +2293,30 @@ def _hot_retention_trigger_reasons(
     if row_trigger > 0 and rows_since_last_run >= row_trigger:
         reasons.append(f"rows_since_last_run>={row_trigger}")
     return reasons
+
+
+def _hot_retention_noop_backoff_reason(
+    *,
+    shard_state: dict[str, object],
+    trigger_reasons: list[str],
+    now_epoch: float,
+    noop_min_interval_seconds: int,
+    forced: bool,
+) -> str:
+    if forced or _as_int(shard_state.get("last_moved_rows"), -1) != 0:
+        return ""
+    if any(
+        reason.startswith("db_growth_gb>=")
+        or reason.startswith("rows_since_last_run>=")
+        for reason in trigger_reasons
+    ):
+        return ""
+    last_run_epoch = _as_float(shard_state.get("last_run_epoch"), 0.0)
+    since_last = max(float(now_epoch) - last_run_epoch, 0.0)
+    minimum = max(int(noop_min_interval_seconds), 60)
+    if last_run_epoch > 0.0 and since_last < minimum:
+        return f"previous_noop_backoff:{int(since_last)}s<{minimum}s"
+    return ""
 
 
 def _parse_csv(raw: str) -> list[str]:
@@ -2001,15 +2373,27 @@ def _raw_live_priority_shard_for_source(source_rel: str) -> str:
     )
     if rel.startswith("governance/events/channel_schema_violations_"):
         return "schema_violations"
+    if rel.startswith("governance/health/"):
+        return "health_fast"
     if rel.startswith("governance/watchdog/"):
         return "support_watchdog"
     if rel.startswith("governance/channels/risk/"):
         return "risk_support"
     if rel.startswith(("governance/channels/api/", "governance/channels/ingress/")):
         return "crypto_api_ingress" if is_crypto else "api_ingress"
-    if rel.startswith(("governance/channels/runtime/", "governance/channels/loop_state/")):
+    if rel.startswith(
+        ("governance/channels/runtime/", "governance/channels/loop_state/")
+    ):
         return "crypto_runtime" if is_crypto else "runtime"
     if rel.startswith("governance/events/"):
+        return "governance"
+    if rel.startswith(
+        (
+            "governance/cells/",
+            "governance/evidence/",
+            "governance/system_expansion_execution/",
+        )
+    ):
         return "governance"
     if "decision_explanations/" in rel or rel.startswith("data/stale_stage/"):
         return "crypto_explanations" if is_crypto else "explanations"
@@ -2021,13 +2405,26 @@ def _raw_live_priority_shard_for_source(source_rel: str) -> str:
         or "top_level_trade_links" in rel
     ):
         return "crypto_trading_fast" if is_crypto else "trading_fast"
-    if rel.startswith("decisions/") or rel.startswith("governance/channels/decision/") or "/decision_" in rel:
+    if (
+        rel.startswith("decisions/")
+        or rel.startswith("governance/channels/decision/")
+        or "/decision_" in rel
+    ):
         if is_crypto:
             return "crypto_trading"
-        if any(token in rel for token in ("aggressive", "intraday_aggressive", "swing_aggressive")):
+        if any(
+            token in rel
+            for token in ("aggressive", "intraday_aggressive", "swing_aggressive")
+        ):
             return "aggressive_trading"
         return "trading"
-    if rel.startswith(("data/external_context/", "exports/external_context/", "exports/external_feeds/")):
+    if rel.startswith(
+        (
+            "data/external_context/",
+            "exports/external_context/",
+            "exports/external_feeds/",
+        )
+    ):
         return "data"
     return ""
 
@@ -2038,20 +2435,45 @@ def _apply_raw_live_priority_focus(
     backpressure_path: Path | None = None,
     now_utc: datetime | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    snapshot_path = backpressure_path or (HEALTH_ROOT / "ingestion_backpressure_latest.json")
+    snapshot_path = backpressure_path or (
+        HEALTH_ROOT / "ingestion_backpressure_latest.json"
+    )
     focused_shards = [dict(shard) for shard in shards]
-    priority_boost_requested = _env_flag("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST", False)
-    automatic_focus_enabled = _env_flag("SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED", True)
+    priority_boost_requested = _env_flag(
+        "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST", False
+    )
+    automatic_focus_enabled = _env_flag(
+        "SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED", True
+    )
+    respect_explicit_scope = _env_flag(
+        "SQL_LINK_SERVICE_RAW_LIVE_RESPECT_EXPLICIT_SCOPE", True
+    )
+    override_explicit_scope = _env_flag(
+        "SQL_LINK_SERVICE_RAW_LIVE_OVERRIDE_EXPLICIT_SCOPE", False
+    )
+    explicit_scope_keys = sorted(
+        key
+        for key, value in os.environ.items()
+        if key.startswith("SQL_LINK_SERVICE_SHARD_")
+        and key.endswith("_PATH_CONTAINS")
+        and str(value).strip()
+    )
     contract: dict[str, object] = {
         "enabled": bool(priority_boost_requested or automatic_focus_enabled),
         "priority_boost_requested": priority_boost_requested,
         "automatic_focus_enabled": automatic_focus_enabled,
+        "respect_explicit_scope": respect_explicit_scope,
+        "override_explicit_scope": override_explicit_scope,
+        "explicit_scope_keys": explicit_scope_keys,
         "applied": False,
         "snapshot_path": str(snapshot_path),
         "reason": "disabled",
         "focused_shards": [],
     }
     if not bool(contract["enabled"]):
+        return focused_shards, contract
+    if explicit_scope_keys and respect_explicit_scope and not override_explicit_scope:
+        contract["reason"] = "explicit_cycle_scope_preserved"
         return focused_shards, contract
 
     snapshot = _load_json(snapshot_path)
@@ -2061,7 +2483,9 @@ def _apply_raw_live_priority_focus(
         contract["reason"] = "snapshot_missing_timestamp"
         return focused_shards, contract
     snapshot_age_seconds = (now - observed_at).total_seconds()
-    max_age_seconds = max(_env_float("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MAX_AGE_SECONDS", 180.0), 1.0)
+    max_age_seconds = max(
+        _env_float("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MAX_AGE_SECONDS", 180.0), 1.0
+    )
     contract["snapshot_timestamp_utc"] = observed_at.isoformat()
     contract["snapshot_age_seconds"] = round(max(snapshot_age_seconds, 0.0), 3)
     contract["max_age_seconds"] = round(max_age_seconds, 3)
@@ -2105,9 +2529,15 @@ def _apply_raw_live_priority_focus(
     contract["admission_pause_lines"] = admission_pause_lines
     contract["minimum_pending_lines"] = minimum_pending_lines
     raw_rows = snapshot.get("top_pending_files")
-    rows = [dict(row) for row in raw_rows if isinstance(row, dict)] if isinstance(raw_rows, list) else []
+    rows = (
+        [dict(row) for row in raw_rows if isinstance(row, dict)]
+        if isinstance(raw_rows, list)
+        else []
+    )
     rows.sort(key=lambda row: _as_int(row.get("pending_lines"), 0), reverse=True)
-    source_minimum = max(_env_int("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_SOURCE_MIN_LINES", 250), 1)
+    source_minimum = max(
+        _env_int("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_SOURCE_MIN_LINES", 250), 1
+    )
     aged_source_seconds = max(
         _env_float("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_AGED_SOURCE_SECONDS", 180.0),
         1.0,
@@ -2133,7 +2563,9 @@ def _apply_raw_live_priority_focus(
 
     candidate_rows = rows if material_pressure else aged_source_rows
     max_sources_per_shard = max(
-        min(_env_int("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MAX_SOURCES_PER_SHARD", 8), 16),
+        min(
+            _env_int("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MAX_SOURCES_PER_SHARD", 8), 16
+        ),
         1,
     )
     available_shards = {str(shard.get("name") or "") for shard in focused_shards}
@@ -2161,13 +2593,31 @@ def _apply_raw_live_priority_focus(
         if not source_rows:
             continue
         source_paths = [str(row["source_rel"]) for row in source_rows]
-        shard_pending_lines = sum(_as_int(row.get("pending_lines"), 0) for row in source_rows)
-        has_signal_generation = any(path.startswith("governance/events/signal_generation_") for path in source_paths)
+        shard_pending_lines = sum(
+            _as_int(row.get("pending_lines"), 0) for row in source_rows
+        )
+        largest_source_pending_lines = max(
+            (_as_int(row.get("pending_lines"), 0) for row in source_rows),
+            default=0,
+        )
+        has_signal_generation = any(
+            path.startswith("governance/events/signal_generation_")
+            for path in source_paths
+        )
+        adaptive_max_lines = 32000
+        if largest_source_pending_lines >= 250000:
+            adaptive_max_lines = 128000
+        elif largest_source_pending_lines >= 100000:
+            adaptive_max_lines = 64000
+        if has_signal_generation:
+            adaptive_max_lines = max(adaptive_max_lines, 64000)
         shard["path_contains"] = ",".join(source_paths)
-        shard["max_files"] = max(_as_int(shard.get("max_files"), 0), len(source_paths), 1)
+        shard["max_files"] = max(
+            _as_int(shard.get("max_files"), 0), len(source_paths), 1
+        )
         shard["max_lines_per_file"] = max(
             _as_int(shard.get("max_lines_per_file"), 0),
-            64000 if has_signal_generation else 32000,
+            adaptive_max_lines,
         )
         shard["max_bytes_per_file"] = max(
             _as_int(shard.get("max_bytes_per_file"), 0),
@@ -2200,20 +2650,46 @@ def _apply_raw_live_priority_focus(
     return focused_shards, contract
 
 
-def _effective_cycle_args(args: argparse.Namespace, overrides: dict[str, str]) -> argparse.Namespace:
+def _effective_cycle_args(
+    args: argparse.Namespace, overrides: dict[str, str]
+) -> argparse.Namespace:
     values = vars(args).copy()
-    values["interval_seconds"] = max(_dynamic_env_int(overrides, "SQL_LINK_SERVICE_INTERVAL_SECONDS", int(args.interval_seconds)), 10)
-    values["link_mode"] = str(_dynamic_env_value(overrides, "SQL_LINK_SERVICE_LINK_MODE", str(args.link_mode or "sqlite")) or "sqlite")
-    values["shards"] = str(_dynamic_env_value(overrides, "SQL_LINK_SERVICE_SHARDS", str(args.shards or "")))
+    values["interval_seconds"] = max(
+        _dynamic_env_int(
+            overrides, "SQL_LINK_SERVICE_INTERVAL_SECONDS", int(args.interval_seconds)
+        ),
+        10,
+    )
+    values["link_mode"] = str(
+        _dynamic_env_value(
+            overrides, "SQL_LINK_SERVICE_LINK_MODE", str(args.link_mode or "sqlite")
+        )
+        or "sqlite"
+    )
+    values["shards"] = str(
+        _dynamic_env_value(overrides, "SQL_LINK_SERVICE_SHARDS", str(args.shards or ""))
+    )
     if "SQL_LINK_SERVICE_SHARD_WRITER_LANES" in overrides:
-        requested_shard_writer_lanes = _dynamic_env_int(overrides, "SQL_LINK_SERVICE_SHARD_WRITER_LANES", int(getattr(args, "preprocess_workers", 1)))
+        requested_shard_writer_lanes = _dynamic_env_int(
+            overrides,
+            "SQL_LINK_SERVICE_SHARD_WRITER_LANES",
+            int(getattr(args, "preprocess_workers", 1)),
+        )
     elif "SQL_LINK_SERVICE_PREPROCESS_WORKERS" in overrides:
-        requested_shard_writer_lanes = _dynamic_env_int(overrides, "SQL_LINK_SERVICE_PREPROCESS_WORKERS", int(getattr(args, "preprocess_workers", 1)))
+        requested_shard_writer_lanes = _dynamic_env_int(
+            overrides,
+            "SQL_LINK_SERVICE_PREPROCESS_WORKERS",
+            int(getattr(args, "preprocess_workers", 1)),
+        )
     else:
         requested_shard_writer_lanes = int(getattr(args, "preprocess_workers", 1))
     requested_shard_writer_lanes = max(requested_shard_writer_lanes, 1)
     max_shard_writer_lanes = (
-        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES", requested_shard_writer_lanes)
+        _dynamic_env_int(
+            overrides,
+            "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES",
+            requested_shard_writer_lanes,
+        )
         if "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES" in overrides
         else requested_shard_writer_lanes
     )
@@ -2222,42 +2698,85 @@ def _effective_cycle_args(args: argparse.Namespace, overrides: dict[str, str]) -
         1,
     )
     values["low_priority_merge_skip_gb"] = max(
-        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_LOW_PRIORITY_MERGE_SKIP_GB", float(args.low_priority_merge_skip_gb)),
+        _dynamic_env_float(
+            overrides,
+            "SQL_LINK_SERVICE_LOW_PRIORITY_MERGE_SKIP_GB",
+            float(args.low_priority_merge_skip_gb),
+        ),
         0.0,
     )
     values["merge_max_seconds_per_cycle"] = max(
-        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE", float(args.merge_max_seconds_per_cycle)),
+        _dynamic_env_float(
+            overrides,
+            "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE",
+            float(args.merge_max_seconds_per_cycle),
+        ),
         0.0,
     )
     values["shard_link_timeout_seconds"] = max(
-        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS", int(args.shard_link_timeout_seconds)),
+        _dynamic_env_int(
+            overrides,
+            "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS",
+            int(args.shard_link_timeout_seconds),
+        ),
         1,
     )
-    values["auto_wal_checkpoint"] = _dynamic_env_flag(overrides, "SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT", bool(args.auto_wal_checkpoint))
+    values["auto_wal_checkpoint"] = _dynamic_env_flag(
+        overrides,
+        "SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT",
+        bool(args.auto_wal_checkpoint),
+    )
     values["wal_checkpoint_threshold_gb"] = max(
-        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB", float(args.wal_checkpoint_threshold_gb)),
+        _dynamic_env_float(
+            overrides,
+            "SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB",
+            float(args.wal_checkpoint_threshold_gb),
+        ),
         0.0,
     )
     values["wal_checkpoint_trigger_growth_gb"] = max(
-        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB", float(args.wal_checkpoint_trigger_growth_gb)),
+        _dynamic_env_float(
+            overrides,
+            "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB",
+            float(args.wal_checkpoint_trigger_growth_gb),
+        ),
         0.0,
     )
     values["wal_checkpoint_trigger_rows"] = max(
-        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_ROWS", int(args.wal_checkpoint_trigger_rows)),
+        _dynamic_env_int(
+            overrides,
+            "SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_ROWS",
+            int(args.wal_checkpoint_trigger_rows),
+        ),
         0,
     )
     values["wal_checkpoint_min_interval_seconds"] = max(
-        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_WAL_CHECKPOINT_MIN_INTERVAL_SECONDS", int(args.wal_checkpoint_min_interval_seconds)),
+        _dynamic_env_int(
+            overrides,
+            "SQL_LINK_SERVICE_WAL_CHECKPOINT_MIN_INTERVAL_SECONDS",
+            int(args.wal_checkpoint_min_interval_seconds),
+        ),
         60,
     )
     values["wal_truncate_max_gb"] = max(
-        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_WAL_TRUNCATE_MAX_GB", float(args.wal_truncate_max_gb)),
+        _dynamic_env_float(
+            overrides,
+            "SQL_LINK_SERVICE_WAL_TRUNCATE_MAX_GB",
+            float(args.wal_truncate_max_gb),
+        ),
         0.0,
     )
     values["wal_checkpoint_mode"] = str(
-        _dynamic_env_value(overrides, "SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE", str(args.wal_checkpoint_mode or "auto")) or "auto"
+        _dynamic_env_value(
+            overrides,
+            "SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE",
+            str(args.wal_checkpoint_mode or "auto"),
+        )
+        or "auto"
     )
-    values["auto_hot_retention"] = _dynamic_env_flag(overrides, "SQL_LINK_SERVICE_AUTO_HOT_RETENTION", bool(args.auto_hot_retention))
+    values["auto_hot_retention"] = _dynamic_env_flag(
+        overrides, "SQL_LINK_SERVICE_AUTO_HOT_RETENTION", bool(args.auto_hot_retention)
+    )
     values["auto_queue_retention"] = _dynamic_env_flag(
         overrides,
         "SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION",
@@ -2269,41 +2788,69 @@ def _effective_cycle_args(args: argparse.Namespace, overrides: dict[str, str]) -
         bool(getattr(args, "auto_local_fallback_prune", True)),
     )
     values["hot_retention_max_db_gb"] = max(
-        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_HOT_MAX_DB_GB", float(args.hot_retention_max_db_gb)),
+        _dynamic_env_float(
+            overrides,
+            "SQL_LINK_SERVICE_HOT_MAX_DB_GB",
+            float(args.hot_retention_max_db_gb),
+        ),
         0.0,
     )
     values["hot_retention_trigger_growth_gb"] = max(
-        _dynamic_env_float(overrides, "SQL_LINK_SERVICE_HOT_TRIGGER_GROWTH_GB", float(args.hot_retention_trigger_growth_gb)),
+        _dynamic_env_float(
+            overrides,
+            "SQL_LINK_SERVICE_HOT_TRIGGER_GROWTH_GB",
+            float(args.hot_retention_trigger_growth_gb),
+        ),
         0.0,
     )
     values["hot_retention_trigger_rows"] = max(
-        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_HOT_TRIGGER_ROWS", int(args.hot_retention_trigger_rows)),
+        _dynamic_env_int(
+            overrides,
+            "SQL_LINK_SERVICE_HOT_TRIGGER_ROWS",
+            int(args.hot_retention_trigger_rows),
+        ),
         0,
     )
     values["hot_retention_hot_days"] = max(
-        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_HOT_DAYS", int(args.hot_retention_hot_days)),
+        _dynamic_env_int(
+            overrides, "SQL_LINK_SERVICE_HOT_DAYS", int(args.hot_retention_hot_days)
+        ),
         0,
     )
     values["hot_retention_hot_hours"] = max(
-        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_HOT_HOURS", int(args.hot_retention_hot_hours)),
+        _dynamic_env_int(
+            overrides, "SQL_LINK_SERVICE_HOT_HOURS", int(args.hot_retention_hot_hours)
+        ),
         0,
     )
     values["hot_retention_batch_size"] = max(
-        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_HOT_BATCH_SIZE", int(args.hot_retention_batch_size)),
+        _dynamic_env_int(
+            overrides,
+            "SQL_LINK_SERVICE_HOT_BATCH_SIZE",
+            int(args.hot_retention_batch_size),
+        ),
         1000,
     )
     values["hot_retention_max_rows"] = max(
-        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_HOT_MAX_ROWS", int(args.hot_retention_max_rows)),
+        _dynamic_env_int(
+            overrides, "SQL_LINK_SERVICE_HOT_MAX_ROWS", int(args.hot_retention_max_rows)
+        ),
         0,
     )
     values["hot_retention_min_interval_seconds"] = max(
-        _dynamic_env_int(overrides, "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS", int(args.hot_retention_min_interval_seconds)),
+        _dynamic_env_int(
+            overrides,
+            "SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS",
+            int(args.hot_retention_min_interval_seconds),
+        ),
         60,
     )
     return argparse.Namespace(**values)
 
 
-def _apply_explicit_cycle_scope(args: argparse.Namespace, overrides: dict[str, str]) -> dict[str, str]:
+def _apply_explicit_cycle_scope(
+    args: argparse.Namespace, overrides: dict[str, str]
+) -> dict[str, str]:
     scoped = dict(overrides)
     explicit_shards = bool(getattr(args, "cli_shards_explicit", False))
     requested = str(getattr(args, "shards", "") or "").strip()
@@ -2373,7 +2920,9 @@ def _prune_stale_local_fallback_artifacts(
     older_than_seconds: int,
     max_files: int,
 ) -> dict[str, object]:
-    candidates = _stale_local_fallback_paths(*roots, older_than_seconds=max(int(older_than_seconds), 0))
+    candidates = _stale_local_fallback_paths(
+        *roots, older_than_seconds=max(int(older_than_seconds), 0)
+    )
     deleted_files = 0
     deleted_bytes = 0
     delete_errors = 0
@@ -2420,11 +2969,18 @@ def _save_integrity_marker(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
-def _should_run_deep_integrity_check(*, shard_name: str, sqlite_db: Path) -> tuple[bool, Path, dict[str, object]]:
+def _should_run_deep_integrity_check(
+    *, shard_name: str, sqlite_db: Path
+) -> tuple[bool, Path, dict[str, object]]:
     marker_path = _integrity_marker_path(shard_name)
     marker = _load_integrity_marker(marker_path)
-    min_interval_seconds = max(int(os.getenv("SQL_LINK_SERVICE_DEEP_INTEGRITY_MIN_INTERVAL_SECONDS", "21600")), 300)
-    max_inline_db_gb = max(float(os.getenv("SQL_LINK_SERVICE_DEEP_INTEGRITY_MAX_INLINE_DB_GB", "1.5")), 0.0)
+    min_interval_seconds = max(
+        int(os.getenv("SQL_LINK_SERVICE_DEEP_INTEGRITY_MIN_INTERVAL_SECONDS", "21600")),
+        300,
+    )
+    max_inline_db_gb = max(
+        float(os.getenv("SQL_LINK_SERVICE_DEEP_INTEGRITY_MAX_INLINE_DB_GB", "1.5")), 0.0
+    )
     db_size_gb = _db_size_gb(sqlite_db)
     checked_at_epoch = float(marker.get("checked_at_epoch", 0.0) or 0.0)
     marker_ok = bool(marker.get("ok", False))
@@ -2474,8 +3030,12 @@ def _sqlite_corruption_error(text: str) -> bool:
     )
 
 
-def _quarantine_primary_db_artifacts(primary_db: Path, *, reason: str) -> dict[str, object]:
-    real_db = primary_db.resolve(strict=False) if primary_db.is_symlink() else primary_db
+def _quarantine_primary_db_artifacts(
+    primary_db: Path, *, reason: str
+) -> dict[str, object]:
+    real_db = (
+        primary_db.resolve(strict=False) if primary_db.is_symlink() else primary_db
+    )
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     quarantine_root = real_db.parent / "corrupt_quarantine" / f"primary_{stamp}"
     quarantine_root.mkdir(parents=True, exist_ok=True)
@@ -2508,8 +3068,12 @@ def _quarantine_shard_artifacts(
     health_file: Path,
     force_reason: str = "",
 ) -> dict[str, object]:
-    deep_check, marker_path, marker = _should_run_deep_integrity_check(shard_name=shard_name, sqlite_db=sqlite_db)
-    marker_age_seconds = max(time.time() - _as_float(marker.get("checked_at_epoch"), 0.0), 0.0)
+    deep_check, marker_path, marker = _should_run_deep_integrity_check(
+        shard_name=shard_name, sqlite_db=sqlite_db
+    )
+    marker_age_seconds = max(
+        time.time() - _as_float(marker.get("checked_at_epoch"), 0.0), 0.0
+    )
     db_size_gb = _db_size_gb(sqlite_db)
     skip_probe_min_interval_seconds = max(
         int(os.getenv("SQL_LINK_SERVICE_OPEN_PROBE_MIN_INTERVAL_SECONDS", "900")),
@@ -2596,7 +3160,12 @@ def _quarantine_shard_artifacts(
     quarantine_root.mkdir(parents=True, exist_ok=True)
 
     moved_paths: list[str] = []
-    for path in (sqlite_db, Path(f"{sqlite_db}-wal"), Path(f"{sqlite_db}-shm"), state_file):
+    for path in (
+        sqlite_db,
+        Path(f"{sqlite_db}-wal"),
+        Path(f"{sqlite_db}-shm"),
+        state_file,
+    ):
         if not path.exists():
             continue
         dest = quarantine_root / path.name
@@ -2626,7 +3195,11 @@ def _shard_env(name: str, suffix: str) -> str:
 
 def _approved_second_cold_sql_root(safe_name: str, *, kind: str) -> Path | None:
     configured = str(os.getenv("BOT_SECOND_COLD_ROOT", "") or "").strip()
-    if not configured or configured == "/Volumes/VIDEO" or configured.startswith("/Volumes/VIDEO/"):
+    if (
+        not configured
+        or configured == "/Volumes/VIDEO"
+        or configured.startswith("/Volumes/VIDEO/")
+    ):
         return None
     root = Path(configured).expanduser()
     clean = str(safe_name or "").strip().lower().replace("-", "_")
@@ -2639,7 +3212,11 @@ def _approved_primary_cold_sql_root(*, kind: str) -> Path | None:
     configured = str(os.getenv("BOT_SECOND_COLD_ROOT", "") or "").strip()
     if not configured:
         configured = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
-    if not configured or configured == "/Volumes/VIDEO" or configured.startswith("/Volumes/VIDEO/"):
+    if (
+        not configured
+        or configured == "/Volumes/VIDEO"
+        or configured.startswith("/Volumes/VIDEO/")
+    ):
         return None
     root = Path(configured).expanduser()
     if not root.exists() or not os.access(root, os.W_OK):
@@ -2657,7 +3234,10 @@ def _table_exists(conn: sqlite3.Connection, db_alias: str, table: str) -> bool:
 
 def _table_columns(conn: sqlite3.Connection, db_alias: str, table: str) -> set[str]:
     try:
-        return {str(row[1]) for row in conn.execute(f"PRAGMA {db_alias}.table_info({table})")}
+        return {
+            str(row[1])
+            for row in conn.execute(f"PRAGMA {db_alias}.table_info({table})")
+        }
     except Exception:
         return set()
 
@@ -2676,8 +3256,7 @@ def _merge_column_sql(
 
 
 def _ensure_primary_schema(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS jsonl_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_file TEXT NOT NULL,
@@ -2702,8 +3281,7 @@ def _ensure_primary_schema(conn: sqlite3.Connection) -> None:
             source_quality_label TEXT,
             UNIQUE(source_file, line_no)
         )
-        """
-    )
+        """)
     try:
         cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(jsonl_records)")}
     except Exception:
@@ -2721,8 +3299,7 @@ def _ensure_primary_schema(conn: sqlite3.Connection) -> None:
     ):
         if col not in cols:
             conn.execute(f"ALTER TABLE jsonl_records ADD COLUMN {col} TEXT")
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS json_file_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_file TEXT NOT NULL,
@@ -2736,26 +3313,39 @@ def _ensure_primary_schema(conn: sqlite3.Connection) -> None:
             log_schema_version INTEGER,
             UNIQUE(source_rel, payload_sha1)
         )
-        """
-    )
-    conn.execute(
-        """
+        """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS shard_merge_state (
             shard_name TEXT PRIMARY KEY,
             last_jsonl_id INTEGER NOT NULL DEFAULT 0,
             last_json_file_id INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL
         )
-        """
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jsonl_records_source_rel_line ON jsonl_records(source_rel, line_no)"
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_jsonl_records_source_rel_line ON jsonl_records(source_rel, line_no)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_jsonl_records_ingested_at ON jsonl_records(ingested_at)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_jsonl_records_source_day_stream ON jsonl_records(source_day_utc, source_stream)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_jsonl_records_source_broker ON jsonl_records(source_broker)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_jsonl_records_routing_lane ON jsonl_records(routing_lane)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_jsonl_records_asset_class ON jsonl_records(asset_class)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_json_file_records_source_rel ON json_file_records(source_rel)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_json_file_records_ingested_at ON json_file_records(ingested_at)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jsonl_records_ingested_at ON jsonl_records(ingested_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jsonl_records_source_day_stream ON jsonl_records(source_day_utc, source_stream)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jsonl_records_source_broker ON jsonl_records(source_broker)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jsonl_records_routing_lane ON jsonl_records(routing_lane)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jsonl_records_asset_class ON jsonl_records(asset_class)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_json_file_records_source_rel ON json_file_records(source_rel)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_json_file_records_ingested_at ON json_file_records(ingested_at)"
+    )
 
 
 def _read_shard_cursor(conn: sqlite3.Connection, shard_name: str) -> tuple[int, int]:
@@ -2829,7 +3419,9 @@ def _probe_shard_merge_state(
 
     conn = _connect_primary_db(primary_db, sqlite_timeout_seconds)
     try:
-        conn.execute(f"PRAGMA busy_timeout={int(max(float(sqlite_timeout_seconds), 1.0) * 1000)}")
+        conn.execute(
+            f"PRAGMA busy_timeout={int(max(float(sqlite_timeout_seconds), 1.0) * 1000)}"
+        )
         _ensure_primary_schema(conn)
         last_jsonl_id, last_json_file_id = _read_shard_cursor(conn, shard_name)
         result["last_jsonl_id"] = last_jsonl_id
@@ -2837,18 +3429,30 @@ def _probe_shard_merge_state(
         conn.execute("ATTACH DATABASE ? AS sharddb", (str(shard_db),))
         if _table_exists(conn, "sharddb", "jsonl_records"):
             result["max_jsonl_id"] = int(
-                conn.execute("SELECT COALESCE(MAX(id), 0) FROM sharddb.jsonl_records").fetchone()[0] or 0
+                conn.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM sharddb.jsonl_records"
+                ).fetchone()[0]
+                or 0
             )
         if _table_exists(conn, "sharddb", "json_file_records"):
             result["max_json_file_id"] = int(
-                conn.execute("SELECT COALESCE(MAX(id), 0) FROM sharddb.json_file_records").fetchone()[0] or 0
+                conn.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM sharddb.json_file_records"
+                ).fetchone()[0]
+                or 0
             )
         conn.execute("DETACH DATABASE sharddb")
         result["merge_required"] = bool(
             int(result["max_jsonl_id"]) > int(last_jsonl_id)
             or int(result["max_json_file_id"]) > int(last_json_file_id)
-            or (int(result["max_jsonl_id"]) > 0 and int(last_jsonl_id) > int(result["max_jsonl_id"]))
-            or (int(result["max_json_file_id"]) > 0 and int(last_json_file_id) > int(result["max_json_file_id"]))
+            or (
+                int(result["max_jsonl_id"]) > 0
+                and int(last_jsonl_id) > int(result["max_jsonl_id"])
+            )
+            or (
+                int(result["max_json_file_id"]) > 0
+                and int(last_json_file_id) > int(result["max_json_file_id"])
+            )
         )
         return result
     except Exception as exc:
@@ -2896,14 +3500,19 @@ def _merge_shard_into_primary(
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute(f"PRAGMA busy_timeout={int(max(float(sqlite_timeout_seconds), 1.0) * 1000)}")
+        conn.execute(
+            f"PRAGMA busy_timeout={int(max(float(sqlite_timeout_seconds), 1.0) * 1000)}"
+        )
         _ensure_primary_schema(conn)
         last_jsonl_id, last_json_file_id = _read_shard_cursor(conn, shard_name)
         conn.execute("ATTACH DATABASE ? AS sharddb", (str(shard_db),))
 
         if _table_exists(conn, "sharddb", "jsonl_records"):
             max_jsonl_id = int(
-                conn.execute("SELECT COALESCE(MAX(id), 0) FROM sharddb.jsonl_records").fetchone()[0] or 0
+                conn.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM sharddb.jsonl_records"
+                ).fetchone()[0]
+                or 0
             )
             result["max_jsonl_id"] = max_jsonl_id
             if max_jsonl_id > 0 and last_jsonl_id > max_jsonl_id:
@@ -2918,7 +3527,9 @@ def _merge_shard_into_primary(
             )
             result["merge_target_jsonl_id"] = int(target_jsonl_id)
             if int(target_jsonl_id) > int(last_jsonl_id):
-                col_list, select_col_list = _merge_column_sql(conn, table="jsonl_records", columns=JSONL_COLUMNS)
+                col_list, select_col_list = _merge_column_sql(
+                    conn, table="jsonl_records", columns=JSONL_COLUMNS
+                )
                 params: tuple[object, ...]
                 where_sql = "WHERE id > ? AND id <= ?"
                 params = (last_jsonl_id, target_jsonl_id)
@@ -2935,15 +3546,21 @@ def _merge_shard_into_primary(
                     """,
                     params,
                 )
-                result["jsonl_rows_inserted"] = int(conn.execute("SELECT changes()").fetchone()[0] or 0)
+                result["jsonl_rows_inserted"] = int(
+                    conn.execute("SELECT changes()").fetchone()[0] or 0
+                )
                 result["merge_capped"] = bool(
-                    int(merge_max_jsonl_rows) > 0 and int(target_jsonl_id) < int(max_jsonl_id)
+                    int(merge_max_jsonl_rows) > 0
+                    and int(target_jsonl_id) < int(max_jsonl_id)
                 )
                 last_jsonl_id = target_jsonl_id
 
         if _table_exists(conn, "sharddb", "json_file_records"):
             max_json_file_id = int(
-                conn.execute("SELECT COALESCE(MAX(id), 0) FROM sharddb.json_file_records").fetchone()[0] or 0
+                conn.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM sharddb.json_file_records"
+                ).fetchone()[0]
+                or 0
             )
             result["max_json_file_id"] = max_json_file_id
             if max_json_file_id > 0 and last_json_file_id > max_json_file_id:
@@ -2963,7 +3580,11 @@ def _merge_shard_into_primary(
                 where_sql = "WHERE id > ? AND id <= ?"
                 if str(merge_hot_cutoff_utc or "").strip():
                     where_sql += " AND ingested_at >= ?"
-                    params = (last_json_file_id, target_json_file_id, str(merge_hot_cutoff_utc))
+                    params = (
+                        last_json_file_id,
+                        target_json_file_id,
+                        str(merge_hot_cutoff_utc),
+                    )
                 conn.execute(
                     f"""
                     INSERT OR IGNORE INTO main.json_file_records ({col_list})
@@ -2974,10 +3595,15 @@ def _merge_shard_into_primary(
                     """,
                     params,
                 )
-                result["json_file_rows_inserted"] = int(conn.execute("SELECT changes()").fetchone()[0] or 0)
+                result["json_file_rows_inserted"] = int(
+                    conn.execute("SELECT changes()").fetchone()[0] or 0
+                )
                 result["merge_capped"] = bool(
                     result["merge_capped"]
-                    or (int(merge_max_json_file_rows) > 0 and int(target_json_file_id) < int(max_json_file_id))
+                    or (
+                        int(merge_max_json_file_rows) > 0
+                        and int(target_json_file_id) < int(max_json_file_id)
+                    )
                 )
                 last_json_file_id = target_json_file_id
 
@@ -3076,26 +3702,53 @@ def _run_hot_retention(
 
 
 def _shard_inserted_rows(shard_result: dict[str, object]) -> int:
-    health = shard_result.get("health", {}) if isinstance(shard_result.get("health"), dict) else {}
-    sqlite_bucket = health.get("sqlite", {}) if isinstance(health.get("sqlite"), dict) else {}
-    sqlite_json_bucket = health.get("sqlite_json_files", {}) if isinstance(health.get("sqlite_json_files"), dict) else {}
-    return _as_int(sqlite_bucket.get("inserted"), 0) + _as_int(sqlite_json_bucket.get("inserted"), 0)
+    health = (
+        shard_result.get("health", {})
+        if isinstance(shard_result.get("health"), dict)
+        else {}
+    )
+    sqlite_bucket = (
+        health.get("sqlite", {}) if isinstance(health.get("sqlite"), dict) else {}
+    )
+    sqlite_json_bucket = (
+        health.get("sqlite_json_files", {})
+        if isinstance(health.get("sqlite_json_files"), dict)
+        else {}
+    )
+    return _as_int(sqlite_bucket.get("inserted"), 0) + _as_int(
+        sqlite_json_bucket.get("inserted"), 0
+    )
 
 
 def _shard_pending_lines(shard_result: dict[str, object]) -> int:
-    health = shard_result.get("health", {}) if isinstance(shard_result.get("health"), dict) else {}
-    sqlite_bucket = health.get("sqlite", {}) if isinstance(health.get("sqlite"), dict) else {}
+    health = (
+        shard_result.get("health", {})
+        if isinstance(shard_result.get("health"), dict)
+        else {}
+    )
+    sqlite_bucket = (
+        health.get("sqlite", {}) if isinstance(health.get("sqlite"), dict) else {}
+    )
     return max(_as_int(sqlite_bucket.get("pending_lines"), 0), 0)
 
 
 def _shard_link_resumable_interruption(shard_result: dict[str, object] | None) -> bool:
-    if not isinstance(shard_result, dict) or int(shard_result.get("rc", 0)) not in {-15, 143}:
+    if not isinstance(shard_result, dict) or int(shard_result.get("rc", 0)) not in {
+        -15,
+        143,
+    }:
         return False
     output = f"{shard_result.get('stdout_tail') or ''}\n{shard_result.get('stderr_tail') or ''}".lower()
     if _sqlite_corruption_error(output) or "traceback" in output:
         return False
-    health = shard_result.get("health") if isinstance(shard_result.get("health"), dict) else {}
-    sqlite_bucket = health.get("sqlite") if isinstance(health.get("sqlite"), dict) else {}
+    health = (
+        shard_result.get("health")
+        if isinstance(shard_result.get("health"), dict)
+        else {}
+    )
+    sqlite_bucket = (
+        health.get("sqlite") if isinstance(health.get("sqlite"), dict) else {}
+    )
     checkpoint_progress = bool(
         _shard_inserted_rows(shard_result) > 0
         or "sqlite inserted=" in output
@@ -3113,7 +3766,10 @@ def _shard_link_merge_eligible(shard_result: dict[str, object] | None) -> bool:
         return True
     if not bool(shard_result.get("timed_out", False)):
         return False
-    return bool(_shard_inserted_rows(shard_result) > 0 or _shard_pending_lines(shard_result) <= 0)
+    return bool(
+        _shard_inserted_rows(shard_result) > 0
+        or _shard_pending_lines(shard_result) <= 0
+    )
 
 
 def _shard_link_hard_failed(shard_result: dict[str, object]) -> bool:
@@ -3131,21 +3787,43 @@ def _merge_followup_summary(
         if isinstance(row, dict)
         and str(row.get("reason") or "").startswith("merge_cycle_budget_exhausted")
     ]
-    capped = [row for row in merge_results if isinstance(row, dict) and bool(row.get("merge_capped", False))]
-    hard_failed = [row for row in shard_results if isinstance(row, dict) and _shard_link_hard_failed(row)]
+    capped = [
+        row
+        for row in merge_results
+        if isinstance(row, dict) and bool(row.get("merge_capped", False))
+    ]
+    hard_failed = [
+        row
+        for row in shard_results
+        if isinstance(row, dict) and _shard_link_hard_failed(row)
+    ]
     partial_timeout = [
         row
         for row in shard_results
-        if isinstance(row, dict) and bool(row.get("timed_out", False)) and _shard_link_merge_eligible(row)
+        if isinstance(row, dict)
+        and bool(row.get("timed_out", False))
+        and _shard_link_merge_eligible(row)
     ]
     resumable_interruption = [
         row
         for row in shard_results
         if isinstance(row, dict) and _shard_link_resumable_interruption(row)
     ]
-    skipped_budget_shards = [str(row.get("shard") or "") for row in budget_exhausted if str(row.get("shard") or "").strip()]
-    capped_shards = [str(row.get("shard") or "") for row in capped if str(row.get("shard") or "").strip()]
-    hard_failed_shards = [str(row.get("shard") or "") for row in hard_failed if str(row.get("shard") or "").strip()]
+    skipped_budget_shards = [
+        str(row.get("shard") or "")
+        for row in budget_exhausted
+        if str(row.get("shard") or "").strip()
+    ]
+    capped_shards = [
+        str(row.get("shard") or "")
+        for row in capped
+        if str(row.get("shard") or "").strip()
+    ]
+    hard_failed_shards = [
+        str(row.get("shard") or "")
+        for row in hard_failed
+        if str(row.get("shard") or "").strip()
+    ]
     followup_reasons = []
     if capped_shards:
         followup_reasons.append("merge_row_cap_remaining")
@@ -3159,7 +3837,12 @@ def _merge_followup_summary(
         followup_reasons.append("hard_failed_shards_need_replay")
     return {
         "followup_needed": bool(followup_reasons),
-        "catch_up_recommended": bool(capped_shards or skipped_budget_shards or partial_timeout or resumable_interruption),
+        "catch_up_recommended": bool(
+            capped_shards
+            or skipped_budget_shards
+            or partial_timeout
+            or resumable_interruption
+        ),
         "followup_reasons": followup_reasons,
         "merge_capped_count": len(capped_shards),
         "merge_budget_exhausted_count": len(skipped_budget_shards),
@@ -3171,7 +3854,12 @@ def _merge_followup_summary(
         "hard_failed_shards": hard_failed_shards[:16],
         "recommended_next_wave": (
             "run another focused writer-cycle coordinator wave after refreshing backpressure"
-            if bool(capped_shards or skipped_budget_shards or partial_timeout or resumable_interruption)
+            if bool(
+                capped_shards
+                or skipped_budget_shards
+                or partial_timeout
+                or resumable_interruption
+            )
             else ""
         ),
     }
@@ -3219,7 +3907,11 @@ def _run_queue_retention(
             timeout=_queue_retention_timeout_seconds(),
         )
     except subprocess.TimeoutExpired as exc:
-        return 124, (exc.stdout or "").strip() if isinstance(exc.stdout, str) else "", "queue_retention_timeout"
+        return (
+            124,
+            (exc.stdout or "").strip() if isinstance(exc.stdout, str) else "",
+            "queue_retention_timeout",
+        )
     return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
 
 
@@ -3267,47 +3959,103 @@ def _build_shards(shard_names: list[str]) -> list[dict[str, object]]:
         if not safe_name:
             continue
         defaults = DEFAULT_SHARD_DEFS.get(safe_name, {})
-        include_streams = os.getenv(_shard_env(safe_name, "INCLUDE_STREAMS"), defaults.get("include_streams", ""))
-        exclude_streams = os.getenv(_shard_env(safe_name, "EXCLUDE_STREAMS"), defaults.get("exclude_streams", ""))
-        path_contains = _env_path_filter_or_default(_shard_env(safe_name, "PATH_CONTAINS"), defaults.get("path_contains", ""))
-        path_not_contains = _env_path_filter_or_default(_shard_env(safe_name, "PATH_NOT_CONTAINS"), defaults.get("path_not_contains", ""))
-        skip_json_files = _env_flag(_shard_env(safe_name, "SKIP_JSON_FILES"), bool(defaults.get("skip_json_files", True)))
-        merge_to_primary = _env_flag(_shard_env(safe_name, "MERGE_TO_PRIMARY"), bool(defaults.get("merge_to_primary", True)))
-        merge_hot_days = max(_env_int(_shard_env(safe_name, "MERGE_HOT_DAYS"), int(defaults.get("merge_hot_days", 0) or 0)), 0)
-        hot_retention_enabled = _env_flag(_shard_env(safe_name, "HOT_RETENTION_ENABLED"), bool(defaults.get("hot_retention_enabled", False)))
+        include_streams = os.getenv(
+            _shard_env(safe_name, "INCLUDE_STREAMS"),
+            defaults.get("include_streams", ""),
+        )
+        exclude_streams = os.getenv(
+            _shard_env(safe_name, "EXCLUDE_STREAMS"),
+            defaults.get("exclude_streams", ""),
+        )
+        path_contains = _env_path_filter_or_default(
+            _shard_env(safe_name, "PATH_CONTAINS"), defaults.get("path_contains", "")
+        )
+        path_not_contains = _env_path_filter_or_default(
+            _shard_env(safe_name, "PATH_NOT_CONTAINS"),
+            defaults.get("path_not_contains", ""),
+        )
+        skip_json_files = _env_flag(
+            _shard_env(safe_name, "SKIP_JSON_FILES"),
+            bool(defaults.get("skip_json_files", True)),
+        )
+        merge_to_primary = _env_flag(
+            _shard_env(safe_name, "MERGE_TO_PRIMARY"),
+            bool(defaults.get("merge_to_primary", True)),
+        )
+        merge_hot_days = max(
+            _env_int(
+                _shard_env(safe_name, "MERGE_HOT_DAYS"),
+                int(defaults.get("merge_hot_days", 0) or 0),
+            ),
+            0,
+        )
+        hot_retention_enabled = _env_flag(
+            _shard_env(safe_name, "HOT_RETENTION_ENABLED"),
+            bool(defaults.get("hot_retention_enabled", False)),
+        )
         max_lines_per_file = max(
-            _env_int(_shard_env(safe_name, "MAX_LINES_PER_FILE"), int(defaults.get("max_lines_per_file", 0) or 0)),
+            _env_int(
+                _shard_env(safe_name, "MAX_LINES_PER_FILE"),
+                int(defaults.get("max_lines_per_file", 0) or 0),
+            ),
             0,
         )
         max_bytes_per_file = max(
             _env_int(
                 _shard_env(safe_name, "MAX_BYTES_PER_FILE"),
-                _env_int("INGEST_MAX_BYTES_PER_FILE", int(defaults.get("max_bytes_per_file", 0) or 0)),
+                _env_int(
+                    "INGEST_MAX_BYTES_PER_FILE",
+                    int(defaults.get("max_bytes_per_file", 0) or 0),
+                ),
             ),
             0,
         )
         sqlite_batch_max_bytes = max(
             _env_int(
                 _shard_env(safe_name, "SQLITE_BATCH_MAX_BYTES"),
-                _env_int("SQLITE_BATCH_MAX_BYTES", int(defaults.get("sqlite_batch_max_bytes", 0) or 0)),
+                _env_int(
+                    "SQLITE_BATCH_MAX_BYTES",
+                    int(defaults.get("sqlite_batch_max_bytes", 0) or 0),
+                ),
             ),
             0,
         )
         state_checkpoint_lines = max(
-            _env_int(_shard_env(safe_name, "STATE_CHECKPOINT_LINES"), int(defaults.get("state_checkpoint_lines", 10000) or 10000)),
+            _env_int(
+                _shard_env(safe_name, "STATE_CHECKPOINT_LINES"),
+                int(defaults.get("state_checkpoint_lines", 10000) or 10000),
+            ),
             0,
         )
         merge_max_jsonl_rows = max(
-            _env_int(_shard_env(safe_name, "MERGE_MAX_JSONL_ROWS"), int(defaults.get("merge_max_jsonl_rows", 0) or 0)),
+            _env_int(
+                _shard_env(safe_name, "MERGE_MAX_JSONL_ROWS"),
+                int(defaults.get("merge_max_jsonl_rows", 0) or 0),
+            ),
             0,
         )
         merge_max_json_file_rows = max(
-            _env_int(_shard_env(safe_name, "MERGE_MAX_JSON_FILE_ROWS"), int(defaults.get("merge_max_json_file_rows", 0) or 0)),
+            _env_int(
+                _shard_env(safe_name, "MERGE_MAX_JSON_FILE_ROWS"),
+                int(defaults.get("merge_max_json_file_rows", 0) or 0),
+            ),
             0,
         )
-        archive_root_default = _approved_second_cold_sql_root(safe_name, kind="archives") or SHARD_DB_ROOT / "archives" / safe_name
-        cold_export_root_default = _approved_second_cold_sql_root(safe_name, kind="cold_archives") or SHARD_DB_ROOT / "cold_archives" / safe_name
-        max_files = max(_env_int(_shard_env(safe_name, "MAX_FILES"), int(defaults.get("max_files", 0) or 0)), 0)
+        archive_root_default = (
+            _approved_second_cold_sql_root(safe_name, kind="archives")
+            or SHARD_DB_ROOT / "archives" / safe_name
+        )
+        cold_export_root_default = (
+            _approved_second_cold_sql_root(safe_name, kind="cold_archives")
+            or SHARD_DB_ROOT / "cold_archives" / safe_name
+        )
+        max_files = max(
+            _env_int(
+                _shard_env(safe_name, "MAX_FILES"),
+                int(defaults.get("max_files", 0) or 0),
+            ),
+            0,
+        )
         heat_row = heat_map.get(safe_name, {})
         if bool(heat_row.get("promotion_candidate", False)):
             max_files += 2
@@ -3320,7 +4068,12 @@ def _build_shards(shard_names: list[str]) -> list[dict[str, object]]:
                 "path_not_contains": path_not_contains,
                 "skip_json_files": skip_json_files,
                 "merge_to_primary": merge_to_primary,
-                "merge_priority": str(os.getenv(_shard_env(safe_name, "MERGE_PRIORITY"), str(defaults.get("merge_priority", "normal") or "normal"))),
+                "merge_priority": str(
+                    os.getenv(
+                        _shard_env(safe_name, "MERGE_PRIORITY"),
+                        str(defaults.get("merge_priority", "normal") or "normal"),
+                    )
+                ),
                 "merge_hot_days": merge_hot_days,
                 "max_files": max_files,
                 "max_lines_per_file": max_lines_per_file,
@@ -3330,29 +4083,135 @@ def _build_shards(shard_names: list[str]) -> list[dict[str, object]]:
                 "merge_max_jsonl_rows": merge_max_jsonl_rows,
                 "merge_max_json_file_rows": merge_max_json_file_rows,
                 "sqlite_db": SHARD_DB_ROOT / f"jsonl_link_{safe_name}.sqlite3",
-                "state_file": SHARD_STATE_ROOT / f"jsonl_sql_link_state_{safe_name}.json",
-                "health_file": HEALTH_ROOT / f"jsonl_sql_ingestion_health_{safe_name}_latest.json",
-                "journal_file": HEALTH_ROOT / f"jsonl_ingest_batch_journal_{safe_name}_latest.jsonl",
-                "journal_events_file": EVENT_ROOT / f"jsonl_ingest_batches_{safe_name}_{day_utc}.jsonl",
-                "invalid_log_file": EVENT_ROOT / f"jsonl_ingestion_invalid_{safe_name}_{day_utc}.jsonl",
+                "state_file": SHARD_STATE_ROOT
+                / f"jsonl_sql_link_state_{safe_name}.json",
+                "health_file": HEALTH_ROOT
+                / f"jsonl_sql_ingestion_health_{safe_name}_latest.json",
+                "journal_file": HEALTH_ROOT
+                / f"jsonl_ingest_batch_journal_{safe_name}_latest.jsonl",
+                "journal_events_file": EVENT_ROOT
+                / f"jsonl_ingest_batches_{safe_name}_{day_utc}.jsonl",
+                "invalid_log_file": EVENT_ROOT
+                / f"jsonl_ingestion_invalid_{safe_name}_{day_utc}.jsonl",
                 "hot_retention_enabled": hot_retention_enabled,
-                "hot_retention_max_db_gb": _env_float(_shard_env(safe_name, "HOT_RETENTION_MAX_DB_GB"), float(defaults.get("hot_retention_max_db_gb", 0.0) or 0.0)),
-                "hot_retention_trigger_growth_gb": _env_float(_shard_env(safe_name, "HOT_RETENTION_TRIGGER_GROWTH_GB"), float(defaults.get("hot_retention_trigger_growth_gb", 0.0) or 0.0)),
-                "hot_retention_trigger_rows": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_TRIGGER_ROWS"), int(defaults.get("hot_retention_trigger_rows", 0) or 0)), 0),
-                "hot_retention_hot_days": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_HOT_DAYS"), int(defaults.get("hot_retention_hot_days", 0) or 0)), 0),
-                "hot_retention_hot_hours": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_HOT_HOURS"), int(defaults.get("hot_retention_hot_hours", 0) or 0)), 0),
-                "hot_retention_batch_size": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_BATCH_SIZE"), int(defaults.get("hot_retention_batch_size", 50000) or 50000)), 1000),
-                "hot_retention_max_rows": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_MAX_ROWS"), int(defaults.get("hot_retention_max_rows", 0) or 0)), 0),
-                "hot_retention_archive_period": str(os.getenv(_shard_env(safe_name, "HOT_RETENTION_ARCHIVE_PERIOD"), str(defaults.get("hot_retention_archive_period", "day") or "day"))),
-                "hot_retention_archive_retention_days": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_ARCHIVE_RETENTION_DAYS"), int(defaults.get("hot_retention_archive_retention_days", 365) or 365)), 0),
-                "hot_retention_vacuum_threshold_gb": _env_float(_shard_env(safe_name, "HOT_RETENTION_VACUUM_THRESHOLD_GB"), float(defaults.get("hot_retention_vacuum_threshold_gb", 0.0) or 0.0)),
-                "hot_retention_min_interval_seconds": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_MIN_INTERVAL_SECONDS"), int(defaults.get("hot_retention_min_interval_seconds", 300) or 300)), 60),
-                "hot_retention_archive_root": os.getenv(_shard_env(safe_name, "HOT_RETENTION_ARCHIVE_ROOT"), str(archive_root_default)),
-                "hot_retention_cold_export_root": os.getenv(_shard_env(safe_name, "HOT_RETENTION_COLD_EXPORT_ROOT"), str(cold_export_root_default if hot_retention_enabled else "")),
-                "hot_retention_cold_export_format": str(os.getenv(_shard_env(safe_name, "HOT_RETENTION_COLD_EXPORT_FORMAT"), str(defaults.get("hot_retention_cold_export_format", "parquet") or "parquet"))),
-                "hot_retention_cold_export_batch_size": max(_env_int(_shard_env(safe_name, "HOT_RETENTION_COLD_EXPORT_BATCH_SIZE"), int(defaults.get("hot_retention_cold_export_batch_size", 50000) or 50000)), 1000),
-                "hot_retention_cold_export_compression": str(os.getenv(_shard_env(safe_name, "HOT_RETENTION_COLD_EXPORT_COMPRESSION"), str(defaults.get("hot_retention_cold_export_compression", "zstd") or "zstd"))),
-                "heat_promotion_candidate": bool(heat_row.get("promotion_candidate", False)),
+                "hot_retention_max_db_gb": _env_float(
+                    _shard_env(safe_name, "HOT_RETENTION_MAX_DB_GB"),
+                    float(defaults.get("hot_retention_max_db_gb", 0.0) or 0.0),
+                ),
+                "hot_retention_trigger_growth_gb": _env_float(
+                    _shard_env(safe_name, "HOT_RETENTION_TRIGGER_GROWTH_GB"),
+                    float(defaults.get("hot_retention_trigger_growth_gb", 0.0) or 0.0),
+                ),
+                "hot_retention_trigger_rows": max(
+                    _env_int(
+                        _shard_env(safe_name, "HOT_RETENTION_TRIGGER_ROWS"),
+                        int(defaults.get("hot_retention_trigger_rows", 0) or 0),
+                    ),
+                    0,
+                ),
+                "hot_retention_hot_days": max(
+                    _env_int(
+                        _shard_env(safe_name, "HOT_RETENTION_HOT_DAYS"),
+                        int(defaults.get("hot_retention_hot_days", 0) or 0),
+                    ),
+                    0,
+                ),
+                "hot_retention_hot_hours": max(
+                    _env_int(
+                        _shard_env(safe_name, "HOT_RETENTION_HOT_HOURS"),
+                        int(defaults.get("hot_retention_hot_hours", 0) or 0),
+                    ),
+                    0,
+                ),
+                "hot_retention_batch_size": max(
+                    _env_int(
+                        _shard_env(safe_name, "HOT_RETENTION_BATCH_SIZE"),
+                        int(defaults.get("hot_retention_batch_size", 50000) or 50000),
+                    ),
+                    1000,
+                ),
+                "hot_retention_max_rows": max(
+                    _env_int(
+                        _shard_env(safe_name, "HOT_RETENTION_MAX_ROWS"),
+                        int(defaults.get("hot_retention_max_rows", 0) or 0),
+                    ),
+                    0,
+                ),
+                "hot_retention_archive_period": str(
+                    os.getenv(
+                        _shard_env(safe_name, "HOT_RETENTION_ARCHIVE_PERIOD"),
+                        str(
+                            defaults.get("hot_retention_archive_period", "day") or "day"
+                        ),
+                    )
+                ),
+                "hot_retention_archive_retention_days": max(
+                    _env_int(
+                        _shard_env(safe_name, "HOT_RETENTION_ARCHIVE_RETENTION_DAYS"),
+                        int(
+                            defaults.get("hot_retention_archive_retention_days", 365)
+                            or 365
+                        ),
+                    ),
+                    0,
+                ),
+                "hot_retention_vacuum_threshold_gb": _env_float(
+                    _shard_env(safe_name, "HOT_RETENTION_VACUUM_THRESHOLD_GB"),
+                    float(
+                        defaults.get("hot_retention_vacuum_threshold_gb", 0.0) or 0.0
+                    ),
+                ),
+                "hot_retention_min_interval_seconds": max(
+                    _env_int(
+                        _shard_env(safe_name, "HOT_RETENTION_MIN_INTERVAL_SECONDS"),
+                        int(
+                            defaults.get("hot_retention_min_interval_seconds", 300)
+                            or 300
+                        ),
+                    ),
+                    60,
+                ),
+                "hot_retention_archive_root": os.getenv(
+                    _shard_env(safe_name, "HOT_RETENTION_ARCHIVE_ROOT"),
+                    str(archive_root_default),
+                ),
+                "hot_retention_cold_export_root": os.getenv(
+                    _shard_env(safe_name, "HOT_RETENTION_COLD_EXPORT_ROOT"),
+                    str(cold_export_root_default if hot_retention_enabled else ""),
+                ),
+                "hot_retention_cold_export_format": str(
+                    os.getenv(
+                        _shard_env(safe_name, "HOT_RETENTION_COLD_EXPORT_FORMAT"),
+                        str(
+                            defaults.get("hot_retention_cold_export_format", "parquet")
+                            or "parquet"
+                        ),
+                    )
+                ),
+                "hot_retention_cold_export_batch_size": max(
+                    _env_int(
+                        _shard_env(safe_name, "HOT_RETENTION_COLD_EXPORT_BATCH_SIZE"),
+                        int(
+                            defaults.get("hot_retention_cold_export_batch_size", 50000)
+                            or 50000
+                        ),
+                    ),
+                    1000,
+                ),
+                "hot_retention_cold_export_compression": str(
+                    os.getenv(
+                        _shard_env(safe_name, "HOT_RETENTION_COLD_EXPORT_COMPRESSION"),
+                        str(
+                            defaults.get(
+                                "hot_retention_cold_export_compression", "zstd"
+                            )
+                            or "zstd"
+                        ),
+                    )
+                ),
+                "heat_promotion_candidate": bool(
+                    heat_row.get("promotion_candidate", False)
+                ),
                 "last_heat_score": float(heat_row.get("last_heat_score", 0.0) or 0.0),
             }
         )
@@ -3372,12 +4231,20 @@ def _run_shard_links(
     live_lane_cap_reload: bool = False,
 ) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
-    lane_cap = _live_shard_writer_lane_cap(int(preprocess_workers)) if live_lane_cap_reload else int(preprocess_workers)
+    lane_cap = (
+        _live_shard_writer_lane_cap(int(preprocess_workers))
+        if live_lane_cap_reload
+        else int(preprocess_workers)
+    )
     worker_count = max(1, min(int(preprocess_workers), max(len(shards), 1), lane_cap))
     parallelism_contract = _shard_parallelism_contract(worker_count)
     tier_lane_caps = {
         str(key): _as_int(value, worker_count)
-        for key, value in (parallelism_contract.get("tier_lane_caps") if isinstance(parallelism_contract.get("tier_lane_caps"), dict) else {}).items()
+        for key, value in (
+            parallelism_contract.get("tier_lane_caps")
+            if isinstance(parallelism_contract.get("tier_lane_caps"), dict)
+            else {}
+        ).items()
     }
     smart_parallelism_enabled = bool(parallelism_contract.get("enabled", False))
     timeout_by_index = {
@@ -3385,7 +4252,9 @@ def _run_shard_links(
         for idx, shard in enumerate(shards)
     }
 
-    def _link_one_shard(shard: dict[str, object], timeout_seconds: int) -> dict[str, object]:
+    def _link_one_shard(
+        shard: dict[str, object], timeout_seconds: int
+    ) -> dict[str, object]:
         started = time.monotonic()
         skip_record = _fresh_idle_shard_skip_record(
             shard,
@@ -3442,9 +4311,16 @@ def _run_shard_links(
         if int(shard.get("max_bytes_per_file", 0) or 0) > 0:
             cmd.extend(["--max-bytes-per-file", str(int(shard["max_bytes_per_file"]))])
         if int(shard.get("sqlite_batch_max_bytes", 0) or 0) > 0:
-            cmd.extend(["--sqlite-batch-max-bytes", str(int(shard["sqlite_batch_max_bytes"]))])
+            cmd.extend(
+                ["--sqlite-batch-max-bytes", str(int(shard["sqlite_batch_max_bytes"]))]
+            )
         if int(shard.get("state_checkpoint_lines", 0) or 0) > 0:
-            cmd.extend(["--sqlite-state-checkpoint-lines", str(int(shard["state_checkpoint_lines"]))])
+            cmd.extend(
+                [
+                    "--sqlite-state-checkpoint-lines",
+                    str(int(shard["state_checkpoint_lines"])),
+                ]
+            )
         if bool(shard.get("skip_json_files")):
             cmd.append("--skip-json-files")
         timed_out = False
@@ -3464,8 +4340,16 @@ def _run_shard_links(
             returncode = int(proc.returncode)
         except subprocess.TimeoutExpired as exc:
             timed_out = True
-            stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-            stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+            stdout = (
+                exc.stdout.decode("utf-8", errors="ignore")
+                if isinstance(exc.stdout, bytes)
+                else str(exc.stdout or "")
+            )
+            stderr = (
+                exc.stderr.decode("utf-8", errors="ignore")
+                if isinstance(exc.stderr, bytes)
+                else str(exc.stderr or "")
+            )
             returncode = 124
         if returncode != 0 and _sqlite_corruption_error(f"{stdout}\n{stderr}"):
             post_failure_recovery = _quarantine_shard_artifacts(
@@ -3504,10 +4388,30 @@ def _run_shard_links(
                     timed_out = False
                 except subprocess.TimeoutExpired as exc:
                     timed_out = True
-                    retry_stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-                    retry_stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
-                    stdout = "\n".join([stdout or "", "--- retry_after_corruption_quarantine_timeout ---", retry_stdout]).strip()
-                    stderr = "\n".join([stderr or "", "--- retry_after_corruption_quarantine_timeout ---", retry_stderr]).strip()
+                    retry_stdout = (
+                        exc.stdout.decode("utf-8", errors="ignore")
+                        if isinstance(exc.stdout, bytes)
+                        else str(exc.stdout or "")
+                    )
+                    retry_stderr = (
+                        exc.stderr.decode("utf-8", errors="ignore")
+                        if isinstance(exc.stderr, bytes)
+                        else str(exc.stderr or "")
+                    )
+                    stdout = "\n".join(
+                        [
+                            stdout or "",
+                            "--- retry_after_corruption_quarantine_timeout ---",
+                            retry_stdout,
+                        ]
+                    ).strip()
+                    stderr = "\n".join(
+                        [
+                            stderr or "",
+                            "--- retry_after_corruption_quarantine_timeout ---",
+                            retry_stderr,
+                        ]
+                    ).strip()
                     returncode = 124
         duration_ms = round(max(time.monotonic() - started, 0.0) * 1000.0, 3)
         health = {}
@@ -3538,7 +4442,9 @@ def _run_shard_links(
             "health": health,
         }
 
-    def _failure_result(shard: dict[str, object], exc: Exception, *, timeout_seconds: int) -> dict[str, object]:
+    def _failure_result(
+        shard: dict[str, object], exc: Exception, *, timeout_seconds: int
+    ) -> dict[str, object]:
         return {
             "shard": str(shard.get("name") or ""),
             "sqlite_db": str(shard.get("sqlite_db") or ""),
@@ -3557,7 +4463,10 @@ def _run_shard_links(
             "health": {},
         }
 
-    def _emit_progress(rows: list[dict[str, object]], active_rows: list[dict[str, object]] | None = None) -> None:
+    def _emit_progress(
+        rows: list[dict[str, object]],
+        active_rows: list[dict[str, object]] | None = None,
+    ) -> None:
         if not callable(progress_callback):
             return
         try:
@@ -3570,7 +4479,9 @@ def _run_shard_links(
         except Exception:
             pass
 
-    def _ordered_partial(completed_by_index: dict[int, dict[str, object]]) -> list[dict[str, object]]:
+    def _ordered_partial(
+        completed_by_index: dict[int, dict[str, object]],
+    ) -> list[dict[str, object]]:
         return [completed_by_index[key] for key in sorted(completed_by_index)]
 
     def _active_records(
@@ -3586,12 +4497,18 @@ def _run_shard_links(
                 index=idx,
                 total=len(shards),
                 started_monotonic=started_by_index.get(idx, time.monotonic()),
-                timeout_seconds=timeout_by_index.get(idx, int(shard_link_timeout_seconds)),
+                timeout_seconds=timeout_by_index.get(
+                    idx, int(shard_link_timeout_seconds)
+                ),
                 worker_count=worker_count,
                 queued_shard_count=queued_shard_count,
                 active_count=active_count,
-                tier_active_count=_active_tier_counts(shards, running).get(_shard_lane_tier(str(shards[idx].get("name") or "")), active_count),
-                tier_active_limit=tier_lane_caps.get(_shard_lane_tier(str(shards[idx].get("name") or "")), worker_count),
+                tier_active_count=_active_tier_counts(shards, running).get(
+                    _shard_lane_tier(str(shards[idx].get("name") or "")), active_count
+                ),
+                tier_active_limit=tier_lane_caps.get(
+                    _shard_lane_tier(str(shards[idx].get("name") or "")), worker_count
+                ),
                 smart_parallelism_enabled=smart_parallelism_enabled,
             )
             for idx in sorted(running.values())
@@ -3608,17 +4525,25 @@ def _run_shard_links(
                         index=idx,
                         total=len(shards),
                         started_monotonic=started_by_index[idx],
-                        timeout_seconds=timeout_by_index.get(idx, int(shard_link_timeout_seconds)),
+                        timeout_seconds=timeout_by_index.get(
+                            idx, int(shard_link_timeout_seconds)
+                        ),
                         worker_count=worker_count,
                         queued_shard_count=max(len(shards) - idx - 1, 0),
                         active_count=1,
                         tier_active_count=1,
-                        tier_active_limit=tier_lane_caps.get(_shard_lane_tier(str(shard.get("name") or "")), 1),
+                        tier_active_limit=tier_lane_caps.get(
+                            _shard_lane_tier(str(shard.get("name") or "")), 1
+                        ),
                         smart_parallelism_enabled=smart_parallelism_enabled,
                     )
                 ],
             )
-            results.append(_link_one_shard(shard, timeout_by_index.get(idx, int(shard_link_timeout_seconds))))
+            results.append(
+                _link_one_shard(
+                    shard, timeout_by_index.get(idx, int(shard_link_timeout_seconds))
+                )
+            )
             _emit_progress(list(results), [])
         return results
 
@@ -3626,12 +4551,21 @@ def _run_shard_links(
     queued_indexes = list(range(len(shards)))
     running: dict[object, int] = {}
     started_by_index: dict[int, float] = {}
-    heartbeat_seconds = max(_env_float("SQL_LINK_SERVICE_PROGRESS_HEARTBEAT_SECONDS", 20.0), 1.0)
+    heartbeat_seconds = max(
+        _env_float("SQL_LINK_SERVICE_PROGRESS_HEARTBEAT_SECONDS", 20.0), 1.0
+    )
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
+
         def _submit_ready() -> None:
-            live_lane_cap = _live_shard_writer_lane_cap(worker_count) if live_lane_cap_reload else worker_count
-            live_tier_lane_caps = {key: min(value, live_lane_cap) for key, value in tier_lane_caps.items()}
+            live_lane_cap = (
+                _live_shard_writer_lane_cap(worker_count)
+                if live_lane_cap_reload
+                else worker_count
+            )
+            live_tier_lane_caps = {
+                key: min(value, live_lane_cap) for key, value in tier_lane_caps.items()
+            }
             while queued_indexes and len(running) < live_lane_cap:
                 idx = _pop_next_queued_shard_index(
                     queued_indexes=queued_indexes,
@@ -3643,17 +4577,34 @@ def _run_shard_links(
                 if idx is None:
                     break
                 started_by_index[idx] = time.monotonic()
-                future = executor.submit(_link_one_shard, shards[idx], timeout_by_index.get(idx, int(shard_link_timeout_seconds)))
+                future = executor.submit(
+                    _link_one_shard,
+                    shards[idx],
+                    timeout_by_index.get(idx, int(shard_link_timeout_seconds)),
+                )
                 running[future] = idx
 
         _submit_ready()
-        _emit_progress(_ordered_partial(completed_by_index), _active_records(running, started_by_index, queued_shard_count=len(queued_indexes)))
+        _emit_progress(
+            _ordered_partial(completed_by_index),
+            _active_records(
+                running, started_by_index, queued_shard_count=len(queued_indexes)
+            ),
+        )
         while running:
-            done, _pending = wait(set(running.keys()), timeout=heartbeat_seconds, return_when=FIRST_COMPLETED)
+            done, _pending = wait(
+                set(running.keys()),
+                timeout=heartbeat_seconds,
+                return_when=FIRST_COMPLETED,
+            )
             if not done:
                 _emit_progress(
                     _ordered_partial(completed_by_index),
-                    _active_records(running, started_by_index, queued_shard_count=len(queued_indexes)),
+                    _active_records(
+                        running,
+                        started_by_index,
+                        queued_shard_count=len(queued_indexes),
+                    ),
                 )
                 continue
             for future in done:
@@ -3665,76 +4616,308 @@ def _run_shard_links(
                     completed_by_index[idx] = _failure_result(
                         shard,
                         exc,
-                        timeout_seconds=timeout_by_index.get(idx, int(shard_link_timeout_seconds)),
+                        timeout_seconds=timeout_by_index.get(
+                            idx, int(shard_link_timeout_seconds)
+                        ),
                     )
             _submit_ready()
             _emit_progress(
                 _ordered_partial(completed_by_index),
-                _active_records(running, started_by_index, queued_shard_count=len(queued_indexes)),
+                _active_records(
+                    running, started_by_index, queued_shard_count=len(queued_indexes)
+                ),
             )
-    results = [completed_by_index[idx] for idx in range(len(shards)) if idx in completed_by_index]
+    results = [
+        completed_by_index[idx]
+        for idx in range(len(shards))
+        if idx in completed_by_index
+    ]
     return results
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Sharded SQL linker manager with incremental merge back into the primary SQLite DB.")
-    parser.add_argument("--interval-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_INTERVAL_SECONDS", "20")))
-    parser.add_argument("--sqlite-timeout-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_SQLITE_TIMEOUT", "300")))
-    parser.add_argument("--sqlite-lock-retries", type=int, default=int(os.getenv("SQL_LINK_SERVICE_LOCK_RETRIES", "200")))
-    parser.add_argument("--sqlite-lock-retry-delay-seconds", type=float, default=float(os.getenv("SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS", "0.5")))
-    parser.add_argument("--shard-link-timeout-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS", "180")))
-    parser.add_argument("--link-mode", choices=("sqlite", "both"), default=os.getenv("SQL_LINK_SERVICE_LINK_MODE", "sqlite"))
-    parser.add_argument("--lock-path", default=str(PROJECT_ROOT / "governance" / "locks" / "jsonl_sql_writer.lock"))
-    parser.add_argument("--primary-db", default=os.getenv("SQL_LINK_SERVICE_PRIMARY_DB", str(PRIMARY_DB_PATH)))
+    parser = argparse.ArgumentParser(
+        description="Sharded SQL linker manager with incremental merge back into the primary SQLite DB."
+    )
+    parser.add_argument(
+        "--interval-seconds",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_INTERVAL_SECONDS", "20")),
+    )
+    parser.add_argument(
+        "--sqlite-timeout-seconds",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_SQLITE_TIMEOUT", "300")),
+    )
+    parser.add_argument(
+        "--sqlite-lock-retries",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_LOCK_RETRIES", "200")),
+    )
+    parser.add_argument(
+        "--sqlite-lock-retry-delay-seconds",
+        type=float,
+        default=float(os.getenv("SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS", "0.5")),
+    )
+    parser.add_argument(
+        "--shard-link-timeout-seconds",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS", "180")),
+    )
+    parser.add_argument(
+        "--link-mode",
+        choices=("sqlite", "both"),
+        default=os.getenv("SQL_LINK_SERVICE_LINK_MODE", "sqlite"),
+    )
+    parser.add_argument(
+        "--lock-path",
+        default=str(PROJECT_ROOT / "governance" / "locks" / "jsonl_sql_writer.lock"),
+    )
+    parser.add_argument(
+        "--primary-db",
+        default=os.getenv("SQL_LINK_SERVICE_PRIMARY_DB", str(PRIMARY_DB_PATH)),
+    )
     parser.add_argument("--shards", default=os.getenv("SQL_LINK_SERVICE_SHARDS", ""))
-    parser.add_argument("--preprocess-workers", type=int, default=int(os.getenv("SQL_LINK_SERVICE_PREPROCESS_WORKERS", "1")))
-    parser.add_argument("--low-priority-merge-skip-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_LOW_PRIORITY_MERGE_SKIP_GB", "120")))
-    parser.add_argument("--merge-max-seconds-per-cycle", type=float, default=float(os.getenv("SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE", "60")))
-    parser.add_argument("--auto-wal-checkpoint", action="store_true", default=os.getenv("SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT", "1") == "1")
-    parser.add_argument("--wal-checkpoint-threshold-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB", "2")))
-    parser.add_argument("--wal-checkpoint-trigger-growth-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB", "1.5")))
-    parser.add_argument("--wal-checkpoint-trigger-rows", type=int, default=int(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_ROWS", "750000")))
-    parser.add_argument("--wal-checkpoint-min-interval-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_MIN_INTERVAL_SECONDS", "900")))
-    parser.add_argument("--wal-truncate-max-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_WAL_TRUNCATE_MAX_GB", "8")))
-    parser.add_argument("--wal-checkpoint-mode", choices=("auto", "passive", "truncate", "restart"), default=os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE", "auto"))
-    parser.add_argument("--auto-hot-retention", action="store_true", default=os.getenv("SQL_LINK_SERVICE_AUTO_HOT_RETENTION", "1") == "1")
-    parser.add_argument("--hot-retention-max-db-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_HOT_MAX_DB_GB", "12")))
-    parser.add_argument("--hot-retention-trigger-growth-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_HOT_TRIGGER_GROWTH_GB", "2")))
-    parser.add_argument("--hot-retention-trigger-rows", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_TRIGGER_ROWS", "500000")))
-    parser.add_argument("--hot-retention-hot-days", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_DAYS", "3")))
-    parser.add_argument("--hot-retention-hot-hours", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_HOURS", "0")))
-    parser.add_argument("--hot-retention-batch-size", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_BATCH_SIZE", "120000")))
-    parser.add_argument("--hot-retention-max-rows", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_MAX_ROWS", "1000000")))
-    parser.add_argument("--hot-retention-min-interval-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS", "180")))
-    parser.add_argument("--hot-retention-vacuum-threshold-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_HOT_VACUUM_THRESHOLD_GB", "20")))
-    parser.add_argument("--hot-retention-archive-db", default=os.getenv("SQL_LINK_SERVICE_HOT_ARCHIVE_DB", str(PROJECT_ROOT / "data" / "jsonl_link_archive.sqlite3")))
-    parser.add_argument("--hot-retention-archive-root", default=os.getenv("SQL_LINK_SERVICE_HOT_ARCHIVE_ROOT", str(PROJECT_ROOT / "data" / "jsonl_link_archives")))
-    parser.add_argument("--hot-retention-archive-period", choices=("single", "day", "month"), default=os.getenv("SQL_LINK_SERVICE_HOT_ARCHIVE_PERIOD", "day"))
-    parser.add_argument("--hot-retention-archive-retention-days", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_ARCHIVE_RETENTION_DAYS", "365")))
-    parser.add_argument("--hot-retention-archive-prune-vacuum", action="store_true", default=os.getenv("SQL_LINK_SERVICE_HOT_ARCHIVE_PRUNE_VACUUM", "1") == "1")
-    parser.add_argument("--hot-retention-cold-export-root", default=os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_ROOT", str(PROJECT_ROOT / "data" / "cold_archives" / "jsonl_link_primary")))
-    parser.add_argument("--hot-retention-cold-export-format", choices=("parquet",), default=os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_FORMAT", "parquet"))
-    parser.add_argument("--hot-retention-cold-export-batch-size", type=int, default=int(os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_BATCH_SIZE", "50000")))
-    parser.add_argument("--hot-retention-cold-export-compression", default=os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_COMPRESSION", "zstd"))
-    parser.add_argument("--auto-queue-retention", action="store_true", default=os.getenv("SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION", "1") == "1")
-    parser.add_argument("--queue-retention-db", default=os.getenv("SQL_LINK_SERVICE_QUEUE_DB", str(QUEUE_DB_PATH)))
-    parser.add_argument("--queue-retention-max-db-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_QUEUE_MAX_DB_GB", "10")))
-    parser.add_argument("--queue-retention-acked-days", type=int, default=int(os.getenv("SQL_LINK_SERVICE_QUEUE_ACKED_DAYS", "7")))
-    parser.add_argument("--queue-retention-batch-size", type=int, default=int(os.getenv("SQL_LINK_SERVICE_QUEUE_BATCH_SIZE", "80000")))
-    parser.add_argument("--queue-retention-max-rows", type=int, default=int(os.getenv("SQL_LINK_SERVICE_QUEUE_MAX_ROWS", "240000")))
-    parser.add_argument("--queue-retention-min-interval-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_QUEUE_MIN_INTERVAL_SECONDS", "900")))
-    parser.add_argument("--queue-retention-vacuum-threshold-gb", type=float, default=float(os.getenv("SQL_LINK_SERVICE_QUEUE_VACUUM_THRESHOLD_GB", "20")))
-    parser.add_argument("--queue-retention-cleanup-consumer-state-days", type=int, default=int(os.getenv("SQL_LINK_SERVICE_QUEUE_CLEANUP_CONSUMER_STATE_DAYS", "30")))
-    parser.add_argument("--queue-retention-prune-orphans", action="store_true", default=os.getenv("SQL_LINK_SERVICE_QUEUE_PRUNE_ORPHANS", "0") == "1")
-    parser.add_argument("--queue-retention-orphan-days", type=int, default=int(os.getenv("SQL_LINK_SERVICE_QUEUE_ORPHAN_DAYS", "45")))
-    parser.add_argument("--auto-local-fallback-prune", action="store_true", default=os.getenv("SQL_LINK_SERVICE_AUTO_LOCAL_FALLBACK_PRUNE", "1") == "1")
-    parser.add_argument("--local-fallback-prune-older-than-seconds", type=int, default=int(os.getenv("SQL_LINK_SERVICE_LOCAL_FALLBACK_PRUNE_OLDER_THAN_SECONDS", "43200")))
-    parser.add_argument("--local-fallback-prune-max-files", type=int, default=int(os.getenv("SQL_LINK_SERVICE_LOCAL_FALLBACK_PRUNE_MAX_FILES", "200")))
+    parser.add_argument(
+        "--preprocess-workers",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_PREPROCESS_WORKERS", "1")),
+    )
+    parser.add_argument(
+        "--low-priority-merge-skip-gb",
+        type=float,
+        default=float(os.getenv("SQL_LINK_SERVICE_LOW_PRIORITY_MERGE_SKIP_GB", "120")),
+    )
+    parser.add_argument(
+        "--merge-max-seconds-per-cycle",
+        type=float,
+        default=float(os.getenv("SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE", "60")),
+    )
+    parser.add_argument(
+        "--auto-wal-checkpoint",
+        action="store_true",
+        default=os.getenv("SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT", "1") == "1",
+    )
+    parser.add_argument(
+        "--wal-checkpoint-threshold-gb",
+        type=float,
+        default=float(os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB", "2")),
+    )
+    parser.add_argument(
+        "--wal-checkpoint-trigger-growth-gb",
+        type=float,
+        default=float(
+            os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_GROWTH_GB", "1.5")
+        ),
+    )
+    parser.add_argument(
+        "--wal-checkpoint-trigger-rows",
+        type=int,
+        default=int(
+            os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_TRIGGER_ROWS", "750000")
+        ),
+    )
+    parser.add_argument(
+        "--wal-checkpoint-min-interval-seconds",
+        type=int,
+        default=int(
+            os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_MIN_INTERVAL_SECONDS", "900")
+        ),
+    )
+    parser.add_argument(
+        "--wal-truncate-max-gb",
+        type=float,
+        default=float(os.getenv("SQL_LINK_SERVICE_WAL_TRUNCATE_MAX_GB", "8")),
+    )
+    parser.add_argument(
+        "--wal-checkpoint-mode",
+        choices=("auto", "passive", "truncate", "restart"),
+        default=os.getenv("SQL_LINK_SERVICE_WAL_CHECKPOINT_MODE", "auto"),
+    )
+    parser.add_argument(
+        "--auto-hot-retention",
+        action="store_true",
+        default=os.getenv("SQL_LINK_SERVICE_AUTO_HOT_RETENTION", "1") == "1",
+    )
+    parser.add_argument(
+        "--hot-retention-max-db-gb",
+        type=float,
+        default=float(os.getenv("SQL_LINK_SERVICE_HOT_MAX_DB_GB", "12")),
+    )
+    parser.add_argument(
+        "--hot-retention-trigger-growth-gb",
+        type=float,
+        default=float(os.getenv("SQL_LINK_SERVICE_HOT_TRIGGER_GROWTH_GB", "2")),
+    )
+    parser.add_argument(
+        "--hot-retention-trigger-rows",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_HOT_TRIGGER_ROWS", "500000")),
+    )
+    parser.add_argument(
+        "--hot-retention-hot-days",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_HOT_DAYS", "3")),
+    )
+    parser.add_argument(
+        "--hot-retention-hot-hours",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_HOT_HOURS", "0")),
+    )
+    parser.add_argument(
+        "--hot-retention-batch-size",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_HOT_BATCH_SIZE", "120000")),
+    )
+    parser.add_argument(
+        "--hot-retention-max-rows",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_HOT_MAX_ROWS", "1000000")),
+    )
+    parser.add_argument(
+        "--hot-retention-min-interval-seconds",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_HOT_MIN_INTERVAL_SECONDS", "180")),
+    )
+    parser.add_argument(
+        "--hot-retention-vacuum-threshold-gb",
+        type=float,
+        default=float(os.getenv("SQL_LINK_SERVICE_HOT_VACUUM_THRESHOLD_GB", "20")),
+    )
+    parser.add_argument(
+        "--hot-retention-archive-db",
+        default=os.getenv(
+            "SQL_LINK_SERVICE_HOT_ARCHIVE_DB",
+            str(PROJECT_ROOT / "data" / "jsonl_link_archive.sqlite3"),
+        ),
+    )
+    parser.add_argument(
+        "--hot-retention-archive-root",
+        default=os.getenv(
+            "SQL_LINK_SERVICE_HOT_ARCHIVE_ROOT",
+            str(PROJECT_ROOT / "data" / "jsonl_link_archives"),
+        ),
+    )
+    parser.add_argument(
+        "--hot-retention-archive-period",
+        choices=("single", "day", "month"),
+        default=os.getenv("SQL_LINK_SERVICE_HOT_ARCHIVE_PERIOD", "day"),
+    )
+    parser.add_argument(
+        "--hot-retention-archive-retention-days",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_HOT_ARCHIVE_RETENTION_DAYS", "365")),
+    )
+    parser.add_argument(
+        "--hot-retention-archive-prune-vacuum",
+        action="store_true",
+        default=os.getenv("SQL_LINK_SERVICE_HOT_ARCHIVE_PRUNE_VACUUM", "1") == "1",
+    )
+    parser.add_argument(
+        "--hot-retention-cold-export-root",
+        default=os.getenv(
+            "SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_ROOT",
+            str(PROJECT_ROOT / "data" / "cold_archives" / "jsonl_link_primary"),
+        ),
+    )
+    parser.add_argument(
+        "--hot-retention-cold-export-format",
+        choices=("parquet",),
+        default=os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_FORMAT", "parquet"),
+    )
+    parser.add_argument(
+        "--hot-retention-cold-export-batch-size",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_BATCH_SIZE", "50000")),
+    )
+    parser.add_argument(
+        "--hot-retention-cold-export-compression",
+        default=os.getenv("SQL_LINK_SERVICE_HOT_COLD_ARCHIVE_COMPRESSION", "zstd"),
+    )
+    parser.add_argument(
+        "--auto-queue-retention",
+        action="store_true",
+        default=os.getenv("SQL_LINK_SERVICE_AUTO_QUEUE_RETENTION", "1") == "1",
+    )
+    parser.add_argument(
+        "--queue-retention-db",
+        default=os.getenv("SQL_LINK_SERVICE_QUEUE_DB", str(QUEUE_DB_PATH)),
+    )
+    parser.add_argument(
+        "--queue-retention-max-db-gb",
+        type=float,
+        default=float(os.getenv("SQL_LINK_SERVICE_QUEUE_MAX_DB_GB", "10")),
+    )
+    parser.add_argument(
+        "--queue-retention-acked-days",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_QUEUE_ACKED_DAYS", "7")),
+    )
+    parser.add_argument(
+        "--queue-retention-batch-size",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_QUEUE_BATCH_SIZE", "80000")),
+    )
+    parser.add_argument(
+        "--queue-retention-max-rows",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_QUEUE_MAX_ROWS", "240000")),
+    )
+    parser.add_argument(
+        "--queue-retention-min-interval-seconds",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_QUEUE_MIN_INTERVAL_SECONDS", "900")),
+    )
+    parser.add_argument(
+        "--queue-retention-vacuum-threshold-gb",
+        type=float,
+        default=float(os.getenv("SQL_LINK_SERVICE_QUEUE_VACUUM_THRESHOLD_GB", "20")),
+    )
+    parser.add_argument(
+        "--queue-retention-cleanup-consumer-state-days",
+        type=int,
+        default=int(
+            os.getenv("SQL_LINK_SERVICE_QUEUE_CLEANUP_CONSUMER_STATE_DAYS", "30")
+        ),
+    )
+    parser.add_argument(
+        "--queue-retention-prune-orphans",
+        action="store_true",
+        default=os.getenv("SQL_LINK_SERVICE_QUEUE_PRUNE_ORPHANS", "0") == "1",
+    )
+    parser.add_argument(
+        "--queue-retention-orphan-days",
+        type=int,
+        default=int(os.getenv("SQL_LINK_SERVICE_QUEUE_ORPHAN_DAYS", "45")),
+    )
+    parser.add_argument(
+        "--auto-local-fallback-prune",
+        action="store_true",
+        default=os.getenv("SQL_LINK_SERVICE_AUTO_LOCAL_FALLBACK_PRUNE", "1") == "1",
+    )
+    parser.add_argument(
+        "--local-fallback-prune-older-than-seconds",
+        type=int,
+        default=int(
+            os.getenv(
+                "SQL_LINK_SERVICE_LOCAL_FALLBACK_PRUNE_OLDER_THAN_SECONDS", "43200"
+            )
+        ),
+    )
+    parser.add_argument(
+        "--local-fallback-prune-max-files",
+        type=int,
+        default=int(
+            os.getenv("SQL_LINK_SERVICE_LOCAL_FALLBACK_PRUNE_MAX_FILES", "200")
+        ),
+    )
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
-    maintenance_hold_token = str(os.getenv(MAINTENANCE_HOLD_TOKEN_ENV, "") or "").strip()
+    maintenance_hold_token = str(
+        os.getenv(MAINTENANCE_HOLD_TOKEN_ENV, "") or ""
+    ).strip()
     maintenance_hold_authorized = _maintenance_hold_authorized(
         maintenance_hold,
         token=maintenance_hold_token,
@@ -3747,14 +4930,22 @@ def main() -> int:
             "reason": "runtime_maintenance_hold_active",
             "runtime_maintenance_hold": maintenance_hold,
         }
-        print(json.dumps(payload, ensure_ascii=True) if args.json else "sql_link_shard_manager guarded_hold=runtime_maintenance_hold_active")
+        print(
+            json.dumps(payload, ensure_ascii=True)
+            if args.json
+            else "sql_link_shard_manager guarded_hold=runtime_maintenance_hold_active"
+        )
         return 75
     args.cli_shards_explicit = "--shards" in sys.argv[1:]
 
     shard_names = _parse_csv(_normalized_shard_config(args.shards))
     if not shard_names:
         msg = {"ok": False, "reason": "no_shards_configured"}
-        print(json.dumps(msg, ensure_ascii=True) if args.json else "sql_link_shard_manager no shards configured")
+        print(
+            json.dumps(msg, ensure_ascii=True)
+            if args.json
+            else "sql_link_shard_manager no shards configured"
+        )
         return 2
 
     lock_path = Path(args.lock_path)
@@ -3765,7 +4956,12 @@ def main() -> int:
     except BlockingIOError:
         fh.seek(0)
         owner = fh.read().strip()
-        msg = {"ok": False, "reason": "writer_lock_busy", "lock_path": str(lock_path), "owner": owner}
+        msg = {
+            "ok": False,
+            "reason": "writer_lock_busy",
+            "lock_path": str(lock_path),
+            "owner": owner,
+        }
         progress = _busy_progress_summary()
         if progress:
             msg["service_progress"] = progress
@@ -3808,7 +5004,9 @@ def main() -> int:
     while True:
         boundary_hold = _cycle_boundary_maintenance_hold(
             PROJECT_ROOT,
-            authorized_token=maintenance_hold_token if maintenance_hold_authorized else "",
+            authorized_token=(
+                maintenance_hold_token if maintenance_hold_authorized else ""
+            ),
         )
         if boundary_hold:
             _write_service_progress(
@@ -3824,9 +5022,13 @@ def main() -> int:
         ts = _now_utc()
         cycle_ts = time.time()
         active_request = _load_active_request(REQUEST_PATH)
-        request_overrides = _apply_explicit_cycle_scope(args, _cycle_runtime_overrides(active_request))
+        request_overrides = _apply_explicit_cycle_scope(
+            args, _cycle_runtime_overrides(active_request)
+        )
         cycle_args = _effective_cycle_args(args, request_overrides)
-        cycle_shard_names = _parse_csv(_normalized_shard_config(str(cycle_args.shards or "")))
+        cycle_shard_names = _parse_csv(
+            _normalized_shard_config(str(cycle_args.shards or ""))
+        )
         if not cycle_shard_names:
             cycle_shard_names = list(shard_names)
         with _temporary_env_overrides(request_overrides):
@@ -3860,10 +5062,14 @@ def main() -> int:
                 link_mode=str(cycle_args.link_mode or "sqlite"),
                 sqlite_timeout_seconds=int(cycle_args.sqlite_timeout_seconds),
                 sqlite_lock_retries=int(cycle_args.sqlite_lock_retries),
-                sqlite_lock_retry_delay_seconds=float(cycle_args.sqlite_lock_retry_delay_seconds),
+                sqlite_lock_retry_delay_seconds=float(
+                    cycle_args.sqlite_lock_retry_delay_seconds
+                ),
                 shard_link_timeout_seconds=int(cycle_args.shard_link_timeout_seconds),
                 preprocess_workers=int(getattr(cycle_args, "preprocess_workers", 1)),
-                live_lane_cap_reload=_dynamic_env_flag(request_overrides, "SQL_LINK_SERVICE_LIVE_LANE_CAP_RELOAD", True),
+                live_lane_cap_reload=_dynamic_env_flag(
+                    request_overrides, "SQL_LINK_SERVICE_LIVE_LANE_CAP_RELOAD", True
+                ),
                 progress_callback=lambda rows, active_shard_links=None: _write_service_progress(
                     cycle_started_utc=ts,
                     current_step="shard_linking",
@@ -3899,9 +5105,13 @@ def main() -> int:
         )
         merge_started_ts = time.time()
         for shard in shards:
-            result = next((row for row in shard_results if row["shard"] == shard["name"]), None)
+            result = next(
+                (row for row in shard_results if row["shard"] == shard["name"]), None
+            )
             if _shard_link_merge_eligible(result):
-                merge_budget_seconds = max(float(cycle_args.merge_max_seconds_per_cycle), 0.0)
+                merge_budget_seconds = max(
+                    float(cycle_args.merge_max_seconds_per_cycle), 0.0
+                )
                 if (
                     merge_budget_seconds > 0.0
                     and str(shard.get("name") or "") != "health_fast"
@@ -4029,12 +5239,14 @@ def main() -> int:
                     )
                 else:
                     merge_probe = _probe_shard_merge_state(
-                                shard_name=str(shard["name"]),
-                                shard_db=Path(str(shard["sqlite_db"])),
-                                primary_db=primary_db,
-                                sqlite_timeout_seconds=int(cycle_args.sqlite_timeout_seconds),
-                            )
-                    if bool(merge_probe.get("ok", False)) and not bool(merge_probe.get("merge_required", True)):
+                        shard_name=str(shard["name"]),
+                        shard_db=Path(str(shard["sqlite_db"])),
+                        primary_db=primary_db,
+                        sqlite_timeout_seconds=int(cycle_args.sqlite_timeout_seconds),
+                    )
+                    if bool(merge_probe.get("ok", False)) and not bool(
+                        merge_probe.get("merge_required", True)
+                    ):
                         merge_results.append(
                             {
                                 "shard": str(shard["name"]),
@@ -4042,14 +5254,26 @@ def main() -> int:
                                 "primary_db": str(primary_db),
                                 "ok": True,
                                 "skipped": True,
-                                "reason": str(merge_probe.get("reason") or "merge_up_to_date"),
+                                "reason": str(
+                                    merge_probe.get("reason") or "merge_up_to_date"
+                                ),
                                 "jsonl_rows_inserted": 0,
                                 "json_file_rows_inserted": 0,
-                                "last_jsonl_id": int(merge_probe.get("last_jsonl_id", 0) or 0),
-                                "last_json_file_id": int(merge_probe.get("last_json_file_id", 0) or 0),
-                                "max_jsonl_id": int(merge_probe.get("max_jsonl_id", 0) or 0),
-                                "max_json_file_id": int(merge_probe.get("max_json_file_id", 0) or 0),
-                                "merge_hot_cutoff_utc": _merge_hot_cutoff_utc(int(shard.get("merge_hot_days", 0) or 0)),
+                                "last_jsonl_id": int(
+                                    merge_probe.get("last_jsonl_id", 0) or 0
+                                ),
+                                "last_json_file_id": int(
+                                    merge_probe.get("last_json_file_id", 0) or 0
+                                ),
+                                "max_jsonl_id": int(
+                                    merge_probe.get("max_jsonl_id", 0) or 0
+                                ),
+                                "max_json_file_id": int(
+                                    merge_probe.get("max_json_file_id", 0) or 0
+                                ),
+                                "merge_hot_cutoff_utc": _merge_hot_cutoff_utc(
+                                    int(shard.get("merge_hot_days", 0) or 0)
+                                ),
                             }
                         )
                     else:
@@ -4058,10 +5282,18 @@ def main() -> int:
                                 shard_name=str(shard["name"]),
                                 shard_db=Path(str(shard["sqlite_db"])),
                                 primary_db=primary_db,
-                                sqlite_timeout_seconds=int(cycle_args.sqlite_timeout_seconds),
-                                merge_hot_cutoff_utc=_merge_hot_cutoff_utc(int(shard.get("merge_hot_days", 0) or 0)),
-                                merge_max_jsonl_rows=int(shard.get("merge_max_jsonl_rows", 0) or 0),
-                                merge_max_json_file_rows=int(shard.get("merge_max_json_file_rows", 0) or 0),
+                                sqlite_timeout_seconds=int(
+                                    cycle_args.sqlite_timeout_seconds
+                                ),
+                                merge_hot_cutoff_utc=_merge_hot_cutoff_utc(
+                                    int(shard.get("merge_hot_days", 0) or 0)
+                                ),
+                                merge_max_jsonl_rows=int(
+                                    shard.get("merge_max_jsonl_rows", 0) or 0
+                                ),
+                                merge_max_json_file_rows=int(
+                                    shard.get("merge_max_json_file_rows", 0) or 0
+                                ),
                             )
                         )
                 _write_service_progress(
@@ -4083,8 +5315,14 @@ def main() -> int:
         shard_hot_retention_results: list[dict[str, object]] = []
         for shard in shards:
             shard_name = str(shard["name"])
-            result = next((row for row in shard_results if row["shard"] == shard_name), None)
-            if not result or int(result.get("rc", 1)) != 0 or not bool(shard.get("hot_retention_enabled", False)):
+            result = next(
+                (row for row in shard_results if row["shard"] == shard_name), None
+            )
+            if (
+                not result
+                or int(result.get("rc", 1)) != 0
+                or not bool(shard.get("hot_retention_enabled", False))
+            ):
                 continue
             db_path = Path(str(shard["sqlite_db"]))
             db_size = _db_size_gb(db_path)
@@ -4096,17 +5334,28 @@ def main() -> int:
             )
             if not bool(shard_retention_safety.get("effective_enabled", False)):
                 continue
-            shard_state = _load_shard_hot_state(maintenance_state, shard_name=shard_name, db_size_gb=db_size)
-            shard_state["rows_since_last_run"] = _as_int(shard_state.get("rows_since_last_run"), 0) + _shard_inserted_rows(result)
-            growth_gb = max(db_size - _as_float(shard_state.get("baseline_db_size_gb"), db_size), 0.0)
+            shard_state = _load_shard_hot_state(
+                maintenance_state, shard_name=shard_name, db_size_gb=db_size
+            )
+            shard_state["rows_since_last_run"] = _as_int(
+                shard_state.get("rows_since_last_run"), 0
+            ) + _shard_inserted_rows(result)
+            growth_gb = max(
+                db_size - _as_float(shard_state.get("baseline_db_size_gb"), db_size),
+                0.0,
+            )
             trigger_reasons = _hot_retention_trigger_reasons(
                 db_size_gb=db_size,
                 max_db_gb=float(shard.get("hot_retention_max_db_gb", 0.0) or 0.0),
                 db_growth_gb=growth_gb,
-                growth_trigger_gb=float(shard.get("hot_retention_trigger_growth_gb", 0.0) or 0.0),
+                growth_trigger_gb=float(
+                    shard.get("hot_retention_trigger_growth_gb", 0.0) or 0.0
+                ),
                 rows_since_last_run=_as_int(shard_state.get("rows_since_last_run"), 0),
                 row_trigger=int(shard.get("hot_retention_trigger_rows", 0) or 0),
-                has_successful_run=bool(str(shard_state.get("last_run_utc") or "").strip()),
+                has_successful_run=bool(
+                    str(shard_state.get("last_run_utc") or "").strip()
+                ),
             )
             shard_retention = {
                 "shard": shard_name,
@@ -4116,14 +5365,20 @@ def main() -> int:
                 "db_path": str(db_path),
                 "db_size_gb_before": round(db_size, 3),
                 "max_db_gb": float(shard.get("hot_retention_max_db_gb", 0.0) or 0.0),
-                "trigger_growth_gb": float(shard.get("hot_retention_trigger_growth_gb", 0.0) or 0.0),
+                "trigger_growth_gb": float(
+                    shard.get("hot_retention_trigger_growth_gb", 0.0) or 0.0
+                ),
                 "trigger_rows": int(shard.get("hot_retention_trigger_rows", 0) or 0),
-                "rows_since_last_run": _as_int(shard_state.get("rows_since_last_run"), 0),
+                "rows_since_last_run": _as_int(
+                    shard_state.get("rows_since_last_run"), 0
+                ),
                 "db_growth_gb_since_last_run": round(growth_gb, 3),
                 "hot_days": int(shard.get("hot_retention_hot_days", 0) or 0),
                 "hot_hours": int(shard.get("hot_retention_hot_hours", 0) or 0),
                 "archive_root": str(shard.get("hot_retention_archive_root") or ""),
-                "cold_export_root": str(shard.get("hot_retention_cold_export_root") or ""),
+                "cold_export_root": str(
+                    shard.get("hot_retention_cold_export_root") or ""
+                ),
                 "trigger_reasons": list(trigger_reasons),
                 "ran": False,
                 "rc": 0,
@@ -4133,33 +5388,90 @@ def main() -> int:
                 "skipped_reason": "",
             }
             if trigger_reasons:
-                since_last = cycle_ts - float(_as_float(shard_state.get("last_run_epoch"), 0.0))
-                if since_last >= max(int(shard.get("hot_retention_min_interval_seconds", 300) or 300), 60):
+                since_last = cycle_ts - float(
+                    _as_float(shard_state.get("last_run_epoch"), 0.0)
+                )
+                min_interval_seconds = max(
+                    int(shard.get("hot_retention_min_interval_seconds", 300) or 300),
+                    60,
+                )
+                noop_min_interval_seconds = max(
+                    _env_int(
+                        "SQL_LINK_SERVICE_HOT_RETENTION_NOOP_MIN_INTERVAL_SECONDS", 3600
+                    ),
+                    min_interval_seconds,
+                )
+                noop_backoff_reason = _hot_retention_noop_backoff_reason(
+                    shard_state=shard_state,
+                    trigger_reasons=trigger_reasons,
+                    now_epoch=cycle_ts,
+                    noop_min_interval_seconds=noop_min_interval_seconds,
+                    forced=bool(shard_retention_safety.get("forced", False)),
+                )
+                if noop_backoff_reason:
+                    shard_retention["skipped_reason"] = noop_backoff_reason
+                    shard_retention["noop_min_interval_seconds"] = (
+                        noop_min_interval_seconds
+                    )
+                elif since_last >= min_interval_seconds:
                     swap_pause, swap_env = _retention_maintenance_paused_for_swap()
                     if swap_pause:
                         shard_retention["skipped_reason"] = "swap_pressure_pause"
                         shard_retention["details"] = _swap_pause_details(swap_env)
                     else:
+                        vacuum_requested = _hot_retention_vacuum_requested(
+                            db_path,
+                            float(
+                                shard.get("hot_retention_vacuum_threshold_gb", 0.0)
+                                or 0.0
+                            ),
+                        )
                         vacuum_capacity = _vacuum_capacity_contract(
                             db_path,
-                            requested=db_size >= float(shard.get("hot_retention_vacuum_threshold_gb", 0.0) or 0.0),
+                            requested=vacuum_requested,
                         )
                         do_vacuum = bool(vacuum_capacity.get("allowed", False))
                         rc, out, err = _run_hot_retention(
                             db_path=db_path,
                             hot_days=int(shard.get("hot_retention_hot_days", 1) or 1),
                             hot_hours=int(shard.get("hot_retention_hot_hours", 0) or 0),
-                            batch_size=int(shard.get("hot_retention_batch_size", 50000) or 50000),
+                            batch_size=int(
+                                shard.get("hot_retention_batch_size", 50000) or 50000
+                            ),
                             max_rows=int(shard.get("hot_retention_max_rows", 0) or 0),
-                            archive_db=str(Path(str(shard.get("hot_retention_archive_root") or "")) / "latest.sqlite3"),
-                            archive_root=str(shard.get("hot_retention_archive_root") or ""),
-                            archive_period=str(shard.get("hot_retention_archive_period", "day") or "day"),
-                            archive_retention_days=int(shard.get("hot_retention_archive_retention_days", 365) or 365),
+                            archive_db=str(
+                                Path(str(shard.get("hot_retention_archive_root") or ""))
+                                / "latest.sqlite3"
+                            ),
+                            archive_root=str(
+                                shard.get("hot_retention_archive_root") or ""
+                            ),
+                            archive_period=str(
+                                shard.get("hot_retention_archive_period", "day")
+                                or "day"
+                            ),
+                            archive_retention_days=int(
+                                shard.get("hot_retention_archive_retention_days", 365)
+                                or 365
+                            ),
                             archive_prune_vacuum=True,
-                            cold_export_root=str(shard.get("hot_retention_cold_export_root") or ""),
-                            cold_export_format=str(shard.get("hot_retention_cold_export_format", "parquet") or "parquet"),
-                            cold_export_batch_size=int(shard.get("hot_retention_cold_export_batch_size", 50000) or 50000),
-                            cold_export_compression=str(shard.get("hot_retention_cold_export_compression", "zstd") or "zstd"),
+                            cold_export_root=str(
+                                shard.get("hot_retention_cold_export_root") or ""
+                            ),
+                            cold_export_format=str(
+                                shard.get("hot_retention_cold_export_format", "parquet")
+                                or "parquet"
+                            ),
+                            cold_export_batch_size=int(
+                                shard.get("hot_retention_cold_export_batch_size", 50000)
+                                or 50000
+                            ),
+                            cold_export_compression=str(
+                                shard.get(
+                                    "hot_retention_cold_export_compression", "zstd"
+                                )
+                                or "zstd"
+                            ),
                             vacuum=do_vacuum,
                         )
                         shard_retention.update(
@@ -4174,17 +5486,32 @@ def main() -> int:
                             }
                         )
                         if int(rc) == 0:
+                            moved_rows = _as_int(
+                                shard_retention.get("details", {}).get("moved_rows"),
+                                0,
+                            )
+                            previous_noop_runs = _as_int(
+                                shard_state.get("consecutive_noop_runs"), 0
+                            )
                             shard_state.update(
                                 {
                                     "last_run_utc": ts,
                                     "last_run_epoch": float(cycle_ts),
-                                    "baseline_db_size_gb": round(_db_size_gb(db_path), 3),
+                                    "baseline_db_size_gb": round(
+                                        _db_size_gb(db_path), 3
+                                    ),
                                     "rows_since_last_run": 0,
                                     "last_trigger_reasons": list(trigger_reasons),
+                                    "last_moved_rows": moved_rows,
+                                    "consecutive_noop_runs": (
+                                        previous_noop_runs + 1 if moved_rows <= 0 else 0
+                                    ),
                                 }
                             )
                 else:
-                    shard_retention["skipped_reason"] = f"min_interval_not_met:{int(since_last)}s"
+                    shard_retention["skipped_reason"] = (
+                        f"min_interval_not_met:{int(since_last)}s"
+                    )
             else:
                 shard_retention["skipped_reason"] = "below_data_trigger"
             shard_retention["db_size_gb_after"] = round(_db_size_gb(db_path), 3)
@@ -4210,7 +5537,9 @@ def main() -> int:
         partial_timeout_shard_count = sum(
             1
             for row in shard_results
-            if isinstance(row, dict) and bool(row.get("timed_out", False)) and _shard_link_merge_eligible(row)
+            if isinstance(row, dict)
+            and bool(row.get("timed_out", False))
+            and _shard_link_merge_eligible(row)
         )
         resumable_interruption_shard_count = sum(
             1
@@ -4220,10 +5549,26 @@ def main() -> int:
         skipped_fresh_idle_shard_count = sum(
             1
             for row in shard_results
-            if isinstance(row, dict) and bool(row.get("skipped", False)) and str(row.get("skip_reason") or "") == "fresh_idle_health"
+            if isinstance(row, dict)
+            and bool(row.get("skipped", False))
+            and str(row.get("skip_reason") or "") == "fresh_idle_health"
         )
-        hard_failed_shard_count = sum(1 for row in shard_results if isinstance(row, dict) and _shard_link_hard_failed(row))
-        overall_rc = 0 if hard_failed_shard_count <= 0 and all(bool(row.get("ok", False)) for row in merge_results) and all(int(row.get("rc", 0)) == 0 for row in shard_hot_retention_results if bool(row.get("ran", False))) else 1
+        hard_failed_shard_count = sum(
+            1
+            for row in shard_results
+            if isinstance(row, dict) and _shard_link_hard_failed(row)
+        )
+        overall_rc = (
+            0
+            if hard_failed_shard_count <= 0
+            and all(bool(row.get("ok", False)) for row in merge_results)
+            and all(
+                int(row.get("rc", 0)) == 0
+                for row in shard_hot_retention_results
+                if bool(row.get("ran", False))
+            )
+            else 1
+        )
         merged_rows = _merged_rows_inserted(merge_results)
         merge_followup = _merge_followup_summary(
             merge_results=merge_results,
@@ -4232,12 +5577,24 @@ def main() -> int:
         for key in ("wal_checkpoint", "hot_retention"):
             bucket = maintenance_state.get(key, {})
             if isinstance(bucket, dict):
-                bucket["rows_since_last_run"] = _as_int(bucket.get("rows_since_last_run"), 0) + int(merged_rows)
+                bucket["rows_since_last_run"] = _as_int(
+                    bucket.get("rows_since_last_run"), 0
+                ) + int(merged_rows)
 
         wal_size = _wal_size_gb(primary_db)
-        checkpoint_state = maintenance_state.get("wal_checkpoint", {}) if isinstance(maintenance_state.get("wal_checkpoint"), dict) else {}
-        checkpoint_rows_since_last = _as_int(checkpoint_state.get("rows_since_last_run"), 0)
-        checkpoint_wal_growth_gb = max(wal_size - _as_float(checkpoint_state.get("baseline_wal_size_gb"), wal_size), 0.0)
+        checkpoint_state = (
+            maintenance_state.get("wal_checkpoint", {})
+            if isinstance(maintenance_state.get("wal_checkpoint"), dict)
+            else {}
+        )
+        checkpoint_rows_since_last = _as_int(
+            checkpoint_state.get("rows_since_last_run"), 0
+        )
+        checkpoint_wal_growth_gb = max(
+            wal_size
+            - _as_float(checkpoint_state.get("baseline_wal_size_gb"), wal_size),
+            0.0,
+        )
         checkpoint_trigger_reasons = _wal_checkpoint_trigger_reasons(
             wal_size_gb=wal_size,
             wal_threshold_gb=float(cycle_args.wal_checkpoint_threshold_gb),
@@ -4266,12 +5623,20 @@ def main() -> int:
         }
         if cycle_args.auto_wal_checkpoint and overall_rc == 0 and wal_size <= 0.0:
             wal_checkpoint["skipped_reason"] = "no_wal"
-        elif cycle_args.auto_wal_checkpoint and overall_rc == 0 and checkpoint_trigger_reasons:
+        elif (
+            cycle_args.auto_wal_checkpoint
+            and overall_rc == 0
+            and checkpoint_trigger_reasons
+        ):
             since_last = cycle_ts - float(last_wal_checkpoint_ts)
-            if since_last >= max(int(cycle_args.wal_checkpoint_min_interval_seconds), 60):
+            if since_last >= max(
+                int(cycle_args.wal_checkpoint_min_interval_seconds), 60
+            ):
                 rc, out, err = _run_wal_checkpoint(
                     db_path=primary_db,
-                    checkpoint_threshold_gb=float(cycle_args.wal_checkpoint_threshold_gb),
+                    checkpoint_threshold_gb=float(
+                        cycle_args.wal_checkpoint_threshold_gb
+                    ),
                     truncate_max_gb=float(cycle_args.wal_truncate_max_gb),
                     checkpoint_mode=str(cycle_args.wal_checkpoint_mode),
                 )
@@ -4296,9 +5661,13 @@ def main() -> int:
                         }
                     )
             else:
-                wal_checkpoint["skipped_reason"] = f"min_interval_not_met:{int(since_last)}s"
+                wal_checkpoint["skipped_reason"] = (
+                    f"min_interval_not_met:{int(since_last)}s"
+                )
         elif cycle_args.auto_wal_checkpoint:
-            wal_checkpoint["skipped_reason"] = "link_failed" if overall_rc != 0 else "below_data_trigger"
+            wal_checkpoint["skipped_reason"] = (
+                "link_failed" if overall_rc != 0 else "below_data_trigger"
+            )
         wal_checkpoint["wal_size_gb_after"] = round(_wal_size_gb(primary_db), 3)
 
         db_size = _db_size_gb(primary_db)
@@ -4311,13 +5680,17 @@ def main() -> int:
         )
         effective_archive_db = Path(str(cycle_args.hot_retention_archive_db))
         effective_archive_root = Path(str(cycle_args.hot_retention_archive_root or ""))
-        effective_cold_export_root = Path(str(cycle_args.hot_retention_cold_export_root or ""))
+        effective_cold_export_root = Path(
+            str(cycle_args.hot_retention_cold_export_root or "")
+        )
         archive_route = {
             "rerouted_for_local_pressure": False,
             "archive_root": str(effective_archive_root),
             "cold_export_root": str(effective_cold_export_root),
         }
-        local_pressure = primary_free_gb < float(primary_retention_safety.get("target_free_gb", 0.0) or 0.0)
+        local_pressure = primary_free_gb < float(
+            primary_retention_safety.get("target_free_gb", 0.0) or 0.0
+        )
         if local_pressure:
             pressure_archive_root = _approved_primary_cold_sql_root(kind="archives")
             pressure_cold_root = _approved_primary_cold_sql_root(kind="cold_archives")
@@ -4333,9 +5706,15 @@ def main() -> int:
                     "protected_volume_excluded": "/Volumes/VIDEO",
                 }
         archive_blockers = _archive_maintenance_blockers(str(effective_archive_root))
-        hot_state = maintenance_state.get("hot_retention", {}) if isinstance(maintenance_state.get("hot_retention"), dict) else {}
+        hot_state = (
+            maintenance_state.get("hot_retention", {})
+            if isinstance(maintenance_state.get("hot_retention"), dict)
+            else {}
+        )
         hot_rows_since_last = _as_int(hot_state.get("rows_since_last_run"), 0)
-        hot_db_growth_gb = max(db_size - _as_float(hot_state.get("baseline_db_size_gb"), db_size), 0.0)
+        hot_db_growth_gb = max(
+            db_size - _as_float(hot_state.get("baseline_db_size_gb"), db_size), 0.0
+        )
         hot_trigger_reasons = _hot_retention_trigger_reasons(
             db_size_gb=db_size,
             max_db_gb=float(cycle_args.hot_retention_max_db_gb),
@@ -4359,7 +5738,9 @@ def main() -> int:
             "archive_root": str(effective_archive_root),
             "archive_route": archive_route,
             "archive_period": str(cycle_args.hot_retention_archive_period),
-            "archive_retention_days": int(cycle_args.hot_retention_archive_retention_days),
+            "archive_retention_days": int(
+                cycle_args.hot_retention_archive_retention_days
+            ),
             "archive_prune_vacuum": bool(cycle_args.hot_retention_archive_prune_vacuum),
             "cold_export_root": str(effective_cold_export_root),
             "cold_export_format": str(cycle_args.hot_retention_cold_export_format),
@@ -4378,9 +5759,15 @@ def main() -> int:
         }
         if archive_blockers:
             hot_retention["skipped_reason"] = "archive_maintenance_blocked"
-        elif bool(primary_retention_safety.get("effective_enabled", False)) and overall_rc == 0 and hot_trigger_reasons:
+        elif (
+            bool(primary_retention_safety.get("effective_enabled", False))
+            and overall_rc == 0
+            and hot_trigger_reasons
+        ):
             since_last = cycle_ts - float(last_hot_retention_ts)
-            if since_last >= max(int(cycle_args.hot_retention_min_interval_seconds), 60):
+            if since_last >= max(
+                int(cycle_args.hot_retention_min_interval_seconds), 60
+            ):
                 swap_pause, swap_env = _retention_maintenance_paused_for_swap()
                 if swap_pause:
                     hot_retention["skipped_reason"] = "swap_pressure_pause"
@@ -4388,7 +5775,9 @@ def main() -> int:
                 else:
                     vacuum_capacity = _vacuum_capacity_contract(
                         primary_db,
-                        requested=db_size >= float(cycle_args.hot_retention_vacuum_threshold_gb),
+                        requested=_hot_retention_vacuum_requested(
+                            primary_db, float(cycle_args.hot_retention_vacuum_threshold_gb)
+                        ),
                         free_gb=primary_free_gb,
                     )
                     do_vacuum = bool(vacuum_capacity.get("allowed", False))
@@ -4401,12 +5790,22 @@ def main() -> int:
                         archive_db=str(effective_archive_db),
                         archive_root=str(effective_archive_root),
                         archive_period=str(cycle_args.hot_retention_archive_period),
-                        archive_retention_days=int(cycle_args.hot_retention_archive_retention_days),
-                        archive_prune_vacuum=bool(cycle_args.hot_retention_archive_prune_vacuum),
+                        archive_retention_days=int(
+                            cycle_args.hot_retention_archive_retention_days
+                        ),
+                        archive_prune_vacuum=bool(
+                            cycle_args.hot_retention_archive_prune_vacuum
+                        ),
                         cold_export_root=str(effective_cold_export_root),
-                        cold_export_format=str(cycle_args.hot_retention_cold_export_format),
-                        cold_export_batch_size=int(cycle_args.hot_retention_cold_export_batch_size),
-                        cold_export_compression=str(cycle_args.hot_retention_cold_export_compression),
+                        cold_export_format=str(
+                            cycle_args.hot_retention_cold_export_format
+                        ),
+                        cold_export_batch_size=int(
+                            cycle_args.hot_retention_cold_export_batch_size
+                        ),
+                        cold_export_compression=str(
+                            cycle_args.hot_retention_cold_export_compression
+                        ),
                         vacuum=do_vacuum,
                     )
                     hot_retention.update(
@@ -4425,16 +5824,24 @@ def main() -> int:
                         hot_state.update(
                             {
                                 "last_run_utc": ts,
-                                "baseline_db_size_gb": round(_db_size_gb(primary_db), 3),
-                                "baseline_wal_size_gb": round(_wal_size_gb(primary_db), 3),
+                                "baseline_db_size_gb": round(
+                                    _db_size_gb(primary_db), 3
+                                ),
+                                "baseline_wal_size_gb": round(
+                                    _wal_size_gb(primary_db), 3
+                                ),
                                 "rows_since_last_run": 0,
                                 "last_trigger_reasons": list(hot_trigger_reasons),
                             }
                         )
             else:
-                hot_retention["skipped_reason"] = f"min_interval_not_met:{int(since_last)}s"
+                hot_retention["skipped_reason"] = (
+                    f"min_interval_not_met:{int(since_last)}s"
+                )
         elif bool(primary_retention_safety.get("effective_enabled", False)):
-            hot_retention["skipped_reason"] = "below_data_trigger" if overall_rc == 0 else "link_failed"
+            hot_retention["skipped_reason"] = (
+                "below_data_trigger" if overall_rc == 0 else "link_failed"
+            )
         hot_retention["db_size_gb_after"] = round(_db_size_gb(primary_db), 3)
 
         queue_db_path = Path(str(args.queue_retention_db))
@@ -4458,7 +5865,9 @@ def main() -> int:
             "max_rows": int(args.queue_retention_max_rows),
             "prune_orphans": bool(args.queue_retention_prune_orphans),
             "orphan_days": int(args.queue_retention_orphan_days),
-            "cleanup_consumer_state_days": int(args.queue_retention_cleanup_consumer_state_days),
+            "cleanup_consumer_state_days": int(
+                args.queue_retention_cleanup_consumer_state_days
+            ),
             "ran": False,
             "rc": 0,
             "stdout_tail": "",
@@ -4466,7 +5875,12 @@ def main() -> int:
             "details": {},
             "skipped_reason": "",
         }
-        if bool(queue_retention_safety.get("effective_enabled", False)) and overall_rc == 0 and queue_db_path.exists() and queue_db_size >= float(args.queue_retention_max_db_gb):
+        if (
+            bool(queue_retention_safety.get("effective_enabled", False))
+            and overall_rc == 0
+            and queue_db_path.exists()
+            and queue_db_size >= float(args.queue_retention_max_db_gb)
+        ):
             since_last = cycle_ts - float(last_queue_retention_ts)
             if since_last >= max(int(args.queue_retention_min_interval_seconds), 60):
                 swap_pause, swap_env = _retention_maintenance_paused_for_swap()
@@ -4478,7 +5892,8 @@ def main() -> int:
                         queue_db_path,
                         requested=bool(
                             _queue_retention_inline_vacuum_enabled()
-                            and queue_db_size >= float(args.queue_retention_vacuum_threshold_gb)
+                            and queue_db_size
+                            >= float(args.queue_retention_vacuum_threshold_gb)
                         ),
                     )
                     do_vacuum = bool(vacuum_capacity.get("allowed", False))
@@ -4487,7 +5902,9 @@ def main() -> int:
                         acked_days=int(args.queue_retention_acked_days),
                         batch_size=int(args.queue_retention_batch_size),
                         max_rows=int(args.queue_retention_max_rows),
-                        cleanup_consumer_state_days=int(args.queue_retention_cleanup_consumer_state_days),
+                        cleanup_consumer_state_days=int(
+                            args.queue_retention_cleanup_consumer_state_days
+                        ),
                         prune_orphans=bool(args.queue_retention_prune_orphans),
                         orphan_days=int(args.queue_retention_orphan_days),
                         vacuum=do_vacuum,
@@ -4505,12 +5922,16 @@ def main() -> int:
                     )
                     last_queue_retention_ts = cycle_ts
             else:
-                queue_retention["skipped_reason"] = f"min_interval_not_met:{int(since_last)}s"
+                queue_retention["skipped_reason"] = (
+                    f"min_interval_not_met:{int(since_last)}s"
+                )
         elif bool(queue_retention_safety.get("effective_enabled", False)):
             if not queue_db_path.exists():
                 queue_retention["skipped_reason"] = "db_missing"
             else:
-                queue_retention["skipped_reason"] = "db_below_threshold" if overall_rc == 0 else "link_failed"
+                queue_retention["skipped_reason"] = (
+                    "db_below_threshold" if overall_rc == 0 else "link_failed"
+                )
         queue_retention["db_size_gb_after"] = round(_db_size_gb(queue_db_path), 3)
 
         payload = {
@@ -4525,7 +5946,8 @@ def main() -> int:
                     "status": "active",
                 },
                 "mysql": {
-                    "enabled": str(cycle_args.link_mode or "sqlite") in {"mysql", "both"},
+                    "enabled": str(cycle_args.link_mode or "sqlite")
+                    in {"mysql", "both"},
                     "status": (
                         "active"
                         if str(cycle_args.link_mode or "sqlite") in {"mysql", "both"}
@@ -4534,11 +5956,19 @@ def main() -> int:
                 },
             },
             "low_priority_merge_skip_gb": float(cycle_args.low_priority_merge_skip_gb),
-            "merge_max_seconds_per_cycle": float(cycle_args.merge_max_seconds_per_cycle),
+            "merge_max_seconds_per_cycle": float(
+                cycle_args.merge_max_seconds_per_cycle
+            ),
             "preprocess_workers": int(getattr(cycle_args, "preprocess_workers", 1)),
-            "parallel_shard_linking": int(getattr(cycle_args, "preprocess_workers", 1)) > 1,
+            "parallel_shard_linking": int(getattr(cycle_args, "preprocess_workers", 1))
+            > 1,
             "shard_writer_lane_contract": shard_writer_lane_contract,
-            "shard_writer_lane_count": int(shard_writer_lane_contract.get("selected_shard_writer_lanes", getattr(cycle_args, "preprocess_workers", 1))),
+            "shard_writer_lane_count": int(
+                shard_writer_lane_contract.get(
+                    "selected_shard_writer_lanes",
+                    getattr(cycle_args, "preprocess_workers", 1),
+                )
+            ),
             "primary_merge_writer_count": 1,
             "single_primary_sqlite_writer": True,
             "primary_db_role": _primary_db_role(primary_db),
@@ -4552,13 +5982,19 @@ def main() -> int:
             "maintenance_state_path": str(MAINTENANCE_STATE_PATH),
             "merged_rows_this_cycle": int(merged_rows),
             "partial_timeout_shard_count": int(partial_timeout_shard_count),
-            "resumable_interruption_shard_count": int(resumable_interruption_shard_count),
+            "resumable_interruption_shard_count": int(
+                resumable_interruption_shard_count
+            ),
             "skipped_fresh_idle_shard_count": int(skipped_fresh_idle_shard_count),
             "hard_failed_shard_count": int(hard_failed_shard_count),
             "merge_followup": merge_followup,
             "planned_shard_count": len(shards),
             "completed_shard_count": len(shard_results),
-            "timed_out_shard_count": sum(1 for row in shard_results if isinstance(row, dict) and bool(row.get("timed_out", False))),
+            "timed_out_shard_count": sum(
+                1
+                for row in shard_results
+                if isinstance(row, dict) and bool(row.get("timed_out", False))
+            ),
             "shard_link_plan": shard_link_plan,
             "shards": shard_results,
             "merge_results": merge_results,
@@ -4572,7 +6008,9 @@ def main() -> int:
             "p_core_drain_contract": _p_core_drain_contract(active_request),
         }
         _ensure_directory(LATEST_HEALTH.parent)
-        LATEST_HEALTH.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        LATEST_HEALTH.write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8"
+        )
         _write_service_progress(
             cycle_started_utc=ts,
             current_step="complete",
@@ -4588,13 +6026,28 @@ def main() -> int:
             shard_link_plan=shard_link_plan,
             shard_writer_lane_contract=shard_writer_lane_contract,
         )
+        focused_request_completed = bool(
+            overall_rc == 0
+            and partial_timeout_shard_count == 0
+            and resumable_interruption_shard_count == 0
+            and len(shard_results) == len(shards)
+        )
+        if focused_request_completed:
+            _record_consumed_focused_request(
+                active_request,
+                completed_at_utc=ts,
+                merged_rows=int(merged_rows),
+                completed_shards=shard_results,
+            )
         maintenance_state["timestamp_utc"] = ts
         _write_json(MAINTENANCE_STATE_PATH, maintenance_state)
 
         if args.json:
             print(json.dumps(payload, ensure_ascii=True))
         else:
-            print(f"sql_link_shard_manager rc={overall_rc} ok={overall_rc == 0} ts={ts}")
+            print(
+                f"sql_link_shard_manager rc={overall_rc} ok={overall_rc == 0} ts={ts}"
+            )
 
         if args.once:
             break

@@ -8,14 +8,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY_PATH = PROJECT_ROOT / "config" / "sleeve_strategy_contracts_v1.json"
-DEFAULT_PERFORMANCE_PATH = PROJECT_ROOT / "governance" / "health" / "paper_performance_latest.json"
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "research" / "sleeve_strategy_specialization_latest.json"
-DEFAULT_CONTRACTS_OUT_PATH = PROJECT_ROOT / "governance" / "research" / "sleeve_strategy_contracts_latest.json"
-DEFAULT_LIBRARY_OUT_PATH = PROJECT_ROOT / "governance" / "research" / "sleeve_strategy_library_latest.json"
-DEFAULT_FAMILIES_OUT_PATH = PROJECT_ROOT / "governance" / "research" / "sleeve_strategy_families_latest.json"
+DEFAULT_PERFORMANCE_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "paper_performance_latest.json"
+)
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "research"
+    / "sleeve_strategy_specialization_latest.json"
+)
+DEFAULT_CONTRACTS_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "research" / "sleeve_strategy_contracts_latest.json"
+)
+DEFAULT_LIBRARY_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "research" / "sleeve_strategy_library_latest.json"
+)
+DEFAULT_FAMILIES_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "research" / "sleeve_strategy_families_latest.json"
+)
 
 if str(PROJECT_ROOT) not in __import__("sys").path:
     __import__("sys").path.insert(0, str(PROJECT_ROOT))
@@ -78,7 +90,10 @@ def _regime_context(
     regime_policy = policy.get("regime_adaptation")
     settings = dict(regime_policy) if isinstance(regime_policy, Mapping) else {}
     source_path = Path(
-        str(settings.get("source_path") or "governance/health/regime_control_plane_latest.json")
+        str(
+            settings.get("source_path")
+            or "governance/health/regime_control_plane_latest.json"
+        )
     )
     if not source_path.is_absolute():
         source_path = project_root / source_path
@@ -90,7 +105,9 @@ def _regime_context(
         else None
     )
     maximum_age = max(int(settings.get("maximum_source_age_seconds") or 3600), 1)
-    fresh = bool(timestamp is not None and age_seconds is not None and age_seconds <= maximum_age)
+    fresh = bool(
+        timestamp is not None and age_seconds is not None and age_seconds <= maximum_age
+    )
     source_status = str(payload.get("overall_status") or "missing").strip().lower()
     current_regime = str(payload.get("regime_state") or "").strip().lower()
     return {
@@ -99,13 +116,25 @@ def _regime_context(
         "stance_score": payload.get("stance_score"),
         "source_status": source_status,
         "source_timestamp_utc": str(payload.get("timestamp_utc") or ""),
-        "source_age_seconds": round(age_seconds, 3) if age_seconds is not None else None,
+        "source_age_seconds": (
+            round(age_seconds, 3) if age_seconds is not None else None
+        ),
         "source_fresh": fresh,
         "activation_ready": fresh and source_status == "ready" and bool(current_regime),
         "source_path": str(source_path),
         "low_confidence_behavior": str(settings.get("low_confidence_behavior") or ""),
         "authority": "ranking_research_admission_and_evidence_segmentation_only",
     }
+
+
+def _measurement_thresholds(
+    contract: Mapping[str, Any], policy: Mapping[str, Any]
+) -> dict[str, Any]:
+    parameters = contract.get("measurement_parameters")
+    if isinstance(parameters, Mapping) and parameters:
+        return dict(parameters)
+    thresholds = policy.get("candidate_binding")
+    return dict(thresholds) if isinstance(thresholds, Mapping) else {}
 
 
 def _quality_assessment(
@@ -140,8 +169,7 @@ def _quality_assessment(
             "evidence_maturity_percent": 0.0,
             "reason": "portfolio contribution evidence is required instead of standalone profit",
         }
-    thresholds = policy.get("candidate_binding")
-    settings = dict(thresholds) if isinstance(thresholds, Mapping) else {}
+    settings = _measurement_thresholds(contract, policy)
     probation_samples = max(int(settings.get("minimum_probation_samples") or 30), 1)
     validation_samples = max(
         int(settings.get("minimum_validation_samples") or 100), probation_samples
@@ -177,7 +205,9 @@ def _quality_assessment(
         reason = "negative candidate-forward post-cost mean"
     elif sample_count < probation_samples:
         verdict, grade, score = "insufficient_evidence", "NE", None
-        reason = f"samples below probation threshold: {sample_count}/{probation_samples}"
+        reason = (
+            f"samples below probation threshold: {sample_count}/{probation_samples}"
+        )
     elif mean_return > 0.0:
         verdict, grade, score = "promising_unconfirmed", "B", 72.0
         reason = "positive mean but robust independent confidence is pending"
@@ -256,27 +286,36 @@ def _lifecycle(
     if not evidence:
         return "parked_candidate", ["no_identity_bound_post_cost_samples"], False
 
-    binding_policy = policy.get("candidate_binding")
-    thresholds = dict(binding_policy) if isinstance(binding_policy, Mapping) else {}
+    thresholds = _measurement_thresholds(contract, policy)
     sample_count = max(int(evidence.get("sample_count") or 0), 0)
     day_count = max(int(evidence.get("independent_day_count") or 0), 0)
     symbol_count = max(int(evidence.get("independent_symbol_count") or 0), 0)
     probation_samples = max(int(thresholds.get("minimum_probation_samples") or 30), 1)
-    validation_samples = max(int(thresholds.get("minimum_validation_samples") or 100), probation_samples)
+    validation_samples = max(
+        int(thresholds.get("minimum_validation_samples") or 100), probation_samples
+    )
     minimum_days = max(int(thresholds.get("minimum_independent_days") or 7), 1)
     minimum_symbols = max(int(thresholds.get("minimum_independent_symbols") or 3), 1)
     expectancy = evidence.get("post_cost_expectancy")
     expectancy_row = dict(expectancy) if isinstance(expectancy, Mapping) else {}
 
     if sample_count < probation_samples:
-        return "parked_candidate", [f"samples_below_probation:{sample_count}/{probation_samples}"], False
+        return (
+            "parked_candidate",
+            [f"samples_below_probation:{sample_count}/{probation_samples}"],
+            False,
+        )
     if objective in {"hedge_utility", "capital_preservation"}:
         return (
             "probation",
             [f"objective_specific_portfolio_contribution_evidence_pending:{objective}"],
             False,
         )
-    if sample_count < validation_samples or day_count < minimum_days or symbol_count < minimum_symbols:
+    if (
+        sample_count < validation_samples
+        or day_count < minimum_days
+        or symbol_count < minimum_symbols
+    ):
         return (
             "probation",
             [
@@ -291,8 +330,7 @@ def _lifecycle(
     mean_return = float(expectancy_row.get("mean_post_cost_return_bps") or 0.0)
     if mean_return < 0.0:
         lower_bound = float(
-            expectancy_row.get("lower_confidence_bound_95_post_cost_return_bps")
-            or 0.0
+            expectancy_row.get("lower_confidence_bound_95_post_cost_return_bps") or 0.0
         )
         if sample_count >= (2 * validation_samples) and lower_bound < 0.0:
             return (
@@ -300,7 +338,11 @@ def _lifecycle(
                 ["mature_negative_candidate_forward_post_cost_expectancy"],
                 False,
             )
-        return "demotion_review", ["nonpositive_candidate_forward_post_cost_expectancy"], False
+        return (
+            "demotion_review",
+            ["nonpositive_candidate_forward_post_cost_expectancy"],
+            False,
+        )
     return "watch", ["positive_mean_but_robust_confidence_pending"], False
 
 
@@ -356,7 +398,33 @@ def build_payload(
                     if isinstance(contract.get("objective_scorecard"), Mapping)
                     else ""
                 ),
+                "economic_value_type": str(
+                    (contract.get("objective_scorecard") or {}).get(
+                        "economic_value_type"
+                    )
+                    if isinstance(contract.get("objective_scorecard"), Mapping)
+                    else ""
+                ),
+                "activation_evidence_rule": str(
+                    (contract.get("objective_scorecard") or {}).get(
+                        "activation_evidence_rule"
+                    )
+                    if isinstance(contract.get("objective_scorecard"), Mapping)
+                    else ""
+                ),
+                "positive_contextual_value_required_for_activation": bool(
+                    (contract.get("objective_scorecard") or {}).get(
+                        "positive_contextual_value_required_for_activation", False
+                    )
+                    if isinstance(contract.get("objective_scorecard"), Mapping)
+                    else False
+                ),
                 "contract_complete": bool(contract.get("contract_complete", False)),
+                "measurement_parameters": dict(
+                    contract.get("measurement_parameters")
+                    if isinstance(contract.get("measurement_parameters"), Mapping)
+                    else {}
+                ),
                 "contract_receipt_sha256": str(
                     contract.get("contract_receipt_sha256") or ""
                 ),
@@ -407,6 +475,26 @@ def build_payload(
         for contract in contracts.values()
         if contract.get("source_kind") == "curated_addition"
     )
+    measurement_defaults = (
+        dict(policy.get("measurement_parameter_defaults"))
+        if isinstance(policy.get("measurement_parameter_defaults"), Mapping)
+        else {}
+    )
+    objective_measurements = (
+        dict(policy.get("objective_measurement_parameters"))
+        if isinstance(policy.get("objective_measurement_parameters"), Mapping)
+        else {}
+    )
+    sleeve_measurements = (
+        dict(policy.get("sleeve_measurement_parameters"))
+        if isinstance(policy.get("sleeve_measurement_parameters"), Mapping)
+        else {}
+    )
+    uncertainty_policy = (
+        dict(measurement_defaults.get("uncertainty_policy"))
+        if isinstance(measurement_defaults.get("uncertainty_policy"), Mapping)
+        else {}
+    )
     payload = {
         "timestamp_utc": generated_at,
         "schema_version": 1,
@@ -433,17 +521,32 @@ def build_payload(
                 "promising_unconfirmed", 0
             ),
             "weak_count": quality_counts.get("weak", 0),
-            "retirement_candidate_count": quality_counts.get(
-                "retirement_candidate", 0
-            ),
+            "retirement_candidate_count": quality_counts.get("retirement_candidate", 0),
             "insufficient_evidence_count": quality_counts.get(
                 "insufficient_evidence", 0
             ),
             "policy": "good and bad verdicts require candidate-bound objective-aware evidence; unknown is not bad",
         },
+        "measurement_parameter_summary": {
+            "default_authority": str(measurement_defaults.get("authority") or ""),
+            "objective_parameter_count": len(objective_measurements),
+            "sleeve_specific_parameter_count": len(sleeve_measurements),
+            "all_explicit_sleeves_parameterized": set(
+                policy.get("sleeves")
+                if isinstance(policy.get("sleeves"), Mapping)
+                else {}
+            )
+            <= set(sleeve_measurements),
+            "uncertainty_policy": uncertainty_policy,
+        },
+        "economic_context_source_of_truth": dict(
+            policy.get("economic_context_source_of_truth") or {}
+        ),
         "strategy_rows": rows,
         "limitations": [
             "complete contracts improve attribution and research discipline but do not manufacture profitable evidence",
+            "every trading sleeve must earn positive objective-specific economic value in its supported context before separate capital consideration",
+            "all sleeves are not required to activate or profit simultaneously; nonmatching sleeves collect, quarantine, or retire",
             "broad master decisions remain ensemble_champion identities until an explicit named strategy is selected",
             "hedge and capital-preservation sleeves require portfolio-contribution evidence rather than standalone-profit grading",
             "control-only sleeves never receive trading-profit objectives",
@@ -463,6 +566,9 @@ def build_payload(
         "contract_count": len(contracts),
         "contracts_sha256": _canonical_hash(contracts),
         "contracts": contracts,
+        "economic_context_source_of_truth": dict(
+            policy.get("economic_context_source_of_truth") or {}
+        ),
         "authority_contract": dict(policy.get("authority") or {}),
     }
     return payload, contract_payload
@@ -559,14 +665,27 @@ def build_library_payload(
                 "activation_state": str(contract.get("activation_state") or ""),
                 "signal_family": str(definition.get("signal_family") or "general"),
                 "archetype": str(definition.get("archetype") or ""),
-                "conditioning_overlay": str(definition.get("conditioning_overlay") or ""),
-                "plain_language_summary": str(definition.get("plain_language_summary") or ""),
+                "conditioning_overlay": str(
+                    definition.get("conditioning_overlay") or ""
+                ),
+                "plain_language_summary": str(
+                    definition.get("plain_language_summary") or ""
+                ),
                 "ideal_regimes": list(definition.get("ideal_regimes") or []),
                 "hostile_regimes": list(definition.get("hostile_regimes") or []),
-                "expected_failure_modes": list(definition.get("expected_failure_modes") or []),
+                "expected_failure_modes": list(
+                    definition.get("expected_failure_modes") or []
+                ),
+                "measurement_parameters": dict(
+                    contract.get("measurement_parameters")
+                    if isinstance(contract.get("measurement_parameters"), Mapping)
+                    else {}
+                ),
                 "regime_assessment": regime,
                 "quality_assessment": quality,
-                "contract_receipt_sha256": str(contract.get("contract_receipt_sha256") or ""),
+                "contract_receipt_sha256": str(
+                    contract.get("contract_receipt_sha256") or ""
+                ),
                 "authority": "research_catalog_only_no_decision_sizing_allocation_promotion_or_live_authority",
             }
         )
@@ -575,7 +694,11 @@ def build_library_payload(
         "timestamp_utc": generated_at,
         "schema_version": 1,
         "ok": incomplete == 0 and authority_violations == 0 and len(rows) == 12000,
-        "status": "ready" if incomplete == 0 and authority_violations == 0 and len(rows) == 12000 else "blocked",
+        "status": (
+            "ready"
+            if incomplete == 0 and authority_violations == 0 and len(rows) == 12000
+            else "blocked"
+        ),
         "policy_id": str(policy.get("policy_id") or ""),
         "library_contract": {
             "target_total_strategies": 12000,
@@ -600,7 +723,8 @@ def build_library_payload(
         "regime_relevance_counts": dict(sorted(relevance_counts.items())),
         "regime_activation_summary": {
             "cold_activation_eligible_count": cold_activation_eligible_count,
-            "cold_activation_blocked_count": tier_counts.get("cold_research", 0) - cold_activation_eligible_count,
+            "cold_activation_blocked_count": tier_counts.get("cold_research", 0)
+            - cold_activation_eligible_count,
             "activation_ready": bool(regime_context.get("activation_ready", False)),
             "policy": "cold admission requires a fresh ready regime and still needs explicit candidate-bound governance approval",
         },
@@ -618,7 +742,9 @@ def build_library_payload(
     }
 
 
-def _parent_contract(contract: Mapping[str, Any], *, failure_modes: list[str]) -> dict[str, Any]:
+def _parent_contract(
+    contract: Mapping[str, Any], *, failure_modes: list[str]
+) -> dict[str, Any]:
     definition = dict(contract.get("strategy_definition") or {})
     return {
         "economic_thesis": str(contract.get("economic_thesis") or ""),
@@ -646,6 +772,11 @@ def _parent_contract(contract: Mapping[str, Any], *, failure_modes: list[str]) -
         "risk_budget": str(contract.get("risk_budget") or ""),
         "shorting_policy": str(contract.get("shorting_policy") or ""),
         "evidence_policy": str(contract.get("evidence_policy") or ""),
+        "measurement_parameters": dict(
+            contract.get("measurement_parameters")
+            if isinstance(contract.get("measurement_parameters"), Mapping)
+            else {}
+        ),
         "lifecycle_policy": str(contract.get("lifecycle_policy") or ""),
     }
 
@@ -654,7 +785,12 @@ def _shared_failure_modes(contracts: list[Mapping[str, Any]]) -> list[str]:
     rows = [
         set(
             str(item)
-            for item in (dict(contract.get("strategy_definition") or {}).get("expected_failure_modes") or [])
+            for item in (
+                dict(contract.get("strategy_definition") or {}).get(
+                    "expected_failure_modes"
+                )
+                or []
+            )
         )
         for contract in contracts
     ]
@@ -691,7 +827,9 @@ def build_family_payload(
         for row in hot_strategy_rows
         if isinstance(row, Mapping) and str(row.get("strategy_id") or "")
     }
-    overlay_policy = dict((policy.get("strategy_library") or {}).get("conditioning_overlays") or {})
+    overlay_policy = dict(
+        (policy.get("strategy_library") or {}).get("conditioning_overlays") or {}
+    )
     configured_conditions = [
         {
             "condition_id": str(name),
@@ -732,13 +870,22 @@ def build_family_payload(
             "display_name": str(contract.get("display_name") or ""),
             "library_tier": str(contract.get("library_tier") or ""),
             "activation_state": str(contract.get("activation_state") or ""),
-            "conditioning_overlay": str(definition.get("conditioning_overlay") or "native_strategy_logic"),
-            "confirmation_requirement": str(definition.get("confirmation_requirement") or ""),
+            "conditioning_overlay": str(
+                definition.get("conditioning_overlay") or "native_strategy_logic"
+            ),
+            "confirmation_requirement": str(
+                definition.get("confirmation_requirement") or ""
+            ),
             "overlay_failure_modes": sorted(
-                set(str(item) for item in (definition.get("expected_failure_modes") or []))
+                set(
+                    str(item)
+                    for item in (definition.get("expected_failure_modes") or [])
+                )
                 - set(_shared_failure_modes([contract]))
             ),
-            "contract_receipt_sha256": str(contract.get("contract_receipt_sha256") or ""),
+            "contract_receipt_sha256": str(
+                contract.get("contract_receipt_sha256") or ""
+            ),
             "evidence": {
                 "quality_verdict": str(quality.get("verdict") or "unknown"),
                 "quality_grade": str(quality.get("grade") or "unknown"),
@@ -747,14 +894,18 @@ def build_family_payload(
                 "independent_day_count": quality.get("independent_day_count"),
                 "independent_symbol_count": quality.get("independent_symbol_count"),
                 "regime_relevance": str(regime.get("relevance") or "unknown"),
-                "cold_activation_eligible": bool(regime.get("cold_activation_eligible", False)),
+                "cold_activation_eligible": bool(
+                    regime.get("cold_activation_eligible", False)
+                ),
                 "source_artifact": "governance/research/sleeve_strategy_library_latest.json",
                 "lookup_key": strategy_id,
             },
             "evidence_is_variant_specific": True,
         }
 
-    for contract in sorted(hot_contracts, key=lambda row: str(row.get("strategy_id") or "")):
+    for contract in sorted(
+        hot_contracts, key=lambda row: str(row.get("strategy_id") or "")
+    ):
         strategy_id = str(contract.get("strategy_id") or "")
         definition = dict(contract.get("strategy_definition") or {})
         child = child_receipt(contract)
@@ -763,10 +914,14 @@ def build_family_payload(
             {
                 "family_id": strategy_id,
                 "family_kind": "native_hot_identity",
-                "family_name": str(contract.get("display_name") or contract.get("strategy_name") or ""),
+                "family_name": str(
+                    contract.get("display_name") or contract.get("strategy_name") or ""
+                ),
                 "sleeve_id": str(contract.get("sleeve_id") or ""),
                 "objective_class": str(contract.get("objective_class") or ""),
-                "archetype": str(definition.get("archetype") or contract.get("strategy_name") or ""),
+                "archetype": str(
+                    definition.get("archetype") or contract.get("strategy_name") or ""
+                ),
                 "library_tier": str(contract.get("library_tier") or ""),
                 "parent_contract": _parent_contract(
                     contract,
@@ -799,14 +954,18 @@ def build_family_payload(
         for contract in ordered:
             child = child_receipt(contract)
             definition = dict(contract.get("strategy_definition") or {})
-            all_failures = set(str(item) for item in (definition.get("expected_failure_modes") or []))
+            all_failures = set(
+                str(item) for item in (definition.get("expected_failure_modes") or [])
+            )
             child["overlay_failure_modes"] = sorted(all_failures - set(shared_failures))
             overlay = str(child.get("conditioning_overlay") or "")
             if overlay:
                 materialized.append(overlay)
                 if overlay in condition_materialized_counts:
                     condition_materialized_counts[overlay] += 1
-            verdict = str((child.get("evidence") or {}).get("quality_verdict") or "unknown")
+            verdict = str(
+                (child.get("evidence") or {}).get("quality_verdict") or "unknown"
+            )
             verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
             children.append(child)
         materialized = sorted(set(materialized))
@@ -821,10 +980,14 @@ def build_family_payload(
                 "objective_class": objective_class,
                 "archetype": archetype,
                 "library_tier": "cold_research",
-                "parent_contract": _parent_contract(first, failure_modes=shared_failures),
+                "parent_contract": _parent_contract(
+                    first, failure_modes=shared_failures
+                ),
                 "supported_conditions": configured_condition_ids,
                 "materialized_conditions": materialized,
-                "unmaterialized_conditions": sorted(set(configured_condition_ids) - set(materialized)),
+                "unmaterialized_conditions": sorted(
+                    set(configured_condition_ids) - set(materialized)
+                ),
                 "variant_count": len(children),
                 "child_variants": children,
                 "family_evidence": {
@@ -866,7 +1029,11 @@ def build_family_payload(
         "timestamp_utc": generated_at,
         "schema_version": 1,
         "ok": lineage_complete and exact_consolidation and all_conditions_supported,
-        "status": "ready" if lineage_complete and exact_consolidation and all_conditions_supported else "blocked",
+        "status": (
+            "ready"
+            if lineage_complete and exact_consolidation and all_conditions_supported
+            else "blocked"
+        ),
         "policy_id": str(policy.get("policy_id") or ""),
         "consolidation_contract": {
             "conceptual_strategy_count": len(contracts),
@@ -885,14 +1052,22 @@ def build_family_payload(
         "condition_coverage": {
             "configured_condition_count": len(configured_conditions),
             "configured_conditions": configured_conditions,
-            "materialized_parent_counts": dict(sorted(condition_materialized_counts.items())),
+            "materialized_parent_counts": dict(
+                sorted(condition_materialized_counts.items())
+            ),
             "all_cold_parent_families_support_all_conditions": all_conditions_supported,
             "supported_only_conditions_are_not_materialized_strategies": True,
         },
-        "cold_parent_family_counts_by_objective": dict(sorted(objective_counts.items())),
+        "cold_parent_family_counts_by_objective": dict(
+            sorted(objective_counts.items())
+        ),
         "sections": {
-            "trading_family_count": sum(1 for row in families if row.get("objective_class") != "control_only"),
-            "control_family_count": sum(1 for row in families if row.get("objective_class") == "control_only"),
+            "trading_family_count": sum(
+                1 for row in families if row.get("objective_class") != "control_only"
+            ),
+            "control_family_count": sum(
+                1 for row in families if row.get("objective_class") == "control_only"
+            ),
         },
         "families": families,
         "authority_contract": {
@@ -910,6 +1085,7 @@ def build_family_payload(
             "the 879 native hot identities and all paper/live behavior remain unchanged."
         ),
     }
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -993,7 +1169,13 @@ def main() -> int:
             f"validated={payload['lifecycle_counts'].get('validated_candidate', 0)} "
             f"regime={payload['current_regime'].get('current_regime', 'unknown')}"
         )
-    return 0 if payload.get("ok", False) and library_payload.get("ok", False) and family_payload.get("ok", False) else 2
+    return (
+        0
+        if payload.get("ok", False)
+        and library_payload.get("ok", False)
+        and family_payload.get("ok", False)
+        else 2
+    )
 
 
 if __name__ == "__main__":
