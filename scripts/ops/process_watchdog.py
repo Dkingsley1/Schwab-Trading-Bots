@@ -1409,6 +1409,11 @@ def _resolved_restart_storms(
         if count < max(int(restart_storm_threshold), 1):
             continue
         row = status_by_name.get(name, {})
+        writer_admission_held = bool(
+            name == "sql_link_writer"
+            and row.get("restart_skipped") == "writer_admission_hold"
+            and (row.get("writer_admission_hold") or {}).get("active", False)
+        )
         row_settle_seconds = max(
             int(
                 row.get("restart_storm_settle_seconds", settle_seconds)
@@ -1495,6 +1500,7 @@ def _resolved_restart_storms(
             "last_restart_age_seconds": round(float(last_age), 3),
             "settle_seconds": int(row_settle_seconds),
             "resolved": not unresolved,
+            "deferred_by_writer_admission": writer_admission_held,
             "impact": impact,
             "quarantinable": bool(quarantinable),
             "quarantine_state": (
@@ -1520,7 +1526,7 @@ def _resolved_restart_storms(
         elif sql_writer_recovered:
             storm["resolution_reason"] = "sql_writer_active_progress_recovered"
         recent.append(storm)
-        if unresolved:
+        if unresolved and not writer_admission_held:
             active.append(storm)
     return active, recent
 
@@ -1557,6 +1563,20 @@ def _forgive_resolved_restart_debt(
         "forgiven_names": sorted(forgiven_names),
         "removed_event_count": int(removed),
         "policy": "clear_restart_budget_debt_after_target_is_running_with_fresh_heartbeat_and_storm_is_resolved",
+    }
+
+
+def _sql_writer_restart_hold(safety_pause: Dict[str, Any]) -> Dict[str, Any]:
+    reason = ""
+    if _env_flag("SQL_LINK_SERVICE_PAUSED_FOR_LOCAL_STORAGE"):
+        reason = "local_storage_reserve_pressure"
+    elif safety_pause.get("runtime_maintenance_hold_active", False):
+        reason = "runtime_maintenance_hold"
+    return {
+        "active": bool(reason),
+        "reason": reason,
+        "writer_ready": False,
+        "policy": "respect_writer_owner_admission_without_forgiving_restart_debt_or_certifying_recovery",
     }
 
 
@@ -1837,6 +1857,7 @@ def _sql_link_writer_recovery_health() -> Dict[str, Any]:
 
 
 INTENTIONAL_RESTART_SKIPS = {
+    "writer_admission_hold",
     "paused_by_safety_flags",
     "creative_cotenant_pause_active",
     "network_outage_active",
@@ -3822,6 +3843,14 @@ def main() -> int:
             continue
 
         if t["name"] == "sql_link_writer" and not process_live:
+            writer_hold = _sql_writer_restart_hold(safety_pause)
+            if writer_hold["active"]:
+                row["writer_admission_hold"] = writer_hold
+                row["restart_skipped"] = "writer_admission_hold"
+                row["reason"] = writer_hold["reason"]
+                row["heartbeat_ok"] = False
+                status.append(row)
+                continue
             writer_idle_health = _sql_link_writer_idle_health()
             row["writer_idle_health"] = writer_idle_health
             if bool(writer_idle_health.get("ok", False)):

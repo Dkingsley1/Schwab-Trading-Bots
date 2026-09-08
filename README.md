@@ -163,6 +163,10 @@ Local storage uses a `125 GiB` warning target and a `135 GiB` recovery target by
 
 Storage-pressure recovery starts at the same boundary that pauses SQL writers. Its bounded sequence verifies rotated telemetry, compresses inactive cold SQLite copies when the optional `afsctool` backend is installed, and offloads closed compressed history with durable restore proof and atomic original-path links. These actions preserve data and reserve limits; a successful recovery wave is not proof of full platform readiness. See [Storage And Ingestion](docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md).
 
+Risk-evidence refresh scheduling uses the One Numbers measurement timestamp, not file modification time. The requested interval is capped at half the execution breaker's freshness budget, including off-hours; missing, invalid, future, or pre-auth measurements request a guarded rebuild. Resource and maintenance admission still apply, so this schedule is not a freshness guarantee or execution unlock. Paper reporting publishes unmeasured day/week changes as `null` (unavailable), including downstream truth ledgers, operator summaries, and period charts. Historical inventory remains visible without becoming a current-period return.
+
+The process watchdog also respects the SQL writer owner's storage pause and maintenance hold before attempting restarts. Existing restart history is retained; deferred work is never relabeled as healthy ingestion.
+
 ### Paper Profitability Hardening
 
 The paper path applies sixteen coordinated controls before profitability evidence is considered promotion-worthy:

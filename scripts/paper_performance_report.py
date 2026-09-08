@@ -746,30 +746,49 @@ def _build_period_history_series(
 def _build_period_change_series(
     *,
     selected_day: str,
-    selected_net: float,
-    week_to_date_change: float,
+    selected_net: float | None,
+    week_to_date_change: float | None,
     all_days: list[str],
     history_by_day: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     selected_date = datetime.strptime(selected_day, "%Y%m%d").date()
+    week_start = (selected_date - timedelta(days=selected_date.weekday())).strftime(
+        "%Y%m%d"
+    )
     period_rows: list[dict[str, Any]] = [
         {
             "label": "WTD",
             "window_days": int(selected_date.weekday() + 1),
-            "change": round(float(week_to_date_change), 6),
+            "available_days": sum(
+                1 for day in all_days if week_start <= day <= selected_day
+            ),
+            "available": week_to_date_change is not None,
+            "change": (
+                round(week_to_date_change, 6)
+                if week_to_date_change is not None
+                else None
+            ),
         }
     ]
     for window_days in (7, 14, 21, 30):
         start_day = (selected_date - timedelta(days=window_days - 1)).strftime("%Y%m%d")
         prior_day = max((d for d in all_days if d < start_day), default="")
-        prior_net = float((history_by_day.get(prior_day) or {}).get("ending_net_pnl_total", 0.0) or 0.0)
+        prior_net = float(
+            (history_by_day.get(prior_day) or {}).get("ending_net_pnl_total", 0.0)
+            or 0.0
+        )
         available_days = sum(1 for d in all_days if start_day <= d <= selected_day)
         period_rows.append(
             {
                 "label": f"{window_days}D",
                 "window_days": int(window_days),
                 "available_days": int(available_days),
-                "change": round(float(selected_net - prior_net), 6),
+                "available": selected_net is not None,
+                "change": (
+                    round(selected_net - prior_net, 6)
+                    if selected_net is not None
+                    else None
+                ),
             }
         )
     return period_rows
@@ -2149,11 +2168,12 @@ def _summarize_day(
             "buy_count": int(stats.get("buy_count", 0)),
             "sell_count": int(stats.get("sell_count", 0)),
             "unique_symbols": int(len(stats.get("symbols", {}))),
-            "change_vs_previous_day": 0.0,
-            "realized_change_vs_previous_day": 0.0,
-            "ending_realized_pnl_total": 0.0,
-            "ending_unrealized_pnl_total": 0.0,
-            "ending_net_pnl_total": 0.0,
+            "change_vs_previous_day": None,
+            "realized_change_vs_previous_day": None,
+            "ending_realized_pnl_total": None,
+            "ending_unrealized_pnl_total": None,
+            "ending_net_pnl_total": None,
+            "unavailable_reason": "selected_day_has_no_book_snapshot",
             "top_profiles": _rank_counter(stats.get("profiles", Counter())),
             "top_symbols": _rank_counter(stats.get("symbols", Counter())),
             "top_strategies": _rank_counter(stats.get("strategies", Counter())),
@@ -2325,20 +2345,32 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         key_builder=_week_start_key,
         label_name="week",
     )
-    week_to_date_change = round(float(selected_net - prior_week_net), 6)
+    selected_available = bool(day_summary.get("available", False))
+    week_to_date_change = (
+        round(selected_net - prior_week_net, 6) if selected_available else None
+    )
 
     week_summary = {
         "week_start_day_utc": week_start,
         "week_end_day_utc": day,
         "available": bool(day_summary.get("available", False)),
+        "unavailable_reason": (
+            "" if selected_available else "selected_day_has_no_book_snapshot"
+        ),
         "executions": int(week_exec),
         "buy_count": int(week_buys),
         "sell_count": int(week_sells),
         "week_to_date_change": week_to_date_change,
-        "week_to_date_realized_change": round(float(selected_realized - prior_week_realized), 6),
+        "week_to_date_realized_change": (
+            round(selected_realized - prior_week_realized, 6)
+            if selected_available
+            else None
+        ),
         "rolling_change_days": int(max(int(week_days), 1)),
-        "rolling_change": round(float(selected_net - prior_rolling_net), 6),
-        "ending_net_pnl_total": round(float(selected_net), 6),
+        "rolling_change": (
+            round(selected_net - prior_rolling_net, 6) if selected_available else None
+        ),
+        "ending_net_pnl_total": round(selected_net, 6) if selected_available else None,
         "top_profiles": _rank_counter(week_profiles),
         "top_symbols": _rank_counter(week_symbols),
         "top_strategies": _rank_counter(week_strategies),
@@ -2398,8 +2430,8 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         "sleeve_latest": sleeve_latest_summary,
         "period_change_series": _build_period_change_series(
             selected_day=day,
-            selected_net=float(selected_net),
-            week_to_date_change=float(week_to_date_change),
+            selected_net=selected_net if selected_available else None,
+            week_to_date_change=week_to_date_change,
             all_days=all_days,
             history_by_day=history_by_day,
         ),
@@ -2764,6 +2796,11 @@ def _render_bundle_storage_unavailable(
     }
 
 
+def _format_pnl(value: Any, digits: int = 6) -> str:
+    number = _safe_float(value, float("nan"))
+    return f"{number:.{digits}f}" if math.isfinite(number) else "unavailable"
+
+
 def render_paper_performance_markdown(payload: dict[str, Any]) -> str:
     day = payload.get("day") if isinstance(payload.get("day"), dict) else {}
     week = payload.get("week") if isinstance(payload.get("week"), dict) else {}
@@ -2785,19 +2822,19 @@ def render_paper_performance_markdown(payload: dict[str, Any]) -> str:
         f"- available: {bool(day.get('available', False))}",
         f"- executions: {int(day.get('executions', 0) or 0)}",
         f"- buys/sells: {int(day.get('buy_count', 0) or 0)}/{int(day.get('sell_count', 0) or 0)}",
-        f"- ending_realized_pnl_total: {float(day.get('ending_realized_pnl_total', 0.0) or 0.0):.6f}",
-        f"- ending_unrealized_pnl_total: {float(day.get('ending_unrealized_pnl_total', 0.0) or 0.0):.6f}",
-        f"- ending_net_pnl_total: {float(day.get('ending_net_pnl_total', 0.0) or 0.0):.6f}",
-        f"- change_vs_previous_day: {float(day.get('change_vs_previous_day', 0.0) or 0.0):.6f}",
+        f"- ending_realized_pnl_total: {_format_pnl(day.get('ending_realized_pnl_total'))}",
+        f"- ending_unrealized_pnl_total: {_format_pnl(day.get('ending_unrealized_pnl_total'))}",
+        f"- ending_net_pnl_total: {_format_pnl(day.get('ending_net_pnl_total'))}",
+        f"- change_vs_previous_day: {_format_pnl(day.get('change_vs_previous_day'))}",
         "",
         "## Week",
         "",
         f"- week_start_day_utc: {week.get('week_start_day_utc', '')}",
         f"- week_end_day_utc: {week.get('week_end_day_utc', '')}",
         f"- executions: {int(week.get('executions', 0) or 0)}",
-        f"- week_to_date_change: {float(week.get('week_to_date_change', 0.0) or 0.0):.6f}",
-        f"- week_to_date_realized_change: {float(week.get('week_to_date_realized_change', 0.0) or 0.0):.6f}",
-        f"- rolling_{int(week.get('rolling_change_days', 7) or 7)}d_change: {float(week.get('rolling_change', 0.0) or 0.0):.6f}",
+        f"- week_to_date_change: {_format_pnl(week.get('week_to_date_change'))}",
+        f"- week_to_date_realized_change: {_format_pnl(week.get('week_to_date_realized_change'))}",
+        f"- rolling_{int(week.get('rolling_change_days', 7) or 7)}d_change: {_format_pnl(week.get('rolling_change'))}",
         "",
         "## Graphs",
         "",
@@ -3003,15 +3040,15 @@ def render_paper_performance_html(payload: dict[str, Any], *, source_path: Path,
           <h2>End Of Day</h2>
           <p>day_utc: {html.escape(str(day.get('day_utc', '')))}</p>
           <p>executions: {int(day.get('executions', 0) or 0)}</p>
-          <p>ending_net_pnl_total: {float(day.get('ending_net_pnl_total', 0.0) or 0.0):.6f}</p>
-          <p>change_vs_previous_day: {float(day.get('change_vs_previous_day', 0.0) or 0.0):.6f}</p>
+          <p>ending_net_pnl_total: {_format_pnl(day.get('ending_net_pnl_total'))}</p>
+          <p>change_vs_previous_day: {_format_pnl(day.get('change_vs_previous_day'))}</p>
         </div>
         <div class="stat-block">
           <h2>Week</h2>
           <p>week_start_day_utc: {html.escape(str(week.get('week_start_day_utc', '')))}</p>
           <p>week_end_day_utc: {html.escape(str(week.get('week_end_day_utc', '')))}</p>
-          <p>week_to_date_change: {float(week.get('week_to_date_change', 0.0) or 0.0):.6f}</p>
-          <p>rolling_{int(week.get('rolling_change_days', 7) or 7)}d_change: {float(week.get('rolling_change', 0.0) or 0.0):.6f}</p>
+          <p>week_to_date_change: {_format_pnl(week.get('week_to_date_change'))}</p>
+          <p>rolling_{int(week.get('rolling_change_days', 7) or 7)}d_change: {_format_pnl(week.get('rolling_change'))}</p>
         </div>
       </div>
     </section>
@@ -3209,9 +3246,9 @@ def main() -> int:
         print(
             "paper_performance "
             f"day={day_summary.get('day_utc', '')} "
-            f"eod_net={float(day_summary.get('ending_net_pnl_total', 0.0) or 0.0):.4f} "
-            f"day_change={float(day_summary.get('change_vs_previous_day', 0.0) or 0.0):.4f} "
-            f"wtd_change={float(week_summary.get('week_to_date_change', 0.0) or 0.0):.4f}"
+            f"eod_net={_format_pnl(day_summary.get('ending_net_pnl_total'), 4)} "
+            f"day_change={_format_pnl(day_summary.get('change_vs_previous_day'), 4)} "
+            f"wtd_change={_format_pnl(week_summary.get('week_to_date_change'), 4)}"
         )
     if not payload.get("ok"):
         return 2

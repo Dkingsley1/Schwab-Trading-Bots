@@ -2492,6 +2492,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     'PY="$(zsh ./scripts/ops/runtime_python.sh)"',
                     '"$PY" scripts/build_one_numbers_report.py',
                 ],
+                notes=[
+                    "For the unattended admission path, use ./scripts/ops/opsctl.sh one-numbers-refresh. It schedules from producer measurement time and the breaker freshness deadline, including off-hours; real resource and maintenance holds remain authoritative.",
+                ],
             ),
             _command_entry(
                 project_root,

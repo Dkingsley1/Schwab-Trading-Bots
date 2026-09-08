@@ -1498,6 +1498,8 @@ PY="$(zsh ./scripts/ops/runtime_python.sh)"
 "$PY" scripts/build_one_numbers_report.py
 ```
 
+For the unattended admission path, use ./scripts/ops/opsctl.sh one-numbers-refresh. It schedules from producer measurement time and the breaker freshness deadline, including off-hours; real resource and maintenance holds remain authoritative.
+
 ### Open the active bot stack PDF
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot

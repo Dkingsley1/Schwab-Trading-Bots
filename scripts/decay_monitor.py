@@ -147,7 +147,14 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             {
                 "label": str(row.get("label") or ""),
                 "window_days": _safe_int(row.get("window_days"), 0),
-                "change": round(_safe_float(row.get("change"), 0.0), 6),
+                "available": row.get("available") is not False
+                and row.get("change") is not None,
+                "change": (
+                    round(_safe_float(row.get("change"), 0.0), 6)
+                    if row.get("available") is not False
+                    and row.get("change") is not None
+                    else None
+                ),
                 "available_days": _safe_int(row.get("available_days"), 0),
             }
         )

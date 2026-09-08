@@ -50,29 +50,6 @@ else:
 PY
 }
 
-auth_epoch_refresh_required() {
-  "$PYTHON_BIN" - "$SUMMARY_PATH" "$AUTH_TOKEN_PATH" <<'PY'
-from datetime import datetime, timezone
-import json
-from pathlib import Path
-import sys
-
-summary_path = Path(sys.argv[1])
-token_path = Path(sys.argv[2])
-try:
-    payload = json.loads(summary_path.read_text(encoding="utf-8"))
-    raw = str(payload.get("data_quality_session_local_timestamp") or "").strip()
-    measured = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    if measured.tzinfo is None:
-        measured = measured.replace(tzinfo=timezone.utc)
-    token_mtime = token_path.stat().st_mtime
-except Exception:
-    print(0)
-    raise SystemExit(0)
-print(1 if measured.timestamp() + 2.0 < token_mtime else 0)
-PY
-}
-
 refresh_guard_output() {
   "$PYTHON_BIN" "$PROJECT_ROOT/scripts/resource_guard.py" --profile refresh
 }
@@ -96,8 +73,11 @@ if (( session_open == 1 )); then
   target_interval="$SESSION_INTERVAL"
 fi
 
-summary_age_seconds="$(age_seconds_for "$SUMMARY_PATH")"
-auth_epoch_refresh_due="$(auth_epoch_refresh_required)"
+refresh_policy=(${(s: :)$("$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/one_numbers_refresh_policy.py" --summary "$SUMMARY_PATH" --token "$AUTH_TOKEN_PATH" --target-interval "$target_interval" --breaker-max-age "$BREAKER_MAX_AGE_SECONDS" --shell)})
+summary_age_seconds="${refresh_policy[1]}"
+auth_epoch_refresh_due="${refresh_policy[2]}"
+target_interval="${refresh_policy[3]}"
+echo "one_numbers_refresh schedule measurement_status=${refresh_policy[4]} measurement_age_seconds=$summary_age_seconds target_interval=$target_interval auth_epoch_refresh_required=$auth_epoch_refresh_due session_open=$session_open"
 
 guard_output=""
 critical_refresh=0
