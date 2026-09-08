@@ -364,3 +364,63 @@ and no live orders were enabled. Additional permitted storage was requested.
   trading/governance shards; the primary cache had only 0.040 GiB free pages.
   These are retained rows, not a vacuum cleanup opportunity. An additional
   permitted archive/restore destination is required; the reserve was not lowered.
+
+## Operations And Qualification Continuation
+
+September 8, 2026. These corrections address C09-C11, C13, and C21 without
+closing the broader release requirements or changing candidate/order authority.
+
+- Storage memory admission counted valid `rc=2` storage-pressure assessments as
+  failed repairs and opened a one-hour circuit after three readings. Completed
+  observations now have their own outcome: fresh aware producer time, finite
+  typed memory metrics, a recognized pressure state, and an expected completed
+  return code are required. Admission retains the existing green/normal,
+  25-percent-free, and 8-GiB-swap ceilings. Blocked observations persist their
+  state; a valid observation does not imply permission to repair.
+- Only legacy misclassified read-only observation circuits receive one fresh
+  revalidation. The previous state remains in the receipt; invalid revalidation
+  keeps the circuit blocked. Mutating repairs never receive this exception.
+- The epoch refresh coordinator could publish snapshot timeout/lock stdout over
+  the last verified manifest, forcing the next builder back to a full scan.
+  Snapshot publication now belongs exclusively to the builder. Coordinator
+  failures use `runtime_training_snapshot_latest.json.refresh_failure.json`;
+  unchanged/old producer time cannot earn current-epoch credit. Timeout attempts
+  stop instead of immediately repeating a full exhausted worker budget.
+- Price sidecar reads previously bounded valid JSON rows only, before the
+  incremental deadline checks and even before snapshot reuse in full readers.
+  Reads now cap decompressed bytes at 32 MiB, records at 1 MiB, and time at ten
+  seconds or the remaining scan deadline. Malformed bytes count against the
+  budget. Full readers discover price sources only when a valid observation
+  lacks its own price; disabled sidecars do not scan or invent prices.
+- The default incremental scan allowed 180 seconds inside a 150-second worker.
+  Its default is now 30 seconds; incremental and seed-backfill scans share an
+  absolute deadline reserving publication time. Per-row deadline checks and
+  explicit sidecar/source-quota/error partial coverage supplement the existing
+  outer worker cleanup and hash-bound publication contract.
+
+At 21:34:40 UTC the unattended storage owner adopted the new observation
+contract and revalidated its prior circuit. The completed 21:36:38 wave verified
+two BOT_LOGS SQLite copies and reclaimed 1,260,326,912 allocated bytes (1.174 GiB)
+with identical hashes and SQLite quick-check results. Its owned maintenance hold
+was released. Local free space moved from 53.637 to 53.464 GiB during this wave;
+external savings are not internal capacity. Offload's separate repair circuit
+remained respected. BOT_LOGS had about 112 GiB free, below its 125-GiB offload
+reserve. Retained originals/history were not deleted to meet a target.
+
+The requested production snapshot rebuild deferred through the normal
+maintenance owner for `host_pressure,outside_quiet_window`. The previously
+published timeout remains unavailable evidence until a producer rebuild succeeds;
+no timestamp was fabricated and no guard was overridden. Additional explicitly
+approved archive/restore capacity and an off-host alert destination were requested.
+Full production restore, independent monitoring delivery, clean accepted release,
+candidate samples and market-session validation remain open.
+
+Verification: the final selected 17-file suite passed **294 tests**, including an
+actual isolated snapshot worker publishing rows and a matching manifest. This is
+not a full repository or production-load test. Seven lightweight diagnostic
+owners were refreshed without applying runtime recommendations; writer observation
+reported ready, while plumbing retained three real blockers. The 21:42 UTC
+regression guard and non-applying autopilot retained two blocked and five degraded
+surfaces. Project guard passed all six checks, and regenerated command hygiene
+reported 234 entries with no drift. No candidate, credential, risk limit, protected
+volume, or unrelated working-tree edit was changed by this continuation.

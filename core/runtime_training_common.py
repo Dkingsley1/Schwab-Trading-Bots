@@ -7,6 +7,7 @@ import json
 import math
 import os
 import sys
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -586,16 +587,55 @@ def _runtime_row_price(row: Mapping[str, Any], features: Mapping[str, Any] | Non
     return 0.0
 
 
-def _iter_runtime_price_sidecar_rows(paths: Sequence[Path], *, max_rows: int = 0) -> Iterable[Dict[str, Any]]:
+def _iter_runtime_price_sidecar_rows(
+    paths: Sequence[Path],
+    *,
+    max_rows: int = 0,
+    deadline_monotonic: float | None = None,
+    max_bytes: int = 32 * 1024 * 1024,
+    stats: Dict[str, Any] | None = None,
+) -> Iterable[Dict[str, Any]]:
+    # Bound decompressed bytes, including malformed/blank rows, not just JSON yields.
+    stats = stats if stats is not None else {}
+    deadline = (
+        min(deadline_monotonic, time.monotonic() + 10)
+        if deadline_monotonic is not None
+        else time.monotonic() + 10
+    )
+    byte_budget = max(int(max_bytes), 1)
+    scanned_bytes = 0
     yielded = 0
     for raw_path in paths:
         path = Path(raw_path)
         try:
-            handle_cm = gzip.open(path, "rt", encoding="utf-8") if path.suffix == ".gz" else path.open("r", encoding="utf-8")
+            if time.monotonic() >= deadline:
+                stats["timed_out"] = True
+                return
+            handle_cm = (
+                gzip.open(path, "rb") if path.suffix == ".gz" else path.open("rb")
+            )
             with handle_cm as handle:
-                for line in handle:
-                    if max_rows > 0 and yielded >= max_rows:
+                while True:
+                    if time.monotonic() >= deadline:
+                        stats["timed_out"] = True
                         return
+                    if max_rows > 0 and yielded >= max_rows:
+                        stats["row_limit_hit"] = True
+                        return
+                    remaining = byte_budget - scanned_bytes
+                    if remaining <= 0:
+                        stats["byte_limit_hit"] = True
+                        return
+                    line = handle.readline(min(remaining, 1024 * 1024))
+                    if not line:
+                        break
+                    scanned_bytes += len(line)
+                    stats["scanned_bytes"] = scanned_bytes
+                    if not line.endswith(b"\n"):
+                        # Do not parse a budget-truncated record as a complete observation.
+                        if len(line) >= min(remaining, 1024 * 1024):
+                            stats["record_limit_hit"] = True
+                            return
                     line = line.strip()
                     if not line:
                         continue
@@ -605,8 +645,10 @@ def _iter_runtime_price_sidecar_rows(paths: Sequence[Path], *, max_rows: int = 0
                         continue
                     if isinstance(row, dict):
                         yielded += 1
+                        stats["row_count"] = yielded
                         yield row
         except Exception:
+            stats["file_error_count"] = int(stats.get("file_error_count", 0)) + 1
             continue
 
 
@@ -2237,12 +2279,7 @@ def load_runtime_observation_sequences(
     mode_allow = {str(x).strip().lower() for x in (mode_allowlist or []) if str(x).strip()}
     symbol_allow = {str(x).strip().upper() for x in (symbol_allowlist or []) if str(x).strip()}
     gap_fill_context = _load_runtime_gap_fill_context(root)
-    sidecar_paths = _recent_decision_paths(root, lookback_days=max(int(lookback_days), 1))
-    sidecar_max_rows = max(int(os.getenv("RUNTIME_TRAIN_PRICE_SIDECAR_MAX_ROWS", "200000") or 200000), 1000)
-    price_sidecar = _build_runtime_price_sidecar_from_rows(
-        _iter_runtime_price_sidecar_rows(sidecar_paths, max_rows=sidecar_max_rows),
-        max_rows=sidecar_max_rows,
-    )
+    price_sidecar: Dict[str, Any] | None = None
     effective_prefer_sqlite = _env_flag("RUNTIME_TRAIN_PREFER_SQLITE", False) if prefer_sqlite is None else bool(prefer_sqlite)
 
     if allow_snapshot and _env_flag("RUNTIME_TRAIN_USE_SNAPSHOT", False):
@@ -2350,6 +2387,24 @@ def load_runtime_observation_sequences(
         if price <= 0.0:
             price = _runtime_row_price(row, features)
         if price <= 0.0:
+            if price_sidecar is None:
+                price_sidecar = {}
+                if _env_flag("RUNTIME_TRAIN_PRICE_SIDECAR_ENABLED", True):
+                    sidecar_paths = _recent_decision_paths(
+                        root, lookback_days=max(int(lookback_days), 1)
+                    )
+                    sidecar_max_rows = max(
+                        _safe_int(
+                            os.getenv("RUNTIME_TRAIN_PRICE_SIDECAR_MAX_ROWS"), 200000
+                        ),
+                        1,
+                    )
+                    price_sidecar = _build_runtime_price_sidecar_from_rows(
+                        _iter_runtime_price_sidecar_rows(
+                            sidecar_paths, max_rows=sidecar_max_rows
+                        ),
+                        max_rows=sidecar_max_rows,
+                    )
             sidecar_entry = _lookup_runtime_sidecar_context(
                 price_sidecar,
                 symbol=symbol,

@@ -233,7 +233,11 @@ def _artifact_present(path: Path) -> bool:
         return False
 
 
-def _write_refresh_failure_envelope(path: Path, payload: dict[str, Any]) -> Path:
+def _write_refresh_failure_envelope(
+    path: Path, payload: dict[str, Any], *, preserve_artifact: bool = False
+) -> Path:
+    if preserve_artifact:
+        path = path.with_name(f"{path.name}.refresh_failure.json")
     suffix = path.suffix.lower()
     if suffix == ".json":
         write_payload(path, payload)
@@ -283,6 +287,18 @@ def _artifact_refreshed_since(
     if previous_signature is None:
         return modified_during_cycle
     return modified_during_cycle and current_signature != previous_signature
+
+
+def _producer_timestamp_is_current(path: Path, started: datetime) -> bool:
+    payload = _load_json(path)
+    try:
+        timestamp = datetime.fromisoformat(
+            str(payload.get("timestamp_utc", "")).replace("Z", "+00:00")
+        )
+        now = datetime.now(timezone.utc)
+        return timestamp.tzinfo is not None and started <= timestamp <= now
+    except (ValueError, TypeError, OverflowError):
+        return False
 
 
 def _step_specs(project_root: Path) -> list[dict[str, Any]]:
@@ -1515,6 +1531,7 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
         },
         {
             "name": "runtime_training_snapshot_verified",
+            "producer_owned_publication": True,
             "payload_path": health_root / "runtime_training_snapshot_latest.json",
             "cmd": [
                 str(PY),
@@ -4228,7 +4245,10 @@ def _dependency_failure_result(
         path_envelope["refresh_operating_contract"] = path_envelope[
             "operating_contract"
         ]
-        write_payload(path, path_envelope)
+        if spec.get("producer_owned_publication"):
+            _write_refresh_failure_envelope(path, path_envelope, preserve_artifact=True)
+        else:
+            write_payload(path, path_envelope)
     return {
         "cmd": list(spec.get("cmd") or []),
         "rc": 2,
@@ -4242,11 +4262,23 @@ def _dependency_failure_result(
         "timeout_cleanup": {},
         "refresh_attempt_count": 0,
         "refresh_attempts": [],
-        "artifact_refreshed_this_cycle": True,
-        "artifact_path_freshness": {str(path): True for path in paths},
+        "artifact_refreshed_this_cycle": not bool(
+            spec.get("producer_owned_publication")
+        ),
+        "artifact_path_freshness": {
+            str(path): not bool(spec.get("producer_owned_publication"))
+            for path in paths
+        },
         "published_from_stdout": False,
         "failure_envelope_published": True,
-        "failure_envelope_paths": [str(path) for path in paths],
+        "failure_envelope_paths": [
+            str(
+                path.with_name(f"{path.name}.refresh_failure.json")
+                if spec.get("producer_owned_publication")
+                else path
+            )
+            for path in paths
+        ],
         "dependency_blocked": True,
         "missing_current_epoch_dependencies": missing_dependencies,
     }
@@ -4285,6 +4317,10 @@ def _run_spec_with_freshness(
                 attempt_started,
                 previous_signature=previous_signatures[path],
             )
+            and (
+                not spec.get("producer_owned_publication")
+                or _producer_timestamp_is_current(path, attempt_started)
+            )
             for path in tracked_paths
         }
         published_this_attempt = False
@@ -4292,6 +4328,12 @@ def _run_spec_with_freshness(
             not path_freshness[payload_path]
             and result.get("payload_source") == "stdout"
             and payload
+            and not spec.get("producer_owned_publication")
+            and not result.get("timed_out")
+            and int(result.get("rc", 1)) in {0, 2}
+            and payload.get("publication_verified") is not False
+            and str(payload.get("overall_status", ""))
+            not in {"timed_out", "already_running"}
         ):
             write_payload(payload_path, payload)
             published_from_stdout = True
@@ -4315,6 +4357,8 @@ def _run_spec_with_freshness(
             }
         )
         if refreshed_this_cycle:
+            break
+        if result.get("timed_out") or int(result.get("rc", 1)) == 124:
             break
 
     result = dict(result)
@@ -4352,7 +4396,9 @@ def _run_spec_with_freshness(
                 "operating_contract"
             ]
             failure_envelope_path = _write_refresh_failure_envelope(
-                stale_path, failure_envelope
+                stale_path,
+                failure_envelope,
+                preserve_artifact=bool(spec.get("producer_owned_publication")),
             )
             if _artifact_present(failure_envelope_path):
                 failure_envelope_paths.append(str(failure_envelope_path))

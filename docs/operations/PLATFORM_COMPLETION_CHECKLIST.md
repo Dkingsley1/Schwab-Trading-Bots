@@ -68,6 +68,15 @@ Status vocabulary:
 | C25 | Complete test evidence / Partial | Run appropriate unit, integration, contract, migration, restart, failure-injection, concurrency, load, and long-duration tests against the actual release artifact. The 515-test hardening run covered 29 files; subsequent publication verification passed 2,268 tests and two subtests across 126 changed test files. Neither proves every production workflow. Track gaps and flaky tests explicitly. |
 | C26 | Documentation and operator consistency / Partial | Every control has one owner, inputs/outputs, authority boundary, failure behavior, recovery procedure, evidence path, and escalation destination. Generated commands, dashboards, runbooks, and readiness summaries must agree with the implemented behavior. |
 
+September 8 continuation: C11's misclassified storage-memory circuit is corrected
+and its unattended adoption was observed at 21:34 UTC. C10/C13/C21 now have
+bounded sidecar scans, shared incremental/seed deadlines, producer-owned snapshot
+publication, and separate coordinator failure receipts. Those changes do not close
+the broad areas: the production snapshot verification attempt deferred for host
+pressure/quiet hours, internal capacity remains below reserve, and full restore,
+off-host monitoring, clean candidate acceptance, and organic qualification remain
+separate prerequisites. See the hardening ledger for the dated evidence.
+
 ## Completion Rules
 
 For each required row record the accountable owner, versioned contract, baseline

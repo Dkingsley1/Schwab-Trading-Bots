@@ -7,9 +7,125 @@ from scripts import build_runtime_training_snapshot as src
 import hashlib
 import json
 import sys
+import subprocess
 from datetime import datetime, timezone
 
 import pytest
+
+
+def test_real_snapshot_worker_publishes_matching_manifest_and_rows(tmp_path):
+    now = datetime.now(timezone.utc)
+    source = tmp_path / "decisions" / "shadow" / f"trade_decisions_{now:%Y%m%d}.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "symbol": "SPY",
+                "strategy": "grand_master_bot",
+                "features": {"last_price": 100},
+                "metadata": {
+                    "layer": "grand_master",
+                    "mode": "shadow",
+                    "snapshot_id": "fixture-one",
+                },
+            }
+        )
+        + "\n"
+    )
+    rows = tmp_path / "rows.jsonl"
+    health = tmp_path / "health.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(src.__file__)),
+            "--project-root",
+            str(tmp_path),
+            "--rows-path",
+            str(rows),
+            "--health-path",
+            str(health),
+            "--lock-path",
+            str(tmp_path / "snapshot.lock"),
+            "--seed-health-path",
+            str(tmp_path / "absent-seed.json"),
+            "--no-prefer-sqlite",
+            "--max-runtime-seconds",
+            "30",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=40,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["row_count"] == 1
+    assert report["rows_sha256"] == hashlib.sha256(rows.read_bytes()).hexdigest()
+    assert json.loads(health.read_text()) == report
+    assert '"snapshot_phase": "completed"' in result.stderr
+
+
+def test_incremental_sidecar_shares_scan_deadline_and_reports_partial(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "rows.jsonl"
+    path.write_text("{}\n")
+    seen = {}
+    monkeypatch.setenv("RUNTIME_TRAIN_PRICE_SIDECAR_ENABLED", "1")
+
+    def bounded_sidecar(paths, **kwargs):
+        seen.update(kwargs)
+        kwargs["stats"]["byte_limit_hit"] = True
+        return iter([])
+
+    monkeypatch.setattr(src.rtc, "_iter_runtime_price_sidecar_rows", bounded_sidecar)
+    monkeypatch.setattr(src.rtc, "_load_runtime_gap_fill_context", lambda *a: {})
+    before = src.time.monotonic()
+    count, stats = src._merge_candidate_rows_into_sequences(
+        {},
+        candidate_paths=[path],
+        project_root=tmp_path,
+        since_utc=datetime.now(timezone.utc),
+        mode_allowlist=[],
+        symbol_allowlist=[],
+        max_runtime_seconds=30,
+    )
+    assert before + 30 <= seen["deadline_monotonic"] <= src.time.monotonic() + 30
+    assert count == 0
+    assert stats["price_sidecar_scan"]["byte_limit_hit"]
+    assert stats["candidate_scan_partial"]
+
+
+def test_expired_worker_scan_budget_preserves_base_without_reopening_sources(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "rows.jsonl"
+    path.write_text("{}\n")
+    base = {("shadow", "SPY"): [{"snapshot_id": "existing"}]}
+    monkeypatch.setenv("RUNTIME_TRAIN_PRICE_SIDECAR_ENABLED", "0")
+    monkeypatch.setattr(src.rtc, "_load_runtime_gap_fill_context", lambda *a: {})
+    monkeypatch.setattr(
+        src,
+        "_iter_recent_json_rows_newest_first",
+        lambda *a, **kw: pytest.fail("scan resumed after publication reserve"),
+    )
+    count, stats = src._merge_candidate_rows_into_sequences(
+        base,
+        candidate_paths=[path],
+        project_root=tmp_path,
+        since_utc=datetime.now(timezone.utc),
+        mode_allowlist=[],
+        symbol_allowlist=[],
+        max_runtime_seconds=180,
+        deadline_monotonic=src.time.monotonic() - 1,
+    )
+    assert count == 0
+    assert base[("shadow", "SPY")][0]["snapshot_id"] == "existing"
+    assert stats["candidate_scan_timed_out"]
+    assert stats["candidate_scan_partial"]
+
 
 def test_single_flight_lock_reports_already_running_when_snapshot_builder_is_active(tmp_path: Path) -> None:
     lock_path = tmp_path / "governance" / "locks" / "runtime_training_snapshot.lock"

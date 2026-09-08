@@ -1,6 +1,7 @@
 import json
 import os
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts.ops import runtime_artifact_refresh
@@ -432,6 +433,123 @@ def test_runtime_artifact_refresh_publishes_current_stdout_when_producer_does_no
     assert (
         json.loads(artifact_path.read_text(encoding="utf-8"))["generation"] == "current"
     )
+
+
+def test_snapshot_refresh_timeout_preserves_verified_manifest_and_reports_failure(
+    tmp_path,
+):
+    spec = next(
+        row
+        for row in runtime_artifact_refresh._step_specs(tmp_path)
+        if row["name"] == "runtime_training_snapshot_verified"
+    )
+    path = spec["payload_path"]
+    original = {
+        "timestamp_utc": "2026-09-01T00:00:00Z",
+        "schema_version": 2,
+        "rows_sha256": "a" * 64,
+        "rows_path": "rows.jsonl",
+    }
+    _write_json(path, original)
+    before = path.read_bytes()
+    calls = []
+
+    def runner(spec, root):
+        calls.append(spec["name"])
+        return {
+            "rc": 124,
+            "timed_out": False,
+            "payload_source": "stdout",
+            "payload": {
+                "ok": False,
+                "overall_status": "timed_out",
+                "publication_verified": False,
+            },
+        }
+
+    result = runtime_artifact_refresh._run_spec_with_freshness(spec, tmp_path, runner)
+    assert path.read_bytes() == before
+    assert len(calls) == 1
+    assert not result["artifact_refreshed_this_cycle"]
+    assert not result["published_from_stdout"]
+    assert result["failure_envelope_published"]
+    failure = json.loads(Path(result["failure_envelope_paths"][0]).read_text())
+    assert failure["producer_rc"] == 124
+    assert failure["stale_source_rejected"]
+
+
+def test_snapshot_refresh_never_publishes_already_running_stdout(tmp_path):
+    spec = next(
+        row
+        for row in runtime_artifact_refresh._step_specs(tmp_path)
+        if row["name"] == "runtime_training_snapshot_verified"
+    )
+    result = runtime_artifact_refresh._run_spec_with_freshness(
+        spec,
+        tmp_path,
+        lambda *a: {
+            "rc": 0,
+            "payload_source": "stdout",
+            "payload": {"ok": True, "overall_status": "already_running"},
+        },
+    )
+    assert not spec["payload_path"].exists()
+    assert not result["artifact_refreshed_this_cycle"]
+    assert result["failure_envelope_published"]
+
+
+def test_snapshot_dependency_failure_preserves_producer_owned_manifest(tmp_path):
+    spec = next(
+        row
+        for row in runtime_artifact_refresh._step_specs(tmp_path)
+        if row["name"] == "runtime_training_snapshot_verified"
+    )
+    path = spec["payload_path"]
+    _write_json(path, {"rows_sha256": "retained"})
+    before = path.read_bytes()
+    result = runtime_artifact_refresh._dependency_failure_result(spec, ["upstream"])
+    assert path.read_bytes() == before
+    assert not result["artifact_refreshed_this_cycle"]
+    assert result["dependency_blocked"]
+    assert Path(result["failure_envelope_paths"][0]).exists()
+
+
+def test_snapshot_mtime_rewrite_cannot_refresh_old_producer_evidence(tmp_path):
+    spec = next(
+        row
+        for row in runtime_artifact_refresh._step_specs(tmp_path)
+        if row["name"] == "runtime_training_snapshot_verified"
+    )
+    old = {"timestamp_utc": "2000-01-01T00:00:00Z", "rows_sha256": "preserved"}
+
+    def runner(spec, root):
+        _write_json(spec["payload_path"], old)
+        return {"rc": 0, "payload": old, "payload_source": "stdout"}
+
+    result = runtime_artifact_refresh._run_spec_with_freshness(spec, tmp_path, runner)
+    assert not result["artifact_refreshed_this_cycle"]
+    assert json.loads(spec["payload_path"].read_text()) == old
+
+
+def test_snapshot_real_producer_publication_can_refresh_current_epoch(tmp_path):
+    spec = next(
+        row
+        for row in runtime_artifact_refresh._step_specs(tmp_path)
+        if row["name"] == "runtime_training_snapshot_verified"
+    )
+
+    def runner(spec, root):
+        payload = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "rows_sha256": "new",
+            "ok": True,
+        }
+        _write_json(spec["payload_path"], payload)
+        return {"rc": 0, "payload": payload, "payload_source": "stdout"}
+
+    result = runtime_artifact_refresh._run_spec_with_freshness(spec, tmp_path, runner)
+    assert result["artifact_refreshed_this_cycle"]
+    assert not result["published_from_stdout"]
 
 
 def test_runtime_artifact_refresh_blocks_consumers_when_current_epoch_dependency_did_not_publish(

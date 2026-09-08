@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CORE_DIR = PROJECT_ROOT / "core"
@@ -13,6 +14,94 @@ if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))
 
 import runtime_training_common as rtc
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_price_sidecar_caps_decompressed_bytes_even_without_valid_rows(
+    tmp_path, compressed
+):
+    path = tmp_path / ("rows.jsonl.gz" if compressed else "rows.jsonl")
+    data = b"invalid\n" * 1000 + b'{"symbol":"SPY"}\n'
+    path.write_bytes(gzip.compress(data) if compressed else data)
+    stats = {}
+    assert (
+        list(rtc._iter_runtime_price_sidecar_rows([path], max_bytes=64, stats=stats))
+        == []
+    )
+    assert stats["scanned_bytes"] == 64
+    assert stats["byte_limit_hit"]
+
+
+def test_price_sidecar_does_not_parse_budget_truncated_record(tmp_path):
+    path = tmp_path / "rows.jsonl"
+    path.write_bytes(b'{"symbol":"SPY"}' + b" " * 100 + b"\n")
+    stats = {}
+    assert (
+        list(rtc._iter_runtime_price_sidecar_rows([path], max_bytes=16, stats=stats))
+        == []
+    )
+    assert stats["record_limit_hit"]
+
+
+def test_price_sidecar_expired_deadline_does_not_open_source(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtc.time, "monotonic", lambda: 10)
+    monkeypatch.setattr(
+        Path, "open", lambda *a, **kw: pytest.fail("expired scan opened source")
+    )
+    stats = {}
+    assert (
+        list(
+            rtc._iter_runtime_price_sidecar_rows(
+                [tmp_path / "rows"], deadline_monotonic=9, stats=stats
+            )
+        )
+        == []
+    )
+    assert stats["timed_out"]
+
+
+@pytest.mark.parametrize("price_field", ["features", "market"])
+def test_priced_runtime_rows_do_not_trigger_sidecar_scan(
+    tmp_path, monkeypatch, price_field
+):
+    row = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "symbol": "SPY",
+        "strategy": "grand_master_bot",
+        "metadata": {"layer": "grand_master", "mode": "shadow", "snapshot_id": "one"},
+        price_field: {"last_price": 100},
+    }
+    monkeypatch.setattr(
+        rtc, "_iter_runtime_observation_rows", lambda *a, **kw: iter([row])
+    )
+    monkeypatch.setattr(rtc, "_load_runtime_gap_fill_context", lambda *a: {})
+    monkeypatch.setattr(
+        rtc,
+        "_recent_decision_paths",
+        lambda *a, **kw: pytest.fail("unneeded sidecar discovery"),
+    )
+    rows = rtc.load_runtime_observation_sequences(tmp_path, allow_snapshot=False)
+    assert rows[("shadow", "SPY")][0]["price"] == 100
+
+
+def test_disabled_sidecar_does_not_scan_or_invent_price(tmp_path, monkeypatch):
+    monkeypatch.setenv("RUNTIME_TRAIN_PRICE_SIDECAR_ENABLED", "0")
+    row = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "symbol": "SPY",
+        "strategy": "grand_master_bot",
+        "metadata": {"layer": "grand_master", "mode": "shadow"},
+    }
+    monkeypatch.setattr(
+        rtc, "_iter_runtime_observation_rows", lambda *a, **kw: iter([row])
+    )
+    monkeypatch.setattr(rtc, "_load_runtime_gap_fill_context", lambda *a: {})
+    monkeypatch.setattr(
+        rtc,
+        "_recent_decision_paths",
+        lambda *a, **kw: pytest.fail("disabled sidecar discovery"),
+    )
+    assert rtc.load_runtime_observation_sequences(tmp_path, allow_snapshot=False) == {}
 
 
 def test_safe_int_handles_numeric_strings_and_bad_values() -> None:

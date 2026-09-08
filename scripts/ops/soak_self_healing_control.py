@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -33,6 +34,7 @@ DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "soak_self_healing
 DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "soak_self_healing.lock"
 DEFAULT_MAX_FAILURES_BEFORE_CIRCUIT = 3
 DEFAULT_CIRCUIT_OPEN_SECONDS = 3600
+STORAGE_MEMORY_STEP = "storage_recovery_memory_admission"
 
 MANAGED_DAILY_FAILURES = {
     "feature_store_manifest",
@@ -355,7 +357,70 @@ def _update_step_state(
         "circuit_until_utc": circuit_until.isoformat() if circuit_until else "",
         "circuit_reason": "bounded_repair_failure_budget_exhausted" if circuit_until else "",
     }
+    if step_name == STORAGE_MEMORY_STEP:
+        steps[step_name]["observation_contract_version"] = 1
+        steps[step_name]["admission_ready"] = bool(row.get("admission_ready"))
+        steps[step_name]["observation_reason"] = row.get("observation_reason", "")
+        if row.get("legacy_circuit_revalidation"):
+            steps[step_name]["legacy_circuit_revalidation"] = row[
+                "legacy_circuit_revalidation"
+            ]
     state["steps"] = steps
+
+
+def _storage_memory_observation(result: dict[str, Any]) -> dict[str, Any]:
+    """A blocked storage assessment can still be a valid memory observation."""
+    payload = _as_dict(result.get("parsed"))
+    snapshot = _as_dict(payload.get("memory_snapshot"))
+    invalid = {
+        "ok": False,
+        "admission_ready": False,
+        "observation_reason": "invalid_memory_observation",
+    }
+    if (
+        result.get("timed_out")
+        or type(result.get("rc")) is not int
+        or result["rc"] not in {0, 2}
+    ):
+        return invalid
+    try:
+        measured = datetime.fromisoformat(
+            str(payload.get("timestamp_utc", "")).replace("Z", "+00:00")
+        )
+        if (
+            measured.tzinfo is None
+            or not 0 <= (_utc_now() - measured).total_seconds() <= 90
+        ):
+            return invalid
+    except (TypeError, ValueError, OverflowError):
+        return invalid
+    free = snapshot.get("memory_free_pct")
+    swap = snapshot.get("swap_used_gb")
+    try:
+        valid_metrics = all(
+            type(value) in {int, float} and math.isfinite(value)
+            for value in (free, swap)
+        )
+    except OverflowError:
+        valid_metrics = False
+    if not valid_metrics:
+        return invalid
+    pressure = snapshot.get("memory_pressure_state")
+    if (
+        not 0 <= free <= 100
+        or swap < 0
+        or type(pressure) is not str
+        or pressure not in {"green", "normal", "yellow", "red"}
+    ):
+        return invalid
+    admitted = pressure in {"green", "normal"} and free >= 25 and swap <= 8
+    return {
+        "ok": True,
+        "admission_ready": admitted,
+        "observation_reason": (
+            "memory_admitted" if admitted else "memory_pressure_not_admitted"
+        ),
+    }
 
 
 def _run_step(
@@ -373,7 +438,16 @@ def _run_step(
     circuit_open_seconds: int = DEFAULT_CIRCUIT_OPEN_SECONDS,
 ) -> dict[str, Any]:
     circuit = _repair_circuit_active(state, name)
-    if bool(circuit.get("active")):
+    prior = _as_dict(_as_dict(state.get("steps")).get(name))
+    # Recheck only legacy, misclassified read-only observations, never repairs.
+    legacy_revalidation = bool(
+        name == STORAGE_MEMORY_STEP
+        and circuit.get("active")
+        and prior.get("last_rc") == 2
+        and prior.get("last_status") == "blocked"
+        and not prior.get("observation_contract_version")
+    )
+    if bool(circuit.get("active")) and not legacy_revalidation:
         row = {
             "name": name,
             "command": cmd,
@@ -398,6 +472,14 @@ def _run_step(
         return row
     result = _run_command(cmd, project_root=project_root, timeout_sec=timeout_sec, env=env)
     row = {"name": name, "executed": True, **result}
+    if name == STORAGE_MEMORY_STEP:
+        row["assessment_payload_ok"] = bool(result.get("ok"))
+        row.update(_storage_memory_observation(result))
+        receipt = prior.get("legacy_circuit_revalidation")
+        if legacy_revalidation:
+            receipt = {"timestamp_utc": _iso_now(), "previous_state": prior}
+        if receipt:
+            row["legacy_circuit_revalidation"] = receipt
     _update_step_state(
         state,
         name,
@@ -723,7 +805,7 @@ def build_storage_recovery_payload(
         else:
             memory = _run_step(
                 steps,
-                name="storage_recovery_memory_admission",
+                name=STORAGE_MEMORY_STEP,
                 cmd=_cmd(
                     resolve_runtime_python(project_root),
                     project_root / "scripts/ops/memory_efficiency_control.py",
@@ -735,13 +817,10 @@ def build_storage_recovery_payload(
                 env=env,
                 state=state,
             )
-            snapshot = _as_dict(_as_dict(memory.get("parsed")).get("memory_snapshot"))
             admitted = bool(
                 memory.get("executed")
-                and not memory.get("timed_out")
-                and snapshot.get("memory_pressure_state") in {"green", "normal"}
-                and _safe_float(snapshot.get("memory_free_pct")) >= 25.0
-                and _safe_float(snapshot.get("swap_used_gb"), 100.0) <= 8.0
+                and memory.get("ok")
+                and memory.get("admission_ready")
             )
             reason = (
                 "bounded_storage_recovery" if admitted else "memory_admission_not_ready"
@@ -845,6 +924,7 @@ def build_storage_recovery_payload(
                 state=state,
                 cooldown_seconds=3600,
             )
+    if any(step.get("executed") for step in steps):
         _write_state(project_root, state)
     free_after = shutil.disk_usage(project_root).free / 1024**3
     payload = {

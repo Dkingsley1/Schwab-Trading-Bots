@@ -587,6 +587,13 @@ def _iter_recent_json_rows_newest_first(
                         pending = b""
                         complete_lines = lines
                     for raw_line in reversed(complete_lines):
+                        if (
+                            deadline_monotonic is not None
+                            and time.monotonic() >= deadline_monotonic
+                        ):
+                            if stats is not None:
+                                stats["timed_out"] = True
+                            return
                         if max_rows > 0 and parsed_rows >= max_rows:
                             if stats is not None:
                                 stats["row_limit_hit"] = True
@@ -709,9 +716,16 @@ def _merge_candidate_rows_into_sequences(
     symbol_allowlist: list[str],
     max_runtime_seconds: float = 0.0,
     max_candidate_rows: int = 0,
+    deadline_monotonic: float | None = None,
 ) -> tuple[int, dict[str, Any]]:
     started = time.monotonic()
     deadline = started + max_runtime_seconds if max_runtime_seconds > 0 else None
+    if deadline_monotonic is not None:
+        deadline = (
+            min(deadline, deadline_monotonic)
+            if deadline is not None
+            else deadline_monotonic
+        )
     candidate_paths = sorted(candidate_paths, key=_path_mtime_sort_key, reverse=True)
     scan_stats: dict[str, Any] = {
         "candidate_scan_budget_seconds": round(float(max_runtime_seconds), 3),
@@ -724,10 +738,16 @@ def _merge_candidate_rows_into_sequences(
         "candidate_file_error_count": 0,
     }
     price_sidecar: dict[str, Any] = {}
+    sidecar_stats: dict[str, Any] = {}
     if candidate_paths and rtc._env_flag("RUNTIME_TRAIN_PRICE_SIDECAR_ENABLED", True):
         sidecar_max_rows = max(rtc._safe_int(os.getenv("RUNTIME_TRAIN_PRICE_SIDECAR_MAX_ROWS"), 5000), 0)
         price_sidecar = rtc._build_runtime_price_sidecar_from_rows(
-            rtc._iter_runtime_price_sidecar_rows(candidate_paths, max_rows=sidecar_max_rows),
+            rtc._iter_runtime_price_sidecar_rows(
+                candidate_paths,
+                max_rows=sidecar_max_rows,
+                deadline_monotonic=deadline,
+                stats=sidecar_stats,
+            ),
             max_rows=sidecar_max_rows,
         )
 
@@ -840,8 +860,22 @@ def _merge_candidate_rows_into_sequences(
             )
             base_sequences[key] = existing
     scan_stats["candidate_scan_elapsed_seconds"] = round(float(time.monotonic() - started), 3)
+    scan_stats["price_sidecar_scan"] = sidecar_stats
     scan_stats["candidate_scan_partial"] = bool(
-        scan_stats["candidate_scan_timed_out"] or scan_stats["candidate_scan_row_limit_hit"]
+        scan_stats["candidate_scan_timed_out"]
+        or scan_stats["candidate_scan_row_limit_hit"]
+        or scan_stats["candidate_source_quota_hit_count"]
+        or scan_stats["candidate_file_error_count"]
+        or any(
+            sidecar_stats.get(key)
+            for key in (
+                "timed_out",
+                "row_limit_hit",
+                "byte_limit_hit",
+                "record_limit_hit",
+                "file_error_count",
+            )
+        )
     )
     return int(merged_row_count), scan_stats
 
@@ -857,6 +891,7 @@ def _incremental_snapshot_sequences(
     prefer_sqlite: bool,
     max_runtime_seconds: float = 0.0,
     max_candidate_rows: int = 0,
+    deadline_monotonic: float | None = None,
 ) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], dict[str, Any]] | None:
     if not _summary_config_compatible(
         summary,
@@ -908,6 +943,7 @@ def _incremental_snapshot_sequences(
         symbol_allowlist=symbol_allowlist,
         max_runtime_seconds=max_runtime_seconds,
         max_candidate_rows=max_candidate_rows,
+        deadline_monotonic=deadline_monotonic,
     )
 
     return base_sequences, {
@@ -973,6 +1009,9 @@ def _seeded_snapshot_sequences(
     lookback_days: int,
     mode_allowlist: list[str],
     symbol_allowlist: list[str],
+    max_runtime_seconds: float = 30.0,
+    max_candidate_rows: int = 25000,
+    deadline_monotonic: float | None = None,
 ) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], dict[str, Any]] | None:
     if not _summary_can_seed_target(
         seed_summary,
@@ -1038,6 +1077,9 @@ def _seeded_snapshot_sequences(
         since_utc=target_since_utc,
         mode_allowlist=mode_allowlist,
         symbol_allowlist=symbol_allowlist,
+        max_runtime_seconds=max_runtime_seconds,
+        max_candidate_rows=max_candidate_rows,
+        deadline_monotonic=deadline_monotonic,
     )
     return base_sequences, {
         "build_mode": "seed_backfill_refresh",
@@ -1186,7 +1228,7 @@ def main() -> int:
     parser.add_argument(
         "--incremental-max-runtime-seconds",
         type=float,
-        default=_env_float("RUNTIME_TRAIN_INCREMENTAL_MAX_RUNTIME_SECONDS", 180.0),
+        default=_env_float("RUNTIME_TRAIN_INCREMENTAL_MAX_RUNTIME_SECONDS", 30.0),
         help="Maximum seconds to scan incremental JSONL candidates before committing a partial refresh.",
     )
     parser.add_argument(
@@ -1212,6 +1254,9 @@ def main() -> int:
             sys.argv[1:], timeout_seconds=args.max_runtime_seconds
         )
 
+    args.scan_deadline_monotonic = time.monotonic() + max(
+        float(args.max_runtime_seconds) - 30.0, 0.0
+    )
     _phase("route_validation")
     routes = [args.project_root, args.rows_path, args.health_path, args.lock_path]
     if args.seed_health_path:
@@ -1324,6 +1369,7 @@ def _build_locked_snapshot(
         prefer_sqlite=bool(args.prefer_sqlite),
         max_runtime_seconds=max(float(args.incremental_max_runtime_seconds), 0.0),
         max_candidate_rows=max(int(args.incremental_max_candidate_rows), 0),
+        deadline_monotonic=args.scan_deadline_monotonic,
     )
     if incremental is not None:
         sequences, incremental_meta = incremental
@@ -1338,6 +1384,11 @@ def _build_locked_snapshot(
                 lookback_days=max(int(args.lookback_days), 1),
                 mode_allowlist=mode_allowlist,
                 symbol_allowlist=symbol_allowlist,
+                max_runtime_seconds=max(
+                    float(args.incremental_max_runtime_seconds), 0.0
+                ),
+                max_candidate_rows=max(int(args.incremental_max_candidate_rows), 0),
+                deadline_monotonic=args.scan_deadline_monotonic,
             )
             if seed_health_path and seed_health_path.exists()
             else None

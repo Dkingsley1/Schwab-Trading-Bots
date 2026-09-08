@@ -1803,7 +1803,7 @@ PY="$(zsh ./scripts/ops/runtime_python.sh)"
 ```
 
 Run this before a manual full retrain so SQL state, runtime snapshots, coverage, and promotion gates are fresh.
-The snapshot worker has a total deadline, phase diagnostics, atomic row publication, and hash-bound readers; timeout is not successful refresh or qualification.
+The snapshot worker has a total deadline, bounded decompressed price scans, a shared incremental/seed deadline with publication reserve, partial-coverage diagnostics, atomic row publication, and hash-bound readers. The epoch coordinator preserves the producer-owned manifest and writes a separate failure receipt; timeout or changed mtime is not successful refresh or qualification.
 
 ### Guarded retrain orchestrator
 ```bash
@@ -2376,7 +2376,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh soak-self-heal --storage-recovery-only --json
 ```
 
-The existing launchd owner runs bounded pressure relief before its heavy-maintenance gate. Apply keeps the shared self-healing lock, live host admission, cold writer handoff, and destination reserve; it cannot run cache rebuilds, training, candidate acceptance, or trading.
+The existing launchd owner runs bounded pressure relief before its heavy-maintenance gate. Apply keeps the shared self-healing lock, fresh typed memory admission, cold writer handoff, and destination reserve; it cannot run cache rebuilds, training, candidate acceptance, or trading. A completed storage-pressure assessment is not a failed memory repair; legacy observation-circuit revalidation retains its prior state.
 
 ### Inspect storage routes and ingestion definitions
 ```bash
