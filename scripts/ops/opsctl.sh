@@ -3443,7 +3443,7 @@ opsctl commands:
   continuous-soak-integrity|soak-integrity [--json]
   production-quality-slo|production-slo-guard [--apply] [--refresh-quality] [--json]
   production-hardening-watch|hardening-watch [--apply] [--execute-safe-repairs] [--execute-on-watch] [--max-actions N] [--max-execute-actions N] [--json]
-  readiness-evidence-refresh|evidence-refresh [--profile all|accrual|dashboard] [--apply] [--force] [--cooldown-minutes N] [--timeout-seconds N] [--json]
+  readiness-evidence-refresh|evidence-refresh [--profile all|accrual|dashboard|production] [--status] [--apply] [--force] [--cooldown-minutes N] [--timeout-seconds N] [--json]
   market-replay-fill-capture|replay-fill-capture [--apply] [--min-latency-seconds N] [--max-latency-seconds N] [--json]
   independent-fill-acquisition|independent-fill-evidence [--apply] [--inbox PATH] [--json]
   promotion-candidate-advancement|candidate-advancement [--limit N] [--execute] [--json]

@@ -171,6 +171,8 @@ Risk-evidence refresh scheduling uses the One Numbers measurement timestamp, not
 
 The process watchdog also respects the SQL writer owner's storage pause and maintenance hold before attempting restarts. Existing restart history is retained; deferred work is never relabeled as healthy ingestion.
 
+Scheduled hardening observes independent profiles even after one fails, preserves the failed cycle exit, and disables optional watcher repairs for that cycle. Its OS-owned singleton lock does not expire by file age. Within an evidence profile, failed or expired selected dependencies block consumers without rewriting their last artifact; independent branches continue. `./scripts/ops/opsctl.sh readiness-evidence-refresh --profile production --status --json` reads the lock-bound progress journal and the requested profile's own completion receipt without running producers. Completion time owns cooldown eligibility; running, interrupted, unpublished, and stale evidence cannot imply readiness.
+
 ### Paper Profitability Hardening
 
 The paper path applies sixteen coordinated controls before profitability evidence is considered promotion-worthy:

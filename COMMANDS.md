@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `abee13121bcab6e18e3f2b0c96a06057d1195fb05881d6e50ed1ae14193bb8dd`.
+Command contract hash: `b1ab50976264ad21c84871391affe1853da64bbb8543c73d2073b6de61d984f9`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -454,7 +454,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:9a0b69390a23a39542748fae0108a2bcd9f9a7c935f6effb86ab12d1d7eb91c9 section:`Status And Health` section_key:`status-and-health` title:Publish production-quality repair lanes title_key:`publish-production-quality-repair-lanes` opsctl:`production-quality` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:079d2a1a6cbe25881172205c3997bebea2da6f40f2d81640db1389579346a566 section:`Status And Health` section_key:`status-and-health` title:PyCharm active bot blue highlights title_key:`pycharm-active-bot-blue-highlights` opsctl:`pycharm-active-bot-highlights` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:b78415c6f92b0a099a704e922e977a6c9915872706aad0c3e753e0281d8f75ba section:`Status And Health` section_key:`status-and-health` title:Refresh health gates title_key:`refresh-health-gates` opsctl:`health-gates` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
-- search-entry:537290298c6b1eb60a77be007c54847030efc21151fc09d6f64bd82dbaa9a516 section:`Status And Health` section_key:`status-and-health` title:Refresh readiness evidence without the full dashboard title_key:`refresh-readiness-evidence-without-the-full-dashboard` opsctl:`readiness-evidence-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:0b4a2bb30ff61798750737cc975971d2d080d7a1baea0c4793b44b08fc1e4055 section:`Status And Health` section_key:`status-and-health` title:Refresh readiness evidence without the full dashboard title_key:`refresh-readiness-evidence-without-the-full-dashboard` opsctl:`readiness-evidence-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:5c42cde9787324dfb1206f08bba236c4f22ec3331b467e7b3f8cc25f5445a72d section:`Status And Health` section_key:`status-and-health` title:Refresh runtime dashboard contracts title_key:`refresh-runtime-dashboard-contracts` opsctl:`dashboard-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:36e9560d6a52bc737d00023af33cecb8c45a473a03d29cec30e040e6c08d3b3e section:`Status And Health` section_key:`status-and-health` title:Refresh source-backed capability proofs title_key:`refresh-source-backed-capability-proofs` opsctl:`capability-materialization` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:d33a24e9bbe25513a8cc09e9eb6fddb450bfb07708aabedc21fc6257c8d520a1 section:`Status And Health` section_key:`status-and-health` title:Rehearse the sealed live-execution path title_key:`rehearse-the-sealed-live-execution-path` opsctl:`live-execution-rehearsal` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -2127,12 +2127,15 @@ This refreshes the health-gates artifact directly when stale health-gate state i
 ### Refresh readiness evidence without the full dashboard
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh readiness-evidence-refresh --profile production --status --json
 ./scripts/ops/opsctl.sh readiness-evidence-refresh --profile accrual --apply --json
 ./scripts/ops/opsctl.sh readiness-evidence-refresh --profile production --apply --json
 ./scripts/ops/opsctl.sh readiness-evidence-refresh --profile dashboard --apply --json
 ```
 
-The bounded accrual profile maintains organic collection every 15 minutes. The hourly production profile keeps all ten pillar owners, risk inputs, recovery proof, immutable evidence, and derived readiness controls current. The dashboard profile refreshes the bounded hot-state surface. All profiles are serialized, independently cooled down, market-data/paper-only, and have no training-launch or live-order authority.
+Accrual uses a 15-minute default cooldown and production uses 45 minutes in the scheduled wrapper; admission and runtime failures can delay either. The wrapper continues independent observations after a failed profile, retains a failed cycle exit, and disables optional watcher repairs for that cycle. An OS-owned wrapper lock cannot be stolen by age.
+Within a profile, failed or expired selected dependencies block their consumers even under --force; independent branches still run. Expected qualification-pending assessments remain separate from producer failure. Dependencies outside the selected profile stay consumer-owned instead of expanding a bounded profile into the full graph.
+--status is read-only and shows the current lock-bound run, active step, interruption state, and the requested profile's own completion receipt. --apply publishes an atomic .progress.json journal plus the terminal report. Cooldowns start at completion; old, unfinished, or another profile's evidence cannot imply current success. No training-launch or live-order authority is added.
 
 ### Refresh runtime dashboard contracts
 ```bash

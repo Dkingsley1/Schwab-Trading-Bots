@@ -2104,12 +2104,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 project_root,
                 "Refresh readiness evidence without the full dashboard",
                 [
+                    "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile production --status --json",
                     "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile accrual --apply --json",
                     "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile production --apply --json",
                     "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile dashboard --apply --json",
                 ],
                 notes=[
-                    "The bounded accrual profile maintains organic collection every 15 minutes. The hourly production profile keeps all ten pillar owners, risk inputs, recovery proof, immutable evidence, and derived readiness controls current. The dashboard profile refreshes the bounded hot-state surface. All profiles are serialized, independently cooled down, market-data/paper-only, and have no training-launch or live-order authority.",
+                    "Accrual uses a 15-minute default cooldown and production uses 45 minutes in the scheduled wrapper; admission and runtime failures can delay either. The wrapper continues independent observations after a failed profile, retains a failed cycle exit, and disables optional watcher repairs for that cycle. An OS-owned wrapper lock cannot be stolen by age.",
+                    "Within a profile, failed or expired selected dependencies block their consumers even under --force; independent branches still run. Expected qualification-pending assessments remain separate from producer failure. Dependencies outside the selected profile stay consumer-owned instead of expanding a bounded profile into the full graph.",
+                    "--status is read-only and shows the current lock-bound run, active step, interruption state, and the requested profile's own completion receipt. --apply publishes an atomic .progress.json journal plus the terminal report. Cooldowns start at completion; old, unfinished, or another profile's evidence cannot imply current success. No training-launch or live-order authority is added.",
                 ],
             ),
             _command_entry(

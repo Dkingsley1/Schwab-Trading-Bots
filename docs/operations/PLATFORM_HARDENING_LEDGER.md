@@ -424,3 +424,70 @@ regression guard and non-applying autopilot retained two blocked and five degrad
 surfaces. Project guard passed all six checks, and regenerated command hygiene
 reported 234 entries with no drift. No candidate, credential, risk limit, protected
 volume, or unrelated working-tree edit was changed by this continuation.
+
+## Scheduled Operations Continuation
+
+September 8, 2026, after 22:12 UTC. The 22:03 accrual receipt showed a training
+snapshot timeout followed by execution of its dependent snapshot/feature jobs.
+The production profile's last completion receipt was still from 18:31 UTC.
+
+- The hardening wrapper used `set -e` around sequential profiles. A degraded
+  accrual exit prevented both production refresh and the final watcher. It now
+  continues independent observations, logs each stage's exit, preserves the
+  first failure as the cycle exit, and omits both optional watcher repair flags
+  whenever an upstream profile fails.
+- Its directory lease could be removed after 300 seconds even while a long
+  profile remained active. The wrapper now uses the installed zsh system module's
+  OS-owned file lock, with bounded contention and automatic release on exit.
+  An existing legacy directory lease causes explicit deferral; age never proves
+  it is abandoned. No live owner was killed or force-unlocked for adoption.
+- The refresh owner now blocks consumers of failed, unprocessed, or expired
+  selected dependencies, including transitive consumers and fresh cached child
+  artifacts under `--force`. Independent branches continue. Expected completed
+  qualification-pending results remain usable observations, not qualified
+  evidence. Out-of-profile dependencies remain the consumer's responsibility;
+  bounded profiles are not silently expanded into the complete graph.
+- `refresh_after` expresses ordering-only observations separately from hard
+  `depends_on` inputs. The source-mutation guard reads candidate configuration,
+  event-chain evidence, and actual Git/source state directly; a failed
+  production-excellence report must not stop it detecting source drift. It keeps
+  that ordering trigger without inheriting qualification's failure as a hard
+  prerequisite. Other declared hard dependencies remain fail-closed.
+- Cooldown queries previously returned whichever profile last wrote the root
+  report. They now return the requested profile's own result and retain other
+  profiles' failures. Completion time, not cycle start, owns report freshness and
+  the next cooldown eligibility timestamp; source age is rechecked at each step.
+- An atomic `readiness_evidence_refresh_latest.progress.json` journal records
+  run identity, lock identity, active step, terminal step outcomes, timing, and
+  interruption. `readiness-evidence-refresh --profile production --status --json`
+  reads it without starting producers or creating a writer lock. Missing owners,
+  old green reports, mismatched lock ownership, and a completion journal without
+  the matching published report cannot claim current success. Exception messages
+  are not copied into the new runner-error field.
+
+At 22:25 UTC the scheduled wrapper reached the production profile after degraded
+accrual, and the new journal recorded two completed steps before the coherent
+training refresh. This confirms adoption and restored scheduling opportunity,
+not training recovery or full production readiness. The unresolved full-source
+snapshot timeout, capacity reserve, full restore proof, external monitoring,
+accepted release, and economic qualification remain separate open work.
+
+The production profile completed at 22:33:23 UTC after starting at 22:25:57 UTC:
+24 refreshed, 12 already-fresh, two failed, and 41 dependency-blocked steps, for
+79 explicit outcomes. These are not 79 executed or healthy jobs. Direct failures
+were `coherent_training_profitability_refresh` and `state_snapshot_restore_drill`.
+The final watcher published at 22:33:43 UTC with no repair execution requested or
+attempted and no live execution authority. The source-integrity ordering-only
+refinement followed this run; its regression test passed, and a separate 22:39
+source observation still reported unaccepted source and an invalid candidate
+event chain without accepting or rewriting candidate state.
+
+Verification: the final focused 11-file suite passed **305 tests**, including real
+zsh wrapper failure/contended-lock tests, progress publication, interruption,
+profile cooldowns, dependency expiry, and protected-route rejection. This is not
+a full repository or production-load test. Both shell files passed syntax checks.
+Project guard passed all six checks; command hygiene reported 234 entries with
+no drift. The 22:39 regression guard and non-applying autopilot retained two
+blocked and five degraded surfaces, with zero autopilot repair attempts. These
+operational corrections do not clear storage reserves, training freshness,
+production restore, candidate integrity, or trading qualification gates.

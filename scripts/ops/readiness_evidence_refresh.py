@@ -6,7 +6,9 @@ import fcntl
 import json
 import os
 import sys
-from datetime import datetime, timezone
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -29,6 +31,8 @@ else:
         write_payload,
     )
 
+
+from core.storage_router import inspect_storage_path
 
 DEFAULT_OUT = Path("governance/health/readiness_evidence_refresh_latest.json")
 DEFAULT_LOCK = Path("governance/locks/readiness_evidence_refresh.lock")
@@ -190,6 +194,7 @@ def _step(
     max_age_minutes: float = 15.0,
     allowed_returncodes: tuple[int, ...] = (0,),
     depends_on: tuple[str, ...] = (),
+    refresh_after: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     return {
         "name": name,
@@ -199,6 +204,7 @@ def _step(
         "max_age_minutes": float(max_age_minutes),
         "allowed_returncodes": list(allowed_returncodes),
         "depends_on": list(depends_on),
+        "refresh_after": list(refresh_after),
     }
 
 
@@ -1045,7 +1051,7 @@ def default_steps() -> list[dict[str, Any]]:
             "governance/health/source_mutation_guard_latest.json",
             "--json",
             max_age_minutes=20,
-            depends_on=("production_excellence",),
+            refresh_after=("production_excellence",),
         ),
         _step(
             "system_drift_registry",
@@ -1142,7 +1148,10 @@ def default_steps() -> list[dict[str, Any]]:
             "--json",
             max_age_minutes=30,
             allowed_returncodes=(0, 2),
-            depends_on=("platform_stabilization_quality", "writer_process_intelligence"),
+            depends_on=(
+                "platform_stabilization_quality",
+                "writer_process_intelligence",
+            ),
         ),
         _step(
             "system_plumbing_control",
@@ -1161,7 +1170,12 @@ def default_steps() -> list[dict[str, Any]]:
             "--json",
             max_age_minutes=180,
             allowed_returncodes=(0, 2),
-            depends_on=("distributed_cell_architecture", "adaptive_regression_guard", "platform_settlement_stabilization", "system_plumbing_control"),
+            depends_on=(
+                "distributed_cell_architecture",
+                "adaptive_regression_guard",
+                "platform_settlement_stabilization",
+                "system_plumbing_control",
+            ),
         ),
         _step(
             "system_architecture_contract_graph",
@@ -1308,11 +1322,89 @@ def _acquire_lock(path: Path) -> tuple[Any | None, str]:
         return None, owner
     handle.seek(0)
     handle.truncate()
-    handle.write(
-        f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()}\n"
-    )
+    owner = f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()} id={uuid.uuid4().hex}"
+    handle.write(owner + "\n")
     handle.flush()
-    return handle, ""
+    return handle, owner
+
+
+def _profile_report(prior: dict[str, Any], profile: str) -> dict[str, Any]:
+    if str(prior.get("profile") or "all").strip().lower() == profile:
+        return {key: value for key, value in prior.items() if key != "profile_runs"}
+    runs = prior.get("profile_runs")
+    report = runs.get(profile) if isinstance(runs, dict) else None
+    if not isinstance(report, dict):
+        return {}
+    return {
+        **report,
+        "profile": profile,
+        "ok": report.get(
+            "ok",
+            report.get("overall_status") == "ready"
+            and not report.get("operational_failures"),
+        ),
+    }
+
+
+def status_payload(
+    project_root: Path, out_path: Path, lock_path: Path, profile: str
+) -> dict[str, Any]:
+    """Observe the job journal and actual lock without starting a producer."""
+    report = _profile_report(load_json(out_path), profile)
+    progress = load_json(out_path.with_suffix(".progress.json"))
+    lock_held: bool | None = False
+    owner = ""
+    try:
+        with lock_path.open("r", encoding="utf-8") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                lock_held = True
+            owner = handle.read(4096).strip()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        lock_held = None
+    recorded_state = progress.get("run_state")
+    if lock_held is None:
+        observed_state = "unknown"
+    elif lock_held:
+        observed_state = (
+            "running"
+            if recorded_state == "running" and owner == progress.get("lock_owner")
+            else "running_uninstrumented"
+        )
+    elif recorded_state == "running":
+        observed_state = "interrupted"
+    elif (
+        recorded_state == "completed"
+        and progress.get("profile") == profile
+        and progress.get("run_id") != report.get("run_id")
+    ):
+        observed_state = "completion_unpublished"
+    else:
+        observed_state = str(recorded_state or "idle")
+    freshness = evidence_freshness(
+        report, max_age_minutes=45 if profile == "production" else 15
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "profile": profile,
+        "overall_status": observed_state,
+        "ok": observed_state in {"idle", "completed"}
+        and bool(report.get("ok"))
+        and freshness["fresh"],
+        "read_only": True,
+        "live_execution_authority": False,
+        "last_profile_report": report,
+        "last_profile_freshness": freshness,
+        "active_run": {
+            **progress,
+            "observed_state": observed_state,
+            "lock_held": lock_held,
+        },
+    }
 
 
 def refresh(
@@ -1326,6 +1418,8 @@ def refresh(
     profile: str = "all",
     runner: Runner = run_bounded_process_group,
     now: datetime | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    lock_owner: str = "",
 ) -> dict[str, Any]:
     current = now or datetime.now(timezone.utc)
     effective_out = _resolve(project_root, out_path)
@@ -1334,16 +1428,7 @@ def refresh(
     prior_profile_runs = (
         prior.get("profile_runs") if isinstance(prior.get("profile_runs"), dict) else {}
     )
-    prior_profile = (
-        prior_profile_runs.get(profile_key)
-        if isinstance(prior_profile_runs.get(profile_key), dict)
-        else {}
-    )
-    if (
-        not prior_profile
-        and str(prior.get("profile") or "all").strip().lower() == profile_key
-    ):
-        prior_profile = prior
+    prior_profile = _profile_report(prior, profile_key)
     prior_freshness = evidence_freshness(prior_profile, now=current)
     prior_age = prior_freshness["age_minutes"] if prior_freshness["status"] in {"fresh", "stale"} else None
     if (
@@ -1353,7 +1438,9 @@ def refresh(
         and prior_age < max(float(cooldown_minutes), 1.0)
     ):
         return {
-            **prior,
+            **prior_profile,
+            "profile": profile_key,
+            "profile_runs": prior_profile_runs,
             "refresh_skipped": True,
             "refresh_skip_reason": "cooldown_active",
             "refresh_query_timestamp_utc": current.isoformat(),
@@ -1362,14 +1449,98 @@ def refresh(
         }
 
     selected_steps = steps if steps is not None else profile_steps(profile_key)
+    selected_names = {str(spec.get("name") or "unnamed") for spec in selected_steps}
+    selected_by_name = {
+        str(spec.get("name") or "unnamed"): spec for spec in selected_steps
+    }
     results: list[dict[str, Any]] = []
     statuses: dict[str, str] = {}
     operational_failures: list[str] = []
     refreshed_names: list[str] = []
+    dependency_blocked: list[str] = []
+    run_id = uuid.uuid4().hex
+
+    def publish_progress(state: str, active_step: str = "") -> None:
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "run_id": run_id,
+                    "profile": profile_key,
+                    "pid": os.getpid(),
+                    "lock_owner": lock_owner,
+                    "started_utc": current.isoformat(),
+                    "timestamp_utc": (now or datetime.now(timezone.utc)).isoformat(),
+                    "run_state": state,
+                    "active_step": active_step,
+                    "overall_status": state,
+                    "progress_only": True,
+                    "active_step_started_utc": (
+                        step_now.isoformat() if active_step else ""
+                    ),
+                    "step_count": len(selected_steps),
+                    "completed_step_count": len(results),
+                    "ok": state == "completed"
+                    and not operational_failures
+                    and not dependency_blocked,
+                    "steps": [
+                        {
+                            key: row[key]
+                            for key in (
+                                "name",
+                                "status",
+                                "executed",
+                                "reason",
+                                "started_utc",
+                                "finished_utc",
+                                "duration_seconds",
+                                "blocked_by",
+                            )
+                            if key in row
+                        }
+                        for row in results
+                    ],
+                    "live_execution_authority": False,
+                }
+            )
+
+    publish_progress("running")
     for spec in selected_steps:
         name = str(spec.get("name") or "unnamed")
         artifact = _resolve(project_root, Path(str(spec.get("artifact") or "")))
-        age_before = _artifact_age(artifact, now=current)
+        step_now = now or datetime.now(timezone.utc)
+        age_before = _artifact_age(artifact, now=step_now)
+        blocked_by = []
+        for dependency in spec.get("depends_on") or []:
+            dep = str(dependency)
+            if dep not in selected_names:
+                continue
+            dependency_spec = selected_by_name[dep]
+            dependency_age = _artifact_age(
+                _resolve(project_root, Path(dependency_spec["artifact"])), now=step_now
+            )
+            if (
+                statuses.get(dep) not in {"fresh", "refreshed"}
+                or dependency_age is None
+                or dependency_age > float(dependency_spec.get("max_age_minutes", 15))
+            ):
+                blocked_by.append(dep)
+        if blocked_by:
+            statuses[name] = "dependency_blocked"
+            dependency_blocked.append(name)
+            results.append(
+                {
+                    "name": name,
+                    "status": "dependency_blocked",
+                    "executed": False,
+                    "artifact": str(artifact),
+                    "reason": "selected_dependency_unavailable",
+                    "blocked_by": blocked_by,
+                    "finished_utc": step_now.isoformat(),
+                }
+            )
+            publish_progress("running")
+            continue
         dependency_refreshed = any(
             statuses.get(str(dep)) == "refreshed"
             for dep in spec.get("depends_on") or []
@@ -1377,6 +1548,10 @@ def refresh(
         due = bool(
             force
             or dependency_refreshed
+            or any(
+                statuses.get(str(dep)) in {"refreshed", "failed", "dependency_blocked"}
+                for dep in spec.get("refresh_after") or []
+            )
             or age_before is None
             or age_before > float(spec.get("max_age_minutes", 15.0))
         )
@@ -1391,27 +1566,40 @@ def refresh(
                         round(age_before, 3) if age_before is not None else None
                     ),
                     "executed": False,
+                    "finished_utc": step_now.isoformat(),
                 }
             )
+            publish_progress("running")
             continue
         command = [
             sys.executable,
             str(project_root / str(spec.get("script") or "")),
             *[str(arg) for arg in spec.get("args") or []],
         ]
-        result = runner(
-            command,
-            cwd=project_root,
-            timeout_seconds=max(int(timeout_seconds), 30),
-            env={
-                **os.environ,
-                "MARKET_DATA_ONLY": "1",
-                "ALLOW_ORDER_EXECUTION": "0",
-                "TOP_BOT_ENABLE_LIVE_EXECUTION": "0",
-                "BOT_LIVE_MONEY_LOCKED_DURING_SOAK": "1",
-            },
-        )
-        rc = int(result.get("rc", 125))
+        publish_progress("running", name)
+        started_monotonic = time.monotonic()
+        try:
+            result = runner(
+                command,
+                cwd=project_root,
+                timeout_seconds=max(int(timeout_seconds), 30),
+                env={
+                    **os.environ,
+                    "MARKET_DATA_ONLY": "1",
+                    "ALLOW_ORDER_EXECUTION": "0",
+                    "TOP_BOT_ENABLE_LIVE_EXECUTION": "0",
+                    "EXECUTION_LANE_LIVE_ENABLED": "0",
+                    "BOT_LIVE_MONEY_LOCKED_DURING_SOAK": "1",
+                },
+            )
+        except Exception as exc:
+            result = {"rc": 125, "runner_error_type": type(exc).__name__}
+        except BaseException:
+            publish_progress("interrupted", name)
+            raise
+        if not isinstance(result, dict) or type(result.get("rc")) is not int:
+            result = {"rc": 125, "runner_error_type": "InvalidRunnerResult"}
+        rc = result["rc"]
         allowed = {int(value) for value in spec.get("allowed_returncodes") or [0]}
         artifact_present = artifact.exists()
         published = load_json(artifact)
@@ -1438,6 +1626,10 @@ def refresh(
                 "status": status,
                 "executed": True,
                 "returncode": rc,
+                "runner_error_type": result.get("runner_error_type", ""),
+                "started_utc": step_now.isoformat(),
+                "finished_utc": (now or datetime.now(timezone.utc)).isoformat(),
+                "duration_seconds": round(time.monotonic() - started_monotonic, 3),
                 "allowed_returncodes": sorted(allowed),
                 "timed_out": bool(result.get("timed_out", False)),
                 "artifact": str(artifact),
@@ -1454,25 +1646,27 @@ def refresh(
                 "stderr_tail": str(result.get("stderr") or "")[-1000:],
             }
         )
+        publish_progress("running")
+    completed = now or datetime.now(timezone.utc)
+    run_ok = not operational_failures and not dependency_blocked
     payload = {
         "schema_version": SCHEMA_VERSION,
-        "timestamp_utc": current.isoformat(),
-        "overall_status": "ready" if not operational_failures else "degraded",
-        "ok": not operational_failures,
+        "timestamp_utc": completed.isoformat(),
+        "started_utc": current.isoformat(),
+        "completed_utc": completed.isoformat(),
+        "next_eligible_utc": (
+            completed + timedelta(minutes=max(float(cooldown_minutes), 1.0))
+        ).isoformat(),
+        "run_id": run_id,
+        "run_state": "completed",
+        "overall_status": "ready" if run_ok else "degraded",
+        "ok": run_ok,
         "profile": profile_key,
         "profile_runs": {
             **{
                 str(key): value
                 for key, value in prior_profile_runs.items()
                 if str(key) in {"all", *PROFILE_STEP_NAMES}
-            },
-            profile_key: {
-                "timestamp_utc": current.isoformat(),
-                "overall_status": "ready" if not operational_failures else "degraded",
-                "failed_step_count": len(operational_failures),
-                "operational_failures": list(operational_failures),
-                "failed_steps": [row for row in results if row["status"] == "failed"],
-                "step_count": len(results),
             },
         },
         "refresh_skipped": False,
@@ -1481,6 +1675,9 @@ def refresh(
         "refreshed_step_count": len(refreshed_names),
         "fresh_step_count": sum(1 for row in results if row["status"] == "fresh"),
         "failed_step_count": len(operational_failures),
+        "dependency_blocked_step_count": len(dependency_blocked),
+        "dependency_blocked_steps": dependency_blocked,
+        "failed_steps": [row for row in results if row["status"] == "failed"],
         "refreshed_steps": refreshed_names,
         "operational_failures": operational_failures,
         "steps": results,
@@ -1495,8 +1692,17 @@ def refresh(
             "full_runtime_refresh_replacement": False,
             "bounded_refresh_profile": profile_key != "all",
             "per_profile_failure_receipts_preserved": True,
+            "selected_dependency_failures_block_consumers": True,
+            "outside_profile_dependencies": "consumer_owned_no_implicit_profile_expansion",
+            "progress_journal_has_no_readiness_authority": True,
         },
     }
+    payload["profile_runs"][profile_key] = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"profile_runs", "control_contract"}
+    }
+    publish_progress("completed")
     return payload
 
 
@@ -1514,14 +1720,44 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--force", action="store_true")
     parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Read job progress and completion receipts without running producers or acquiring the writer lock.",
+    )
+    parser.add_argument(
         "--apply",
         action="store_true",
         help="Publish the refresh report; evidence producers publish their own bounded artifacts.",
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    root_requested = args.project_root.expanduser()
+    for route in (
+        root_requested,
+        _resolve(root_requested, args.out_file),
+        _resolve(root_requested, args.lock_file),
+        _resolve(root_requested, args.out_file).with_suffix(".progress.json"),
+    ):
+        if inspect_storage_path(route)["status"] not in {"present", "missing"}:
+            parser.error("refresh route is protected or unavailable")
     project_root = args.project_root.expanduser().resolve()
     lock_path = _resolve(project_root, args.lock_file)
+    if args.status:
+        if args.apply or args.force:
+            parser.error("--status cannot be combined with --apply or --force")
+        payload = status_payload(
+            project_root,
+            _resolve(project_root, args.out_file),
+            lock_path,
+            str(args.profile),
+        )
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=True))
+        else:
+            print(
+                f"readiness_evidence_refresh profile={args.profile} state={payload['overall_status']} active_profile={payload['active_run'].get('profile', '')} active_step={payload['active_run'].get('active_step', '')} last_result={payload['last_profile_report'].get('overall_status', 'unavailable')}"
+            )
+        return 0 if payload["ok"] else 2
     lock_handle, owner = _acquire_lock(lock_path)
     if lock_handle is None:
         payload = {
@@ -1544,6 +1780,19 @@ def main(argv: list[str] | None = None) -> int:
                 timeout_seconds=int(args.timeout_seconds),
                 out_path=args.out_file,
                 profile=str(args.profile),
+                progress_callback=(
+                    (
+                        lambda row: write_payload(
+                            _resolve(project_root, args.out_file).with_suffix(
+                                ".progress.json"
+                            ),
+                            row,
+                        )
+                    )
+                    if args.apply
+                    else None
+                ),
+                lock_owner=owner,
             )
             if args.apply and payload.get("write_latest", False):
                 write_payload(_resolve(project_root, args.out_file), payload)

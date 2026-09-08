@@ -77,6 +77,13 @@ pressure/quiet hours, internal capacity remains below reserve, and full restore,
 off-host monitoring, clean candidate acceptance, and organic qualification remain
 separate prerequisites. See the hardening ledger for the dated evidence.
 
+Further C09/C11/C13 work corrects scheduled-profile starvation, age-stealable
+wrapper locking, failed/expired dependency handling, cross-profile cooldown
+reporting, and start-time-based completion receipts. Per-step journals and a
+read-only status view expose interrupted or uninstrumented runs. These are
+specific engineering corrections, not closure of all job lifecycle, recovery,
+capacity, monitoring, or qualification requirements.
+
 ## Completion Rules
 
 For each required row record the accountable owner, versioned contract, baseline

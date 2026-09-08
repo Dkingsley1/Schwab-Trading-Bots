@@ -1,4 +1,6 @@
 import json
+import fcntl
+import copy
 import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -199,7 +201,8 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
         "--json",
     ]
     assert production_steps["codex_project_guard"]["args"] == ["--staged", "--json"]
-    assert production_steps["source_mutation_guard"]["depends_on"] == [
+    assert production_steps["source_mutation_guard"]["depends_on"] == []
+    assert production_steps["source_mutation_guard"]["refresh_after"] == [
         "production_excellence"
     ]
     assert production_steps["system_drift_registry"]["depends_on"] == [
@@ -331,6 +334,392 @@ def _spec(artifact: str, *, allowed=(0,), max_age=15) -> dict:
         "allowed_returncodes": list(allowed),
         "depends_on": [],
     }
+
+
+def _graph_spec(name, dependencies=()):
+    return {
+        **_spec(f"{name}.json"),
+        "name": name,
+        "script": f"{name}.py",
+        "depends_on": list(dependencies),
+    }
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_failed_dependency_blocks_fresh_and_transitive_consumers_not_independent_work(
+    tmp_path, force
+):
+    _write(tmp_path / "child.json", {"timestamp_utc": NOW.isoformat()})
+    before = (tmp_path / "child.json").read_bytes()
+    specs = [
+        _graph_spec("upstream"),
+        _graph_spec("child", ["upstream"]),
+        _graph_spec("grandchild", ["child"]),
+        _graph_spec("independent"),
+    ]
+    calls = []
+
+    def runner(command, **kwargs):
+        name = Path(command[1]).stem
+        calls.append(name)
+        assert kwargs["env"]["ALLOW_ORDER_EXECUTION"] == "0"
+        assert kwargs["env"]["EXECUTION_LANE_LIVE_ENABLED"] == "0"
+        if name == "upstream":
+            return {"rc": 124, "timed_out": True}
+        _write(tmp_path / f"{name}.json", {"timestamp_utc": NOW.isoformat()})
+        return {"rc": 0}
+
+    result = refresh.refresh(tmp_path, steps=specs, runner=runner, now=NOW, force=force)
+    assert calls == ["upstream", "independent"]
+    assert result["operational_failures"] == ["upstream"]
+    assert result["dependency_blocked_steps"] == ["child", "grandchild"]
+    assert result["steps"][1]["blocked_by"] == ["upstream"]
+    assert result["steps"][2]["blocked_by"] == ["child"]
+    assert not result["ok"]
+    assert (tmp_path / "child.json").read_bytes() == before
+
+
+def test_pending_qualification_is_completed_observation_not_failed_dependency(tmp_path):
+    upstream = {**_graph_spec("upstream"), "allowed_returncodes": [0, 2]}
+
+    def runner(command, **kwargs):
+        name = Path(command[1]).stem
+        _write(
+            tmp_path / f"{name}.json",
+            {
+                "timestamp_utc": NOW.isoformat(),
+                "ok": False,
+                "overall_status": "evidence_pending",
+            },
+        )
+        return {"rc": 2 if name == "upstream" else 0}
+
+    result = refresh.refresh(
+        tmp_path,
+        steps=[upstream, _graph_spec("child", ["upstream"])],
+        runner=runner,
+        now=NOW,
+    )
+    assert result["ok"]
+    assert result["refreshed_steps"] == ["upstream", "child"]
+    assert result["steps"][0]["published_ok"] is False
+
+
+def test_ordering_only_source_guard_still_refreshes_after_failed_qualification(
+    tmp_path,
+):
+    _write(tmp_path / "guard.json", {"timestamp_utc": NOW.isoformat()})
+    calls = []
+
+    def runner(command, **kwargs):
+        name = Path(command[1]).stem
+        calls.append(name)
+        if name == "qualification":
+            return {"rc": 124}
+        _write(tmp_path / "guard.json", {"timestamp_utc": NOW.isoformat(), "ok": False})
+        return {"rc": 0}
+
+    specs = [
+        _graph_spec("qualification"),
+        {**_graph_spec("guard"), "refresh_after": ["qualification"]},
+    ]
+    result = refresh.refresh(tmp_path, steps=specs, runner=runner, now=NOW)
+    assert calls == ["qualification", "guard"]
+    assert result["dependency_blocked_steps"] == []
+    assert not result["ok"]
+
+
+def test_dependency_cycle_fails_closed_without_running_commands(tmp_path):
+    result = refresh.refresh(
+        tmp_path,
+        steps=[_graph_spec("a", ["b"]), _graph_spec("b", ["a"])],
+        runner=lambda *a, **kw: pytest.fail("cyclic dependency ran"),
+        now=NOW,
+    )
+    assert result["dependency_blocked_steps"] == ["a", "b"]
+    assert not result["ok"]
+
+
+def test_profile_cooldown_returns_its_own_failure_after_another_profile_succeeds(
+    tmp_path,
+):
+    out = tmp_path / "refresh.json"
+    production = refresh.refresh(
+        tmp_path,
+        steps=[_graph_spec("upstream")],
+        runner=lambda *a, **kw: {"rc": 124},
+        profile="production",
+        out_path=out,
+        now=NOW,
+    )
+    _write(out, production)
+    accrual = refresh.refresh(
+        tmp_path, steps=[], profile="accrual", out_path=out, now=NOW
+    )
+    _write(out, accrual)
+    before = out.read_bytes()
+    result = refresh.refresh(
+        tmp_path,
+        steps=[],
+        profile="production",
+        out_path=out,
+        now=NOW + timedelta(minutes=1),
+    )
+    assert result["profile"] == "production"
+    assert result["refresh_skipped"]
+    assert not result["ok"]
+    assert result["failed_step_count"] == 1
+    assert result["operational_failures"] == ["upstream"]
+    assert result["timestamp_utc"] == NOW.isoformat()
+    assert out.read_bytes() == before
+
+
+def test_progress_records_step_lifecycle_and_survives_runner_exception(tmp_path):
+    progress = []
+
+    def runner(*args, **kwargs):
+        assert progress[-1]["active_step"] == "upstream"
+        raise OSError("sensitive exception contents must not be copied")
+
+    result = refresh.refresh(
+        tmp_path,
+        steps=[_graph_spec("upstream")],
+        runner=runner,
+        now=NOW,
+        progress_callback=lambda row: progress.append(copy.deepcopy(row)),
+    )
+    assert [row["run_state"] for row in progress] == [
+        "running",
+        "running",
+        "running",
+        "completed",
+    ]
+    assert result["steps"][0]["runner_error_type"] == "OSError"
+    assert result["steps"][0]["duration_seconds"] >= 0
+    assert "sensitive exception" not in json.dumps(result)
+    assert not progress[-1]["ok"]
+    assert progress[-1]["completed_step_count"] == 1
+
+
+def test_progress_records_interruption_without_completed_credit(tmp_path):
+    progress = []
+
+    def runner(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        refresh.refresh(
+            tmp_path,
+            steps=[_graph_spec("upstream")],
+            runner=runner,
+            now=NOW,
+            progress_callback=lambda row: progress.append(copy.deepcopy(row)),
+        )
+    assert progress[-1]["run_state"] == "interrupted"
+    assert progress[-1]["active_step"] == "upstream"
+    assert not progress[-1]["ok"]
+
+
+def test_read_only_status_detects_orphaned_progress_and_never_creates_locks(tmp_path):
+    out = tmp_path / "refresh.json"
+    lock = tmp_path / "missing.lock"
+    journal = out.with_suffix(".progress.json")
+    _write(
+        journal,
+        {"run_state": "running", "lock_owner": "orphan", "active_step": "upstream"},
+    )
+    before = journal.read_bytes()
+    result = refresh.status_payload(tmp_path, out, lock, "production")
+    assert result["overall_status"] == "interrupted"
+    assert result["read_only"] and not result["ok"]
+    assert not lock.exists() and not out.exists()
+    assert journal.read_bytes() == before
+
+
+def test_status_binds_running_journal_to_current_lock_owner(tmp_path):
+    out = tmp_path / "refresh.json"
+    lock = tmp_path / "job.lock"
+    handle, owner = refresh._acquire_lock(lock)
+    try:
+        _write(
+            out.with_suffix(".progress.json"),
+            {"run_state": "running", "lock_owner": owner},
+        )
+        assert (
+            refresh.status_payload(tmp_path, out, lock, "production")["overall_status"]
+            == "running"
+        )
+        _write(
+            out.with_suffix(".progress.json"),
+            {"run_state": "running", "lock_owner": "different"},
+        )
+        assert (
+            refresh.status_payload(tmp_path, out, lock, "production")["overall_status"]
+            == "running_uninstrumented"
+        )
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def test_status_cli_never_acquires_lock_or_runs_refresh(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        refresh, "_acquire_lock", lambda *a: pytest.fail("status acquired writer lock")
+    )
+    monkeypatch.setattr(
+        refresh, "refresh", lambda *a, **kw: pytest.fail("status ran producers")
+    )
+    assert refresh.main(["--project-root", str(tmp_path), "--status", "--json"]) == 2
+    assert json.loads(capsys.readouterr().out)["read_only"]
+    assert not (tmp_path / "governance").exists()
+
+
+def test_long_run_uses_completion_time_for_report_and_cooldown(tmp_path, monkeypatch):
+    clock = [NOW]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+
+    monkeypatch.setattr(refresh, "datetime", Clock)
+
+    def runner(*args, **kwargs):
+        clock[0] += timedelta(minutes=20)
+        _write(tmp_path / "upstream.json", {"timestamp_utc": clock[0].isoformat()})
+        return {"rc": 0}
+
+    out = tmp_path / "refresh.json"
+    result = refresh.refresh(
+        tmp_path, steps=[_graph_spec("upstream")], runner=runner, out_path=out
+    )
+    assert result["started_utc"] == NOW.isoformat()
+    assert result["timestamp_utc"] == (NOW + timedelta(minutes=20)).isoformat()
+    assert result["next_eligible_utc"] == (NOW + timedelta(minutes=35)).isoformat()
+    _write(out, result)
+    clock[0] += timedelta(minutes=1)
+    assert refresh.refresh(tmp_path, steps=[], out_path=out)["refresh_skipped"]
+
+
+def test_previously_fresh_dependency_expiring_during_run_blocks_consumer(
+    tmp_path, monkeypatch
+):
+    clock = [NOW]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+
+    monkeypatch.setattr(refresh, "datetime", Clock)
+    _write(tmp_path / "upstream.json", {"timestamp_utc": NOW.isoformat()})
+
+    def runner(command, **kwargs):
+        assert Path(command[1]).stem == "slow"
+        clock[0] += timedelta(minutes=20)
+        _write(tmp_path / "slow.json", {"timestamp_utc": clock[0].isoformat()})
+        return {"rc": 0}
+
+    result = refresh.refresh(
+        tmp_path,
+        steps=[
+            _graph_spec("upstream"),
+            _graph_spec("slow"),
+            _graph_spec("child", ["upstream"]),
+        ],
+        runner=runner,
+    )
+    assert result["dependency_blocked_steps"] == ["child"]
+    assert result["steps"][0]["status"] == "fresh"
+
+
+def test_completion_journal_without_matching_published_report_cannot_claim_success(
+    tmp_path,
+):
+    out = tmp_path / "refresh.json"
+    _write(
+        out,
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "profile": "production",
+            "run_id": "old",
+            "ok": True,
+        },
+    )
+    _write(
+        out.with_suffix(".progress.json"),
+        {"run_state": "completed", "profile": "production", "run_id": "new"},
+    )
+    result = refresh.status_payload(tmp_path, out, tmp_path / "lock", "production")
+    assert result["overall_status"] == "completion_unpublished"
+    assert not result["ok"]
+
+
+def test_status_rejects_old_green_profile_as_current_health(tmp_path):
+    out = tmp_path / "refresh.json"
+    _write(
+        out,
+        {"timestamp_utc": "2000-01-01T00:00:00Z", "profile": "production", "ok": True},
+    )
+    result = refresh.status_payload(tmp_path, out, tmp_path / "lock", "production")
+    assert not result["ok"]
+    assert result["last_profile_freshness"]["status"] == "stale"
+
+
+def test_status_rejects_protected_alias_before_resolving(tmp_path, monkeypatch):
+    alias = tmp_path / "reserved"
+    alias.symlink_to("/Volumes/VIDEO")
+    original_resolve = Path.resolve
+
+    def checked_resolve(path, *args, **kwargs):
+        assert str(path) != str(alias)
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", checked_resolve)
+    with pytest.raises(SystemExit, match="2"):
+        refresh.main(["--project-root", str(alias), "--status"])
+
+
+def test_cli_publishes_progress_without_replacing_other_profile_reports(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(refresh, "profile_steps", lambda *a: [])
+    assert (
+        refresh.main(
+            [
+                "--project-root",
+                str(tmp_path),
+                "--profile",
+                "production",
+                "--apply",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    out = tmp_path / refresh.DEFAULT_OUT
+    report = json.loads(out.read_text())
+    journal = json.loads(out.with_suffix(".progress.json").read_text())
+    assert journal["run_state"] == "completed"
+    assert journal["run_id"] == report["run_id"]
+    assert journal["lock_owner"]
+    assert (
+        refresh.main(
+            [
+                "--project-root",
+                str(tmp_path),
+                "--profile",
+                "production",
+                "--status",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["active_run"]["lock_held"] is False
+    assert result["overall_status"] == "completed"
 
 
 def test_fresh_artifact_is_not_recomputed(tmp_path: Path) -> None:
