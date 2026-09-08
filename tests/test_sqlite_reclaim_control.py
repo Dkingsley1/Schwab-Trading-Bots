@@ -185,3 +185,50 @@ def test_writer_handoff_timeout_defers_and_releases_owned_hold(tmp_path, monkeyp
     result = reclaim.build_payload(tmp_path, db, scratch, apply=True)
     assert result["blockers"] == ["writer_handoff_timeout"]
     assert len(released) == 1
+
+
+def test_shared_filesystem_needs_sum_not_largest_individual_allocation():
+    blockers = reclaim.reclaim_blockers(
+        SPACE,
+        internal_free_gb=100,
+        scratch_free_gb=100,
+        same_filesystem=True,
+        memory_ready=True,
+    )
+    assert blockers == ["insufficient_shared_filesystem_reserve"]
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1, None, True])
+def test_invalid_capacity_cannot_authorize_reclaim(value):
+    assert reclaim.reclaim_blockers(
+        SPACE,
+        internal_free_gb=value,
+        scratch_free_gb=200,
+        same_filesystem=True,
+        memory_ready=True,
+    ) == ["invalid_capacity_measurement"]
+
+
+def test_process_timeout_releases_hold_without_claiming_reclaim(tmp_path, monkeypatch):
+    db, scratch = prepared(tmp_path, monkeypatch)
+    handoff = {"ready": True, "owned_hold": True, "token": "fixture"}
+    released = []
+    monkeypatch.setattr(
+        reclaim, "_coordinate_priority_retention_handoff", lambda *a, **kw: handoff
+    )
+    monkeypatch.setattr(
+        reclaim,
+        "_release_priority_retention_handoff",
+        lambda root, hold: released.append(hold) or {},
+    )
+
+    def timeout(command, **kwargs):
+        assert kwargs["timeout"] == 960
+        raise subprocess.TimeoutExpired(command, 960)
+
+    monkeypatch.setattr(reclaim.subprocess, "run", timeout)
+    result = reclaim.build_payload(tmp_path, db, scratch, apply=True)
+    assert result["ok"] is False
+    assert result["vacuum_ran"] is False
+    assert result["maintenance_outcome"] == "unknown_requires_integrity_observation"
+    assert released == [handoff]

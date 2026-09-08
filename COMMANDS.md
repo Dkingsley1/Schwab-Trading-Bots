@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `f83cdc0c6ef4c2ea6d61beb286c3bbb58d4933b1a1a685b42731c34755e9ceb8`.
+Command contract hash: `8078079e55d7fed5582c05b4c28596c45aafc4d608f05760bd7d4a3694761a26`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -412,7 +412,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:715cb68e02c22a26e0575910c63871955d85364807606fa4fc12972f7caa938d section:`Reports And PDFs` section_key:`reports-and-pdfs` title:Report catalog bundle title_key:`report-catalog-bundle` opsctl:`report-pdfs` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:71092f22733803ba0ad4e14fceca48b512b2fd859cd03b6343e72b4d355e7f6f section:`Retrain` section_key:`retrain` title:Evaluate or retire a strategy offspring title_key:`evaluate-or-retire-a-strategy-offspring` opsctl:`strategy-generation` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2d6f3e088d1289a8bdbdec63e7da16b1064b7a1ecfc4b7fb7675e93cf472c021 section:`Retrain` section_key:`retrain` title:Force full retrain (bypass prechecks) title_key:`force-full-retrain-bypass-prechecks` opsctl:`retrain-force-full` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
-- search-entry:66f36e9e3bd84732995efe81a154264a21640c64b27037da97e878814c693ae2 section:`Retrain` section_key:`retrain` title:Full retrain preflight title_key:`full-retrain-preflight` opsctl:`runtime-training-snapshot, coverage-seed, coverage-gap-closer` scripts:`scripts/daily_log_refresh.sh, scripts/ops/opsctl.sh, scripts/retrain_schema_compatibility_guard.py, scripts/promotion_quality_gate.py` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:60ac23054f7496be60b3a7290ab61dec9ac1339df302fabcc1e016692b6eb488 section:`Retrain` section_key:`retrain` title:Full retrain preflight title_key:`full-retrain-preflight` opsctl:`runtime-training-snapshot, coverage-seed, coverage-gap-closer` scripts:`scripts/daily_log_refresh.sh, scripts/ops/opsctl.sh, scripts/retrain_schema_compatibility_guard.py, scripts/promotion_quality_gate.py` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:924904d5a4869f0f6b635462ae55c10a8a46d96069d9ad3ce35b3ac2b3a51c39 section:`Retrain` section_key:`retrain` title:Guarded retrain orchestrator title_key:`guarded-retrain-orchestrator` opsctl:`retrain-orchestrate` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:510d2ecaa1987134c112fc697456bdcccb41fe3e788431ebc4fb2b00b308bed0 section:`Retrain` section_key:`retrain` title:Inspect bounded strategy generations title_key:`inspect-bounded-strategy-generations` opsctl:`strategy-generation` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:5836a0275f390d7c0defeb820ac000c12278fb0a9469b1a7ddc19df1e94b78ca section:`Retrain` section_key:`retrain` title:Propose a bounded strategy generation title_key:`propose-a-bounded-strategy-generation` opsctl:`strategy-generation` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -1784,7 +1784,7 @@ Use this only when you intentionally want to bypass the normal data-quality, fre
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/daily_log_refresh.sh
-./scripts/ops/opsctl.sh runtime-training-snapshot --json
+./scripts/ops/opsctl.sh runtime-training-snapshot --max-runtime-seconds 150 --json
 ./scripts/ops/opsctl.sh coverage-seed --write-queue --json
 ./scripts/ops/opsctl.sh coverage-gap-closer --apply-stage --launch --json
 PY="$(zsh ./scripts/ops/runtime_python.sh)"
@@ -1793,6 +1793,7 @@ PY="$(zsh ./scripts/ops/runtime_python.sh)"
 ```
 
 Run this before a manual full retrain so SQL state, runtime snapshots, coverage, and promotion gates are fresh.
+The snapshot worker has a total deadline, phase diagnostics, atomic row publication, and hash-bound readers; timeout is not successful refresh or qualification.
 
 ### Guarded retrain orchestrator
 ```bash

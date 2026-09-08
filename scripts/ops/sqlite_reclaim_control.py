@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -52,6 +53,18 @@ def reclaim_blockers(
     memory_ready: bool,
 ) -> list[str]:
     blockers = []
+    measurements = [
+        space.get(key)
+        for key in ("physical_gb", "live_gb", "reclaimable_gb", "reclaimable_ratio")
+    ] + [internal_free_gb, scratch_free_gb]
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+        for value in measurements
+    ):
+        return ["invalid_capacity_measurement"]
     if space["reclaimable_gb"] < 2 or space["reclaimable_ratio"] < 0.10:
         blockers.append("below_material_reclaim_threshold")
     if not memory_ready:
@@ -62,11 +75,14 @@ def reclaim_blockers(
     if internal_free_gb < rewrite_required:
         blockers.append("insufficient_database_volume_reserve")
     if same_filesystem:
-        scratch_required = max(scratch_required, rewrite_required)
+        # Both allocations coexist; two views of one volume are not two budgets.
+        scratch_required += rewrite_required
+        if min(internal_free_gb, scratch_free_gb) < scratch_required:
+            blockers.append("insufficient_shared_filesystem_reserve")
     else:
         scratch_required = max(scratch_required, 125 + space["live_gb"])
-    if scratch_free_gb < scratch_required:
-        blockers.append("insufficient_scratch_reserve")
+        if scratch_free_gb < scratch_required:
+            blockers.append("insufficient_scratch_reserve")
     return blockers
 
 
@@ -167,6 +183,7 @@ def build_payload(project_root: Path, db: Path, scratch: Path, *, apply: bool) -
                     env=env,
                     capture_output=True,
                     text=True,
+                    timeout=960,
                 )
                 records = []
                 for line in result.stdout.splitlines():
@@ -188,6 +205,13 @@ def build_payload(project_root: Path, db: Path, scratch: Path, *, apply: bool) -
                 )
                 if not payload["ok"]:
                     payload["stderr_tail"] = result.stderr[-2000:]
+    except subprocess.TimeoutExpired:
+        payload.update(
+            ok=False,
+            overall_status="error",
+            blockers=["vacuum_process_deadline_exceeded"],
+            maintenance_outcome="unknown_requires_integrity_observation",
+        )
     except BlockingIOError:
         payload.update(
             overall_status="deferred", blockers=["maintenance_or_writer_lock_busy"]

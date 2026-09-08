@@ -24,8 +24,13 @@ if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))
 
 import runtime_training_common as rtc
-from scripts.ops.long_runtime_common import eastern_off_hours_window
-
+from scripts.ops.long_runtime_common import (
+    eastern_off_hours_window,
+    evidence_freshness,
+    run_bounded_process_group,
+    write_payload,
+)
+from core.storage_router import inspect_storage_path
 
 DEFAULT_ROWS_PATH = PROJECT_ROOT / "exports" / "training" / "runtime_training_snapshot_latest.jsonl"
 DEFAULT_HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_training_snapshot_latest.json"
@@ -60,6 +65,89 @@ def _sha256_file(path: Path) -> str:
 
 def _parse_csv(raw: str) -> list[str]:
     return [part.strip() for part in str(raw or "").split(",") if part.strip()]
+
+
+def _snapshot_rows_match(summary: dict[str, Any]) -> bool:
+    rows_path = Path(str(summary.get("rows_path") or ""))
+    if inspect_storage_path(rows_path)["status"] != "present":
+        return False
+    expected = str(summary.get("rows_sha256") or "")
+    if not expected:
+        return summary.get("schema_version", 1) == 1
+    return _sha256_file(rows_path) == expected
+
+
+def _publish_snapshot_rows(rows_path: Path, sequences: dict) -> tuple[int, int, str]:
+    rows_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = rows_path.with_name(f".{rows_path.name}.building")
+    digest = hashlib.sha256()
+    row_count = 0
+    try:
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
+        )
+        with os.fdopen(descriptor, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            for (mode, symbol), rows in sorted(sequences.items()):
+                for row in rows:
+                    encoded = (
+                        json.dumps(
+                            {"mode": mode, "symbol": symbol, **row}, ensure_ascii=True
+                        )
+                        + "\n"
+                    ).encode("utf-8")
+                    handle.write(encoded)
+                    digest.update(encoded)
+                    row_count += 1
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, rows_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return row_count, len(sequences), digest.hexdigest()
+
+
+def _phase(name: str) -> None:
+    print(
+        json.dumps({"snapshot_phase": name, "monotonic": time.monotonic()}),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _run_bounded_snapshot(argv: list[str], *, timeout_seconds: int) -> int:
+    result = run_bounded_process_group(
+        [sys.executable, str(Path(__file__).resolve()), *argv, "--bounded-worker"],
+        cwd=PROJECT_ROOT,
+        timeout_seconds=timeout_seconds,
+    )
+    if result["stdout"]:
+        print(result["stdout"], end="")
+    if result["stderr"]:
+        print(result["stderr"], end="", file=sys.stderr)
+    if result["timed_out"]:
+        phases = []
+        for line in result["stderr"].splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("snapshot_phase"):
+                phases.append(row["snapshot_phase"])
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "overall_status": "timed_out",
+                    "reason": "runtime_training_snapshot_total_deadline_exceeded",
+                    "last_phase": phases[-1] if phases else "worker_startup",
+                    "timeout_seconds": timeout_seconds,
+                    "timeout_cleanup": result["timeout_cleanup"],
+                    "publication_verified": False,
+                }
+            )
+        )
+    return int(result["rc"])
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -202,13 +290,14 @@ def _reusable_snapshot_payload(
     if int(summary.get("sequence_count", 0) or 0) <= 0 or int(summary.get("row_count", 0) or 0) <= 0:
         return {}
     rows_path = Path(str(summary.get("rows_path") or "")).expanduser()
-    if not rows_path.exists():
+    if not _snapshot_rows_match(summary):
         return {}
     ts = _parse_ts(summary.get("timestamp_utc"))
     if ts is None:
         return {}
-    age_minutes = max((datetime.now(timezone.utc) - ts).total_seconds(), 0.0) / 60.0
-    if age_minutes > float(max(int(max_age_minutes), 0)):
+    freshness = evidence_freshness(summary, max_age_minutes=max_age_minutes)
+    age_minutes = freshness["age_minutes"]
+    if not freshness["fresh"]:
         return {}
     content_freshness = _snapshot_content_freshness(summary)
     if not bool(content_freshness.get("content_fresh", False)):
@@ -243,7 +332,7 @@ def _light_refresh_existing_snapshot_payload(
     if int(summary.get("sequence_count", 0) or 0) <= 0 or int(summary.get("row_count", 0) or 0) <= 0:
         return {}
     rows_path = Path(str(summary.get("rows_path") or "")).expanduser()
-    if not rows_path.exists():
+    if not _snapshot_rows_match(summary):
         return {}
     content_freshness = _snapshot_content_freshness(summary)
     if not bool(content_freshness.get("content_fresh", False)):
@@ -281,7 +370,7 @@ def _summary_config_compatible(
     if bool(summary.get("prefer_sqlite", False)) != bool(prefer_sqlite):
         return False
     rows_path = Path(str(summary.get("rows_path") or "")).expanduser()
-    return rows_path.exists()
+    return inspect_storage_path(rows_path)["status"] == "present"
 
 
 def _summary_can_seed_target(
@@ -296,7 +385,7 @@ def _summary_can_seed_target(
     if str(summary.get("project_root") or "") != str(project_root):
         return False
     rows_path = Path(str(summary.get("rows_path") or "")).expanduser()
-    if not rows_path.exists():
+    if inspect_storage_path(rows_path)["status"] != "present":
         return False
     seed_mode_allowlist = [str(x) for x in summary.get("mode_allowlist", [])]
     seed_symbol_allowlist = [str(x) for x in summary.get("symbol_allowlist", [])]
@@ -782,6 +871,7 @@ def _incremental_snapshot_sequences(
     if since_summary_utc is None:
         return None
 
+    _phase("incremental_base_read")
     base_sequences = rtc._load_runtime_snapshot_rows(
         project_root,
         lookback_days=max(int(lookback_days), 1),
@@ -792,6 +882,7 @@ def _incremental_snapshot_sequences(
     if not base_sequences:
         return None
 
+    _phase("incremental_discovery")
     candidate_paths = _incremental_candidate_paths(
         project_root,
         lookback_days=max(int(lookback_days), 1),
@@ -807,6 +898,7 @@ def _incremental_snapshot_sequences(
         }
 
     since_utc = datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))
+    _phase("incremental_candidate_parse")
     merged_row_count, scan_stats = _merge_candidate_rows_into_sequences(
         base_sequences,
         candidate_paths=candidate_paths,
@@ -838,6 +930,7 @@ def _full_refresh_sequences(
     prefer_sqlite: bool,
     max_observation_rows: int,
 ) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], dict[str, Any]]:
+    _phase("full_source_load")
     sequences = rtc.load_runtime_observation_sequences(
         project_root,
         lookback_days=max(int(lookback_days), 1),
@@ -851,6 +944,7 @@ def _full_refresh_sequences(
     if sequences or not bool(prefer_sqlite):
         return sequences, meta
 
+    _phase("full_jsonl_fallback")
     fallback_sequences = rtc.load_runtime_observation_sequences(
         project_root,
         lookback_days=max(int(lookback_days), 1),
@@ -1102,9 +1196,29 @@ def main() -> int:
         help="Maximum valid JSONL candidate rows to parse during incremental refresh; 0 disables the row cap.",
     )
     parser.add_argument("--light-refresh-existing", action="store_true")
+    parser.add_argument(
+        "--max-runtime-seconds",
+        type=int,
+        default=150,
+        help="Total worker deadline, including discovery, fallback, parsing, and publication.",
+    )
+    parser.add_argument("--bounded-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    if args.max_runtime_seconds <= 0:
+        parser.error("--max-runtime-seconds must be positive")
+    if not args.bounded_worker:
+        return _run_bounded_snapshot(
+            sys.argv[1:], timeout_seconds=args.max_runtime_seconds
+        )
 
+    _phase("route_validation")
+    routes = [args.project_root, args.rows_path, args.health_path, args.lock_path]
+    if args.seed_health_path:
+        routes.append(args.seed_health_path)
+    for raw in routes:
+        if inspect_storage_path(raw)["status"] not in {"present", "missing"}:
+            parser.error("snapshot route is protected or unavailable")
     project_root = Path(args.project_root).resolve()
     rows_path = Path(args.rows_path).expanduser()
     health_path = Path(args.health_path).expanduser()
@@ -1115,6 +1229,7 @@ def main() -> int:
         seed_health_path = default_seed_path
     mode_allowlist = _parse_csv(args.mode_allowlist)
     symbol_allowlist = _parse_csv(args.symbol_allowlist)
+    _phase("lock_acquisition")
     lock_handle, already_running = _acquire_single_flight_lock(
         lock_path,
         project_root=project_root,
@@ -1130,8 +1245,32 @@ def main() -> int:
                 f"lock_path={already_running.get('lock_path', '')}"
             )
         return 0
-    _ = lock_handle
+    try:
+        return _build_locked_snapshot(
+            args,
+            project_root,
+            rows_path,
+            health_path,
+            lock_path,
+            seed_health_path,
+            mode_allowlist,
+            symbol_allowlist,
+        )
+    finally:
+        lock_handle.close()
 
+
+def _build_locked_snapshot(
+    args,
+    project_root,
+    rows_path,
+    health_path,
+    lock_path,
+    seed_health_path,
+    mode_allowlist,
+    symbol_allowlist,
+) -> int:
+    _phase("existing_snapshot_validation")
     current_summary = _load_json(health_path)
     reusable = _reusable_snapshot_payload(
         current_summary,
@@ -1163,8 +1302,7 @@ def main() -> int:
             prefer_sqlite=bool(args.prefer_sqlite),
         )
         if light_refresh:
-            health_path.parent.mkdir(parents=True, exist_ok=True)
-            health_path.write_text(json.dumps(light_refresh, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            write_payload(health_path, light_refresh)
             if args.json:
                 print(json.dumps(light_refresh, ensure_ascii=True))
             else:
@@ -1175,6 +1313,7 @@ def main() -> int:
             return 0
 
     incremental_meta: dict[str, Any] = {}
+    _phase("incremental_load_discovery_and_scan")
     incremental = _incremental_snapshot_sequences(
         current_summary,
         project_root=project_root,
@@ -1189,6 +1328,7 @@ def main() -> int:
     if incremental is not None:
         sequences, incremental_meta = incremental
     else:
+        _phase("seed_load_and_discovery")
         seed_summary = _load_json(seed_health_path) if seed_health_path and seed_health_path.exists() else {}
         seeded = (
             _seeded_snapshot_sequences(
@@ -1205,6 +1345,7 @@ def main() -> int:
         if seeded is not None:
             sequences, incremental_meta = seeded
         else:
+            _phase("full_refresh_with_sqlite_jsonl_fallback")
             sequences, incremental_meta = _full_refresh_sequences(
                 project_root,
                 lookback_days=max(int(args.lookback_days), 1),
@@ -1214,22 +1355,16 @@ def main() -> int:
                 max_observation_rows=max(int(args.max_observation_rows), 0),
             )
 
+    _phase("sequence_limits_and_coverage")
     sequences = _limit_snapshot_sequences(
         sequences,
         max_sequences=max(int(args.max_sequences), 0),
         max_rows_per_sequence=max(int(args.max_rows_per_sequence), 0),
     )
 
-    rows_path.parent.mkdir(parents=True, exist_ok=True)
-    row_count = 0
-    sequence_count = 0
     coverage = _coverage_summary(sequences)
-    with rows_path.open("w", encoding="utf-8") as handle:
-        for (mode, symbol), rows in sorted(sequences.items()):
-            sequence_count += 1
-            for row in rows:
-                handle.write(json.dumps({"mode": mode, "symbol": symbol, **row}, ensure_ascii=True) + "\n")
-                row_count += 1
+    _phase("atomic_rows_publication")
+    row_count, sequence_count, rows_hash = _publish_snapshot_rows(rows_path, sequences)
     del sequences
     gc.collect()
 
@@ -1247,8 +1382,13 @@ def main() -> int:
         "rows_path": str(rows_path),
         "health_path": str(health_path),
         "lock_path": str(lock_path),
-        "jsonl_discovery_manifest": str(project_root / "governance" / "health" / "jsonl_discovery_manifest_latest.json"),
-        "rows_sha256": _sha256_file(rows_path),
+        "jsonl_discovery_manifest": str(
+            project_root
+            / "governance"
+            / "health"
+            / "jsonl_discovery_manifest_latest.json"
+        ),
+        "rows_sha256": rows_hash,
         "sequence_count": int(sequence_count),
         "row_count": int(row_count),
         "coverage": coverage,
@@ -1260,8 +1400,9 @@ def main() -> int:
     }
     payload.update(_snapshot_content_freshness(payload))
     payload.update(incremental_meta)
-    health_path.parent.mkdir(parents=True, exist_ok=True)
-    health_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    _phase("atomic_health_publication")
+    write_payload(health_path, payload)
+    _phase("completed")
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

@@ -1,4 +1,5 @@
 import json
+import hashlib
 import sqlite3
 import sys
 import pytest
@@ -737,6 +738,13 @@ def test_recovery_snapshot_contract_requires_fresh_snapshot_database_and_content
         {
             "timestamp_utc": src._utc_now(),
             "copied_paths": ["data/snapshot_context.sqlite3"],
+            "files": [
+                {
+                    "path": "data/snapshot_context.sqlite3",
+                    "size_bytes": 2,
+                    "sha256": hashlib.sha256(b"db").hexdigest(),
+                }
+            ],
             "errors": [],
         },
     )
@@ -788,6 +796,94 @@ def test_recovery_snapshot_contract_rejects_missing_and_unsafe_manifest_paths(
     assert "recovery_snapshot_manifest_verification_failed" in contract["blockers"]
     assert verification["missing_paths"] == ["governance/missing.json"]
     assert verification["unsafe_paths"] == ["../outside.txt"]
+
+
+def _verified_manifest(root):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "state").write_bytes(b"state")
+    return {
+        "timestamp_utc": src._utc_now(),
+        "copied_paths": ["state"],
+        "errors": [],
+        "files": [
+            {
+                "path": "state",
+                "size_bytes": 5,
+                "sha256": hashlib.sha256(b"state").hexdigest(),
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("sha256", ""),
+        ("sha256", "invalid"),
+        ("size_bytes", None),
+        ("size_bytes", True),
+        ("size_bytes", -1),
+    ],
+)
+def test_recovery_requires_complete_typed_integrity_records(tmp_path, field, value):
+    manifest = _verified_manifest(tmp_path)
+    manifest["files"][0][field] = value
+    assert src._verify_snapshot_manifest(tmp_path, manifest)["ready"] is False
+
+
+@pytest.mark.parametrize("field", ["files", "copied_paths"])
+def test_duplicate_manifest_records_fail_closed(tmp_path, field):
+    manifest = _verified_manifest(tmp_path)
+    manifest[field] *= 2
+    result = src._verify_snapshot_manifest(tmp_path, manifest)
+    assert result["ready"] is False
+    assert result["schema_errors"]
+
+
+def test_verification_receipt_binds_actual_contents(tmp_path):
+    manifest = _verified_manifest(tmp_path)
+    first = src._verify_snapshot_manifest(tmp_path, manifest)
+    (tmp_path / "state").write_bytes(b"other")
+    manifest["files"][0]["sha256"] = hashlib.sha256(b"other").hexdigest()
+    second = src._verify_snapshot_manifest(tmp_path, manifest)
+    assert first["ready"] and second["ready"]
+    assert first["verification_receipt_sha256"] != second["verification_receipt_sha256"]
+
+
+def test_manifest_protected_symlink_rejected_before_target_access(
+    tmp_path, monkeypatch
+):
+    manifest = _verified_manifest(tmp_path)
+    (tmp_path / "state").unlink()
+    (tmp_path / "state").symlink_to("/Volumes/VIDEO/state")
+    original = Path.lstat
+
+    def guarded(path, *args, **kwargs):
+        assert not str(path).casefold().startswith("/volumes/video")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", guarded)
+    result = src._verify_snapshot_manifest(tmp_path, manifest)
+    assert result["ready"] is False
+    assert result["unsafe_paths"] == ["state"]
+
+
+@pytest.mark.parametrize("timestamp", [None, "invalid", "2099-01-01T00:00:00+00:00"])
+def test_recovery_manifest_and_control_evidence_require_producer_time(
+    tmp_path, timestamp
+):
+    root = tmp_path / "recovery"
+    manifest = _verified_manifest(root / "latest")
+    content = {"ok": True, "manifest_hash": "a" * 64}
+    manifest.pop("timestamp_utc")
+    if timestamp is not None:
+        manifest["timestamp_utc"] = timestamp
+        content["timestamp_utc"] = timestamp
+    _write_json(root / "recovery_manifest_latest.json", manifest)
+    _write_json(tmp_path / "governance/content_store/latest.json", content)
+    result = src._recovery_snapshot_contract(tmp_path, root)
+    assert "recovery_snapshot_stale" in result["blockers"]
+    assert "immutable_control_plane_evidence_not_current" in result["blockers"]
 
 
 def test_online_curated_snapshot_uses_sqlite_backup_without_writer_quiet(

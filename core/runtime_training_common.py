@@ -28,6 +28,7 @@ from sql_dataset_io import (
     resolve_sqlite_path,
     split_paths_by_sqlite_coverage,
 )
+from storage_router import inspect_storage_path
 
 from market_context_features import (
     BOND_REFERENCE_FEATURE_KEYS,
@@ -1302,6 +1303,8 @@ def _load_runtime_snapshot_rows(
 ) -> RuntimeSequenceMap:
     root = Path(project_root).expanduser().resolve()
     summary_path = Path(snapshot_file or (root / _DEFAULT_RUNTIME_SNAPSHOT_HEALTH)).expanduser()
+    if inspect_storage_path(summary_path)["status"] != "present":
+        return {}
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
     except Exception:
@@ -1311,16 +1314,21 @@ def _load_runtime_snapshot_rows(
     if int(summary.get("lookback_days", 0) or 0) < max(int(lookback_days), 1):
         return {}
     rows_path = Path(str(summary.get("rows_path") or "")).expanduser()
-    if not rows_path.exists():
+    if inspect_storage_path(rows_path)["status"] != "present":
         return {}
 
     since_utc = datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))
     mode_allow = {str(x).strip().lower() for x in (mode_allowlist or []) if str(x).strip()}
     symbol_allow = {str(x).strip().upper() for x in (symbol_allowlist or []) if str(x).strip()}
     grouped: RuntimeSequenceMap = defaultdict(list)
+    expected_hash = str(summary.get("rows_sha256") or "")
+    if summary.get("schema_version") == 2 and not expected_hash:
+        return {}
+    digest = hashlib.sha256()
     try:
-        with rows_path.open("r", encoding="utf-8") as handle:
+        with rows_path.open("rb") as handle:
             for line in handle:
+                digest.update(line)
                 line = line.strip()
                 if not line:
                     continue
@@ -1343,6 +1351,8 @@ def _load_runtime_snapshot_rows(
                     continue
                 grouped[(mode, symbol)].append(dict(row))
     except Exception:
+        return {}
+    if expected_hash and digest.hexdigest() != expected_hash:
         return {}
     return grouped
 

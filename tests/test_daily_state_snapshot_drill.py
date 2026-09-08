@@ -1,4 +1,5 @@
 import importlib.util
+import fcntl
 import json
 import sqlite3
 import sys
@@ -6,6 +7,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from types import SimpleNamespace
+
+import pytest
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1] / "scripts" / "daily_state_snapshot_drill.py"
@@ -228,9 +232,12 @@ def test_retention_only_removes_owned_completed_runs(tmp_path):
     linked = tmp_path / "20260904_120000"
     for directory in (current, old, unrelated):
         directory.mkdir()
-    (old / "manifest.json").write_text(json.dumps({"run_dir": str(old)}))
+    (old / "manifest.json").write_text(json.dumps({"run_dir": str(old), "ok": True}))
     linked.symlink_to(unrelated, target_is_directory=True)
-    assert module._prune_old_runs(tmp_path, 0, current_run=current) == 1
+    assert (
+        module._prune_old_runs(tmp_path, 0, current_run=current, current_verified=True)
+        == 1
+    )
     assert current.exists() and unrelated.exists() and linked.is_symlink()
     assert not old.exists()
 
@@ -255,22 +262,140 @@ def test_regular_file_mutation_during_copy_fails_verification(tmp_path):
     module.PROJECT_ROOT = tmp_path
     target = tmp_path / "mutable.txt"
     target.write_text("before")
-    real_copy = module.shutil.copy2
+    real_copy = module._copy_bounded
 
-    def mutate_after_copy(source, destination):
-        result = real_copy(source, destination)
+    def mutate_after_copy(source, destination, **kwargs):
+        result = real_copy(source, destination, **kwargs)
         if source == target:
             target.write_text("changed while copying")
         return result
 
     output = tmp_path / "snapshots"
-    with mock.patch.object(module.shutil, "copy2", side_effect=mutate_after_copy):
+    with mock.patch.object(module, "_copy_bounded", side_effect=mutate_after_copy):
         with mock.patch.object(
             sys, "argv", ["drill", "--out-root", str(output), "--targets", str(target)]
         ):
             assert module.main() == 2
     report = json.loads((output / "latest.json").read_text())
     assert report["rows"][0]["error"] == "source_changed_during_snapshot"
+
+
+def test_capacity_counts_all_snapshots_and_restore_copies(tmp_path):
+    module = _load_module()
+    with mock.patch.object(
+        module.shutil, "disk_usage", return_value=SimpleNamespace(free=64 * 2**30 + 350)
+    ):
+        budget = module._capacity_preflight(tmp_path, 2, 100)
+    assert budget["required_free_bytes"] == 64 * 2**30 + 400
+    assert budget["sufficient"] is False
+
+
+def test_low_capacity_defers_all_copying_and_preserves_previous_restore(tmp_path):
+    module = _load_module()
+    module.PROJECT_ROOT = tmp_path
+    target = tmp_path / "state.json"
+    target.write_text("state")
+    output = tmp_path / "snapshots"
+    old = output / "20260901_120000"
+    old.mkdir(parents=True)
+    (old / "manifest.json").write_text(json.dumps({"run_dir": str(old), "ok": True}))
+    with mock.patch.object(
+        module.shutil, "disk_usage", return_value=SimpleNamespace(free=100)
+    ):
+        with mock.patch.object(
+            module, "_copy_bounded", side_effect=AssertionError("must not copy")
+        ):
+            with mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "drill",
+                    "--out-root",
+                    str(output),
+                    "--targets",
+                    str(target),
+                    "--keep-runs",
+                    "1",
+                ],
+            ):
+                assert module.main() == 2
+    report = json.loads((output / "latest.json").read_text())
+    assert report["rows"][0]["error"] == "insufficient_snapshot_capacity"
+    assert old.is_dir()
+
+
+def test_failed_and_unverified_history_is_not_pruned(tmp_path):
+    module = _load_module()
+    current = tmp_path / "20260907_120000"
+    failed = tmp_path / "20260906_120000"
+    failed.mkdir()
+    (failed / "manifest.json").write_text(
+        json.dumps({"run_dir": str(failed), "ok": False})
+    )
+    assert (
+        module._prune_old_runs(tmp_path, 1, current_run=current, current_verified=True)
+        == 0
+    )
+    assert failed.is_dir()
+
+
+def test_busy_storage_lane_does_not_overwrite_snapshot_receipt(tmp_path, capsys):
+    module = _load_module()
+    module.PROJECT_ROOT = tmp_path
+    lock_path = tmp_path / "governance/locks/storage_maintenance.lock"
+    lock_path.parent.mkdir(parents=True)
+    output = tmp_path / "snapshots"
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with mock.patch.object(
+            sys, "argv", ["drill", "--out-root", str(output), "--targets"]
+        ):
+            assert module.main() == 2
+    assert (
+        json.loads(capsys.readouterr().out)["reason"] == "storage_maintenance_lock_busy"
+    )
+    assert not output.exists()
+
+
+def test_copy_cannot_exceed_byte_budget(tmp_path):
+    module = _load_module()
+    source = tmp_path / "source"
+    destination = tmp_path / "copy"
+    source.write_bytes(b"12345678")
+    with pytest.raises(RuntimeError, match="copy_budget"):
+        module._copy_bounded(source, destination, max_bytes=4)
+    assert destination.stat().st_size <= 4
+
+
+def test_unknown_capacity_fails_closed(tmp_path):
+    module = _load_module()
+    with mock.patch.object(
+        module.shutil, "disk_usage", side_effect=OSError("unavailable")
+    ):
+        result = module._capacity_preflight(tmp_path, 1, 100)
+    assert result["known"] is False
+    assert result["sufficient"] is False
+
+
+def test_capacity_honors_higher_configured_live_reserve(tmp_path, monkeypatch):
+    module = _load_module()
+    monkeypatch.setenv("BOT_LOCAL_STORAGE_TARGET_FREE_GB", "125")
+    with mock.patch.object(module.shutil, "disk_usage", return_value=SimpleNamespace(free=100 * 2**30)):
+        result = module._capacity_preflight(tmp_path, 1, 100)
+    assert result["reserve_bytes"] == 125 * 2**30
+    assert result["sufficient"] is False
+
+
+def test_failed_publication_never_prunes_previous_success(tmp_path):
+    module = _load_module()
+    module.PROJECT_ROOT = tmp_path
+    target = tmp_path / "state"
+    target.write_text("state")
+    with mock.patch.object(module, "_write_json_atomic", side_effect=OSError("publish failed")):
+        with mock.patch.object(module, "_prune_old_runs", side_effect=AssertionError("pruned too early")):
+            with mock.patch.object(sys, "argv", ["drill", "--out-root", str(tmp_path / "snapshots"), "--targets", str(target)]):
+                with pytest.raises(OSError, match="publish failed"):
+                    module.main()
 
 
 if __name__ == "__main__":

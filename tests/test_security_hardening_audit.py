@@ -1,5 +1,6 @@
 import json
 import sys
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import scripts.security_hardening_audit as src
-
+import pytest
 
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -20,6 +21,13 @@ def test_security_hardening_audit_checks_rbac_and_secret_scan(tmp_path: Path, mo
     now = datetime.now(timezone.utc).isoformat()
     (tmp_path / ".githooks").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".githooks" / "pre-commit").write_text("python scripts/secret_scan.py --staged\n", encoding="utf-8")
+    (tmp_path / ".githooks" / "pre-commit").chmod(0o700)
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(
+        ["git", "config", "--local", "core.hooksPath", ".githooks"],
+        cwd=tmp_path,
+        check=True,
+    )
     (tmp_path / ".gitignore").write_text("token.json\n", encoding="utf-8")
     (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
     (tmp_path / "scripts" / "shadow_preflight.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
@@ -75,3 +83,52 @@ def test_security_hardening_audit_checks_rbac_and_secret_scan(tmp_path: Path, mo
     assert payload["summary"]["rbac_role_count"] == 6
     assert payload["summary"]["key_rotation_schedule_defined"] is True
     assert payload["summary"]["rbac_manifest_path"].endswith("config/security/rbac_roles.json")
+
+
+def test_checked_in_hook_without_git_activation_is_not_enabled(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(
+        ["git", "config", "--local", "core.hooksPath", ".git/hooks"],
+        cwd=tmp_path,
+        check=True,
+    )
+    hook = tmp_path / ".githooks/pre-commit"
+    hook.parent.mkdir()
+    hook.write_text("python scripts/secret_scan.py --staged\n")
+    hook.chmod(0o700)
+    assert src._hook_contract(tmp_path)["active"] is False
+
+
+def test_nonexecutable_hook_does_not_count_as_active(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(
+        ["git", "config", "--local", "core.hooksPath", ".githooks"],
+        cwd=tmp_path,
+        check=True,
+    )
+    hook = tmp_path / ".githooks/pre-commit"
+    hook.parent.mkdir()
+    hook.write_text("python scripts/secret_scan.py --staged\n")
+    hook.chmod(0o600)
+    assert src._hook_contract(tmp_path)["active"] is False
+
+
+@pytest.mark.parametrize("timestamp", [None, "invalid", "2099-01-01T00:00:00+00:00"])
+def test_security_receipts_cannot_use_file_mtime_or_future_time(
+    tmp_path, monkeypatch, timestamp
+):
+    row = (
+        {"timestamp_utc": timestamp} if timestamp is not None else {"unversioned": True}
+    )
+    _write_json(tmp_path / "governance/health/secret_scan_latest.json", row)
+    _write_json(tmp_path / "governance/audits/registry_mutation_latest.json", row)
+    output = tmp_path / "audit.json"
+    monkeypatch.setattr(src, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["audit", "--out", str(output), "--json"])
+    assert src.main() == 2
+    checks = {
+        row["name"]: row["ok"] for row in json.loads(output.read_text())["checks"]
+    }
+    assert checks["secret_scan_artifact_fresh"] is False
+    assert checks["secret_scan_clear"] is False
+    assert checks["mutation_latest_fresh"] is False

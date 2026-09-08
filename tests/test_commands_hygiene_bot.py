@@ -120,7 +120,7 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "### Data quality refresh bundle" in commands_text
     assert '"$PY" scripts/build_one_numbers_report.py' in commands_text
     assert "### Full retrain preflight" in commands_text
-    assert "./scripts/ops/opsctl.sh runtime-training-snapshot --json" in commands_text
+    assert "./scripts/ops/opsctl.sh runtime-training-snapshot --max-runtime-seconds 150 --json" in commands_text
     assert "./scripts/ops/opsctl.sh coverage-seed --write-queue --json" in commands_text
     assert "./scripts/ops/opsctl.sh coverage-gap-closer --apply-stage --launch --json" in commands_text
     assert '"$PY" scripts/retrain_schema_compatibility_guard.py --json' in commands_text

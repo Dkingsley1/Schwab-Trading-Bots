@@ -80,6 +80,60 @@ an unattended soak, recovery readiness, or live-promotion qualification.
 
 ## Remaining Work
 
+### All-26 Follow-Up Implementation
+
+The following additional failures were reproduced and corrected during the
+operator's all-26 request. They are implementation fixes with focused test
+evidence, not completed release-level work packages.
+
+| ID / Criteria | Reproduced Failure And Correction | Owner / Tests |
+| --- | --- | --- |
+| PH-13 / C02 | Same-filesystem vacuum demand used the largest individual allocation instead of simultaneous demand. Reclaim now sums rewrite and scratch requirements and rejects unknown, nonfinite, negative, or boolean capacity values. | `scripts/ops/sqlite_reclaim_control.py`; shared-volume and malformed-capacity tests |
+| PH-14 / C02 | Daily restore drills lacked an aggregate capacity admission check. Two capped copies per eligible target plus the configured live-growth reserve (at least 64 GiB) are required, with per-target rechecks and the existing storage-maintenance lock. Regular-file copies have byte/time bounds and owner-only access. | `scripts/daily_state_snapshot_drill.py`; combined demand, unavailable/full disk, higher reserve, busy lane, and bounded-copy tests |
+| PH-15 / C07 | Failed drill attempts could prune successful history. Retention now requires published, verified current evidence, and only successful owned historical runs are eligible. Failed/unverified history is preserved for investigation, not treated as free space. | Daily snapshot owner; failed-current and failed-history retention tests |
+| PH-16 / C03 | Recovery manifest verification accepted missing sizes/hashes, duplicate rows, and receipts that were unchanged across different valid contents. It now requires complete typed unique records, exact digests, content-bound receipts, and permitted in-root physical paths. Size-only large-file observations remain unverified. | `scripts/ops/storage_disaster_recovery.py`; malformed, duplicate, same-size content, and protected-symlink tests |
+| PH-17 / C13 | Recovery and immutable-control evidence could use file mtime or future producer time. Both now use the shared producer-time contract and publish freshness reasons. | DR owner; absent, invalid, and future timestamp tests |
+| PH-18 / C10 | Vacuum's child process lacked an outer deadline, while training's incremental budget excluded discovery, fallback, and publication. Vacuum now has a 960-second parent timeout with an unknown-outcome receipt; snapshot CLI wraps its worker in the existing process-group deadline/cleanup owner, defaults to 150 seconds, and reports the last phase. | Reclaim and training snapshot owners; owned-hold timeout release and actual hanging-child cleanup tests |
+| PH-19 / C10, C21 | Training rows were overwritten in place and readers did not verify the published digest. Rows now stage and atomically replace, health uses the existing atomic writer, and schema-v2 readers/reuse require the matching hash. The brief two-file publication gap fails closed; it is not claimed to be a multi-file transaction. | `scripts/build_runtime_training_snapshot.py`, `core/runtime_training_common.py`; interrupted publication, digest, mismatched-generation, missing-hash, and temporary-symlink tests |
+| PH-20 / C19, C24 | Security audit treated a checked-in hook as active, defaulted missing scan counts to clean, and credited future/mtime-based receipts. It now observes Git's actual hook route/executability, requires an explicit valid count, uses producer time, and accepts the documented `--json` flag. It does not install hooks or accept source drift. | `scripts/security_hardening_audit.py`; actual temporary Git configuration, CLI, and malformed-time tests |
+| PH-21 / C09, C13 | The shared plumbing report was almost four days old and its producer was absent from the production refresh profile. The existing read-only owner now runs after writer observation and before the architecture consumer, with 30-minute eligibility inside the 45-minute cadence. | `scripts/ops/readiness_evidence_refresh.py`; producer inclusion, ordering, read-only authority, and consumer dependency assertions |
+
+Remaining limits: the minimum 64 GiB snapshot margin is conservative admission, not a
+measured fleet-wide forecast or reservation against nonparticipating writers.
+The full platform recovery protocol, damaged archive salvage, and production
+restart proof are still open. Training phase diagnostics and total deadlines
+contain recurrence; they do not establish the cause of the earlier observed
+180-second timeout or prove repeated unattended success. Schema-v1 training
+fixtures remain a legacy compatibility path, not v2 integrity evidence. Active
+hook declaration is configuration evidence, not proof of every shell branch or
+a security certification. No production data was deleted or writer restarted.
+
+### Follow-Up Verification
+
+- The 75-file cross-platform suite passed **1,011 tests and two subtests** after
+  correcting a command-documentation expectation for the new deadline flag.
+  The final snapshot read-boundary adjustments passed **107 focused tests**;
+  the subsequent missing-producer integration passed **72 tests** spanning its
+  scheduler, plumbing, freshness, and architecture consumers. These overlapping
+  runs must not be added together as a unique-test count or full-platform proof.
+- The bounded snapshot CLI verified and reused the actual 9,123-row, 504-sequence
+  snapshot at 00:49 UTC on September 8. Its original producer timestamp and row
+  hash were preserved. This checks reuse and worker dispatch, not a new full
+  rebuild or repeated unattended adoption.
+- At 00:46 UTC the corrected security audit reported 16 passing checks and two
+  failures for inactive hook enforcement. No hook was installed or disabled.
+  The non-applying regression autopilot showed storage blocked and security
+  degraded, with zero repair attempts.
+- At 00:54 UTC fast health was guarded-ready, with no global halt and live
+  execution explicitly blocked. At 00:55 UTC the refreshed plumbing owner
+  reported healthy routes, queues, and progressing writer, but unresolved
+  data-plane write-recovery and global-clear blockers. That evidence remains
+  open under C09/C13/C20; historical incidents were not reset to force readiness.
+- Command hygiene reports 230 entries with no drift. The staged secret scan
+  has zero findings and the staged project guard passes all seven checks.
+  Production-sized restore, archive salvage, disruptive restart exercises,
+  off-host monitoring, and candidate/release acceptance remain unperformed.
+
 These are open implementation packages or evidence prerequisites, not defects
 closed merely by documenting them. Missing evidence must not become a green grade.
 
@@ -92,7 +146,7 @@ closed merely by documenting them. Missing evidence must not become a green grad
 | P1: Intermittent snapshot timeout | `scripts/build_runtime_training_snapshot.py`, readiness refresh | Reproduce the observed 180-second process timeout despite the 30-second incremental scan budget; measure lock, discovery, parsing, fallback, and publication phases; bound the entire operation without relabeling old data as fresh. Verify multiple unattended cycles. A later successful refresh is recovery evidence, not a root-cause fix. |
 | P1: Independent monitoring | `scripts/observability_exporter.py` | Verify local sentinel and paper-regression freshness; configure an operator-approved off-host receiver; test delivery and real failure detection. No external destination or credentials were invented. |
 | P1: Runtime authority coverage | Role/operating contracts, broker and execution entry points | Prove every mutating entry point enforces its action guard, including retry and restart paths. A complete role registry is not invocation-coverage proof. Keep live/promotion locks intact. |
-| P1: Release isolation | Source-mutation, immutable-release, project and candidate guards | Split mixed dirty work into dependency-complete reviewed changes, test a clean immutable build, and verify rollback. Preserve existing work; no automatic commit, push, or acceptance. |
+| P1: Release isolation | Source-mutation, immutable-release, project and candidate guards | Split mixed dirty work into dependency-complete reviewed changes, test a clean immutable build, and verify rollback. Publication follows operator instruction; candidate acceptance remains a separate explicit decision. |
 | P2: Training/qualification vocabulary | Training quality, grade and promotion consumers | Separate structural coverage, current quality, unresolved improvements, and candidate-bound eligibility. A score of 100 must not imply all qualifications passed. |
 | P2: Full schema compatibility | Schema migration guard and its six producers/consumers | Supported versions, required types/values, nested invariants, migration compatibility, and replay fixtures. PH-01 fixes aggregate truth, not every validation gap. |
 | P2: Seven institutional evidence gaps | `scripts/ops/institutional_research_extensions_control.py` and research owners | Real risk-schedule, cross-engine valuation, execution frontier, independent factor, incident ownership, DAG checkpoint/resume, and versioned dataset evidence. Eight implemented controls and one evidenced control are different coverage measures. |

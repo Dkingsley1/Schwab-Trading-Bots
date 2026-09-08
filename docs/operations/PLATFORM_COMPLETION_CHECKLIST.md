@@ -80,3 +80,34 @@ scheduler, and self-healing reliability; monitoring and configuration adoption;
 release/authority/security verification; then complete research and candidate
 qualification. Parallel independent work is possible, but no row gains evidence
 by being added to a checklist, pushed to GitHub, or assigned a better grade.
+
+## Execution Waves And Hidden Defects
+
+The operator requested work across all 26 areas. These are work packages, not
+26 patches. No row is marked complete by this follow-up implementation pass.
+
+| Wave | Checklist Coverage | Exit Evidence |
+| --- | --- | --- |
+| 1: Data safety | C01-C07 | Route and ingestion failure tests, shared admission, schema/replay fixtures, verified archive investigation, and an approved production-scope isolated restore. |
+| 2: Unattended operation | C08-C15 | Configuration adoption, scheduled and deferred lifecycle receipts, total deadlines, bounded repairs, controlled restart/failover exercises, and approved off-host delivery/failure receipts. |
+| 3: Trust and qualification | C16-C23 | Entrypoint authority tests, broker/accounting reconciliation, dependency/security review, honest grades, reproducible research, genuine institutional evidence, and policy-required candidate history. |
+| 4: Release closure | C24-C26, with all earlier rows rechecked | Immutable reviewed build, rollback/deployment proof, broader integration/failure/load/soak testing, and consistent operator documentation. |
+
+Newly reproduced defects belong under the affected row, with a regression test
+and a ledger entry. Cross-subsystem, concurrency, interrupted-write, clock,
+capacity, malformed-evidence, and restart tests are mandatory discovery work.
+If a finding introduces a genuinely new release requirement, add it explicitly;
+do not hide it to preserve the number 26. Reopen a closed row if its release
+identity, evidence validity, or acceptance criteria cease to hold.
+
+PH-13 through PH-21 in the hardening ledger record this pass's capacity,
+retention, recovery-manifest, freshness, worker-timeout, atomic-publication, and
+security-audit and missing scheduled-producer fixes. Those fixes advance C02, C03, C07, C09, C10, C13, C19, C21,
+C24, C25, and C26, but do not close their broader proof obligations.
+
+Production-sized restore/archive work still requires an approved isolated
+destination and resource window; real reboot/failover tests require an approved
+interruption scope; off-host tests require a receiver approved by the operator.
+External advisories, independently sourced outcomes, market sessions, and
+candidate acceptance cannot be manufactured by editing local reports. Neither
+this checklist nor a successful Git push authorizes live trading or promotion.

@@ -2381,7 +2381,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Full retrain preflight",
                 [
                     "./scripts/daily_log_refresh.sh",
-                    "./scripts/ops/opsctl.sh runtime-training-snapshot --json",
+                    "./scripts/ops/opsctl.sh runtime-training-snapshot --max-runtime-seconds 150 --json",
                     "./scripts/ops/opsctl.sh coverage-seed --write-queue --json",
                     "./scripts/ops/opsctl.sh coverage-gap-closer --apply-stage --launch --json",
                     'PY="$(zsh ./scripts/ops/runtime_python.sh)"',
@@ -2390,6 +2390,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ],
                 notes=[
                     "Run this before a manual full retrain so SQL state, runtime snapshots, coverage, and promotion gates are fresh.",
+                    "The snapshot worker has a total deadline, phase diagnostics, atomic row publication, and hash-bound readers; timeout is not successful refresh or qualification.",
                 ],
             ),
             _command_entry(

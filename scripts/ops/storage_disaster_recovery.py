@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -48,6 +49,8 @@ else:
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
+from core.storage_router import inspect_storage_path
+
 DEFAULT_OUT_PATH = (
     PROJECT_ROOT / "governance" / "health" / "storage_disaster_recovery_latest.json"
 )
@@ -174,61 +177,107 @@ def _snapshot_file_manifest(
 def _verify_snapshot_manifest(
     latest_root: Path, manifest: dict[str, Any]
 ) -> dict[str, Any]:
+    errors: list[str] = []
+    raw_paths = manifest.get("copied_paths")
+    copied_paths = raw_paths if isinstance(raw_paths, list) else []
+    if not copied_paths or any(
+        not isinstance(item, str) or not item.strip() for item in copied_paths
+    ):
+        errors.append("invalid_copied_paths")
     copied_paths = [
-        str(item or "").strip()
-        for item in manifest.get("copied_paths", [])
-        if str(item or "").strip()
+        item for item in copied_paths if isinstance(item, str) and item.strip()
     ]
-    file_rows = {
-        str(row.get("path") or "").strip(): row
-        for row in manifest.get("files", [])
-        if isinstance(row, dict) and str(row.get("path") or "").strip()
-    }
+    if len(copied_paths) != len(set(copied_paths)):
+        errors.append("duplicate_copied_paths")
+    raw_rows = manifest.get("files")
+    file_rows = {}
+    if not isinstance(raw_rows, list):
+        errors.append("missing_file_rows")
+        raw_rows = []
+    for row in raw_rows:
+        if not isinstance(row, dict) or not isinstance(row.get("path"), str):
+            errors.append("invalid_file_row")
+            continue
+        raw = row["path"]
+        if raw in file_rows:
+            errors.append("duplicate_file_row")
+        file_rows[raw] = row
+    if set(file_rows) != set(copied_paths):
+        errors.append("file_rows_do_not_match_copied_paths")
     checked: list[dict[str, Any]] = []
     unsafe_paths: list[str] = []
     missing_paths: list[str] = []
     mismatched_paths: list[str] = []
-    resolved_root = latest_root.resolve()
+    unverified_paths: list[str] = []
+    root_route = inspect_storage_path(latest_root)
+    root_available = (
+        root_route["status"] == "present" and root_route.get("kind") == "directory"
+    )
+    resolved_root = Path(str(root_route["resolved_path"]))
+    if not root_available:
+        errors.append("snapshot_root_unavailable")
     for raw in copied_paths:
         relative = Path(raw)
         if relative.is_absolute() or ".." in relative.parts:
             unsafe_paths.append(raw)
             continue
         candidate = latest_root / relative
-        try:
-            resolved = candidate.resolve(strict=True)
-        except (FileNotFoundError, OSError, RuntimeError):
+        if not root_available:
+            continue
+        route = inspect_storage_path(candidate)
+        if route["status"] == "missing":
             missing_paths.append(raw)
             continue
-        if not _path_is_within(resolved, resolved_root) or not resolved.is_file():
+        resolved = Path(str(route["resolved_path"]))
+        if (
+            route["status"] != "present"
+            or route.get("size_bytes") is None
+            or not _path_is_within(resolved, resolved_root)
+        ):
             unsafe_paths.append(raw)
             continue
         expected = file_rows.get(raw, {})
         expected_size = expected.get("size_bytes")
-        expected_hash = str(expected.get("sha256") or "")
-        actual_size = int(resolved.stat().st_size)
-        size_match = expected_size is None or actual_size == _safe_int(
-            expected_size, -1
+        expected_hash = expected.get("sha256")
+        actual_size = int(route["size_bytes"])
+        size_match = (
+            type(expected_size) is int
+            and expected_size >= 0
+            and actual_size == expected_size
         )
-        hash_match = True
+        hash_recorded = (
+            isinstance(expected_hash, str)
+            and re.fullmatch(r"[0-9a-f]{64}", expected_hash) is not None
+        )
+        hash_match = False
         actual_hash = ""
-        if expected_hash:
-            actual_hash = _sha256_file(resolved)
-            hash_match = actual_hash == expected_hash
+        if hash_recorded:
+            try:
+                actual_hash = _sha256_file(resolved)
+                hash_match = actual_hash == expected_hash
+            except OSError:
+                pass
+        else:
+            unverified_paths.append(raw)
         if not size_match or not hash_match:
             mismatched_paths.append(raw)
         checked.append(
             {
                 "path": raw,
                 "size_match": size_match,
-                "hash_verified": bool(expected_hash),
+                "hash_verified": bool(hash_recorded and hash_match),
                 "hash_match": hash_match,
                 "actual_size_bytes": actual_size,
                 "actual_sha256": actual_hash,
             }
         )
     ready = bool(
-        copied_paths and not unsafe_paths and not missing_paths and not mismatched_paths
+        copied_paths
+        and not errors
+        and not unsafe_paths
+        and not missing_paths
+        and not mismatched_paths
+        and not unverified_paths
     )
     receipt = {
         "copied_path_count": len(copied_paths),
@@ -236,6 +285,9 @@ def _verify_snapshot_manifest(
         "unsafe_paths": sorted(unsafe_paths),
         "missing_paths": sorted(missing_paths),
         "mismatched_paths": sorted(mismatched_paths),
+        "unverified_paths": sorted(unverified_paths),
+        "schema_errors": sorted(set(errors)),
+        "checked": checked,
     }
     return {
         "ready": ready,
@@ -245,8 +297,7 @@ def _verify_snapshot_manifest(
                 receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":")
             ).encode("utf-8")
         ).hexdigest(),
-        "checked": checked,
-        "policy": "every manifest path must resolve inside the promoted snapshot and match recorded size and SHA-256 when present",
+        "policy": "every unique manifest path must resolve inside the permitted snapshot and match a required nonnegative size and SHA-256; metadata-only observations earn no integrity credit",
     }
 
 
@@ -1534,36 +1585,51 @@ def _recovery_snapshot_contract(
     project_root: Path, recovery_root: Path
 ) -> dict[str, Any]:
     manifest_path = recovery_root / "recovery_manifest_latest.json"
-    manifest = _load_json(manifest_path)
+    manifest = (
+        _load_json(manifest_path)
+        if inspect_storage_path(manifest_path)["status"] == "present"
+        else {}
+    )
     latest_root = recovery_root / "latest"
     max_age_minutes = max(
         _safe_float(os.getenv("BOT_LOGS_RECOVERY_MAX_SNAPSHOT_AGE_HOURS"), 36.0) * 60.0,
         60.0,
     )
-    age_minutes = payload_age_minutes(manifest, manifest_path)
+    freshness = evidence_freshness(manifest, max_age_minutes=max_age_minutes)
+    age_minutes = freshness["age_minutes"]
     copied_paths = (
         manifest.get("copied_paths")
         if isinstance(manifest.get("copied_paths"), list)
         else []
     )
-    snapshot_db_present = bool(
-        (latest_root / "data" / "snapshot_context.sqlite3").is_file()
+    database_route = inspect_storage_path(
+        latest_root / "data" / "snapshot_context.sqlite3"
+    )
+    snapshot_db_present = (
+        database_route["status"] == "present"
+        and database_route.get("size_bytes") is not None
     )
     manifest_clean = bool(manifest and not list(manifest.get("errors") or []))
-    snapshot_fresh = bool(age_minutes is not None and age_minutes <= max_age_minutes)
+    snapshot_fresh = freshness["fresh"]
     manifest_verification = _verify_snapshot_manifest(latest_root, manifest)
 
     content_path = project_root / "governance" / "content_store" / "latest.json"
-    content = _load_json(content_path)
-    content_age = payload_age_minutes(content, content_path)
-    content_fresh = bool(content_age is not None and content_age <= 24.0 * 60.0)
+    content = (
+        _load_json(content_path)
+        if inspect_storage_path(content_path)["status"] == "present"
+        else {}
+    )
+    content_freshness = evidence_freshness(content, max_age_minutes=24.0 * 60.0)
+    content_age = content_freshness["age_minutes"]
+    content_fresh = content_freshness["fresh"]
     content_ready = bool(
         content_fresh
         and content.get("ok", False)
         and str(content.get("manifest_hash") or "")
     )
     blockers = []
-    if not latest_root.is_dir():
+    latest_route = inspect_storage_path(latest_root)
+    if latest_route["status"] != "present" or latest_route.get("kind") != "directory":
         blockers.append("recovery_snapshot_missing")
     if not manifest_clean:
         blockers.append("recovery_manifest_missing_or_unclean")
@@ -1584,6 +1650,7 @@ def _recovery_snapshot_contract(
             round(float(age_minutes), 3) if age_minutes is not None else None
         ),
         "max_age_minutes": max_age_minutes,
+        "freshness": freshness,
         "manifest_clean": manifest_clean,
         "copied_path_count": len(copied_paths),
         "snapshot_context_backup_present": snapshot_db_present,
@@ -1591,6 +1658,7 @@ def _recovery_snapshot_contract(
         "content_store": {
             "path": str(content_path),
             "ready": content_ready,
+            "freshness": content_freshness,
             "age_minutes": (
                 round(float(content_age), 3) if content_age is not None else None
             ),

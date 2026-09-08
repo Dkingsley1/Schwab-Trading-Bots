@@ -227,7 +227,7 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
         "distributed_cell_architecture",
         "architecture_hardening",
     }
-    for name in ("platform_intelligence", "platform_brain_v5", "platform_stabilization_quality", "platform_settlement_stabilization"):
+    for name in ("platform_intelligence", "platform_brain_v5", "platform_stabilization_quality", "platform_settlement_stabilization", "system_plumbing_control"):
         assert name in production
         assert production_steps[name]["max_age_minutes"] < 45
         assert "--apply" not in production_steps[name]["args"]
@@ -236,6 +236,8 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
     assert production.index("writer_process_intelligence") < production.index("platform_settlement_stabilization")
     assert "writer_process_intelligence" in production_steps["platform_settlement_stabilization"]["depends_on"]
     assert production_steps["writer_process_intelligence"]["args"] == ["--json"]
+    assert "system_plumbing_control" in production_steps["architecture_hardening"]["depends_on"]
+    assert production_steps["system_plumbing_control"]["depends_on"] == ["writer_process_intelligence"]
     assert production_steps["master_infrastructure_supervisor"]["depends_on"] == [
         "system_drift_guard"
     ]
@@ -298,6 +300,8 @@ def test_accrual_collectors_are_bounded_and_evidence_only() -> None:
         "30",
         "--incremental-max-candidate-rows",
         "5000",
+        "--max-runtime-seconds",
+        "150",
         "--json",
     ]
     assert set(steps["feature_store_manifest"]["allowed_returncodes"]) == {0, 2}
