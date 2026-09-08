@@ -229,6 +229,7 @@ def test_fallback_route_pressure_contract_defines_ordered_pipeline(
     tmp_path: Path, monkeypatch
 ) -> None:
     project_root = tmp_path / "project"
+    monkeypatch.setattr(guard, "_disk_free_gb", lambda _path: 500.0)
     health = project_root / "governance" / "health"
     external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
     external_root.mkdir(parents=True)
@@ -283,6 +284,7 @@ def test_local_reserve_guard_routes_pressure_to_external_rehome_plan(
     tmp_path: Path, monkeypatch
 ) -> None:
     project_root = tmp_path / "project"
+    monkeypatch.setattr(guard, "_disk_free_gb", lambda _path: 500.0)
     health = project_root / "governance" / "health"
     external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
     external_root.mkdir(parents=True)
@@ -361,6 +363,56 @@ def test_local_reserve_guard_routes_pressure_to_external_rehome_plan(
         == "storage_switch_orchestrator"
     )
     assert payload["recovery_request"]["command"][-1] == "storage-switch-external"
+
+
+def test_rehome_requires_capacity_for_full_tree_and_reserve(tmp_path, monkeypatch):
+    external = tmp_path / "external"
+    external.mkdir()
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(external))
+    monkeypatch.setattr(guard, "_disk_free_gb", lambda _path: 200.0)
+    _write_json(
+        tmp_path / "governance/health/storage_failback_sync_latest.json",
+        {
+            "mode": "local_fallback",
+            "sqlite_skip_report": {"summary": {"local_bytes_total": GIB}},
+        },
+    )
+    census = {"size_gb": 300.0, "size_kind": "complete", "errors": 0}
+    monkeypatch.setattr(guard, "_bounded_tree_size", lambda _path: dict(census))
+    report = guard.fallback_route_pressure_contract(tmp_path, {"pressure_active": True})
+    assert report["status"] == "route_rehome_blocked"
+    assert report["destination_capacity"]["required_free_gb"] == 425.0
+    assert report["destination_capacity"]["shortfall_gb"] == 225.0
+    assert report["route_rehome_ready"] is False
+    census.update(size_gb=1.0, size_kind="lower_bound")
+    report = guard.fallback_route_pressure_contract(tmp_path, {"pressure_active": True})
+    assert report["destination_capacity"]["known"] is False
+    assert report["destination_capacity"]["required_free_gb"] is None
+    assert report["route_rehome_ready"] is False
+
+
+def test_protected_destination_alias_is_not_probed(tmp_path, monkeypatch):
+    alias = tmp_path / "external"
+    alias.symlink_to("/Volumes/VIDEO")
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(alias))
+    monkeypatch.setattr(
+        guard.os,
+        "access",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("protected access")),
+    )
+    report = guard.fallback_route_pressure_contract(tmp_path, {"pressure_active": True})
+    assert report["external_available"] is False
+    assert guard._bounded_tree_size(alias)["size_kind"] == "unknown"
+
+
+def test_tree_census_is_bounded_and_does_not_follow_links(tmp_path):
+    (tmp_path / "media").symlink_to("/Volumes/VIDEO")
+    (tmp_path / "record").write_bytes(b"evidence")
+    census = guard._bounded_tree_size(tmp_path)
+    assert census["size_bytes"] == 8
+    assert census["files_counted"] == 1
+    assert census["size_kind"] == "complete"
+    assert guard._bounded_tree_size(tmp_path, max_files=1)["truncated"] is True
 
 
 def test_history_is_event_driven_and_append_only(tmp_path: Path) -> None:

@@ -66,6 +66,61 @@ def _run_main(module, argv: list[str]) -> tuple[int, dict]:
 
 
 class SqlHotRetentionTests(unittest.TestCase):
+
+    def test_conflicting_archive_id_does_not_delete_source(self):
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            db, archive = Path(td) / "hot.sqlite3", Path(td) / "archive.sqlite3"
+            for path in (db, archive):
+                _init_db(path)
+            _insert_rows(db, [(1, "2000-01-01T00:00:00+00:00", "source", 1)])
+            _insert_rows(archive, [(1, "2000-01-01T00:00:00+00:00", "different", 1)])
+            with self.assertRaisesRegex(
+                RuntimeError, "archive_copy_verification_failed"
+            ):
+                _run_main(
+                    module,
+                    [
+                        "retention",
+                        "--db",
+                        str(db),
+                        "--archive-db",
+                        str(archive),
+                        "--json",
+                    ],
+                )
+            self.assertEqual(_count_rows(db), 1)
+            with sqlite3.connect(archive) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT source_rel FROM jsonl_records").fetchone()[0],
+                    "different",
+                )
+
+    def test_identical_archive_retry_is_verified_before_source_release(self):
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            db, archive = Path(td) / "hot.sqlite3", Path(td) / "archive.sqlite3"
+            for path in (db, archive):
+                _init_db(path)
+                _insert_rows(path, [(1, "2000-01-01T00:00:00+00:00", "source", 1)])
+            rc, payload = _run_main(
+                module,
+                [
+                    "retention",
+                    "--db",
+                    str(db),
+                    "--archive-db",
+                    str(archive),
+                    "--archive-retention-days",
+                    "0",
+                    "--json",
+                ],
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(payload["moved_rows"], 1)
+            self.assertEqual(_count_rows(db), 0)
+            self.assertEqual(_count_rows(archive), 1)
+
     def test_requested_vacuum_reclaims_pages_without_newly_expired_rows(self) -> None:
         module = _load_module()
         with tempfile.TemporaryDirectory() as td:

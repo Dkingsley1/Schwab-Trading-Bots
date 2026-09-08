@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import math
 import os
 import subprocess
 import sys
@@ -15,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.local_storage_reserve import local_storage_reserve_contract  # noqa: E402
+from core.storage_router import inspect_storage_path  # noqa: E402
 
 DEFAULT_OUT_PATH = (
     PROJECT_ROOT / "governance" / "health" / "local_storage_reserve_guard_latest.json"
@@ -430,6 +432,17 @@ def _bounded_tree_size(
     files = 0
     size_bytes = 0
     errors = 0
+    if inspect_storage_path(path).get("status") not in {"present", "missing"}:
+        return {
+            "path": str(path),
+            "exists": False,
+            "size_bytes": 0,
+            "size_gb": 0.0,
+            "size_kind": "unknown",
+            "files_counted": 0,
+            "truncated": False,
+            "errors": 1,
+        }
     if not path.exists():
         return {
             "path": str(path),
@@ -441,36 +454,35 @@ def _bounded_tree_size(
             "truncated": False,
             "errors": 0,
         }
-    for root, _, names in os.walk(path):
-        root_path = Path(root)
-        for name in names:
-            if files >= max(max_files, 1):
-                return {
-                    "path": str(path),
-                    "exists": True,
-                    "size_bytes": int(size_bytes),
-                    "size_gb": round(float(size_bytes) / (1024**3), 3),
-                    "size_kind": "lower_bound",
-                    "files_counted": int(files),
-                    "truncated": True,
-                    "errors": int(errors),
-                }
-            item = root_path / name
-            try:
-                if item.is_symlink():
-                    continue
-                size_bytes += int(item.stat().st_size)
-                files += 1
-            except OSError:
-                errors += 1
+    pending = [path]
+    entries_seen = 0
+    truncated = False
+    while pending and not truncated:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entries_seen >= max(max_files, 1):
+                        truncated = True
+                        break
+                    entries_seen += 1
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        size_bytes += entry.stat(follow_symlinks=False).st_size
+                        files += 1
+        except OSError:
+            errors += 1
     return {
         "path": str(path),
         "exists": True,
         "size_bytes": int(size_bytes),
         "size_gb": round(float(size_bytes) / (1024**3), 3),
-        "size_kind": "complete",
+        "size_kind": "lower_bound" if truncated or errors else "complete",
         "files_counted": int(files),
-        "truncated": False,
+        "truncated": truncated,
         "errors": int(errors),
     }
 
@@ -792,12 +804,32 @@ def fallback_route_pressure_contract(
     local_root = project_root / "local_fallback_storage"
     external_root = _external_project_root_from_env()
     external_available = bool(
-        external_root.exists() and os.access(external_root, os.W_OK)
+        inspect_storage_path(external_root).get("status") == "present"
+        and os.access(external_root, os.W_OK)
     )
     external_free_gb = _disk_free_gb(external_root) if external_available else 0.0
+    local_tree = _bounded_tree_size(local_root)
+    copy_gb = max(float(local_tree.get("size_gb") or 0), tracked_local_sqlite_gb)
+    reserve_gb = max(
+        float(reserve.get("target_free_gb") or DEFAULT_TARGET_FREE_GB),
+        DEFAULT_TARGET_FREE_GB,
+    )
+    capacity_known = bool(
+        local_tree.get("size_kind") == "complete"
+        and not local_tree.get("errors")
+        and all(
+            math.isfinite(value) and value >= 0
+            for value in (copy_gb, reserve_gb, external_free_gb)
+        )
+    )
+    required_gb = copy_gb + reserve_gb
+    capacity_ready = bool(capacity_known and external_free_gb >= required_gb)
     route_rehome_required = bool(route_is_local_fallback and pressure_active)
     route_rehome_ready = bool(
-        route_rehome_required and external_available and not mismatches
+        route_rehome_required
+        and external_available
+        and not mismatches
+        and capacity_ready
     )
     standby_prune_ready = bool(
         active_mode in {"external", "external_curated"}
@@ -827,6 +859,31 @@ def fallback_route_pressure_contract(
         "external_root": str(external_root),
         "external_available": external_available,
         "external_free_gb": external_free_gb,
+        "destination_capacity": {
+            "ready": capacity_ready,
+            "known": capacity_known,
+            "scope": "full_local_fallback_tree_conservative_copy_envelope",
+            "local_tree": local_tree,
+            "copy_gb": round(copy_gb, 3),
+            "reserve_gb": reserve_gb,
+            "required_free_gb": round(required_gb, 3) if capacity_known else None,
+            "shortfall_gb": (
+                round(max(required_gb - external_free_gb, 0), 3)
+                if capacity_known
+                else None
+            ),
+            "minimum_required_free_gb": round(required_gb, 3),
+            "minimum_shortfall_gb": round(max(required_gb - external_free_gb, 0), 3),
+            "reason": (
+                "ready"
+                if capacity_ready
+                else (
+                    "destination_capacity_insufficient"
+                    if capacity_known
+                    else "source_census_incomplete"
+                )
+            ),
+        },
         "active_local_count": int(active_local_count),
         "active_external_count": int(active_external_count),
         "warm_standby_count": int(warm_standby_count),
@@ -1036,7 +1093,7 @@ def build_payload(
     recovery["ordered_recovery_pipeline"] = list(
         route_pressure.get("ordered_recovery_pipeline") or []
     )
-    if bool(route_pressure.get("route_rehome_required", False)):
+    if bool(route_pressure.get("route_rehome_ready", False)):
         recovery["delegated_controller"] = "storage_switch_orchestrator"
         recovery["command"] = [
             str(project_root / "scripts" / "ops" / "opsctl.sh"),
@@ -1115,13 +1172,17 @@ def build_payload(
             if status == "ready"
             else (
                 "switch active storage back to BOT_LOGS, then prune verified local standby"
-                if bool(route_pressure.get("route_rehome_required", False))
+                if bool(route_pressure.get("route_rehome_ready", False))
                 else (
-                    "run bounded storage recovery while paper collection continues"
-                    if recovery.get("active")
-                    and not recovery.get("paper_pause_required")
-                    and not hard_blockers
-                    else "restore reserve or telemetry routing before unattended collection"
+                    "provide sufficient verified destination capacity before a storage route switch"
+                    if bool(route_pressure.get("route_rehome_required", False))
+                    else (
+                        "run bounded storage recovery while paper collection continues"
+                        if recovery.get("active")
+                        and not recovery.get("paper_pause_required")
+                        and not hard_blockers
+                        else "restore reserve or telemetry routing before unattended collection"
+                    )
                 )
             )
         ),

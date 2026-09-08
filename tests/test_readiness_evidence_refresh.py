@@ -352,6 +352,23 @@ def test_fresh_artifact_is_not_recomputed(tmp_path: Path) -> None:
     assert payload["refreshed_step_count"] == 0
 
 
+def test_one_numbers_producer_timestamp_prevents_duplicate_refresh(tmp_path):
+    artifact = tmp_path / "exports/one_numbers/one_numbers_summary.json"
+    _write(artifact, {"generated_utc": NOW.isoformat()})
+
+    def should_not_run(*_args, **_kwargs):
+        raise AssertionError("current One Numbers report must not be rebuilt")
+
+    report = refresh.refresh(
+        tmp_path,
+        steps=[_spec("exports/one_numbers/one_numbers_summary.json")],
+        runner=should_not_run,
+        now=NOW,
+    )
+    assert report["ok"] is True
+    assert report["fresh_step_count"] == 1
+
+
 def test_due_step_accepts_evidence_pending_return_code(tmp_path: Path) -> None:
     artifact = tmp_path / "governance" / "health" / "test_latest.json"
 
@@ -397,6 +414,47 @@ def test_timeout_is_an_operational_failure(tmp_path: Path) -> None:
 
     assert payload["ok"] is False
     assert payload["operational_failures"] == ["test_step"]
+
+
+def test_successful_accrual_preserves_production_failure_receipt(tmp_path):
+    out = tmp_path / "refresh.json"
+    production = refresh.refresh(
+        tmp_path,
+        steps=[_spec("governance/health/missing.json")],
+        runner=lambda *_args, **_kwargs: {
+            "rc": 124,
+            "stderr": "timeout",
+            "timed_out": True,
+        },
+        profile="production",
+        out_path=out,
+        now=NOW,
+    )
+    _write(out, production)
+    accrual = refresh.refresh(
+        tmp_path,
+        steps=[],
+        profile="accrual",
+        out_path=out,
+        now=NOW,
+    )
+    assert accrual["ok"] is True
+    failure = accrual["profile_runs"]["production"]
+    assert failure["operational_failures"] == ["test_step"]
+    assert failure["failed_steps"][0]["timed_out"] is True
+    assert failure["failed_steps"][0]["stderr_tail"] == "timeout"
+    _write(out, accrual)
+    recovered = refresh.refresh(
+        tmp_path,
+        steps=[],
+        profile="production",
+        out_path=out,
+        now=NOW,
+        force=True,
+    )
+    assert recovered["profile_runs"]["production"]["failed_steps"] == []
+    assert recovered["profile_runs"]["production"]["operational_failures"] == []
+    assert recovered["profile_runs"]["accrual"] == accrual["profile_runs"]["accrual"]
 
 
 @pytest.mark.parametrize("evidence", [

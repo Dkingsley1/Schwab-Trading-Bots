@@ -189,6 +189,27 @@ def _delete_jsonl_record_ids(conn: sqlite3.Connection, ids: list[int], *, chunk_
         conn.execute(f"DELETE FROM jsonl_records WHERE id IN ({id_marks})", chunk)
 
 
+def _verify_archived_rows(
+    conn: sqlite3.Connection, columns: list[str], rows: list[sqlite3.Row]
+) -> None:
+    # INSERT OR IGNORE is not proof: an existing ID or unique key can hide a conflict.
+    column_sql = ",".join('"' + name.replace('"', '""') + '"' for name in columns)
+    id_index = columns.index("id")
+    for start in range(0, len(rows), 500):
+        batch = rows[start : start + 500]
+        expected = {
+            int(row["id"]): tuple(row[name] for name in columns) for row in batch
+        }
+        marks = ",".join("?" for _ in expected)
+        archived = conn.execute(
+            f"SELECT {column_sql} FROM jsonl_records WHERE id IN ({marks})",
+            list(expected),
+        ).fetchall()
+        actual = {int(row[id_index]): tuple(row) for row in archived}
+        if actual != expected:
+            raise RuntimeError("archive_copy_verification_failed_source_preserved")
+
+
 def _sqlite_column_specs(conn: sqlite3.Connection, table: str) -> list[tuple[str, str]]:
     return [
         (str(row[1]), str(row[2] or "TEXT"))
@@ -519,6 +540,7 @@ def main() -> int:
                 if conn is None:
                     archive_path.parent.mkdir(parents=True, exist_ok=True)
                     conn = _connect(archive_path)
+                    conn.execute("PRAGMA synchronous=FULL")
                     _ensure_archive_schema(src, conn)
                     archive_conns[archive_path] = conn
 
@@ -527,6 +549,7 @@ def main() -> int:
                     f"INSERT OR IGNORE INTO jsonl_records ({col_list}) VALUES ({qmarks})",
                     payload,
                 )
+                _verify_archived_rows(conn, cols, group_rows)
                 conn.commit()
                 archive_rows_by_db[str(archive_path)] = archive_rows_by_db.get(str(archive_path), 0) + len(group_rows)
 

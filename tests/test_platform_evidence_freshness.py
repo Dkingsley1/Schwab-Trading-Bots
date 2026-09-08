@@ -24,6 +24,17 @@ NOW = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
         ),
         ({"timestamp_utc": (NOW - timedelta(minutes=61)).isoformat()}, "stale"),
         ({"timestamp_utc": (NOW - timedelta(minutes=60)).isoformat()}, "fresh"),
+        ({"generated_utc": NOW.isoformat()}, "fresh"),
+        ({"generated_utc": (NOW - timedelta(minutes=61)).isoformat()}, "stale"),
+        (
+            {"generated_utc": (NOW + timedelta(minutes=2)).isoformat()},
+            "future_timestamp",
+        ),
+        ({"generated_utc": "bad"}, "timestamp_invalid"),
+        (
+            {"timestamp_utc": "bad", "generated_utc": NOW.isoformat()},
+            "timestamp_invalid",
+        ),
     ],
 )
 def test_producer_timestamp_is_required(payload, status):

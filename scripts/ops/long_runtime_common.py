@@ -110,7 +110,18 @@ def evidence_freshness(
 ) -> dict[str, Any]:
     """Use producer time, never file mtime, to qualify reported evidence."""
     field = next(
-        (key for key in ("timestamp_utc", "updated_at_utc", "updated_at", "created_at", "ended_utc") if key in payload),
+        (
+            key
+            for key in (
+                "timestamp_utc",
+                "updated_at_utc",
+                "updated_at",
+                "created_at",
+                "ended_utc",
+                "generated_utc",
+            )
+            if key in payload
+        ),
         "",
     )
     raw = payload.get(field) if field else None

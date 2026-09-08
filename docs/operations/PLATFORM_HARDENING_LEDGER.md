@@ -176,3 +176,75 @@ is recorded in `docs/operations/SOURCE_AND_STORAGE_MAINTENANCE.md` and is not
 counted again here. Only the main Git worktree existed at the earlier inventory;
 there were no disposable worktrees to remove. Existing staged and unstaged work
 was preserved.
+
+## September 8 Degradation Repair
+
+This is a targeted repair, not closure of the 26 platform areas.
+
+| Defect | Implemented Correction | Remaining Boundary |
+| --- | --- | --- |
+| Raw compaction trusted a one-byte gzip read and prefix-only duplicate check | Full restored SHA-256 and byte count, stable source identity, no-clobber publication, synced archive publication, scratch reserve, bounded processing, and protected-route checks before release | Cooperative I/O deadlines and per-operation reserves are not a fleet-wide allocation reservation or a production power-loss drill |
+| Hot retention could ignore a conflicting archive insert and then delete source rows | Compare every archived field in bounded batches and commit the archive with FULL synchronization before source deletion | Production-sized retention/reclamation, schema evolution, and existing corrupt archives remain separate work |
+| Mounted BOT_LOGS was called ready for rehoming without a capacity budget | Full local-fallback census plus reserve; incomplete scans, errors, and insufficient capacity block the recommendation; partial budgets are explicitly lower bounds | This does not perform a route switch or prove a less expensive, scoped migration plan |
+| A successful accrual refresh erased production failure details | Preserve failed step IDs and bounded diagnostic receipts independently for each refresh profile | Historic receipts that already lost their detail cannot be reconstructed |
+| One Numbers `generated_utc` was rejected as an absent producer timestamp | Recognize the existing producer field while retaining invalid, stale, and future-time rejection and higher-priority timestamp precedence | A recently generated report does not establish post-auth measurement freshness or permit trading |
+
+Operational observations through 14:37 UTC:
+
+- Verified and removed 158 eligible historical raw duplicates, preserving their
+  full compressed contents. Receipts record 412,299,649 raw bytes released at
+  `governance/health/raw_compaction_recovery_20260908.json` and
+  `governance/training/raw_compaction_recovery_20260908.json`. These are runtime
+  evidence, not source files to commit. Active/current-day logs were protected.
+- Internal free space rose from approximately 31 GiB at initial inspection to
+  approximately 36.8 GiB. Only the 412 MB receipt is attributed to this cleanup;
+  concurrent host activity accounts for the other change. The configured SQL
+  writer pause below 64 GiB remains intact. Collection can continue while the
+  paused writer causes queue growth: 41,143 pending lines at 14:33 UTC.
+- The 19 local shards occupy approximately 278 GiB. The dominant trading and
+  governance databases had no material free pages. A bounded inspection of the
+  100 largest cold SQLite archives found none with more than 512 MiB of free
+  pages. Vacuum alone cannot fix this capacity problem. Weeks-old hot records
+  and retention scheduling/admission remain unresolved.
+- BOT_LOGS had approximately 116.4 GiB free. No alternate destination was
+  invented, no route was switched, and no retained SQLite archive was deleted.
+  Additional permitted capacity or an explicitly reviewed archival policy is
+  required before larger recovery; protected media remains excluded.
+- The first bounded production refresh passed 78 of 79 operational steps and
+  isolated the One Numbers timestamp/lock failure. A subsequent automatic
+  accrual refresh preserved that production failure receipt, proving adoption
+  of per-profile diagnostics. Post-fix production verification is separate.
+- The non-applying regression guard and autopilot still report storage and
+  live-canary blockers, plus training, lineage, security, autonomy, and promotion
+  evidence debt. Their status was not forced green; no repair retries were
+  invoked through the autopilot. Candidate acceptance, off-host monitoring,
+  inactive hook enforcement, post-auth execution evidence, and full recovery
+  certification are not closed by this repair.
+
+Only the main Git worktree exists. Unrelated registry and audio-runtime changes
+remain outside this repair. There was no stack restart, token modification,
+order placement, candidate acceptance, or reserve/qualification relaxation.
+
+### Final Repair Verification
+
+- The final 14-file regression suite passed **418 tests and two subtests**.
+  This covers the changed producers plus storage, shard-manager, runtime,
+  plumbing, health, and architecture consumers; it is not a full-platform test.
+- The corrected scheduler accepted One Numbers' real producer timestamp without
+  executing a duplicate rebuild. One diagnostic training refresh exceeded the
+  shorter 90-second limit; its isolated retry completed within the normal
+  180-second limit and preserved the actual `paper_performance_input_not_gradeable`
+  dependency blockage. It was not counted as qualification success.
+- The final production pass started at 14:46 UTC with the normal 180-second
+  timeout: 35 refreshed, 43 already fresh, and one failed out of 79 steps. The
+  remaining failure was `health_gates`, which published current evidence and
+  returned 2 for real ingestion/backpressure overload. No remaining failure in
+  that pass was a timeout or the One Numbers timestamp defect.
+- At 14:48 UTC fast health remained degraded: collection ready, 35,093 pending
+  lines, guarded paper blocked. Storage, restart-storm, and write-path recovery
+  blockers remained visible. A falling queue in one sample is not sustained
+  recovery proof. Additional permitted capacity remains the main unresolved
+  operational prerequisite; guard statuses and thresholds were not overridden.
+- The staged project guard passed all seven checks and the staged secret scan
+  found zero findings before publication. The live hook enforcement gap remains
+  separate; no hook was installed, disabled, or bypassed.

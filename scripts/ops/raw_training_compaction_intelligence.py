@@ -6,14 +6,23 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import gzip
 import hashlib
 import json
+import math
 import os
 import shutil
+import stat
 import sys
+import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.storage_router import inspect_storage_path
+
 DEFAULT_HEALTH_PATH = (
     PROJECT_ROOT
     / "governance"
@@ -159,11 +168,7 @@ def _status_from_score(score: float) -> str:
 
 
 def _is_under_protected_volume(path: Path) -> bool:
-    raw = str(path)
-    for prefix in PROTECTED_VOLUME_PREFIXES:
-        if raw == prefix or raw.startswith(prefix + "/"):
-            return True
-    return False
+    return inspect_storage_path(path).get("status") not in {"present", "missing"}
 
 
 def _path_parts_lower(path: Path) -> set[str]:
@@ -212,30 +217,32 @@ def _date_token_matches_current_day(path: Path, today: str) -> bool:
 
 
 def _iter_jsonl_files(root: Path) -> Iterable[Path]:
-    if not root.exists():
-        return
     if _is_under_protected_volume(root):
         return
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        current = Path(dirpath)
+    if not root.exists():
+        return
+    pending = [root]
+    while pending:
+        current = pending.pop()
         if _is_under_protected_volume(current):
-            dirnames[:] = []
             continue
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if name not in EXCLUDED_DIR_NAMES
-            and not name.startswith(".")
-            and not _is_under_protected_volume(current / name)
-            and not (current / name).is_symlink()
-        ]
-        for name in filenames:
-            if not name.endswith(".jsonl"):
-                continue
-            path = current / name
-            if path.is_symlink() or _is_under_protected_volume(path):
-                continue
-            yield path
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        if (
+                            entry.name not in EXCLUDED_DIR_NAMES
+                            and not entry.name.startswith(".")
+                        ):
+                            pending.append(Path(entry.path))
+                    elif entry.name.endswith(".jsonl") and entry.is_file(
+                        follow_symlinks=False
+                    ):
+                        yield Path(entry.path)
+        except OSError:
+            continue
 
 
 def _default_scan_roots() -> list[Path]:
@@ -441,8 +448,10 @@ def _select_batch(
 
 def _verify_gzip(path: Path) -> bool:
     try:
+        if _is_under_protected_volume(path):
+            return False
         with gzip.open(path, "rb") as handle:
-            handle.read(1)
+            _digest_stream(handle, time.monotonic() + 300)
         return path.exists() and path.stat().st_size > 0
     except Exception:
         return False
@@ -459,30 +468,112 @@ def _gzip_prefix_sha256(path: Path, sample_bytes: int) -> tuple[str, int]:
     return digest.hexdigest(), len(chunk)
 
 
+def _file_identity(path: Path) -> tuple[int, ...]:
+    if _is_under_protected_volume(path):
+        raise ValueError("protected_or_unavailable_route")
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("not_regular_file")
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _digest_stream(handle: Any, deadline: float) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    while True:
+        if time.monotonic() > deadline:
+            raise TimeoutError("compaction_verification_deadline")
+        chunk = handle.read(1024 * 1024)
+        if not chunk:
+            return digest.hexdigest(), size
+        digest.update(chunk)
+        size += len(chunk)
+
+
+def _sync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _compaction_reserve_bytes() -> int:
+    reserve = float(os.getenv("BOT_LOCAL_STORAGE_EMERGENCY_FREE_GB", "16"))
+    if not math.isfinite(reserve) or reserve < 0:
+        raise ValueError("invalid_compaction_reserve")
+    return int(max(reserve, 16.0) * 1024**3)
+
+
 def _compress_and_clear(
     path: Path, compressed_path: Path, *, compress_level: int, keep_raw: bool
 ) -> dict[str, Any]:
     started = datetime.now(timezone.utc)
-    before_bytes = path.stat().st_size
-    tmp_path = compressed_path.with_name(compressed_path.name + f".tmp.{os.getpid()}")
-    compressed_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = None
     try:
-        with path.open("rb") as src, gzip.open(
-            tmp_path, "wb", compresslevel=compress_level
-        ) as dst:
-            shutil.copyfileobj(src, dst, length=1024 * 1024)
-        tmp_path.replace(compressed_path)
-        verified = _verify_gzip(compressed_path)
-        if not verified:
-            return {
-                "path": str(path),
-                "compressed_path": str(compressed_path),
-                "status": "failed",
-                "reason": "gzip_verification_failed",
-                "raw_removed": False,
-            }
+        identity = _file_identity(path)
+        before_bytes = identity[2]
+        if _is_under_protected_volume(compressed_path):
+            raise ValueError("protected_or_unavailable_route")
+        if compressed_path.exists():
+            return _remove_duplicate_raw(
+                path,
+                compressed_path,
+                expected_prefix_sha256="",
+                sample_bytes=0,
+                keep_raw=keep_raw,
+            )
+        compressed_path.parent.mkdir(parents=True, exist_ok=True)
+        # Recovery compaction must retain emergency headroom even for incompressible input.
+        if (
+            shutil.disk_usage(compressed_path.parent).free
+            < before_bytes * 1.01 + _compaction_reserve_bytes()
+        ):
+            raise RuntimeError("insufficient_compaction_scratch_reserve")
+        deadline = time.monotonic() + 300
+        fd, name = tempfile.mkstemp(
+            prefix=".raw_compact_", suffix=".tmp", dir=compressed_path.parent
+        )
+        tmp_path = Path(name)
+        digest = hashlib.sha256()
+        copied = 0
+        with os.fdopen(fd, "wb") as raw_out, path.open("rb") as src:
+            with gzip.GzipFile(
+                fileobj=raw_out, mode="wb", compresslevel=compress_level, mtime=0
+            ) as dst:
+                while True:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError("compaction_deadline")
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    copied += len(chunk)
+                    if copied > before_bytes:
+                        raise RuntimeError("source_changed_during_compaction")
+                    digest.update(chunk)
+                    dst.write(chunk)
+            raw_out.flush()
+            os.fsync(raw_out.fileno())
+        with gzip.open(tmp_path, "rb") as verify:
+            restored_digest, restored_bytes = _digest_stream(verify, deadline)
+        if (restored_digest, restored_bytes) != (
+            digest.hexdigest(),
+            before_bytes,
+        ) or copied != before_bytes:
+            raise RuntimeError("gzip_restore_proof_mismatch")
+        if _file_identity(path) != identity:
+            raise RuntimeError("source_changed_during_compaction")
+        # Atomic no-clobber publication preserves any competing or divergent archive.
+        os.link(tmp_path, compressed_path)
+        _sync_directory(compressed_path.parent)
+        target_identity = _file_identity(compressed_path)
         raw_removed = False
         if not keep_raw:
+            if (
+                _file_identity(path) != identity
+                or _file_identity(compressed_path) != target_identity
+            ):
+                raise RuntimeError("source_or_target_changed_before_release")
             path.unlink()
             raw_removed = True
         after_bytes = compressed_path.stat().st_size
@@ -499,12 +590,15 @@ def _compress_and_clear(
             "raw_removed": raw_removed,
             "before_bytes": before_bytes,
             "compressed_bytes": after_bytes,
+            "sha256_uncompressed": restored_digest,
+            "verified_raw_bytes": restored_bytes,
+            "verification_basis": "full_gzip_restore_sha256_and_stable_source_identity",
             "estimated_raw_bytes_cleared": before_bytes if raw_removed else 0,
             "duration_seconds": duration_seconds,
         }
     except Exception as exc:
         try:
-            if tmp_path.exists():
+            if tmp_path is not None and tmp_path.exists():
                 tmp_path.unlink()
         except Exception:
             pass
@@ -516,45 +610,66 @@ def _compress_and_clear(
             "raw_removed": False,
             "estimated_raw_bytes_cleared": 0,
         }
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _remove_duplicate_raw(
-    path: Path, compressed_path: Path, *, expected_prefix_sha256: str, sample_bytes: int
+    path: Path,
+    compressed_path: Path,
+    *,
+    expected_prefix_sha256: str,
+    sample_bytes: int,
+    keep_raw: bool = False,
 ) -> dict[str, Any]:
-    before_bytes = path.stat().st_size
-    if not _verify_gzip(compressed_path):
-        return {
-            "path": str(path),
-            "compressed_path": str(compressed_path),
-            "status": "failed",
-            "reason": "compressed_sibling_failed_verification",
-            "raw_removed": False,
-            "estimated_raw_bytes_cleared": 0,
-        }
-    if expected_prefix_sha256 and sample_bytes > 0:
-        gz_prefix_sha256, gz_hashed_bytes = _gzip_prefix_sha256(
-            compressed_path, sample_bytes
-        )
-        if gz_prefix_sha256 != expected_prefix_sha256:
+    try:
+        identity = _file_identity(path)
+        target_identity = _file_identity(compressed_path)
+        before_bytes = identity[2]
+        deadline = time.monotonic() + 300
+        with path.open("rb") as source:
+            source_digest, source_bytes = _digest_stream(source, deadline)
+        with gzip.open(compressed_path, "rb") as restored:
+            restored_digest, restored_bytes = _digest_stream(restored, deadline)
+        if (
+            _file_identity(path) != identity
+            or _file_identity(compressed_path) != target_identity
+        ):
+            raise RuntimeError("source_or_target_changed_during_verification")
+        if (source_digest, source_bytes) != (restored_digest, restored_bytes):
+            reason = "compressed_sibling_content_mismatch"
+            if expected_prefix_sha256 and sample_bytes > 0:
+                prefix, _ = _gzip_prefix_sha256(compressed_path, sample_bytes)
+                if prefix != expected_prefix_sha256:
+                    reason = "compressed_sibling_prefix_mismatch"
             return {
                 "path": str(path),
                 "compressed_path": str(compressed_path),
                 "status": "skipped",
-                "reason": "compressed_sibling_prefix_mismatch",
+                "reason": reason,
                 "raw_removed": False,
-                "expected_prefix_sha256": expected_prefix_sha256,
-                "compressed_prefix_sha256": gz_prefix_sha256,
-                "compressed_prefix_hashed_bytes": gz_hashed_bytes,
                 "estimated_raw_bytes_cleared": 0,
             }
-    try:
-        path.unlink()
+        if not keep_raw:
+            with compressed_path.open("rb") as durable:
+                os.fsync(durable.fileno())
+            _sync_directory(compressed_path.parent)
+            if (
+                _file_identity(path) != identity
+                or _file_identity(compressed_path) != target_identity
+            ):
+                raise RuntimeError("source_or_target_changed_before_release")
+            path.unlink()
     except Exception as exc:
         return {
             "path": str(path),
             "compressed_path": str(compressed_path),
             "status": "failed",
-            "reason": f"{type(exc).__name__}:{exc}",
+            "reason": f"compressed_sibling_failed_verification:{type(exc).__name__}:{exc}",
             "raw_removed": False,
             "estimated_raw_bytes_cleared": 0,
         }
@@ -562,11 +677,18 @@ def _remove_duplicate_raw(
         "path": str(path),
         "compressed_path": str(compressed_path),
         "status": "ok",
-        "action": "remove_raw_duplicate_of_compressed_sibling",
-        "raw_removed": True,
+        "action": (
+            "compress_keep_raw"
+            if keep_raw
+            else "remove_raw_duplicate_of_compressed_sibling"
+        ),
+        "raw_removed": not keep_raw,
         "before_bytes": before_bytes,
         "compressed_bytes": compressed_path.stat().st_size,
-        "estimated_raw_bytes_cleared": before_bytes,
+        "estimated_raw_bytes_cleared": 0 if keep_raw else before_bytes,
+        "sha256_uncompressed": source_digest,
+        "verified_raw_bytes": source_bytes,
+        "verification_basis": "full_gzip_restore_sha256_and_stable_source_identity",
         "duration_seconds": 0.0,
     }
 
@@ -583,6 +705,16 @@ def _apply_batch(
     for index, row in enumerate(rows):
         path = Path(str(row.get("path", "")))
         compressed_path = Path(str(row.get("compressed_path", "")))
+        if _is_under_protected_volume(path) or _is_under_protected_volume(
+            compressed_path
+        ):
+            records_by_index[index] = {
+                "path": str(path),
+                "status": "skipped",
+                "reason": "protected_volume",
+                "raw_removed": False,
+            }
+            continue
         if not path.exists():
             records_by_index[index] = {
                 "path": str(path),
@@ -609,8 +741,12 @@ def _apply_batch(
                 compressed_path,
                 expected_prefix_sha256=str(row.get("prefix_sha256", "")),
                 sample_bytes=_safe_int(row.get("prefix_hashed_bytes"), 0),
+                keep_raw=keep_raw,
             )
-            if duplicate_record.get("reason") == "compressed_sibling_prefix_mismatch":
+            if duplicate_record.get("reason") in {
+                "compressed_sibling_prefix_mismatch",
+                "compressed_sibling_content_mismatch",
+            }:
                 repacked_path = _raw_training_sibling(path)
                 repack_record = _compress_and_clear(
                     path,
@@ -619,9 +755,9 @@ def _apply_batch(
                     keep_raw=keep_raw,
                 )
                 repack_record["original_compressed_path"] = str(compressed_path)
-                repack_record["original_compressed_sibling_reason"] = (
-                    "compressed_sibling_prefix_mismatch"
-                )
+                repack_record["original_compressed_sibling_reason"] = duplicate_record[
+                    "reason"
+                ]
                 if repack_record.get("status") == "ok":
                     repack_record["action"] = (
                         "repack_mismatched_sibling_then_remove_raw"
@@ -942,14 +1078,15 @@ def _build_rows(
     seen: set[str] = set()
     for root in scan_roots:
         root = root.expanduser()
+        protected = _is_under_protected_volume(root)
         roots_payload.append(
             {
                 "path": str(root),
-                "exists": root.exists(),
-                "protected": _is_under_protected_volume(root),
+                "exists": False if protected else root.exists(),
+                "protected": protected,
             }
         )
-        if not root.exists() or _is_under_protected_volume(root):
+        if protected or not root.exists():
             continue
         for path in _iter_jsonl_files(root):
             key = str(path)

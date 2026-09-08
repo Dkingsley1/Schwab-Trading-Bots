@@ -1470,6 +1470,9 @@ def refresh(
                 "timestamp_utc": current.isoformat(),
                 "overall_status": "ready" if not operational_failures else "degraded",
                 "failed_step_count": len(operational_failures),
+                "operational_failures": list(operational_failures),
+                "failed_steps": [row for row in results if row["status"] == "failed"],
+                "step_count": len(results),
             },
         },
         "refresh_skipped": False,
@@ -1491,6 +1494,7 @@ def refresh(
             "destructive_storage_maintenance_authority": False,
             "full_runtime_refresh_replacement": False,
             "bounded_refresh_profile": profile_key != "all",
+            "per_profile_failure_receipts_preserved": True,
         },
     }
     return payload
