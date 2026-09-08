@@ -9,6 +9,12 @@ The defect history and specific open work packages are in
 `docs/operations/PLATFORM_HARDENING_LEDGER.md`. Edit the existing owner named in
 `docs/architecture/SOURCE_OF_TRUTH.md`, not a generated score or health report.
 
+The detailed [work-package definitions](PLATFORM_COMPLETION_WORK_PACKAGES.md)
+expand these areas into 157 stable acceptance requirements, source owners,
+verification starting points, closure evidence, ten cross-boundary scenarios,
+and explicit operator decisions. These are proof obligations, not 157 confirmed
+bugs or completed fixes. This checklist remains the status index.
+
 Status vocabulary:
 
 - **Open:** a specific implementation, operational, or evidence gap was found.

@@ -369,6 +369,7 @@ Full generated detail lives in [docs/showcase/generated/highlights_latest.md](do
 - Source organization and guarded storage recovery: [docs/operations/SOURCE_AND_STORAGE_MAINTENANCE.md](docs/operations/SOURCE_AND_STORAGE_MAINTENANCE.md)
 - Corrected defects, verification, and remaining closure requirements: [docs/operations/PLATFORM_HARDENING_LEDGER.md](docs/operations/PLATFORM_HARDENING_LEDGER.md)
 - Full release-completion criteria across storage, runtime, safety, research, and deployment: [docs/operations/PLATFORM_COMPLETION_CHECKLIST.md](docs/operations/PLATFORM_COMPLETION_CHECKLIST.md)
+- Detailed source owners, 157 acceptance requirements, failure scenarios, evidence, and approval boundaries: [docs/operations/PLATFORM_COMPLETION_WORK_PACKAGES.md](docs/operations/PLATFORM_COMPLETION_WORK_PACKAGES.md)
 - Storage routes, ingestion durability, and lifecycle ownership: [docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md](docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md)
 - Architecture decision record: [docs/architecture/ADR-0001-system-source-of-truth.md](docs/architecture/ADR-0001-system-source-of-truth.md)
 - Codex project guardrails: [AGENTS.md](AGENTS.md)

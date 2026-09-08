@@ -80,6 +80,18 @@ an unattended soak, recovery readiness, or live-promotion qualification.
 
 ## Remaining Work
 
+### Detailed Acceptance Definitions
+
+The operator requested further definition of all broad areas. The versioned
+`docs/operations/PLATFORM_COMPLETION_WORK_PACKAGES.md` expands C01-C26 into
+157 stable requirements with lead/collaborating sources, baseline obligations,
+verification starting points, closure evidence, ten cross-boundary scenarios,
+and explicit external decisions. The checklist still owns status. These are
+acceptance definitions, not 157 diagnosed defects, a new runtime evaluator, or
+new completion credit. Defect IDs below remain reserved for reproduced failures
+and their actual corrections. No runtime setting, candidate, authority, or
+approval boundary changes as a result of this documentation expansion.
+
 ### All-26 Follow-Up Implementation
 
 The following additional failures were reproduced and corrected during the
