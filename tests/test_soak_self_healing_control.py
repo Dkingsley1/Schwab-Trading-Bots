@@ -1,6 +1,7 @@
 import json
 import sys
-from datetime import datetime, timezone
+import pytest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -9,6 +10,20 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import scripts.ops.soak_self_healing_control as src
+
+
+def test_storage_recovery_cli_rejects_reserved_alias_before_resolve(tmp_path, monkeypatch):
+    alias = tmp_path / "reserved"
+    alias.symlink_to("/Volumes/VIDEO")
+    real_resolve = Path.resolve
+
+    def checked_resolve(path, *args, **kwargs):
+        assert not str(path).startswith((str(alias), "/Volumes/VIDEO"))
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", checked_resolve)
+    with pytest.raises(SystemExit, match="2"):
+        src.main(["--project-root", str(alias), "--storage-recovery-only", "--apply"])
 
 
 def _write_daily(project_root: Path, *, ok: bool, failed_checks: list[str]) -> None:
@@ -426,6 +441,26 @@ def test_critical_local_disk_headroom_runs_bounded_application_memory_recovery(t
     assert memory_calls == 2
 
 
+def test_storage_recovery_starts_at_writer_pause_threshold(monkeypatch):
+    monkeypatch.setenv("BOT_LOCAL_STORAGE_PRESSURE_FREE_GB", "64")
+    result = src._local_disk_headroom_recovery_contract(
+        {
+            "local_disk_headroom_contract": {
+                "local_disk_free_gb": 40,
+                "warning_free_gb": 32,
+                "critical_free_gb": 8,
+            }
+        }
+    )
+    assert result["active"] and result["storage_pressure_active"]
+    assert not result["critical"]
+    assert result["warning_free_gb"] == 64
+    clear = src._local_disk_headroom_recovery_contract(
+        {"memory_snapshot": {"local_disk_free_gb": 70}}
+    )
+    assert not clear["active"]
+
+
 def test_cold_archive_configuration_rejects_protected_volume_and_uses_safe_fallback(tmp_path: Path) -> None:
     external = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
     external.mkdir(parents=True)
@@ -451,6 +486,282 @@ def test_cold_archive_configuration_fails_closed_without_safe_fallback() -> None
     assert payload["configured"] is False
     assert payload["reason"] == "non_protected_second_cold_root_not_configured"
     assert "BOT_SECOND_COLD_ROOT" not in env
+
+
+def test_cold_archive_rejects_protected_alias_before_metadata(tmp_path, monkeypatch):
+    alias = tmp_path / "forbidden_alias"
+    alias.symlink_to("/Volumes/VIDEO")
+    original_exists = Path.exists
+
+    def checked_exists(path):
+        assert not str(path).startswith((str(alias), "/Volumes/VIDEO"))
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", checked_exists)
+    monkeypatch.setattr(src, "PROJECT_ROOT", tmp_path)
+    payload = src._configure_cold_archive_env(
+        {"BOT_LOGS_EXTERNAL_PROJECT_ROOT": str(alias / "bot")}, apply=True
+    )
+    assert payload["route_state"] == "deferred_until_external_returns"
+
+
+def _storage_recovery_fixture(tmp_path, monkeypatch, free_gb=40):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        src.shutil, "disk_usage", lambda path: SimpleNamespace(free=free_gb * 1024**3)
+    )
+    monkeypatch.setattr(
+        src, "maintenance_hold_snapshot", lambda root: {"active": False}
+    )
+    monkeypatch.setattr(src.os, "getloadavg", lambda: (0, 0, 0))
+    monkeypatch.setattr(
+        src,
+        "_configure_cold_archive_env",
+        lambda env, apply: {
+            "configured": True,
+            "redundancy_ready": True,
+            "path": str(tmp_path / "cold"),
+        },
+    )
+    calls = []
+
+    def runner(cmd, **kwargs):
+        calls.append(cmd)
+        return _result(
+            cmd,
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "ok": True,
+                "overall_status": "ready",
+                "memory_snapshot": {
+                    "memory_pressure_state": "green",
+                    "memory_free_pct": 50,
+                    "swap_used_gb": 2,
+                },
+            },
+        )
+
+    monkeypatch.setattr(src, "_run_command", runner)
+    return calls
+
+
+def _memory_result(**snapshot_overrides):
+    return _result(
+        [],
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "ok": False,
+            "overall_status": "blocked",
+            "reasons": ["storage_pressure_critical"],
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_free_pct": 89,
+                "swap_used_gb": 4.75,
+                **snapshot_overrides,
+            },
+        },
+    )
+
+
+def test_valid_blocked_assessment_does_not_exhaust_repair_budget(tmp_path, monkeypatch):
+    _storage_recovery_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        src, "_run_command", lambda *a, **kw: _memory_result(memory_free_pct=20)
+    )
+    for _ in range(4):
+        payload = src.build_storage_recovery_payload(tmp_path, apply=True)
+        assert not payload["admitted"]
+        assert len(payload["steps"]) == 1
+        assert payload["steps"][0]["executed"]
+        assert payload["steps"][0]["ok"]
+    step = src._load_state(tmp_path)["steps"][src.STORAGE_MEMORY_STEP]
+    assert step["failure_count"] == 0
+    assert not step["admission_ready"]
+    assert step["last_status"] == "blocked"
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_legacy_observation_circuit_gets_one_fresh_revalidation(
+    tmp_path, monkeypatch, valid
+):
+    _storage_recovery_fixture(tmp_path, monkeypatch)
+    prior = {
+        "failure_count": 3,
+        "last_rc": 2,
+        "last_status": "blocked",
+        "circuit_until_utc": (
+            datetime.now(timezone.utc) + timedelta(hours=1)
+        ).isoformat(),
+    }
+    src._write_state(tmp_path, {"steps": {src.STORAGE_MEMORY_STEP: prior}})
+    result = _memory_result()
+    if not valid:
+        result["parsed"].pop("timestamp_utc")
+    monkeypatch.setattr(src, "_run_command", lambda *a, **kw: result)
+    first = src.build_storage_recovery_payload(tmp_path, apply=True)
+    assert first["admitted"] is valid
+    step = src._load_state(tmp_path)["steps"][src.STORAGE_MEMORY_STEP]
+    assert step["observation_contract_version"] == 1
+    assert step["legacy_circuit_revalidation"]["previous_state"] == prior
+    assert step["failure_count"] == (0 if valid else 4)
+    if not valid:
+        second = src.build_storage_recovery_payload(tmp_path, apply=True)
+        assert not second["steps"][0]["executed"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("memory_free_pct", None),
+        ("memory_free_pct", True),
+        ("memory_free_pct", "89"),
+        ("memory_free_pct", float("nan")),
+        ("memory_free_pct", float("inf")),
+        ("memory_free_pct", 101),
+        ("swap_used_gb", -1),
+        ("swap_used_gb", False),
+        ("swap_used_gb", float("nan")),
+        ("memory_pressure_state", "unknown"),
+        ("swap_used_gb", 10**1000),
+        ("memory_pressure_state", ["green"]),
+    ],
+)
+def test_memory_observation_rejects_invalid_metrics(field, value):
+    assert not src._storage_memory_observation(_memory_result(**{field: value}))["ok"]
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        None,
+        "garbage",
+        "2026-09-08T12:00:00",
+        "2000-01-01T00:00:00Z",
+        "2100-01-01T00:00:00Z",
+    ],
+)
+def test_memory_observation_requires_fresh_aware_timestamp(timestamp):
+    result = _memory_result()
+    result["parsed"]["timestamp_utc"] = timestamp
+    assert not src._storage_memory_observation(result)["ok"]
+
+
+@pytest.mark.parametrize(
+    "field,value", [("rc", 1), ("rc", 124), ("rc", False), ("timed_out", True)]
+)
+def test_memory_observation_requires_completed_assessment(field, value):
+    result = _memory_result()
+    result[field] = value
+    assert not src._storage_memory_observation(result)["ok"]
+
+
+def test_storage_recovery_only_is_bounded_and_does_not_claim_complete(
+    tmp_path, monkeypatch
+):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    payload = src.build_storage_recovery_payload(tmp_path, apply=True)
+    assert payload["admitted"]
+    assert not payload["ok"]
+    assert not payload["live_execution_authority"]
+    assert not payload["heavy_maintenance_allowed"]
+    assert len(calls) == 4
+    assert "memory_efficiency_control.py" in calls[0][1]
+    assert [cmd[1] for cmd in calls[1:]] == [
+        "governance-telemetry-compactor",
+        "cold-archive-compactor",
+        "deep-cold-storage-layer",
+    ]
+    assert calls[2][calls[2].index("--max-raw-gb") + 1] == "8"
+    assert calls[3][calls[3].index("--destination-reserve-gb") + 1] == "125"
+    assert "--no-include-local-quarantine" in calls[3]
+
+
+def test_storage_recovery_only_noop_and_read_only_do_not_run_repairs(
+    tmp_path, monkeypatch
+):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch, free_gb=80)
+    assert src.build_storage_recovery_payload(tmp_path, apply=True)["ok"]
+    assert not calls
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch, free_gb=40)
+    assert not src.build_storage_recovery_payload(tmp_path, apply=False)["ok"]
+    assert not calls
+
+
+def test_storage_recovery_only_respects_hold_load_and_unknown_memory(
+    tmp_path, monkeypatch
+):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(src, "maintenance_hold_snapshot", lambda root: {"active": True})
+    assert (
+        src.build_storage_recovery_payload(tmp_path, apply=True)["reason"]
+        == "existing_maintenance_hold"
+    )
+    assert not calls
+    monkeypatch.setattr(
+        src, "maintenance_hold_snapshot", lambda root: {"active": False}
+    )
+    monkeypatch.setattr(src.os, "getloadavg", lambda: (1000, 1000, 1000))
+    assert (
+        src.build_storage_recovery_payload(tmp_path, apply=True)["reason"]
+        == "host_load_above_recovery_budget"
+    )
+    assert not calls
+    monkeypatch.setattr(src.os, "getloadavg", lambda: (0, 0, 0))
+    monkeypatch.setattr(
+        src, "_run_command", lambda cmd, **kw: _result(cmd, {"ok": False})
+    )
+    payload = src.build_storage_recovery_payload(tmp_path, apply=True)
+    assert payload["reason"] == "memory_admission_not_ready"
+    assert len(payload["steps"]) == 1
+
+
+def test_storage_recovery_launcher_precedes_heavy_gate():
+    launcher = (
+        PROJECT_ROOT / "scripts/ops/run_soak_self_healing_launchd.sh"
+    ).read_text()
+    assert launcher.index("--storage-recovery-only") < launcher.index(
+        "run_guarded_maintenance.sh"
+    )
+    assert "MAINTENANCE_SLOT_DEFER_OUTSIDE_QUIET_WINDOW=0" not in launcher
+
+
+def test_cold_archive_configuration_defers_locally_when_external_root_is_offline(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(src, "PROJECT_ROOT", tmp_path)
+    unavailable_external = tmp_path / "offline-volume" / "schwab_trading_bot"
+    env = {"BOT_LOGS_EXTERNAL_PROJECT_ROOT": str(unavailable_external)}
+
+    payload = src._configure_cold_archive_env(env, apply=False)
+
+    expected = tmp_path / "local_fallback_storage" / "cold_archive_deferred"
+    assert payload["configured"] is True
+    assert payload["path"] == str(expected)
+    assert payload["route_state"] == "deferred_until_external_returns"
+    assert payload["redundancy_ready"] is False
+    assert payload["hot_path_blocked"] is False
+    assert payload["auto_failback_enabled"] is True
+    assert env["BOT_SECOND_COLD_ROOT"] == str(expected)
+
+
+def test_cold_archive_configuration_defers_explicit_unmounted_external_target(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(src, "PROJECT_ROOT", tmp_path)
+    requested = "/Volumes/OFFLINE_TEST_VOLUME/schwab_trading_bot/cold_archive"
+    env = {"BOT_SECOND_COLD_ROOT": requested}
+
+    payload = src._configure_cold_archive_env(env, apply=False)
+
+    expected = tmp_path / "local_fallback_storage" / "cold_archive_deferred"
+    assert payload["requested_path"] == requested
+    assert payload["path"] == str(expected)
+    assert payload["route_state"] == "deferred_until_external_returns"
+    assert payload["redundancy_ready"] is False
+    assert env["BOT_SECOND_COLD_ROOT"] == str(expected)
 
 
 def test_stale_profitability_runtime_controls_are_refreshed_and_rechecked(tmp_path: Path, monkeypatch) -> None:

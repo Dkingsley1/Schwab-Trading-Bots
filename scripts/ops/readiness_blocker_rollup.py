@@ -108,6 +108,14 @@ def _root_for_pillar(pillar_id: str, check_id: str, *, raw_profitability_active:
     return "unclassified_readiness_blocker"
 
 
+def _root_for_readiness_section(section_id: str) -> str:
+    if section_id == "paper_profitability_control":
+        return "raw_profitability_evidence"
+    if section_id == "continuous_soak":
+        return "candidate_soak_time"
+    return "unclassified_readiness_blocker"
+
+
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     health = project_root / "governance" / "health"
     excellence = load_json(health / "production_excellence_control_latest.json")
@@ -168,16 +176,24 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     grade_summary = _as_dict(live_money.get("grade_summary"))
     for section_id in [str(item) for item in _as_list(grade_summary.get("below_floor_sections")) if str(item).strip()]:
-        root_id = "raw_profitability_evidence" if section_id == "paper_profitability_control" else "unclassified_readiness_blocker"
+        root_id = _root_for_readiness_section(section_id)
         add(root_id, surface=f"live_money_readiness:{section_id}", symptom="section_below_A", evidence=section_id)
     runway = _as_dict(live_money.get("transition_runway"))
     for pillar in _as_list(runway.get("pillars")):
         if not isinstance(pillar, dict) or bool(pillar.get("ready", False)):
             continue
-        root_id = "raw_profitability_evidence" if "paper_profitability_control" in _as_list(pillar.get("blocked_sections")) else "unclassified_readiness_blocker"
+        blocked_sections = [str(item) for item in _as_list(pillar.get("blocked_sections"))]
+        pillar_id = str(pillar.get("pillar_id") or "unknown")
+        root_id = (
+            "raw_profitability_evidence"
+            if "paper_profitability_control" in blocked_sections
+            else "candidate_soak_time"
+            if pillar_id == "continuous_soak" or "continuous_soak" in blocked_sections
+            else "unclassified_readiness_blocker"
+        )
         add(
             root_id,
-            surface=f"transition_runway:{str(pillar.get('pillar_id') or 'unknown')}",
+            surface=f"transition_runway:{pillar_id}",
             symptom=str(pillar.get("runway_status") or "blocked"),
             evidence=pillar.get("blockers") or [],
         )

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STORAGE_CONTROL_BACKPRESSURE_OVERRIDE_MAX_AGE_SECONDS = 1800.0
+CURRENT_RAW_STREAM_MAX_AGE_SECONDS = 15 * 60
 
 
 def _load_json(path: Path) -> dict:
@@ -31,6 +32,43 @@ def _parse_iso_utc(raw: object) -> datetime | None:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _raw_stream_ages(project_root: Path, *, now_utc: datetime) -> tuple[float | None, float | None]:
+    try:
+        try:
+            import build_one_numbers_report as one_numbers_report
+        except ImportError:
+            from scripts import build_one_numbers_report as one_numbers_report
+
+        requested_day = now_utc.strftime('%Y%m%d')
+        decision_days = [
+            day
+            for day in one_numbers_report._raw_jsonl_days(project_root, 'decision')
+            if day <= requested_day
+        ]
+        governance_days = [
+            day
+            for day in one_numbers_report._raw_jsonl_days(project_root, 'governance')
+            if day <= requested_day
+        ]
+        decision_day = max(decision_days, default=requested_day)
+        governance_day = max(governance_days, default=requested_day)
+        decision = one_numbers_report._raw_decision_freshness_snapshot(project_root, decision_day)
+        governance = one_numbers_report._raw_governance_snapshot(project_root, governance_day)
+        decision_age = one_numbers_report._timestamp_age_seconds(
+            decision.get('latest_timestamp'), now_utc=now_utc
+        )
+        governance_age = one_numbers_report._timestamp_age_seconds(
+            governance.get('latest_timestamp'), now_utc=now_utc
+        )
+    except Exception:
+        return None, None
+    missing_age = 10 ** 9
+    return (
+        None if decision_age >= missing_age else float(decision_age),
+        None if governance_age >= missing_age else float(governance_age),
+    )
 
 
 def _path_size_gb(path: Path) -> float:
@@ -150,7 +188,16 @@ def _storage_control_backpressure_override(storage_control: dict[str, Any]) -> d
     targets = steady_state.get("targets") if isinstance(steady_state.get("targets"), dict) else {}
     source = str(backpressure.get("effective_raw_live_source") or effective.get("source") or "").strip()
     overlay_adjusted = bool(backpressure.get("overlay_adjusted", False))
-    overlay_clear = bool(backpressure.get("overlay_pressure_clear", False) or source == "fresh_empty_sql_ingestion_overlay")
+    managed_support_clear = bool(
+        backpressure.get("managed_support_pressure_clear", False)
+    )
+    effective_pressure_clear = bool(
+        backpressure.get("effective_pressure_clear", False)
+    )
+    overlay_clear = bool(
+        backpressure.get("overlay_pressure_clear", False)
+        or source == "fresh_empty_sql_ingestion_overlay"
+    )
     shard_reconciliation = (
         effective.get("sql_shard_state_reconciliation")
         if isinstance(effective.get("sql_shard_state_reconciliation"), dict)
@@ -184,9 +231,16 @@ def _storage_control_backpressure_override(storage_control: dict[str, Any]) -> d
         or effective.get("oldest_age_reconciled", False)
         or "fresh_empty_sql" in source
         or shard_reconciliation_active
+        or managed_support_clear
     )
     age_clear = bool(oldest_age <= oldest_target and (oldest_age > 0.0 or age_reconciled or overlay_clear))
-    authoritative_clear = bool(storage_ready and overlay_adjusted and overlay_clear)
+    authoritative_clear = bool(
+        storage_ready
+        and (
+            (overlay_adjusted and overlay_clear)
+            or (effective_pressure_clear and managed_support_clear)
+        )
+    )
     effective_queue_clear = bool(queue_clear and age_clear and age_reconciled)
     if not (
         (authoritative_clear or effective_queue_clear)
@@ -199,6 +253,8 @@ def _storage_control_backpressure_override(storage_control: dict[str, Any]) -> d
             "storage_ready": storage_ready,
             "overlay_adjusted": overlay_adjusted,
             "overlay_clear": overlay_clear,
+            "managed_support_clear": managed_support_clear,
+            "effective_pressure_clear": effective_pressure_clear,
             "queue_clear": queue_clear,
             "age_clear": age_clear,
             "age_reconciled": age_reconciled,
@@ -223,12 +279,16 @@ def _storage_control_backpressure_override(storage_control: dict[str, Any]) -> d
         "storage_ready": storage_ready,
         "overlay_adjusted": overlay_adjusted,
         "overlay_clear": overlay_clear,
+        "managed_support_clear": managed_support_clear,
+        "effective_pressure_clear": effective_pressure_clear,
         "queue_clear": queue_clear,
         "age_clear": age_clear,
         "age_reconciled": age_reconciled,
         "shard_reconciliation_active": shard_reconciliation_active,
         "reason": (
-            "fresh_sql_overlay_clear"
+            "fresh_managed_support_pressure_clear"
+            if authoritative_clear and managed_support_clear
+            else "fresh_sql_overlay_clear"
             if authoritative_clear
             else "fresh_sql_shard_state_reconciled_queue_clear"
             if shard_reconciliation_active
@@ -378,6 +438,26 @@ def main() -> int:
     parser = argparse.ArgumentParser(description='Compute single health score and hard gate flags.')
     parser.add_argument('--project-root', default=str(PROJECT_ROOT))
     parser.add_argument('--stale-window-limit', type=int, default=int(os.getenv('HEALTH_GATE_STALE_WINDOW_LIMIT', '0')))
+    parser.add_argument(
+        '--current-decision-max-age-seconds',
+        type=float,
+        default=float(
+            os.getenv(
+                'HEALTH_GATE_CURRENT_DECISION_MAX_AGE_SECONDS',
+                str(CURRENT_RAW_STREAM_MAX_AGE_SECONDS),
+            )
+        ),
+    )
+    parser.add_argument(
+        '--current-governance-max-age-seconds',
+        type=float,
+        default=float(
+            os.getenv(
+                'HEALTH_GATE_CURRENT_GOVERNANCE_MAX_AGE_SECONDS',
+                str(CURRENT_RAW_STREAM_MAX_AGE_SECONDS),
+            )
+        ),
+    )
     parser.add_argument('--blocked-rate-limit', type=float, default=float(os.getenv('HEALTH_GATE_BLOCKED_RATE_LIMIT', '0.30')))
     parser.add_argument('--watchdog-restarts-limit', type=int, default=int(os.getenv('HEALTH_GATE_WATCHDOG_RESTARTS_LIMIT', '3')))
     parser.add_argument('--ingestion-pending-lines-limit', type=int, default=int(os.getenv('HEALTH_GATE_INGEST_PENDING_LINES_LIMIT', '20000')))
@@ -529,6 +609,61 @@ def main() -> int:
         risk_blocked_rate = float(risk_blocked_raw or 0.0)
     blocked_rate = _effective_blocked_rate(data_blocked_rate, risk_blocked_rate)
     stale_windows = int(one_numbers.get('decision_stale_windows_4h', 0) or one_numbers.get('decision_stale_windows', 0) or 0)
+    one_numbers_generated_at = _parse_iso_utc(
+        one_numbers.get('generated_utc')
+        or one_numbers.get('timestamp_utc')
+        or one_numbers.get('as_of_utc')
+    )
+    one_numbers_age_seconds = (
+        max((datetime.now(timezone.utc) - one_numbers_generated_at).total_seconds(), 0.0)
+        if one_numbers_generated_at is not None
+        else None
+    )
+    decision_last_age_at_report = _to_float(one_numbers.get('decision_last_age_sec'), -1.0)
+    current_decision_age_seconds = (
+        float(one_numbers_age_seconds) + decision_last_age_at_report
+        if one_numbers_age_seconds is not None and decision_last_age_at_report >= 0.0
+        else None
+    )
+    governance_last_age_at_report = _to_float(one_numbers.get('governance_last_age_sec'), -1.0)
+    current_governance_age_seconds = (
+        float(one_numbers_age_seconds) + governance_last_age_at_report
+        if one_numbers_age_seconds is not None and governance_last_age_at_report >= 0.0
+        else None
+    )
+    current_decision_max_age_seconds = max(float(args.current_decision_max_age_seconds), 1.0)
+    current_governance_max_age_seconds = max(float(args.current_governance_max_age_seconds), 1.0)
+    decision_freshness_source = 'one_numbers_snapshot'
+    governance_freshness_source = 'one_numbers_snapshot'
+    if (
+        current_decision_age_seconds is None
+        or current_decision_age_seconds > current_decision_max_age_seconds
+        or (
+            current_governance_age_seconds is not None
+            and current_governance_age_seconds > current_governance_max_age_seconds
+        )
+    ):
+        raw_decision_age, raw_governance_age = _raw_stream_ages(project_root, now_utc=datetime.now(timezone.utc))
+        if raw_decision_age is not None and (
+            current_decision_age_seconds is None or raw_decision_age < current_decision_age_seconds
+        ):
+            current_decision_age_seconds = raw_decision_age
+            decision_freshness_source = 'raw_jsonl_tail'
+        if raw_governance_age is not None and (
+            current_governance_age_seconds is None or raw_governance_age < current_governance_age_seconds
+        ):
+            current_governance_age_seconds = raw_governance_age
+            governance_freshness_source = 'raw_jsonl_tail'
+    governance_fresh = bool(
+        current_governance_age_seconds is None
+        or current_governance_age_seconds <= current_governance_max_age_seconds
+    )
+    stale_window_debt_recovered = bool(
+        stale_windows > args.stale_window_limit
+        and current_decision_age_seconds is not None
+        and current_decision_age_seconds <= current_decision_max_age_seconds
+        and governance_fresh
+    )
     watchdog_restarts = int((daily_summary.get('watchdog', {}) or {}).get('restarts', one_numbers.get('watchdog_restarts', 0) or 0))
 
     sqlite_ingest = ingestion_health.get('sqlite', {}) if isinstance(ingestion_health.get('sqlite', {}), dict) else {}
@@ -554,6 +689,17 @@ def main() -> int:
         if str(name).strip()
     ]
     priority_shard_latency_failures = [row['shard'] for row in priority_shards if bool(row.get('latency_breached'))]
+    priority_shard_latency_advisories = [
+        row['shard']
+        for row in priority_shards
+        if bool(row.get('latency_breached'))
+        and row.get('tier') != 'critical'
+        and _to_int(row.get('pending_lines'), 0) <= 0
+        and _to_float(row.get('oldest_uningested_age_seconds'), 0.0) <= 0.0
+    ]
+    priority_shard_active_latency_failures = [
+        shard for shard in priority_shard_latency_failures if shard not in priority_shard_latency_advisories
+    ]
     priority_shard_storage_failures = [row['shard'] for row in priority_shards if bool(row.get('storage_breached'))]
     critical_priority_latency_failures = [
         row['shard']
@@ -579,7 +725,7 @@ def main() -> int:
         default=0.0,
     )
 
-    gate_stale = stale_windows > args.stale_window_limit
+    gate_stale = stale_windows > args.stale_window_limit and not stale_window_debt_recovered
     gate_blocked = blocked_rate > args.blocked_rate_limit
     gate_restarts = watchdog_restarts > args.watchdog_restarts_limit
 
@@ -618,14 +764,15 @@ def main() -> int:
 
     score = 100.0
     score -= min(blocked_rate * 100.0 * 0.35, 35.0)
-    score -= min(stale_windows * 8.0, 32.0)
+    score_stale_windows = 0 if stale_window_debt_recovered else stale_windows
+    score -= min(score_stale_windows * 8.0, 32.0)
     score -= min(watchdog_restarts * 7.0, 21.0)
     score -= min((ingest_pending_lines / 1000.0) * 0.8, 8.0)
     score -= min((ingest_oldest_age_s / 60.0) * 0.7, 7.0)
     score -= min(max(ingest_invalid_lines, 0) * 0.25, 5.0)
     if backpressure_overload:
         score -= 4.0
-    score -= min(len(priority_shard_latency_failures) * 4.0, 12.0)
+    score -= min(len(priority_shard_active_latency_failures) * 4.0, 12.0)
     score -= min(len(priority_shard_storage_failures) * 3.0, 9.0)
     score -= min(len(collector_required_failures) * 5.0, 10.0)
     score -= min(len(collector_soft_failures) * 1.5, 6.0)
@@ -665,10 +812,14 @@ def main() -> int:
         gate_sql_progress_stall=gate_sql_progress_stall,
         gate_sql_wal_pressure=gate_sql_wal_pressure,
         gate_backpressure_overload=gate_backpressure_overload,
-        priority_shard_latency_failures=priority_shard_latency_failures,
+        priority_shard_latency_failures=priority_shard_active_latency_failures,
         priority_shard_storage_failures=priority_shard_storage_failures,
         collector_required_failures=collector_required_failures,
     )
+    if stale_window_debt_recovered:
+        recommendations.append('retain_historical_stale_windows_as_advisory_evidence')
+    if priority_shard_latency_advisories:
+        recommendations.append('retain_recovered_priority_shard_latency_as_advisory_evidence')
 
     payload = {
         'timestamp_utc': datetime.now(timezone.utc).isoformat(),
@@ -689,6 +840,15 @@ def main() -> int:
             'risk_blocked_rate': risk_blocked_rate,
             'blocked_rate_risk_weight': 0.25,
             'stale_windows': stale_windows,
+            'one_numbers_age_seconds': round(one_numbers_age_seconds, 3) if one_numbers_age_seconds is not None else None,
+            'decision_last_age_at_report_seconds': round(decision_last_age_at_report, 3) if decision_last_age_at_report >= 0 else None,
+            'current_decision_age_seconds': round(current_decision_age_seconds, 3) if current_decision_age_seconds is not None else None,
+            'governance_last_age_at_report_seconds': round(governance_last_age_at_report, 3) if governance_last_age_at_report >= 0 else None,
+            'current_governance_age_seconds': round(current_governance_age_seconds, 3) if current_governance_age_seconds is not None else None,
+            'decision_freshness_source': decision_freshness_source,
+            'governance_freshness_source': governance_freshness_source,
+            'stale_window_debt_recovered': stale_window_debt_recovered,
+            'score_stale_windows': score_stale_windows,
             'watchdog_restarts': watchdog_restarts,
             'ingest_pending_lines': ingest_pending_lines,
             'ingest_oldest_uningested_age_seconds': ingest_oldest_age_s,
@@ -701,6 +861,8 @@ def main() -> int:
             'backpressure_oldest_pending_age_seconds': backpressure_oldest_age_s,
             'backpressure_oldest_age_material_lines': backpressure_oldest_age_material_lines,
             'priority_shard_latency_failures': priority_shard_latency_failures,
+            'priority_shard_active_latency_failures': priority_shard_active_latency_failures,
+            'priority_shard_latency_advisories': priority_shard_latency_advisories,
             'priority_shard_storage_failures': priority_shard_storage_failures,
             'critical_priority_shard_latency_failures': critical_priority_latency_failures,
             'critical_priority_shard_storage_failures': critical_priority_storage_failures,
@@ -745,6 +907,8 @@ def main() -> int:
         },
         'thresholds': {
             'stale_window_limit': int(args.stale_window_limit),
+            'current_decision_max_age_seconds': current_decision_max_age_seconds,
+            'current_governance_max_age_seconds': current_governance_max_age_seconds,
             'blocked_rate_limit': float(args.blocked_rate_limit),
             'watchdog_restarts_limit': int(args.watchdog_restarts_limit),
             'ingestion_pending_lines_limit': int(args.ingestion_pending_lines_limit),

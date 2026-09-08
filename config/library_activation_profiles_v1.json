@@ -122,6 +122,8 @@
       "aiostream"
     ],
     "off_hours_research": [
+      "river",
+      "linearmodels",
       "statsforecast",
       "mlforecast",
       "sktime",

@@ -7,7 +7,6 @@ import threading
 import time
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -15,19 +14,29 @@ if str(PROJECT_ROOT) not in sys.path:
 import scripts.ops.sql_link_shard_manager as shard_manager
 
 
-def test_sql_link_routes_hot_shards_local_when_external_hot_storage_is_disabled(tmp_path: Path, monkeypatch) -> None:
+def test_sql_link_routes_hot_shards_local_when_external_hot_storage_is_disabled(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "repo"
     project_root.mkdir()
     monkeypatch.setattr(shard_manager, "PROJECT_ROOT", project_root)
-    monkeypatch.setattr(shard_manager, "LOCAL_FALLBACK_ROOT", project_root / "local_fallback_storage")
+    monkeypatch.setattr(
+        shard_manager, "LOCAL_FALLBACK_ROOT", project_root / "local_fallback_storage"
+    )
     monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "0")
 
-    routed = shard_manager._routed_or_local_fallback_path(project_root / "data" / "sql_link_shards")
+    routed = shard_manager._routed_or_local_fallback_path(
+        project_root / "data" / "sql_link_shards"
+    )
 
-    assert routed == project_root / "local_fallback_storage" / "data" / "sql_link_shards"
+    assert (
+        routed == project_root / "local_fallback_storage" / "data" / "sql_link_shards"
+    )
 
 
-def test_cycle_boundary_maintenance_hold_requests_clean_writer_handoff(monkeypatch, tmp_path: Path) -> None:
+def test_cycle_boundary_maintenance_hold_requests_clean_writer_handoff(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(
         shard_manager,
         "maintenance_hold_snapshot",
@@ -40,10 +49,50 @@ def test_cycle_boundary_maintenance_hold_requests_clean_writer_handoff(monkeypat
     assert hold["reason"] == "cold_archive_compaction"
 
 
-def test_cycle_boundary_maintenance_hold_keeps_writer_running_without_hold(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(shard_manager, "maintenance_hold_snapshot", lambda _root: {"active": False})
+def test_cycle_boundary_maintenance_hold_keeps_writer_running_without_hold(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        shard_manager, "maintenance_hold_snapshot", lambda _root: {"active": False}
+    )
 
     assert shard_manager._cycle_boundary_maintenance_hold(tmp_path) == {}
+
+
+def test_matching_token_authorizes_one_shot_manager_during_maintenance_hold(
+    monkeypatch, tmp_path: Path
+) -> None:
+    hold = {
+        "active": True,
+        "valid": True,
+        "token": "retention-token",
+        "reason": "priority_retention",
+    }
+    monkeypatch.setattr(shard_manager, "maintenance_hold_snapshot", lambda _root: hold)
+
+    assert (
+        shard_manager._maintenance_hold_authorized(
+            hold, token="retention-token", once=True
+        )
+        is True
+    )
+    assert (
+        shard_manager._maintenance_hold_authorized(hold, token="wrong", once=True)
+        is False
+    )
+    assert (
+        shard_manager._maintenance_hold_authorized(
+            hold, token="retention-token", once=False
+        )
+        is False
+    )
+    assert (
+        shard_manager._cycle_boundary_maintenance_hold(
+            tmp_path,
+            authorized_token="retention-token",
+        )
+        == {}
+    )
 
 
 def test_child_python_inherits_manager_runtime(monkeypatch, tmp_path: Path) -> None:
@@ -56,7 +105,9 @@ def test_child_python_inherits_manager_runtime(monkeypatch, tmp_path: Path) -> N
     monkeypatch.setattr(
         shard_manager,
         "resolve_runtime_python",
-        lambda _root: (_ for _ in ()).throw(AssertionError("parent runtime should win")),
+        lambda _root: (_ for _ in ()).throw(
+            AssertionError("parent runtime should win")
+        ),
     )
 
     assert shard_manager._resolve_child_python() == fake_parent
@@ -66,10 +117,15 @@ def test_child_python_honors_explicit_service_bin(monkeypatch, tmp_path: Path) -
     monkeypatch.setattr(shard_manager, "PROJECT_ROOT", tmp_path)
     monkeypatch.setenv("SQL_LINK_SERVICE_PYTHON_BIN", ".venv314/bin/python")
 
-    assert shard_manager._resolve_child_python() == (tmp_path / ".venv314" / "bin" / "python").resolve()
+    assert (
+        shard_manager._resolve_child_python()
+        == (tmp_path / ".venv314" / "bin" / "python").resolve()
+    )
 
 
-def test_retention_maintenance_pause_reads_live_swap_override(tmp_path, monkeypatch) -> None:
+def test_retention_maintenance_pause_reads_live_swap_override(
+    tmp_path, monkeypatch
+) -> None:
     override = tmp_path / ".env.swap_pressure_override"
     override.write_text(
         "\n".join(
@@ -82,12 +138,16 @@ def test_retention_maintenance_pause_reads_live_swap_override(tmp_path, monkeypa
         encoding="utf-8",
     )
     monkeypatch.delenv("RETENTION_MAINTENANCE_PAUSED_FOR_SWAP", raising=False)
-    paused, env = shard_manager._retention_maintenance_paused_for_swap(override_path=override)
+    paused, env = shard_manager._retention_maintenance_paused_for_swap(
+        override_path=override
+    )
     assert paused is True
     assert env["SWAP_PRESSURE_TIER"] == "pause_research"
 
 
-def test_retention_maintenance_pause_can_clear_with_normal_override(tmp_path, monkeypatch) -> None:
+def test_retention_maintenance_pause_can_clear_with_normal_override(
+    tmp_path, monkeypatch
+) -> None:
     override = tmp_path / ".env.swap_pressure_override"
     override.write_text(
         "\n".join(
@@ -100,7 +160,9 @@ def test_retention_maintenance_pause_can_clear_with_normal_override(tmp_path, mo
         encoding="utf-8",
     )
     monkeypatch.setenv("RETENTION_MAINTENANCE_PAUSED_FOR_SWAP", "1")
-    paused, env = shard_manager._retention_maintenance_paused_for_swap(override_path=override)
+    paused, env = shard_manager._retention_maintenance_paused_for_swap(
+        override_path=override
+    )
     assert paused is False
     assert env["RETENTION_MAINTENANCE_PAUSED_FOR_SWAP"] == "0"
 
@@ -151,8 +213,7 @@ def test_queue_retention_inline_cleanup_is_bounded(monkeypatch) -> None:
 
 def _create_shard_jsonl_db(path: Path) -> None:
     conn = sqlite3.connect(str(path))
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE jsonl_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_file TEXT NOT NULL,
@@ -168,8 +229,7 @@ def _create_shard_jsonl_db(path: Path) -> None:
             log_schema_version INTEGER,
             UNIQUE(source_file, line_no)
         )
-        """
-    )
+        """)
     conn.execute(
         """
         INSERT INTO jsonl_records (
@@ -243,8 +303,7 @@ def test_merge_shard_into_primary_preserves_route_label_columns(tmp_path) -> Non
     primary_db = tmp_path / "primary.sqlite3"
     shard_db = tmp_path / "coinbase.sqlite3"
     conn = sqlite3.connect(str(shard_db))
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE jsonl_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_file TEXT NOT NULL,
@@ -269,8 +328,7 @@ def test_merge_shard_into_primary_preserves_route_label_columns(tmp_path) -> Non
             source_quality_label TEXT,
             UNIQUE(source_file, line_no)
         )
-        """
-    )
+        """)
     conn.execute(
         """
         INSERT INTO jsonl_records (
@@ -322,10 +380,19 @@ def test_merge_shard_into_primary_preserves_route_label_columns(tmp_path) -> Non
 
     assert result["ok"] is True
     assert result["jsonl_rows_inserted"] == 1
-    assert row == ("coinbase", "coinbase_ticker", "coinbase", "crypto", "coinbase_crypto", "exchange_native")
+    assert row == (
+        "coinbase",
+        "coinbase_ticker",
+        "coinbase",
+        "crypto",
+        "coinbase_crypto",
+        "exchange_native",
+    )
 
 
-def test_quarantine_shard_artifacts_moves_corrupt_db_and_state(tmp_path, monkeypatch) -> None:
+def test_quarantine_shard_artifacts_moves_corrupt_db_and_state(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(shard_manager, "SHARD_DB_ROOT", tmp_path / "sql_link_shards")
 
     sqlite_db = tmp_path / "jsonl_link_governance.sqlite3"
@@ -392,9 +459,15 @@ def test_merge_shard_into_primary_resets_cursor_after_rebuild(tmp_path) -> None:
     assert cursor == 2
 
 
-def test_quarantine_shard_artifacts_uses_light_probe_when_recent_integrity_marker_exists(tmp_path, monkeypatch) -> None:
+def test_quarantine_shard_artifacts_uses_light_probe_when_recent_integrity_marker_exists(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(shard_manager, "SHARD_DB_ROOT", tmp_path / "sql_link_shards")
-    monkeypatch.setattr(shard_manager, "INTEGRITY_MARKER_ROOT", tmp_path / "health" / "sql_link_integrity")
+    monkeypatch.setattr(
+        shard_manager,
+        "INTEGRITY_MARKER_ROOT",
+        tmp_path / "health" / "sql_link_integrity",
+    )
 
     sqlite_db = tmp_path / "jsonl_link_trading.sqlite3"
     conn = sqlite3.connect(str(sqlite_db))
@@ -405,12 +478,7 @@ def test_quarantine_shard_artifacts_uses_light_probe_when_recent_integrity_marke
     marker_path = shard_manager._integrity_marker_path("trading")
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     marker_path.write_text(
-        (
-            '{'
-            f'"checked_at_epoch": {time.time()}, '
-            '"ok": true'
-            '}'
-        ),
+        ("{" f'"checked_at_epoch": {time.time()}, ' '"ok": true' "}"),
         encoding="utf-8",
     )
 
@@ -434,9 +502,15 @@ def test_quarantine_shard_artifacts_uses_light_probe_when_recent_integrity_marke
     assert probe_modes == [False]
 
 
-def test_quarantine_shard_artifacts_skips_recent_probe_for_large_db(tmp_path, monkeypatch) -> None:
+def test_quarantine_shard_artifacts_skips_recent_probe_for_large_db(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(shard_manager, "SHARD_DB_ROOT", tmp_path / "sql_link_shards")
-    monkeypatch.setattr(shard_manager, "INTEGRITY_MARKER_ROOT", tmp_path / "health" / "sql_link_integrity")
+    monkeypatch.setattr(
+        shard_manager,
+        "INTEGRITY_MARKER_ROOT",
+        tmp_path / "health" / "sql_link_integrity",
+    )
 
     sqlite_db = tmp_path / "jsonl_link_trading.sqlite3"
     conn = sqlite3.connect(str(sqlite_db))
@@ -447,12 +521,7 @@ def test_quarantine_shard_artifacts_skips_recent_probe_for_large_db(tmp_path, mo
     marker_path = shard_manager._integrity_marker_path("trading")
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     marker_path.write_text(
-        (
-            "{"
-            f'"checked_at_epoch": {time.time()}, '
-            '"ok": true'
-            "}"
-        ),
+        ("{" f'"checked_at_epoch": {time.time()}, ' '"ok": true' "}"),
         encoding="utf-8",
     )
 
@@ -478,9 +547,15 @@ def test_quarantine_shard_artifacts_skips_recent_probe_for_large_db(tmp_path, mo
     assert probe_modes == []
 
 
-def test_quarantine_shard_artifacts_uses_light_probe_for_large_db_without_marker(tmp_path, monkeypatch) -> None:
+def test_quarantine_shard_artifacts_uses_light_probe_for_large_db_without_marker(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(shard_manager, "SHARD_DB_ROOT", tmp_path / "sql_link_shards")
-    monkeypatch.setattr(shard_manager, "INTEGRITY_MARKER_ROOT", tmp_path / "health" / "sql_link_integrity")
+    monkeypatch.setattr(
+        shard_manager,
+        "INTEGRITY_MARKER_ROOT",
+        tmp_path / "health" / "sql_link_integrity",
+    )
 
     sqlite_db = tmp_path / "jsonl_link_crypto_trading.sqlite3"
     conn = sqlite3.connect(str(sqlite_db))
@@ -507,9 +582,13 @@ def test_quarantine_shard_artifacts_uses_light_probe_for_large_db_without_marker
     assert recovery["triggered"] is False
 
 
-def test_configured_primary_db_path_preserves_routed_symlink_path(tmp_path, monkeypatch) -> None:
+def test_configured_primary_db_path_preserves_routed_symlink_path(
+    tmp_path, monkeypatch
+) -> None:
     routed_primary = tmp_path / "data" / "jsonl_link.sqlite3"
-    fallback_primary = tmp_path / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"
+    fallback_primary = (
+        tmp_path / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"
+    )
     fallback_primary.parent.mkdir(parents=True, exist_ok=True)
     fallback_primary.write_bytes(b"db")
     routed_primary.parent.mkdir(parents=True, exist_ok=True)
@@ -520,77 +599,116 @@ def test_configured_primary_db_path_preserves_routed_symlink_path(tmp_path, monk
 
     assert configured == routed_primary
     assert configured.resolve(strict=False) == fallback_primary.resolve(strict=False)
-    assert shard_manager._primary_db_role(configured, configured.resolve(strict=False)) == "compatibility_cache"
+    assert (
+        shard_manager._primary_db_role(configured, configured.resolve(strict=False))
+        == "compatibility_cache"
+    )
 
 
-def test_configured_primary_db_path_uses_local_fallback_for_broken_route(tmp_path, monkeypatch) -> None:
+def test_configured_primary_db_path_uses_local_fallback_for_broken_route(
+    tmp_path, monkeypatch
+) -> None:
     routed_primary = tmp_path / "data" / "jsonl_link.sqlite3"
-    missing_external_primary = tmp_path / "missing_bot_logs" / "data" / "jsonl_link.sqlite3"
-    fallback_primary = tmp_path / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"
+    missing_external_primary = (
+        tmp_path / "missing_bot_logs" / "data" / "jsonl_link.sqlite3"
+    )
+    fallback_primary = (
+        tmp_path / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"
+    )
     routed_primary.parent.mkdir(parents=True, exist_ok=True)
     routed_primary.symlink_to(missing_external_primary)
     monkeypatch.setattr(shard_manager, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(shard_manager, "LOCAL_FALLBACK_ROOT", tmp_path / "local_fallback_storage")
+    monkeypatch.setattr(
+        shard_manager, "LOCAL_FALLBACK_ROOT", tmp_path / "local_fallback_storage"
+    )
     monkeypatch.setattr(shard_manager, "PRIMARY_DB_PATH", routed_primary)
 
     configured = shard_manager._configured_primary_db_path(str(routed_primary))
 
     assert configured == fallback_primary
-    assert shard_manager._primary_db_role(configured, configured.resolve(strict=False)) == "compatibility_cache"
+    assert (
+        shard_manager._primary_db_role(configured, configured.resolve(strict=False))
+        == "compatibility_cache"
+    )
 
 
-def test_routed_or_local_fallback_path_redirects_broken_shard_symlink(tmp_path, monkeypatch) -> None:
+def test_routed_or_local_fallback_path_redirects_broken_shard_symlink(
+    tmp_path, monkeypatch
+) -> None:
     routed_shards = tmp_path / "data" / "sql_link_shards"
     missing_external_shards = tmp_path / "missing_bot_logs" / "data" / "sql_link_shards"
     fallback_shards = tmp_path / "local_fallback_storage" / "data" / "sql_link_shards"
     routed_shards.parent.mkdir(parents=True, exist_ok=True)
     routed_shards.symlink_to(missing_external_shards)
     monkeypatch.setattr(shard_manager, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(shard_manager, "LOCAL_FALLBACK_ROOT", tmp_path / "local_fallback_storage")
+    monkeypatch.setattr(
+        shard_manager, "LOCAL_FALLBACK_ROOT", tmp_path / "local_fallback_storage"
+    )
 
-    assert shard_manager._routed_or_local_fallback_path(routed_shards) == fallback_shards
+    assert (
+        shard_manager._routed_or_local_fallback_path(routed_shards) == fallback_shards
+    )
 
 
 def test_normalized_shard_config_upgrades_old_default_layouts() -> None:
-    assert shard_manager._normalized_shard_config("") == shard_manager.CURRENT_DEFAULT_SHARDS
-    assert shard_manager._normalized_shard_config(shard_manager.LEGACY_DEFAULT_SHARDS) == shard_manager.CURRENT_DEFAULT_SHARDS
-    assert shard_manager._normalized_shard_config(shard_manager.PRE_FAST_DEFAULT_SHARDS) == shard_manager.CURRENT_DEFAULT_SHARDS
-    assert shard_manager._normalized_shard_config(shard_manager.PRE_BACKLOG_SPLIT_DEFAULT_SHARDS) == shard_manager.CURRENT_DEFAULT_SHARDS
-    assert shard_manager._normalized_shard_config(shard_manager.PRE_API_INGRESS_DEFAULT_SHARDS) == shard_manager.CURRENT_DEFAULT_SHARDS
+    assert (
+        shard_manager._normalized_shard_config("")
+        == shard_manager.CURRENT_DEFAULT_SHARDS
+    )
+    assert (
+        shard_manager._normalized_shard_config(shard_manager.LEGACY_DEFAULT_SHARDS)
+        == shard_manager.CURRENT_DEFAULT_SHARDS
+    )
+    assert (
+        shard_manager._normalized_shard_config(shard_manager.PRE_FAST_DEFAULT_SHARDS)
+        == shard_manager.CURRENT_DEFAULT_SHARDS
+    )
+    assert (
+        shard_manager._normalized_shard_config(
+            shard_manager.PRE_BACKLOG_SPLIT_DEFAULT_SHARDS
+        )
+        == shard_manager.CURRENT_DEFAULT_SHARDS
+    )
+    assert (
+        shard_manager._normalized_shard_config(
+            shard_manager.PRE_API_INGRESS_DEFAULT_SHARDS
+        )
+        == shard_manager.CURRENT_DEFAULT_SHARDS
+    )
 
 
 def test_build_shards_separates_fast_trading_streams() -> None:
     shards = {
         row["name"]: row
         for row in shard_manager._build_shards(
-                [
-                    "health_fast",
-                    "writer_progress",
-                    "trading_fast",
-                    "runtime",
-                    "predictive_stability",
-                    "self_healing",
-                    "hot_path_storage",
-                    "api_ingress",
-                    "crypto_api_ingress",
-                    "aggressive_trading",
-                    "trading",
-                    "crypto_runtime",
-                    "crypto_trading_fast",
-                    "crypto_trading",
-                    "risk_support",
-                    "governance",
-                    "support_watchdog",
-                    "schema_violations",
-                    "collector_utility",
-                    "admission_evidence",
-                    "crypto_explanations",
-                    "explanations",
-                    "reports",
-                    "shadow_attribution",
-                    "crypto_shadow_attribution",
-                    "data",
-                ]
+            [
+                "health_fast",
+                "writer_progress",
+                "trading_fast",
+                "runtime",
+                "predictive_stability",
+                "self_healing",
+                "hot_path_storage",
+                "api_ingress",
+                "crypto_api_ingress",
+                "aggressive_trading",
+                "trading",
+                "crypto_runtime",
+                "crypto_trading_fast",
+                "crypto_trading",
+                "risk_support",
+                "governance",
+                "support_watchdog",
+                "schema_violations",
+                "collector_utility",
+                "admission_evidence",
+                "crypto_explanations",
+                "explanations",
+                "reports",
+                "shadow_attribution",
+                "crypto_shadow_attribution",
+                "data",
+            ]
         )
     }
 
@@ -602,13 +720,21 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert shards["crypto_runtime"]["max_lines_per_file"] == 12000
     assert shards["crypto_runtime"]["state_checkpoint_lines"] == 2000
     assert shards["crypto_runtime"]["merge_max_jsonl_rows"] == 8000
-    assert shards["crypto_trading_fast"]["include_streams"] == "paper_broker_bridge,top_level_trade_links"
+    assert (
+        shards["crypto_trading_fast"]["include_streams"]
+        == "paper_broker_bridge,top_level_trade_links"
+    )
     assert shards["crypto_explanations"]["include_streams"] == "decision_explanations"
     assert shards["crypto_explanations"]["merge_hot_days"] == 3
     assert shards["crypto_explanations"]["merge_priority"] == "low"
-    assert "shadow_pnl_attribution_" in str(shards["crypto_shadow_attribution"]["path_contains"])
-    assert "governance/channels/risk/" in str(shards["crypto_shadow_attribution"]["path_not_contains"])
+    assert "shadow_pnl_attribution_" in str(
+        shards["crypto_shadow_attribution"]["path_contains"]
+    )
+    assert "governance/channels/risk/" in str(
+        shards["crypto_shadow_attribution"]["path_not_contains"]
+    )
     assert shards["crypto_shadow_attribution"]["merge_to_primary"] is False
+    assert shards["crypto_shadow_attribution"]["hot_retention_hot_hours"] == 6
     assert shards["runtime"]["include_streams"] == "governance"
     assert "governance/channels/runtime/" in str(shards["runtime"]["path_contains"])
     assert shards["runtime"]["max_lines_per_file"] == 12000
@@ -623,14 +749,21 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert shards["api_ingress"]["max_files"] == 24
     assert shards["api_ingress"]["merge_to_primary"] is False
     assert shards["schema_violations"]["include_streams"] == "schema_violations"
-    assert "channel_schema_violations_" in str(shards["schema_violations"]["path_contains"])
+    assert "channel_schema_violations_" in str(
+        shards["schema_violations"]["path_contains"]
+    )
     assert shards["schema_violations"]["merge_to_primary"] is False
     assert shards["writer_progress"]["skip_json_files"] is False
-    assert "writer_cycle_coordinator_" in str(shards["writer_progress"]["path_contains"])
+    assert "writer_cycle_coordinator_" in str(
+        shards["writer_progress"]["path_contains"]
+    )
     assert shards["writer_progress"]["merge_max_json_file_rows"] == 96
     assert shards["predictive_stability"]["skip_json_files"] is False
     assert "pressure_trajectory" in str(shards["predictive_stability"]["path_contains"])
-    assert shards["self_healing"]["include_streams"] == "governance,governance_events,governance_watchdog"
+    assert (
+        shards["self_healing"]["include_streams"]
+        == "governance,governance_events,governance_watchdog"
+    )
     assert "blackstart" in str(shards["self_healing"]["path_contains"])
     assert shards["collector_utility"]["merge_to_primary"] is False
     assert "collector_budget" in str(shards["collector_utility"]["path_contains"])
@@ -640,15 +773,22 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert "teacher_lineage" in str(shards["admission_evidence"]["path_contains"])
     assert shards["reports"]["merge_to_primary"] is False
     assert "exports/reports/" in str(shards["reports"]["path_contains"])
-    assert shards["trading_fast"]["include_streams"] == "paper_broker_bridge,top_level_trade_links"
+    assert (
+        shards["trading_fast"]["include_streams"]
+        == "paper_broker_bridge,top_level_trade_links"
+    )
     assert shards["explanations"]["include_streams"] == "decision_explanations"
     assert shards["explanations"]["merge_hot_days"] == 3
     assert shards["explanations"]["hot_retention_hot_hours"] == 0
     assert shards["explanations"]["merge_priority"] == "low"
-    assert "shadow_pnl_attribution_" in str(shards["shadow_attribution"]["path_contains"])
+    assert "shadow_pnl_attribution_" in str(
+        shards["shadow_attribution"]["path_contains"]
+    )
     assert shards["shadow_attribution"]["merge_to_primary"] is False
     assert shards["aggressive_trading"]["include_streams"] == "decisions,trade_logs"
-    assert "shadow_intraday_aggressive_" in str(shards["aggressive_trading"]["path_contains"])
+    assert "shadow_intraday_aggressive_" in str(
+        shards["aggressive_trading"]["path_contains"]
+    )
     assert shards["aggressive_trading"]["max_lines_per_file"] == 20000
     assert shards["aggressive_trading"]["max_bytes_per_file"] == 128 * 1024 * 1024
     assert shards["aggressive_trading"]["sqlite_batch_max_bytes"] == 32 * 1024 * 1024
@@ -674,9 +814,15 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert "governance_walk_forward" in str(shards["governance"]["include_streams"])
     assert "governance/watchdog/" in str(shards["governance"]["path_not_contains"])
     assert "governance/channels/risk/" in str(shards["governance"]["path_not_contains"])
-    assert "governance/channels/ingress/" in str(shards["governance"]["path_not_contains"])
-    assert "governance/channels/runtime/" in str(shards["governance"]["path_not_contains"])
-    assert "channel_schema_violations_" in str(shards["governance"]["path_not_contains"])
+    assert "governance/channels/ingress/" in str(
+        shards["governance"]["path_not_contains"]
+    )
+    assert "governance/channels/runtime/" in str(
+        shards["governance"]["path_not_contains"]
+    )
+    assert "channel_schema_violations_" in str(
+        shards["governance"]["path_not_contains"]
+    )
     assert shards["governance"]["max_lines_per_file"] == 8000
     assert shards["governance"]["state_checkpoint_lines"] == 2000
     assert shards["governance"]["merge_max_jsonl_rows"] == 6000
@@ -704,27 +850,40 @@ def test_build_shards_separates_fast_trading_streams() -> None:
     assert shards["data"]["merge_to_primary"] is False
 
 
-def test_build_shards_routes_hot_retention_archives_to_non_protected_second_cold(monkeypatch, tmp_path: Path) -> None:
+def test_build_shards_routes_hot_retention_archives_to_non_protected_second_cold(
+    monkeypatch, tmp_path: Path
+) -> None:
     second_cold = tmp_path / "BOT_COLD" / "schwab_trading_bot_cold"
     monkeypatch.setenv("BOT_SECOND_COLD_ROOT", str(second_cold))
 
-    shards = {row["name"]: row for row in shard_manager._build_shards(["risk_support", "crypto_trading"])}
+    shards = {
+        row["name"]: row
+        for row in shard_manager._build_shards(["risk_support", "crypto_trading"])
+    }
 
-    assert str(shards["risk_support"]["hot_retention_archive_root"]).startswith(str(second_cold))
-    assert str(shards["risk_support"]["hot_retention_cold_export_root"]).startswith(str(second_cold))
-    assert str(shards["crypto_trading"]["hot_retention_archive_root"]).startswith(str(second_cold))
-    assert str(shards["crypto_trading"]["hot_retention_cold_export_root"]).startswith(str(second_cold))
+    assert str(shards["risk_support"]["hot_retention_archive_root"]).startswith(
+        str(second_cold)
+    )
+    assert str(shards["risk_support"]["hot_retention_cold_export_root"]).startswith(
+        str(second_cold)
+    )
+    assert str(shards["crypto_trading"]["hot_retention_archive_root"]).startswith(
+        str(second_cold)
+    )
+    assert str(shards["crypto_trading"]["hot_retention_cold_export_root"]).startswith(
+        str(second_cold)
+    )
 
 
 def test_load_active_request_sanitizes_live_drain_overrides(tmp_path) -> None:
     request_path = tmp_path / "sql_link_service_request_latest.json"
     request_path.write_text(
         json.dumps(
-                {
-                    "active": True,
-                    "request_kind": "external_backlog_drain",
-                    "requested_at": "2026-04-17T11:00:00+00:00",
-                    "expires_utc": "2099-04-18T12:00:00+00:00",
+            {
+                "active": True,
+                "request_kind": "external_backlog_drain",
+                "requested_at": "2026-04-17T11:00:00+00:00",
+                "expires_utc": "2099-04-18T12:00:00+00:00",
                 "env_overrides": {
                     "SQL_LINK_SERVICE_SHARDS": "health_fast,runtime,trading",
                     "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": "25",
@@ -752,8 +911,13 @@ def test_load_active_request_sanitizes_live_drain_overrides(tmp_path) -> None:
     payload = shard_manager._load_active_request(request_path)
 
     assert payload["request_kind"] == "external_backlog_drain"
-    assert payload["env_overrides"]["SQL_LINK_SERVICE_SHARDS"] == "health_fast,runtime,trading"
-    assert payload["env_overrides"]["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "25"
+    assert (
+        payload["env_overrides"]["SQL_LINK_SERVICE_SHARDS"]
+        == "health_fast,runtime,trading"
+    )
+    assert (
+        payload["env_overrides"]["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "25"
+    )
     assert payload["env_overrides"]["INGEST_MAX_BYTES_PER_FILE"] == "67108864"
     assert payload["env_overrides"]["SQLITE_BATCH_MAX_BYTES"] == "16777216"
     assert payload["env_overrides"]["BOT_OPS_SQLITE_CACHE_SIZE_KB"] == "8192"
@@ -770,7 +934,88 @@ def test_load_active_request_sanitizes_live_drain_overrides(tmp_path) -> None:
     assert "BAD_KEY" not in payload["env_overrides"]
 
 
-def test_live_runtime_controls_choose_most_restrictive_writer_capacity(tmp_path, monkeypatch) -> None:
+def test_load_active_request_ignores_consumed_one_shot_fleet_request(
+    monkeypatch, tmp_path: Path
+) -> None:
+    request_path = tmp_path / "sql_link_service_request_latest.json"
+    progress_path = tmp_path / "sql_link_service_progress_latest.json"
+    request = {
+        "active": True,
+        "request_kind": "backpressure_drainer_fleet",
+        "requested_at": "2026-04-17T11:00:00+00:00",
+        "expires_utc": "2099-04-18T12:00:00+00:00",
+        "reason": "backpressure_drainer_fleet:runtime_channel_drainer",
+        "env_overrides": {
+            "SQL_LINK_SERVICE_SHARDS": "runtime,crypto_runtime,health_fast"
+        },
+    }
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    progress_path.write_text(
+        json.dumps(
+            {
+                "running": False,
+                "current_step": "complete",
+                "active_request": {
+                    "request_kind": request["request_kind"],
+                    "requested_at": request["requested_at"],
+                    "expires_utc": request["expires_utc"],
+                    "reason": request["reason"],
+                    "env_overrides": request["env_overrides"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(shard_manager, "PROGRESS_HEALTH", progress_path)
+
+    assert shard_manager._load_active_request(request_path) == {}
+
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    progress["running"] = True
+    progress_path.write_text(json.dumps(progress), encoding="utf-8")
+    assert shard_manager._load_active_request(request_path)["request_kind"] == (
+        "backpressure_drainer_fleet"
+    )
+
+
+def test_consumed_request_receipt_survives_later_broad_progress(
+    monkeypatch, tmp_path: Path
+) -> None:
+    request_path = tmp_path / "sql_link_service_request_latest.json"
+    consumed_path = tmp_path / "sql_link_service_request_consumed_latest.json"
+    progress_path = tmp_path / "sql_link_service_progress_latest.json"
+    request = {
+        "active": True,
+        "request_kind": "backpressure_drainer_fleet",
+        "requested_at": "2026-04-17T11:00:00+00:00",
+        "expires_utc": "2099-04-18T12:00:00+00:00",
+        "reason": "backpressure_drainer_fleet:runtime_channel_drainer",
+        "env_overrides": {"SQL_LINK_SERVICE_SHARDS": "runtime,health_fast"},
+    }
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    progress_path.write_text(
+        json.dumps({"running": True, "current_step": "shard_linking", "active_request": {}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(shard_manager, "PROGRESS_HEALTH", progress_path)
+    monkeypatch.setattr(shard_manager, "REQUEST_CONSUMED_PATH", consumed_path)
+
+    shard_manager._record_consumed_focused_request(
+        shard_manager._load_active_request(request_path),
+        completed_at_utc="2026-04-17T11:01:00+00:00",
+        merged_rows=123,
+        completed_shards=[{"name": "runtime"}, {"name": "health_fast"}],
+    )
+
+    assert shard_manager._load_active_request(request_path) == {}
+    receipt = json.loads(consumed_path.read_text(encoding="utf-8"))
+    assert receipt["merged_rows"] == 123
+    assert receipt["completed_shards"] == ["runtime", "health_fast"]
+
+
+def test_live_runtime_controls_choose_most_restrictive_writer_capacity(
+    tmp_path, monkeypatch
+) -> None:
     runtime_override = tmp_path / "runtime.env"
     pressure_override = tmp_path / "pressure.env"
     runtime_override.write_text(
@@ -800,8 +1045,12 @@ def test_live_runtime_controls_choose_most_restrictive_writer_capacity(tmp_path,
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(shard_manager, "RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH", runtime_override)
-    monkeypatch.setattr(shard_manager, "PRESSURE_RELIEF_OVERRIDE_PATH", pressure_override)
+    monkeypatch.setattr(
+        shard_manager, "RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH", runtime_override
+    )
+    monkeypatch.setattr(
+        shard_manager, "PRESSURE_RELIEF_OVERRIDE_PATH", pressure_override
+    )
 
     overrides = shard_manager._live_runtime_control_overrides()
 
@@ -844,7 +1093,9 @@ def test_cycle_request_cannot_widen_newer_runtime_writer_cap(monkeypatch) -> Non
     assert overrides["SQL_LINK_SERVICE_INTERVAL_SECONDS"] == "75"
 
 
-def test_cycle_sleep_wakes_when_focused_request_changes(tmp_path: Path, monkeypatch) -> None:
+def test_cycle_sleep_wakes_when_focused_request_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
     request_path = tmp_path / "request.json"
     sleeps: list[float] = []
     refreshed_request = {
@@ -853,21 +1104,28 @@ def test_cycle_sleep_wakes_when_focused_request_changes(tmp_path: Path, monkeypa
         "reason": "backpressure_drainer_fleet:core_decision_drainer",
         "env_overrides": {"SQL_LINK_SERVICE_SHARDS": "crypto_trading,health_fast"},
     }
-    monkeypatch.setattr(shard_manager.time, "sleep", lambda seconds: sleeps.append(seconds))
-    monkeypatch.setattr(shard_manager, "_load_active_request", lambda _path: refreshed_request)
+    monkeypatch.setattr(
+        shard_manager.time, "sleep", lambda seconds: sleeps.append(seconds)
+    )
+    monkeypatch.setattr(
+        shard_manager, "_load_active_request", lambda _path: refreshed_request
+    )
 
     result = shard_manager._sleep_until_next_cycle(
         900,
         active_request={},
         request_path=request_path,
         poll_seconds=2,
+        project_root=tmp_path,
     )
 
     assert result == "request_changed"
     assert sleeps == [2.0]
 
 
-def test_cycle_sleep_preserves_interval_when_request_is_unchanged(tmp_path: Path, monkeypatch) -> None:
+def test_cycle_sleep_preserves_interval_when_request_is_unchanged(
+    tmp_path: Path, monkeypatch
+) -> None:
     request_path = tmp_path / "request.json"
     sleeps: list[float] = []
     active_request = {
@@ -876,18 +1134,47 @@ def test_cycle_sleep_preserves_interval_when_request_is_unchanged(tmp_path: Path
         "reason": "backpressure_drainer_fleet:core_decision_drainer",
         "env_overrides": {"SQL_LINK_SERVICE_SHARDS": "crypto_trading,health_fast"},
     }
-    monkeypatch.setattr(shard_manager.time, "sleep", lambda seconds: sleeps.append(seconds))
-    monkeypatch.setattr(shard_manager, "_load_active_request", lambda _path: active_request)
+    monkeypatch.setattr(
+        shard_manager.time, "sleep", lambda seconds: sleeps.append(seconds)
+    )
+    monkeypatch.setattr(
+        shard_manager, "_load_active_request", lambda _path: active_request
+    )
 
     result = shard_manager._sleep_until_next_cycle(
         10,
         active_request=active_request,
         request_path=request_path,
         poll_seconds=3,
+        project_root=tmp_path,
     )
 
     assert result == "interval_elapsed"
     assert sleeps == [3.0, 3.0, 3.0, 1.0]
+
+
+def test_cycle_sleep_wakes_for_maintenance_without_starting_another_write(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sleeps = []
+    monkeypatch.setattr(
+        shard_manager.time, "sleep", lambda seconds: sleeps.append(seconds)
+    )
+    monkeypatch.setattr(shard_manager, "_load_active_request", lambda _path: {})
+    monkeypatch.setattr(
+        shard_manager,
+        "_cycle_boundary_maintenance_hold",
+        lambda _root: {"active": True} if sleeps else {},
+    )
+    result = shard_manager._sleep_until_next_cycle(
+        900,
+        active_request={},
+        request_path=tmp_path / "request.json",
+        poll_seconds=2,
+        project_root=tmp_path,
+    )
+    assert result == "maintenance_hold"
+    assert sleeps == [2.0]
 
 
 def test_effective_cycle_args_applies_live_request_env() -> None:
@@ -986,7 +1273,9 @@ def test_explicit_cli_shards_override_broad_request_scope(monkeypatch) -> None:
     assert effective.preprocess_workers == 7
 
 
-def test_temporary_env_overrides_clears_stale_shard_path_filters(monkeypatch, tmp_path: Path) -> None:
+def test_temporary_env_overrides_clears_stale_shard_path_filters(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(shard_manager, "SHARD_DB_ROOT", tmp_path / "sql_link_shards")
     monkeypatch.setattr(shard_manager, "SHARD_STATE_ROOT", tmp_path / "state")
     monkeypatch.setattr(shard_manager, "HEALTH_ROOT", tmp_path / "health")
@@ -1008,14 +1297,18 @@ def test_temporary_env_overrides_clears_stale_shard_path_filters(monkeypatch, tm
 
     assert "shadow_bond_equities" in str(by_name["explanations"]["path_contains"])
     assert "shadow_crypto/" in str(by_name["crypto_explanations"]["path_contains"])
-    assert "shadow_bond_equities" not in str(by_name["crypto_explanations"]["path_contains"])
+    assert "shadow_bond_equities" not in str(
+        by_name["crypto_explanations"]["path_contains"]
+    )
     assert (
         os.environ["SQL_LINK_SERVICE_SHARD_CRYPTO_EXPLANATIONS_PATH_CONTAINS"]
         == "decision_explanations/shadow_bond_equities/decision_explanations_20260612.jsonl"
     )
 
 
-def test_cycle_runtime_overrides_reads_live_runtime_guard(tmp_path, monkeypatch) -> None:
+def test_cycle_runtime_overrides_reads_live_runtime_guard(
+    tmp_path, monkeypatch
+) -> None:
     runtime_override = tmp_path / ".env.runtime_resource_guard_override"
     pressure_override = tmp_path / ".env.pressure_relief_override"
     runtime_override.write_text(
@@ -1034,10 +1327,16 @@ def test_cycle_runtime_overrides_reads_live_runtime_guard(tmp_path, monkeypatch)
         "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE=20\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(shard_manager, "RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH", runtime_override)
-    monkeypatch.setattr(shard_manager, "PRESSURE_RELIEF_OVERRIDE_PATH", pressure_override)
+    monkeypatch.setattr(
+        shard_manager, "RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH", runtime_override
+    )
+    monkeypatch.setattr(
+        shard_manager, "PRESSURE_RELIEF_OVERRIDE_PATH", pressure_override
+    )
 
-    overrides = shard_manager._cycle_runtime_overrides({"env_overrides": {"SQL_LINK_SERVICE_PREPROCESS_WORKERS": "2"}})
+    overrides = shard_manager._cycle_runtime_overrides(
+        {"env_overrides": {"SQL_LINK_SERVICE_PREPROCESS_WORKERS": "2"}}
+    )
 
     assert overrides["SQL_LINK_SERVICE_HOST_COOLING_ACTIVE"] == "1"
     assert overrides["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "1"
@@ -1046,7 +1345,9 @@ def test_cycle_runtime_overrides_reads_live_runtime_guard(tmp_path, monkeypatch)
     assert "BAD_KEY" not in overrides
 
 
-def test_cycle_runtime_overrides_preserves_child_cooling_controls(tmp_path, monkeypatch) -> None:
+def test_cycle_runtime_overrides_preserves_child_cooling_controls(
+    tmp_path, monkeypatch
+) -> None:
     runtime_override = tmp_path / ".env.runtime_resource_guard_override"
     pressure_override = tmp_path / ".env.pressure_relief_override"
     runtime_override.write_text(
@@ -1068,8 +1369,12 @@ def test_cycle_runtime_overrides_preserves_child_cooling_controls(tmp_path, monk
         encoding="utf-8",
     )
     pressure_override.write_text("", encoding="utf-8")
-    monkeypatch.setattr(shard_manager, "RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH", runtime_override)
-    monkeypatch.setattr(shard_manager, "PRESSURE_RELIEF_OVERRIDE_PATH", pressure_override)
+    monkeypatch.setattr(
+        shard_manager, "RUNTIME_RESOURCE_GUARD_OVERRIDE_PATH", runtime_override
+    )
+    monkeypatch.setattr(
+        shard_manager, "PRESSURE_RELIEF_OVERRIDE_PATH", pressure_override
+    )
 
     overrides = shard_manager._cycle_runtime_overrides({})
 
@@ -1109,7 +1414,9 @@ def test_run_shard_links_records_timeout_and_continues(tmp_path, monkeypatch) ->
     )
 
     def fake_run(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired(cmd=["link"], timeout=1, output="working", stderr="slow")
+        raise subprocess.TimeoutExpired(
+            cmd=["link"], timeout=1, output="working", stderr="slow"
+        )
 
     monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
 
@@ -1153,7 +1460,9 @@ def test_run_shard_links_applies_shard_specific_timeout(tmp_path, monkeypatch) -
 
     def fake_run(_cmd, *_args, **kwargs):
         captured_timeouts.append(int(kwargs["timeout"]))
-        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=["link"], returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
 
@@ -1199,7 +1508,9 @@ def test_run_shard_links_emits_active_shard_progress(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(
         shard_manager.subprocess,
         "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr=""),
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=["link"], returncode=0, stdout="", stderr=""
+        ),
     )
 
     def progress_callback(_rows, active_shard_links=None):
@@ -1217,8 +1528,14 @@ def test_run_shard_links_emits_active_shard_progress(tmp_path, monkeypatch) -> N
     )
 
     assert [row["shard"] for row in results] == ["data", "reports"]
-    assert any(event and event[0]["shard"] == "data" and event[0]["queued_shard_count"] == 1 for event in events)
-    assert any(event and event[0]["shard"] == "reports" and event[0]["tail_shard"] is True for event in events)
+    assert any(
+        event and event[0]["shard"] == "data" and event[0]["queued_shard_count"] == 1
+        for event in events
+    )
+    assert any(
+        event and event[0]["shard"] == "reports" and event[0]["tail_shard"] is True
+        for event in events
+    )
 
 
 def test_run_shard_links_uses_preprocess_worker_budget(tmp_path, monkeypatch) -> None:
@@ -1256,7 +1573,9 @@ def test_run_shard_links_uses_preprocess_worker_budget(tmp_path, monkeypatch) ->
         time.sleep(0.05)
         with lock:
             active["count"] -= 1
-        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=["link"], returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
 
@@ -1270,7 +1589,11 @@ def test_run_shard_links_uses_preprocess_worker_budget(tmp_path, monkeypatch) ->
         preprocess_workers=3,
     )
 
-    assert [row["shard"] for row in results] == ["trading", "aggressive_trading", "crypto_trading"]
+    assert [row["shard"] for row in results] == [
+        "trading",
+        "aggressive_trading",
+        "crypto_trading",
+    ]
     assert active["max"] > 1
     assert all(row["parallel_preprocess"] is True for row in results)
     assert all(row["preprocess_worker_count"] == 3 for row in results)
@@ -1321,7 +1644,9 @@ def test_run_shard_links_obeys_live_governor_lane_cap(tmp_path, monkeypatch) -> 
         time.sleep(0.03)
         with lock:
             active["count"] -= 1
-        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=["link"], returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
 
@@ -1336,7 +1661,11 @@ def test_run_shard_links_obeys_live_governor_lane_cap(tmp_path, monkeypatch) -> 
         live_lane_cap_reload=True,
     )
 
-    assert [row["shard"] for row in results] == ["trading", "aggressive_trading", "crypto_trading"]
+    assert [row["shard"] for row in results] == [
+        "trading",
+        "aggressive_trading",
+        "crypto_trading",
+    ]
     assert active["max"] == 1
     assert all(row["parallel_preprocess"] is False for row in results)
     assert all(row["preprocess_worker_count"] == 1 for row in results)
@@ -1414,7 +1743,9 @@ def test_run_shard_links_caps_cold_shard_parallelism(tmp_path, monkeypatch) -> N
         time.sleep(0.03)
         with lock:
             active["count"] -= 1
-        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=["link"], returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
 
@@ -1433,7 +1764,9 @@ def test_run_shard_links_caps_cold_shard_parallelism(tmp_path, monkeypatch) -> N
     assert all(row["preprocess_worker_count"] == 3 for row in results)
 
 
-def test_run_shard_links_lets_hot_shard_bypass_capped_cold_queue(tmp_path, monkeypatch) -> None:
+def test_run_shard_links_lets_hot_shard_bypass_capped_cold_queue(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_SMART_SHARD_PARALLELISM", "1")
     monkeypatch.setenv("SQL_LINK_SERVICE_COLD_SHARD_LANE_CAP", "1")
     shards = []
@@ -1487,7 +1820,9 @@ def test_run_shard_links_lets_hot_shard_bypass_capped_cold_queue(tmp_path, monke
     assert started.index("trading") < started.index("reports")
 
 
-def test_run_shard_links_skips_fresh_idle_non_sentinel_shards(tmp_path, monkeypatch) -> None:
+def test_run_shard_links_skips_fresh_idle_non_sentinel_shards(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", "1")
     monkeypatch.setenv("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", "120")
     health_file = tmp_path / "data_health.json"
@@ -1524,7 +1859,9 @@ def test_run_shard_links_skips_fresh_idle_non_sentinel_shards(tmp_path, monkeypa
 
     def fake_run(*_args, **_kwargs):
         calls["subprocess"] += 1
-        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=["link"], returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(shard_manager, "_quarantine_shard_artifacts", fake_quarantine)
     monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
@@ -1546,7 +1883,9 @@ def test_run_shard_links_skips_fresh_idle_non_sentinel_shards(tmp_path, monkeypa
     assert calls == {"quarantine": 0, "subprocess": 0}
 
 
-def test_run_shard_links_does_not_skip_focused_path_against_unfiltered_health(tmp_path, monkeypatch) -> None:
+def test_run_shard_links_does_not_skip_focused_path_against_unfiltered_health(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", "1")
     monkeypatch.setenv("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", "120")
     health_file = tmp_path / "risk_support_health.json"
@@ -1584,7 +1923,9 @@ def test_run_shard_links_does_not_skip_focused_path_against_unfiltered_health(tm
 
     def fake_run(*_args, **_kwargs):
         calls["subprocess"] += 1
-        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=["link"], returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(shard_manager, "_quarantine_shard_artifacts", fake_quarantine)
     monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
@@ -1604,7 +1945,9 @@ def test_run_shard_links_does_not_skip_focused_path_against_unfiltered_health(tm
     assert calls == {"quarantine": 1, "subprocess": 1}
 
 
-def test_run_shard_links_does_not_skip_focused_source_with_pending_bytes(tmp_path, monkeypatch) -> None:
+def test_run_shard_links_does_not_skip_focused_source_with_pending_bytes(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", "1")
     monkeypatch.setenv("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", "120")
     source = tmp_path / "signal_generation.jsonl"
@@ -1666,7 +2009,9 @@ def test_run_shard_links_does_not_skip_focused_source_with_pending_bytes(tmp_pat
 
     def fake_run(*_args, **_kwargs):
         calls["subprocess"] += 1
-        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=["link"], returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(shard_manager, "_quarantine_shard_artifacts", fake_quarantine)
     monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
@@ -1685,7 +2030,9 @@ def test_run_shard_links_does_not_skip_focused_source_with_pending_bytes(tmp_pat
     assert calls == {"quarantine": 1, "subprocess": 1}
 
 
-def test_run_shard_links_does_not_skip_unfocused_tracked_source_with_pending_bytes(tmp_path, monkeypatch) -> None:
+def test_run_shard_links_does_not_skip_unfocused_tracked_source_with_pending_bytes(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", "1")
     monkeypatch.setenv("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", "120")
     source = tmp_path / "signal_generation.jsonl"
@@ -1746,7 +2093,9 @@ def test_run_shard_links_does_not_skip_unfocused_tracked_source_with_pending_byt
 
     def fake_run(*_args, **_kwargs):
         calls["subprocess"] += 1
-        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=["link"], returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(shard_manager, "_quarantine_shard_artifacts", fake_quarantine)
     monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
@@ -1765,7 +2114,9 @@ def test_run_shard_links_does_not_skip_unfocused_tracked_source_with_pending_byt
     assert calls == {"quarantine": 1, "subprocess": 1}
 
 
-def test_run_shard_links_does_not_skip_fresh_idle_dirty_health(tmp_path, monkeypatch) -> None:
+def test_run_shard_links_does_not_skip_fresh_idle_dirty_health(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", "1")
     monkeypatch.setenv("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", "120")
     health_file = tmp_path / "governance_health.json"
@@ -1802,7 +2153,9 @@ def test_run_shard_links_does_not_skip_fresh_idle_dirty_health(tmp_path, monkeyp
 
     def fake_run(*_args, **_kwargs):
         calls["subprocess"] += 1
-        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=["link"], returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(shard_manager, "_quarantine_shard_artifacts", fake_quarantine)
     monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
@@ -1822,7 +2175,9 @@ def test_run_shard_links_does_not_skip_fresh_idle_dirty_health(tmp_path, monkeyp
     assert calls == {"quarantine": 1, "subprocess": 1}
 
 
-def test_run_shard_links_does_not_skip_fresh_idle_when_filters_change(tmp_path, monkeypatch) -> None:
+def test_run_shard_links_does_not_skip_fresh_idle_when_filters_change(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", "1")
     monkeypatch.setenv("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", "120")
     health_file = tmp_path / "governance_health.json"
@@ -1865,7 +2220,9 @@ def test_run_shard_links_does_not_skip_fresh_idle_when_filters_change(tmp_path, 
 
     def fake_run(*_args, **_kwargs):
         calls["subprocess"] += 1
-        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=["link"], returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(shard_manager, "_quarantine_shard_artifacts", fake_quarantine)
     monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
@@ -1885,7 +2242,9 @@ def test_run_shard_links_does_not_skip_fresh_idle_when_filters_change(tmp_path, 
     assert calls == {"quarantine": 1, "subprocess": 1}
 
 
-def test_run_shard_links_does_not_skip_stale_decision_catch_up(tmp_path, monkeypatch) -> None:
+def test_run_shard_links_does_not_skip_stale_decision_catch_up(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS", "1")
     monkeypatch.setenv("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", "120")
     monkeypatch.setenv("SQL_LINK_SERVICE_STALE_DECISION_SOURCE_CATCH_UP", "1")
@@ -1924,7 +2283,9 @@ def test_run_shard_links_does_not_skip_stale_decision_catch_up(tmp_path, monkeyp
 
     def fake_run(*_args, **_kwargs):
         calls["subprocess"] += 1
-        return subprocess.CompletedProcess(args=["link"], returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=["link"], returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(shard_manager, "_quarantine_shard_artifacts", fake_quarantine)
     monkeypatch.setattr(shard_manager.subprocess, "run", fake_run)
@@ -1944,7 +2305,9 @@ def test_run_shard_links_does_not_skip_stale_decision_catch_up(tmp_path, monkeyp
     assert calls == {"quarantine": 1, "subprocess": 1}
 
 
-def test_run_shard_links_forwards_sparse_decision_byte_caps(tmp_path, monkeypatch) -> None:
+def test_run_shard_links_forwards_sparse_decision_byte_caps(
+    tmp_path, monkeypatch
+) -> None:
     shard = {
         "name": "crypto_trading",
         "sqlite_db": tmp_path / "crypto.sqlite3",
@@ -2079,14 +2442,24 @@ def test_missing_shard_db_direct_merge_is_noop_skip(tmp_path: Path) -> None:
     assert result["json_file_rows_inserted"] == 0
 
 
-def test_merge_followup_summary_recommends_catch_up_for_capped_or_budgeted_merge() -> None:
+def test_merge_followup_summary_recommends_catch_up_for_capped_or_budgeted_merge() -> (
+    None
+):
     summary = shard_manager._merge_followup_summary(
         merge_results=[
             {"shard": "trading", "merge_capped": True},
-            {"shard": "aggressive_trading", "reason": "merge_cycle_budget_exhausted:60.1s"},
+            {
+                "shard": "aggressive_trading",
+                "reason": "merge_cycle_budget_exhausted:60.1s",
+            },
         ],
         shard_results=[
-            {"shard": "crypto_trading", "rc": 124, "timed_out": True, "health": {"sqlite": {"inserted": 12, "pending_lines": 0}}},
+            {
+                "shard": "crypto_trading",
+                "rc": 124,
+                "timed_out": True,
+                "health": {"sqlite": {"inserted": 12, "pending_lines": 0}},
+            },
         ],
     )
 
@@ -2100,25 +2473,25 @@ def test_merge_followup_summary_recommends_catch_up_for_capped_or_budgeted_merge
 
 
 def test_build_shards_reads_hourly_hot_retention_overrides(monkeypatch) -> None:
-    monkeypatch.setenv("SQL_LINK_SERVICE_SHARD_EXPLANATIONS_HOT_RETENTION_HOT_HOURS", "2")
-    monkeypatch.setenv("SQL_LINK_SERVICE_SHARD_EXPLANATIONS_HOT_RETENTION_MAX_ROWS", "900000")
+    monkeypatch.setenv(
+        "SQL_LINK_SERVICE_SHARD_EXPLANATIONS_HOT_RETENTION_HOT_HOURS", "2"
+    )
+    monkeypatch.setenv(
+        "SQL_LINK_SERVICE_SHARD_EXPLANATIONS_HOT_RETENTION_MAX_ROWS", "900000"
+    )
 
-    shards = {
-        row["name"]: row
-        for row in shard_manager._build_shards(["explanations"])
-    }
+    shards = {row["name"]: row for row in shard_manager._build_shards(["explanations"])}
 
     assert shards["explanations"]["hot_retention_hot_hours"] == 2
     assert shards["explanations"]["hot_retention_max_rows"] == 900000
 
 
 def test_build_shards_bounds_governance_tail_work_by_default(monkeypatch) -> None:
-    monkeypatch.setattr(shard_manager.ops_data_plane, "load_shard_heat_map", lambda _project_root: {})
+    monkeypatch.setattr(
+        shard_manager.ops_data_plane, "load_shard_heat_map", lambda _project_root: {}
+    )
 
-    shards = {
-        row["name"]: row
-        for row in shard_manager._build_shards(["governance"])
-    }
+    shards = {row["name"]: row for row in shard_manager._build_shards(["governance"])}
 
     assert shards["governance"]["max_files"] == 10
     assert shards["governance"]["max_bytes_per_file"] == 128 * 1024 * 1024
@@ -2193,7 +2566,55 @@ def test_raw_live_priority_focus_routes_fresh_material_hotspot_and_prioritizes_s
     assert plan["priority_rows"][0]["raw_live_priority_focus"] is True
 
 
-def test_raw_live_priority_focus_ignores_stale_snapshot(tmp_path: Path, monkeypatch) -> None:
+def test_raw_live_priority_focus_scales_batch_for_large_single_source(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    snapshot_path = tmp_path / "ingestion_backpressure_latest.json"
+    now = shard_manager.datetime(2026, 9, 2, 21, 0, tzinfo=shard_manager.timezone.utc)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "pending_lines": 300000,
+                "top_pending_files": [
+                    {
+                        "source_rel": "governance/evidence/canary_rollout_observations.jsonl",
+                        "pending_lines": 300000,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED", "1")
+    shards = [
+        {
+            "name": "governance",
+            "max_files": 4,
+            "max_lines_per_file": 8000,
+            "max_bytes_per_file": 128 * 1024 * 1024,
+            "sqlite_batch_max_bytes": 32 * 1024 * 1024,
+        }
+    ]
+
+    focused, contract = shard_manager._apply_raw_live_priority_focus(
+        shards,
+        backpressure_path=snapshot_path,
+        now_utc=now,
+    )
+
+    assert contract["applied"] is True
+    assert focused[0]["max_lines_per_file"] == 128000
+    assert (
+        focused[0]["path_contains"]
+        == "governance/evidence/canary_rollout_observations.jsonl"
+    )
+
+
+def test_raw_live_priority_focus_ignores_stale_snapshot(
+    tmp_path: Path, monkeypatch
+) -> None:
     snapshot_path = tmp_path / "ingestion_backpressure_latest.json"
     now = shard_manager.datetime(2026, 8, 5, 16, 0, tzinfo=shard_manager.timezone.utc)
     snapshot_path.write_text(
@@ -2225,7 +2646,9 @@ def test_raw_live_priority_focus_ignores_stale_snapshot(tmp_path: Path, monkeypa
     assert focused == shards
 
 
-def test_raw_live_priority_focus_releases_when_pressure_clears(tmp_path: Path, monkeypatch) -> None:
+def test_raw_live_priority_focus_releases_when_pressure_clears(
+    tmp_path: Path, monkeypatch
+) -> None:
     snapshot_path = tmp_path / "ingestion_backpressure_latest.json"
     now = shard_manager.datetime(2026, 8, 5, 16, 0, tzinfo=shard_manager.timezone.utc)
     snapshot_path.write_text(
@@ -2299,10 +2722,15 @@ def test_raw_live_priority_focus_drains_aged_hot_source_below_line_threshold(
     assert contract["aged_source_pressure"] is True
     assert contract["aged_source_count"] == 1
     assert contract["aged_source_pending_lines"] == 980
-    assert focused[0]["path_contains"] == "governance/events/signal_generation_20260805.jsonl"
+    assert (
+        focused[0]["path_contains"]
+        == "governance/events/signal_generation_20260805.jsonl"
+    )
 
 
-def test_raw_live_priority_focus_can_be_explicitly_disabled(tmp_path: Path, monkeypatch) -> None:
+def test_raw_live_priority_focus_can_be_explicitly_disabled(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST", "0")
     monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED", "0")
     shards = [{"name": "governance", "path_contains": "", "max_files": 4}]
@@ -2318,19 +2746,95 @@ def test_raw_live_priority_focus_can_be_explicitly_disabled(tmp_path: Path, monk
     assert focused == shards
 
 
+def test_raw_live_priority_focus_preserves_explicit_drainer_scope(
+    tmp_path: Path, monkeypatch
+) -> None:
+    snapshot_path = tmp_path / "ingestion_backpressure_latest.json"
+    now = shard_manager.datetime(2026, 8, 5, 16, 0, tzinfo=shard_manager.timezone.utc)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "pending_lines": 9000,
+                "top_pending_files": [
+                    {
+                        "source_rel": "governance/events/signal_generation_20260805.jsonl",
+                        "pending_lines": 8000,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    explicit_path = "governance/events/auth_events_20260801.jsonl"
+    monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED", "1")
+    monkeypatch.setenv("SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS", explicit_path)
+    shards = [{"name": "governance", "path_contains": explicit_path, "max_files": 4}]
+
+    focused, contract = shard_manager._apply_raw_live_priority_focus(
+        shards,
+        backpressure_path=snapshot_path,
+        now_utc=now,
+    )
+
+    assert contract["enabled"] is True
+    assert contract["applied"] is False
+    assert contract["reason"] == "explicit_cycle_scope_preserved"
+    assert contract["explicit_scope_keys"] == [
+        "SQL_LINK_SERVICE_SHARD_GOVERNANCE_PATH_CONTAINS"
+    ]
+    assert focused == shards
+
+
 def test_raw_live_priority_source_routing_covers_operational_lanes() -> None:
-    assert shard_manager._raw_live_priority_shard_for_source(
-        "governance/events/signal_generation_20260805.jsonl"
-    ) == "governance"
-    assert shard_manager._raw_live_priority_shard_for_source(
-        "governance/channels/runtime/default_crypto_coinbase/loop_state.jsonl"
-    ) == "crypto_runtime"
-    assert shard_manager._raw_live_priority_shard_for_source(
-        "exports/paper_broker_bridge/paper/paper_bridge_orders_20260805.jsonl"
-    ) == "trading_fast"
-    assert shard_manager._raw_live_priority_shard_for_source(
-        "governance/channels/risk/default_schwab/risk.jsonl"
-    ) == "risk_support"
+    assert (
+        shard_manager._raw_live_priority_shard_for_source(
+            "governance/events/signal_generation_20260805.jsonl"
+        )
+        == "governance"
+    )
+    assert (
+        shard_manager._raw_live_priority_shard_for_source(
+            "governance/channels/runtime/default_crypto_coinbase/loop_state.jsonl"
+        )
+        == "crypto_runtime"
+    )
+    assert (
+        shard_manager._raw_live_priority_shard_for_source(
+            "governance/health/infrabot_adaptive_feedback.jsonl"
+        )
+        == "health_fast"
+    )
+    assert (
+        shard_manager._raw_live_priority_shard_for_source(
+            "governance/cells/storage_writer_cell/queue.jsonl"
+        )
+        == "governance"
+    )
+    assert (
+        shard_manager._raw_live_priority_shard_for_source(
+            "governance/evidence/canary_rollout_observations.jsonl"
+        )
+        == "governance"
+    )
+    assert (
+        shard_manager._raw_live_priority_shard_for_source(
+            "governance/system_expansion_execution/operator_memory.jsonl"
+        )
+        == "governance"
+    )
+    assert (
+        shard_manager._raw_live_priority_shard_for_source(
+            "exports/paper_broker_bridge/paper/paper_bridge_orders_20260805.jsonl"
+        )
+        == "trading_fast"
+    )
+    assert (
+        shard_manager._raw_live_priority_shard_for_source(
+            "governance/channels/risk/default_schwab/risk.jsonl"
+        )
+        == "risk_support"
+    )
 
 
 def test_build_shards_uses_heat_map_to_expand_hot_shard_capacity(monkeypatch) -> None:
@@ -2345,41 +2849,62 @@ def test_build_shards_uses_heat_map_to_expand_hot_shard_capacity(monkeypatch) ->
         },
     )
 
-    shards = {
-        row["name"]: row
-        for row in shard_manager._build_shards(["explanations"])
-    }
+    shards = {row["name"]: row for row in shard_manager._build_shards(["explanations"])}
 
     assert shards["explanations"]["heat_promotion_candidate"] is True
     assert shards["explanations"]["last_heat_score"] == 3.4
-    assert shards["explanations"]["max_files"] == int(shard_manager.DEFAULT_SHARD_DEFS["explanations"]["max_files"]) + 2
+    assert (
+        shards["explanations"]["max_files"]
+        == int(shard_manager.DEFAULT_SHARD_DEFS["explanations"]["max_files"]) + 2
+    )
 
 
-def test_prioritize_shards_for_linking_moves_sentinel_and_hot_pending_first(tmp_path, monkeypatch) -> None:
+def test_prioritize_shards_for_linking_moves_sentinel_and_hot_pending_first(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.delenv("SQL_LINK_SERVICE_SHARD_ORDER_MODE", raising=False)
     monkeypatch.delenv("SQL_LINK_SERVICE_ADAPTIVE_SHARD_ORDER", raising=False)
     trading_health = tmp_path / "trading_health.json"
     data_health = tmp_path / "data_health.json"
-    trading_health.write_text(json.dumps({"sqlite": {"pending_lines": 24000}}), encoding="utf-8")
-    data_health.write_text(json.dumps({"sqlite": {"pending_lines": 48000}}), encoding="utf-8")
+    trading_health.write_text(
+        json.dumps({"sqlite": {"pending_lines": 24000}}), encoding="utf-8"
+    )
+    data_health.write_text(
+        json.dumps({"sqlite": {"pending_lines": 48000}}), encoding="utf-8"
+    )
     shards = [
-        {"name": "data", "health_file": data_health, "merge_priority": "low", "merge_to_primary": False},
+        {
+            "name": "data",
+            "health_file": data_health,
+            "merge_priority": "low",
+            "merge_to_primary": False,
+        },
         {"name": "health_fast", "health_file": tmp_path / "health_fast.json"},
         {"name": "trading", "health_file": trading_health, "last_heat_score": 1.5},
-        {"name": "explanations", "health_file": tmp_path / "explanations.json", "merge_priority": "low"},
+        {
+            "name": "explanations",
+            "health_file": tmp_path / "explanations.json",
+            "merge_priority": "low",
+        },
     ]
 
     ordered, plan = shard_manager._prioritize_shards_for_linking(shards)
 
     assert [row["name"] for row in ordered][:2] == ["health_fast", "trading"]
-    assert [row["name"] for row in ordered].index("data") < [row["name"] for row in ordered].index("explanations")
+    assert [row["name"] for row in ordered].index("data") < [
+        row["name"] for row in ordered
+    ].index("explanations")
     assert plan["enabled"] is True
     assert plan["policy"] == "adaptive_hot_pending_sentinel_first"
-    trading_row = next(row for row in plan["priority_rows"] if row["shard"] == "trading")
+    trading_row = next(
+        row for row in plan["priority_rows"] if row["shard"] == "trading"
+    )
     assert trading_row["pending_lines"] == 24000
 
 
-def test_prioritize_shards_for_linking_can_preserve_stable_order(tmp_path, monkeypatch) -> None:
+def test_prioritize_shards_for_linking_can_preserve_stable_order(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_SHARD_ORDER_MODE", "stable")
     shards = [
         {"name": "data", "health_file": tmp_path / "data.json"},
@@ -2394,7 +2919,9 @@ def test_prioritize_shards_for_linking_can_preserve_stable_order(tmp_path, monke
     assert plan["policy"] == "stable_config_order"
 
 
-def test_write_service_progress_exposes_shard_link_queue_details(tmp_path, monkeypatch) -> None:
+def test_write_service_progress_exposes_shard_link_queue_details(
+    tmp_path, monkeypatch
+) -> None:
     progress_path = tmp_path / "progress.json"
     monkeypatch.setattr(shard_manager, "PROGRESS_HEALTH", progress_path)
     shards = [{"name": "health_fast"}, {"name": "trading"}, {"name": "data"}]
@@ -2411,8 +2938,18 @@ def test_write_service_progress_exposes_shard_link_queue_details(tmp_path, monke
         shards=shards,
         shard_results=shard_results,
         merge_results=[],
-        shard_link_plan={"policy": "adaptive_hot_pending_sentinel_first", "planned_order": ["health_fast", "trading", "data"]},
-        active_shard_links=[{"shard": "data", "elapsed_seconds": 12.345, "timeout_seconds": 60, "tail_shard": True}],
+        shard_link_plan={
+            "policy": "adaptive_hot_pending_sentinel_first",
+            "planned_order": ["health_fast", "trading", "data"],
+        },
+        active_shard_links=[
+            {
+                "shard": "data",
+                "elapsed_seconds": 12.345,
+                "timeout_seconds": 60,
+                "tail_shard": True,
+            }
+        ],
     )
 
     payload = json.loads(progress_path.read_text(encoding="utf-8"))
@@ -2434,22 +2971,23 @@ def test_build_shards_fails_open_when_heat_map_unavailable(monkeypatch) -> None:
 
     monkeypatch.setattr(shard_manager.ops_data_plane, "load_shard_heat_map", _raise)
 
-    shards = {
-        row["name"]: row
-        for row in shard_manager._build_shards(["trading"])
-    }
+    shards = {row["name"]: row for row in shard_manager._build_shards(["trading"])}
 
     assert shards["trading"]["heat_promotion_candidate"] is False
 
 
-def test_connect_primary_db_quarantines_malformed_primary_and_recreates(tmp_path, monkeypatch) -> None:
+def test_connect_primary_db_quarantines_malformed_primary_and_recreates(
+    tmp_path, monkeypatch
+) -> None:
     primary_db = tmp_path / "data" / "jsonl_link.sqlite3"
     primary_db.parent.mkdir(parents=True, exist_ok=True)
     primary_db.write_bytes(b"not a sqlite database")
     Path(f"{primary_db}-wal").write_bytes(b"bad wal")
     Path(f"{primary_db}-shm").write_bytes(b"bad shm")
     monkeypatch.setattr(shard_manager, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(shard_manager, "HEALTH_ROOT", tmp_path / "governance" / "health")
+    monkeypatch.setattr(
+        shard_manager, "HEALTH_ROOT", tmp_path / "governance" / "health"
+    )
 
     conn = shard_manager._connect_primary_db(primary_db, sqlite_timeout_seconds=30)
     try:
@@ -2457,7 +2995,11 @@ def test_connect_primary_db_quarantines_malformed_primary_and_recreates(tmp_path
     finally:
         conn.close()
 
-    recovery = json.loads((tmp_path / "governance" / "health" / "sql_link_primary_recovery_latest.json").read_text(encoding="utf-8"))
+    recovery = json.loads(
+        (
+            tmp_path / "governance" / "health" / "sql_link_primary_recovery_latest.json"
+        ).read_text(encoding="utf-8")
+    )
     assert recovery["triggered"] is True
     assert recovery["primary_db"] == str(primary_db)
     assert "quarantined_malformed_primary" in recovery["recovery_action"]
@@ -2481,9 +3023,13 @@ def test_sql_link_service_payload_marks_mysql_disabled_in_sqlite_mode(tmp_path) 
             "mysql": {"enabled": False, "status": "disabled_by_link_mode"},
         },
     }
-    (health_root / "sql_link_service_latest.json").write_text(json.dumps(payload), encoding="utf-8")
+    (health_root / "sql_link_service_latest.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
 
-    saved = json.loads((health_root / "sql_link_service_latest.json").read_text(encoding="utf-8"))
+    saved = json.loads(
+        (health_root / "sql_link_service_latest.json").read_text(encoding="utf-8")
+    )
 
     assert saved["sinks"]["sqlite"]["enabled"] is True
     assert saved["sinks"]["mysql"]["enabled"] is False
@@ -2511,7 +3057,9 @@ def test_should_skip_low_priority_merge_when_primary_db_is_large() -> None:
 def test_db_size_gb_prefers_live_page_usage_over_sparse_logical_size(tmp_path) -> None:
     db_path = tmp_path / "sparse.sqlite3"
     conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE jsonl_records (id INTEGER PRIMARY KEY, payload_json TEXT)")
+    conn.execute(
+        "CREATE TABLE jsonl_records (id INTEGER PRIMARY KEY, payload_json TEXT)"
+    )
     conn.execute("INSERT INTO jsonl_records (payload_json) VALUES (?)", ("{}",))
     conn.commit()
     page_size = int(conn.execute("PRAGMA page_size").fetchone()[0])
@@ -2521,7 +3069,7 @@ def test_db_size_gb_prefers_live_page_usage_over_sparse_logical_size(tmp_path) -
     with db_path.open("ab") as fh:
         fh.truncate((page_size * page_count) + (32 * 1024 * 1024))
 
-    measured_bytes = shard_manager._db_size_gb(db_path) * (1024.0 ** 3)
+    measured_bytes = shard_manager._db_size_gb(db_path) * (1024.0**3)
 
     assert measured_bytes < db_path.stat().st_size
     assert measured_bytes == page_size * page_count
@@ -2601,17 +3149,81 @@ def test_retention_safety_respects_disabled_retention_inside_envelope() -> None:
     assert contract["force_reasons"] == []
 
 
-def test_vacuum_capacity_guard_preserves_free_space_reserve(tmp_path: Path, monkeypatch) -> None:
+def test_vacuum_request_counts_freed_pages_below_live_retention_threshold(tmp_path, monkeypatch):
+    db = tmp_path / "freelist.sqlite3"
+    with db.open("wb") as handle:
+        handle.truncate(58 * 1024**3)
+    monkeypatch.setattr(shard_manager, "_db_size_gb", lambda path: 12.0)
+    assert shard_manager._hot_retention_vacuum_requested(db, 24.0)
+    monkeypatch.setattr(shard_manager, "_db_size_gb", lambda path: 57.0)
+    assert not shard_manager._hot_retention_vacuum_requested(db, 24.0)
+    assert not shard_manager._hot_retention_vacuum_requested(tmp_path / "missing", 24.0)
+
+
+def test_vacuum_capacity_guard_preserves_free_space_reserve(
+    tmp_path: Path, monkeypatch
+) -> None:
     db_path = tmp_path / "cache.sqlite3"
     db_path.write_bytes(b"db")
     monkeypatch.setenv("SQL_LINK_SERVICE_VACUUM_MIN_FREE_AFTER_GB", "32")
 
-    blocked = shard_manager._vacuum_capacity_contract(db_path, requested=True, free_gb=10.0)
-    allowed = shard_manager._vacuum_capacity_contract(db_path, requested=True, free_gb=64.0)
+    blocked = shard_manager._vacuum_capacity_contract(
+        db_path, requested=True, free_gb=10.0
+    )
+    allowed = shard_manager._vacuum_capacity_contract(
+        db_path, requested=True, free_gb=64.0
+    )
 
     assert blocked["allowed"] is False
     assert blocked["blocked_reason"] == "insufficient_vacuum_headroom"
     assert allowed["allowed"] is True
+
+
+def test_hot_retention_noop_backoff_skips_repeated_size_only_runs() -> None:
+    state = {
+        "last_run_epoch": 1000.0,
+        "last_moved_rows": 0,
+        "rows_since_last_run": 0,
+    }
+
+    reason = shard_manager._hot_retention_noop_backoff_reason(
+        shard_state=state,
+        trigger_reasons=["db_size_gb>=4"],
+        now_epoch=1200.0,
+        noop_min_interval_seconds=3600,
+        forced=False,
+    )
+    material_reason = shard_manager._hot_retention_noop_backoff_reason(
+        shard_state=state,
+        trigger_reasons=["db_size_gb>=4", "rows_since_last_run>=120000"],
+        now_epoch=1200.0,
+        noop_min_interval_seconds=3600,
+        forced=False,
+    )
+
+    assert reason == "previous_noop_backoff:200s<3600s"
+    assert material_reason == ""
+
+
+def test_shard_hot_state_treats_existing_success_as_backoff_eligible() -> None:
+    maintenance_state = {
+        "shard_hot_retention": {
+            "explanations": {
+                "last_run_utc": "2026-09-02T21:43:00+00:00",
+                "last_run_epoch": 1000.0,
+                "rows_since_last_run": 0,
+            }
+        }
+    }
+
+    state = shard_manager._load_shard_hot_state(
+        maintenance_state,
+        shard_name="explanations",
+        db_size_gb=9.0,
+    )
+
+    assert state["last_moved_rows"] == 0
+    assert state["consecutive_noop_runs"] == 0
 
 
 def test_wal_checkpoint_triggers_on_growth_or_rows() -> None:
@@ -2628,31 +3240,54 @@ def test_wal_checkpoint_triggers_on_growth_or_rows() -> None:
     assert "rows_since_last_run>=750000" in reasons
 
 
-def test_build_shards_splits_crypto_paths_from_generic_shards(tmp_path, monkeypatch) -> None:
+def test_build_shards_splits_crypto_paths_from_generic_shards(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(shard_manager, "SHARD_DB_ROOT", tmp_path / "sql_link_shards")
     monkeypatch.setattr(shard_manager, "SHARD_STATE_ROOT", tmp_path / "state")
     monkeypatch.setattr(shard_manager, "HEALTH_ROOT", tmp_path / "health")
     monkeypatch.setattr(shard_manager, "EVENT_ROOT", tmp_path / "events")
 
-    shards = shard_manager._build_shards(["trading", "crypto_trading", "governance", "support_watchdog", "crypto_governance", "data"])
+    shards = shard_manager._build_shards(
+        [
+            "trading",
+            "crypto_trading",
+            "governance",
+            "support_watchdog",
+            "crypto_governance",
+            "data",
+        ]
+    )
     by_name = {str(row["name"]): row for row in shards}
 
     assert "crypto_trading" in by_name
     assert "crypto_governance" in by_name
     assert "shadow_crypto/" in str(by_name["crypto_trading"]["path_contains"])
     assert "shadow_crypto/" in str(by_name["trading"]["path_not_contains"])
-    assert "default_crypto_coinbase" in str(by_name["crypto_governance"]["path_contains"])
-    assert "governance/channels/risk/" in str(by_name["crypto_governance"]["path_not_contains"])
+    assert "default_crypto_coinbase" in str(
+        by_name["crypto_governance"]["path_contains"]
+    )
+    assert "governance/channels/risk/" in str(
+        by_name["crypto_governance"]["path_not_contains"]
+    )
     assert "default_crypto_schwab" in str(by_name["governance"]["path_not_contains"])
     assert "governance/watchdog/" in str(by_name["governance"]["path_not_contains"])
     assert by_name["support_watchdog"]["include_streams"] == "governance_watchdog"
-    assert by_name["crypto_trading"]["include_streams"] == by_name["trading"]["include_streams"]
-    assert by_name["crypto_governance"]["include_streams"] == by_name["governance"]["include_streams"]
+    assert (
+        by_name["crypto_trading"]["include_streams"]
+        == by_name["trading"]["include_streams"]
+    )
+    assert (
+        by_name["crypto_governance"]["include_streams"]
+        == by_name["governance"]["include_streams"]
+    )
     assert by_name["crypto_trading"]["max_files"] == 10
     assert by_name["crypto_governance"]["max_files"] == 12
 
 
-def test_build_shards_ignores_blank_path_filter_overrides(tmp_path, monkeypatch) -> None:
+def test_build_shards_ignores_blank_path_filter_overrides(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(shard_manager, "SHARD_DB_ROOT", tmp_path / "sql_link_shards")
     monkeypatch.setattr(shard_manager, "SHARD_STATE_ROOT", tmp_path / "state")
     monkeypatch.setattr(shard_manager, "HEALTH_ROOT", tmp_path / "health")
@@ -2731,8 +3366,7 @@ def test_merge_shard_into_primary_respects_merge_hot_cutoff(tmp_path) -> None:
     shard_db = tmp_path / "governance.sqlite3"
 
     conn = sqlite3.connect(str(shard_db))
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE jsonl_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_file TEXT NOT NULL,
@@ -2748,8 +3382,7 @@ def test_merge_shard_into_primary_respects_merge_hot_cutoff(tmp_path) -> None:
             log_schema_version INTEGER,
             UNIQUE(source_file, line_no)
         )
-        """
-    )
+        """)
     conn.executemany(
         """
         INSERT INTO jsonl_records (
@@ -2758,8 +3391,32 @@ def test_merge_shard_into_primary_respects_merge_hot_cutoff(tmp_path) -> None:
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            ("a.jsonl", "decision_explanations/a.jsonl", 1, "2026-03-01T00:00:00+00:00", "a", "{}", "", "", "", "", 2),
-            ("b.jsonl", "decision_explanations/b.jsonl", 1, "2026-04-01T00:00:00+00:00", "b", "{}", "", "", "", "", 2),
+            (
+                "a.jsonl",
+                "decision_explanations/a.jsonl",
+                1,
+                "2026-03-01T00:00:00+00:00",
+                "a",
+                "{}",
+                "",
+                "",
+                "",
+                "",
+                2,
+            ),
+            (
+                "b.jsonl",
+                "decision_explanations/b.jsonl",
+                1,
+                "2026-04-01T00:00:00+00:00",
+                "b",
+                "{}",
+                "",
+                "",
+                "",
+                "",
+                2,
+            ),
         ],
     )
     conn.commit()
@@ -2833,6 +3490,7 @@ def test_prune_stale_local_fallback_artifacts_deletes_old_files_only(tmp_path) -
     old_path.touch()
     fresh_path.touch()
     import os
+
     os.utime(old_path, (stale_epoch, stale_epoch))
     os.utime(fresh_path, (fresh_epoch, fresh_epoch))
 
@@ -2849,6 +3507,15 @@ def test_prune_stale_local_fallback_artifacts_deletes_old_files_only(tmp_path) -
 
 
 def test_normalized_shard_config_upgrades_legacy_default() -> None:
-    assert shard_manager._normalized_shard_config("") == shard_manager.CURRENT_DEFAULT_SHARDS
-    assert shard_manager._normalized_shard_config("trading,governance,data") == shard_manager.CURRENT_DEFAULT_SHARDS
-    assert shard_manager._normalized_shard_config("trading,governance,data,custom") == "trading,governance,data,custom"
+    assert (
+        shard_manager._normalized_shard_config("")
+        == shard_manager.CURRENT_DEFAULT_SHARDS
+    )
+    assert (
+        shard_manager._normalized_shard_config("trading,governance,data")
+        == shard_manager.CURRENT_DEFAULT_SHARDS
+    )
+    assert (
+        shard_manager._normalized_shard_config("trading,governance,data,custom")
+        == "trading,governance,data,custom"
+    )

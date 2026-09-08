@@ -22,7 +22,7 @@ def test_power_event_candidates_include_recent_clamshell_sleep(monkeypatch) -> N
         "_recent_pmset_lines",
         lambda limit=watch.PMSET_POWER_LOG_TAIL_LINES: [
             f"{sleep_stamp} Sleep                Entering Sleep state due to 'Clamshell Sleep':TCPKeepAlive=active Using Batt (Charge:100%) 5 secs",
-            f"{open_stamp} Assertions           PID 358(powerd) Created UserIsActive \"com.apple.powermanagement.lidopen\" 00:00:00  id:0x0x9000092e5 [System: PrevIdle PrevDisp PrevSleep DeclUser kCPU kDisp]",
+            f'{open_stamp} Assertions           PID 358(powerd) Created UserIsActive "com.apple.powermanagement.lidopen" 00:00:00  id:0x0x9000092e5 [System: PrevIdle PrevDisp PrevSleep DeclUser kCPU kDisp]',
         ],
     )
     candidates = watch._power_event_candidates(24 * 60 * 60)
@@ -38,8 +38,14 @@ def test_power_event_severity_and_heading() -> None:
 
     assert watch._event_severity(close_key, "") == "critical"
     assert watch._event_severity(open_key, "") == "info"
-    assert watch._notification_heading(close_key, "") == ("Trading Bot Critical", "Laptop Closed")
-    assert watch._notification_heading(open_key, "") == ("Trading Bot Incident", "Laptop Opened")
+    assert watch._notification_heading(close_key, "") == (
+        "Trading Bot Critical",
+        "Laptop Closed",
+    )
+    assert watch._notification_heading(open_key, "") == (
+        "Trading Bot Incident",
+        "Laptop Opened",
+    )
 
 
 def test_recent_pmset_lines_handles_timeout(monkeypatch, tmp_path: Path) -> None:
@@ -59,7 +65,9 @@ def test_recent_pmset_lines_handles_timeout(monkeypatch, tmp_path: Path) -> None
 def test_recent_pmset_lines_uses_short_cache(monkeypatch, tmp_path: Path) -> None:
     calls = []
     monkeypatch.setattr(watch, "_PMSET_POWER_LOG_CACHE", None)
-    monkeypatch.setattr(watch, "DEFAULT_PMSET_CACHE_PATH", tmp_path / "pmset_cache.json")
+    monkeypatch.setattr(
+        watch, "DEFAULT_PMSET_CACHE_PATH", tmp_path / "pmset_cache.json"
+    )
     monkeypatch.setenv(watch.PMSET_POWER_LOG_CACHE_SECONDS_ENV, "90")
     monkeypatch.setenv(watch.PMSET_SKIP_UNDER_PRESSURE_ENV, "0")
     monkeypatch.setattr(watch.time, "monotonic", lambda: 100.0 + len(calls))
@@ -82,7 +90,9 @@ def test_recent_pmset_lines_uses_short_cache(monkeypatch, tmp_path: Path) -> Non
     assert calls[0][0] == ["/usr/bin/pmset", "-g", "log"]
 
 
-def test_recent_pmset_lines_uses_disk_cache_across_runs(monkeypatch, tmp_path: Path) -> None:
+def test_recent_pmset_lines_uses_disk_cache_across_runs(
+    monkeypatch, tmp_path: Path
+) -> None:
     cache_path = tmp_path / "pmset_cache.json"
     cache_path.write_text(
         json.dumps(
@@ -126,7 +136,9 @@ def test_notification_body_adds_action_hint_for_tripwire() -> None:
     assert "Action: keep live halted and inspect the tripwire incidents." in body
 
 
-def test_all_sleeves_down_suppressed_when_launcher_is_recently_starting(monkeypatch, tmp_path: Path) -> None:
+def test_all_sleeves_down_suppressed_when_launcher_is_recently_starting(
+    monkeypatch, tmp_path: Path
+) -> None:
     launcher = tmp_path / "all_sleeves_launcher_latest.json"
     launcher.write_text(
         json.dumps(
@@ -143,14 +155,25 @@ def test_all_sleeves_down_suppressed_when_launcher_is_recently_starting(monkeypa
     monkeypatch.setattr(watch, "ALL_SLEEVES_LAUNCHER_PATH", launcher)
 
     event = watch._all_sleeves_down_event(
-        {"status": [{"name": "all_sleeves", "running": 0, "heartbeat_ok": False, "alt_running": 0}]},
+        {
+            "status": [
+                {
+                    "name": "all_sleeves",
+                    "running": 0,
+                    "heartbeat_ok": False,
+                    "alt_running": 0,
+                }
+            ]
+        },
         900.0,
     )
 
     assert event is None
 
 
-def test_all_sleeves_down_suppressed_during_watchdog_restart_handoff(monkeypatch, tmp_path: Path) -> None:
+def test_all_sleeves_down_suppressed_during_watchdog_restart_handoff(
+    monkeypatch, tmp_path: Path
+) -> None:
     launcher = tmp_path / "all_sleeves_launcher_latest.json"
     launcher.write_text(
         json.dumps(
@@ -186,7 +209,9 @@ def test_all_sleeves_down_suppressed_during_watchdog_restart_handoff(monkeypatch
     assert event is None
 
 
-def test_all_sleeves_down_suppressed_when_fanout_hold_intentionally_blocks_restart(monkeypatch, tmp_path: Path) -> None:
+def test_all_sleeves_down_suppressed_when_fanout_hold_intentionally_blocks_restart(
+    monkeypatch, tmp_path: Path
+) -> None:
     launcher = tmp_path / "all_sleeves_launcher_latest.json"
     launcher.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(watch, "ALL_SLEEVES_LAUNCHER_PATH", launcher)
@@ -211,7 +236,9 @@ def test_all_sleeves_down_suppressed_when_fanout_hold_intentionally_blocks_resta
     assert event is None
 
 
-def test_all_sleeves_down_suppressed_when_creative_pause_is_intentional(monkeypatch, tmp_path: Path) -> None:
+def test_all_sleeves_down_suppressed_when_creative_pause_is_intentional(
+    monkeypatch, tmp_path: Path
+) -> None:
     launcher = tmp_path / "all_sleeves_launcher_latest.json"
     launcher.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(watch, "ALL_SLEEVES_LAUNCHER_PATH", launcher)
@@ -253,7 +280,9 @@ def test_all_sleeves_down_suppressed_when_creative_pause_is_intentional(monkeypa
     assert event is None
 
 
-def test_all_sleeves_restart_storm_suppressed_while_launcher_is_recovering(monkeypatch, tmp_path: Path) -> None:
+def test_all_sleeves_restart_storm_suppressed_while_launcher_is_recovering(
+    monkeypatch, tmp_path: Path
+) -> None:
     launcher = tmp_path / "all_sleeves_launcher_latest.json"
     launcher.write_text(
         json.dumps(
@@ -269,7 +298,9 @@ def test_all_sleeves_restart_storm_suppressed_while_launcher_is_recovering(monke
     )
     monkeypatch.setattr(watch, "ALL_SLEEVES_LAUNCHER_PATH", launcher)
 
-    event = watch._restart_storm_event({"restart_storms": [{"name": "all_sleeves"}]}, 900.0)
+    event = watch._restart_storm_event(
+        {"restart_storms": [{"name": "all_sleeves"}]}, 900.0
+    )
 
     assert event is None
 
@@ -291,10 +322,14 @@ def test_notification_group_key_compacts_critical_alert_variants() -> None:
     key_a = "critical_alert:warn:latest_default"
     key_b = "critical_alert:warn:latest_other"
 
-    assert watch._notification_group_key(key_a, message) == watch._notification_group_key(key_b, message)
+    assert watch._notification_group_key(
+        key_a, message
+    ) == watch._notification_group_key(key_b, message)
 
 
-def test_global_halt_clear_event_surfaces_recent_auto_clear(monkeypatch, tmp_path: Path) -> None:
+def test_global_halt_clear_event_surfaces_recent_auto_clear(
+    monkeypatch, tmp_path: Path
+) -> None:
     halt_recovery = tmp_path / "shadow_watchdog_halt_recovery_latest.json"
     halt_recovery.write_text(
         json.dumps(
@@ -316,7 +351,10 @@ def test_global_halt_clear_event_surfaces_recent_auto_clear(monkeypatch, tmp_pat
     assert key == "global_halt_cleared"
     assert "cleared automatically" in message
     assert watch._event_severity(key, message) == "info"
-    assert watch._notification_heading(key, message) == ("Trading Bot Incident", "Global Halt Cleared")
+    assert watch._notification_heading(key, message) == (
+        "Trading Bot Incident",
+        "Global Halt Cleared",
+    )
 
 
 def test_incident_auto_halt_clear_event_is_informational() -> None:
@@ -331,7 +369,10 @@ def test_incident_auto_halt_clear_event_is_informational() -> None:
         900.0,
     )
 
-    assert event == ("incident_auto_halt_cleared", "Incident auto-halt cleared itself\nClear streak: 3")
+    assert event == (
+        "incident_auto_halt_cleared",
+        "Incident auto-halt cleared itself\nClear streak: 3",
+    )
     assert watch._event_severity(event[0], event[1]) == "info"
 
 
@@ -339,19 +380,154 @@ def test_halt_clear_events_share_imessage_allowlist_family() -> None:
     allowlist = watch._parse_imessage_event_allowlist("global_halt,incident_auto_halt")
 
     assert watch._imessage_event_allowed("global_halt_cleared", allowlist) is True
-    assert watch._imessage_event_allowed("incident_auto_halt_cleared", allowlist) is True
+    assert (
+        watch._imessage_event_allowed("incident_auto_halt_cleared", allowlist) is True
+    )
 
 
 def test_notification_allowlist_honors_reason_aliases() -> None:
-    allowlist = watch._parse_event_allowlist("tripwire,storage_critical,health_gate_critical")
+    allowlist = watch._parse_event_allowlist(
+        "tripwire,storage_critical,health_gate_critical,auth_expired"
+    )
 
     assert watch._notification_event_allowed("tripwire:all_sleeves", allowlist) is True
     assert watch._notification_event_allowed("storage_mount_missing", allowlist) is True
-    assert watch._notification_event_allowed("critical_alert:critical:critical_latest_default_crypto_coinbase", allowlist) is True
-    assert watch._notification_event_allowed("creative_mode:creative_mode_active:music", allowlist) is False
+    assert (
+        watch._notification_event_allowed(
+            "critical_alert:critical:critical_latest_default_crypto_coinbase", allowlist
+        )
+        is True
+    )
+    assert (
+        watch._notification_event_allowed(
+            "auth_lease:critical:interactive_refresh_required", allowlist
+        )
+        is True
+    )
+    assert (
+        watch._notification_event_allowed(
+            "creative_mode:creative_mode_active:music", allowlist
+        )
+        is False
+    )
 
 
-def test_critical_alert_events_suppress_training_done(monkeypatch, tmp_path: Path) -> None:
+def test_auth_lease_event_surfaces_interactive_schwab_refresh() -> None:
+    stamp = datetime.now(timezone.utc).isoformat()
+    event = watch._auth_lease_event(
+        {
+            "timestamp_utc": stamp,
+            "overall_status": "blocked",
+            "lease_state": "critical",
+            "broker_state": {
+                "auth_reason": "OAuthError: invalid_grant: Refresh token is invalid, expired or revoked",
+            },
+        },
+        {
+            "timestamp_utc": stamp,
+            "overall_status": "blocked",
+            "token": {"ready": False},
+            "findings": ["token_not_ready:token_expired"],
+            "operator_followups": [
+                "./scripts/ops/opsctl.sh token-refresh-interactive --force --json"
+            ],
+        },
+        900.0,
+    )
+
+    assert event is not None
+    key, message = event
+    assert key == "auth_lease:critical:interactive_refresh_required"
+    assert "Schwab sign-in is required" in message
+    assert "Paper execution and broker reconciliation are paused" in message
+    assert watch._event_severity(key, message) == "critical"
+    assert watch._notification_heading(key, message) == (
+        "Trading Bot Critical",
+        "Schwab Authorization",
+    )
+    assert "token-refresh-interactive" in watch._notification_body(key, message)
+
+
+def test_auth_lease_event_surfaces_warning_without_claiming_paper_is_paused() -> None:
+    stamp = datetime.now(timezone.utc).isoformat()
+    event = watch._auth_lease_event(
+        {
+            "timestamp_utc": stamp,
+            "overall_status": "degraded",
+            "lease_state": "warning",
+        },
+        {"timestamp_utc": stamp, "overall_status": "ready", "token": {"ready": True}},
+        900.0,
+    )
+
+    assert event == (
+        "auth_lease:warn:lease_warning",
+        "Schwab authorization is nearing its critical lease floor.\nPaper collection remains active.",
+    )
+    assert watch._event_severity(event[0], event[1]) == "warn"
+    assert watch._notification_heading(event[0], event[1]) == (
+        "Trading Bot Warning",
+        "Schwab Authorization",
+    )
+
+
+def test_auth_lease_event_clears_when_current_contract_is_ready() -> None:
+    stamp = datetime.now(timezone.utc).isoformat()
+
+    assert (
+        watch._auth_lease_event(
+            {
+                "timestamp_utc": stamp,
+                "overall_status": "ready",
+                "lease_state": "healthy",
+            },
+            {
+                "timestamp_utc": stamp,
+                "overall_status": "ready",
+                "token": {"ready": True},
+            },
+        900.0,
+        )
+        is None
+    )
+
+
+def test_auth_lease_event_ignores_stale_blocked_supervisor_when_lease_is_current() -> (
+    None
+):
+    now = datetime.now(timezone.utc)
+
+    assert (
+        watch._auth_lease_event(
+            {
+                "timestamp_utc": now.isoformat(),
+                "overall_status": "ready",
+                "lease_state": "healthy",
+            },
+        {
+            "timestamp_utc": (now - timedelta(hours=1)).isoformat(),
+            "overall_status": "blocked",
+            "token": {"ready": False},
+                "operator_followups": [
+                    "./scripts/ops/opsctl.sh token-refresh-interactive --force --json"
+                ],
+        },
+        900.0,
+        )
+        is None
+    )
+
+
+def test_auth_notification_repeat_floor_defaults_to_thirty_minutes(monkeypatch) -> None:
+    monkeypatch.delenv(watch.AUTH_MIN_REPEAT_SECONDS_ENV, raising=False)
+
+    assert watch._event_repeat_seconds("auth_lease:critical:blocked", 300.0) == 1800.0
+    assert watch._event_repeat_seconds("tripwire:all_sleeves", 300.0) == 300.0
+
+
+def test_critical_alert_events_suppress_training_done(
+    monkeypatch, tmp_path: Path
+) -> None:
     alerts = tmp_path / "alerts"
     alerts.mkdir()
     (alerts / "critical_latest_training.json").write_text(
@@ -387,7 +563,9 @@ def test_critical_alert_events_suppress_training_done(monkeypatch, tmp_path: Pat
     assert "Lane Kill Switch" in events[0][1]
 
 
-def test_critical_alert_events_suppress_expired_lane_cooldown(monkeypatch, tmp_path: Path) -> None:
+def test_critical_alert_events_suppress_expired_lane_cooldown(
+    monkeypatch, tmp_path: Path
+) -> None:
     alerts = tmp_path / "alerts"
     alerts.mkdir()
     now = datetime.now(timezone.utc)
@@ -410,7 +588,9 @@ def test_critical_alert_events_suppress_expired_lane_cooldown(monkeypatch, tmp_p
     assert watch._critical_alert_events(900.0) == []
 
 
-def test_critical_alert_events_keep_active_lane_cooldown(monkeypatch, tmp_path: Path) -> None:
+def test_critical_alert_events_keep_active_lane_cooldown(
+    monkeypatch, tmp_path: Path
+) -> None:
     alerts = tmp_path / "alerts"
     alerts.mkdir()
     now = datetime.now(timezone.utc)
@@ -440,13 +620,25 @@ def test_critical_alert_events_keep_active_lane_cooldown(monkeypatch, tmp_path: 
     assert "Lane Kill Switch" in events[0][1]
 
 
-def test_notify_attempts_imessage_when_enabled_and_severity_matches(monkeypatch) -> None:
+def test_notify_attempts_imessage_when_enabled_and_severity_matches(
+    monkeypatch,
+) -> None:
     calls = []
-    monkeypatch.setattr(watch, "_notify_mac", lambda *args, **kwargs: {"channel": "mac", "returncode": 0})
+    monkeypatch.setattr(
+        watch,
+        "_notify_mac",
+        lambda *args, **kwargs: {"channel": "mac", "returncode": 0},
+    )
 
     def fake_imessage(title: str, body: str, recipient: str) -> dict:
         calls.append((title, body, recipient))
-        return {"channel": "imessage", "recipient": recipient, "returncode": 0, "stdout": "", "stderr": ""}
+        return {
+            "channel": "imessage",
+            "recipient": recipient,
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        }
 
     monkeypatch.setattr(watch, "_notify_imessage", fake_imessage)
 
@@ -482,13 +674,18 @@ def test_swap_pressure_event_surfaces_restart_advisory() -> None:
     assert key == "swap_pressure:swap_pressure_restart_advisory:pause_research"
     assert "restart PyCharm" in message
     assert watch._event_severity(key, message) == "warn"
-    assert watch._notification_heading(key, message) == ("Trading Bot Warning", "Swap Pressure")
+    assert watch._notification_heading(key, message) == (
+        "Trading Bot Warning",
+        "Swap Pressure",
+    )
 
 
 def test_storage_event_ignores_stale_unavailable_mount() -> None:
     event = watch._storage_event(
         {
-            "timestamp_utc": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
+            "timestamp_utc": (
+                datetime.now(timezone.utc) - timedelta(hours=2)
+            ).isoformat(),
             "external_available": False,
             "mount_root": "/Volumes/BOT_LOGS",
         },
@@ -496,6 +693,126 @@ def test_storage_event_ignores_stale_unavailable_mount() -> None:
     )
 
     assert event is None
+
+
+def test_storage_event_ignores_intentional_local_hot_storage_policy() -> None:
+    event = watch._storage_event(
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "external_available": False,
+            "external_unavailable_reason": "cold_archive_only_local_hot_storage_policy",
+            "external_required_for_hot_path": False,
+            "probe_skipped_external_io": True,
+            "mount_root": "/Volumes/BOT_LOGS",
+        },
+        900.0,
+    )
+
+    assert event is None
+
+
+def test_storage_event_ignores_flagged_local_hot_storage_policy_without_reason() -> (
+    None
+):
+    event = watch._storage_event(
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "external_available": False,
+            "external_required_for_hot_path": False,
+            "probe_skipped_external_io": True,
+            "mount_root": "/Volumes/BOT_LOGS",
+        },
+        900.0,
+    )
+
+    assert event is None
+
+
+def test_storage_event_ignores_contradictory_missing_mount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(watch, "_mount_root_present", lambda _root: True)
+
+    event = watch._storage_event(
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "external_available": False,
+            "external_unavailable_reason": "mount_missing",
+            "external_required_for_hot_path": True,
+            "mount_root": "/Volumes/BOT_LOGS",
+        },
+        900.0,
+    )
+
+    assert event is None
+
+
+def test_storage_event_requires_confirmed_missing_mount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(watch, "_mount_root_present", lambda _root: False)
+
+    event = watch._storage_event(
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "external_available": False,
+            "external_unavailable_reason": "mount_missing",
+            "external_required_for_hot_path": True,
+            "mount_root": "/Volumes/BOT_LOGS",
+        },
+        900.0,
+    )
+
+    assert event == (
+        "storage_mount_missing",
+        "Storage route unavailable: /Volumes/BOT_LOGS",
+    )
+
+
+def test_storage_event_confirmation_requires_consecutive_observations() -> None:
+    pending: dict[str, dict[str, object]] = {}
+    now = datetime.now(timezone.utc)
+    kwargs = {
+        "group_key": "storage_mount_missing",
+        "body": "Storage route unavailable",
+        "required_observations": 3,
+        "max_gap_seconds": 30.0,
+    }
+
+    assert watch._storage_event_confirmed(pending, now=now, **kwargs) is False
+    assert (
+        watch._storage_event_confirmed(
+            pending, now=now + timedelta(seconds=8), **kwargs
+        )
+        is False
+    )
+    assert (
+        watch._storage_event_confirmed(
+            pending, now=now + timedelta(seconds=16), **kwargs
+        )
+        is True
+    )
+    assert pending["storage_mount_missing"]["count"] == 3
+
+
+def test_storage_event_confirmation_resets_after_observation_gap() -> None:
+    pending: dict[str, dict[str, object]] = {}
+    now = datetime.now(timezone.utc)
+    kwargs = {
+        "group_key": "storage_mount_missing",
+        "body": "Storage route unavailable",
+        "required_observations": 3,
+        "max_gap_seconds": 30.0,
+    }
+
+    assert watch._storage_event_confirmed(pending, now=now, **kwargs) is False
+    assert (
+        watch._storage_event_confirmed(
+            pending, now=now + timedelta(seconds=60), **kwargs
+        )
+        is False
+    )
+    assert pending["storage_mount_missing"]["count"] == 1
 
 
 def test_storage_event_surfaces_recent_unavailable_mount() -> None:
@@ -509,4 +826,7 @@ def test_storage_event_surfaces_recent_unavailable_mount() -> None:
         900.0,
     )
 
-    assert event == ("storage_mount_missing", "Storage route unavailable: /Volumes/BOT_LOGS (external low space)")
+    assert event == (
+        "storage_mount_missing",
+        "Storage route unavailable: /Volumes/BOT_LOGS (external low space)",
+    )

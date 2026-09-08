@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -10,7 +11,10 @@ from typing import Any, Dict, Optional
 
 from core.runtime_layers import CircuitBreaker
 from core.execution_simulator import simulate_execution
-
+from core.live_canary_allowlist import evaluate_live_canary_allowlist
+from core.live_canary_preflight import evaluate_live_canary_preflight
+from core.live_execution_envelope import file_sha256, verify_live_execution_envelope
+from core.system_role_contracts import evaluate_component_action
 
 TRADE_ACTIONS = {
     "BUY",
@@ -53,27 +57,131 @@ class LiveRiskConfig:
     max_cancel_probability: float = 0.85
     max_stale_quote_probability: float = 0.80
     allow_new_short_positions: bool = False
+    cumulative_loss_cap: float = 0.0
+    risk_state_path: str = ""
+    risk_state_candidate_id: str = ""
 
     @classmethod
-    def from_env(cls) -> "LiveRiskConfig":
+    def from_env(cls, project_root: str | Path | None = None) -> "LiveRiskConfig":
+        policy: dict[str, Any] = {}
+        plan_limits: dict[str, Any] = {}
+        if project_root is not None:
+            policy, _ = _load_production_firewall_policy(project_root)
+            canary_contract = evaluate_live_canary_allowlist(project_root)
+            raw_limits = canary_contract.get("hard_limits")
+            plan_limits = raw_limits if isinstance(raw_limits, dict) else {}
+
+        def bounded_float(env_name: str, fallback: float, *caps: Any) -> float:
+            positive_caps = [
+                float(value) for value in caps if float(value or 0.0) > 0.0
+            ]
+            default_value = min(positive_caps) if positive_caps else float(fallback)
+            requested = max(float(os.getenv(env_name, str(default_value))), 0.0)
+            if positive_caps:
+                return min(
+                    requested if requested > 0.0 else default_value, *positive_caps
+                )
+            return requested
+
+        def bounded_int(env_name: str, fallback: int, *caps: Any) -> int:
+            positive_caps = [
+                int(float(value)) for value in caps if int(float(value or 0)) > 0
+            ]
+            default_value = min(positive_caps) if positive_caps else int(fallback)
+            requested = max(int(os.getenv(env_name, str(default_value))), 1)
+            return min(requested, *positive_caps) if positive_caps else requested
+
         return cls(
-            max_position_qty_per_symbol=max(float(os.getenv("LIVE_MAX_POSITION_QTY_PER_SYMBOL", "250")), 0.0),
-            max_order_notional=max(float(os.getenv("LIVE_MAX_ORDER_NOTIONAL", "25000")), 0.0),
-            max_open_orders_total=max(int(os.getenv("LIVE_MAX_OPEN_ORDERS_TOTAL", "30")), 1),
-            max_open_orders_per_symbol=max(int(os.getenv("LIVE_MAX_OPEN_ORDERS_PER_SYMBOL", "3")), 1),
-            daily_loss_cap=max(float(os.getenv("LIVE_MAX_DAILY_LOSS", "1000")), 0.0),
+            max_position_qty_per_symbol=bounded_float(
+                "LIVE_MAX_POSITION_QTY_PER_SYMBOL",
+                250.0,
+                policy.get("max_order_quantity"),
+                plan_limits.get("max_order_quantity"),
+            ),
+            max_order_notional=bounded_float(
+                "LIVE_MAX_ORDER_NOTIONAL",
+                25000.0,
+                policy.get("max_single_order_notional"),
+                plan_limits.get("max_order_notional_usd"),
+            ),
+            max_open_orders_total=bounded_int(
+                "LIVE_MAX_OPEN_ORDERS_TOTAL",
+                30,
+                plan_limits.get("max_concurrent_positions"),
+            ),
+            max_open_orders_per_symbol=bounded_int(
+                "LIVE_MAX_OPEN_ORDERS_PER_SYMBOL",
+                3,
+                plan_limits.get("max_concurrent_positions"),
+            ),
+            daily_loss_cap=bounded_float(
+                "LIVE_MAX_DAILY_LOSS",
+                1000.0,
+                policy.get("max_daily_loss"),
+                plan_limits.get("max_daily_loss_usd"),
+            ),
             api_fail_limit=max(int(os.getenv("LIVE_API_FAIL_LIMIT", "3")), 1),
-            api_cooldown_seconds=max(int(os.getenv("LIVE_API_COOLDOWN_SECONDS", "120")), 1),
-            trade_min_interval_seconds=max(float(os.getenv("LIVE_TRADE_MIN_INTERVAL_SECONDS", "8")), 0.0),
-            trade_min_interval_global_seconds=max(float(os.getenv("LIVE_TRADE_GLOBAL_MIN_INTERVAL_SECONDS", "1.5")), 0.0),
+            api_cooldown_seconds=max(
+                int(os.getenv("LIVE_API_COOLDOWN_SECONDS", "120")), 1
+            ),
+            trade_min_interval_seconds=max(
+                float(os.getenv("LIVE_TRADE_MIN_INTERVAL_SECONDS", "8")), 0.0
+            ),
+            trade_min_interval_global_seconds=max(
+                float(os.getenv("LIVE_TRADE_GLOBAL_MIN_INTERVAL_SECONDS", "1.5")), 0.0
+            ),
             max_slippage_bps=max(float(os.getenv("LIVE_MAX_SLIPPAGE_BPS", "35")), 0.0),
-            max_fill_deviation_bps=max(float(os.getenv("LIVE_MAX_FILL_DEVIATION_BPS", "45")), 0.0),
-            min_execution_realism_score=max(float(os.getenv("LIVE_MIN_EXECUTION_REALISM_SCORE", "25")), 0.0),
-            min_effective_fill_ratio=max(float(os.getenv("LIVE_MIN_EFFECTIVE_FILL_RATIO", "0.50")), 0.0),
-            max_reject_probability=max(float(os.getenv("LIVE_MAX_REJECT_PROBABILITY", "0.80")), 0.0),
-            max_cancel_probability=max(float(os.getenv("LIVE_MAX_CANCEL_PROBABILITY", "0.85")), 0.0),
-            max_stale_quote_probability=max(float(os.getenv("LIVE_MAX_STALE_QUOTE_PROBABILITY", "0.80")), 0.0),
-            allow_new_short_positions=_truthy(os.getenv("LIVE_ALLOW_NEW_SHORT_POSITIONS", "0"), False),
+            max_fill_deviation_bps=max(
+                float(os.getenv("LIVE_MAX_FILL_DEVIATION_BPS", "45")), 0.0
+            ),
+            min_execution_realism_score=max(
+                float(os.getenv("LIVE_MIN_EXECUTION_REALISM_SCORE", "25")), 0.0
+            ),
+            min_effective_fill_ratio=max(
+                float(os.getenv("LIVE_MIN_EFFECTIVE_FILL_RATIO", "0.50")), 0.0
+            ),
+            max_reject_probability=max(
+                float(os.getenv("LIVE_MAX_REJECT_PROBABILITY", "0.80")), 0.0
+            ),
+            max_cancel_probability=max(
+                float(os.getenv("LIVE_MAX_CANCEL_PROBABILITY", "0.85")), 0.0
+            ),
+            max_stale_quote_probability=max(
+                float(os.getenv("LIVE_MAX_STALE_QUOTE_PROBABILITY", "0.80")), 0.0
+            ),
+            allow_new_short_positions=bool(
+                _truthy(os.getenv("LIVE_ALLOW_NEW_SHORT_POSITIONS", "0"), False)
+                and (
+                    policy.get("allow_new_short_positions", False)
+                    if project_root is not None
+                    else True
+                )
+            ),
+            cumulative_loss_cap=(
+                bounded_float(
+                    "LIVE_MAX_CUMULATIVE_LOSS",
+                    0.0,
+                    policy.get("max_cumulative_loss"),
+                    plan_limits.get("max_cumulative_loss_usd"),
+                )
+                if project_root is not None
+                else 0.0
+            ),
+            risk_state_path=(
+                str(
+                    Path(project_root)
+                    / "governance"
+                    / "runtime"
+                    / "live_risk_budget_state.json"
+                )
+                if project_root is not None
+                else ""
+            ),
+            risk_state_candidate_id=(
+                str(canary_contract.get("current_candidate_id") or "")
+                if project_root is not None
+                else ""
+            ),
         )
 
 
@@ -99,7 +207,9 @@ def _string_list(value: Any) -> list[str]:
     return []
 
 
-def _load_production_firewall_policy(project_root: str | Path) -> tuple[dict[str, Any], Path]:
+def _load_production_firewall_policy(
+    project_root: str | Path,
+) -> tuple[dict[str, Any], Path]:
     config_path = Path(project_root) / "config" / "production_readiness_control_v1.json"
     try:
         payload = json.loads(config_path.read_text(encoding="utf-8"))
@@ -111,6 +221,20 @@ def _load_production_firewall_policy(project_root: str | Path) -> tuple[dict[str
     return (policy if isinstance(policy, dict) else {}), config_path
 
 
+def live_order_replace_allowed(project_root: str | Path) -> bool:
+    policy, _ = _load_production_firewall_policy(project_root)
+    return bool(policy.get("allow_live_order_replace", False))
+
+
+def _hash_bound_account_reference(value: object) -> bool:
+    reference = str(value or "").strip()
+    if len(reference) < 16 or reference.startswith("****") or "*" in reference:
+        return False
+    if reference.isdigit():
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9._~+-]+", reference))
+
+
 def production_order_firewall_check(
     *,
     project_root: str | Path,
@@ -120,10 +244,13 @@ def production_order_firewall_check(
     order_spec: Dict[str, Any],
     reference_price: float = 0.0,
     risk_reducing_exit: bool = False,
+    intent_evidence: Optional[Dict[str, Any]] = None,
+    live_execution_envelope: Optional[Dict[str, Any]] = None,
     env: Optional[Dict[str, str]] = None,
 ) -> GuardDecision:
     env_map = env if isinstance(env, dict) else dict(os.environ)
     policy, config_path = _load_production_firewall_policy(project_root)
+    canary_contract = evaluate_live_canary_allowlist(project_root, env=env_map)
     allow_env = str(policy.get("allow_order_execution_env") or "ALLOW_ORDER_EXECUTION")
     market_data_env = str(policy.get("market_data_only_env") or "MARKET_DATA_ONLY")
     market_data_default = bool(policy.get("market_data_only_default", True))
@@ -131,6 +258,19 @@ def production_order_firewall_check(
     execution_armed = _truthy(env_map.get(allow_env), False)
     market_data_only = _truthy(env_map.get(market_data_env), market_data_default)
     blockers: list[str] = []
+
+    role_contract_decision: dict[str, Any] = {}
+    if bool(policy.get("require_system_role_contract_for_live_submit", False)):
+        role_contract_decision = evaluate_component_action(
+            project_root,
+            component_id=str(
+                policy.get("live_execution_component_id") or "live_execution_gateway"
+            ),
+            action="live_submit",
+            state_domain="live_order_submission",
+        )
+        if not bool(role_contract_decision.get("ok", False)):
+            blockers.append("system_role_contract_live_submit_denied")
     if not execution_armed:
         blockers.append("live_execution_not_armed")
     if market_data_only:
@@ -142,7 +282,10 @@ def production_order_firewall_check(
         policy.get("production_excellence_artifact")
         or "governance/health/production_excellence_control_latest.json",
     )
-    if bool(policy.get("require_production_excellence_for_live_submit", True)) and not risk_reducing_exit:
+    if (
+        bool(policy.get("require_production_excellence_for_live_submit", True))
+        and not risk_reducing_exit
+    ):
         try:
             loaded = json.loads(excellence_path.read_text(encoding="utf-8"))
             production_excellence = loaded if isinstance(loaded, dict) else {}
@@ -160,14 +303,18 @@ def production_order_firewall_check(
         policy.get("live_transition_integrity_artifact")
         or "governance/health/live_transition_integrity_control_latest.json",
     )
-    if bool(policy.get("require_live_transition_integrity_for_live_submit", False)) and not risk_reducing_exit:
+    if (
+        bool(policy.get("require_live_transition_integrity_for_live_submit", False))
+        and not risk_reducing_exit
+    ):
         try:
             loaded = json.loads(transition_path.read_text(encoding="utf-8"))
             transition_integrity = loaded if isinstance(loaded, dict) else {}
         except Exception:
             transition_integrity = {}
         if not bool(
-            str(transition_integrity.get("control_grade") or "").strip().upper() in {"A+", "A++"}
+            str(transition_integrity.get("control_grade") or "").strip().upper()
+            in {"A+", "A++"}
             and transition_integrity.get("ready_for_live_transition", False)
         ):
             blockers.append("live_transition_integrity_not_ready")
@@ -193,60 +340,290 @@ def production_order_firewall_check(
         blockers.append("required_safety_flag_missing")
 
     qty = max(float(quantity or 0.0), 0.0)
-    max_qty = float(policy.get("max_order_quantity") or 0.0)
+    plan_limits = (
+        canary_contract.get("hard_limits")
+        if isinstance(canary_contract.get("hard_limits"), dict)
+        else {}
+    )
+    policy_max_qty = float(policy.get("max_order_quantity") or 0.0)
+    plan_max_qty = float(plan_limits.get("max_order_quantity") or 0.0)
+    quantity_caps = [value for value in (policy_max_qty, plan_max_qty) if value > 0.0]
+    max_qty = min(quantity_caps) if quantity_caps else 0.0
     if not risk_reducing_exit and max_qty > 0.0 and qty > max_qty:
         blockers.append("quantity_exceeds_cap")
+    if (
+        not risk_reducing_exit
+        and bool(policy.get("require_whole_share_quantity", False))
+        and abs(qty - round(qty)) > 1e-9
+    ):
+        blockers.append("fractional_quantity_not_allowed")
 
     order_price = 0.0
     try:
         order_price = float((order_spec or {}).get("price") or 0.0)
     except Exception:
         order_price = 0.0
+    order_type = str((order_spec or {}).get("orderType") or "").strip().upper()
+    order_session = str((order_spec or {}).get("session") or "").strip().upper()
+    order_duration = str((order_spec or {}).get("duration") or "").strip().upper()
+    allowed_order_types = {
+        str(item).upper() for item in _string_list(policy.get("allowed_order_types"))
+    }
+    allowed_sessions = {
+        str(item).upper() for item in _string_list(policy.get("allowed_sessions"))
+    }
+    allowed_durations = {
+        str(item).upper() for item in _string_list(policy.get("allowed_durations"))
+    }
+    if (
+        not risk_reducing_exit
+        and allowed_order_types
+        and order_type not in allowed_order_types
+    ):
+        blockers.append("order_type_not_allowed")
+    if (
+        not risk_reducing_exit
+        and allowed_sessions
+        and order_session not in allowed_sessions
+    ):
+        blockers.append("order_session_not_allowed")
+    if (
+        not risk_reducing_exit
+        and allowed_durations
+        and order_duration not in allowed_durations
+    ):
+        blockers.append("order_duration_not_allowed")
+    tick_size = max(float(policy.get("equity_tick_size") or 0.0), 0.0)
+    if (
+        not risk_reducing_exit
+        and order_type == "LIMIT"
+        and order_price > 0.0
+        and tick_size > 0.0
+        and abs((order_price / tick_size) - round(order_price / tick_size)) > 1e-7
+    ):
+        blockers.append("limit_price_tick_invalid")
     if order_price <= 0.0:
         try:
             order_price = max(float(reference_price or 0.0), 0.0)
         except Exception:
             order_price = 0.0
-    max_notional = float(policy.get("max_single_order_notional") or 0.0)
+    policy_max_notional = float(policy.get("max_single_order_notional") or 0.0)
+    plan_max_notional = float(plan_limits.get("max_order_notional_usd") or 0.0)
+    notional_caps = [
+        value for value in (policy_max_notional, plan_max_notional) if value > 0.0
+    ]
+    max_notional = min(notional_caps) if notional_caps else 0.0
     legs = (order_spec or {}).get("orderLegCollection")
-    asset_types = [
+    asset_types = (
+        [
             str(((leg or {}).get("instrument") or {}).get("assetType") or "").upper()
             for leg in legs
             if isinstance(leg, dict)
-        ] if isinstance(legs, list) else []
-    instructions = [
-        str((leg or {}).get("instruction") or "").upper()
-        for leg in legs
-        if isinstance(leg, dict)
-    ] if isinstance(legs, list) else []
-    leg_symbols = [
-        str(((leg or {}).get("instrument") or {}).get("symbol") or "").strip().upper()
-        for leg in legs
-        if isinstance(leg, dict)
-    ] if isinstance(legs, list) else []
-    allowed_asset_types = {str(item).upper() for item in _string_list(policy.get("allowed_asset_types"))}
-    allowed_instructions = {str(item).upper() for item in _string_list(policy.get("allowed_instructions"))}
-    if allowed_asset_types and (not asset_types or any(item not in allowed_asset_types for item in asset_types)):
+        ]
+        if isinstance(legs, list)
+        else []
+    )
+    instructions = (
+        [
+            str((leg or {}).get("instruction") or "").upper()
+            for leg in legs
+            if isinstance(leg, dict)
+        ]
+        if isinstance(legs, list)
+        else []
+    )
+    leg_symbols = (
+        [
+            str(((leg or {}).get("instrument") or {}).get("symbol") or "")
+            .strip()
+            .upper()
+            for leg in legs
+            if isinstance(leg, dict)
+        ]
+        if isinstance(legs, list)
+        else []
+    )
+    allowed_asset_types = {
+        str(item).upper() for item in _string_list(policy.get("allowed_asset_types"))
+    }
+    allowed_instructions = {
+        str(item).upper() for item in _string_list(policy.get("allowed_instructions"))
+    }
+    if allowed_asset_types and (
+        not asset_types or any(item not in allowed_asset_types for item in asset_types)
+    ):
         blockers.append("asset_type_not_allowed")
     effective_instructions = instructions or [str(action or "").strip().upper()]
-    if not risk_reducing_exit and allowed_instructions and any(item not in allowed_instructions for item in effective_instructions):
+    if (
+        not risk_reducing_exit
+        and allowed_instructions
+        and any(item not in allowed_instructions for item in effective_instructions)
+    ):
         blockers.append("instruction_not_allowed")
 
     symbol_key = str(symbol or "").strip().upper()
     if not leg_symbols or any(item != symbol_key for item in leg_symbols):
         blockers.append("order_symbol_mismatch")
-    allowlist_path = _project_path(project_root, policy.get("canary_allowlist_path") or "")
-    canary_allowlist: list[str] = []
-    if allowlist_path.exists():
+    allowlist_path = Path(str(canary_contract.get("path") or ""))
+    canary_allowlist = [str(item) for item in canary_contract.get("symbols", [])]
+    is_new_entry = str(action or "").strip().upper() in {
+        "BUY",
+        "BUY_TO_OPEN",
+        "SELL_SHORT",
+        "SELL_TO_OPEN",
+    }
+    account_reference_env = str(
+        policy.get("account_reference_env") or "SCHWAB_ACCOUNT_HASH"
+    )
+    account_auto_discover_env = str(
+        policy.get("account_auto_discover_env") or "SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER"
+    )
+    account_reference_present = bool(
+        str(env_map.get(account_reference_env) or "").strip()
+    )
+    account_reference_hash_bound = _hash_bound_account_reference(
+        env_map.get(account_reference_env)
+    )
+    account_auto_discover = _truthy(env_map.get(account_auto_discover_env), True)
+    account_reference_pinned = bool(
+        account_reference_present and not account_auto_discover
+    )
+    if (
+        is_new_entry
+        and not risk_reducing_exit
+        and bool(policy.get("require_pinned_account_reference", True))
+        and not account_reference_pinned
+    ):
+        blockers.append("live_account_reference_not_pinned")
+    if (
+        is_new_entry
+        and not risk_reducing_exit
+        and bool(
+            policy.get(
+                "require_hash_account_reference",
+                policy.get("require_pinned_account_reference", True),
+            )
+        )
+        and not account_reference_hash_bound
+    ):
+        blockers.append("live_account_reference_not_hash_bound")
+
+    canary_preflight: dict[str, Any] = {}
+    if (
+        is_new_entry
+        and not risk_reducing_exit
+        and bool(policy.get("require_live_canary_preflight", False))
+    ):
+        canary_preflight = evaluate_live_canary_preflight(
+            project_root,
+            symbol=symbol_key,
+            action=action,
+            account_reference=str(env_map.get(account_reference_env) or ""),
+            env=env_map,
+        )
+        if not bool(canary_preflight.get("ready", False)):
+            blockers.extend(
+                str(item)
+                for item in canary_preflight.get("blockers", [])
+                if str(item)
+            )
+
+    boundary_quarantine: dict[str, Any] = {}
+    boundary_quarantine_path = _project_path(
+        project_root,
+        policy.get("schwab_boundary_quarantine_artifact")
+        or "governance/health/SCHWAB_BROKER_BOUNDARY_QUARANTINE.json",
+    )
+    if bool(policy.get("require_schwab_boundary_clear", True)):
         try:
-            loaded_allowlist = json.loads(allowlist_path.read_text(encoding="utf-8"))
-            raw_symbols = loaded_allowlist.get("symbols", []) if isinstance(loaded_allowlist, dict) else []
-            canary_allowlist = [str(item).strip().upper() for item in raw_symbols if str(item).strip()]
+            loaded = json.loads(boundary_quarantine_path.read_text(encoding="utf-8"))
+            boundary_quarantine = loaded if isinstance(loaded, dict) else {}
         except Exception:
-            canary_allowlist = []
-    is_new_entry = str(action or "").strip().upper() in {"BUY", "BUY_TO_OPEN", "SELL_SHORT", "SELL_TO_OPEN"}
-    if is_new_entry and not risk_reducing_exit and (not canary_allowlist or symbol_key not in set(canary_allowlist)):
+            boundary_quarantine = {}
+        if bool(boundary_quarantine.get("active", False)):
+            blockers.append("schwab_broker_boundary_quarantine_active")
+    if (
+        is_new_entry
+        and not risk_reducing_exit
+        and not bool(canary_contract.get("ready", False))
+    ):
+        blockers.extend(
+            str(item) for item in canary_contract.get("blockers", []) if str(item)
+        )
+    if (
+        is_new_entry
+        and not risk_reducing_exit
+        and (not canary_allowlist or symbol_key not in set(canary_allowlist))
+    ):
         blockers.append("symbol_not_in_live_canary_allowlist")
+
+    envelope_verification: dict[str, Any] = {}
+    if (
+        bool(policy.get("require_sealed_live_execution_envelope", True))
+        and not risk_reducing_exit
+    ):
+        envelope_verification = verify_live_execution_envelope(
+            live_execution_envelope or {},
+            expected_candidate_id=str(
+                canary_contract.get("current_candidate_id") or ""
+            ),
+            expected_account_reference=str(env_map.get(account_reference_env) or ""),
+            expected_policy_sha256=file_sha256(config_path),
+            max_quote_age_seconds=max(
+                float(policy.get("max_quote_age_seconds") or 15.0), 0.0
+            ),
+            max_account_snapshot_age_seconds=max(
+                float(policy.get("max_account_snapshot_age_seconds") or 30.0), 0.0
+            ),
+            max_spread_bps=max(float(policy.get("max_spread_bps") or 75.0), 0.0),
+            max_future_skew_seconds=max(
+                float(policy.get("max_future_clock_skew_seconds") or 2.0), 0.0
+            ),
+            require_affirmative_risk_decision=bool(
+                policy.get("require_affirmative_risk_decision", False)
+            ),
+            require_quote_provenance=bool(
+                policy.get("require_quote_provenance", False)
+            ),
+            allowed_quote_providers=tuple(
+                _string_list(policy.get("allowed_quote_providers"))
+            ),
+            require_canary_preflight_receipt=bool(
+                policy.get("require_live_canary_preflight", False) and is_new_entry
+            ),
+            expected_account_policy_key=str(
+                canary_preflight.get("account_policy_key") or ""
+            ),
+        )
+        envelope_intent = (
+            live_execution_envelope.get("intent_evidence")
+            if isinstance(live_execution_envelope, dict)
+            and isinstance(live_execution_envelope.get("intent_evidence"), dict)
+            else {}
+        )
+        supplied_intent_hash = (
+            str((intent_evidence or {}).get("intent_sha256") or "").strip().lower()
+        )
+        envelope_intent_hash = (
+            str(envelope_intent.get("intent_sha256") or "").strip().lower()
+        )
+        if supplied_intent_hash != envelope_intent_hash:
+            envelope_verification = {
+                **envelope_verification,
+                "ok": False,
+                "blockers": list(
+                    dict.fromkeys(
+                        list(envelope_verification.get("blockers") or [])
+                        + ["firewall_intent_envelope_mismatch"]
+                    )
+                ),
+            }
+        if not bool(envelope_verification.get("ok", False)):
+            blockers.extend(
+                str(item)
+                for item in envelope_verification.get("blockers", [])
+                if str(item)
+            )
 
     if not risk_reducing_exit and max_notional > 0.0 and order_price > 0.0:
         multiplier = 100.0 if "OPTION" in asset_types else 1.0
@@ -270,6 +647,13 @@ def production_order_firewall_check(
         "active_halt_flags": active_halt_flags,
         "missing_safety_flags": missing_safety_flags,
         "order_price": float(order_price),
+        "order_type": order_type,
+        "order_session": order_session,
+        "order_duration": order_duration,
+        "allowed_order_types": sorted(allowed_order_types),
+        "allowed_sessions": sorted(allowed_sessions),
+        "allowed_durations": sorted(allowed_durations),
+        "equity_tick_size": float(tick_size),
         "estimated_notional": float(notional),
         "asset_types": asset_types,
         "instructions": effective_instructions,
@@ -279,13 +663,37 @@ def production_order_firewall_check(
         "allowed_instructions": sorted(allowed_instructions),
         "canary_allowlist_path": str(allowlist_path),
         "canary_allowlist": canary_allowlist,
+        "canary_allowlist_contract": canary_contract,
+        "account_reference_env": account_reference_env,
+        "account_auto_discover_env": account_auto_discover_env,
+        "account_reference_present": account_reference_present,
+        "account_auto_discover": account_auto_discover,
+        "account_reference_pinned": account_reference_pinned,
+        "account_reference_hash_bound": account_reference_hash_bound,
+        "live_canary_preflight": canary_preflight,
+        "schwab_boundary_quarantine_path": str(boundary_quarantine_path),
+        "schwab_boundary_quarantine_active": bool(
+            boundary_quarantine.get("active", False)
+        ),
+        "effective_max_order_quantity": float(max_qty),
+        "effective_max_order_notional": float(max_notional),
         "production_excellence_path": str(excellence_path),
-        "production_excellence_ready": bool(production_excellence.get("ten_out_of_ten_ready", False)),
+        "production_excellence_ready": bool(
+            production_excellence.get("ten_out_of_ten_ready", False)
+        ),
         "live_transition_integrity_path": str(transition_path),
         "live_transition_control_ready": bool(
-            str(transition_integrity.get("control_grade") or "").strip().upper() in {"A+", "A++"}
+            str(transition_integrity.get("control_grade") or "").strip().upper()
+            in {"A+", "A++"}
         ),
-        "live_transition_runtime_ready": bool(transition_integrity.get("ready_for_live_transition", False)),
+        "live_transition_runtime_ready": bool(
+            transition_integrity.get("ready_for_live_transition", False)
+        ),
+        "system_role_contract_decision": role_contract_decision,
+        "live_execution_envelope_verification": envelope_verification,
+        "sealed_live_execution_envelope_required": bool(
+            policy.get("require_sealed_live_execution_envelope", True)
+        ),
         "config_path": str(config_path),
         "policy": "reject_by_default_until_production_firewall_is_armed_and_clear; verified emergency exits remain risk reducing",
     }
@@ -296,7 +704,9 @@ def production_order_firewall_check(
             reason=blockers[0],
             details={**details, "blockers": blockers},
         )
-    return GuardDecision(ok=True, gate="production_order_firewall", reason="ok", details=details)
+    return GuardDecision(
+        ok=True, gate="production_order_firewall", reason="ok", details=details
+    )
 
 
 class LiveExecutionGuard:
@@ -317,6 +727,10 @@ class LiveExecutionGuard:
 
         self._daily_key = self._utc_day_key(time.time())
         self._realized_pnl_today = 0.0
+        self._realized_pnl_cumulative = 0.0
+        self._risk_state_ready = True
+        self._risk_state_error = ""
+        self._load_risk_state()
 
         self._fill_count = 0
         self._fill_slippage_bps_sum = 0.0
@@ -343,11 +757,78 @@ class LiveExecutionGuard:
             return
         self._daily_key = day_key
         self._realized_pnl_today = 0.0
+        self._persist_risk_state()
 
         self._fill_count = 0
         self._fill_slippage_bps_sum = 0.0
         self._fill_deviation_bps_sum = 0.0
         self._fill_deviation_violations = 0
+
+    def _risk_state_file(self) -> Path | None:
+        raw = str(self.config.risk_state_path or "").strip()
+        return Path(raw) if raw else None
+
+    def _load_risk_state(self) -> None:
+        path = self._risk_state_file()
+        if path is None:
+            return
+        candidate_id = str(self.config.risk_state_candidate_id or "").strip()
+        if not candidate_id:
+            self._risk_state_ready = False
+            self._risk_state_error = "risk_state_candidate_missing"
+            return
+        if not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(payload, dict)
+                or int(payload.get("schema_version", 0) or 0) != 1
+            ):
+                raise ValueError("invalid_schema")
+            persisted_candidate = str(payload.get("candidate_id") or "").strip()
+            if persisted_candidate != candidate_id:
+                return
+            self._realized_pnl_cumulative = float(
+                payload.get("realized_pnl_cumulative", 0.0) or 0.0
+            )
+            if str(payload.get("daily_key") or "") == self._daily_key:
+                self._realized_pnl_today = float(
+                    payload.get("realized_pnl_today", 0.0) or 0.0
+                )
+        except Exception as exc:
+            self._risk_state_ready = False
+            self._risk_state_error = f"risk_state_invalid:{type(exc).__name__}"
+
+    def _persist_risk_state(self) -> None:
+        path = self._risk_state_file()
+        if path is None:
+            return
+        candidate_id = str(self.config.risk_state_candidate_id or "").strip()
+        if not candidate_id:
+            self._risk_state_ready = False
+            self._risk_state_error = "risk_state_candidate_missing"
+            return
+        temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        payload = {
+            "schema_version": 1,
+            "candidate_id": candidate_id,
+            "daily_key": self._daily_key,
+            "realized_pnl_today": float(self._realized_pnl_today),
+            "realized_pnl_cumulative": float(self._realized_pnl_cumulative),
+            "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path.write_text(
+                json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            os.replace(temp_path, path)
+            self._risk_state_ready = True
+            self._risk_state_error = ""
+        except Exception as exc:
+            self._risk_state_ready = False
+            self._risk_state_error = f"risk_state_write_failed:{type(exc).__name__}"
 
     def allow_api_call(self, key: str = "broker_api") -> bool:
         return self._api_breaker.allow(key)
@@ -372,6 +853,8 @@ class LiveExecutionGuard:
         spread_bps: float = 8.0,
         volatility_1m: float = 0.0,
         latency_ms: float = 120.0,
+        bid_price: float = 0.0,
+        ask_price: float = 0.0,
         bid_size: float = 1000.0,
         ask_size: float = 1000.0,
         broker: str = "",
@@ -389,10 +872,20 @@ class LiveExecutionGuard:
     ) -> GuardDecision:
         side = str(action or "").strip().upper()
         if side not in TRADE_ACTIONS:
-            return GuardDecision(ok=True, gate="non_trade_action", reason="non_trade_action", details={})
+            return GuardDecision(
+                ok=True, gate="non_trade_action", reason="non_trade_action", details={}
+            )
 
         now_value = time.time() if now_ts is None else float(now_ts)
         self._roll_day(now_value)
+
+        if not self._risk_state_ready:
+            return GuardDecision(
+                ok=False,
+                gate="persistent_risk_state",
+                reason=self._risk_state_error or "persistent_risk_state_not_ready",
+                details={"risk_state_path": str(self.config.risk_state_path or "")},
+            )
 
         symbol_key = str(symbol or "").strip().upper()
         qty = max(float(quantity or 0.0), 0.0)
@@ -410,7 +903,9 @@ class LiveExecutionGuard:
                 },
             )
 
-        if self.config.daily_loss_cap > 0.0 and self._realized_pnl_today <= -abs(self.config.daily_loss_cap):
+        if self.config.daily_loss_cap > 0.0 and self._realized_pnl_today <= -abs(
+            self.config.daily_loss_cap
+        ):
             return GuardDecision(
                 ok=False,
                 gate="daily_loss_cap",
@@ -421,31 +916,62 @@ class LiveExecutionGuard:
                 },
             )
 
+        if (
+            self.config.cumulative_loss_cap > 0.0
+            and self._realized_pnl_cumulative <= -abs(self.config.cumulative_loss_cap)
+        ):
+            return GuardDecision(
+                ok=False,
+                gate="cumulative_loss_cap",
+                reason="cumulative_loss_cap_reached",
+                details={
+                    "realized_pnl_cumulative": float(self._realized_pnl_cumulative),
+                    "max_cumulative_loss": float(self.config.cumulative_loss_cap),
+                    "risk_state_path": str(self.config.risk_state_path or ""),
+                },
+            )
+
         if self.config.trade_min_interval_global_seconds > 0.0:
             since_global = now_value - self._last_trade_global_ts
-            if self._last_trade_global_ts > 0.0 and since_global < self.config.trade_min_interval_global_seconds:
+            if (
+                self._last_trade_global_ts > 0.0
+                and since_global < self.config.trade_min_interval_global_seconds
+            ):
                 return GuardDecision(
                     ok=False,
                     gate="trade_throttle_global",
                     reason="trade_global_min_interval",
                     details={
-                        "since_last_global_trade_seconds": round(max(since_global, 0.0), 6),
-                        "required_seconds": float(self.config.trade_min_interval_global_seconds),
+                        "since_last_global_trade_seconds": round(
+                            max(since_global, 0.0), 6
+                        ),
+                        "required_seconds": float(
+                            self.config.trade_min_interval_global_seconds
+                        ),
                     },
                 )
 
         if self.config.trade_min_interval_seconds > 0.0:
-            last_symbol_ts = float(self._last_trade_symbol_ts.get(symbol_key, 0.0) or 0.0)
+            last_symbol_ts = float(
+                self._last_trade_symbol_ts.get(symbol_key, 0.0) or 0.0
+            )
             since_symbol = now_value - last_symbol_ts
-            if last_symbol_ts > 0.0 and since_symbol < self.config.trade_min_interval_seconds:
+            if (
+                last_symbol_ts > 0.0
+                and since_symbol < self.config.trade_min_interval_seconds
+            ):
                 return GuardDecision(
                     ok=False,
                     gate="trade_throttle_symbol",
                     reason="trade_symbol_min_interval",
                     details={
                         "symbol": symbol_key,
-                        "since_last_symbol_trade_seconds": round(max(since_symbol, 0.0), 6),
-                        "required_seconds": float(self.config.trade_min_interval_seconds),
+                        "since_last_symbol_trade_seconds": round(
+                            max(since_symbol, 0.0), 6
+                        ),
+                        "required_seconds": float(
+                            self.config.trade_min_interval_seconds
+                        ),
                     },
                 )
 
@@ -470,7 +996,9 @@ class LiveExecutionGuard:
                 details={
                     "symbol": symbol_key,
                     "open_orders_symbol": int(symbol_open_orders),
-                    "max_open_orders_per_symbol": int(self.config.max_open_orders_per_symbol),
+                    "max_open_orders_per_symbol": int(
+                        self.config.max_open_orders_per_symbol
+                    ),
                 },
             )
 
@@ -479,7 +1007,11 @@ class LiveExecutionGuard:
         current_qty = float(position.get("qty", 0.0) or 0.0)
         projected_qty = current_qty + signed_qty
 
-        if enforce_long_only and projected_qty < 0.0 and not self.config.allow_new_short_positions:
+        if (
+            enforce_long_only
+            and projected_qty < 0.0
+            and not self.config.allow_new_short_positions
+        ):
             return GuardDecision(
                 ok=False,
                 gate="short_position_limit",
@@ -503,7 +1035,9 @@ class LiveExecutionGuard:
                     "current_qty": float(current_qty),
                     "signed_qty": float(signed_qty),
                     "projected_qty": float(projected_qty),
-                    "max_position_qty_per_symbol": float(self.config.max_position_qty_per_symbol),
+                    "max_position_qty_per_symbol": float(
+                        self.config.max_position_qty_per_symbol
+                    ),
                 },
             )
 
@@ -555,6 +1089,8 @@ class LiveExecutionGuard:
                 spread_bps=max(float(spread_bps or 0.0), 0.0),
                 volatility_1m=max(float(volatility_1m or 0.0), 0.0),
                 latency_ms=max(float(latency_ms or 0.0), 0.0),
+                bid_price=max(float(bid_price or 0.0), 0.0),
+                ask_price=max(float(ask_price or 0.0), 0.0),
                 bid_size=max(float(bid_size or 0.0), 0.0),
                 ask_size=max(float(ask_size or 0.0), 0.0),
                 order_size=qty,
@@ -572,19 +1108,31 @@ class LiveExecutionGuard:
                 open_interest=max(float(open_interest or 0.0), 0.0),
             )
             reasons: list[str] = []
-            if str(sim.paper_execution_status) == "stale_quote_rejected":
+            if str(sim.paper_execution_status) == "crossed_or_locked_quote_rejected":
+                reasons.append("simulated_crossed_or_locked_quote_rejected")
+            elif str(sim.paper_execution_status) == "stale_quote_rejected":
                 reasons.append("simulated_stale_quote_rejected")
             elif str(sim.paper_execution_status) == "rejected":
                 reasons.append("simulated_order_rejected")
-            if float(sim.paper_execution_score) < float(self.config.min_execution_realism_score):
+            if float(sim.paper_execution_score) < float(
+                self.config.min_execution_realism_score
+            ):
                 reasons.append("execution_realism_score_below_floor")
-            if float(sim.effective_fill_ratio) < float(self.config.min_effective_fill_ratio):
+            if float(sim.effective_fill_ratio) < float(
+                self.config.min_effective_fill_ratio
+            ):
                 reasons.append("effective_fill_ratio_below_floor")
-            if float(sim.reject_probability) > float(self.config.max_reject_probability):
+            if float(sim.reject_probability) > float(
+                self.config.max_reject_probability
+            ):
                 reasons.append("reject_probability_above_cap")
-            if float(sim.cancel_probability) > float(self.config.max_cancel_probability):
+            if float(sim.cancel_probability) > float(
+                self.config.max_cancel_probability
+            ):
                 reasons.append("cancel_probability_above_cap")
-            if float(sim.stale_quote_probability) > float(self.config.max_stale_quote_probability):
+            if float(sim.stale_quote_probability) > float(
+                self.config.max_stale_quote_probability
+            ):
                 reasons.append("stale_quote_probability_above_cap")
             if reasons:
                 return GuardDecision(
@@ -595,26 +1143,53 @@ class LiveExecutionGuard:
                         "symbol": symbol_key,
                         "reasons": reasons,
                         "paper_execution_status": str(sim.paper_execution_status),
-                        "paper_execution_score": round(float(sim.paper_execution_score), 6),
-                        "effective_fill_ratio": round(float(sim.effective_fill_ratio), 6),
+                        "paper_execution_score": round(
+                            float(sim.paper_execution_score), 6
+                        ),
+                        "effective_fill_ratio": round(
+                            float(sim.effective_fill_ratio), 6
+                        ),
                         "reject_probability": round(float(sim.reject_probability), 6),
                         "cancel_probability": round(float(sim.cancel_probability), 6),
-                        "stale_quote_probability": round(float(sim.stale_quote_probability), 6),
+                        "stale_quote_probability": round(
+                            float(sim.stale_quote_probability), 6
+                        ),
                         "expected_fill_price": float(sim.expected_fill_price),
                         "slippage_bps": round(float(sim.slippage_bps), 6),
+                        "touch_price": round(float(sim.touch_price), 8),
+                        "quoted_spread_bps": round(float(sim.quoted_spread_bps), 6),
+                        "beyond_touch_cost_bps": round(
+                            float(sim.beyond_touch_cost_bps), 6
+                        ),
+                        "quote_source_mode": str(sim.quote_source_mode),
+                        "quote_crossed_or_locked": bool(sim.quote_crossed_or_locked),
                         "thresholds": {
-                            "min_execution_realism_score": float(self.config.min_execution_realism_score),
-                            "min_effective_fill_ratio": float(self.config.min_effective_fill_ratio),
-                            "max_reject_probability": float(self.config.max_reject_probability),
-                            "max_cancel_probability": float(self.config.max_cancel_probability),
-                            "max_stale_quote_probability": float(self.config.max_stale_quote_probability),
+                            "min_execution_realism_score": float(
+                                self.config.min_execution_realism_score
+                            ),
+                            "min_effective_fill_ratio": float(
+                                self.config.min_effective_fill_ratio
+                            ),
+                            "max_reject_probability": float(
+                                self.config.max_reject_probability
+                            ),
+                            "max_cancel_probability": float(
+                                self.config.max_cancel_probability
+                            ),
+                            "max_stale_quote_probability": float(
+                                self.config.max_stale_quote_probability
+                            ),
                         },
                     },
                 )
 
-        return GuardDecision(ok=True, gate="ok", reason="ok", details={"symbol": symbol_key})
+        return GuardDecision(
+            ok=True, gate="ok", reason="ok", details={"symbol": symbol_key}
+        )
 
-    def mark_trade_submitted(self, *, symbol: str, now_ts: Optional[float] = None) -> None:
+    def mark_trade_submitted(
+        self, *, symbol: str, now_ts: Optional[float] = None
+    ) -> None:
         now_value = time.time() if now_ts is None else float(now_ts)
         symbol_key = str(symbol or "").strip().upper()
         self._last_trade_symbol_ts[symbol_key] = now_value
@@ -629,9 +1204,11 @@ class LiveExecutionGuard:
         spread_bps: float = 8.0,
         volatility_1m: float = 0.0,
         latency_ms: float = 120.0,
+        bid_price: float = 0.0,
+        ask_price: float = 0.0,
         bid_size: float = 1000.0,
         ask_size: float = 1000.0,
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         sim = simulate_execution(
             action=str(action or "HOLD").strip().upper(),
             last_price=max(float(reference_price or 0.0), 0.0),
@@ -639,6 +1216,8 @@ class LiveExecutionGuard:
             spread_bps=max(float(spread_bps or 0.0), 0.0),
             volatility_1m=max(float(volatility_1m or 0.0), 0.0),
             latency_ms=max(float(latency_ms or 0.0), 0.0),
+            bid_price=max(float(bid_price or 0.0), 0.0),
+            ask_price=max(float(ask_price or 0.0), 0.0),
             bid_size=max(float(bid_size or 0.0), 0.0),
             ask_size=max(float(ask_size or 0.0), 0.0),
             order_size=max(float(quantity or 0.0), 0.0),
@@ -646,6 +1225,12 @@ class LiveExecutionGuard:
         return {
             "expected_fill_price": float(sim.expected_fill_price),
             "expected_slippage_bps": float(sim.slippage_bps),
+            "touch_price": float(sim.touch_price),
+            "quoted_spread_bps": float(sim.quoted_spread_bps),
+            "beyond_touch_cost_bps": float(sim.beyond_touch_cost_bps),
+            "total_cost_bps": float(sim.total_cost_bps),
+            "quote_source_mode": str(sim.quote_source_mode),
+            "quote_crossed_or_locked": bool(sim.quote_crossed_or_locked),
             "impact_bps": float(sim.impact_bps),
             "latency_ms": float(sim.latency_ms),
             "partial_fill_ratio": float(sim.partial_fill_ratio),
@@ -679,7 +1264,9 @@ class LiveExecutionGuard:
         else:
             adverse_bps = 0.0
 
-        ok = (self.config.max_fill_deviation_bps <= 0.0) or (adverse_bps <= self.config.max_fill_deviation_bps)
+        ok = (self.config.max_fill_deviation_bps <= 0.0) or (
+            adverse_bps <= self.config.max_fill_deviation_bps
+        )
         return {
             "ok": bool(ok),
             "fill_deviation_bps": round(float(adverse_bps), 6),
@@ -687,7 +1274,9 @@ class LiveExecutionGuard:
             "reason": "ok" if ok else "fill_deviation_limit",
         }
 
-    def register_open_order(self, *, order_id: str, symbol: str, action: str, quantity: float) -> None:
+    def register_open_order(
+        self, *, order_id: str, symbol: str, action: str, quantity: float
+    ) -> None:
         oid = str(order_id or "").strip()
         if not oid:
             return
@@ -699,7 +1288,9 @@ class LiveExecutionGuard:
             "action": str(action or "").strip().upper(),
             "quantity": float(max(float(quantity or 0.0), 0.0)),
         }
-        self._open_orders_by_symbol[symbol_key] = int(self._open_orders_by_symbol.get(symbol_key, 0) or 0) + 1
+        self._open_orders_by_symbol[symbol_key] = (
+            int(self._open_orders_by_symbol.get(symbol_key, 0) or 0) + 1
+        )
 
     def close_open_order(self, order_id: str) -> None:
         oid = str(order_id or "").strip()
@@ -710,12 +1301,19 @@ class LiveExecutionGuard:
             return
         symbol_key = str(row.get("symbol", "")).upper()
         if symbol_key in self._open_orders_by_symbol:
-            self._open_orders_by_symbol[symbol_key] = max(int(self._open_orders_by_symbol[symbol_key]) - 1, 0)
+            self._open_orders_by_symbol[symbol_key] = max(
+                int(self._open_orders_by_symbol[symbol_key]) - 1, 0
+            )
 
-    def record_realized_pnl(self, pnl_delta: float, now_ts: Optional[float] = None) -> None:
+    def record_realized_pnl(
+        self, pnl_delta: float, now_ts: Optional[float] = None
+    ) -> None:
         now_value = time.time() if now_ts is None else float(now_ts)
         self._roll_day(now_value)
-        self._realized_pnl_today += float(pnl_delta or 0.0)
+        delta = float(pnl_delta or 0.0)
+        self._realized_pnl_today += delta
+        self._realized_pnl_cumulative += delta
+        self._persist_risk_state()
 
     def record_fill(
         self,
@@ -744,11 +1342,17 @@ class LiveExecutionGuard:
         new_avg = prev_avg
 
         if signed_qty != 0.0 and price > 0.0:
-            if prev_qty == 0.0 or (prev_qty > 0.0 and signed_qty > 0.0) or (prev_qty < 0.0 and signed_qty < 0.0):
+            if (
+                prev_qty == 0.0
+                or (prev_qty > 0.0 and signed_qty > 0.0)
+                or (prev_qty < 0.0 and signed_qty < 0.0)
+            ):
                 total_abs = abs(prev_qty) + abs(signed_qty)
                 new_qty = prev_qty + signed_qty
                 if total_abs > 0.0 and new_qty != 0.0:
-                    new_avg = ((abs(prev_qty) * prev_avg) + (abs(signed_qty) * price)) / total_abs
+                    new_avg = (
+                        (abs(prev_qty) * prev_avg) + (abs(signed_qty) * price)
+                    ) / total_abs
                 else:
                     new_avg = 0.0
             else:
@@ -769,8 +1373,14 @@ class LiveExecutionGuard:
                     else:
                         new_avg = prev_avg
 
-        self._positions[symbol_key] = {"qty": float(new_qty), "avg_price": float(new_avg)}
+        self._positions[symbol_key] = {
+            "qty": float(new_qty),
+            "avg_price": float(new_avg),
+        }
         self._realized_pnl_today += float(realized_delta)
+        self._realized_pnl_cumulative += float(realized_delta)
+        if realized_delta != 0.0:
+            self._persist_risk_state()
 
         ref_price = max(float(reference_price or 0.0), 0.0)
         exp_price = max(float(expected_fill_price or 0.0), 0.0)
@@ -792,13 +1402,19 @@ class LiveExecutionGuard:
         if ref_price > 0.0 and price > 0.0:
             side = str(action or "").strip().upper()
             if side in {"BUY", "BUY_TO_COVER", "BUY_TO_OPEN", "BUY_TO_CLOSE"}:
-                realized_slippage_bps = max(((price - ref_price) / ref_price) * 10000.0, 0.0)
+                realized_slippage_bps = max(
+                    ((price - ref_price) / ref_price) * 10000.0, 0.0
+                )
             elif side in {"SELL", "SELL_SHORT", "SELL_TO_OPEN", "SELL_TO_CLOSE"}:
-                realized_slippage_bps = max(((ref_price - price) / ref_price) * 10000.0, 0.0)
+                realized_slippage_bps = max(
+                    ((ref_price - price) / ref_price) * 10000.0, 0.0
+                )
 
         self._fill_count += 1
         self._fill_slippage_bps_sum += float(realized_slippage_bps)
-        self._fill_deviation_bps_sum += float(fill_quality.get("fill_deviation_bps", 0.0) or 0.0)
+        self._fill_deviation_bps_sum += float(
+            fill_quality.get("fill_deviation_bps", 0.0) or 0.0
+        )
         if not bool(fill_quality.get("ok", True)):
             self._fill_deviation_violations += 1
 
@@ -819,7 +1435,9 @@ class LiveExecutionGuard:
         row = self._positions.get(symbol_key, {"qty": 0.0})
         return float(row.get("qty", 0.0) or 0.0)
 
-    def set_local_position(self, *, symbol: str, quantity: float, avg_price: Optional[float] = None) -> Dict[str, float]:
+    def set_local_position(
+        self, *, symbol: str, quantity: float, avg_price: Optional[float] = None
+    ) -> Dict[str, float]:
         symbol_key = str(symbol or "").strip().upper()
         prior = self._positions.get(symbol_key, {"qty": 0.0, "avg_price": 0.0})
         prev_avg = float(prior.get("avg_price", 0.0) or 0.0)
@@ -847,11 +1465,19 @@ class LiveExecutionGuard:
         local_q = self.local_position_qty(symbol_key)
         diff = broker_q - local_q
         tol = max(float(tolerance), 0.0)
-        manual_tol = tol if manual_adjustment_tolerance is None else max(float(manual_adjustment_tolerance), 0.0)
+        manual_tol = (
+            tol
+            if manual_adjustment_tolerance is None
+            else max(float(manual_adjustment_tolerance), 0.0)
+        )
         mismatch = abs(diff) > tol
         manual_adjustment = mismatch and (abs(diff) <= manual_tol)
         ok = not mismatch
-        status = "match" if ok else ("manual_adjustment_detected" if manual_adjustment else "mismatch")
+        status = (
+            "match"
+            if ok
+            else ("manual_adjustment_detected" if manual_adjustment else "mismatch")
+        )
         self._broker_positions[symbol_key] = broker_q
         return {
             "symbol": symbol_key,
@@ -873,7 +1499,11 @@ class LiveExecutionGuard:
         position_manual_adjustment_tolerance: Optional[float] = None,
     ) -> Dict[str, Any]:
         broker_rows = broker_open_orders if isinstance(broker_open_orders, list) else []
-        broker_ids = {str(r.get("order_id", "")).strip() for r in broker_rows if str(r.get("order_id", "")).strip()}
+        broker_ids = {
+            str(r.get("order_id", "")).strip()
+            for r in broker_rows
+            if str(r.get("order_id", "")).strip()
+        }
         local_ids = set(self._open_orders.keys())
 
         missing_on_broker = sorted(local_ids - broker_ids)
@@ -890,7 +1520,11 @@ class LiveExecutionGuard:
             )
             position_checks.append(rec)
 
-        pos_ok = all(bool(r.get("ok", False)) for r in position_checks) if position_checks else True
+        pos_ok = (
+            all(bool(r.get("ok", False)) for r in position_checks)
+            if position_checks
+            else True
+        )
         ok = (len(missing_on_broker) == 0) and (len(missing_local) == 0) and pos_ok
 
         return {
@@ -909,32 +1543,60 @@ class LiveExecutionGuard:
         return {
             "daily_key": self._daily_key,
             "realized_pnl_today": float(self._realized_pnl_today),
+            "realized_pnl_cumulative": float(self._realized_pnl_cumulative),
+            "risk_state_ready": bool(self._risk_state_ready),
+            "risk_state_error": self._risk_state_error,
             "open_orders_total": int(len(self._open_orders)),
             "open_orders_by_symbol": dict(self._open_orders_by_symbol),
             "positions": {k: dict(v) for k, v in self._positions.items()},
             "broker_positions": dict(self._broker_positions),
             "config": {
-                "max_position_qty_per_symbol": float(self.config.max_position_qty_per_symbol),
+                "max_position_qty_per_symbol": float(
+                    self.config.max_position_qty_per_symbol
+                ),
                 "max_order_notional": float(self.config.max_order_notional),
                 "max_open_orders_total": int(self.config.max_open_orders_total),
-                "max_open_orders_per_symbol": int(self.config.max_open_orders_per_symbol),
+                "max_open_orders_per_symbol": int(
+                    self.config.max_open_orders_per_symbol
+                ),
                 "daily_loss_cap": float(self.config.daily_loss_cap),
+                "cumulative_loss_cap": float(self.config.cumulative_loss_cap),
+                "risk_state_path": str(self.config.risk_state_path or ""),
+                "risk_state_candidate_id": str(
+                    self.config.risk_state_candidate_id or ""
+                ),
                 "api_fail_limit": int(self.config.api_fail_limit),
                 "api_cooldown_seconds": int(self.config.api_cooldown_seconds),
-                "trade_min_interval_seconds": float(self.config.trade_min_interval_seconds),
-                "trade_min_interval_global_seconds": float(self.config.trade_min_interval_global_seconds),
+                "trade_min_interval_seconds": float(
+                    self.config.trade_min_interval_seconds
+                ),
+                "trade_min_interval_global_seconds": float(
+                    self.config.trade_min_interval_global_seconds
+                ),
                 "max_slippage_bps": float(self.config.max_slippage_bps),
                 "max_fill_deviation_bps": float(self.config.max_fill_deviation_bps),
-                "min_execution_realism_score": float(self.config.min_execution_realism_score),
+                "min_execution_realism_score": float(
+                    self.config.min_execution_realism_score
+                ),
                 "min_effective_fill_ratio": float(self.config.min_effective_fill_ratio),
                 "max_reject_probability": float(self.config.max_reject_probability),
                 "max_cancel_probability": float(self.config.max_cancel_probability),
-                "max_stale_quote_probability": float(self.config.max_stale_quote_probability),
+                "max_stale_quote_probability": float(
+                    self.config.max_stale_quote_probability
+                ),
             },
             "fill_modeling": {
                 "fill_count": int(self._fill_count),
-                "avg_realized_slippage_bps": round(float(self._fill_slippage_bps_sum / self._fill_count), 6) if self._fill_count > 0 else 0.0,
-                "avg_fill_deviation_bps": round(float(self._fill_deviation_bps_sum / self._fill_count), 6) if self._fill_count > 0 else 0.0,
+                "avg_realized_slippage_bps": (
+                    round(float(self._fill_slippage_bps_sum / self._fill_count), 6)
+                    if self._fill_count > 0
+                    else 0.0
+                ),
+                "avg_fill_deviation_bps": (
+                    round(float(self._fill_deviation_bps_sum / self._fill_count), 6)
+                    if self._fill_count > 0
+                    else 0.0
+                ),
                 "fill_deviation_violations": int(self._fill_deviation_violations),
             },
         }

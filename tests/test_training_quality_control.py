@@ -3,7 +3,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -25,8 +24,16 @@ def test_build_payload_surfaces_blockers_and_targeted_actions(tmp_path: Path) ->
         health_root / "training_registry_audit_latest.json",
         {
             "registry_active_bots": 6,
-            "supportability_counts": {"unsupported_runtime_inputs": 2, "unsupported_stale_diagnostics": 1},
-            "tier_counts": {"active_repair": 2, "active_probation": 1, "active_stale": 1, "research_candidate": 6},
+            "supportability_counts": {
+                "unsupported_runtime_inputs": 2,
+                "unsupported_stale_diagnostics": 1,
+            },
+            "tier_counts": {
+                "active_repair": 2,
+                "active_probation": 1,
+                "active_stale": 1,
+                "research_candidate": 6,
+            },
             "active_sample_starved": [
                 {
                     "bot_id": "brain_refinery_v4_simple",
@@ -39,15 +46,25 @@ def test_build_payload_surfaces_blockers_and_targeted_actions(tmp_path: Path) ->
                     "inferred_cause": "sequence_depth_gap",
                 },
             ],
-            "active_quality_failed": [{"bot_id": "brain_refinery_v43_intraday_ultrafast_proxy"}],
-            "active_stale_diagnostics": [{"bot_id": "brain_refinery_v35_dmi_state_machine"}],
+            "active_quality_failed": [
+                {"bot_id": "brain_refinery_v43_intraday_ultrafast_proxy"}
+            ],
+            "active_stale_diagnostics": [
+                {"bot_id": "brain_refinery_v35_dmi_state_machine"}
+            ],
         },
     )
     _write_json(
         health_root / "training_label_audit_latest.json",
         {
-            "top_actions": ["fix_shared_runtime_input", "tighten_abstention_thresholds"],
-            "recommendation_counts": {"fix_shared_runtime_input": 2, "tighten_abstention_thresholds": 1},
+            "top_actions": [
+                "fix_shared_runtime_input",
+                "tighten_abstention_thresholds",
+            ],
+            "recommendation_counts": {
+                "fix_shared_runtime_input": 2,
+                "tighten_abstention_thresholds": 1,
+            },
         },
     )
     _write_json(
@@ -80,7 +97,10 @@ def test_build_payload_surfaces_blockers_and_targeted_actions(tmp_path: Path) ->
     )
     _write_json(health_root / "promotion_quality_gate_latest.json", {"ok": False})
     _write_json(
-        tmp_path / "governance" / "champion_challenger" / "promotion_packet_latest.json",
+        tmp_path
+        / "governance"
+        / "champion_challenger"
+        / "promotion_packet_latest.json",
         {
             "packet_sha256": "seeded-packet",
             "dataset": {"rows_sha256": "rows-hash"},
@@ -96,23 +116,37 @@ def test_build_payload_surfaces_blockers_and_targeted_actions(tmp_path: Path) ->
             "lane_partitions": [],
         },
     )
-    _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": False, "overall_status": "blocked", "family_size": 0})
-    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "needs_work", "weak_sleeve_count": 1})
+    _write_json(
+        tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json",
+        {"ok": False, "overall_status": "blocked", "family_size": 0},
+    )
+    _write_json(
+        tmp_path / "governance" / "research" / "decay_monitor_latest.json",
+        {"overall_status": "needs_work", "weak_sleeve_count": 1},
+    )
     _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": False})
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
             "overall_status": "blocked",
             "severity": "critical",
-            "backpressure": {"estimated_core_drain_minutes": 55.0, "estimated_total_drain_minutes": 260.0},
+            "backpressure": {
+                "estimated_core_drain_minutes": 55.0,
+                "estimated_total_drain_minutes": 260.0,
+            },
             "storage": {"retention_debt_gb": 3.5},
             "top_actions": ["force retention"],
         },
     )
-    experiment_path = tmp_path / "governance" / "experiments" / "experiment_registry.jsonl"
+    experiment_path = (
+        tmp_path / "governance" / "experiments" / "experiment_registry.jsonl"
+    )
     experiment_path.parent.mkdir(parents=True, exist_ok=True)
     experiment_path.write_text(
-        json.dumps({"experiment_id": "exp_bad", "replayability": {"exact_replay_ready": False}}) + "\n",
+        json.dumps(
+            {"experiment_id": "exp_bad", "replayability": {"exact_replay_ready": False}}
+        )
+        + "\n",
         encoding="utf-8",
     )
     _write_json(
@@ -127,7 +161,11 @@ def test_build_payload_surfaces_blockers_and_targeted_actions(tmp_path: Path) ->
         health_root / "paper_performance_latest.json",
         {
             "sleeve_latest": [
-                {"profile": "intraday_aggressive", "ending_net_pnl_total": -5.0, "win_rate": 0.31},
+                {
+                    "profile": "intraday_aggressive",
+                    "ending_net_pnl_total": -5.0,
+                    "win_rate": 0.31,
+                },
                 {"profile": "dividend", "ending_net_pnl_total": 1.0, "win_rate": 0.60},
             ]
         },
@@ -147,7 +185,9 @@ def test_build_payload_surfaces_blockers_and_targeted_actions(tmp_path: Path) ->
     assert payload["targeted_actions"]["repair_runtime_input_bot_ids"] == [
         "brain_refinery_v4_simple",
     ]
-    assert payload["targeted_actions"]["runtime_input_depth_debt_bot_ids"] == ["brain_refinery_v13_choppy"]
+    assert payload["targeted_actions"]["runtime_input_depth_debt_bot_ids"] == [
+        "brain_refinery_v13_choppy"
+    ]
     assert payload["targeted_actions"]["quality_probation_bot_ids"] == [
         "brain_refinery_v43_intraday_ultrafast_proxy",
     ]
@@ -160,9 +200,16 @@ def test_build_payload_surfaces_blockers_and_targeted_actions(tmp_path: Path) ->
     assert payload["immutable_lineage"]["lineage_status"] == "blocked"
     assert "storage_backpressure" in payload["failure_taxonomy"]["failure_buckets"]
     assert "runtime_input_depth_debt" in payload["failure_taxonomy"]["failure_buckets"]
+    contract = payload["operating_contract"]
+    assert contract["complete"] is True
+    assert contract["domain"] == "training_promotion"
+    assert "automatic_model_promotion" in contract["blocked_authority"]
+    assert "feature_store_lineage_not_ready" in contract["definition_gaps"]
 
 
-def test_build_payload_uses_registry_rollup_to_clear_sequence_depth_debt(tmp_path: Path) -> None:
+def test_build_payload_uses_registry_rollup_to_clear_sequence_depth_debt(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
     bot_id = "brain_refinery_v13_choppy"
 
@@ -204,10 +251,14 @@ def test_build_payload_uses_registry_rollup_to_clear_sequence_depth_debt(tmp_pat
 
     assert payload["targeted_actions"]["runtime_input_depth_debt_bot_ids"] == []
     assert payload["targeted_actions"]["repair_runtime_input_bot_ids"] == []
-    assert "runtime_input_depth_debt" not in payload["failure_taxonomy"]["failure_buckets"]
+    assert (
+        "runtime_input_depth_debt" not in payload["failure_taxonomy"]["failure_buckets"]
+    )
 
 
-def test_build_payload_marks_ready_when_training_surface_is_healthy(tmp_path: Path) -> None:
+def test_build_payload_marks_ready_when_training_surface_is_healthy(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
@@ -223,7 +274,10 @@ def test_build_payload_marks_ready_when_training_surface_is_healthy(tmp_path: Pa
             "active_stale_diagnostics": [],
         },
     )
-    _write_json(health_root / "training_label_audit_latest.json", {"top_actions": [], "recommendation_counts": {}})
+    _write_json(
+        health_root / "training_label_audit_latest.json",
+        {"top_actions": [], "recommendation_counts": {}},
+    )
     _write_json(
         health_root / "runtime_training_snapshot_latest.json",
         {
@@ -265,11 +319,23 @@ def test_build_payload_marks_ready_when_training_surface_is_healthy(tmp_path: Pa
     )
     _write_json(
         tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json",
-        {"ok": True, "overall_status": "ready", "family_size": 8, "correction_method": "bonferroni", "regime_segments": ["dividend"]},
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "family_size": 8,
+            "correction_method": "bonferroni",
+            "regime_segments": ["dividend"],
+        },
     )
     _write_json(
         tmp_path / "governance" / "research" / "decay_monitor_latest.json",
-        {"ok": True, "overall_status": "ready", "weak_sleeve_count": 0, "history_days_available": 2, "pnl_slope": 1.5},
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "weak_sleeve_count": 0,
+            "history_days_available": 2,
+            "pnl_slope": 1.5,
+        },
     )
     _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
     _write_json(
@@ -290,15 +356,23 @@ def test_build_payload_marks_ready_when_training_surface_is_healthy(tmp_path: Pa
         {
             "overall_status": "ready",
             "severity": "stable",
-            "backpressure": {"estimated_core_drain_minutes": 4.0, "estimated_total_drain_minutes": 20.0},
+            "backpressure": {
+                "estimated_core_drain_minutes": 4.0,
+                "estimated_total_drain_minutes": 20.0,
+            },
             "storage": {"retention_debt_gb": 0.0},
             "top_actions": [],
         },
     )
-    experiment_path = tmp_path / "governance" / "experiments" / "experiment_registry.jsonl"
+    experiment_path = (
+        tmp_path / "governance" / "experiments" / "experiment_registry.jsonl"
+    )
     experiment_path.parent.mkdir(parents=True, exist_ok=True)
     experiment_path.write_text(
-        json.dumps({"experiment_id": "exp_ok", "replayability": {"exact_replay_ready": True}}) + "\n",
+        json.dumps(
+            {"experiment_id": "exp_ok", "replayability": {"exact_replay_ready": True}}
+        )
+        + "\n",
         encoding="utf-8",
     )
     _write_json(
@@ -308,13 +382,18 @@ def test_build_payload_marks_ready_when_training_surface_is_healthy(tmp_path: Pa
             "summary": {"confirmed_training_success": True},
         },
     )
-    _write_json(health_root / "health_gates_latest.json", {"hard_gate_triggered": False})
+    _write_json(
+        health_root / "health_gates_latest.json", {"hard_gate_triggered": False}
+    )
     _write_json(health_root / "paper_performance_latest.json", {"sleeve_latest": []})
     _write_json(
         health_root / "roster_resilience_planner_latest.json",
         {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": True}},
     )
-    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "calibration_abstention_control_latest.json",
+        {"overall_status": "ready"},
+    )
 
     payload = src.build_payload(tmp_path)
 
@@ -325,7 +404,9 @@ def test_build_payload_marks_ready_when_training_surface_is_healthy(tmp_path: Pa
     assert payload["improvement_status_counts"]["blocked"] == 0
 
 
-def test_build_payload_softens_seeded_coverage_and_recovering_ingestion(tmp_path: Path) -> None:
+def test_build_payload_softens_seeded_coverage_and_recovering_ingestion(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
@@ -341,7 +422,10 @@ def test_build_payload_softens_seeded_coverage_and_recovering_ingestion(tmp_path
             "active_stale_diagnostics": [],
         },
     )
-    _write_json(health_root / "training_label_audit_latest.json", {"top_actions": [], "recommendation_counts": {}})
+    _write_json(
+        health_root / "training_label_audit_latest.json",
+        {"top_actions": [], "recommendation_counts": {}},
+    )
     _write_json(
         health_root / "runtime_training_snapshot_latest.json",
         {
@@ -374,7 +458,10 @@ def test_build_payload_softens_seeded_coverage_and_recovering_ingestion(tmp_path
     )
     _write_json(health_root / "promotion_quality_gate_latest.json", {"ok": False})
     _write_json(
-        tmp_path / "governance" / "champion_challenger" / "promotion_packet_latest.json",
+        tmp_path
+        / "governance"
+        / "champion_challenger"
+        / "promotion_packet_latest.json",
         {
             "packet_sha256": "seeded-packet",
             "dataset": {"rows_sha256": "rows-hash"},
@@ -400,15 +487,24 @@ def test_build_payload_softens_seeded_coverage_and_recovering_ingestion(tmp_path
             "failed_checks": [],
         },
     )
-    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "ready", "weak_sleeve_count": 0})
+    _write_json(
+        tmp_path / "governance" / "research" / "decay_monitor_latest.json",
+        {"overall_status": "ready", "weak_sleeve_count": 0},
+    )
     _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": False})
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
             "overall_status": "blocked",
             "severity": "critical",
-            "backpressure": {"estimated_core_drain_minutes": None, "estimated_total_drain_minutes": None},
-            "storage": {"retention_debt_gb": 0.0, "backlog_drain_status": "drain_active"},
+            "backpressure": {
+                "estimated_core_drain_minutes": None,
+                "estimated_total_drain_minutes": None,
+            },
+            "storage": {
+                "retention_debt_gb": 0.0,
+                "backlog_drain_status": "drain_active",
+            },
             "queue_watermarks": {"breaches": {"hard": []}},
             "ingestion_pressure": {
                 "critical_priority_failures": [],
@@ -450,7 +546,10 @@ def test_build_payload_softens_seeded_coverage_and_recovering_ingestion(tmp_path
         health_root / "roster_resilience_planner_latest.json",
         {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": False}},
     )
-    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "calibration_abstention_control_latest.json",
+        {"overall_status": "ready"},
+    )
 
     payload = src.build_payload(tmp_path)
     improvement_by_key = {row["key"]: row for row in payload["improvements"]}
@@ -461,10 +560,14 @@ def test_build_payload_softens_seeded_coverage_and_recovering_ingestion(tmp_path
     assert improvement_by_key["ingestion_drain_time_guard"]["status"] == "needs_work"
     assert improvement_by_key["multiple_testing_control"]["status"] == "ready"
     assert payload["research"]["multiple_testing_ready"] is True
-    assert "training_not_confirmed" not in payload["failure_taxonomy"]["failure_buckets"]
+    assert (
+        "training_not_confirmed" not in payload["failure_taxonomy"]["failure_buckets"]
+    )
 
 
-def test_build_payload_credits_provisional_registry_backed_active_bots(tmp_path: Path) -> None:
+def test_build_payload_credits_provisional_registry_backed_active_bots(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
@@ -479,14 +582,33 @@ def test_build_payload_credits_provisional_registry_backed_active_bots(tmp_path:
             "active_sample_starved": [],
             "active_quality_failed": [],
             "active_stale_diagnostics": [
-                {"bot_id": "bot_a", "registry_quality_score": 0.45, "registry_test_accuracy": 0.76},
-                {"bot_id": "bot_b", "registry_quality_score": 0.31, "registry_test_accuracy": 0.54},
-                {"bot_id": "bot_c", "registry_quality_score": 0.20, "registry_test_accuracy": 0.51},
-                {"bot_id": "bot_d", "registry_quality_score": 0.05, "registry_test_accuracy": 0.49},
+                {
+                    "bot_id": "bot_a",
+                    "registry_quality_score": 0.45,
+                    "registry_test_accuracy": 0.76,
+                },
+                {
+                    "bot_id": "bot_b",
+                    "registry_quality_score": 0.31,
+                    "registry_test_accuracy": 0.54,
+                },
+                {
+                    "bot_id": "bot_c",
+                    "registry_quality_score": 0.20,
+                    "registry_test_accuracy": 0.51,
+                },
+                {
+                    "bot_id": "bot_d",
+                    "registry_quality_score": 0.05,
+                    "registry_test_accuracy": 0.49,
+                },
             ],
         },
     )
-    _write_json(health_root / "training_label_audit_latest.json", {"top_actions": [], "recommendation_counts": {}})
+    _write_json(
+        health_root / "training_label_audit_latest.json",
+        {"top_actions": [], "recommendation_counts": {}},
+    )
     _write_json(
         health_root / "runtime_training_snapshot_latest.json",
         {
@@ -545,7 +667,10 @@ def test_build_payload_credits_provisional_registry_backed_active_bots(tmp_path:
         {
             "overall_status": "ready",
             "severity": "stable",
-            "backpressure": {"estimated_core_drain_minutes": 8.0, "estimated_total_drain_minutes": 22.0},
+            "backpressure": {
+                "estimated_core_drain_minutes": 8.0,
+                "estimated_total_drain_minutes": 22.0,
+            },
             "storage": {"retention_debt_gb": 0.0},
             "top_actions": [],
         },
@@ -554,23 +679,38 @@ def test_build_payload_credits_provisional_registry_backed_active_bots(tmp_path:
         health_root / "training_report_latest.json",
         {
             "overall_status": "ready",
-            "summary": {"confirmed_training_success": True, "target_count": 0, "failure_count": 0},
+            "summary": {
+                "confirmed_training_success": True,
+                "target_count": 0,
+                "failure_count": 0,
+            },
         },
     )
-    _write_json(health_root / "health_gates_latest.json", {"hard_gate_triggered": False})
+    _write_json(
+        health_root / "health_gates_latest.json", {"hard_gate_triggered": False}
+    )
     _write_json(health_root / "paper_performance_latest.json", {"sleeve_latest": []})
     _write_json(
         health_root / "roster_resilience_planner_latest.json",
         {"bench": {"bench_depth": 4}, "a_plus_contract": {"a_plus_ready": False}},
     )
-    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "calibration_abstention_control_latest.json",
+        {"overall_status": "ready"},
+    )
 
     payload = src.build_payload(tmp_path)
 
     assert payload["supportability"]["active_supportable_bots"] == 1
     assert payload["supportability"]["active_supportability_score"] == 25.0
-    assert payload["targeted_actions"]["provisional_registry_backed_bot_ids"] == ["bot_a"]
-    assert payload["targeted_actions"]["unsupported_stale_bot_ids"] == ["bot_b", "bot_c", "bot_d"]
+    assert payload["targeted_actions"]["provisional_registry_backed_bot_ids"] == [
+        "bot_a"
+    ]
+    assert payload["targeted_actions"]["unsupported_stale_bot_ids"] == [
+        "bot_b",
+        "bot_c",
+        "bot_d",
+    ]
     assert payload["research"]["multiple_testing_contract_present"] is True
     assert payload["immutable_lineage"]["provisional_lineage_ready"] is True
     assert payload["improvement_status_counts"]["blocked"] == 1
@@ -578,7 +718,9 @@ def test_build_payload_credits_provisional_registry_backed_active_bots(tmp_path:
     assert payload["rollout"]["exact_replay_ready"] is False
 
 
-def test_build_payload_uses_supportability_active_denominator_when_collection_bots_are_isolated(tmp_path: Path) -> None:
+def test_build_payload_uses_supportability_active_denominator_when_collection_bots_are_isolated(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
@@ -589,14 +731,20 @@ def test_build_payload_uses_supportability_active_denominator_when_collection_bo
             "registry_active_bots": 104,
             "registry_supportability_active_bots": 4,
             "active_collection_only_bots": 100,
-            "supportability_counts": {"supportable_active": 4, "collection_only_active": 100},
+            "supportability_counts": {
+                "supportable_active": 4,
+                "collection_only_active": 100,
+            },
             "tier_counts": {"active_collection_only": 100, "active_stale": 0},
             "active_sample_starved": [],
             "active_quality_failed": [],
             "active_stale_diagnostics": [],
         },
     )
-    _write_json(health_root / "training_label_audit_latest.json", {"top_actions": [], "recommendation_counts": {}})
+    _write_json(
+        health_root / "training_label_audit_latest.json",
+        {"top_actions": [], "recommendation_counts": {}},
+    )
     _write_json(
         health_root / "runtime_training_snapshot_latest.json",
         {
@@ -611,7 +759,11 @@ def test_build_payload_uses_supportability_active_denominator_when_collection_bo
     )
     _write_json(
         walk_root / "promotion_readiness_latest.json",
-        {"promote_ok": True, "considered_bots": 4, "thresholds": {"min_considered_bots": 4}},
+        {
+            "promote_ok": True,
+            "considered_bots": 4,
+            "thresholds": {"min_considered_bots": 4},
+        },
     )
     _write_json(health_root / "promotion_quality_gate_latest.json", {"ok": True})
     _write_json(
@@ -624,8 +776,19 @@ def test_build_payload_uses_supportability_active_denominator_when_collection_bo
             "lane_partitions": [{"lane": "dividend", "row_count": 300}],
         },
     )
-    _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": True, "overall_status": "ready", "family_size": 8, "correction_method": "bonferroni"})
-    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"ok": True, "overall_status": "ready", "weak_sleeve_count": 0})
+    _write_json(
+        tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "family_size": 8,
+            "correction_method": "bonferroni",
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "research" / "decay_monitor_latest.json",
+        {"ok": True, "overall_status": "ready", "weak_sleeve_count": 0},
+    )
     _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
     _write_json(
         health_root / "training_lineage_manifest_latest.json",
@@ -639,12 +802,26 @@ def test_build_payload_uses_supportability_active_denominator_when_collection_bo
             "lineage_score": 100.0,
         },
     )
-    _write_json(health_root / "ingestion_storage_control_latest.json", {"overall_status": "ready", "storage": {"retention_debt_gb": 0.0}})
-    _write_json(health_root / "training_report_latest.json", {"overall_status": "ready", "summary": {"confirmed_training_success": True}})
-    _write_json(health_root / "health_gates_latest.json", {"hard_gate_triggered": False})
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {"overall_status": "ready", "storage": {"retention_debt_gb": 0.0}},
+    )
+    _write_json(
+        health_root / "training_report_latest.json",
+        {"overall_status": "ready", "summary": {"confirmed_training_success": True}},
+    )
+    _write_json(
+        health_root / "health_gates_latest.json", {"hard_gate_triggered": False}
+    )
     _write_json(health_root / "paper_performance_latest.json", {"sleeve_latest": []})
-    _write_json(health_root / "roster_resilience_planner_latest.json", {"bench": {"bench_depth": 4}, "a_plus_contract": {"a_plus_ready": True}})
-    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "roster_resilience_planner_latest.json",
+        {"bench": {"bench_depth": 4}, "a_plus_contract": {"a_plus_ready": True}},
+    )
+    _write_json(
+        health_root / "calibration_abstention_control_latest.json",
+        {"overall_status": "ready"},
+    )
 
     payload = src.build_payload(tmp_path)
 
@@ -654,7 +831,9 @@ def test_build_payload_uses_supportability_active_denominator_when_collection_bo
     assert payload["supportability"]["active_supportability_score"] == 100.0
 
 
-def test_build_payload_rewards_launch_ready_coverage_and_stronger_provisional_lineage(tmp_path: Path) -> None:
+def test_build_payload_rewards_launch_ready_coverage_and_stronger_provisional_lineage(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
@@ -666,14 +845,29 @@ def test_build_payload_rewards_launch_ready_coverage_and_stronger_provisional_li
         health_root / "training_registry_audit_latest.json",
         {
             "registry_active_bots": 18,
-            "supportability_counts": {"supportable_active": 12, "registry_seeded_active": 3},
+            "supportability_counts": {
+                "supportable_active": 12,
+                "registry_seeded_active": 3,
+            },
             "tier_counts": {"active_stale": 3, "research_candidate": 2},
             "active_sample_starved": [],
             "active_quality_failed": [],
             "active_stale_diagnostics": [
-                {"bot_id": "bot_a", "registry_quality_score": 0.4, "registry_test_accuracy": 0.78},
-                {"bot_id": "bot_b", "registry_quality_score": 0.35, "registry_test_accuracy": 0.75},
-                {"bot_id": "bot_c", "registry_quality_score": 0.28, "registry_test_accuracy": 0.53},
+                {
+                    "bot_id": "bot_a",
+                    "registry_quality_score": 0.4,
+                    "registry_test_accuracy": 0.78,
+                },
+                {
+                    "bot_id": "bot_b",
+                    "registry_quality_score": 0.35,
+                    "registry_test_accuracy": 0.75,
+                },
+                {
+                    "bot_id": "bot_c",
+                    "registry_quality_score": 0.28,
+                    "registry_test_accuracy": 0.53,
+                },
             ],
             "active_registry_seeded": [
                 {"bot_id": "bot_a"},
@@ -684,7 +878,10 @@ def test_build_payload_rewards_launch_ready_coverage_and_stronger_provisional_li
     )
     _write_json(
         health_root / "training_label_audit_latest.json",
-        {"top_actions": ["refresh_training_diagnostics"], "recommendation_counts": {"refresh_training_diagnostics": 1}},
+        {
+            "top_actions": ["refresh_training_diagnostics"],
+            "recommendation_counts": {"refresh_training_diagnostics": 1},
+        },
     )
     _write_json(
         health_root / "runtime_training_snapshot_latest.json",
@@ -748,7 +945,10 @@ def test_build_payload_rewards_launch_ready_coverage_and_stronger_provisional_li
             "failed_checks": [],
         },
     )
-    _write_json(research_root / "decay_monitor_latest.json", {"overall_status": "ready", "weak_sleeve_count": 0})
+    _write_json(
+        research_root / "decay_monitor_latest.json",
+        {"overall_status": "ready", "weak_sleeve_count": 0},
+    )
     _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
     _write_json(
         health_root / "training_lineage_manifest_latest.json",
@@ -770,7 +970,10 @@ def test_build_payload_rewards_launch_ready_coverage_and_stronger_provisional_li
         {
             "overall_status": "ready",
             "severity": "stable",
-            "backpressure": {"estimated_core_drain_minutes": 7.0, "estimated_total_drain_minutes": 18.0},
+            "backpressure": {
+                "estimated_core_drain_minutes": 7.0,
+                "estimated_total_drain_minutes": 18.0,
+            },
             "storage": {"retention_debt_gb": 0.0},
             "top_actions": [],
         },
@@ -779,16 +982,26 @@ def test_build_payload_rewards_launch_ready_coverage_and_stronger_provisional_li
         health_root / "training_report_latest.json",
         {
             "overall_status": "needs_attention",
-            "summary": {"confirmed_training_success": False, "target_count": 0, "trained_count": 0, "failure_count": 0},
+            "summary": {
+                "confirmed_training_success": False,
+                "target_count": 0,
+                "trained_count": 0,
+                "failure_count": 0,
+            },
         },
     )
-    _write_json(health_root / "health_gates_latest.json", {"hard_gate_triggered": False})
+    _write_json(
+        health_root / "health_gates_latest.json", {"hard_gate_triggered": False}
+    )
     _write_json(health_root / "paper_performance_latest.json", {"sleeve_latest": []})
     _write_json(
         health_root / "roster_resilience_planner_latest.json",
         {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": False}},
     )
-    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "calibration_abstention_control_latest.json",
+        {"overall_status": "ready"},
+    )
     experiments_root.mkdir(parents=True, exist_ok=True)
     (experiments_root / "experiment_registry.jsonl").write_text(
         json.dumps(
@@ -812,7 +1025,10 @@ def test_build_payload_rewards_launch_ready_coverage_and_stronger_provisional_li
 
     assert improvement_by_key["promotion_coverage"]["status"] == "needs_work"
     assert improvement_by_key["promotion_coverage"]["priority"] == 1
-    assert improvement_by_key["promotion_coverage"]["metric"]["coverage_launch_ready"] is True
+    assert (
+        improvement_by_key["promotion_coverage"]["metric"]["coverage_launch_ready"]
+        is True
+    )
     assert improvement_by_key["label_and_abstention_calibration"]["status"] == "ready"
     assert payload["immutable_lineage"]["stronger_provisional_lineage_ready"] is True
     assert payload["immutable_lineage"]["experiment_bundle_seeded"] is True
@@ -823,7 +1039,9 @@ def test_build_payload_rewards_launch_ready_coverage_and_stronger_provisional_li
     assert payload["immutable_lineage"]["hash_bundle_complete"] is False
 
 
-def test_build_payload_treats_guarded_ingestion_and_signed_replay_bundle_as_recoverable(tmp_path: Path) -> None:
+def test_build_payload_treats_guarded_ingestion_and_signed_replay_bundle_as_recoverable(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
@@ -841,14 +1059,26 @@ def test_build_payload_treats_guarded_ingestion_and_signed_replay_bundle_as_reco
             "active_registry_seeded": [{"bot_id": f"bot_{idx}"} for idx in range(12)],
         },
     )
-    _write_json(health_root / "training_label_audit_latest.json", {"top_actions": [], "recommendation_counts": {}})
+    _write_json(
+        health_root / "training_label_audit_latest.json",
+        {"top_actions": [], "recommendation_counts": {}},
+    )
     _write_json(
         health_root / "runtime_training_snapshot_latest.json",
-        {"timestamp_utc": now.isoformat(), "row_count": 2200, "sequence_count": 24, "coverage": {"top_modes": [], "top_symbols": []}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "row_count": 2200,
+            "sequence_count": 24,
+            "coverage": {"top_modes": [], "top_symbols": []},
+        },
     )
     _write_json(
         walk_root / "promotion_readiness_latest.json",
-        {"promote_ok": False, "considered_bots": 0, "thresholds": {"min_considered_bots": 4}},
+        {
+            "promote_ok": False,
+            "considered_bots": 0,
+            "thresholds": {"min_considered_bots": 4},
+        },
     )
     _write_json(
         walk_root / "coverage_gap_closer_latest.json",
@@ -885,8 +1115,14 @@ def test_build_payload_treats_guarded_ingestion_and_signed_replay_bundle_as_reco
             "point_in_time_contract": {"dataset_join_keys": ["snapshot_id", "symbol"]},
         },
     )
-    _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": True, "overall_status": "ready"})
-    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "ready", "weak_sleeve_count": 0})
+    _write_json(
+        tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json",
+        {"ok": True, "overall_status": "ready"},
+    )
+    _write_json(
+        tmp_path / "governance" / "research" / "decay_monitor_latest.json",
+        {"overall_status": "ready", "weak_sleeve_count": 0},
+    )
     _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
     _write_json(
         health_root / "training_lineage_manifest_latest.json",
@@ -907,15 +1143,29 @@ def test_build_payload_treats_guarded_ingestion_and_signed_replay_bundle_as_reco
             "overall_status": "blocked",
             "recovery_state": "recovering_under_guard",
             "recovery_quality_score": 96.0,
-            "backpressure": {"estimated_core_drain_minutes": None, "estimated_total_drain_minutes": None},
-            "storage": {"retention_debt_gb": 0.0, "backlog_drain_status": "drain_active"},
+            "backpressure": {
+                "estimated_core_drain_minutes": None,
+                "estimated_total_drain_minutes": None,
+            },
+            "storage": {
+                "retention_debt_gb": 0.0,
+                "backlog_drain_status": "drain_active",
+            },
             "bounded_recovery_contract": {"active": True},
             "top_actions": [],
         },
     )
     _write_json(
         health_root / "training_report_latest.json",
-        {"overall_status": "blocked", "summary": {"confirmed_training_success": False, "target_count": 0, "trained_count": 0, "failure_count": 0}},
+        {
+            "overall_status": "blocked",
+            "summary": {
+                "confirmed_training_success": False,
+                "target_count": 0,
+                "trained_count": 0,
+                "failure_count": 0,
+            },
+        },
     )
     _write_json(health_root / "health_gates_latest.json", {"hard_gate_triggered": True})
     _write_json(health_root / "paper_performance_latest.json", {"sleeve_latest": []})
@@ -923,7 +1173,10 @@ def test_build_payload_treats_guarded_ingestion_and_signed_replay_bundle_as_reco
         health_root / "roster_resilience_planner_latest.json",
         {"bench": {"bench_depth": 8}, "a_plus_contract": {"a_plus_ready": True}},
     )
-    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "calibration_abstention_control_latest.json",
+        {"overall_status": "ready"},
+    )
 
     payload = src.build_payload(tmp_path)
 
@@ -936,7 +1189,9 @@ def test_build_payload_treats_guarded_ingestion_and_signed_replay_bundle_as_reco
     assert payload["training_quality_score"] >= 80.0
 
 
-def test_build_payload_trusts_sql_overlay_and_held_out_canary_progress(tmp_path: Path) -> None:
+def test_build_payload_trusts_sql_overlay_and_held_out_canary_progress(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
@@ -954,7 +1209,10 @@ def test_build_payload_trusts_sql_overlay_and_held_out_canary_progress(tmp_path:
             "active_stale_diagnostics": [],
         },
     )
-    _write_json(health_root / "training_label_audit_latest.json", {"top_actions": [], "recommendation_counts": {}})
+    _write_json(
+        health_root / "training_label_audit_latest.json",
+        {"top_actions": [], "recommendation_counts": {}},
+    )
     _write_json(
         health_root / "runtime_training_snapshot_latest.json",
         {
@@ -967,7 +1225,14 @@ def test_build_payload_trusts_sql_overlay_and_held_out_canary_progress(tmp_path:
             },
         },
     )
-    _write_json(walk_root / "promotion_readiness_latest.json", {"promote_ok": False, "considered_bots": 2, "thresholds": {"min_considered_bots": 4}})
+    _write_json(
+        walk_root / "promotion_readiness_latest.json",
+        {
+            "promote_ok": False,
+            "considered_bots": 2,
+            "thresholds": {"min_considered_bots": 4},
+        },
+    )
     _write_json(health_root / "promotion_quality_gate_latest.json", {"ok": True})
     _write_json(
         champion_root / "promotion_packet_latest.json",
@@ -982,8 +1247,19 @@ def test_build_payload_trusts_sql_overlay_and_held_out_canary_progress(tmp_path:
             "point_in_time_contract": {"dataset_join_keys": ["snapshot_id", "symbol"]},
         },
     )
-    _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": True, "overall_status": "ready", "family_size": 8, "correction_method": "bonferroni"})
-    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "ready", "weak_sleeve_count": 0})
+    _write_json(
+        tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "family_size": 8,
+            "correction_method": "bonferroni",
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "research" / "decay_monitor_latest.json",
+        {"overall_status": "ready", "weak_sleeve_count": 0},
+    )
     _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
     _write_json(
         health_root / "training_lineage_manifest_latest.json",
@@ -1055,10 +1331,18 @@ def test_build_payload_trusts_sql_overlay_and_held_out_canary_progress(tmp_path:
             "data_quality_ok": True,
         },
     )
-    _write_json(health_root / "health_gates_latest.json", {"hard_gate_triggered": False})
+    _write_json(
+        health_root / "health_gates_latest.json", {"hard_gate_triggered": False}
+    )
     _write_json(health_root / "paper_performance_latest.json", {"sleeve_latest": []})
-    _write_json(health_root / "roster_resilience_planner_latest.json", {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": True}})
-    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "roster_resilience_planner_latest.json",
+        {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": True}},
+    )
+    _write_json(
+        health_root / "calibration_abstention_control_latest.json",
+        {"overall_status": "ready"},
+    )
 
     payload = src.build_payload(tmp_path)
     improvement_by_key = {row["key"]: row for row in payload["improvements"]}
@@ -1075,7 +1359,9 @@ def test_build_payload_trusts_sql_overlay_and_held_out_canary_progress(tmp_path:
     assert "training_not_confirmed" not in failure_buckets
 
 
-def test_build_payload_counts_artifact_backed_active_supportability(tmp_path: Path) -> None:
+def test_build_payload_counts_artifact_backed_active_supportability(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
@@ -1084,14 +1370,20 @@ def test_build_payload_counts_artifact_backed_active_supportability(tmp_path: Pa
         health_root / "training_registry_audit_latest.json",
         {
             "registry_active_bots": 4,
-            "supportability_counts": {"artifact_backed_active": 3, "supportable_active": 1},
+            "supportability_counts": {
+                "artifact_backed_active": 3,
+                "supportable_active": 1,
+            },
             "tier_counts": {"active_stale": 3},
             "active_sample_starved": [],
             "active_quality_failed": [],
             "active_stale_diagnostics": [{"bot_id": "brain_refinery_v10_seasonal"}],
         },
     )
-    _write_json(health_root / "training_label_audit_latest.json", {"top_actions": [], "recommendation_counts": {}})
+    _write_json(
+        health_root / "training_label_audit_latest.json",
+        {"top_actions": [], "recommendation_counts": {}},
+    )
     _write_json(
         health_root / "runtime_training_snapshot_latest.json",
         {
@@ -1103,7 +1395,11 @@ def test_build_payload_counts_artifact_backed_active_supportability(tmp_path: Pa
     )
     _write_json(
         walk_root / "promotion_readiness_latest.json",
-        {"promote_ok": True, "considered_bots": 4, "thresholds": {"min_considered_bots": 4}},
+        {
+            "promote_ok": True,
+            "considered_bots": 4,
+            "thresholds": {"min_considered_bots": 4},
+        },
     )
     _write_json(health_root / "promotion_quality_gate_latest.json", {"ok": True})
     _write_json(
@@ -1115,21 +1411,50 @@ def test_build_payload_counts_artifact_backed_active_supportability(tmp_path: Pa
             "point_in_time_contract": {"dataset_join_keys": ["snapshot_id", "symbol"]},
         },
     )
-    _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": True, "overall_status": "ready"})
-    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "ready"})
+    _write_json(
+        tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json",
+        {"ok": True, "overall_status": "ready"},
+    )
+    _write_json(
+        tmp_path / "governance" / "research" / "decay_monitor_latest.json",
+        {"overall_status": "ready"},
+    )
     _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
-        {"overall_status": "ready", "backpressure": {}, "storage": {"retention_debt_gb": 0.0}},
+        {
+            "overall_status": "ready",
+            "backpressure": {},
+            "storage": {"retention_debt_gb": 0.0},
+        },
     )
-    experiment_path = tmp_path / "governance" / "experiments" / "experiment_registry.jsonl"
+    experiment_path = (
+        tmp_path / "governance" / "experiments" / "experiment_registry.jsonl"
+    )
     experiment_path.parent.mkdir(parents=True, exist_ok=True)
-    experiment_path.write_text(json.dumps({"experiment_id": "exp_ok", "replayability": {"exact_replay_ready": True}}) + "\n", encoding="utf-8")
-    _write_json(health_root / "training_report_latest.json", {"overall_status": "ready", "summary": {"confirmed_training_success": True}})
-    _write_json(health_root / "health_gates_latest.json", {"hard_gate_triggered": False})
+    experiment_path.write_text(
+        json.dumps(
+            {"experiment_id": "exp_ok", "replayability": {"exact_replay_ready": True}}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _write_json(
+        health_root / "training_report_latest.json",
+        {"overall_status": "ready", "summary": {"confirmed_training_success": True}},
+    )
+    _write_json(
+        health_root / "health_gates_latest.json", {"hard_gate_triggered": False}
+    )
     _write_json(health_root / "paper_performance_latest.json", {"sleeve_latest": []})
-    _write_json(health_root / "roster_resilience_planner_latest.json", {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": True}})
-    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "roster_resilience_planner_latest.json",
+        {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": True}},
+    )
+    _write_json(
+        health_root / "calibration_abstention_control_latest.json",
+        {"overall_status": "ready"},
+    )
 
     payload = src.build_payload(tmp_path)
 
@@ -1137,7 +1462,9 @@ def test_build_payload_counts_artifact_backed_active_supportability(tmp_path: Pa
     assert payload["supportability"]["active_supportability_score"] == 100.0
 
 
-def test_build_payload_softens_guarded_storage_recovery_and_provisional_coverage_seed(tmp_path: Path) -> None:
+def test_build_payload_softens_guarded_storage_recovery_and_provisional_coverage_seed(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
@@ -1153,7 +1480,10 @@ def test_build_payload_softens_guarded_storage_recovery_and_provisional_coverage
             "active_stale_diagnostics": [],
         },
     )
-    _write_json(health_root / "training_label_audit_latest.json", {"top_actions": [], "recommendation_counts": {}})
+    _write_json(
+        health_root / "training_label_audit_latest.json",
+        {"top_actions": [], "recommendation_counts": {}},
+    )
     _write_json(
         health_root / "runtime_training_snapshot_latest.json",
         {
@@ -1197,7 +1527,10 @@ def test_build_payload_softens_guarded_storage_recovery_and_provisional_coverage
             "correction_method": "benjamini_hochberg_fdr",
         },
     )
-    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "ready", "weak_sleeve_count": 0})
+    _write_json(
+        tmp_path / "governance" / "research" / "decay_monitor_latest.json",
+        {"overall_status": "ready", "weak_sleeve_count": 0},
+    )
     _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
     _write_json(
         health_root / "training_lineage_manifest_latest.json",
@@ -1220,7 +1553,10 @@ def test_build_payload_softens_guarded_storage_recovery_and_provisional_coverage
             "overall_status": "degraded",
             "severity": "critical",
             "recovery_state": "recovering_under_guard",
-            "backpressure": {"estimated_core_drain_minutes": None, "estimated_total_drain_minutes": None},
+            "backpressure": {
+                "estimated_core_drain_minutes": None,
+                "estimated_total_drain_minutes": None,
+            },
             "storage": {"retention_debt_gb": 0.0},
             "bounded_recovery_contract": {"active": True},
             "top_actions": ["keep draining backlog"],
@@ -1230,20 +1566,35 @@ def test_build_payload_softens_guarded_storage_recovery_and_provisional_coverage
         health_root / "training_report_latest.json",
         {
             "overall_status": "needs_attention",
-            "summary": {"confirmed_training_success": False, "target_count": 0, "trained_count": 0, "failure_count": 0},
+            "summary": {
+                "confirmed_training_success": False,
+                "target_count": 0,
+                "trained_count": 0,
+                "failure_count": 0,
+            },
         },
     )
-    _write_json(health_root / "health_gates_latest.json", {"hard_gate_triggered": False})
+    _write_json(
+        health_root / "health_gates_latest.json", {"hard_gate_triggered": False}
+    )
     _write_json(health_root / "paper_performance_latest.json", {"sleeve_latest": []})
     _write_json(
         health_root / "roster_resilience_planner_latest.json",
         {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": True}},
     )
-    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
-    experiment_path = tmp_path / "governance" / "experiments" / "experiment_registry.jsonl"
+    _write_json(
+        health_root / "calibration_abstention_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    experiment_path = (
+        tmp_path / "governance" / "experiments" / "experiment_registry.jsonl"
+    )
     experiment_path.parent.mkdir(parents=True, exist_ok=True)
     experiment_path.write_text(
-        json.dumps({"experiment_id": "exp_ok", "replayability": {"exact_replay_ready": True}}) + "\n",
+        json.dumps(
+            {"experiment_id": "exp_ok", "replayability": {"exact_replay_ready": True}}
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -1257,7 +1608,9 @@ def test_build_payload_softens_guarded_storage_recovery_and_provisional_coverage
     assert payload["recoverable_blocked_keys"] == []
 
 
-def test_build_payload_promotes_staged_supportability_and_strong_coverage_queue(tmp_path: Path) -> None:
+def test_build_payload_promotes_staged_supportability_and_strong_coverage_queue(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
@@ -1274,13 +1627,31 @@ def test_build_payload_promotes_staged_supportability_and_strong_coverage_queue(
             "tier_counts": {"active_stale": 25},
             "active_sample_starved": [],
             "active_quality_failed": [],
-            "active_stale_diagnostics": [{"bot_id": f"bot_{idx}", "supportability_status": "staged_support_recovery"} for idx in range(21)]
-            + [{"bot_id": f"strong_{idx}", "registry_quality_score": 0.6, "registry_test_accuracy": 0.76} for idx in range(4)],
+            "active_stale_diagnostics": [
+                {
+                    "bot_id": f"bot_{idx}",
+                    "supportability_status": "staged_support_recovery",
+                }
+                for idx in range(21)
+            ]
+            + [
+                {
+                    "bot_id": f"strong_{idx}",
+                    "registry_quality_score": 0.6,
+                    "registry_test_accuracy": 0.76,
+                }
+                for idx in range(4)
+            ],
             "active_registry_seeded": [{"bot_id": f"strong_{idx}"} for idx in range(4)],
-            "active_staged_support_recovery": [{"bot_id": f"bot_{idx}"} for idx in range(21)],
+            "active_staged_support_recovery": [
+                {"bot_id": f"bot_{idx}"} for idx in range(21)
+            ],
         },
     )
-    _write_json(health_root / "training_label_audit_latest.json", {"top_actions": [], "recommendation_counts": {}})
+    _write_json(
+        health_root / "training_label_audit_latest.json",
+        {"top_actions": [], "recommendation_counts": {}},
+    )
     _write_json(
         health_root / "runtime_training_snapshot_latest.json",
         {
@@ -1302,16 +1673,40 @@ def test_build_payload_promotes_staged_supportability_and_strong_coverage_queue(
     )
     _write_json(
         walk_root / "promotion_readiness_latest.json",
-        {"promote_ok": False, "considered_bots": 0, "thresholds": {"min_considered_bots": 4}},
+        {
+            "promote_ok": False,
+            "considered_bots": 0,
+            "thresholds": {"min_considered_bots": 4},
+        },
     )
     _write_json(
         walk_root / "coverage_seed_latest.json",
         {
             "seed_queue": [
-                {"bot_id": "a", "test_accuracy": 0.82, "quality_score": 0.91, "strong_seed_candidate": True},
-                {"bot_id": "b", "test_accuracy": 0.79, "quality_score": 0.74, "strong_seed_candidate": True},
-                {"bot_id": "c", "test_accuracy": 0.76, "quality_score": 0.65, "strong_seed_candidate": True},
-                {"bot_id": "d", "test_accuracy": 0.75, "quality_score": 0.59, "strong_seed_candidate": True},
+                {
+                    "bot_id": "a",
+                    "test_accuracy": 0.82,
+                    "quality_score": 0.91,
+                    "strong_seed_candidate": True,
+                },
+                {
+                    "bot_id": "b",
+                    "test_accuracy": 0.79,
+                    "quality_score": 0.74,
+                    "strong_seed_candidate": True,
+                },
+                {
+                    "bot_id": "c",
+                    "test_accuracy": 0.76,
+                    "quality_score": 0.65,
+                    "strong_seed_candidate": True,
+                },
+                {
+                    "bot_id": "d",
+                    "test_accuracy": 0.75,
+                    "quality_score": 0.59,
+                    "strong_seed_candidate": True,
+                },
             ],
             "coverage_shortfall_bots": 4,
         },
@@ -1351,8 +1746,14 @@ def test_build_payload_promotes_staged_supportability_and_strong_coverage_queue(
             "lane_partitions": [{"lane": "aggressive", "row_count": 720}],
         },
     )
-    _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": True, "overall_status": "ready"})
-    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "ready", "weak_sleeve_count": 0})
+    _write_json(
+        tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json",
+        {"ok": True, "overall_status": "ready"},
+    )
+    _write_json(
+        tmp_path / "governance" / "research" / "decay_monitor_latest.json",
+        {"overall_status": "ready", "weak_sleeve_count": 0},
+    )
     _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
     _write_json(
         health_root / "training_lineage_manifest_latest.json",
@@ -1376,7 +1777,10 @@ def test_build_payload_promotes_staged_supportability_and_strong_coverage_queue(
             "severity": "critical",
             "recovery_state": "stabilized_recovery",
             "recovery_quality_score": 92.0,
-            "backpressure": {"estimated_core_drain_minutes": None, "estimated_total_drain_minutes": None},
+            "backpressure": {
+                "estimated_core_drain_minutes": None,
+                "estimated_total_drain_minutes": None,
+            },
             "storage": {"retention_debt_gb": 0.0},
             "queue_watermarks": {"breaches": {"hard": []}},
             "ingestion_pressure": {
@@ -1390,7 +1794,12 @@ def test_build_payload_promotes_staged_supportability_and_strong_coverage_queue(
         health_root / "training_report_latest.json",
         {
             "overall_status": "needs_attention",
-            "summary": {"confirmed_training_success": False, "target_count": 0, "trained_count": 0, "failure_count": 0},
+            "summary": {
+                "confirmed_training_success": False,
+                "target_count": 0,
+                "trained_count": 0,
+                "failure_count": 0,
+            },
         },
     )
     _write_json(
@@ -1414,7 +1823,10 @@ def test_build_payload_promotes_staged_supportability_and_strong_coverage_queue(
         health_root / "roster_resilience_planner_latest.json",
         {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": True}},
     )
-    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "calibration_abstention_control_latest.json",
+        {"overall_status": "ready"},
+    )
 
     payload = src.build_payload(tmp_path)
     improvement_by_key = {row["key"]: row for row in payload["improvements"]}
@@ -1430,7 +1842,9 @@ def test_build_payload_promotes_staged_supportability_and_strong_coverage_queue(
     assert payload["rollout"]["coverage_quality_ready_count"] == 4
 
 
-def test_build_payload_counts_full_contained_stale_roster_beyond_preview_cap(tmp_path: Path) -> None:
+def test_build_payload_counts_full_contained_stale_roster_beyond_preview_cap(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     bot_ids = [f"bot_{idx}" for idx in range(100)]
@@ -1446,7 +1860,9 @@ def test_build_payload_counts_full_contained_stale_roster_beyond_preview_cap(tmp
             "active_quality_failed_bot_ids": [],
             "active_quality_failed": [],
             "active_quality_probation_isolated_bot_ids": bot_ids,
-            "active_quality_probation_isolated": [{"bot_id": bot_id} for bot_id in bot_ids[:25]],
+            "active_quality_probation_isolated": [
+                {"bot_id": bot_id} for bot_id in bot_ids[:25]
+            ],
             "active_unsupported_stale_diagnostics_bot_ids": [],
         },
     )
@@ -1480,48 +1896,122 @@ def test_build_payload_uses_stronger_provisional_accuracy_floor(tmp_path: Path) 
             "active_sample_starved": [],
             "active_quality_failed": [],
             "active_stale_diagnostics": [
-                {"bot_id": "bot_a", "registry_quality_score": 0.31, "registry_test_accuracy": 0.74},
-                {"bot_id": "bot_b", "registry_quality_score": 0.31, "registry_test_accuracy": 0.75},
-                {"bot_id": "bot_c", "candidate_quality_score": 0.59, "candidate_test_accuracy": 0.76},
-                {"bot_id": "bot_d", "registry_quality_score": 0.18, "registry_test_accuracy": 0.62},
+                {
+                    "bot_id": "bot_a",
+                    "registry_quality_score": 0.31,
+                    "registry_test_accuracy": 0.74,
+                },
+                {
+                    "bot_id": "bot_b",
+                    "registry_quality_score": 0.31,
+                    "registry_test_accuracy": 0.75,
+                },
+                {
+                    "bot_id": "bot_c",
+                    "candidate_quality_score": 0.59,
+                    "candidate_test_accuracy": 0.76,
+                },
+                {
+                    "bot_id": "bot_d",
+                    "registry_quality_score": 0.18,
+                    "registry_test_accuracy": 0.62,
+                },
             ],
         },
     )
-    _write_json(health_root / "training_label_audit_latest.json", {"top_actions": [], "recommendation_counts": {}})
+    _write_json(
+        health_root / "training_label_audit_latest.json",
+        {"top_actions": [], "recommendation_counts": {}},
+    )
     _write_json(
         health_root / "runtime_training_snapshot_latest.json",
-        {"timestamp_utc": now.isoformat(), "row_count": 1600, "sequence_count": 18, "coverage": {"top_modes": [], "top_symbols": []}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "row_count": 1600,
+            "sequence_count": 18,
+            "coverage": {"top_modes": [], "top_symbols": []},
+        },
     )
-    _write_json(walk_root / "promotion_readiness_latest.json", {"promote_ok": True, "considered_bots": 4, "thresholds": {"min_considered_bots": 4}})
+    _write_json(
+        walk_root / "promotion_readiness_latest.json",
+        {
+            "promote_ok": True,
+            "considered_bots": 4,
+            "thresholds": {"min_considered_bots": 4},
+        },
+    )
     _write_json(health_root / "promotion_quality_gate_latest.json", {"ok": True})
-    _write_json(champion_root / "promotion_packet_latest.json", {"packet_sha256": "packet", "dataset": {"rows_sha256": "rows"}})
+    _write_json(
+        champion_root / "promotion_packet_latest.json",
+        {"packet_sha256": "packet", "dataset": {"rows_sha256": "rows"}},
+    )
     _write_json(
         tmp_path / "governance" / "feature_store" / "latest.json",
-        {"ok": True, "dataset_contract": {"rows_sha256": "rows"}, "point_in_time_contract": {"dataset_join_keys": ["snapshot_id"]}},
+        {
+            "ok": True,
+            "dataset_contract": {"rows_sha256": "rows"},
+            "point_in_time_contract": {"dataset_join_keys": ["snapshot_id"]},
+        },
     )
-    _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": True, "overall_status": "ready"})
-    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "ready"})
+    _write_json(
+        tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json",
+        {"ok": True, "overall_status": "ready"},
+    )
+    _write_json(
+        tmp_path / "governance" / "research" / "decay_monitor_latest.json",
+        {"overall_status": "ready"},
+    )
     _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
-    _write_json(health_root / "training_lineage_manifest_latest.json", {"lineage_contract_ready": True, "exact_replay_ready": True, "feature_store_lineage_ok": True, "lineage_score": 100.0})
-    _write_json(health_root / "ingestion_storage_control_latest.json", {"overall_status": "ready", "storage": {"retention_debt_gb": 0.0}})
-    _write_json(health_root / "training_report_latest.json", {"overall_status": "ready", "summary": {"confirmed_training_success": True}})
-    _write_json(health_root / "health_gates_latest.json", {"hard_gate_triggered": False})
+    _write_json(
+        health_root / "training_lineage_manifest_latest.json",
+        {
+            "lineage_contract_ready": True,
+            "exact_replay_ready": True,
+            "feature_store_lineage_ok": True,
+            "lineage_score": 100.0,
+        },
+    )
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {"overall_status": "ready", "storage": {"retention_debt_gb": 0.0}},
+    )
+    _write_json(
+        health_root / "training_report_latest.json",
+        {"overall_status": "ready", "summary": {"confirmed_training_success": True}},
+    )
+    _write_json(
+        health_root / "health_gates_latest.json", {"hard_gate_triggered": False}
+    )
     _write_json(health_root / "paper_performance_latest.json", {"sleeve_latest": []})
-    _write_json(health_root / "roster_resilience_planner_latest.json", {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": True}})
-    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "roster_resilience_planner_latest.json",
+        {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": True}},
+    )
+    _write_json(
+        health_root / "calibration_abstention_control_latest.json",
+        {"overall_status": "ready"},
+    )
 
     payload = src.build_payload(tmp_path)
 
-    assert payload["targeted_actions"]["provisional_registry_backed_bot_ids"] == ["bot_b", "bot_c"]
+    assert payload["targeted_actions"]["provisional_registry_backed_bot_ids"] == [
+        "bot_b",
+        "bot_c",
+    ]
 
 
-def test_build_payload_reconciles_ingestion_pending_hard_gate_when_backpressure_is_green(tmp_path: Path) -> None:
+def test_build_payload_reconciles_ingestion_pending_hard_gate_when_backpressure_is_green(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
     champion_root = tmp_path / "governance" / "champion_challenger"
 
-    _write_json(health_root / "training_registry_audit_latest.json", {"registry_active_bots": 4, "supportability_counts": {}, "tier_counts": {}})
+    _write_json(
+        health_root / "training_registry_audit_latest.json",
+        {"registry_active_bots": 4, "supportability_counts": {}, "tier_counts": {}},
+    )
     _write_json(health_root / "training_label_audit_latest.json", {"top_actions": []})
     _write_json(
         health_root / "runtime_training_snapshot_latest.json",
@@ -1529,18 +2019,46 @@ def test_build_payload_reconciles_ingestion_pending_hard_gate_when_backpressure_
             "timestamp_utc": now.isoformat(),
             "row_count": 1200,
             "sequence_count": 12,
-            "coverage": {"top_modes": [{"mode": "shadow_crypto", "row_count": 500}], "top_symbols": [{"symbol": "BTC-USD", "row_count": 100}]},
+            "coverage": {
+                "top_modes": [{"mode": "shadow_crypto", "row_count": 500}],
+                "top_symbols": [{"symbol": "BTC-USD", "row_count": 100}],
+            },
         },
     )
-    _write_json(walk_root / "promotion_readiness_latest.json", {"promote_ok": True, "considered_bots": 4, "thresholds": {"min_considered_bots": 4}})
+    _write_json(
+        walk_root / "promotion_readiness_latest.json",
+        {
+            "promote_ok": True,
+            "considered_bots": 4,
+            "thresholds": {"min_considered_bots": 4},
+        },
+    )
     _write_json(health_root / "promotion_quality_gate_latest.json", {"ok": True})
-    _write_json(champion_root / "promotion_packet_latest.json", {"packet_sha256": "packet", "dataset": {"rows_sha256": "rows"}})
+    _write_json(
+        champion_root / "promotion_packet_latest.json",
+        {"packet_sha256": "packet", "dataset": {"rows_sha256": "rows"}},
+    )
     _write_json(
         tmp_path / "governance" / "feature_store" / "latest.json",
-        {"ok": True, "dataset_contract": {"rows_sha256": "rows"}, "point_in_time_contract": {"dataset_join_keys": ["snapshot_id"]}},
+        {
+            "ok": True,
+            "dataset_contract": {"rows_sha256": "rows"},
+            "point_in_time_contract": {"dataset_join_keys": ["snapshot_id"]},
+        },
     )
-    _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": True, "overall_status": "ready", "family_size": 8, "correction_method": "benjamini_hochberg_fdr"})
-    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "ready", "weak_sleeve_count": 0})
+    _write_json(
+        tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json",
+        {
+            "ok": True,
+            "overall_status": "ready",
+            "family_size": 8,
+            "correction_method": "benjamini_hochberg_fdr",
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "research" / "decay_monitor_latest.json",
+        {"overall_status": "ready", "weak_sleeve_count": 0},
+    )
     _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
     _write_json(
         health_root / "training_lineage_manifest_latest.json",
@@ -1567,7 +2085,10 @@ def test_build_payload_reconciles_ingestion_pending_hard_gate_when_backpressure_
             "storage": {"retention_debt_gb": 0.0},
         },
     )
-    _write_json(health_root / "training_report_latest.json", {"overall_status": "ready", "summary": {"confirmed_training_success": True}})
+    _write_json(
+        health_root / "training_report_latest.json",
+        {"overall_status": "ready", "summary": {"confirmed_training_success": True}},
+    )
     _write_json(
         health_root / "health_gates_latest.json",
         {
@@ -1589,12 +2110,23 @@ def test_build_payload_reconciles_ingestion_pending_hard_gate_when_backpressure_
         },
     )
     _write_json(health_root / "paper_performance_latest.json", {"sleeve_latest": []})
-    _write_json(health_root / "roster_resilience_planner_latest.json", {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": True}})
-    _write_json(health_root / "calibration_abstention_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "roster_resilience_planner_latest.json",
+        {"bench": {"bench_depth": 5}, "a_plus_contract": {"a_plus_ready": True}},
+    )
+    _write_json(
+        health_root / "calibration_abstention_control_latest.json",
+        {"overall_status": "ready"},
+    )
 
     payload = src.build_payload(tmp_path)
     improvement_by_key = {row["key"]: row for row in payload["improvements"]}
 
     assert improvement_by_key["ingestion_health_guard"]["status"] == "ready"
-    assert improvement_by_key["ingestion_health_guard"]["metric"]["ingestion_pending_training_reconciled"] is True
+    assert (
+        improvement_by_key["ingestion_health_guard"]["metric"][
+            "ingestion_pending_training_reconciled"
+        ]
+        is True
+    )
     assert "ingestion_health_guard" not in payload["top_priorities"]

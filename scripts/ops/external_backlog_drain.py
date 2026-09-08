@@ -107,7 +107,8 @@ def _preservable_service_request(path: Path, *, now_utc: datetime) -> dict[str, 
     payload = _load_json(path)
     if not payload or payload.get("active") is False:
         return {}
-    if str(payload.get("request_kind") or "") != "backpressure_drainer_fleet":
+    request_kind = str(payload.get("request_kind") or "")
+    if request_kind not in {"backpressure_drainer_fleet", "external_backlog_drain"}:
         return {}
     expires_utc = _parse_iso_utc(payload.get("expires_utc"))
     if expires_utc is not None and expires_utc <= now_utc:
@@ -118,6 +119,7 @@ def _preservable_service_request(path: Path, *, now_utc: datetime) -> dict[str, 
     preserved = dict(payload)
     preserved["preserved_existing_request"] = True
     preserved["preserved_by"] = "external_backlog_drain"
+    preserved["preserved_without_lease_extension"] = True
     return preserved
 
 
@@ -934,6 +936,57 @@ _MEMORY_SAFETY_WORKER_KEYS = (
 )
 
 
+def _load_runtime_worker_caps(project_root: Path) -> dict[str, str]:
+    path = project_root / "config" / ".env.runtime_resource_guard_override"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+
+    caps: dict[str, str] = {}
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.removeprefix("export ").strip()
+        if key not in _MEMORY_SAFETY_WORKER_KEYS:
+            continue
+        value = raw_value.strip().strip("\"'")
+        if _safe_int(value, 0) > 0:
+            caps[key] = value
+    return caps
+
+
+def _apply_runtime_worker_caps(
+    env: dict[str, str],
+    runtime_caps: dict[str, str] | None = None,
+) -> tuple[dict[str, str], dict[str, dict[str, int]]]:
+    capped = dict(env)
+    applied: dict[str, dict[str, int]] = {}
+    for key in _MEMORY_SAFETY_WORKER_KEYS:
+        candidate_caps = [
+            cap
+            for cap in (
+                _safe_int((runtime_caps or {}).get(key), 0),
+                _safe_int(os.getenv(key), 0),
+            )
+            if cap > 0
+        ]
+        runtime_cap = min(candidate_caps) if candidate_caps else 0
+        current = _safe_int(capped.get(key), 0)
+        if runtime_cap <= 0 or (current > 0 and current <= runtime_cap):
+            continue
+        effective = runtime_cap if current <= 0 else min(current, runtime_cap)
+        capped[key] = str(effective)
+        applied[key] = {
+            "requested": current,
+            "runtime_cap": runtime_cap,
+            "effective": effective,
+        }
+    return capped, applied
+
+
 def _apply_memory_safety_caps(project_root: Path, env: dict[str, str]) -> tuple[dict[str, str], dict[str, Any]]:
     memory = _load_json(project_root / "governance" / "health" / "memory_efficiency_control_latest.json")
     relief = (
@@ -1004,9 +1057,11 @@ def _drain_env(
     off_hours_active: bool,
     core_focus: dict[str, Any] | None = None,
     backpressure: dict[str, Any] | None = None,
+    runtime_worker_caps: dict[str, str] | None = None,
 ) -> tuple[str, dict[str, str]]:
     env = {str(key): str(value) for key, value in base_env.items() if str(key).strip()}
     if not off_hours_active:
+        env, _ = _apply_runtime_worker_caps(env, runtime_worker_caps)
         return "standard_guard", env
 
     prioritized_shards = _prioritized_shards_for_core_focus(core_focus)
@@ -1154,6 +1209,7 @@ def _drain_env(
                     "SQL_LINK_SERVICE_SHARD_CRYPTO_TRADING_MERGE_MAX_JSONL_ROWS": "250",
                 }
             )
+    env, _ = _apply_runtime_worker_caps(env, runtime_worker_caps)
     return "offhours_external_backlog_drain", _drop_empty_shard_path_filters(env)
 
 
@@ -1167,6 +1223,28 @@ def _write_service_request(
 ) -> dict[str, Any]:
     preserved = _preservable_service_request(path, now_utc=now_utc)
     if preserved:
+        if str(preserved.get("request_kind") or "") == "external_backlog_drain":
+            existing_env = (
+                dict(preserved.get("env_overrides"))
+                if isinstance(preserved.get("env_overrides"), dict)
+                else {}
+            )
+            downshifted: dict[str, dict[str, int]] = {}
+            for key in _MEMORY_SAFETY_WORKER_KEYS:
+                requested = _safe_int(drain_env.get(key), 0)
+                existing = _safe_int(existing_env.get(key), 0)
+                if requested <= 0 or existing <= 0 or requested >= existing:
+                    continue
+                existing_env[key] = str(requested)
+                downshifted[key] = {
+                    "previous": existing,
+                    "effective": requested,
+                }
+            if downshifted:
+                preserved["env_overrides"] = existing_env
+                preserved["resource_cap_downshift"] = downshifted
+                preserved["resource_caps_updated_at_utc"] = now_utc.isoformat()
+                _write_json(path, preserved)
         return preserved
 
     expires_utc = now_utc.timestamp() + max(float(wait_timeout_seconds), 900.0)
@@ -1451,12 +1529,14 @@ def build_payload(
     critical = str(governor_payload.get("profile") or "") == "critical_backpressure"
     planning_backpressure_before = _backpressure_with_storage_overlay(backpressure_before, storage_control_before)
     core_focus_before = _core_hotspots(planning_backpressure_before)
+    runtime_worker_caps = _load_runtime_worker_caps(project_root)
     drain_profile, drain_env = _drain_env(
         governor_payload.get("env_overrides") if isinstance(governor_payload.get("env_overrides"), dict) else {},
         critical=critical,
         off_hours_active=bool(window.get("active", False) or force_live_window),
         core_focus=core_focus_before,
         backpressure=planning_backpressure_before,
+        runtime_worker_caps=runtime_worker_caps,
     )
     drain_env, memory_safety_caps = _apply_memory_safety_caps(project_root, drain_env)
 
@@ -1526,6 +1606,7 @@ def build_payload(
                         off_hours_active=bool(window.get("active", False) or force_live_window),
                         core_focus=core_focus_before,
                         backpressure=planning_backpressure_before,
+                        runtime_worker_caps=runtime_worker_caps,
                     )
                     drain_env, memory_safety_caps = _apply_memory_safety_caps(project_root, drain_env)
 
@@ -1840,6 +1921,11 @@ def build_payload(
         "service_request_path": str(health_root / "sql_link_service_request_latest.json"),
         "service_request": service_request_payload,
         "retired_service_request": retired_service_request_payload,
+        "runtime_worker_caps": {
+            "source": str(project_root / "config" / ".env.runtime_resource_guard_override"),
+            "loaded": bool(runtime_worker_caps),
+            "values": dict(runtime_worker_caps),
+        },
         "memory_safety_caps": memory_safety_caps,
         "backpressure_before": before_snapshot,
         "backpressure_after": after_snapshot,

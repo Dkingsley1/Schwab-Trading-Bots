@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import gzip
 import json
 import os
+import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,16 +18,34 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, write_payload
+    from scripts.ops.long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        load_json,
+        write_payload,
+    )
 else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, write_payload
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "data_collection_storage_guard_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "data_collection_storage_guard_latest.json"
+)
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
+from core.storage_router import inspect_storage_path
+
 DEFAULT_EXTERNAL_ROOT = Path("/Volumes/BOT_LOGS/schwab_trading_bot")
 PROTECTED_VOLUME_PREFIXES = ("/Volumes/VIDEO",)
-SAFE_STALE_SUFFIXES = (".tmp", ".temp", ".part", ".partial", ".incomplete", ".download", ".swap", ".swp")
+SAFE_STALE_SUFFIXES = (
+    ".tmp",
+    ".temp",
+    ".part",
+    ".partial",
+    ".incomplete",
+    ".download",
+    ".swap",
+    ".swp",
+)
 SAFE_METADATA_NAMES = {".DS_Store"}
 DEFAULT_SPACE_RECOVERY_MAX_DELETE_GB = 8.0
 DEFAULT_SPACE_RECOVERY_TARGET_FREE_GB = 64.0
@@ -31,6 +53,11 @@ DEFAULT_SPACE_RECOVERY_MIN_AGE_HOURS = 6.0
 DEFAULT_SPACE_RECOVERY_CANDIDATE_LIMIT = 20000
 DEFAULT_SPACE_RECOVERY_SCAN_FILE_LIMIT = 200000
 DEFAULT_SPACE_RECOVERY_JUMBO_DUPLICATE_GB = 12.0
+DEFAULT_SPACE_RECOVERY_JUMBO_STATEFUL_DEBRIS_GB = 128.0
+STATEFUL_DEBRIS_REASONS = {
+    "old_stateful_corrupt_sqlite_artifact",
+    "old_stateful_failover_backup_artifact",
+}
 
 
 def _disk_usage(path: Path) -> dict[str, Any]:
@@ -68,8 +95,7 @@ def _gb(raw: int | float) -> float:
 
 
 def _is_protected_volume(path: Path) -> bool:
-    text = str(path.expanduser())
-    return any(text == prefix or text.startswith(prefix + "/") for prefix in PROTECTED_VOLUME_PREFIXES)
+    return inspect_storage_path(path).get("status") not in {"present", "missing"}
 
 
 def _is_within_root(path: Path, root: Path) -> bool:
@@ -80,7 +106,14 @@ def _is_within_root(path: Path, root: Path) -> bool:
         return False
 
 
-def _mode_for_space(*, available_gb: float, used_ratio: float, warn_gb: float, throttle_gb: float, critical_gb: float) -> str:
+def _mode_for_space(
+    *,
+    available_gb: float,
+    used_ratio: float,
+    warn_gb: float,
+    throttle_gb: float,
+    critical_gb: float,
+) -> str:
     if available_gb <= critical_gb or used_ratio >= 0.98:
         return "critical"
     if available_gb <= throttle_gb or used_ratio >= 0.94:
@@ -94,11 +127,23 @@ def _collector_kind(row: dict[str, Any]) -> str:
     kind = str(row.get("slot_kind") or "").strip().lower()
     role = str(row.get("bot_role") or "").strip().lower()
     label_contract = str(row.get("data_label_contract_version") or "").strip().lower()
-    collections = ",".join(str(item or "").strip().lower() for item in list(row.get("data_intake_collections") or []))
+    collections = ",".join(
+        str(item or "").strip().lower()
+        for item in list(row.get("data_intake_collections") or [])
+    )
     if (
         "quant" in kind
         or label_contract.startswith("quant_")
-        or any(token in collections for token in ("mlx_library", "mlx_graph", "mlx_snn", "mlx_vision", "esig_rough_path"))
+        or any(
+            token in collections
+            for token in (
+                "mlx_library",
+                "mlx_graph",
+                "mlx_snn",
+                "mlx_vision",
+                "esig_rough_path",
+            )
+        )
     ):
         return "quant_research"
     if "aggressive_intraday" in kind:
@@ -123,7 +168,11 @@ def _guard_profile(mode: str, kind: str) -> dict[str, Any]:
         return {
             "capture_mode": "full",
             "max_daily_storage_mb": 250 if kind == "aggressive_intraday" else 150,
-            "freshness_floor_seconds": 60 if kind == "aggressive_intraday" else (180 if kind == "options" else 300),
+            "freshness_floor_seconds": (
+                60
+                if kind == "aggressive_intraday"
+                else (180 if kind == "options" else 300)
+            ),
             "retention_profile": "",
             "sample_rate": 1.0,
         }
@@ -139,7 +188,11 @@ def _guard_profile(mode: str, kind: str) -> dict[str, Any]:
         return {
             "capture_mode": "sampled",
             "max_daily_storage_mb": 100 if kind == "aggressive_intraday" else 80,
-            "freshness_floor_seconds": 180 if kind == "aggressive_intraday" else (300 if kind == "options" else 600),
+            "freshness_floor_seconds": (
+                180
+                if kind == "aggressive_intraday"
+                else (300 if kind == "options" else 600)
+            ),
             "retention_profile": "hot_sampled_3d_warm_45d",
             "sample_rate": 0.5,
         }
@@ -155,15 +208,31 @@ def _guard_profile(mode: str, kind: str) -> dict[str, Any]:
         return {
             "capture_mode": "thin_sample",
             "max_daily_storage_mb": 50 if kind == "aggressive_intraday" else 40,
-            "freshness_floor_seconds": 600 if kind == "aggressive_intraday" else (900 if kind == "options" else 1200),
+            "freshness_floor_seconds": (
+                600
+                if kind == "aggressive_intraday"
+                else (900 if kind == "options" else 1200)
+            ),
             "retention_profile": "hot_thin_1d_warm_30d",
             "sample_rate": 0.2,
         }
     return {
         "capture_mode": "metadata_only",
-        "max_daily_storage_mb": 10 if kind == "quant_research" else (15 if kind == "aggressive_intraday" else 20),
-        "freshness_floor_seconds": 1800 if kind == "aggressive_intraday" else (1800 if kind == "options" else 3600),
-        "retention_profile": "hot_quant_metadata_6h_warm_7d" if kind == "quant_research" else "hot_metadata_12h_warm_14d",
+        "max_daily_storage_mb": (
+            10
+            if kind == "quant_research"
+            else (15 if kind == "aggressive_intraday" else 20)
+        ),
+        "freshness_floor_seconds": (
+            1800
+            if kind == "aggressive_intraday"
+            else (1800 if kind == "options" else 3600)
+        ),
+        "retention_profile": (
+            "hot_quant_metadata_6h_warm_7d"
+            if kind == "quant_research"
+            else "hot_metadata_12h_warm_14d"
+        ),
         "sample_rate": 0.03 if kind == "quant_research" else 0.05,
     }
 
@@ -209,42 +278,169 @@ def _refresh_summary(payload: dict[str, Any]) -> None:
     summary["total_bots"] = len(rows)
     summary["active_bots"] = len(active_rows)
     summary["inactive_bots"] = max(len(rows) - len(active_rows), 0)
-    summary["active_signal_sub_bots"] = sum(1 for row in active_rows if str(row.get("bot_role") or "") == "signal_sub_bot")
-    summary["active_infrastructure_sub_bots"] = sum(1 for row in active_rows if str(row.get("bot_role") or "") == "infrastructure_sub_bot")
-    summary["active_options_sub_bots"] = sum(1 for row in active_rows if str(row.get("bot_role") or "") == "options_sub_bot")
+    summary["active_signal_sub_bots"] = sum(
+        1 for row in active_rows if str(row.get("bot_role") or "") == "signal_sub_bot"
+    )
+    summary["active_infrastructure_sub_bots"] = sum(
+        1
+        for row in active_rows
+        if str(row.get("bot_role") or "") == "infrastructure_sub_bot"
+    )
+    summary["active_options_sub_bots"] = sum(
+        1 for row in active_rows if str(row.get("bot_role") or "") == "options_sub_bot"
+    )
     summary["inactive_signal_sub_bots"] = sum(
-        1 for row in rows if not bool(row.get("active", False)) and str(row.get("bot_role") or "") == "signal_sub_bot"
+        1
+        for row in rows
+        if not bool(row.get("active", False))
+        and str(row.get("bot_role") or "") == "signal_sub_bot"
     )
     summary["inactive_infrastructure_sub_bots"] = sum(
-        1 for row in rows if not bool(row.get("active", False)) and str(row.get("bot_role") or "") == "infrastructure_sub_bot"
+        1
+        for row in rows
+        if not bool(row.get("active", False))
+        and str(row.get("bot_role") or "") == "infrastructure_sub_bot"
     )
     summary["inactive_options_sub_bots"] = sum(
-        1 for row in rows if not bool(row.get("active", False)) and str(row.get("bot_role") or "") == "options_sub_bot"
+        1
+        for row in rows
+        if not bool(row.get("active", False))
+        and str(row.get("bot_role") or "") == "options_sub_bot"
     )
-    summary["data_collection_only_bots"] = sum(1 for row in rows if str(row.get("lifecycle_state") or "") == "data_collection_only")
-    summary["training_excluded_bots"] = sum(1 for row in rows if bool(row.get("training_excluded", False)))
-    summary["storage_guarded_collectors"] = sum(1 for row in rows if bool(row.get("data_collection_storage_guarded", False)))
+    summary["data_collection_only_bots"] = sum(
+        1
+        for row in rows
+        if str(row.get("lifecycle_state") or "") == "data_collection_only"
+    )
+    summary["training_excluded_bots"] = sum(
+        1 for row in rows if bool(row.get("training_excluded", False))
+    )
+    summary["storage_guarded_collectors"] = sum(
+        1 for row in rows if bool(row.get("data_collection_storage_guarded", False))
+    )
     summary["storage_guard_metadata_only_collectors"] = sum(
-        1 for row in rows if str(row.get("data_collection_capture_mode") or "") == "metadata_only"
+        1
+        for row in rows
+        if str(row.get("data_collection_capture_mode") or "") == "metadata_only"
     )
     payload["summary"] = summary
     payload["updated_at_utc"] = iso_now()
 
 
 def _duplicate_fallback_files(root: Path, *, limit: int = 50000) -> list[Path]:
-    if not root.exists() or _is_protected_volume(root):
+    if _is_protected_volume(root) or not root.exists():
         return []
     out: list[Path] = []
     for path in root.rglob("*.local_fallback*"):
-        if path.is_file() and not path.is_symlink() and _is_within_root(path, root) and not _is_protected_volume(path):
+        if path.name.endswith(".duplicate_restore_proof.json"):
+            continue
+        if (
+            not _is_protected_volume(path)
+            and not path.is_symlink()
+            and path.is_file()
+            and _is_within_root(path, root)
+            and not _is_protected_volume(path)
+        ):
             out.append(path)
             if len(out) >= limit:
                 break
     return out
 
 
-def _space_candidate_record(path: Path, root: Path, *, reason: str, priority: int, now_ts: float) -> dict[str, Any] | None:
-    if path.is_symlink() or _is_protected_volume(path) or not _is_within_root(path, root):
+def _archived_fallback(path: Path, root: Path) -> bool:
+    if _is_protected_volume(path) or not _is_within_root(path, root):
+        return False
+    rel = path.resolve().relative_to(root.resolve())
+    return bool(
+        rel.parts
+        and (
+            rel.parts[0] in {"cold_archive", "quarantine"}
+            or rel.parts[:2] in {("data", "stale_stage"), ("data", "deep_cold")}
+        )
+    )
+
+
+def _remove_verified_duplicate(path: Path, canonical: Path) -> dict[str, Any]:
+    for candidate in (path, canonical):
+        if (
+            _is_protected_volume(candidate)
+            or candidate.is_symlink()
+            or not candidate.is_file()
+        ):
+            raise ValueError("duplicate_route_unverifiable")
+    deadline = time.monotonic() + 60
+    before = (path.stat(), canonical.stat())
+
+    def identity(st):
+        return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+    def digest(candidate, compressed=False):
+        total = 0
+        value = hashlib.sha256()
+        with (
+            gzip.open(candidate, "rb") if compressed else candidate.open("rb")
+        ) as handle:
+            while chunk := handle.read(1024 * 1024):
+                total += len(chunk)
+                if total > before[0].st_size or time.monotonic() > deadline:
+                    raise ValueError("duplicate_restore_budget_exceeded")
+                value.update(chunk)
+        return total, value.hexdigest()
+
+    source_digest = digest(path)
+    canonical_digest = digest(canonical, canonical.name.endswith(".gz"))
+    if source_digest != canonical_digest:
+        raise ValueError("duplicate_content_mismatch")
+    probe = subprocess.run(
+        ["/usr/sbin/lsof", "-t", "--", str(path), str(canonical)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if probe.returncode != 1 or probe.stdout.strip() or probe.stderr.strip():
+        raise ValueError("duplicate_open_or_idle_probe_unknown")
+    with canonical.open("rb") as handle:
+        os.fsync(handle.fileno())
+    proof = {
+        "timestamp_utc": iso_now(),
+        "source": str(path),
+        "canonical": str(canonical),
+        "sha256": source_digest[1],
+        "restored_bytes": source_digest[0],
+        "full_content_match": True,
+        "source_removed": False,
+    }
+    proof_path = path.with_name(path.name + ".duplicate_restore_proof.json")
+    if _is_protected_volume(proof_path) or proof_path.is_symlink():
+        raise ValueError("duplicate_proof_route_unverifiable")
+    write_payload(proof_path, proof)
+    if load_json(proof_path) != proof:
+        raise ValueError("duplicate_proof_publication_failed")
+    with proof_path.open("rb") as handle:
+        os.fsync(handle.fileno())
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+        if (identity(path.stat()), identity(canonical.stat())) != tuple(
+            identity(st) for st in before
+        ):
+            raise ValueError("duplicate_changed_before_release")
+        path.unlink()
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return {**proof, "source_removed": True, "proof_path": str(proof_path)}
+
+
+def _space_candidate_record(
+    path: Path, root: Path, *, reason: str, priority: int, now_ts: float
+) -> dict[str, Any] | None:
+    if (
+        path.is_symlink()
+        or _is_protected_volume(path)
+        or not _is_within_root(path, root)
+    ):
         return None
     try:
         stat = path.stat()
@@ -254,15 +450,50 @@ def _space_candidate_record(path: Path, root: Path, *, reason: str, priority: in
         return None
     size_bytes = max(int(stat.st_size), 0)
     age_hours = max((float(now_ts) - float(stat.st_mtime)) / 3600.0, 0.0)
-    return {
+    record = {
         "path": str(path),
-        "relative_path": str(path.relative_to(root)) if _is_within_root(path, root) else path.name,
+        "relative_path": (
+            str(path.relative_to(root)) if _is_within_root(path, root) else path.name
+        ),
         "reason": reason,
         "priority": int(priority),
         "size_bytes": size_bytes,
         "size_gb": round(_gb(size_bytes), 6),
         "age_hours": round(age_hours, 3),
     }
+    if reason in STATEFUL_DEBRIS_REASONS:
+        digest, hashed_bytes = _prefix_sha256(path, sample_bytes=65536)
+        record.update(
+            {
+                "prefix_sha256": digest,
+                "prefix_hashed_bytes": hashed_bytes,
+                "cleanup_policy": "metadata_tombstone_then_delete_noncanonical_stateful_debris",
+            }
+        )
+    return record
+
+
+def _prefix_sha256(path: Path, *, sample_bytes: int) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            chunk = handle.read(max(int(sample_bytes), 0))
+    except Exception:
+        return "", 0
+    digest.update(chunk)
+    return digest.hexdigest(), len(chunk)
+
+
+def _stateful_failure_debris_reason(name: str) -> str:
+    lower_name = name.lower()
+    stateful = ".sqlite" in lower_name or ".db" in lower_name
+    if not stateful:
+        return ""
+    if ".corrupt-" in lower_name or ".corrupt_" in lower_name:
+        return "old_stateful_corrupt_sqlite_artifact"
+    if ".pre_local_failover_" in lower_name and lower_name.endswith(".bak"):
+        return "old_stateful_failover_backup_artifact"
+    return ""
 
 
 def _canonical_sibling_for_local_fallback(path: Path) -> Path | None:
@@ -274,9 +505,13 @@ def _canonical_sibling_for_local_fallback(path: Path) -> Path | None:
     if not canonical_name:
         return None
     canonical = path.with_name(canonical_name)
+    if _is_protected_volume(canonical):
+        return None
     if canonical.exists():
         return canonical
     compressed = path.with_name(f"{canonical_name}.gz")
+    if _is_protected_volume(compressed):
+        return None
     if compressed.exists():
         return compressed
     return canonical
@@ -290,9 +525,9 @@ def _safe_space_recovery_candidates(
     candidate_limit: int,
     scan_file_limit: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    if not root.exists() or _is_protected_volume(root):
+    if _is_protected_volume(root) or not root.exists():
         return [], {
-            "scan_root_exists": bool(root.exists()),
+            "scan_root_exists": bool(not _is_protected_volume(root) and root.exists()),
             "protected_volume_blocked": bool(_is_protected_volume(root)),
             "scanned_files": 0,
             "scan_limit_reached": False,
@@ -312,6 +547,7 @@ def _safe_space_recovery_candidates(
         canonical = _canonical_sibling_for_local_fallback(path)
         if (
             canonical is None
+            or _is_protected_volume(canonical)
             or not canonical.exists()
             or canonical.is_symlink()
             or _is_protected_volume(canonical)
@@ -323,12 +559,22 @@ def _safe_space_recovery_candidates(
                 pass
             unbacked_duplicate_count += 1
             continue
-        record = _space_candidate_record(path, root, reason="duplicate_local_fallback_artifact", priority=100, now_ts=now_ts)
+        record = _space_candidate_record(
+            path,
+            root,
+            reason="duplicate_local_fallback_artifact",
+            priority=100,
+            now_ts=now_ts,
+        )
         if record is not None:
             if float(record.get("age_hours") or 0.0) < min_age:
                 continue
             record["canonical_path"] = str(canonical)
-            record["canonical_relative_path"] = str(canonical.relative_to(root)) if _is_within_root(canonical, root) else canonical.name
+            record["canonical_relative_path"] = (
+                str(canonical.relative_to(root))
+                if _is_within_root(canonical, root)
+                else canonical.name
+            )
             record["canonical_exists"] = True
             record["canonical_compressed"] = str(canonical.name).endswith(".gz")
             candidates.append(record)
@@ -345,7 +591,14 @@ def _safe_space_recovery_candidates(
 
     scanned = 0
     scan_limit_reached = False
-    excluded_dirs = {".git", ".Spotlight-V100", ".Trashes", ".fseventsd", "__pycache__", "node_modules"}
+    excluded_dirs = {
+        ".git",
+        ".Spotlight-V100",
+        ".Trashes",
+        ".fseventsd",
+        "__pycache__",
+        "node_modules",
+    }
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         current = Path(dirpath)
         if _is_protected_volume(current):
@@ -365,26 +618,23 @@ def _safe_space_recovery_candidates(
                 break
             path = current / name
             key = str(path)
-            if key in seen or path.is_symlink():
+            if key in seen or _is_protected_volume(path) or path.is_symlink():
                 continue
             lower_name = name.lower()
             reason = ""
             priority = 0
-            if name in SAFE_METADATA_NAMES or name.startswith("._"):
+            stateful_debris_reason = _stateful_failure_debris_reason(name)
+            # Age or a suffix cannot prove that a backup/partial is disposable.
+            if stateful_debris_reason or lower_name.endswith(SAFE_STALE_SUFFIXES):
+                continue
+            if name in SAFE_METADATA_NAMES:
                 reason = "safe_os_metadata_artifact"
                 priority = 60
-            elif lower_name.endswith(SAFE_STALE_SUFFIXES):
-                try:
-                    age_hours = max((now_ts - path.stat().st_mtime) / 3600.0, 0.0)
-                except Exception:
-                    continue
-                if age_hours < min_age:
-                    continue
-                reason = "stale_partial_or_temp_artifact"
-                priority = 80
             else:
                 continue
-            record = _space_candidate_record(path, root, reason=reason, priority=priority, now_ts=now_ts)
+            record = _space_candidate_record(
+                path, root, reason=reason, priority=priority, now_ts=now_ts
+            )
             if record is not None:
                 candidates.append(record)
                 seen.add(key)
@@ -394,7 +644,14 @@ def _safe_space_recovery_candidates(
         if scan_limit_reached:
             break
 
-    candidates.sort(key=lambda row: (int(row.get("priority", 0)), int(row.get("size_bytes", 0)), float(row.get("age_hours", 0.0))), reverse=True)
+    candidates.sort(
+        key=lambda row: (
+            int(row.get("priority", 0)),
+            int(row.get("size_bytes", 0)),
+            float(row.get("age_hours", 0.0)),
+        ),
+        reverse=True,
+    )
     return candidates, {
         "scan_root_exists": True,
         "protected_volume_blocked": False,
@@ -405,7 +662,9 @@ def _safe_space_recovery_candidates(
     }
 
 
-def _effective_space_recovery_delete_gb(*, available_gb: float, target_free_gb: float, max_delete_gb: float) -> float:
+def _effective_space_recovery_delete_gb(
+    *, available_gb: float, target_free_gb: float, max_delete_gb: float
+) -> float:
     max_delete = max(float(max_delete_gb), 0.0)
     target = max(float(target_free_gb), 0.0)
     if target <= 0.0:
@@ -419,9 +678,17 @@ def _select_space_recovery_candidates(
     *,
     max_delete_gb: float,
     jumbo_duplicate_gb: float,
+    jumbo_stateful_debris_gb: float = 0.0,
+    stale_temp_overshoot_gb: float = 0.0,
 ) -> list[dict[str, Any]]:
     max_bytes = int(max(float(max_delete_gb), 0.0) * (1024**3))
     jumbo_duplicate_bytes = int(max(float(jumbo_duplicate_gb), 0.0) * (1024**3))
+    jumbo_stateful_debris_bytes = int(
+        max(float(jumbo_stateful_debris_gb), 0.0) * (1024**3)
+    )
+    stale_temp_overshoot_bytes = int(
+        max(float(stale_temp_overshoot_gb), 0.0) * (1024**3)
+    )
     if max_bytes <= 0:
         return []
     selected: list[dict[str, Any]] = []
@@ -441,6 +708,28 @@ def _select_space_recovery_candidates(
             ):
                 row["selected_over_wave_cap"] = True
                 row["selection_reason"] = "single_jumbo_duplicate_fallback_artifact"
+                selected.append(row)
+                selected_bytes += size_bytes
+            elif (
+                str(row.get("reason") or "") == "stale_partial_or_temp_artifact"
+                and stale_temp_overshoot_bytes > 0
+                and size_bytes <= stale_temp_overshoot_bytes
+            ):
+                row["selected_over_wave_cap"] = True
+                row["selection_reason"] = (
+                    "single_stale_partial_or_temp_artifact_to_restore_reserve"
+                )
+                selected.append(row)
+                selected_bytes += size_bytes
+            elif (
+                str(row.get("reason") or "") in STATEFUL_DEBRIS_REASONS
+                and jumbo_stateful_debris_bytes > 0
+                and size_bytes <= jumbo_stateful_debris_bytes
+            ):
+                row["selected_over_wave_cap"] = True
+                row["selection_reason"] = (
+                    "single_old_stateful_failure_debris_to_restore_reserve"
+                )
                 selected.append(row)
                 selected_bytes += size_bytes
             continue
@@ -477,7 +766,14 @@ def build_payload(
     space_recovery_candidate_limit: int = DEFAULT_SPACE_RECOVERY_CANDIDATE_LIMIT,
     space_recovery_scan_file_limit: int = DEFAULT_SPACE_RECOVERY_SCAN_FILE_LIMIT,
     space_recovery_jumbo_duplicate_gb: float = DEFAULT_SPACE_RECOVERY_JUMBO_DUPLICATE_GB,
+    space_recovery_jumbo_stateful_debris_gb: float = DEFAULT_SPACE_RECOVERY_JUMBO_STATEFUL_DEBRIS_GB,
 ) -> dict[str, Any]:
+    if _is_protected_volume(external_root) or _is_protected_volume(registry_path):
+        return {
+            "ok": False,
+            "overall_status": "blocked",
+            "reason": "protected_or_unverifiable_route",
+        }
     disk = _disk_usage(external_root)
     available_gb = _gb(int(disk.get("available_bytes") or 0))
     used_ratio = float(disk.get("used_ratio") or 1.0)
@@ -507,9 +803,17 @@ def build_payload(
             profile = {
                 **profile,
                 "capture_mode": compute_floor["capture_mode"],
-                "sample_rate": min(float(profile["sample_rate"]), float(compute_floor["sample_rate"])),
-                "max_daily_storage_mb": min(int(profile["max_daily_storage_mb"]), int(compute_floor["max_daily_storage_mb"])),
-                "freshness_floor_seconds": max(int(profile["freshness_floor_seconds"]), int(compute_floor["freshness_floor_seconds"])),
+                "sample_rate": min(
+                    float(profile["sample_rate"]), float(compute_floor["sample_rate"])
+                ),
+                "max_daily_storage_mb": min(
+                    int(profile["max_daily_storage_mb"]),
+                    int(compute_floor["max_daily_storage_mb"]),
+                ),
+                "freshness_floor_seconds": max(
+                    int(profile["freshness_floor_seconds"]),
+                    int(compute_floor["freshness_floor_seconds"]),
+                ),
             }
         desired = {
             "data_collection_storage_guarded": True,
@@ -519,24 +823,43 @@ def build_payload(
             "data_collection_max_daily_storage_mb": profile["max_daily_storage_mb"],
             "data_collection_storage_guard_updated_utc": now,
             "data_collection_runtime_dependency_profile": (
-                "mlx_optional_research_only" if kind == "quant_research" else str(row.get("data_collection_runtime_dependency_profile") or "")
+                "mlx_optional_research_only"
+                if kind == "quant_research"
+                else str(row.get("data_collection_runtime_dependency_profile") or "")
             ),
             "storage_pressure_capture_reason": (
                 f"external_available_gb={available_gb:.2f};mode={mode};{compute_floor['reason']}"
                 if compute_floor
                 else f"external_available_gb={available_gb:.2f};mode={mode}"
             ),
-            "freshness_slo_seconds": max(int(row.get("freshness_slo_seconds") or 0), int(profile["freshness_floor_seconds"])),
+            "freshness_slo_seconds": max(
+                int(row.get("freshness_slo_seconds") or 0),
+                int(profile["freshness_floor_seconds"]),
+            ),
         }
         if profile["retention_profile"]:
             desired["retention_profile"] = profile["retention_profile"]
         delta = {key: value for key, value in desired.items() if row.get(key) != value}
         if delta:
-            changes.append({"bot_id": str(row.get("bot_id") or ""), "kind": kind, "updates": delta})
+            changes.append(
+                {"bot_id": str(row.get("bot_id") or ""), "kind": kind, "updates": delta}
+            )
             if apply:
                 row.update(delta)
 
-    duplicate_files = _duplicate_fallback_files(external_root) if cleanup_duplicates or space_recovery else []
+    duplicate_files = (
+        _duplicate_fallback_files(external_root)
+        if cleanup_duplicates or space_recovery
+        else []
+    )
+    archived_fallbacks = [
+        path for path in duplicate_files if _archived_fallback(path, external_root)
+    ]
+    archived_fallback_set = set(archived_fallbacks)
+    duplicate_files = [
+        path for path in duplicate_files if path not in archived_fallback_set
+    ]
+    archived_fallback_bytes = sum(path.stat().st_size for path in archived_fallbacks)
     duplicate_bytes = 0
     deleted_duplicates: list[str] = []
     for path in duplicate_files:
@@ -546,15 +869,29 @@ def build_payload(
             continue
 
     need_safe_recovery_scan = bool(space_recovery or cleanup_duplicates)
-    space_candidates, space_scan = _safe_space_recovery_candidates(
-        external_root,
-        duplicate_files=duplicate_files,
-        min_age_hours=float(space_recovery_min_age_hours),
-        candidate_limit=max(int(space_recovery_candidate_limit), 1),
-        scan_file_limit=max(int(space_recovery_scan_file_limit), 1),
-    ) if need_safe_recovery_scan else ([], {"scan_root_exists": bool(external_root.exists()), "protected_volume_blocked": bool(_is_protected_volume(external_root)), "scanned_files": 0, "scan_limit_reached": False})
+    space_candidates, space_scan = (
+        _safe_space_recovery_candidates(
+            external_root,
+            duplicate_files=duplicate_files,
+            min_age_hours=float(space_recovery_min_age_hours),
+            candidate_limit=max(int(space_recovery_candidate_limit), 1),
+            scan_file_limit=max(int(space_recovery_scan_file_limit), 1),
+        )
+        if need_safe_recovery_scan
+        else (
+            [],
+            {
+                "scan_root_exists": bool(external_root.exists()),
+                "protected_volume_blocked": bool(_is_protected_volume(external_root)),
+                "scanned_files": 0,
+                "scan_limit_reached": False,
+            },
+        )
+    )
     target_free_gb = max(float(space_recovery_target_free_gb), 0.0)
-    target_free_deficit_gb = max(target_free_gb - float(available_gb), 0.0) if target_free_gb > 0.0 else 0.0
+    target_free_deficit_gb = (
+        max(target_free_gb - float(available_gb), 0.0) if target_free_gb > 0.0 else 0.0
+    )
     effective_max_delete_gb = _effective_space_recovery_delete_gb(
         available_gb=float(available_gb),
         target_free_gb=target_free_gb,
@@ -564,22 +901,40 @@ def build_payload(
         space_candidates,
         max_delete_gb=float(effective_max_delete_gb),
         jumbo_duplicate_gb=float(space_recovery_jumbo_duplicate_gb),
+        jumbo_stateful_debris_gb=float(space_recovery_jumbo_stateful_debris_gb),
+        stale_temp_overshoot_gb=float(space_recovery_max_delete_gb),
     )
     deleted_space: list[dict[str, Any]] = []
     delete_errors: list[dict[str, Any]] = []
     if apply and space_recovery:
         for row in selected_space_candidates:
             path = Path(str(row.get("path") or "")).expanduser()
-            if _is_protected_volume(path) or not _is_within_root(path, external_root) or path.is_symlink():
-                delete_errors.append({"path": str(path), "reason": "safety_check_failed"})
+            if (
+                _is_protected_volume(path)
+                or not _is_within_root(path, external_root)
+                or path.is_symlink()
+            ):
+                delete_errors.append(
+                    {"path": str(path), "reason": "safety_check_failed"}
+                )
                 continue
             try:
-                path.unlink()
+                if str(row.get("reason") or "") == "duplicate_local_fallback_artifact":
+                    row["restore_proof"] = _remove_verified_duplicate(
+                        path, Path(row["canonical_path"])
+                    )
+                elif (
+                    str(row.get("reason") or "") == "safe_os_metadata_artifact"
+                    and path.name == ".DS_Store"
+                ):
+                    path.unlink()
+                else:
+                    raise ValueError("artifact_disposal_not_verified")
                 deleted_space.append(row)
                 if str(row.get("reason") or "") == "duplicate_local_fallback_artifact":
                     deleted_duplicates.append(str(path))
             except Exception as exc:
-                delete_errors.append({"path": str(path), "reason": type(exc).__name__})
+                delete_errors.append({"path": str(path), "reason": str(exc)})
     elif apply and cleanup_duplicates:
         selected_duplicate_candidates = _select_space_recovery_candidates(
             [
@@ -589,38 +944,70 @@ def build_payload(
             ],
             max_delete_gb=float(space_recovery_max_delete_gb),
             jumbo_duplicate_gb=float(space_recovery_jumbo_duplicate_gb),
+            jumbo_stateful_debris_gb=0.0,
+            stale_temp_overshoot_gb=0.0,
         )
         for row in selected_duplicate_candidates:
             path = Path(str(row.get("path") or "")).expanduser()
-            if _is_protected_volume(path) or not _is_within_root(path, external_root) or path.is_symlink():
+            if (
+                _is_protected_volume(path)
+                or not _is_within_root(path, external_root)
+                or path.is_symlink()
+            ):
                 continue
             try:
-                path.unlink()
+                row["restore_proof"] = _remove_verified_duplicate(
+                    path, Path(row["canonical_path"])
+                )
                 deleted_space.append(row)
                 deleted_duplicates.append(str(path))
-            except Exception:
+            except Exception as exc:
+                delete_errors.append({"path": str(path), "reason": str(exc)})
                 continue
 
     backup_path = ""
     if apply and changes:
-        backup = registry_path.parent / "governance" / "lifecycle" / f"master_bot_registry.data_collection_storage_guard_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        backup = (
+            registry_path.parent
+            / "governance"
+            / "lifecycle"
+            / f"master_bot_registry.data_collection_storage_guard_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        )
         backup.parent.mkdir(parents=True, exist_ok=True)
         if registry_path.exists():
-            backup.write_text(registry_path.read_text(encoding="utf-8"), encoding="utf-8")
+            backup.write_text(
+                registry_path.read_text(encoding="utf-8"), encoding="utf-8"
+            )
             backup_path = str(backup)
         _refresh_summary(registry)
-        registry_path.write_text(json.dumps(registry, ensure_ascii=True, indent=2), encoding="utf-8")
+        registry_path.write_text(
+            json.dumps(registry, ensure_ascii=True, indent=2), encoding="utf-8"
+        )
 
-    status = "ready" if mode == "normal" else ("degraded" if mode in {"watch", "throttle"} else "blocked")
+    status = (
+        "ready"
+        if mode == "normal"
+        else ("degraded" if mode in {"watch", "throttle"} else "blocked")
+    )
+    if delete_errors:
+        status = "needs_work"
     return {
         "timestamp_utc": now,
         "schema_version": 1,
-        "ok": mode != "critical",
+        "ok": mode != "critical" and not delete_errors,
         "overall_status": status,
         "apply_requested": bool(apply),
         "external_root": str(external_root),
-        "disk": {**disk, "available_gb": round(available_gb, 3), "used_percent": round(used_ratio * 100.0, 3)},
-        "thresholds": {"warn_gb": warn_gb, "throttle_gb": throttle_gb, "critical_gb": critical_gb},
+        "disk": {
+            **disk,
+            "available_gb": round(available_gb, 3),
+            "used_percent": round(used_ratio * 100.0, 3),
+        },
+        "thresholds": {
+            "warn_gb": warn_gb,
+            "throttle_gb": throttle_gb,
+            "critical_gb": critical_gb,
+        },
         "guard_mode": mode,
         "collector_count": len(collectors),
         "planned_changes": changes[:200],
@@ -631,34 +1018,91 @@ def build_payload(
             "candidate_count": len(duplicate_files),
             "candidate_bytes": duplicate_bytes,
             "candidate_gb": round(_gb(duplicate_bytes), 3),
+            "scope": "active_route_fallback_artifacts_only",
+            "archived_inventory": {
+                "count": len(archived_fallbacks),
+                "bytes": archived_fallback_bytes,
+                "gb": round(_gb(archived_fallback_bytes), 3),
+                "deletion_allowed": False,
+                "reconciliation_verified": False,
+                "policy": "preserved cold/quarantine evidence is not an active route duplicate; capacity and restore obligations remain",
+            },
             "deleted_count": len(deleted_duplicates),
-            "deleted_gb": round(sum(float(row.get("size_gb") or 0.0) for row in deleted_space if str(row.get("reason") or "") == "duplicate_local_fallback_artifact"), 3)
-            if apply
-            else (round(_gb(duplicate_bytes), 3) if apply else 0.0),
+            "deleted_gb": (
+                round(
+                    sum(
+                        float(row.get("size_gb") or 0.0)
+                        for row in deleted_space
+                        if str(row.get("reason") or "")
+                        == "duplicate_local_fallback_artifact"
+                    ),
+                    3,
+                )
+                if apply
+                else (round(_gb(duplicate_bytes), 3) if apply else 0.0)
+            ),
         },
         "safe_space_recovery": {
             "enabled": bool(space_recovery),
             "apply_requested": bool(apply and space_recovery),
             "root": str(external_root),
             "max_delete_gb": round(max(float(space_recovery_max_delete_gb), 0.0), 3),
-            "jumbo_duplicate_gb": round(max(float(space_recovery_jumbo_duplicate_gb), 0.0), 3),
+            "jumbo_duplicate_gb": round(
+                max(float(space_recovery_jumbo_duplicate_gb), 0.0), 3
+            ),
+            "jumbo_stateful_debris_gb": round(
+                max(float(space_recovery_jumbo_stateful_debris_gb), 0.0), 3
+            ),
             "target_free_gb": round(target_free_gb, 3),
             "target_free_deficit_gb": round(target_free_deficit_gb, 3),
             "effective_max_delete_gb": round(float(effective_max_delete_gb), 3),
-            "reserve_rebuild_required": bool(target_free_deficit_gb > 0.25 and selected_space_candidates),
+            "reserve_rebuild_required": bool(
+                target_free_deficit_gb > 0.25 and selected_space_candidates
+            ),
             "min_age_hours": round(max(float(space_recovery_min_age_hours), 0.0), 3),
             "candidate_limit": max(int(space_recovery_candidate_limit), 1),
             "scan_file_limit": max(int(space_recovery_scan_file_limit), 1),
             "scan": space_scan,
+            "preservation_policy": "backup and partial filenames never authorize deletion; duplicate release requires full restore hash, stable identity, idle handles, and durable proof",
             "candidate_count": len(space_candidates),
-            "candidate_bytes": sum(max(int(row.get("size_bytes") or 0), 0) for row in space_candidates),
-            "candidate_gb": round(_gb(sum(max(int(row.get("size_bytes") or 0), 0) for row in space_candidates)), 3),
+            "candidate_bytes": sum(
+                max(int(row.get("size_bytes") or 0), 0) for row in space_candidates
+            ),
+            "candidate_gb": round(
+                _gb(
+                    sum(
+                        max(int(row.get("size_bytes") or 0), 0)
+                        for row in space_candidates
+                    )
+                ),
+                3,
+            ),
             "selected_count": len(selected_space_candidates),
-            "selected_bytes": sum(max(int(row.get("size_bytes") or 0), 0) for row in selected_space_candidates),
-            "selected_gb": round(_gb(sum(max(int(row.get("size_bytes") or 0), 0) for row in selected_space_candidates)), 3),
+            "selected_bytes": sum(
+                max(int(row.get("size_bytes") or 0), 0)
+                for row in selected_space_candidates
+            ),
+            "selected_gb": round(
+                _gb(
+                    sum(
+                        max(int(row.get("size_bytes") or 0), 0)
+                        for row in selected_space_candidates
+                    )
+                ),
+                3,
+            ),
             "deleted_count": len(deleted_space),
-            "deleted_bytes": sum(max(int(row.get("size_bytes") or 0), 0) for row in deleted_space),
-            "deleted_gb": round(_gb(sum(max(int(row.get("size_bytes") or 0), 0) for row in deleted_space)), 3),
+            "deleted_bytes": sum(
+                max(int(row.get("size_bytes") or 0), 0) for row in deleted_space
+            ),
+            "deleted_gb": round(
+                _gb(
+                    sum(
+                        max(int(row.get("size_bytes") or 0), 0) for row in deleted_space
+                    )
+                ),
+                3,
+            ),
             "delete_error_count": len(delete_errors),
             "delete_errors": delete_errors[:20],
             "by_reason": _reason_counts(space_candidates),
@@ -674,22 +1118,40 @@ def build_payload(
             ],
         },
         "recommended_actions": [
-            "keep data-collection-only bots in metadata_only or thin_sample mode until external free space is above the throttle threshold"
-            if mode in {"critical", "throttle"}
-            else "",
-            "run safe BOT_LOGS space recovery in bounded apply waves; it only targets duplicate fallback, stale partial/temp, and OS metadata artifacts"
-            if space_recovery and selected_space_candidates and not apply
-            else "",
-            "remove duplicate .local_fallback files from the external route; they are fallback-copy artifacts, not canonical live files"
-            if cleanup_duplicates and duplicate_files and not apply
-            else "",
+            (
+                "keep data-collection-only bots in metadata_only or thin_sample mode until external free space is above the throttle threshold"
+                if mode in {"critical", "throttle"}
+                else ""
+            ),
+            (
+                "run safe BOT_LOGS space recovery in bounded apply waves; it only targets duplicate fallback, stale partial/temp, OS metadata, and old noncanonical stateful failure debris"
+                if space_recovery and selected_space_candidates and not apply
+                else ""
+            ),
+            (
+                "old corrupt SQLite and failover debris is eligible for metadata-tombstone deletion during emergency BOT_LOGS pressure"
+                if space_recovery
+                and any(
+                    str(row.get("reason") or "") in STATEFUL_DEBRIS_REASONS
+                    for row in selected_space_candidates
+                )
+                and not apply
+                else ""
+            ),
+            (
+                "remove duplicate .local_fallback files from the external route; they are fallback-copy artifacts, not canonical live files"
+                if cleanup_duplicates and duplicate_files and not apply
+                else ""
+            ),
             "run storage-tier-policy after cleanup to find the next archive/compact targets",
         ],
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Guard new data-collection bots from exhausting external storage.")
+    parser = argparse.ArgumentParser(
+        description="Guard new data-collection bots from exhausting external storage."
+    )
     parser.add_argument("--external-root", default=str(DEFAULT_EXTERNAL_ROOT))
     parser.add_argument("--registry", default=str(DEFAULT_REGISTRY_PATH))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
@@ -698,12 +1160,76 @@ def main() -> int:
     parser.add_argument("--critical-gb", type=float, default=40.0)
     parser.add_argument("--cleanup-duplicates", action="store_true")
     parser.add_argument("--space-recovery", action="store_true")
-    parser.add_argument("--space-recovery-max-delete-gb", type=float, default=float(os.getenv("BOT_LOGS_SPACE_RECOVERY_MAX_DELETE_GB", str(DEFAULT_SPACE_RECOVERY_MAX_DELETE_GB))))
-    parser.add_argument("--space-recovery-target-free-gb", type=float, default=float(os.getenv("BOT_LOGS_SPACE_RECOVERY_TARGET_FREE_GB", str(DEFAULT_SPACE_RECOVERY_TARGET_FREE_GB))))
-    parser.add_argument("--space-recovery-min-age-hours", type=float, default=float(os.getenv("BOT_LOGS_SPACE_RECOVERY_MIN_AGE_HOURS", str(DEFAULT_SPACE_RECOVERY_MIN_AGE_HOURS))))
-    parser.add_argument("--space-recovery-candidate-limit", type=int, default=int(os.getenv("BOT_LOGS_SPACE_RECOVERY_CANDIDATE_LIMIT", str(DEFAULT_SPACE_RECOVERY_CANDIDATE_LIMIT))))
-    parser.add_argument("--space-recovery-scan-file-limit", type=int, default=int(os.getenv("BOT_LOGS_SPACE_RECOVERY_SCAN_FILE_LIMIT", str(DEFAULT_SPACE_RECOVERY_SCAN_FILE_LIMIT))))
-    parser.add_argument("--space-recovery-jumbo-duplicate-gb", type=float, default=float(os.getenv("BOT_LOGS_SPACE_RECOVERY_JUMBO_DUPLICATE_GB", str(DEFAULT_SPACE_RECOVERY_JUMBO_DUPLICATE_GB))))
+    parser.add_argument(
+        "--space-recovery-max-delete-gb",
+        type=float,
+        default=float(
+            os.getenv(
+                "BOT_LOGS_SPACE_RECOVERY_MAX_DELETE_GB",
+                str(DEFAULT_SPACE_RECOVERY_MAX_DELETE_GB),
+            )
+        ),
+    )
+    parser.add_argument(
+        "--space-recovery-target-free-gb",
+        type=float,
+        default=float(
+            os.getenv(
+                "BOT_LOGS_SPACE_RECOVERY_TARGET_FREE_GB",
+                str(DEFAULT_SPACE_RECOVERY_TARGET_FREE_GB),
+            )
+        ),
+    )
+    parser.add_argument(
+        "--space-recovery-min-age-hours",
+        type=float,
+        default=float(
+            os.getenv(
+                "BOT_LOGS_SPACE_RECOVERY_MIN_AGE_HOURS",
+                str(DEFAULT_SPACE_RECOVERY_MIN_AGE_HOURS),
+            )
+        ),
+    )
+    parser.add_argument(
+        "--space-recovery-candidate-limit",
+        type=int,
+        default=int(
+            os.getenv(
+                "BOT_LOGS_SPACE_RECOVERY_CANDIDATE_LIMIT",
+                str(DEFAULT_SPACE_RECOVERY_CANDIDATE_LIMIT),
+            )
+        ),
+    )
+    parser.add_argument(
+        "--space-recovery-scan-file-limit",
+        type=int,
+        default=int(
+            os.getenv(
+                "BOT_LOGS_SPACE_RECOVERY_SCAN_FILE_LIMIT",
+                str(DEFAULT_SPACE_RECOVERY_SCAN_FILE_LIMIT),
+            )
+        ),
+    )
+    parser.add_argument(
+        "--space-recovery-jumbo-duplicate-gb",
+        type=float,
+        default=float(
+            os.getenv(
+                "BOT_LOGS_SPACE_RECOVERY_JUMBO_DUPLICATE_GB",
+                str(DEFAULT_SPACE_RECOVERY_JUMBO_DUPLICATE_GB),
+            )
+        ),
+    )
+    parser.add_argument(
+        "--space-recovery-jumbo-stateful-debris-gb",
+        type=float,
+        default=float(
+            os.getenv(
+                "BOT_LOGS_SPACE_RECOVERY_JUMBO_STATEFUL_DEBRIS_GB",
+                str(DEFAULT_SPACE_RECOVERY_JUMBO_STATEFUL_DEBRIS_GB),
+            )
+        ),
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -723,8 +1249,14 @@ def main() -> int:
         space_recovery_candidate_limit=int(args.space_recovery_candidate_limit),
         space_recovery_scan_file_limit=int(args.space_recovery_scan_file_limit),
         space_recovery_jumbo_duplicate_gb=float(args.space_recovery_jumbo_duplicate_gb),
+        space_recovery_jumbo_stateful_debris_gb=float(
+            args.space_recovery_jumbo_stateful_debris_gb
+        ),
     )
-    write_payload(Path(args.out_file).expanduser(), payload)
+    output = Path(args.out_file).expanduser()
+    if _is_protected_volume(output):
+        parser.error("protected_or_unverifiable_output_route")
+    write_payload(output, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "policy_id": "candidate_bound_alpha_measurement_materialization_v1",
+  "operating_mode": "paper_only_cold_lane_measurement_materialization",
+  "candidate_state_path": "governance/runtime/production_candidate_state.json",
+  "paper_performance_path": "governance/health/paper_performance_latest.json",
+  "behavior_dataset_path": "data/trade_history/trade_learning_dataset.json",
+  "measurement_output_path": "governance/research/alpha_concept_inputs_latest.json",
+  "security_master_path": "governance/research/point_in_time_security_master_latest.json",
+  "paper_fill_globs": [
+    "exports/trade_logs/**/paper_trades_*.jsonl",
+    "governance/channels/execution/**/execution_*.jsonl",
+    "governance/channels/fill/**/fill_*.jsonl"
+  ],
+  "candidate_binding": {
+    "required": true,
+    "require_dataset_schema": "behavior_dataset_v8_candidate_bound_multi_horizon_counterfactuals",
+    "minimum_log_schema_version": 2,
+    "require_row_schema_valid": true,
+    "require_row_candidate_binding": true,
+    "allow_historical_fallback": false,
+    "allow_cross_candidate_pooling": false,
+    "allow_candidate_identity_rewrite": false
+  },
+  "factor_context_keys": [
+    "pct_from_close",
+    "mom_5m",
+    "vol_30m",
+    "spread_bps",
+    "market_micro_relative_volume_norm",
+    "market_micro_order_flow_imbalance_norm",
+    "ctx_SPY_pct_from_close",
+    "ctx_QQQ_pct_from_close",
+    "ctx_TLT_pct_from_close",
+    "ctx_UUP_pct_from_close"
+  ],
+  "walk_forward": {
+    "enabled": true,
+    "backend": "auto",
+    "minimum_rows": 30,
+    "fold_count": 5,
+    "minimum_train_rows": 20,
+    "minimum_test_rows": 5,
+    "purge_seconds": 86400,
+    "embargo_seconds": 3600,
+    "ridge_penalty": 0.001,
+    "maximum_features": 16
+  },
+  "research_routing": {
+    "minimum_observations_per_sleeve_regime": 20,
+    "minimum_rank_ic": 0.0,
+    "maximum_absolute_redundancy_correlation": 0.7,
+    "runtime_weight_mutation_allowed": false,
+    "automatic_retirement_allowed": false
+  },
+  "capacity": {
+    "direct_daily_dollar_volume_required": true,
+    "normalized_relative_volume_is_not_daily_dollar_volume": true,
+    "unknown_cost_defaults_allowed": false,
+    "tested_notional_multipliers": [0.25, 0.5, 1.0, 2.0]
+  },
+  "causal_transport": {
+    "enabled": false,
+    "reason": "observational_trade_selection_is_not_a_valid_treatment_without an explicit identification design"
+  },
+  "authority": {
+    "changes_active_action": false,
+    "changes_position_size": false,
+    "changes_allocator_weights": false,
+    "changes_training_labels": false,
+    "submits_paper_orders": false,
+    "submits_live_orders": false,
+    "grants_promotion": false,
+    "mutates_candidate": false,
+    "rewrites_history": false,
+    "guarantees_profitability": false
+  }
+}

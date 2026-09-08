@@ -205,6 +205,9 @@ def test_repository_manifest_separates_runtime_truth_from_economic_and_context_e
     assert "gates.artifact_freshness_guard.ok" not in paper_spec["truthy_paths"]
     assert runtime_specs["runtime_throttle"]["ready_statuses"] == ["ready", "advisory"]
     assert runtime_specs["runtime_throttle"]["truthy_paths"] == ["ok"]
+    assert runtime_specs["memory_pressure"]["status_path"] == "operational_status"
+    assert runtime_specs["memory_pressure"]["truthy_paths"] == ["operational_ok"]
+    assert runtime_specs["autonomic_resource_governor"]["ready_statuses"] == ["ready", "advisory"]
     observability_spec = {
         row["artifact_id"]: row for row in domains["observability_incident"]["artifacts"]
     }["production_quality_slo"]

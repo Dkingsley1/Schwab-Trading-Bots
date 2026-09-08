@@ -2,6 +2,7 @@ import argparse
 import fcntl
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -13,9 +14,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.channel_queue import default_queue_db_path
-from core.runtime_maintenance import maintenance_hold_snapshot
+from core.runtime_maintenance import (
+    maintenance_hold_snapshot,
+    maintenance_hold_token_authorized,
+)
 from core.storage_mounts import find_target_external_volume, resolve_external_storage
-from scripts.ops.support_maintenance_gate import frozen_health_payload, support_maintenance_freeze_contract
+from scripts.ops.support_maintenance_gate import (
+    frozen_health_payload,
+    support_maintenance_freeze_contract,
+)
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -29,9 +36,17 @@ TRACKED_SQLITE_ROUTES = (
 )
 
 
+def _maintenance_hold_blocks_route_mutation(snapshot: dict[str, Any]) -> bool:
+    return bool(
+        snapshot.get("active", False)
+    ) and not maintenance_hold_token_authorized(snapshot)
+
+
 def _path_is_within(path: Path, root: Path) -> bool:
     try:
-        Path(os.path.abspath(str(path.expanduser()))).relative_to(Path(os.path.abspath(str(root.expanduser()))))
+        Path(os.path.abspath(str(path.expanduser()))).relative_to(
+            Path(os.path.abspath(str(root.expanduser())))
+        )
     except ValueError:
         return False
     return True
@@ -39,7 +54,9 @@ def _path_is_within(path: Path, root: Path) -> bool:
 
 def _physical_sqlite_routes_are_local(project_root: Path) -> bool:
     local_root = Path(
-        os.getenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(project_root / "local_fallback_storage"))
+        os.getenv(
+            "BOT_LOGS_LOCAL_FALLBACK_ROOT", str(project_root / "local_fallback_storage")
+        )
     ).expanduser()
     for relative_path in TRACKED_SQLITE_ROUTES:
         route = project_root / relative_path
@@ -64,7 +81,9 @@ def _preserve_verified_local_route_intent(project_root: Path) -> dict[str, Any]:
         "explicit_route_switch": explicit_switch,
         "override_path": str(override_path),
         "override_repaired": False,
-        "effective_prefer_external": str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "") or ""),
+        "effective_prefer_external": str(
+            os.getenv("BOT_LOGS_PREFER_EXTERNAL", "") or ""
+        ),
     }
     if not physical_local or explicit_switch:
         return payload
@@ -87,12 +106,22 @@ def _preserve_verified_local_route_intent(project_root: Path) -> dict[str, Any]:
 
 
 def _external_project_root() -> Path:
-    if str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower() in {"0", "false", "no", "off"}:
+    if str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
         configured = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
         if configured:
             return Path(configured).expanduser()
-        mount_root = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
-        project_dir = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot") or "schwab_trading_bot").strip()
+        mount_root = Path(
+            os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")
+        ).expanduser()
+        project_dir = str(
+            os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot")
+            or "schwab_trading_bot"
+        ).strip()
         return mount_root / project_dir
     return resolve_external_storage().external_root
 
@@ -108,7 +137,7 @@ def _external_min_free_bytes() -> int:
     raw_gb = os.getenv("BOT_LOGS_EXTERNAL_MIN_FREE_GB", "").strip()
     if raw_gb:
         try:
-            return max(int(float(raw_gb) * (1024 ** 3)), 0)
+            return max(int(float(raw_gb) * (1024**3)), 0)
         except Exception:
             return 0
 
@@ -126,7 +155,7 @@ def _external_low_space_autoprune_min_free_bytes() -> int:
     raw_gb = os.getenv("BOT_LOGS_LOW_SPACE_AUTOPRUNE_MIN_FREE_GB", "").strip()
     if raw_gb:
         try:
-            return max(int(float(raw_gb) * (1024 ** 3)), 0)
+            return max(int(float(raw_gb) * (1024**3)), 0)
         except Exception:
             return 0
 
@@ -146,7 +175,9 @@ def _probe_external_storage(external_root: Path) -> dict[str, object]:
     target_volume = find_target_external_volume()
     mount_present = bool(mount_root.exists() and mount_root.is_dir())
     external_root_exists = bool(external_root.exists() and external_root.is_dir())
-    external_root_writable = bool(external_root_exists and os.access(external_root, os.W_OK))
+    external_root_writable = bool(
+        external_root_exists and os.access(external_root, os.W_OK)
+    )
     probe_root = external_root if external_root_exists else mount_root
     external_free_bytes = _disk_free_bytes(probe_root) if mount_present else None
     external_min_free_bytes = _external_low_space_autoprune_min_free_bytes()
@@ -161,16 +192,30 @@ def _probe_external_storage(external_root: Path) -> dict[str, object]:
         "mount_root": str(mount_root),
         "external_root": str(external_root),
         "configured_mount_root": str(resolution.configured_mount_root),
-        "configured_project_root": str(resolution.configured_project_root) if resolution.configured_project_root else "",
-        "candidate_mount_roots": [str(path) for path in resolution.candidate_mount_roots],
-        "matched_mount_root": str(resolution.matched_mount_root) if resolution.matched_mount_root else "",
+        "configured_project_root": (
+            str(resolution.configured_project_root)
+            if resolution.configured_project_root
+            else ""
+        ),
+        "candidate_mount_roots": [
+            str(path) for path in resolution.candidate_mount_roots
+        ],
+        "matched_mount_root": (
+            str(resolution.matched_mount_root) if resolution.matched_mount_root else ""
+        ),
         "match_reason": str(resolution.match_reason),
-        "target_volume_device_identifier": str(target_volume.device_identifier) if target_volume else "",
+        "target_volume_device_identifier": (
+            str(target_volume.device_identifier) if target_volume else ""
+        ),
         "target_volume_name": str(target_volume.volume_name) if target_volume else "",
         "target_volume_uuid": str(target_volume.volume_uuid) if target_volume else "",
-        "target_volume_mount_point": str(target_volume.mount_point) if target_volume else "",
+        "target_volume_mount_point": (
+            str(target_volume.mount_point) if target_volume else ""
+        ),
         "target_volume_present": bool(target_volume is not None),
-        "target_volume_mounted": bool(target_volume.is_mounted) if target_volume else False,
+        "target_volume_mounted": (
+            bool(target_volume.is_mounted) if target_volume else False
+        ),
         "mount_present": mount_present,
         "external_root_exists": external_root_exists,
         "external_root_writable": external_root_writable,
@@ -181,7 +226,9 @@ def _probe_external_storage(external_root: Path) -> dict[str, object]:
 
 
 def _support_freeze_bypass_reason(previous_path: Path, external_root: Path) -> str:
-    prefer_external = str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower()
+    prefer_external = (
+        str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower()
+    )
     if prefer_external in {"0", "false", "no", "off"}:
         return "explicit_local_route_requested"
     try:
@@ -189,7 +236,11 @@ def _support_freeze_bypass_reason(previous_path: Path, external_root: Path) -> s
     except Exception:
         decoded = {}
     previous = decoded if isinstance(decoded, dict) else {}
-    previous_mode = str(previous.get("certified_mode") or previous.get("mode") or "").strip().lower()
+    previous_mode = (
+        str(previous.get("certified_mode") or previous.get("mode") or "")
+        .strip()
+        .lower()
+    )
     if previous_mode not in {"external", "external_curated"}:
         return f"previous_route_not_external:{previous_mode or 'unknown'}"
     try:
@@ -224,7 +275,9 @@ def _acquire_singleton_lock(lock_path: Path):
 
     fh.seek(0)
     fh.truncate(0)
-    fh.write(f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()} cmd={' '.join(sys.argv)}")
+    fh.write(
+        f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()} cmd={' '.join(sys.argv)}"
+    )
     fh.flush()
     return fh, ""
 
@@ -237,7 +290,9 @@ def _read_payload(path: Path) -> dict[str, object]:
     return decoded if isinstance(decoded, dict) else {}
 
 
-def _lock_busy_payload(lock_path: Path, lock_owner: str, previous_path: Path) -> dict[str, object]:
+def _lock_busy_payload(
+    lock_path: Path, lock_owner: str, previous_path: Path
+) -> dict[str, object]:
     observed_at = datetime.now(timezone.utc).isoformat()
     base = {
         "timestamp_utc": observed_at,
@@ -264,12 +319,19 @@ def _lock_busy_payload(lock_path: Path, lock_owner: str, previous_path: Path) ->
     return preserved
 
 
-def _maybe_autoprune_external_low_space(project_root: Path, external_root: Path) -> dict[str, object]:
+def _maybe_autoprune_external_low_space(
+    project_root: Path, external_root: Path
+) -> dict[str, object]:
     payload: dict[str, object] = {
         "enabled": _env_flag("BOT_LOGS_LOW_SPACE_AUTOPRUNE_ENABLED", "1"),
         "attempted": False,
     }
-    if str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower() in {"0", "false", "no", "off"}:
+    if str(os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1") or "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
         payload.update(
             {
                 "external_root": str(external_root),
@@ -303,14 +365,19 @@ def _maybe_autoprune_external_low_space(project_root: Path, external_root: Path)
         project_root,
         external_root,
         require_local_fallback=(
-            os.getenv("RETENTION_EXTERNAL_LIVE_SQLITE_REQUIRE_LOCAL_FALLBACK", "1").strip() == "1"
+            os.getenv(
+                "RETENTION_EXTERNAL_LIVE_SQLITE_REQUIRE_LOCAL_FALLBACK", "1"
+            ).strip()
+            == "1"
         ),
     )
     payload["attempted"] = True
     payload["candidate_count"] = int(len(candidates))
     payload["details"] = details
     if not candidates:
-        payload["skipped_reason"] = str(details.get("skipped_reason") or "no_pressure_candidates")
+        payload["skipped_reason"] = str(
+            details.get("skipped_reason") or "no_pressure_candidates"
+        )
         return payload
 
     deleted, errors = drp._delete_paths(candidates)
@@ -340,7 +407,9 @@ def _path_metadata(path: Path) -> dict[str, object]:
     try:
         stat = path.stat()
         out["size_bytes"] = int(stat.st_size)
-        out["mtime_utc"] = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+        out["mtime_utc"] = datetime.fromtimestamp(
+            stat.st_mtime, tz=timezone.utc
+        ).isoformat()
     except Exception:
         pass
     return out
@@ -368,7 +437,9 @@ def _sync_bot_logs_finder_shortcuts(project_root: Path) -> dict[str, object]:
             "error": "helper_missing",
         }
 
-    create_desktop_shortcut = os.getenv("BOT_LOGS_FINDER_DESKTOP_SHORTCUTS", "1").strip().lower() in {"1", "true", "yes", "on"}
+    create_desktop_shortcut = os.getenv(
+        "BOT_LOGS_FINDER_DESKTOP_SHORTCUTS", "1"
+    ).strip().lower() in {"1", "true", "yes", "on"}
     cmd = [sys.executable, str(helper), "--json"]
     if not create_desktop_shortcut:
         cmd.append("--no-desktop-shortcut")
@@ -380,7 +451,9 @@ def _sync_bot_logs_finder_shortcuts(project_root: Path) -> dict[str, object]:
         check=False,
     )
     payload: dict[str, object] = {}
-    for raw in reversed([line.strip() for line in str(proc.stdout or "").splitlines() if line.strip()]):
+    for raw in reversed(
+        [line.strip() for line in str(proc.stdout or "").splitlines() if line.strip()]
+    ):
         try:
             decoded = json.loads(raw)
         except Exception:
@@ -389,7 +462,9 @@ def _sync_bot_logs_finder_shortcuts(project_root: Path) -> dict[str, object]:
             payload = decoded
             break
     if not payload:
-        out_file = project_root / "governance" / "health" / "bot_logs_finder_sync_latest.json"
+        out_file = (
+            project_root / "governance" / "health" / "bot_logs_finder_sync_latest.json"
+        )
         try:
             decoded = json.loads(out_file.read_text(encoding="utf-8"))
         except Exception:
@@ -412,6 +487,78 @@ def _sqlite_sidecars(path: Path) -> list[str]:
         if candidate.exists():
             out.append(candidate.name)
     return out
+
+
+def _channel_queue_handoff_snapshot(path: Path) -> dict[str, object]:
+    """Prove whether every registered consumer drained this inactive queue copy."""
+    payload: dict[str, object] = {
+        "path": str(path),
+        "schema_ready": False,
+        "stable_standby": False,
+        "registered_consumer_count": 0,
+        "pending_registered_consumer_rows": False,
+        "fully_acked_registered_consumers": False,
+        "reason": "queue_missing",
+    }
+    if not path.exists():
+        return payload
+    sidecars = _sqlite_sidecars(path)
+    payload["sidecars"] = sidecars
+    if sidecars:
+        payload["reason"] = "standby_sidecars_present"
+        return payload
+
+    try:
+        uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
+        conn = sqlite3.connect(uri, uri=True, timeout=5.0)
+        try:
+            tables = {
+                str(row[0] or "")
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name IN ('channel_messages','channel_consumer_state')"
+                ).fetchall()
+            }
+            schema_ready = tables >= {"channel_messages", "channel_consumer_state"}
+            payload["schema_ready"] = schema_ready
+            payload["stable_standby"] = True
+            if not schema_ready:
+                payload["reason"] = "queue_schema_missing"
+                return payload
+            consumer_row = conn.execute(
+                "SELECT COUNT(*), COALESCE(MAX(last_id), 0), COALESCE(MAX(updated_at), '') "
+                "FROM channel_consumer_state"
+            ).fetchone()
+            consumer_count = int(consumer_row[0] if consumer_row else 0)
+            pending_row = conn.execute(
+                "SELECT 1 FROM channel_consumer_state c "
+                "JOIN channel_messages m ON m.channel=c.channel AND m.id>c.last_id "
+                "LIMIT 1"
+            ).fetchone()
+            payload["registered_consumer_count"] = consumer_count
+            payload["max_acknowledged_id"] = int(consumer_row[1] if consumer_row else 0)
+            payload["latest_consumer_update_utc"] = str(
+                consumer_row[2] if consumer_row else ""
+            )
+            payload["pending_registered_consumer_rows"] = pending_row is not None
+            payload["fully_acked_registered_consumers"] = bool(
+                consumer_count > 0 and pending_row is None
+            )
+            payload["reason"] = (
+                "registered_consumer_channels_fully_acked"
+                if payload["fully_acked_registered_consumers"]
+                else (
+                    "registered_consumer_backlog_present"
+                    if pending_row is not None
+                    else "registered_consumer_evidence_missing"
+                )
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        payload["reason"] = "queue_read_failed"
+        payload["error"] = f"{type(exc).__name__}:{exc}"
+    return payload
 
 
 def _default_local_queue_db(project_root: Path, local_root: Path) -> Path:
@@ -469,7 +616,12 @@ def _build_sqlite_skip_report(
         external_meta = (
             _path_metadata(external_path)
             if inspect_external
-            else {"path": str(external_path), "exists": False, "size_bytes": 0, "mtime_utc": ""}
+            else {
+                "path": str(external_path),
+                "exists": False,
+                "size_bytes": 0,
+                "mtime_utc": "",
+            }
         )
         repo_exists = bool(repo_meta.get("exists", False))
         local_exists = bool(local_meta.get("exists", False))
@@ -543,7 +695,11 @@ def _build_sqlite_skip_report(
             )
             active_path = str(repo_path)
             active_passthrough_count += 1
-        elif local_exists and rel == "data/bot_channel_queue.sqlite3" and queue_db_realpath == local_realpath:
+        elif (
+            local_exists
+            and rel == "data/bot_channel_queue.sqlite3"
+            and queue_db_realpath == local_realpath
+        ):
             classification = "active_local_queue"
             reason = (
                 "The channel queue DB is currently pinned to the internal fallback root, "
@@ -565,13 +721,22 @@ def _build_sqlite_skip_report(
             active_path = str(local_path)
             active_local_count += 1
 
+        queue_handoff_evidence: dict[str, object] = {}
+        if rel == "data/bot_channel_queue.sqlite3" and local_exists and external_exists:
+            queue_handoff_evidence = {
+                "local_standby": _channel_queue_handoff_snapshot(local_path),
+                "active_external": _channel_queue_handoff_snapshot(external_path),
+                "policy": (
+                    "a smaller active queue is ready only when both schemas are valid and every "
+                    "registered consumer channel in the inactive standby is fully acknowledged"
+                ),
+            }
+
         verification_state = "missing_external_copy"
         verification_reason = "The external route does not currently have a verified SQLite copy for this tracked path."
         if classification == "active_local_route" and local_bytes > 0:
             verification_state = "active_local_ready"
-            verification_reason = (
-                "The active route is local fallback and the repo link resolves to a present local SQLite copy."
-            )
+            verification_reason = "The active route is local fallback and the repo link resolves to a present local SQLite copy."
             external_ready_count += 1
             verified_count += 1
         elif classification == "active_repo_queue_passthrough" and repo_bytes > 0:
@@ -582,16 +747,41 @@ def _build_sqlite_skip_report(
             )
             external_ready_count += 1
             verified_count += 1
-        elif classification == "active_external_route" and external_exists and external_bytes > 0:
+        elif (
+            classification == "active_external_route"
+            and external_exists
+            and external_bytes > 0
+        ):
             if not local_exists or external_bytes >= local_bytes:
                 verification_state = "verified"
                 verification_reason = "The active external route carries a present SQLite copy that is at least as large as the retained local copy."
                 external_ready_count += 1
                 verified_count += 1
             elif (
+                rel == "data/bot_channel_queue.sqlite3"
+                and bool(
+                    (queue_handoff_evidence.get("active_external") or {}).get(
+                        "schema_ready", False
+                    )
+                )
+                and bool(
+                    (queue_handoff_evidence.get("local_standby") or {}).get(
+                        "fully_acked_registered_consumers", False
+                    )
+                )
+            ):
+                verification_state = "active_external_queue_fully_acked_standby"
+                verification_reason = (
+                    "The active external queue has a valid schema and every registered consumer "
+                    "channel in the larger inactive standby is fully acknowledged."
+                )
+                external_ready_count += 1
+                verified_count += 1
+            elif (
                 _metadata_mtime_utc(external_meta) is not None
                 and _metadata_mtime_utc(local_meta) is not None
-                and _metadata_mtime_utc(external_meta) >= _metadata_mtime_utc(local_meta)
+                and _metadata_mtime_utc(external_meta)
+                >= _metadata_mtime_utc(local_meta)
             ):
                 verification_state = "active_external_newer_than_standby"
                 verification_reason = (
@@ -604,8 +794,14 @@ def _build_sqlite_skip_report(
                 verification_state = "lagging_external_copy"
                 verification_reason = "The active external route copy is present but smaller than the retained local fallback copy."
                 verification_mismatches.append(rel)
-        elif str(mode or "") == "external" and classification in {"warm_standby_retained", "active_local_queue"} and (
-            not external_exists or external_bytes <= 0 or (local_exists and external_bytes < local_bytes)
+        elif (
+            str(mode or "") == "external"
+            and classification in {"warm_standby_retained", "active_local_queue"}
+            and (
+                not external_exists
+                or external_bytes <= 0
+                or (local_exists and external_bytes < local_bytes)
+            )
         ):
             verification_state = "curated_standby"
             verification_reason = (
@@ -650,7 +846,10 @@ def _build_sqlite_skip_report(
                     **external_meta,
                     "sidecars": external_sidecars,
                 },
-                "external_at_least_as_large": bool(external_exists and local_exists and external_bytes >= local_bytes),
+                "queue_handoff_evidence": queue_handoff_evidence,
+                "external_at_least_as_large": bool(
+                    external_exists and local_exists and external_bytes >= local_bytes
+                ),
             }
         )
 
@@ -663,7 +862,11 @@ def _build_sqlite_skip_report(
         verification_state = "active_local_ready"
 
     certified_mode = str(mode or "")
-    if str(mode or "") == "external" and verification_state == "curated_ready":
+    if str(mode or "") == "external" and (
+        verification_state == "curated_ready"
+        or active_local_count > 0
+        or active_passthrough_count > 0
+    ):
         certified_mode = "external_curated"
 
     return {
@@ -700,7 +903,25 @@ def _build_sqlite_skip_report(
     }
 
 
-def _refresh_frozen_sqlite_skip_report(payload: dict[str, object], external_root: Path) -> dict[str, object]:
+def build_sqlite_route_verification(
+    project_root: Path,
+    external_root: Path,
+    *,
+    mode: str,
+    active_root: Path,
+) -> dict[str, object]:
+    """Return a fresh, read-only contract for every authoritative SQLite route."""
+    return _build_sqlite_skip_report(
+        project_root,
+        external_root,
+        mode=mode,
+        active_root=active_root,
+    )
+
+
+def _refresh_frozen_sqlite_skip_report(
+    payload: dict[str, object], external_root: Path
+) -> dict[str, object]:
     refreshed = dict(payload)
     mode = str(refreshed.get("mode") or refreshed.get("certified_mode") or "")
     if not mode or mode == "support_maintenance_frozen":
@@ -736,7 +957,9 @@ def _refresh_frozen_sqlite_skip_report(payload: dict[str, object], external_root
 
     refreshed["sqlite_skip_report"] = sqlite_skip_report
     refreshed["certified_mode"] = str(
-        sqlite_skip_report.get("certified_mode") or refreshed.get("certified_mode") or mode
+        sqlite_skip_report.get("certified_mode")
+        or refreshed.get("certified_mode")
+        or mode
     )
     route_verification = sqlite_skip_report.get("route_verification")
     if isinstance(route_verification, dict):
@@ -749,8 +972,10 @@ def _refresh_frozen_sqlite_skip_report(payload: dict[str, object], external_root
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='Re-evaluate storage route and auto-sync local backlog when drive is back.')
-    parser.add_argument('--json', action='store_true')
+    parser = argparse.ArgumentParser(
+        description="Re-evaluate storage route and auto-sync local backlog when drive is back."
+    )
+    parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     if str(PROJECT_ROOT) not in sys.path:
@@ -766,13 +991,13 @@ def main() -> int:
     )
     lock_fh, lock_owner = _acquire_singleton_lock(lock_path)
 
-    out = PROJECT_ROOT / 'governance' / 'health' / 'storage_failback_sync_latest.json'
-    compat = PROJECT_ROOT / 'governance' / 'health' / 'storage_route_status_latest.json'
+    out = PROJECT_ROOT / "governance" / "health" / "storage_failback_sync_latest.json"
+    compat = PROJECT_ROOT / "governance" / "health" / "storage_route_status_latest.json"
     out.parent.mkdir(parents=True, exist_ok=True)
 
     maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
     local_route_intent = _preserve_verified_local_route_intent(PROJECT_ROOT)
-    if bool(maintenance_hold.get("active", False)):
+    if _maintenance_hold_blocks_route_mutation(maintenance_hold):
         payload = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "ok": True,
@@ -795,8 +1020,8 @@ def main() -> int:
     if lock_fh is None:
         payload = _lock_busy_payload(lock_path, lock_owner, out)
         encoded = json.dumps(payload, ensure_ascii=True, indent=2)
-        out.write_text(encoded, encoding='utf-8')
-        compat.write_text(encoded, encoding='utf-8')
+        out.write_text(encoded, encoding="utf-8")
+        compat.write_text(encoded, encoding="utf-8")
         if args.json:
             print(json.dumps(payload, ensure_ascii=True))
         else:
@@ -806,33 +1031,41 @@ def main() -> int:
                 else {}
             )
             if bool(refresh_deferred.get("busy", False)):
-                print(f"[StorageRoute] busy preserved_previous_route lock_path={lock_path} owner={lock_owner}")
+                print(
+                    f"[StorageRoute] busy preserved_previous_route lock_path={lock_path} owner={lock_owner}"
+                )
             else:
                 print(f"[StorageRoute] busy lock_path={lock_path} owner={lock_owner}")
         return 0
 
     external_root = _external_project_root()
     try:
-        freeze_contract = support_maintenance_freeze_contract(PROJECT_ROOT, "storage_failback_sync")
+        freeze_contract = support_maintenance_freeze_contract(
+            PROJECT_ROOT, "storage_failback_sync"
+        )
         freeze_bypass_reason = _support_freeze_bypass_reason(out, external_root)
         if bool(freeze_contract.get("active", False)) and not freeze_bypass_reason:
             payload = frozen_health_payload(out, freeze_contract)
             payload.setdefault("mode", "support_maintenance_frozen")
-            payload.setdefault("certified_mode", payload.get("mode", "support_maintenance_frozen"))
+            payload.setdefault(
+                "certified_mode", payload.get("mode", "support_maintenance_frozen")
+            )
             payload.setdefault("split_brain_conflicts", 0)
             payload = _refresh_frozen_sqlite_skip_report(payload, external_root)
             encoded = json.dumps(payload, ensure_ascii=True, indent=2)
-            out.write_text(encoded, encoding='utf-8')
-            compat.write_text(encoded, encoding='utf-8')
+            out.write_text(encoded, encoding="utf-8")
+            compat.write_text(encoded, encoding="utf-8")
             if args.json:
                 print(json.dumps(payload, ensure_ascii=True))
             else:
-                print("[StorageRoute] skipped support_maintenance_frozen_for_mac_fluidity")
+                print(
+                    "[StorageRoute] skipped support_maintenance_frozen_for_mac_fluidity"
+                )
             return 0
 
         maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
         local_route_intent = _preserve_verified_local_route_intent(PROJECT_ROOT)
-        if bool(maintenance_hold.get("active", False)):
+        if _maintenance_hold_blocks_route_mutation(maintenance_hold):
             payload = {
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "ok": True,
@@ -852,49 +1085,68 @@ def main() -> int:
                 print("[StorageRoute] skipped runtime_maintenance_hold_before_commit")
             return 0
 
-        low_space_autoprune = _maybe_autoprune_external_low_space(PROJECT_ROOT, external_root)
+        low_space_autoprune = _maybe_autoprune_external_low_space(
+            PROJECT_ROOT, external_root
+        )
         routing = route_runtime_storage(PROJECT_ROOT, allow_autosync=True)
 
         payload = {
-            'timestamp_utc': datetime.now(timezone.utc).isoformat(),
-            'mode': routing.mode,
-            'certified_mode': routing.mode,
-            'active_root': str(routing.active_root),
-            'switched_links': list(routing.switched_links),
-            'passthrough_paths': list(routing.passthrough_paths),
-            'autosync': {
-                'copied_files': int(routing.autosync_copied_files),
-                'copy_errors': int(routing.autosync_copy_errors),
-                'pruned_files': int(routing.autosync_pruned_files),
-                'error_details': list(routing.autosync_error_details),
-                'skip_details': list(routing.autosync_skip_details),
-                'skipped_reason': str(getattr(routing, 'autosync_skipped_reason', '') or ''),
-                'free_bytes': getattr(routing, 'autosync_free_bytes', None),
-                'min_free_bytes': int(getattr(routing, 'autosync_min_free_bytes', 0) or 0),
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "mode": routing.mode,
+            "certified_mode": routing.mode,
+            "active_root": str(routing.active_root),
+            "switched_links": list(routing.switched_links),
+            "passthrough_paths": list(routing.passthrough_paths),
+            "autosync": {
+                "copied_files": int(routing.autosync_copied_files),
+                "copy_errors": int(routing.autosync_copy_errors),
+                "pruned_files": int(routing.autosync_pruned_files),
+                "error_details": list(routing.autosync_error_details),
+                "skip_details": list(routing.autosync_skip_details),
+                "skipped_reason": str(
+                    getattr(routing, "autosync_skipped_reason", "") or ""
+                ),
+                "free_bytes": getattr(routing, "autosync_free_bytes", None),
+                "min_free_bytes": int(
+                    getattr(routing, "autosync_min_free_bytes", 0) or 0
+                ),
             },
-            'split_brain_conflicts': int(routing.split_brain_conflicts),
-            'low_space_autoprune': low_space_autoprune,
-            'sqlite_skip_report': _build_sqlite_skip_report(
+            "split_brain_conflicts": int(routing.split_brain_conflicts),
+            "low_space_autoprune": low_space_autoprune,
+            "sqlite_skip_report": _build_sqlite_skip_report(
                 PROJECT_ROOT,
                 external_root,
                 mode=routing.mode,
                 active_root=routing.active_root,
             ),
-            'finder_sync': _sync_bot_logs_finder_shortcuts(PROJECT_ROOT),
-            'lock_path': str(lock_path),
-            'local_route_intent': local_route_intent,
+            "finder_sync": _sync_bot_logs_finder_shortcuts(PROJECT_ROOT),
+            "lock_path": str(lock_path),
+            "local_route_intent": local_route_intent,
         }
         if bool(freeze_contract.get("active", False)) and freeze_bypass_reason:
             payload["support_maintenance_freeze_bypassed"] = True
             payload["support_maintenance_freeze_bypass_reason"] = freeze_bypass_reason
             payload["support_maintenance_freeze_contract"] = freeze_contract
-        sqlite_skip_report = payload.get('sqlite_skip_report') if isinstance(payload.get('sqlite_skip_report'), dict) else {}
-        payload['certified_mode'] = str(sqlite_skip_report.get('certified_mode') or payload.get('certified_mode') or payload.get('mode') or "")
-        payload['route_verification'] = sqlite_skip_report.get('route_verification') if isinstance(sqlite_skip_report.get('route_verification'), dict) else {}
+        sqlite_skip_report = (
+            payload.get("sqlite_skip_report")
+            if isinstance(payload.get("sqlite_skip_report"), dict)
+            else {}
+        )
+        payload["certified_mode"] = str(
+            sqlite_skip_report.get("certified_mode")
+            or payload.get("certified_mode")
+            or payload.get("mode")
+            or ""
+        )
+        payload["route_verification"] = (
+            sqlite_skip_report.get("route_verification")
+            if isinstance(sqlite_skip_report.get("route_verification"), dict)
+            else {}
+        )
 
         encoded = json.dumps(payload, ensure_ascii=True, indent=2)
-        out.write_text(encoded, encoding='utf-8')
-        compat.write_text(encoded, encoding='utf-8')
+        out.write_text(encoded, encoding="utf-8")
+        compat.write_text(encoded, encoding="utf-8")
 
         if args.json:
             print(json.dumps(payload, ensure_ascii=True))
@@ -913,5 +1165,5 @@ def main() -> int:
             pass
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(main())

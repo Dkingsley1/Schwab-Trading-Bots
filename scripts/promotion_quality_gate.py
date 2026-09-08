@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.operating_contracts import build_operating_contract
 from scripts.ops.long_runtime_common import write_payload
 
 OPS_THRESHOLDS_FILE = PROJECT_ROOT / "governance" / "ops_thresholds.json"
@@ -23,11 +24,21 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 def _promotion_defaults() -> dict[str, Any]:
     payload = _load_json(OPS_THRESHOLDS_FILE)
-    gates = payload.get("promotion_gates") if isinstance(payload.get("promotion_gates"), dict) else {}
-    return gates.get("promotion_gate") if isinstance(gates.get("promotion_gate"), dict) else {}
+    gates = (
+        payload.get("promotion_gates")
+        if isinstance(payload.get("promotion_gates"), dict)
+        else {}
+    )
+    return (
+        gates.get("promotion_gate")
+        if isinstance(gates.get("promotion_gate"), dict)
+        else {}
+    )
 
 
-def _promotion_scope_active(promotion_gate: dict[str, Any], graduation_gate: dict[str, Any]) -> bool:
+def _promotion_scope_active(
+    promotion_gate: dict[str, Any], graduation_gate: dict[str, Any]
+) -> bool:
     considered = int(promotion_gate.get("considered_bots", 0) or 0)
     graduation_scope = int(graduation_gate.get("graduation_scope_active_count", 0) or 0)
     return bool(
@@ -37,14 +48,22 @@ def _promotion_scope_active(promotion_gate: dict[str, Any], graduation_gate: dic
     )
 
 
-def _graduation_effective_ok(graduation_gate: dict[str, Any], promotion_gate: dict[str, Any]) -> bool:
+def _graduation_effective_ok(
+    graduation_gate: dict[str, Any], promotion_gate: dict[str, Any]
+) -> bool:
     if bool(graduation_gate.get("ok", False)):
         return True
-    pass_examples = promotion_gate.get("pass_examples") if isinstance(promotion_gate.get("pass_examples"), list) else []
+    pass_examples = (
+        promotion_gate.get("pass_examples")
+        if isinstance(promotion_gate.get("pass_examples"), list)
+        else []
+    )
     return bool(promotion_gate.get("promote_ok", False) and pass_examples)
 
 
-def _effective_min_considered(promotion_gate: dict[str, Any], configured_min: int) -> int:
+def _effective_min_considered(
+    promotion_gate: dict[str, Any], configured_min: int
+) -> int:
     effective_thresholds = (
         promotion_gate.get("effective_thresholds")
         if isinstance(promotion_gate.get("effective_thresholds"), dict)
@@ -64,7 +83,9 @@ def _promotion_candidate_ids(promotion_gate: dict[str, Any]) -> set[str]:
         if str(raw or "").strip()
     }
     for key in ("pass_examples", "near_pass_examples", "fail_examples"):
-        rows = promotion_gate.get(key) if isinstance(promotion_gate.get(key), list) else []
+        rows = (
+            promotion_gate.get(key) if isinstance(promotion_gate.get(key), list) else []
+        )
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -109,7 +130,10 @@ def _paper_truth_promotion_ready(payload: dict[str, Any] | None) -> bool:
 def _calibration_promotion_ready(payload: dict[str, Any] | None) -> bool:
     snapshot = payload or {}
     if "independent_evidence_ready" in snapshot:
-        return bool(snapshot.get("ok", False) and snapshot.get("independent_evidence_ready", False))
+        return bool(
+            snapshot.get("ok", False)
+            and snapshot.get("independent_evidence_ready", False)
+        )
     return bool(snapshot.get("ok", False))
 
 
@@ -140,11 +164,19 @@ def _resolve_daily_verify_failures(
     resource_guard: dict[str, Any] | None = None,
     ignored_failed_checks: set[str] | None = None,
 ) -> tuple[list[str], list[str]]:
-    failed = daily_verify.get("failed_checks") if isinstance(daily_verify.get("failed_checks"), list) else []
+    failed = (
+        daily_verify.get("failed_checks")
+        if isinstance(daily_verify.get("failed_checks"), list)
+        else []
+    )
     unresolved: list[str] = []
     resolved: list[str] = []
     promotion_scope_active = _promotion_scope_active(promotion_gate, graduation_gate)
-    ignored = {str(item or "").strip() for item in (ignored_failed_checks or set()) if str(item or "").strip()}
+    ignored = {
+        str(item or "").strip()
+        for item in (ignored_failed_checks or set())
+        if str(item or "").strip()
+    }
     resource_guard = resource_guard or {}
     for item in failed:
         name = str(item or "").strip()
@@ -154,7 +186,9 @@ def _resolve_daily_verify_failures(
         if name == "incomplete_run_recovered":
             resolved.append(name)
             continue
-        if name == "new_bot_graduation_gate" and _graduation_effective_ok(graduation_gate, promotion_gate):
+        if name == "new_bot_graduation_gate" and _graduation_effective_ok(
+            graduation_gate, promotion_gate
+        ):
             resolved.append(name)
             continue
         if name == "bot_support_owner_guard" and bool(owner_guard.get("ok", False)):
@@ -162,11 +196,15 @@ def _resolve_daily_verify_failures(
             continue
         if name == "new_bot_admission_guard" and (
             bool(admission_guard.get("ok", False))
-            or not _new_bot_admission_relevant_blockers(admission_guard, promotion_gate)[0]
+            or not _new_bot_admission_relevant_blockers(
+                admission_guard, promotion_gate
+            )[0]
         ):
             resolved.append(name)
             continue
-        if name == "execution_queue_stress_bot" and bool(execution_queue_stress_guard.get("ok", False)):
+        if name == "execution_queue_stress_bot" and bool(
+            execution_queue_stress_guard.get("ok", False)
+        ):
             resolved.append(name)
             continue
         if name == "resource_guard" and bool(
@@ -177,52 +215,81 @@ def _resolve_daily_verify_failures(
         if name == "feature_store_manifest" and feature_store_ready:
             resolved.append(name)
             continue
-        if name == "retrain_schema_compatibility_guard" and bool(schema_compatibility_guard.get("ok", False)):
+        if name == "retrain_schema_compatibility_guard" and bool(
+            schema_compatibility_guard.get("ok", False)
+        ):
             resolved.append(name)
             continue
-        if name == "nightly_resilience_check" and (bool(nightly_resilience_guard.get("ok", False)) or not promotion_scope_active):
+        if name == "nightly_resilience_check" and (
+            bool(nightly_resilience_guard.get("ok", False))
+            or not promotion_scope_active
+        ):
             resolved.append(name)
             continue
-        if name == "state_snapshot_drill" and bool(state_snapshot_drill.get("ok", False)):
+        if name == "state_snapshot_drill" and bool(
+            state_snapshot_drill.get("ok", False)
+        ):
             resolved.append(name)
             continue
         if name == "db_integrity" and bool(db_integrity_guard.get("ok", False)):
             resolved.append(name)
             continue
-        if name == "golden_replay_regression_guard" and bool(golden_replay_guard.get("ok", False)):
+        if name == "golden_replay_regression_guard" and bool(
+            golden_replay_guard.get("ok", False)
+        ):
             resolved.append(name)
             continue
-        if name == "cohort_drift_baseline_guard" and bool(cohort_drift_guard.get("ok", False)):
+        if name == "cohort_drift_baseline_guard" and bool(
+            cohort_drift_guard.get("ok", False)
+        ):
             resolved.append(name)
             continue
-        if name == "replay_hash_registry_guard" and bool(replay_hash_registry_gate.get("ok", False)):
+        if name == "replay_hash_registry_guard" and bool(
+            replay_hash_registry_gate.get("ok", False)
+        ):
             resolved.append(name)
             continue
-        if name == "paper_reconciliation_slo_guard" and bool(paper_reconciliation_slo_guard.get("ok", False)):
+        if name == "paper_reconciliation_slo_guard" and bool(
+            paper_reconciliation_slo_guard.get("ok", False)
+        ):
             resolved.append(name)
             continue
         if name == "paper_execution_truth_layer" and bool(
             (paper_execution_truth_layer or {}).get("ok", False)
-            and (not promotion_scope_active or _paper_truth_promotion_ready(paper_execution_truth_layer))
+            and (
+                not promotion_scope_active
+                or _paper_truth_promotion_ready(paper_execution_truth_layer)
+            )
         ):
             resolved.append(name)
             continue
         if name == "paper_execution_calibration_report" and bool(
             (paper_execution_calibration or {}).get("ok", False)
-            and (not promotion_scope_active or _calibration_promotion_ready(paper_execution_calibration))
+            and (
+                not promotion_scope_active
+                or _calibration_promotion_ready(paper_execution_calibration)
+            )
         ):
             resolved.append(name)
             continue
-        if name == "snapshot_coverage_sentinel" and bool(snapshot_coverage_guard.get("ok", False)):
+        if name == "snapshot_coverage_sentinel" and bool(
+            snapshot_coverage_guard.get("ok", False)
+        ):
             resolved.append(name)
             continue
-        if name == "data_source_divergence_bot" and bool(data_source_divergence_guard.get("ok", False)):
+        if name == "data_source_divergence_bot" and bool(
+            data_source_divergence_guard.get("ok", False)
+        ):
             resolved.append(name)
             continue
-        if name == "artifact_freshness" and bool(artifact_freshness_guard.get("ok", False)):
+        if name == "artifact_freshness" and bool(
+            artifact_freshness_guard.get("ok", False)
+        ):
             resolved.append(name)
             continue
-        if name == "champion_challenger_probation_guard" and bool(probation_guard.get("ok", False)):
+        if name == "champion_challenger_probation_guard" and bool(
+            probation_guard.get("ok", False)
+        ):
             resolved.append(name)
             continue
         if name == "promotion_packet_builder" and (
@@ -230,7 +297,9 @@ def _resolve_daily_verify_failures(
         ):
             resolved.append(name)
             continue
-        if name == "promotion_quality_gate" and (bool(promotion_gate.get("promote_ok", False)) or not promotion_scope_active):
+        if name == "promotion_quality_gate" and (
+            bool(promotion_gate.get("promote_ok", False)) or not promotion_scope_active
+        ):
             resolved.append(name)
             continue
         unresolved.append(name)
@@ -311,7 +380,9 @@ def evaluate_quality(
 
     considered = int(promotion_gate.get("considered_bots", 0) or 0)
     configured_min_considered_bots = max(int(min_considered_bots or 1), 1)
-    effective_min_considered_bots = _effective_min_considered(promotion_gate, configured_min_considered_bots)
+    effective_min_considered_bots = _effective_min_considered(
+        promotion_gate, configured_min_considered_bots
+    )
     raw_fail_share = promotion_gate.get("fail_share", 1.0)
     fail_share = float(1.0 if raw_fail_share is None else raw_fail_share)
     promote_ok = bool(promotion_gate.get("promote_ok", False))
@@ -320,7 +391,11 @@ def evaluate_quality(
         if isinstance(feature_store_manifest.get("point_in_time_contract"), dict)
         else {}
     )
-    contract_hashes = feature_store_manifest.get("contract_hashes") if isinstance(feature_store_manifest.get("contract_hashes"), dict) else {}
+    contract_hashes = (
+        feature_store_manifest.get("contract_hashes")
+        if isinstance(feature_store_manifest.get("contract_hashes"), dict)
+        else {}
+    )
     feature_store_ready = bool(
         feature_store_manifest.get("ok", False)
         and (
@@ -377,44 +452,83 @@ def evaluate_quality(
     if not graduation_effective_ok:
         failed.append("new_bot_graduation_not_ok")
 
-    if has_bot_support_owner_guard and promotion_scope_active and not bool(bot_support_owner_guard.get("ok", False)):
+    if (
+        has_bot_support_owner_guard
+        and promotion_scope_active
+        and not bool(bot_support_owner_guard.get("ok", False))
+    ):
         failed.append("bot_support_owner_contract_not_ok")
 
-    admission_relevant_blocking_ids, admission_candidate_ids = _new_bot_admission_relevant_blockers(
-        new_bot_admission_guard,
-        promotion_gate,
+    admission_relevant_blocking_ids, admission_candidate_ids = (
+        _new_bot_admission_relevant_blockers(
+            new_bot_admission_guard,
+            promotion_gate,
+        )
     )
-    if has_new_bot_admission_guard and not bool(new_bot_admission_guard.get("ok", False)) and admission_relevant_blocking_ids:
+    if (
+        has_new_bot_admission_guard
+        and not bool(new_bot_admission_guard.get("ok", False))
+        and admission_relevant_blocking_ids
+    ):
         failed.append("new_bot_admission_not_ok")
 
     if has_feature_store_manifest and not feature_store_ready:
         failed.append("feature_store_manifest_not_ready")
 
-    if has_schema_compatibility_guard and not bool(retrain_schema_compatibility_guard.get("ok", False)):
+    if has_schema_compatibility_guard and not bool(
+        retrain_schema_compatibility_guard.get("ok", False)
+    ):
         failed.append("retrain_schema_compatibility_not_ok")
 
-    if has_golden_replay_guard and promotion_scope_active and not bool(golden_replay_regression_guard.get("ok", False)):
+    if (
+        has_golden_replay_guard
+        and promotion_scope_active
+        and not bool(golden_replay_regression_guard.get("ok", False))
+    ):
         failed.append("golden_replay_regression_not_ok")
 
-    if has_cohort_drift_guard and not bool(cohort_drift_baseline_guard.get("ok", False)):
+    if has_cohort_drift_guard and not bool(
+        cohort_drift_baseline_guard.get("ok", False)
+    ):
         failed.append("cohort_drift_baseline_not_ok")
 
     if not bool(leak_overfit.get("ok", False)):
         failed.append("leak_overfit_not_ok")
 
-    if require_replay and promotion_scope_active and not bool(replay_gate.get("ok", False)):
+    if (
+        require_replay
+        and promotion_scope_active
+        and not bool(replay_gate.get("ok", False))
+    ):
         failed.append("replay_determinism_not_ok")
 
-    if has_probation_guard and promotion_scope_active and not bool(champion_challenger_probation_guard.get("ok", False)):
+    if (
+        has_probation_guard
+        and promotion_scope_active
+        and not bool(champion_challenger_probation_guard.get("ok", False))
+    ):
         failed.append("champion_challenger_probation_not_ok")
 
-    if require_reconciliation_slo and has_reconciliation_slo and promotion_scope_active and not bool(reconciliation_slo.get("ok", False)):
+    if (
+        require_reconciliation_slo
+        and has_reconciliation_slo
+        and promotion_scope_active
+        and not bool(reconciliation_slo.get("ok", False))
+    ):
         failed.append("reconciliation_slo_not_ok")
 
-    if promotion_scope_active and has_promotion_packet and not bool(promotion_packet.get("ok", False)):
+    if (
+        promotion_scope_active
+        and has_promotion_packet
+        and not bool(promotion_packet.get("ok", False))
+    ):
         failed.append("promotion_packet_not_ready")
 
-    if promotion_scope_active and has_paper_execution_truth_layer and not _paper_truth_promotion_ready(paper_execution_truth_layer):
+    if (
+        promotion_scope_active
+        and has_paper_execution_truth_layer
+        and not _paper_truth_promotion_ready(paper_execution_truth_layer)
+    ):
         failed.append("paper_execution_truth_layer_not_ok")
 
     details = {
@@ -431,43 +545,99 @@ def evaluate_quality(
         "daily_verify_resolved_failed_checks": resolved_daily_verify,
         "graduation_ok": bool(graduation_gate.get("ok", False)),
         "graduation_effective_ok": bool(graduation_effective_ok),
-        "bot_support_owner_guard_ok": (bool(bot_support_owner_guard.get("ok", False)) if has_bot_support_owner_guard else None),
-        "new_bot_admission_ok": (bool(new_bot_admission_guard.get("ok", False)) if has_new_bot_admission_guard else None),
+        "bot_support_owner_guard_ok": (
+            bool(bot_support_owner_guard.get("ok", False))
+            if has_bot_support_owner_guard
+            else None
+        ),
+        "new_bot_admission_ok": (
+            bool(new_bot_admission_guard.get("ok", False))
+            if has_new_bot_admission_guard
+            else None
+        ),
         "new_bot_admission_relevant_blocking_ids": admission_relevant_blocking_ids,
         "promotion_candidate_ids": admission_candidate_ids,
-        "feature_store_manifest_ready": (feature_store_ready if has_feature_store_manifest else None),
+        "feature_store_manifest_ready": (
+            feature_store_ready if has_feature_store_manifest else None
+        ),
         "retrain_schema_compatibility_ok": (
-            bool(retrain_schema_compatibility_guard.get("ok", False)) if has_schema_compatibility_guard else None
+            bool(retrain_schema_compatibility_guard.get("ok", False))
+            if has_schema_compatibility_guard
+            else None
         ),
         "golden_replay_regression_ok": (
-            bool(golden_replay_regression_guard.get("ok", False)) if has_golden_replay_guard else None
+            bool(golden_replay_regression_guard.get("ok", False))
+            if has_golden_replay_guard
+            else None
         ),
         "cohort_drift_baseline_ok": (
-            bool(cohort_drift_baseline_guard.get("ok", False)) if has_cohort_drift_guard else None
+            bool(cohort_drift_baseline_guard.get("ok", False))
+            if has_cohort_drift_guard
+            else None
         ),
         "leak_overfit_ok": bool(leak_overfit.get("ok", False)),
         "replay_ok": bool(replay_gate.get("ok", False)),
         "replay_hash_registry_ok": bool(replay_hash_registry_gate.get("ok", False)),
         "champion_challenger_probation_ok": (
-            bool(champion_challenger_probation_guard.get("ok", False)) if has_probation_guard else None
+            bool(champion_challenger_probation_guard.get("ok", False))
+            if has_probation_guard
+            else None
         ),
-        "reconciliation_slo_ok": (bool(reconciliation_slo.get("ok", False)) if has_reconciliation_slo else None),
-        "promotion_packet_ok": (bool(promotion_packet.get("ok", False)) if has_promotion_packet else None),
-        "snapshot_coverage_ok": bool(snapshot_coverage_guard.get("ok", False)) if snapshot_coverage_guard else None,
-        "data_source_divergence_ok": bool(data_source_divergence_guard.get("ok", False)) if data_source_divergence_guard else None,
-        "artifact_freshness_ok": bool(artifact_freshness_guard.get("ok", False)) if artifact_freshness_guard else None,
-        "nightly_resilience_ok": bool(nightly_resilience_guard.get("ok", False)) if nightly_resilience_guard else None,
-        "state_snapshot_drill_ok": bool(state_snapshot_drill.get("ok", False)) if state_snapshot_drill else None,
-        "db_integrity_ok": bool(db_integrity_guard.get("ok", False)) if db_integrity_guard else None,
-        "execution_queue_stress_ok": bool(execution_queue_stress_guard.get("ok", False)) if execution_queue_stress_guard else None,
+        "reconciliation_slo_ok": (
+            bool(reconciliation_slo.get("ok", False))
+            if has_reconciliation_slo
+            else None
+        ),
+        "promotion_packet_ok": (
+            bool(promotion_packet.get("ok", False)) if has_promotion_packet else None
+        ),
+        "snapshot_coverage_ok": (
+            bool(snapshot_coverage_guard.get("ok", False))
+            if snapshot_coverage_guard
+            else None
+        ),
+        "data_source_divergence_ok": (
+            bool(data_source_divergence_guard.get("ok", False))
+            if data_source_divergence_guard
+            else None
+        ),
+        "artifact_freshness_ok": (
+            bool(artifact_freshness_guard.get("ok", False))
+            if artifact_freshness_guard
+            else None
+        ),
+        "nightly_resilience_ok": (
+            bool(nightly_resilience_guard.get("ok", False))
+            if nightly_resilience_guard
+            else None
+        ),
+        "state_snapshot_drill_ok": (
+            bool(state_snapshot_drill.get("ok", False))
+            if state_snapshot_drill
+            else None
+        ),
+        "db_integrity_ok": (
+            bool(db_integrity_guard.get("ok", False)) if db_integrity_guard else None
+        ),
+        "execution_queue_stress_ok": (
+            bool(execution_queue_stress_guard.get("ok", False))
+            if execution_queue_stress_guard
+            else None
+        ),
         "paper_execution_truth_layer_ok": (
-            _paper_truth_promotion_ready(paper_execution_truth_layer) if has_paper_execution_truth_layer else None
+            _paper_truth_promotion_ready(paper_execution_truth_layer)
+            if has_paper_execution_truth_layer
+            else None
         ),
         "paper_execution_truth_layer_operational_ok": (
-            bool(paper_execution_truth_layer.get("ok", False)) if has_paper_execution_truth_layer else None
+            bool(paper_execution_truth_layer.get("ok", False))
+            if has_paper_execution_truth_layer
+            else None
         ),
         "paper_execution_truth_layer_status": (
-            str(paper_execution_truth_layer.get("overall_status") or "") if has_paper_execution_truth_layer else None
+            str(paper_execution_truth_layer.get("overall_status") or "")
+            if has_paper_execution_truth_layer
+            else None
         ),
         "paper_execution_truth_layer_failed_checks": (
             paper_execution_truth_layer.get(
@@ -484,40 +654,238 @@ def evaluate_quality(
 def main() -> int:
     defaults = _promotion_defaults()
     parser = argparse.ArgumentParser(description="Stricter promotion quality gate.")
-    parser.add_argument("--promotion-gate-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "promotion_gate_latest.json"))
-    parser.add_argument("--daily-verify-file", default=str(PROJECT_ROOT / "governance" / "health" / "daily_auto_verify_latest.json"))
-    parser.add_argument("--graduation-file", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "new_bot_graduation_latest.json"))
-    parser.add_argument("--bot-support-owner-file", default=str(PROJECT_ROOT / "governance" / "health" / "bot_support_owner_guard_latest.json"))
-    parser.add_argument("--new-bot-admission-file", default=str(PROJECT_ROOT / "governance" / "health" / "new_bot_admission_guard_latest.json"))
-    parser.add_argument("--leak-overfit-file", default=str(PROJECT_ROOT / "governance" / "health" / "leak_overfit_guard_latest.json"))
-    parser.add_argument("--replay-file", default=str(PROJECT_ROOT / "governance" / "health" / "replay_end_to_end_latest.json"))
-    parser.add_argument("--replay-hash-registry-file", default=str(PROJECT_ROOT / "governance" / "health" / "replay_hash_registry_guard_latest.json"))
-    parser.add_argument("--feature-store-manifest", default=str(PROJECT_ROOT / "governance" / "feature_store" / "latest.json"))
-    parser.add_argument("--schema-compatibility-file", default=str(PROJECT_ROOT / "governance" / "health" / "retrain_schema_compatibility_latest.json"))
-    parser.add_argument("--golden-replay-file", default=str(PROJECT_ROOT / "governance" / "health" / "golden_replay_regression_latest.json"))
-    parser.add_argument("--cohort-drift-file", default=str(PROJECT_ROOT / "governance" / "health" / "cohort_drift_baseline_latest.json"))
-    parser.add_argument("--probation-guard-file", default=str(PROJECT_ROOT / "governance" / "health" / "champion_challenger_probation_latest.json"))
-    parser.add_argument("--reconciliation-file", default=str(PROJECT_ROOT / "governance" / "health" / "live_reconciliation_slo_latest.json"))
-    parser.add_argument("--paper-reconciliation-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_reconciliation_slo_latest.json"))
-    parser.add_argument("--paper-execution-truth-layer-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_execution_truth_layer_latest.json"))
-    parser.add_argument("--paper-execution-calibration-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_execution_calibration_latest.json"))
-    parser.add_argument("--promotion-packet-file", default=str(PROJECT_ROOT / "governance" / "champion_challenger" / "promotion_packet_latest.json"))
-    parser.add_argument("--snapshot-coverage-file", default=str(PROJECT_ROOT / "governance" / "health" / "snapshot_coverage_latest.json"))
-    parser.add_argument("--data-source-divergence-file", default=str(PROJECT_ROOT / "governance" / "health" / "data_source_divergence_latest.json"))
-    parser.add_argument("--artifact-freshness-file", default=str(PROJECT_ROOT / "governance" / "health" / "artifact_freshness_slo_latest.json"))
-    parser.add_argument("--nightly-resilience-file", default=str(PROJECT_ROOT / "governance" / "health" / "nightly_resilience_latest.json"))
-    parser.add_argument("--state-snapshot-drill-file", default=str(PROJECT_ROOT / "exports" / "state_snapshot_drills" / "latest.json"))
-    parser.add_argument("--db-integrity-file", default=str(PROJECT_ROOT / "governance" / "health" / "sqlite_maintenance_latest.json"))
-    parser.add_argument("--execution-queue-stress-file", default=str(PROJECT_ROOT / "governance" / "health" / "execution_queue_stress_latest.json"))
-    parser.add_argument("--resource-guard-file", default=str(PROJECT_ROOT / "governance" / "health" / "resource_guard_latest.json"))
-    parser.add_argument("--max-fail-share", type=float, default=float(defaults.get("max_fail_share", 0.25)))
-    parser.add_argument("--min-considered-bots", type=int, default=int(defaults.get("min_considered_bots", 4)))
+    parser.add_argument(
+        "--promotion-gate-file",
+        default=str(
+            PROJECT_ROOT / "governance" / "walk_forward" / "promotion_gate_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--daily-verify-file",
+        default=str(
+            PROJECT_ROOT / "governance" / "health" / "daily_auto_verify_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--graduation-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "walk_forward"
+            / "new_bot_graduation_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--bot-support-owner-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "bot_support_owner_guard_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--new-bot-admission-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "new_bot_admission_guard_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--leak-overfit-file",
+        default=str(
+            PROJECT_ROOT / "governance" / "health" / "leak_overfit_guard_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--replay-file",
+        default=str(
+            PROJECT_ROOT / "governance" / "health" / "replay_end_to_end_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--replay-hash-registry-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "replay_hash_registry_guard_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--feature-store-manifest",
+        default=str(PROJECT_ROOT / "governance" / "feature_store" / "latest.json"),
+    )
+    parser.add_argument(
+        "--schema-compatibility-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "retrain_schema_compatibility_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--golden-replay-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "golden_replay_regression_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--cohort-drift-file",
+        default=str(
+            PROJECT_ROOT / "governance" / "health" / "cohort_drift_baseline_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--probation-guard-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "champion_challenger_probation_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--reconciliation-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "live_reconciliation_slo_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--paper-reconciliation-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "paper_reconciliation_slo_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--paper-execution-truth-layer-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "paper_execution_truth_layer_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--paper-execution-calibration-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "paper_execution_calibration_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--promotion-packet-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "champion_challenger"
+            / "promotion_packet_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-coverage-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "snapshot_coverage_training_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--data-source-divergence-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "data_source_divergence_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--artifact-freshness-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "artifact_freshness_slo_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--nightly-resilience-file",
+        default=str(
+            PROJECT_ROOT / "governance" / "health" / "nightly_resilience_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--state-snapshot-drill-file",
+        default=str(PROJECT_ROOT / "exports" / "state_snapshot_drills" / "latest.json"),
+    )
+    parser.add_argument(
+        "--db-integrity-file",
+        default=str(
+            PROJECT_ROOT / "governance" / "health" / "sqlite_maintenance_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--execution-queue-stress-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "execution_queue_stress_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--resource-guard-file",
+        default=str(
+            PROJECT_ROOT / "governance" / "health" / "resource_guard_latest.json"
+        ),
+    )
+    parser.add_argument(
+        "--max-fail-share",
+        type=float,
+        default=float(defaults.get("max_fail_share", 0.25)),
+    )
+    parser.add_argument(
+        "--min-considered-bots",
+        type=int,
+        default=int(defaults.get("min_considered_bots", 4)),
+    )
     parser.add_argument("--require-replay", action="store_true", default=True)
-    parser.add_argument("--no-require-replay", dest="require_replay", action="store_false")
-    parser.add_argument("--require-reconciliation-slo", action="store_true", default=True)
-    parser.add_argument("--no-require-reconciliation-slo", dest="require_reconciliation_slo", action="store_false")
+    parser.add_argument(
+        "--no-require-replay", dest="require_replay", action="store_false"
+    )
+    parser.add_argument(
+        "--require-reconciliation-slo", action="store_true", default=True
+    )
+    parser.add_argument(
+        "--no-require-reconciliation-slo",
+        dest="require_reconciliation_slo",
+        action="store_false",
+    )
     parser.add_argument("--ignore-daily-verify-check", action="append", default=[])
-    parser.add_argument("--out-file", default=str(PROJECT_ROOT / "governance" / "health" / "promotion_quality_gate_latest.json"))
+    parser.add_argument(
+        "--out-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "promotion_quality_gate_latest.json"
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -536,8 +904,12 @@ def main() -> int:
     probation_guard = _load_json(Path(args.probation_guard_file))
     reconciliation = _load_json(Path(args.reconciliation_file))
     paper_reconciliation = _load_json(Path(args.paper_reconciliation_file))
-    paper_execution_truth_layer = _load_json(Path(args.paper_execution_truth_layer_file))
-    paper_execution_calibration = _load_json(Path(args.paper_execution_calibration_file))
+    paper_execution_truth_layer = _load_json(
+        Path(args.paper_execution_truth_layer_file)
+    )
+    paper_execution_calibration = _load_json(
+        Path(args.paper_execution_calibration_file)
+    )
     promotion_packet = _load_json(Path(args.promotion_packet_file))
     snapshot_coverage = _load_json(Path(args.snapshot_coverage_file))
     data_source_divergence = _load_json(Path(args.data_source_divergence_file))
@@ -579,16 +951,125 @@ def main() -> int:
         min_considered_bots=int(args.min_considered_bots),
         require_replay=bool(args.require_replay),
         require_reconciliation_slo=bool(args.require_reconciliation_slo),
-        ignore_daily_verify_failed_checks={str(item or "").strip() for item in list(args.ignore_daily_verify_check or []) if str(item or "").strip()},
+        ignore_daily_verify_failed_checks={
+            str(item or "").strip()
+            for item in list(args.ignore_daily_verify_check or [])
+            if str(item or "").strip()
+        },
+    )
+    overall_status = "ready" if ok else "blocked"
+    promotion_details = (
+        details.get("promotion") if isinstance(details.get("promotion"), dict) else {}
+    )
+    recommended_actions = [
+        (
+            "keep promotion frozen until failed quality checks clear"
+            if failed_checks
+            else "promotion quality gate is ready for the configured scope"
+        ),
+        (
+            "refresh daily verify owner artifacts before retrying promotion"
+            if "daily_verify_not_ok" in failed_checks
+            else ""
+        ),
+        (
+            "restore feature-store lineage before promotion review"
+            if "feature_store_manifest_not_ready" in failed_checks
+            else ""
+        ),
+        (
+            "restore paper execution truth before promotion review"
+            if "paper_execution_truth_layer_not_ok" in failed_checks
+            else ""
+        ),
+        (
+            "collect more considered bots before promotion review"
+            if int(promotion_details.get("considered_bots", 0) or 0)
+            < int(promotion_details.get("min_considered_bots", 1) or 1)
+            else ""
+        ),
+    ]
+    operating_contract = build_operating_contract(
+        contract_id="promotion_quality_gate_operating_contract_v1",
+        owner="promotion_quality_gate",
+        domain="training_promotion",
+        status=overall_status,
+        why=failed_checks[0] if failed_checks else "ready",
+        safe_authority=[
+            "verify_promotion_quality",
+            "resolve_recursive_daily_verify_failures",
+            "publish_failed_promotion_checks",
+        ],
+        blocked_authority=[
+            "automatic_model_promotion",
+            "automatic_live_promotion",
+            "model_replacement",
+            "paper_or_live_order_submission",
+        ],
+        evidence_missing=failed_checks,
+        release_conditions=[
+            "failed_checks_empty",
+            "promotion_scope_active_has_enough_considered_bots",
+            "feature_store_lineage_ready",
+            "paper_execution_truth_ready",
+            "replay_and_reconciliation_ready_when_required",
+        ],
+        next_commands=[
+            ["./scripts/ops/opsctl.sh", "promotion-quality-gate", "--json"],
+            ["./scripts/ops/opsctl.sh", "training-quality", "--json"],
+            ["python", "scripts/retrain_artifact_freshness_guard.py", "--json"],
+        ],
+        definition_gaps=[
+            (
+                "promotion_scope_inactive"
+                if not bool(promotion_details.get("promotion_scope_active", False))
+                else ""
+            ),
+            (
+                "promotion_considered_bot_floor_pending"
+                if int(promotion_details.get("considered_bots", 0) or 0)
+                < int(promotion_details.get("min_considered_bots", 1) or 1)
+                else ""
+            ),
+        ],
+        measurement={
+            "failed_check_count": len(failed_checks),
+            "promote_ok": bool(promotion_details.get("promote_ok", False)),
+            "promotion_scope_active": bool(
+                promotion_details.get("promotion_scope_active", False)
+            ),
+            "considered_bots": int(promotion_details.get("considered_bots", 0) or 0),
+            "min_considered_bots": int(
+                promotion_details.get("min_considered_bots", 0) or 0
+            ),
+            "fail_share": float(promotion_details.get("fail_share", 0.0) or 0.0),
+        },
+        hardening={
+            "recursive_daily_verify_loop_broken": True,
+            "operator_review_required": True,
+            "automatic_live_promotion_allowed": False,
+        },
     )
 
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "ok": ok,
+        "overall_status": overall_status,
+        "promotion_ready": ok,
+        "promotion_authority": False,
         "failed_checks": failed_checks,
+        "recommended_actions": [
+            action for action in recommended_actions if str(action).strip()
+        ],
+        "operating_contract": operating_contract,
+        "promotion_operating_contract": operating_contract,
         "thresholds": {
             "max_fail_share": float(args.max_fail_share),
-            "min_considered_bots": int(details.get("promotion", {}).get("min_considered_bots", args.min_considered_bots)),
+            "min_considered_bots": int(
+                details.get("promotion", {}).get(
+                    "min_considered_bots", args.min_considered_bots
+                )
+            ),
             "configured_min_considered_bots": int(args.min_considered_bots),
             "require_replay": bool(args.require_replay),
             "require_reconciliation_slo": bool(args.require_reconciliation_slo),

@@ -16,6 +16,8 @@ else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, write_payload
 
 
+from scripts.ops.long_runtime_common import evidence_freshness
+
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "health_fast_latest.json"
 ROUTE_READY_STATES = {"ready", "verified", "ok", "curated_ready", "active_passthrough", "active_local_ready"}
 
@@ -92,6 +94,14 @@ def _alert_details(alerts: list[Any]) -> dict[str, Any]:
 
 def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, Any] | None = None) -> dict[str, Any]:
     backpressure = _dict(storage.get("backpressure"))
+    effective = _dict(backpressure.get("effective_raw_live"))
+    effective_pressure_contract = bool(
+        backpressure.get("effective_pressure_clear", False)
+        and effective
+        and _status(storage.get("overall_status")) in {"ready", "advisory"}
+        and _status(storage.get("severity")) in {"", "stable", "low", "normal", "ready"}
+    )
+    pressure_view = effective if effective_pressure_contract else backpressure
     plumbing = _dict(plumbing)
     root_cause = _dict(plumbing.get("root_cause"))
     plumbing_raw_live = _dict(root_cause.get("raw_live"))
@@ -100,11 +110,11 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
     route = _dict(storage.get("external_route_verification"))
     integrity = _dict(storage.get("data_integrity"))
     writer = _dict(storage.get("writer_shedding"))
-    core_pending = _safe_int(backpressure.get("core_pending_lines"), 0)
-    support_pending = _safe_int(backpressure.get("support_pending_lines"), 0)
-    deferred_pending = _safe_int(backpressure.get("deferred_pending_lines"), 0)
-    total_pending = _safe_int(backpressure.get("total_pending_lines"), 0)
-    oldest = _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0)
+    core_pending = _safe_int(pressure_view.get("core_pending_lines"), 0)
+    support_pending = _safe_int(pressure_view.get("support_pending_lines"), 0)
+    deferred_pending = _safe_int(pressure_view.get("deferred_pending_lines"), 0)
+    total_pending = _safe_int(pressure_view.get("total_pending_lines"), 0)
+    oldest = _safe_float(pressure_view.get("oldest_pending_age_seconds"), 0.0)
     pending_threshold = max(_safe_int(backpressure.get("pending_lines_threshold"), 15000), 1)
     route_ready = _status(route.get("verification_state")) in ROUTE_READY_STATES
     integrity_clean = all(
@@ -137,6 +147,7 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
     )
     deferred_managed = bool(
         plumbing_managed_deferred
+        or effective_pressure_contract
         or small_residual_drain_managed
         or deferred_pending > 0
         and backlog_status in {"waiting_for_off_hours", "off_hours_scheduled", "market_hours_guard", "handoff_requested"}
@@ -153,7 +164,11 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
         and writer_breaches_managed
         and core_pending <= 5000
         and support_pending <= 12000
-        and (total_pending >= pending_threshold or small_residual_drain_managed)
+        and (
+            total_pending >= pending_threshold
+            or small_residual_drain_managed
+            or effective_pressure_contract
+        )
     )
     return {
         "active": active,
@@ -174,6 +189,18 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
         "deferred_pending_lines": deferred_pending,
         "total_pending_lines": total_pending,
         "oldest_pending_age_seconds": round(oldest, 3),
+        "effective_pressure_contract": effective_pressure_contract,
+        "pressure_view_source": str(
+            backpressure.get("effective_raw_live_source")
+            or effective.get("source")
+            or "raw_backpressure"
+        ),
+        "raw_total_pending_lines": _safe_int(
+            backpressure.get("total_pending_lines"), 0
+        ),
+        "raw_support_pending_lines": _safe_int(
+            backpressure.get("support_pending_lines"), 0
+        ),
         "plumbing_raw_live": plumbing_raw_live,
         "plumbing_paper_relief": plumbing_paper_relief,
         "policy": "paper-only health treats explicitly scheduled deferred backlog as managed debt when hot-path queues and write routing are clean; live-money readiness still consumes raw backlog as a blocker",
@@ -196,7 +223,19 @@ def _storage_ready(storage: dict[str, Any], plumbing: dict[str, Any] | None = No
     backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
     effective_raw_live = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
     effective_source = str(backpressure.get("effective_raw_live_source") or effective_raw_live.get("source") or "")
-    use_effective = bool(backpressure.get("overlay_adjusted", False) and (backpressure.get("overlay_pressure_clear", False) or effective_source == "fresh_empty_sql_ingestion_overlay"))
+    use_effective = bool(
+        effective_raw_live
+        and (
+            backpressure.get("effective_pressure_clear", False)
+            or (
+                backpressure.get("overlay_adjusted", False)
+                and (
+                    backpressure.get("overlay_pressure_clear", False)
+                    or effective_source == "fresh_empty_sql_ingestion_overlay"
+                )
+            )
+        )
+    )
     raw_live = effective_raw_live if use_effective and effective_raw_live else backpressure.get("raw_live") if isinstance(backpressure.get("raw_live"), dict) else {}
     raw_core = _safe_int(raw_live.get("core_pending_lines"), 0)
     raw_total = _safe_int(raw_live.get("total_pending_lines"), 0)
@@ -209,7 +248,12 @@ def _storage_ready(storage: dict[str, Any], plumbing: dict[str, Any] | None = No
         and raw_oldest <= 15 * 60
         and _safe_int(backpressure.get("total_pending_lines"), 0) <= 12000
     )
-    total_pending = _safe_int(backpressure.get("total_pending_lines"), 0)
+    total_pending = _safe_int(
+        effective_raw_live.get("total_pending_lines")
+        if use_effective
+        else backpressure.get("total_pending_lines"),
+        0,
+    )
     pending_threshold = max(_safe_int(backpressure.get("pending_lines_threshold"), 15000), 1)
     bounded_recovery = _dict(storage.get("bounded_recovery_contract"))
     deferred_relief = _paper_hot_path_storage_relief(storage, plumbing)
@@ -315,8 +359,27 @@ def _platform_repair_contract(
     if plumbing:
         sources["system_plumbing_control"] = plumbing
     issues: list[dict[str, Any]] = []
+    source_freshness = {}
     for name, payload in sources.items():
         status = _status(payload.get("overall_status"))
+        freshness = evidence_freshness(payload)
+        source_freshness[name] = freshness
+        if not freshness["fresh"]:
+            issues.append({
+                "source": name,
+                "overall_status": "evidence_unavailable",
+                "reported_status": status,
+                "reason": freshness["status"],
+                "next_best_command": "./scripts/ops/opsctl.sh " + {
+                    "platform_intelligence": "platform-intelligence",
+                    "platform_brain_v5": "platform-brain-v5",
+                    "platform_stabilization_quality": "platform-stabilization",
+                    "platform_settlement_stabilization": "platform-settlement-stabilization",
+                    "system_architecture_hardening": "system-architecture-hardening",
+                    "system_plumbing_control": "system-plumbing-control",
+                }[name] + " --json",
+            })
+            continue
         if status in {"blocked", "critical", "needs_work", "degraded"}:
             command = payload.get("next_best_command", "")
             issues.append({"source": name, "overall_status": status, "next_best_command": command})
@@ -325,6 +388,7 @@ def _platform_repair_contract(
         "status": "ready" if not issues else "needs_work",
         "issue_count": len(issues),
         "issues": issues,
+        "source_freshness": source_freshness,
         "blocks_guarded_paper": False,
     }
 

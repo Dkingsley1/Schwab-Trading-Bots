@@ -15,14 +15,41 @@ if __package__ in {None, ""}:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.long_runtime_common import load_json, ordered_unique, write_payload
 else:
-    from .long_runtime_common import PROJECT_ROOT, load_json, ordered_unique, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT,
+        load_json,
+        ordered_unique,
+        write_payload,
+    )
 
 
-DEFAULT_HEALTH_OUT = PROJECT_ROOT / "governance" / "health" / "master_grandmaster_profitability_training_latest.json"
-DEFAULT_MODEL_OUT = PROJECT_ROOT / "governance" / "models" / "master_grandmaster_profitability_calibration_latest.json"
-DEFAULT_CONTROL_PATH = PROJECT_ROOT / "governance" / "health" / "paper_runtime_profitability_controls_latest.json"
-DEFAULT_TRAINING_RUNTIME_PATH = PROJECT_ROOT / "governance" / "health" / "training_runtime_control_latest.json"
-DEFAULT_DATASET_PATH = PROJECT_ROOT / "data" / "trade_history" / "trade_learning_dataset.json"
+DEFAULT_HEALTH_OUT = (
+    PROJECT_ROOT
+    / "governance"
+    / "health"
+    / "master_grandmaster_profitability_training_latest.json"
+)
+DEFAULT_MODEL_OUT = (
+    PROJECT_ROOT
+    / "governance"
+    / "models"
+    / "master_grandmaster_profitability_calibration_latest.json"
+)
+DEFAULT_CONTROL_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "health"
+    / "paper_runtime_profitability_controls_latest.json"
+)
+DEFAULT_TRAINING_RUNTIME_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "training_runtime_control_latest.json"
+)
+DEFAULT_DATASET_PATH = (
+    PROJECT_ROOT / "data" / "trade_history" / "trade_learning_dataset.json"
+)
+DEFAULT_GENERATION_FILL_LEARNING_PATH = (
+    PROJECT_ROOT / "governance" / "research" / "generation_fill_learning_latest.json"
+)
 
 TARGETS = [
     "master_trend_bot",
@@ -113,27 +140,65 @@ def _normal_counts(raw: Any) -> dict[str, int]:
 
 
 def _dataset_stats(project_root: Path) -> dict[str, Any]:
-    dataset_path = project_root / "data" / "trade_history" / "trade_learning_dataset.json"
+    dataset_path = (
+        project_root / "data" / "trade_history" / "trade_learning_dataset.json"
+    )
     dataset = load_json(dataset_path)
     data_rows = dataset.get("data") if isinstance(dataset.get("data"), list) else []
     label_counts = _normal_counts(dataset.get("label_counts"))
     if not label_counts and data_rows:
-        label_counts = dict(Counter(str(row.get("label") or "unknown") for row in data_rows if isinstance(row, dict)))
+        label_counts = dict(
+            Counter(
+                str(row.get("label") or "unknown")
+                for row in data_rows
+                if isinstance(row, dict)
+            )
+        )
 
-    regime_counts_raw = dataset.get("regime_label_counts") if isinstance(dataset.get("regime_label_counts"), dict) else {}
-    regime_count = len([key for key, value in regime_counts_raw.items() if str(key).strip() and isinstance(value, dict)])
+    regime_counts_raw = (
+        dataset.get("regime_label_counts")
+        if isinstance(dataset.get("regime_label_counts"), dict)
+        else {}
+    )
+    regime_count = len(
+        [
+            key
+            for key, value in regime_counts_raw.items()
+            if str(key).strip() and isinstance(value, dict)
+        ]
+    )
     if regime_count <= 0 and data_rows:
-        regime_count = len({str(row.get("regime") or "") for row in data_rows if isinstance(row, dict) and str(row.get("regime") or "").strip()})
+        regime_count = len(
+            {
+                str(row.get("regime") or "")
+                for row in data_rows
+                if isinstance(row, dict) and str(row.get("regime") or "").strip()
+            }
+        )
 
-    feature_names = dataset.get("feature_names") if isinstance(dataset.get("feature_names"), list) else []
+    feature_names = (
+        dataset.get("feature_names")
+        if isinstance(dataset.get("feature_names"), list)
+        else []
+    )
     feature_name_set = {str(name) for name in feature_names}
-    missing_paper_features = [name for name in PAPER_PROFITABILITY_FEATURES if name not in feature_name_set]
+    missing_paper_features = [
+        name for name in PAPER_PROFITABILITY_FEATURES if name not in feature_name_set
+    ]
     rows = _safe_int(dataset.get("rows"), len(data_rows))
     total_labels = sum(label_counts.values())
-    max_label_share = (max(label_counts.values()) / total_labels) if total_labels else 0.0
-    positive_share = label_counts.get("positive", 0) / total_labels if total_labels else 0.0
-    negative_share = label_counts.get("negative", 0) / total_labels if total_labels else 0.0
-    neutral_share = label_counts.get("neutral", 0) / total_labels if total_labels else 0.0
+    max_label_share = (
+        (max(label_counts.values()) / total_labels) if total_labels else 0.0
+    )
+    positive_share = (
+        label_counts.get("positive", 0) / total_labels if total_labels else 0.0
+    )
+    negative_share = (
+        label_counts.get("negative", 0) / total_labels if total_labels else 0.0
+    )
+    neutral_share = (
+        label_counts.get("neutral", 0) / total_labels if total_labels else 0.0
+    )
     return {
         "path": str(dataset_path),
         "exists": dataset_path.exists(),
@@ -146,39 +211,157 @@ def _dataset_stats(project_root: Path) -> dict[str, Any]:
         "max_label_share": round(max_label_share, 6),
         "regime_count": regime_count,
         "feature_dim": _safe_int(dataset.get("feature_dim"), len(feature_names)),
-        "paper_profitability_feature_count": len(PAPER_PROFITABILITY_FEATURES) - len(missing_paper_features),
+        "paper_profitability_feature_count": len(PAPER_PROFITABILITY_FEATURES)
+        - len(missing_paper_features),
         "missing_paper_profitability_features": missing_paper_features,
         "refresh_needed_for_new_profitability_features": bool(missing_paper_features),
     }
 
 
 def _training_runtime_stats(project_root: Path) -> dict[str, Any]:
-    runtime_path = project_root / "governance" / "health" / "training_runtime_control_latest.json"
+    runtime_path = (
+        project_root / "governance" / "health" / "training_runtime_control_latest.json"
+    )
     runtime = load_json(runtime_path)
-    snapshot = runtime.get("snapshot") if isinstance(runtime.get("snapshot"), dict) else {}
-    headroom = runtime.get("host_training_headroom_gate") if isinstance(runtime.get("host_training_headroom_gate"), dict) else {}
-    launch = runtime.get("training_launch_contract") if isinstance(runtime.get("training_launch_contract"), dict) else {}
-    canary_batch = launch.get("canary_batch") if isinstance(launch.get("canary_batch"), list) else []
+    snapshot = (
+        runtime.get("snapshot") if isinstance(runtime.get("snapshot"), dict) else {}
+    )
+    headroom = (
+        runtime.get("host_training_headroom_gate")
+        if isinstance(runtime.get("host_training_headroom_gate"), dict)
+        else {}
+    )
+    launch = (
+        runtime.get("training_launch_contract")
+        if isinstance(runtime.get("training_launch_contract"), dict)
+        else {}
+    )
+    canary_batch = (
+        launch.get("canary_batch")
+        if isinstance(launch.get("canary_batch"), list)
+        else []
+    )
     return {
         "path": str(runtime_path),
         "overall_status": str(runtime.get("overall_status") or ""),
         "snapshot_ready": bool(runtime.get("snapshot_ready", False)),
-        "snapshot_age_minutes": round(_safe_float(runtime.get("snapshot_age_minutes"), 0.0), 3),
+        "snapshot_age_minutes": round(
+            _safe_float(runtime.get("snapshot_age_minutes"), 0.0), 3
+        ),
         "snapshot_row_count": _safe_int(snapshot.get("row_count"), 0),
         "snapshot_sequence_count": _safe_int(snapshot.get("sequence_count"), 0),
         "safe_for_training": bool(headroom.get("safe_for_training", False)),
         "batch_cap": _safe_int(headroom.get("batch_cap"), 0),
-        "selected_training_profile": str(headroom.get("selected_training_profile") or ""),
-        "small_batch_training_safe": bool(headroom.get("small_batch_training_safe", False)),
+        "selected_training_profile": str(
+            headroom.get("selected_training_profile") or ""
+        ),
+        "small_batch_training_safe": bool(
+            headroom.get("small_batch_training_safe", False)
+        ),
         "batch10_training_safe": bool(headroom.get("batch10_training_safe", False)),
         "batch20_training_safe": bool(headroom.get("batch20_training_safe", False)),
-        "recommended_retrain_command": launch.get("recommended_retrain_command") if isinstance(launch.get("recommended_retrain_command"), list) else [],
+        "recommended_retrain_command": (
+            launch.get("recommended_retrain_command")
+            if isinstance(launch.get("recommended_retrain_command"), list)
+            else []
+        ),
         "canary_batch": canary_batch,
     }
 
 
+def _generation_fill_learning_stats(project_root: Path) -> dict[str, Any]:
+    path = (
+        project_root
+        / "governance"
+        / "research"
+        / "generation_fill_learning_latest.json"
+    )
+    payload = load_json(path)
+    target = (
+        payload.get("learning_target")
+        if isinstance(payload.get("learning_target"), dict)
+        else {}
+    )
+    dataset = payload.get("dataset") if isinstance(payload.get("dataset"), dict) else {}
+    gate = (
+        payload.get("challenger_training_gate")
+        if isinstance(payload.get("challenger_training_gate"), dict)
+        else {}
+    )
+    validation = (
+        payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
+    )
+    candidate = load_json(
+        project_root / "governance" / "runtime" / "production_candidate_state.json"
+    )
+    target_matches_current = bool(
+        str(target.get("candidate_id") or "")
+        and str(target.get("candidate_id") or "")
+        == str(candidate.get("candidate_id") or "")
+        and _safe_int(target.get("generation"), 0)
+        == _safe_int(candidate.get("generation"), 0)
+    )
+    launch_allowed = bool(
+        payload.get("ok", False)
+        and target_matches_current
+        and gate.get("challenger_training_launch_allowed", False)
+        and validation.get("status") == "ready"
+    )
+    eligible_rows = _safe_int(
+        dataset.get("developmental_pretraining_eligible_row_count"), 0
+    )
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "overall_status": str(payload.get("overall_status") or "missing"),
+        "learning_run_id": str(payload.get("learning_run_id") or ""),
+        "learning_target_candidate_id": str(target.get("candidate_id") or ""),
+        "learning_target_generation": _safe_int(target.get("generation"), 0),
+        "target_matches_current_candidate": target_matches_current,
+        "dataset_sha256": str(dataset.get("dataset_sha256") or ""),
+        "verified_row_count": _safe_int(dataset.get("verified_row_count"), 0),
+        "developmental_pretraining_eligible_row_count": eligible_rows,
+        "empirical_outcome_training_eligible_row_count": _safe_int(
+            dataset.get("empirical_outcome_training_eligible_row_count"), 0
+        ),
+        "simulation_pretraining_only_row_count": _safe_int(
+            dataset.get("simulation_pretraining_only_row_count"), 0
+        ),
+        "quarantined_row_count": _safe_int(dataset.get("quarantined_row_count"), 0),
+        "outcome_label_counts": (
+            dataset.get("outcome_label_counts")
+            if isinstance(dataset.get("outcome_label_counts"), dict)
+            else {}
+        ),
+        "weighted_outcome_label_totals": (
+            dataset.get("weighted_outcome_label_totals")
+            if isinstance(dataset.get("weighted_outcome_label_totals"), dict)
+            else {}
+        ),
+        "chronological_validation_ready": bool(
+            validation.get("chronological_split_ready", False)
+        ),
+        "generation_holdout_validation_ready": bool(
+            validation.get("leave_one_generation_out_ready", False)
+        ),
+        "challenger_training_launch_allowed": launch_allowed,
+        "effective_training_row_count": eligible_rows if launch_allowed else 0,
+        "gate_blockers": list(gate.get("blockers") or []),
+        "historical_rows_grade_current_candidate": False,
+        "historical_rows_earn_clean_soak_credit": False,
+        "automatic_runtime_swap_allowed": False,
+        "automatic_promotion_allowed": False,
+        "live_execution_authority": False,
+    }
+
+
 def _control_contract(project_root: Path) -> dict[str, Any]:
-    control_path = project_root / "governance" / "health" / "paper_runtime_profitability_controls_latest.json"
+    control_path = (
+        project_root
+        / "governance"
+        / "health"
+        / "paper_runtime_profitability_controls_latest.json"
+    )
     control = load_json(control_path)
     contract = (
         control.get("master_grandmaster_training_contract")
@@ -188,9 +371,11 @@ def _control_contract(project_root: Path) -> dict[str, Any]:
     sub_contract = (
         control.get("sub_bot_accuracy_target_contract")
         if isinstance(control.get("sub_bot_accuracy_target_contract"), dict)
-        else contract.get("sub_bot_accuracy_target_contract")
-        if isinstance(contract.get("sub_bot_accuracy_target_contract"), dict)
-        else DEFAULT_SUB_BOT_ACCURACY_TARGET_CONTRACT
+        else (
+            contract.get("sub_bot_accuracy_target_contract")
+            if isinstance(contract.get("sub_bot_accuracy_target_contract"), dict)
+            else DEFAULT_SUB_BOT_ACCURACY_TARGET_CONTRACT
+        )
     )
     return {
         "path": str(control_path),
@@ -201,7 +386,9 @@ def _control_contract(project_root: Path) -> dict[str, Any]:
 
 
 def _overfitting_awareness(project_root: Path) -> dict[str, Any]:
-    payload = load_json(project_root / "governance" / "health" / "overfitting_awareness_latest.json")
+    payload = load_json(
+        project_root / "governance" / "health" / "overfitting_awareness_latest.json"
+    )
     if not payload:
         return {
             "overall_status": "missing",
@@ -215,18 +402,34 @@ def _overfitting_awareness(project_root: Path) -> dict[str, Any]:
         "overall_status": str(payload.get("overall_status") or "ready"),
         "risk_bot_count": _safe_int(payload.get("risk_bot_count"), 0),
         "hard_risk_bot_count": _safe_int(payload.get("hard_risk_bot_count"), 0),
-        "blocked_teacher_bot_count": _safe_int(payload.get("blocked_teacher_bot_count"), 0),
-        "teacher_ineligible_bot_count": _safe_int(payload.get("teacher_ineligible_bot_count"), 0),
-        "active_status_counts": payload.get("active_status_counts") if isinstance(payload.get("active_status_counts"), dict) else {},
-        "top_risk_bots": payload.get("top_risk_bots")[:8] if isinstance(payload.get("top_risk_bots"), list) else [],
+        "blocked_teacher_bot_count": _safe_int(
+            payload.get("blocked_teacher_bot_count"), 0
+        ),
+        "teacher_ineligible_bot_count": _safe_int(
+            payload.get("teacher_ineligible_bot_count"), 0
+        ),
+        "active_status_counts": (
+            payload.get("active_status_counts")
+            if isinstance(payload.get("active_status_counts"), dict)
+            else {}
+        ),
+        "top_risk_bots": (
+            payload.get("top_risk_bots")[:8]
+            if isinstance(payload.get("top_risk_bots"), list)
+            else []
+        ),
         "policy": "masters and Grand Master must downweight overfit-risk bot votes and block full-time promotion while guarded/blocked",
     }
 
 
-def _anti_overfit_assessment(dataset: dict[str, Any], sub_contract: dict[str, Any]) -> dict[str, Any]:
+def _anti_overfit_assessment(
+    dataset: dict[str, Any], sub_contract: dict[str, Any]
+) -> dict[str, Any]:
     min_samples = _safe_int(sub_contract.get("min_oos_samples"), 300)
     min_regimes = _safe_int(sub_contract.get("min_regime_count"), 3)
-    max_label_share_cap = _safe_float(sub_contract.get("max_single_side_action_share"), 0.70)
+    max_label_share_cap = _safe_float(
+        sub_contract.get("max_single_side_action_share"), 0.70
+    )
     checks = [
         {
             "check": "min_labeled_oos_samples",
@@ -242,14 +445,17 @@ def _anti_overfit_assessment(dataset: dict[str, Any], sub_contract: dict[str, An
         },
         {
             "check": "label_balance_not_collapsed",
-            "passed": _safe_float(dataset.get("max_label_share"), 1.0) <= max_label_share_cap,
+            "passed": _safe_float(dataset.get("max_label_share"), 1.0)
+            <= max_label_share_cap,
             "observed": dataset.get("max_label_share", 0.0),
             "required_max": max_label_share_cap,
         },
         {
             "check": "paper_profitability_features_present",
             "passed": not bool(dataset.get("missing_paper_profitability_features")),
-            "observed_missing_count": len(dataset.get("missing_paper_profitability_features") or []),
+            "observed_missing_count": len(
+                dataset.get("missing_paper_profitability_features") or []
+            ),
             "required_missing_count": 0,
         },
     ]
@@ -265,28 +471,61 @@ def _anti_overfit_assessment(dataset: dict[str, Any], sub_contract: dict[str, An
     }
 
 
-def _learned_calibration(control_bundle: dict[str, Any], dataset: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
+def _learned_calibration(
+    control_bundle: dict[str, Any],
+    dataset: dict[str, Any],
+    runtime: dict[str, Any],
+    generation_fill_learning: dict[str, Any],
+) -> dict[str, Any]:
     contract = control_bundle["contract"]
-    sample_policy = contract.get("sample_weight_policy") if isinstance(contract.get("sample_weight_policy"), dict) else {}
-    gate_policy = contract.get("promotion_gate_policy") if isinstance(contract.get("promotion_gate_policy"), dict) else {}
+    sample_policy = (
+        contract.get("sample_weight_policy")
+        if isinstance(contract.get("sample_weight_policy"), dict)
+        else {}
+    )
+    gate_policy = (
+        contract.get("promotion_gate_policy")
+        if isinstance(contract.get("promotion_gate_policy"), dict)
+        else {}
+    )
     mean_profit = _clamp(_safe_float(contract.get("mean_profit_score_norm"), 0.5))
     max_drag = _clamp(_safe_float(contract.get("max_drag_score_norm"), 0.0))
-    mean_size = _clamp(_safe_float(contract.get("mean_position_size_multiplier_norm"), 1.0))
+    mean_size = _clamp(
+        _safe_float(contract.get("mean_position_size_multiplier_norm"), 1.0)
+    )
     labeled_rows = _safe_int(dataset.get("rows"), 0)
     snapshot_rows = _safe_int(runtime.get("snapshot_row_count"), 0)
-    evidence_rows = max(labeled_rows, snapshot_rows)
+    generation_fill_rows = _safe_int(
+        generation_fill_learning.get("effective_training_row_count"), 0
+    )
+    evidence_rows = max(labeled_rows, snapshot_rows) + generation_fill_rows
     evidence_confidence = _clamp(evidence_rows / 5000.0)
-    hard_negative = max(1.0, _safe_float(sample_policy.get("paper_loss_hard_negative_multiplier"), 1.0 + (2.0 * max_drag)))
-    positive_mult = max(0.5, _safe_float(sample_policy.get("paper_profit_positive_multiplier"), 1.0))
-    quarantine_mult = max(1.0, _safe_float(sample_policy.get("strategy_quarantine_multiplier"), 1.0))
+    hard_negative = max(
+        1.0,
+        _safe_float(
+            sample_policy.get("paper_loss_hard_negative_multiplier"),
+            1.0 + (2.0 * max_drag),
+        ),
+    )
+    positive_mult = max(
+        0.5, _safe_float(sample_policy.get("paper_profit_positive_multiplier"), 1.0)
+    )
+    quarantine_mult = max(
+        1.0, _safe_float(sample_policy.get("strategy_quarantine_multiplier"), 1.0)
+    )
     return {
         "artifact_kind": "master_grandmaster_profitability_calibration",
         "trained_on": {
             "labeled_behavior_rows": labeled_rows,
             "runtime_snapshot_rows": snapshot_rows,
+            "generation_fill_learning_rows": generation_fill_rows,
             "evidence_confidence_norm": round(evidence_confidence, 6),
-            "paper_profile_controls_active": len(control_bundle["control"].get("profile_controls") or {}),
-            "paper_strategy_controls_active": len(control_bundle["control"].get("strategy_controls") or {}),
+            "paper_profile_controls_active": len(
+                control_bundle["control"].get("profile_controls") or {}
+            ),
+            "paper_strategy_controls_active": len(
+                control_bundle["control"].get("strategy_controls") or {}
+            ),
         },
         "paper_profitability_state": {
             "mean_profit_score_norm": round(mean_profit, 6),
@@ -294,14 +533,22 @@ def _learned_calibration(control_bundle: dict[str, Any], dataset: dict[str, Any]
             "mean_position_size_multiplier_norm": round(mean_size, 6),
         },
         "master_layer": {
-            "profit_score_floor_norm": round(_safe_float(gate_policy.get("require_profit_score_floor_norm"), 0.62), 6),
-            "drag_score_ceiling_norm": round(_safe_float(gate_policy.get("require_drag_score_below_norm"), 0.38), 6),
+            "profit_score_floor_norm": round(
+                _safe_float(gate_policy.get("require_profit_score_floor_norm"), 0.62), 6
+            ),
+            "drag_score_ceiling_norm": round(
+                _safe_float(gate_policy.get("require_drag_score_below_norm"), 0.38), 6
+            ),
             "risk_damp_scale_norm": round(_clamp(0.35 + (0.55 * max_drag)), 6),
-            "vote_weight_multiplier_norm": round(_clamp(0.55 + (0.35 * mean_profit) - (0.45 * max_drag), 0.10, 0.95), 6),
+            "vote_weight_multiplier_norm": round(
+                _clamp(0.55 + (0.35 * mean_profit) - (0.45 * max_drag), 0.10, 0.95), 6
+            ),
             "position_size_multiplier_norm": round(max(0.05, min(mean_size, 1.0)), 6),
         },
         "grandmaster_layer": {
-            "hold_or_block_drag_threshold_norm": round(_clamp(0.48 + (0.18 * max_drag)), 6),
+            "hold_or_block_drag_threshold_norm": round(
+                _clamp(0.48 + (0.18 * max_drag)), 6
+            ),
             "exit_pressure_multiplier_norm": round(_clamp(0.30 + (0.60 * max_drag)), 6),
             "execution_discount_norm": round(_clamp(0.12 + (0.40 * max_drag)), 6),
             "conflict_cap_norm": round(_clamp(0.74 - (0.24 * max_drag), 0.42, 0.74), 6),
@@ -311,7 +558,30 @@ def _learned_calibration(control_bundle: dict[str, Any], dataset: dict[str, Any]
             "paper_loss_hard_negative_multiplier": round(hard_negative, 6),
             "paper_profit_positive_multiplier": round(positive_mult, 6),
             "strategy_quarantine_multiplier": round(quarantine_mult, 6),
-            "max_effective_weight_cap": round(min(max(hard_negative, quarantine_mult), 3.50), 6),
+            "max_effective_weight_cap": round(
+                min(max(hard_negative, quarantine_mult), 3.50), 6
+            ),
+        },
+        "generation_fill_learning_lineage": {
+            "learning_run_id": str(
+                generation_fill_learning.get("learning_run_id") or ""
+            ),
+            "learning_target_candidate_id": str(
+                generation_fill_learning.get("learning_target_candidate_id") or ""
+            ),
+            "learning_target_generation": _safe_int(
+                generation_fill_learning.get("learning_target_generation"), 0
+            ),
+            "dataset_sha256": str(generation_fill_learning.get("dataset_sha256") or ""),
+            "challenger_training_launch_allowed": bool(
+                generation_fill_learning.get(
+                    "challenger_training_launch_allowed", False
+                )
+            ),
+            "historical_source_generations_remain_provenance_context": True,
+            "historical_rows_grade_current_candidate": False,
+            "automatic_runtime_swap_allowed": False,
+            "automatic_promotion_allowed": False,
         },
         "sub_bot_target_policy": control_bundle["sub_bot_accuracy_target_contract"],
     }
@@ -320,13 +590,22 @@ def _learned_calibration(control_bundle: dict[str, Any], dataset: dict[str, Any]
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     dataset = _dataset_stats(project_root)
     runtime = _training_runtime_stats(project_root)
+    generation_fill_learning = _generation_fill_learning_stats(project_root)
     control_bundle = _control_contract(project_root)
     overfit_awareness = _overfitting_awareness(project_root)
     contract = control_bundle["contract"]
-    targets = contract.get("trainable_targets") if isinstance(contract.get("trainable_targets"), list) else TARGETS
+    targets = (
+        contract.get("trainable_targets")
+        if isinstance(contract.get("trainable_targets"), list)
+        else TARGETS
+    )
     targets = ordered_unique(str(target) for target in targets) or TARGETS
-    calibration = _learned_calibration(control_bundle, dataset, runtime)
-    anti_overfit = _anti_overfit_assessment(dataset, control_bundle["sub_bot_accuracy_target_contract"])
+    calibration = _learned_calibration(
+        control_bundle, dataset, runtime, generation_fill_learning
+    )
+    anti_overfit = _anti_overfit_assessment(
+        dataset, control_bundle["sub_bot_accuracy_target_contract"]
+    )
     active = bool(contract.get("active", False))
     if not active:
         overall_status = "ready_no_active_profitability_drag"
@@ -336,14 +615,23 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         overall_status = "prepared_waiting_for_more_runtime_rows"
     blockers = []
     if dataset.get("refresh_needed_for_new_profitability_features"):
-        blockers.append("behavior_dataset_refresh_needed_for_paper_profitability_features")
+        blockers.append(
+            "behavior_dataset_refresh_needed_for_paper_profitability_features"
+        )
     blockers.extend(anti_overfit.get("failed_checks") or [])
-    if _safe_int(overfit_awareness.get("risk_bot_count"), 0) > 0 or str(overfit_awareness.get("overall_status") or "") in {"guarded", "blocked"}:
+    if _safe_int(overfit_awareness.get("risk_bot_count"), 0) > 0 or str(
+        overfit_awareness.get("overall_status") or ""
+    ) in {"guarded", "blocked"}:
         blockers.append("overfitting_awareness_risk")
+    if generation_fill_learning.get("exists") and not generation_fill_learning.get(
+        "challenger_training_launch_allowed", False
+    ):
+        blockers.append("generation_fill_learning_challenger_gate_blocked")
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "schema_version": 1,
-        "ok": overall_status in {
+        "ok": overall_status
+        in {
             "ready_no_active_profitability_drag",
             "trained_protective_calibration",
             "prepared_waiting_for_more_runtime_rows",
@@ -353,6 +641,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "training_mode": "master_profitability_canary",
         "dataset": dataset,
         "runtime_training_gate": runtime,
+        "generation_fill_learning": generation_fill_learning,
         "master_grandmaster_training_contract": contract,
         "anti_overfit_assessment": anti_overfit,
         "overfitting_awareness": overfit_awareness,
@@ -361,28 +650,66 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "recommended_next_actions": ordered_unique(
             [
                 "apply the learned protective calibration to the master and Grand Master profitability artifact",
-                "refresh behavior dataset so the new paper profitability features appear in feature_names"
-                if dataset.get("refresh_needed_for_new_profitability_features")
-                else "",
+                (
+                    "refresh behavior dataset so the new paper profitability features appear in feature_names"
+                    if dataset.get("refresh_needed_for_new_profitability_features")
+                    else ""
+                ),
                 "run the governor-approved micro-canary sub-bot training before widening",
+                (
+                    "keep generation-fill rows in the G104 offline challenger until provenance, chronological validation, lineage, and training-quality gates all pass"
+                    if generation_fill_learning.get("exists")
+                    and not generation_fill_learning.get(
+                        "challenger_training_launch_allowed", False
+                    )
+                    else ""
+                ),
                 "do not accept 80-90% sub-bot accuracy unless walk-forward and anti-overfit checks pass",
-                "block master/Grand Master promotion votes from overfit-risk bots until the awareness layer returns ready"
-                if str(overfit_awareness.get("overall_status") or "") in {"guarded", "blocked"}
-                else "",
+                (
+                    "block master/Grand Master promotion votes from overfit-risk bots until the awareness layer returns ready"
+                    if str(overfit_awareness.get("overall_status") or "")
+                    in {"guarded", "blocked"}
+                    else ""
+                ),
             ]
         ),
         "recommended_retrain_command": runtime.get("recommended_retrain_command") or [],
         "source_files": {
-            "paper_runtime_profitability_controls": str(project_root / "governance" / "health" / "paper_runtime_profitability_controls_latest.json"),
-            "overfitting_awareness": str(project_root / "governance" / "health" / "overfitting_awareness_latest.json"),
-            "training_runtime_control": str(project_root / "governance" / "health" / "training_runtime_control_latest.json"),
-            "trade_learning_dataset": str(project_root / "data" / "trade_history" / "trade_learning_dataset.json"),
+            "paper_runtime_profitability_controls": str(
+                project_root
+                / "governance"
+                / "health"
+                / "paper_runtime_profitability_controls_latest.json"
+            ),
+            "overfitting_awareness": str(
+                project_root
+                / "governance"
+                / "health"
+                / "overfitting_awareness_latest.json"
+            ),
+            "training_runtime_control": str(
+                project_root
+                / "governance"
+                / "health"
+                / "training_runtime_control_latest.json"
+            ),
+            "trade_learning_dataset": str(
+                project_root / "data" / "trade_history" / "trade_learning_dataset.json"
+            ),
+            "generation_fill_learning": str(
+                project_root
+                / "governance"
+                / "research"
+                / "generation_fill_learning_latest.json"
+            ),
         },
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Train a guarded profitability calibration for master and Grand Master decision layers.")
+    parser = argparse.ArgumentParser(
+        description="Train a guarded profitability calibration for master and Grand Master decision layers."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_HEALTH_OUT))
     parser.add_argument("--model-out", default=str(DEFAULT_MODEL_OUT))

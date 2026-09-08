@@ -17,7 +17,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.sqlite_runtime import connect_sqlite
-from core.runtime_maintenance import maintenance_hold_snapshot
+from core.runtime_maintenance import (
+    maintenance_hold_snapshot,
+    maintenance_hold_token_authorized,
+)
 from scripts import ops_data_plane
 
 DEFAULT_INCLUDE_GLOBS = [
@@ -30,7 +33,12 @@ DEFAULT_INCLUDE_GLOBS = [
     "exports/paper_broker_bridge/**/*.jsonl",
     "data/**/*.jsonl",
 ]
-DEFAULT_EXCLUDE_PARTS = ["/.git/", "/.venv", "/models/archive/"]
+DEFAULT_EXCLUDE_PARTS = [
+    "/.git/",
+    "/.venv",
+    "/models/archive/",
+    "/governance/evidence/canary_rollout_observations.jsonl",
+]
 DEFAULT_INCLUDE_JSON_GLOBS = [
     "master_bot_registry.json",
     "config/**/*.json",
@@ -45,8 +53,15 @@ DEFAULT_INCLUDE_JSON_GLOBS = [
     "exports/external_feeds/**/*.json",
     "exports/state_snapshot_drills/latest.json",
 ]
-DEFAULT_JSON_EXCLUDE_PARTS = ["/.git/", "/.venv", "/models/archive/", "/exports/reports/"]
+DEFAULT_JSON_EXCLUDE_PARTS = [
+    "/.git/",
+    "/.venv",
+    "/models/archive/",
+    "/exports/reports/",
+]
 DISCOVERY_MANIFEST_SCHEMA_VERSION = 1
+JOURNAL_RESUME_INDEX_SCHEMA_VERSION = 1
+JOURNAL_RESUME_EVENTS = {"file_checkpoint", "file_complete"}
 
 
 def _now_utc() -> str:
@@ -134,7 +149,11 @@ def _path_hot_priority(source_rel: str) -> int:
         return 0
     if rel.startswith("governance/channels/decision/"):
         return 1
-    if rel.startswith("exports/paper_broker_bridge/") or rel.startswith("paper_trades_") or rel.startswith("live_orders_"):
+    if (
+        rel.startswith("exports/paper_broker_bridge/")
+        or rel.startswith("paper_trades_")
+        or rel.startswith("live_orders_")
+    ):
         return 2
     if rel.startswith("decision_explanations/"):
         return 3
@@ -161,9 +180,15 @@ def _storage_temperature_label(source_rel: str) -> str:
     rel = str(source_rel or "")
     if rel.startswith("decisions/"):
         return "hot"
-    if rel.startswith("exports/paper_broker_bridge/") or rel.startswith("paper_trades_") or rel.startswith("live_orders_"):
+    if (
+        rel.startswith("exports/paper_broker_bridge/")
+        or rel.startswith("paper_trades_")
+        or rel.startswith("live_orders_")
+    ):
         return "hot"
-    if rel.startswith("governance/events/gate_logs_") or rel.startswith("governance/channels/decision/"):
+    if rel.startswith("governance/events/gate_logs_") or rel.startswith(
+        "governance/channels/decision/"
+    ):
         return "hot"
     if _is_cold_lane_path(rel):
         return "cold"
@@ -191,7 +216,12 @@ def _ingestion_lane_label(source_rel: str) -> str:
     rel = str(source_rel or "")
     if _is_cold_lane_path(rel):
         return "cold_lane"
-    if rel.startswith("decisions/") or rel.startswith("exports/paper_broker_bridge/") or rel.startswith("paper_trades_") or rel.startswith("live_orders_"):
+    if (
+        rel.startswith("decisions/")
+        or rel.startswith("exports/paper_broker_bridge/")
+        or rel.startswith("paper_trades_")
+        or rel.startswith("live_orders_")
+    ):
         return "hot_lane"
     if _is_deferred_analytics_path(rel):
         return "deferred_lane"
@@ -259,7 +289,12 @@ def _parse_csv_values(raw: Optional[str]) -> List[str]:
 
 def _discovery_manifest_path(project_root: Path, kind: str) -> Path:
     suffix = "jsonl" if str(kind).strip().lower() != "json" else "json"
-    return project_root / "governance" / "health" / f"{suffix}_discovery_manifest_latest.json"
+    return (
+        project_root
+        / "governance"
+        / "health"
+        / f"{suffix}_discovery_manifest_latest.json"
+    )
 
 
 def _discovery_manifest_max_age_seconds(kind: str) -> float:
@@ -273,7 +308,9 @@ def _discovery_manifest_max_age_seconds(kind: str) -> float:
         return 300.0
 
 
-def _scan_matching_files(project_root: Path, include: List[str], excludes: List[str]) -> List[Path]:
+def _scan_matching_files(
+    project_root: Path, include: List[str], excludes: List[str]
+) -> List[Path]:
     found: List[Path] = []
     seen_path = set()
     seen_resolved = set()
@@ -306,7 +343,9 @@ _HOT_CHANNEL_DUPLICATE_PATTERNS: tuple[tuple[str, str, str], ...] = (
 
 
 def _prefer_channel_primary_logs() -> bool:
-    return str(os.getenv("PREFER_CHANNEL_PRIMARY_LOGS", "1") or "1").strip().lower() in {"1", "true", "yes", "on"}
+    return str(
+        os.getenv("PREFER_CHANNEL_PRIMARY_LOGS", "1") or "1"
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _is_redundant_hot_channel_duplicate(project_root: Path, path: Path) -> bool:
@@ -323,19 +362,39 @@ def _is_redundant_hot_channel_duplicate(project_root: Path, path: Path) -> bool:
     runtime_match = re.fullmatch(r"runtime_events_(20\d{6})\.jsonl", name)
     if runtime_match:
         day = runtime_match.group(1)
-        return any((project_root / "governance" / "channels" / "runtime").glob(f"*/runtime_{day}.jsonl"))
+        return any(
+            (project_root / "governance" / "channels" / "runtime").glob(
+                f"*/runtime_{day}.jsonl"
+            )
+        )
 
-    for legacy_prefix, channel_name, channel_file_prefix in _HOT_CHANNEL_DUPLICATE_PATTERNS:
-        match = re.fullmatch(rf"{re.escape(legacy_prefix)}(.+)_(20\d{{6}})\.jsonl", name)
+    for (
+        legacy_prefix,
+        channel_name,
+        channel_file_prefix,
+    ) in _HOT_CHANNEL_DUPLICATE_PATTERNS:
+        match = re.fullmatch(
+            rf"{re.escape(legacy_prefix)}(.+)_(20\d{{6}})\.jsonl", name
+        )
         if not match:
             continue
         _context_key, day = match.groups()
-        return any((project_root / "governance" / "channels" / channel_name).glob(f"*/{channel_file_prefix}_{day}.jsonl"))
+        return any(
+            (project_root / "governance" / "channels" / channel_name).glob(
+                f"*/{channel_file_prefix}_{day}.jsonl"
+            )
+        )
     return False
 
 
-def _filter_redundant_hot_channel_duplicates(project_root: Path, files: List[Path]) -> List[Path]:
-    return [path for path in files if not _is_redundant_hot_channel_duplicate(project_root, path)]
+def _filter_redundant_hot_channel_duplicates(
+    project_root: Path, files: List[Path]
+) -> List[Path]:
+    return [
+        path
+        for path in files
+        if not _is_redundant_hot_channel_duplicate(project_root, path)
+    ]
 
 
 def _load_discovery_manifest(
@@ -366,7 +425,9 @@ def _load_discovery_manifest(
     try:
         manifest_age = max(
             datetime.now(timezone.utc).timestamp()
-            - datetime.fromisoformat(manifest_ts.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp(),
+            - datetime.fromisoformat(manifest_ts.replace("Z", "+00:00"))
+            .astimezone(timezone.utc)
+            .timestamp(),
             0.0,
         )
     except Exception:
@@ -508,16 +569,26 @@ def discover_jsonl_files(
         kind="jsonl",
     )
     if manifest_rows is not None:
-        manifest_rows = _filter_redundant_hot_channel_duplicates(project_root, manifest_rows)
+        manifest_rows = _filter_redundant_hot_channel_duplicates(
+            project_root, manifest_rows
+        )
     current_rows = _scan_matching_files(project_root, include, excludes)
     current_rows = _filter_redundant_hot_channel_duplicates(project_root, current_rows)
     if manifest_rows is not None:
         manifest_rels = {
-            str(path.relative_to(project_root)) if path.is_relative_to(project_root) else str(path)
+            (
+                str(path.relative_to(project_root))
+                if path.is_relative_to(project_root)
+                else str(path)
+            )
             for path in manifest_rows
         }
         current_rels = {
-            str(path.relative_to(project_root)) if path.is_relative_to(project_root) else str(path)
+            (
+                str(path.relative_to(project_root))
+                if path.is_relative_to(project_root)
+                else str(path)
+            )
             for path in current_rows
         }
         if manifest_rels == current_rels:
@@ -549,9 +620,13 @@ def discover_jsonl_files(
     return found
 
 
-def _discover_jsonl_files(project_root: Path, include_globs: List[str], exclude_parts: List[str]) -> List[Path]:
+def _discover_jsonl_files(
+    project_root: Path, include_globs: List[str], exclude_parts: List[str]
+) -> List[Path]:
     # Backward-compatible helper kept for tests and internal callers.
-    return discover_jsonl_files(project_root, include_globs=include_globs, exclude_parts=exclude_parts)
+    return discover_jsonl_files(
+        project_root, include_globs=include_globs, exclude_parts=exclude_parts
+    )
 
 
 def discover_json_files(
@@ -606,9 +681,13 @@ def _prioritize_jsonl_files_by_pending_bytes(
             anchor_days.append(datetime.strptime(match.group(1), "%Y%m%d").date())
         except Exception:
             continue
-    filename_anchor_day = max(anchor_days) if anchor_days else datetime.now(timezone.utc).date()
+    filename_anchor_day = (
+        max(anchor_days) if anchor_days else datetime.now(timezone.utc).date()
+    )
 
-    def _sort_key(path: Path) -> Tuple[int, int, int, int, int, int, int, int, float, str]:
+    def _sort_key(
+        path: Path,
+    ) -> Tuple[int, int, int, int, int, int, int, int, float, str]:
         try:
             rel = str(path.relative_to(project_root))
         except Exception:
@@ -753,6 +832,159 @@ def _parse_ts_utc(raw: Any) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
+def _journal_resume_index_path(journal_path: Path) -> Path:
+    return journal_path.with_name(f"{journal_path.name}.resume_index.json")
+
+
+def _load_journal_resume_progress(
+    journal_path: Path,
+    *,
+    persist_index: bool = True,
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
+    """Return highest durable SQLite cursors from an append-only ingest journal."""
+    detail: Dict[str, Any] = {
+        "journal_file": str(journal_path),
+        "index_file": str(_journal_resume_index_path(journal_path)),
+        "journal_available": False,
+        "index_reused": False,
+        "scan_start_bytes": 0,
+        "scan_end_bytes": 0,
+        "scanned_bytes": 0,
+        "entries": 0,
+        "parse_errors": 0,
+    }
+    try:
+        journal_stat = journal_path.stat()
+    except OSError:
+        return {}, detail
+
+    detail["journal_available"] = True
+    index_path = _journal_resume_index_path(journal_path)
+    entries: Dict[str, Dict[str, Any]] = {}
+    start_offset = 0
+    index_payload: Dict[str, Any] = {}
+    try:
+        with open(index_path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            index_payload = loaded
+    except (OSError, ValueError, TypeError):
+        index_payload = {}
+
+    indexed_entries = index_payload.get("entries")
+    indexed_offset = int(index_payload.get("journal_offset_bytes", 0) or 0)
+    if (
+        int(index_payload.get("schema_version", 0) or 0)
+        == JOURNAL_RESUME_INDEX_SCHEMA_VERSION
+        and int(index_payload.get("journal_inode", 0) or 0) == int(journal_stat.st_ino)
+        and 0 <= indexed_offset <= int(journal_stat.st_size)
+        and isinstance(indexed_entries, dict)
+    ):
+        entries = {
+            str(source_rel): dict(progress)
+            for source_rel, progress in indexed_entries.items()
+            if str(source_rel).strip() and isinstance(progress, dict)
+        }
+        start_offset = indexed_offset
+        detail["index_reused"] = True
+    else:
+        try:
+            max_scan_bytes = max(
+                int(os.getenv("INGEST_JOURNAL_RESUME_SCAN_MAX_BYTES", "268435456")), 0
+            )
+        except Exception:
+            max_scan_bytes = 268435456
+        if max_scan_bytes > 0 and int(journal_stat.st_size) > max_scan_bytes:
+            start_offset = int(journal_stat.st_size) - max_scan_bytes
+
+    detail["scan_start_bytes"] = int(start_offset)
+    consumed_offset = int(start_offset)
+    with open(journal_path, "rb") as journal:
+        journal.seek(start_offset)
+        if start_offset > 0 and not detail["index_reused"]:
+            journal.readline()
+            consumed_offset = int(journal.tell())
+
+        while True:
+            line_start = int(journal.tell())
+            raw = journal.readline()
+            if not raw:
+                consumed_offset = line_start
+                break
+            if not raw.endswith(b"\n"):
+                consumed_offset = line_start
+                break
+            consumed_offset = int(journal.tell())
+            try:
+                row = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError, TypeError):
+                detail["parse_errors"] = int(detail["parse_errors"]) + 1
+                continue
+            if (
+                not isinstance(row, dict)
+                or str(row.get("mode") or "sqlite") != "sqlite"
+            ):
+                continue
+            source_rel = str(row.get("source_rel") or "").strip()
+            if not source_rel:
+                continue
+            event = str(row.get("event") or "").strip()
+            if event == "file_start" and str(row.get("reset_reason") or "").strip():
+                entries.pop(source_rel, None)
+                continue
+            if event not in JOURNAL_RESUME_EVENTS:
+                continue
+            try:
+                last_line = max(int(row.get("last_line", 0) or 0), 0)
+                last_offset = max(int(row.get("last_offset_bytes", 0) or 0), 0)
+            except (TypeError, ValueError):
+                detail["parse_errors"] = int(detail["parse_errors"]) + 1
+                continue
+            if last_line <= 0 and last_offset <= 0:
+                continue
+            current = entries.get(source_rel, {})
+            current_key = (
+                int(current.get("last_line", 0) or 0),
+                int(current.get("last_offset_bytes", 0) or 0),
+            )
+            candidate_key = (last_line, last_offset)
+            if candidate_key > current_key:
+                entries[source_rel] = {
+                    "last_line": last_line,
+                    "last_offset_bytes": last_offset,
+                    "timestamp_utc": str(row.get("timestamp_utc") or ""),
+                    "event": event,
+                }
+
+    detail["scan_end_bytes"] = int(consumed_offset)
+    detail["scanned_bytes"] = max(int(consumed_offset) - int(start_offset), 0)
+    detail["entries"] = len(entries)
+    if persist_index:
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": JOURNAL_RESUME_INDEX_SCHEMA_VERSION,
+            "updated_at_utc": _now_utc(),
+            "journal_file": str(journal_path),
+            "journal_inode": int(journal_stat.st_ino),
+            "journal_size_bytes": int(journal_stat.st_size),
+            "journal_offset_bytes": int(consumed_offset),
+            "entries": entries,
+        }
+        tmp_path = index_path.with_name(f".{index_path.name}.{os.getpid()}.tmp")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=True, separators=(",", ":"))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, index_path)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return entries, detail
+
+
 def _extract_event_ts_utc(obj: Dict[str, Any]) -> Optional[datetime]:
     md = obj.get("metadata") if isinstance(obj.get("metadata"), dict) else {}
     keys = [
@@ -773,7 +1005,9 @@ def _extract_event_ts_utc(obj: Dict[str, Any]) -> Optional[datetime]:
     return None
 
 
-def _iter_new_lines(path: Path, start_line: int, start_offset_bytes: int = 0) -> Iterable[Tuple[int, str, int]]:
+def _iter_new_lines(
+    path: Path, start_line: int, start_offset_bytes: int = 0
+) -> Iterable[Tuple[int, str, int]]:
     line_no = max(int(start_line), 0)
     offset = max(int(start_offset_bytes), 0)
 
@@ -832,7 +1066,13 @@ def _route_text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _route_hint_text(obj: Dict[str, Any], route: Dict[str, Any], metadata: Dict[str, Any], *, source_rel: str) -> Tuple[str, str]:
+def _route_hint_text(
+    obj: Dict[str, Any],
+    route: Dict[str, Any],
+    metadata: Dict[str, Any],
+    *,
+    source_rel: str,
+) -> Tuple[str, str]:
     path_hints = [
         source_rel,
         obj.get("source_path"),
@@ -862,12 +1102,21 @@ def _route_hint_text(obj: Dict[str, Any], route: Dict[str, Any], metadata: Dict[
         metadata.get("strategy"),
         metadata.get("source_stream"),
     ]
-    path_text = " ".join(str(item or "") for item in path_hints if str(item or "").strip()).lower()
-    context_text = " ".join(str(item or "") for item in context_hints if str(item or "").strip()).lower()
-    return path_text, " ".join(part for part in (path_text, context_text) if part).lower()
+    path_text = " ".join(
+        str(item or "") for item in path_hints if str(item or "").strip()
+    ).lower()
+    context_text = " ".join(
+        str(item or "") for item in context_hints if str(item or "").strip()
+    ).lower()
+    return (
+        path_text,
+        " ".join(part for part in (path_text, context_text) if part).lower(),
+    )
 
 
-def _extract_route_fields(obj: Dict[str, Any], *, source_rel: str = "") -> Tuple[str, str, str, str, str, str]:
+def _extract_route_fields(
+    obj: Dict[str, Any], *, source_rel: str = ""
+) -> Tuple[str, str, str, str, str, str]:
     route = obj.get("data_route") if isinstance(obj.get("data_route"), dict) else {}
     metadata = obj.get("metadata") if isinstance(obj.get("metadata"), dict) else {}
 
@@ -887,15 +1136,31 @@ def _extract_route_fields(obj: Dict[str, Any], *, source_rel: str = "") -> Tuple
     routing_lane = _pick("routing_lane", "lane")
     source_quality_label = _pick("source_quality_label", "quality_label")
 
-    symbol = str(obj.get("symbol") or obj.get("underlying_symbol") or "").strip().upper()
-    path_haystack, route_haystack = _route_hint_text(obj, route, metadata, source_rel=source_rel)
-    haystack = " ".join([route_haystack, source_broker, source_provider, source_venue, asset_class, routing_lane, symbol]).lower()
+    symbol = (
+        str(obj.get("symbol") or obj.get("underlying_symbol") or "").strip().upper()
+    )
+    path_haystack, route_haystack = _route_hint_text(
+        obj, route, metadata, source_rel=source_rel
+    )
+    haystack = " ".join(
+        [
+            route_haystack,
+            source_broker,
+            source_provider,
+            source_venue,
+            asset_class,
+            routing_lane,
+            symbol,
+        ]
+    ).lower()
     if not source_broker:
         if "coinbase" in haystack:
             source_broker = "coinbase"
         elif "schwab" in haystack:
             source_broker = "schwab"
-        elif "crypto" not in haystack and ("equities" in path_haystack or "equity" in path_haystack):
+        elif "crypto" not in haystack and (
+            "equities" in path_haystack or "equity" in path_haystack
+        ):
             source_broker = "schwab"
     if not source_provider:
         if "coinbase" in haystack:
@@ -969,7 +1234,9 @@ def _event_day_utc(event_ts: Optional[datetime], *, fallback_ts: datetime) -> st
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
 
 
-def _derive_start_cursor(progress: Dict[str, Any], stat: os.stat_result) -> Tuple[int, int, str]:
+def _derive_start_cursor(
+    progress: Dict[str, Any], stat: os.stat_result
+) -> Tuple[int, int, str]:
     start_line = int(float(progress.get("last_line", 0) or 0))
     start_offset = int(float(progress.get("last_offset_bytes", 0) or 0))
     prev_mtime = float(progress.get("mtime", 0.0) or 0.0)
@@ -987,6 +1254,96 @@ def _derive_start_cursor(progress: Dict[str, Any], stat: os.stat_result) -> Tupl
         return 0, 0, "offset_past_eof"
 
     return max(start_line, 0), max(start_offset, 0), ""
+
+
+def _reconcile_sqlite_state_with_journal(
+    files: Iterable[Path],
+    *,
+    project_root: Path,
+    sqlite_state: Dict[str, Dict[str, Any]],
+    journal_progress: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Advance same-inode SQLite state to a newer durable journal checkpoint."""
+    recovered: List[Dict[str, Any]] = []
+    timestamp_tolerance_seconds = 300.0
+    for source_path in files:
+        try:
+            source_rel = str(source_path.relative_to(project_root))
+            source_stat = source_path.stat()
+        except (OSError, ValueError):
+            continue
+        state_progress = sqlite_state.get(source_rel)
+        durable_progress = journal_progress.get(source_rel)
+        if not isinstance(state_progress, dict) or not isinstance(
+            durable_progress, dict
+        ):
+            continue
+        state_inode = int(state_progress.get("file_inode", 0) or 0)
+        if state_inode <= 0 or state_inode != int(source_stat.st_ino):
+            continue
+        _, _, reset_reason = _derive_start_cursor(state_progress, source_stat)
+        if reset_reason:
+            continue
+        try:
+            state_line = max(int(state_progress.get("last_line", 0) or 0), 0)
+            state_offset = max(int(state_progress.get("last_offset_bytes", 0) or 0), 0)
+            durable_line = max(int(durable_progress.get("last_line", 0) or 0), 0)
+            durable_offset = max(
+                int(durable_progress.get("last_offset_bytes", 0) or 0), 0
+            )
+        except (TypeError, ValueError):
+            continue
+        if durable_line <= state_line or durable_offset <= state_offset:
+            continue
+        if durable_offset > int(source_stat.st_size):
+            continue
+
+        durable_ts = _parse_ts_utc(durable_progress.get("timestamp_utc"))
+        if durable_ts is not None:
+            durable_epoch = durable_ts.timestamp()
+            if (
+                durable_epoch
+                > float(source_stat.st_mtime) + timestamp_tolerance_seconds
+            ):
+                continue
+            birth_epoch = float(getattr(source_stat, "st_birthtime", 0.0) or 0.0)
+            if (
+                birth_epoch > 0.0
+                and durable_epoch < birth_epoch - timestamp_tolerance_seconds
+            ):
+                continue
+
+        if durable_offset > 0:
+            try:
+                with open(source_path, "rb") as source:
+                    source.seek(durable_offset - 1)
+                    if source.read(1) != b"\n":
+                        continue
+            except OSError:
+                continue
+
+        sqlite_state[source_rel] = {
+            "last_line": durable_line,
+            "last_offset_bytes": durable_offset,
+            "mtime": float(source_stat.st_mtime),
+            "file_inode": int(source_stat.st_ino),
+            "file_size_bytes": int(source_stat.st_size),
+        }
+        recovered.append(
+            {
+                "source_rel": source_rel,
+                "from_line": state_line,
+                "to_line": durable_line,
+                "recovered_lines": durable_line - state_line,
+                "from_offset_bytes": state_offset,
+                "to_offset_bytes": durable_offset,
+                "journal_timestamp_utc": str(
+                    durable_progress.get("timestamp_utc") or ""
+                ),
+                "journal_event": str(durable_progress.get("event") or ""),
+            }
+        )
+    return recovered
 
 
 def _record_top_pending(
@@ -1076,12 +1433,18 @@ class LatencyAccumulator:
             "p50_seconds": round(_pct(0.50), 3),
             "p95_seconds": round(_pct(0.95), 3),
             "max_seconds": round(float(self.max_seconds), 3),
-            "mean_seconds": round(float(self.total_seconds) / max(int(self.count), 1), 3),
-            "slo_breach_ratio_gt_300s": round(float(self.slo_breaches_300s) / max(int(self.count), 1), 6),
+            "mean_seconds": round(
+                float(self.total_seconds) / max(int(self.count), 1), 3
+            ),
+            "slo_breach_ratio_gt_300s": round(
+                float(self.slo_breaches_300s) / max(int(self.count), 1), 6
+            ),
         }
 
 
-def _latency_payload(acc_all: LatencyAccumulator, by_stream: Dict[str, LatencyAccumulator]) -> Dict[str, Any]:
+def _latency_payload(
+    acc_all: LatencyAccumulator, by_stream: Dict[str, LatencyAccumulator]
+) -> Dict[str, Any]:
     stream_rows = {}
     for stream, acc in sorted(by_stream.items()):
         snap = acc.snapshot()
@@ -1139,8 +1502,7 @@ def _log_invalid_line(
 
 
 def _ensure_sqlite_schema(conn: sqlite3.Connection, table: str) -> None:
-    conn.execute(
-        f"""
+    conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {table} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_file TEXT NOT NULL,
@@ -1165,8 +1527,7 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection, table: str) -> None:
             source_quality_label TEXT,
             UNIQUE(source_file, line_no)
         )
-        """
-    )
+        """)
 
     try:
         cols = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -1193,17 +1554,35 @@ def _ensure_sqlite_schema(conn: sqlite3.Connection, table: str) -> None:
         if col not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
 
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_source_rel ON {table}(source_rel)")
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_source_rel_line ON {table}(source_rel, line_no)")
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_ingested_at ON {table}(ingested_at)")
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table}_source_rel ON {table}(source_rel)"
+    )
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table}_source_rel_line ON {table}(source_rel, line_no)"
+    )
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table}_ingested_at ON {table}(ingested_at)"
+    )
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_run_id ON {table}(run_id)")
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_iter_id ON {table}(iter_id)")
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_decision_id ON {table}(decision_id)")
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_source_day_stream ON {table}(source_day_utc, source_stream)")
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_source_partition_key ON {table}(source_partition_key)")
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_source_broker ON {table}(source_broker)")
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_routing_lane ON {table}(routing_lane)")
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_asset_class ON {table}(asset_class)")
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table}_decision_id ON {table}(decision_id)"
+    )
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table}_source_day_stream ON {table}(source_day_utc, source_stream)"
+    )
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table}_source_partition_key ON {table}(source_partition_key)"
+    )
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table}_source_broker ON {table}(source_broker)"
+    )
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table}_routing_lane ON {table}(routing_lane)"
+    )
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table}_asset_class ON {table}(asset_class)"
+    )
 
 
 def _json_file_stream(source_rel: str) -> str:
@@ -1212,7 +1591,9 @@ def _json_file_stream(source_rel: str) -> str:
         return "registry"
     if rel.startswith("config/"):
         return "config"
-    if rel.startswith("data/external_context/") or rel.startswith("exports/external_context/"):
+    if rel.startswith("data/external_context/") or rel.startswith(
+        "exports/external_context/"
+    ):
         return "external_context"
     if rel.startswith("exports/external_feeds/"):
         return "external_feeds"
@@ -1236,8 +1617,7 @@ def _json_file_stream(source_rel: str) -> str:
 
 
 def _ensure_sqlite_json_file_schema(conn: sqlite3.Connection, table: str) -> None:
-    conn.execute(
-        f"""
+    conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {table} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_file TEXT NOT NULL,
@@ -1251,11 +1631,14 @@ def _ensure_sqlite_json_file_schema(conn: sqlite3.Connection, table: str) -> Non
             log_schema_version INTEGER,
             UNIQUE(source_rel, payload_sha1)
         )
-        """
+        """)
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table}_source_rel ON {table}(source_rel)"
     )
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_source_rel ON {table}(source_rel)")
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_stream ON {table}(stream)")
-    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_ingested_at ON {table}(ingested_at)")
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table}_ingested_at ON {table}(ingested_at)"
+    )
 
 
 def _sync_json_file_to_sqlite(
@@ -1268,9 +1651,13 @@ def _sync_json_file_to_sqlite(
     lock_retry_delay_seconds: float,
 ) -> Dict[str, Any]:
     source_rel = str(file_path.relative_to(project_root))
-    modified_at = datetime.fromtimestamp(file_path.stat().st_mtime, tz=timezone.utc).isoformat()
+    modified_at = datetime.fromtimestamp(
+        file_path.stat().st_mtime, tz=timezone.utc
+    ).isoformat()
     obj = json.loads(file_path.read_text(encoding="utf-8"))
-    payload_json = json.dumps(obj, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    payload_json = json.dumps(
+        obj, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    )
     payload_sha1 = hashlib.sha1(payload_json.encode("utf-8")).hexdigest()
     row = (
         str(file_path),
@@ -1320,10 +1707,12 @@ def _sqlite_executemany_with_retry(
             return conn.executemany(sql, rows)
         except sqlite3.OperationalError as exc:
             msg = str(exc).lower()
-            is_locked = ("database is locked" in msg) or ("database table is locked" in msg)
+            is_locked = ("database is locked" in msg) or (
+                "database table is locked" in msg
+            )
             if (not is_locked) or attempt >= max(lock_retries, 0):
                 raise
-            sleep_s = min(max(lock_retry_delay_seconds, 0.01) * (2 ** attempt), 5.0)
+            sleep_s = min(max(lock_retry_delay_seconds, 0.01) * (2**attempt), 5.0)
             print(
                 f"SQLite busy; retrying batch in {sleep_s:.2f}s "
                 f"(attempt {attempt + 1}/{max(lock_retries, 0)})"
@@ -1340,8 +1729,7 @@ def _source_file_identity_for_sqlite_insert(
     start_line: int,
 ) -> str:
     source_file = str(file_path)
-    rel = str(source_rel or "").replace("\\", "/")
-    if conn is None or int(start_line) != 0 or not rel.startswith("governance/channels/"):
+    if conn is None or int(start_line) != 0:
         return source_file
     try:
         existing = conn.execute(
@@ -1359,6 +1747,56 @@ def _source_file_identity_for_sqlite_insert(
     if inode <= 0:
         return source_file
     return f"{source_file}#inode={inode}"
+
+
+def _source_file_identity_for_cursor(
+    conn: Optional[sqlite3.Connection],
+    table: str,
+    file_path: Path,
+    source_rel: str,
+    progress: Dict[str, Any],
+    start_line: int,
+) -> str:
+    persisted_identity = str(progress.get("source_file_identity") or "").strip()
+    if int(start_line) > 0 and persisted_identity:
+        return persisted_identity
+    return _source_file_identity_for_sqlite_insert(
+        conn,
+        table,
+        file_path,
+        source_rel,
+        start_line,
+    )
+
+
+def _sqlite_source_revision_mismatch(
+    conn: Optional[sqlite3.Connection],
+    table: str,
+    file_path: Path,
+    source_rel: str,
+    progress: Dict[str, Any],
+) -> bool:
+    """Detect a rewritten source whose persisted cursor now points at old SQL content."""
+    if conn is None or int(progress.get("last_line", 0) or 0) <= 0:
+        return False
+    source_identity = str(progress.get("source_file_identity") or str(file_path))
+    try:
+        row = conn.execute(
+            f"SELECT payload_sha1 FROM {table} WHERE source_file=? AND source_rel=? AND line_no=1 LIMIT 1",
+            (source_identity, source_rel),
+        ).fetchone()
+    except Exception:
+        return False
+    if not row or not str(row[0] or "").strip():
+        return False
+    try:
+        with open(file_path, "r", encoding="utf-8") as source:
+            raw = source.readline()
+        obj = json.loads(raw)
+        payload = json.dumps(obj, ensure_ascii=True, separators=(",", ":"))
+    except (OSError, ValueError, TypeError):
+        return False
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest() != str(row[0])
 
 
 def _sync_file_to_sqlite(
@@ -1386,6 +1824,7 @@ def _sync_file_to_sqlite(
     flush_sleep_seconds: float = 0.0,
     host_load_soft_cap: float = 0.0,
     host_load_sleep_seconds: float = 0.0,
+    source_file_identity_override: str = "",
 ) -> Dict[str, Any]:
     inserted = 0
     invalid = 0
@@ -1399,7 +1838,15 @@ def _sync_file_to_sqlite(
     last_checkpoint_line = max(int(start_line), 0)
     source_rel = str(file_path.relative_to(project_root))
     source_stream = _classify_stream(source_rel)
-    source_file_identity = _source_file_identity_for_sqlite_insert(conn, table, file_path, source_rel, start_line)
+    source_file_identity = str(
+        source_file_identity_override or ""
+    ) or _source_file_identity_for_sqlite_insert(
+        conn,
+        table,
+        file_path,
+        source_rel,
+        start_line,
+    )
     expected_schema_version = _log_schema_version()
     ops_conn = None
     if not dry_run:
@@ -1453,7 +1900,9 @@ def _sync_file_to_sqlite(
         if int(last_line_seen) <= int(last_checkpoint_line):
             return
         if not force and max(int(checkpoint_every_lines), 0) > 0:
-            if int(last_line_seen) - int(last_checkpoint_line) < int(checkpoint_every_lines):
+            if int(last_line_seen) - int(last_checkpoint_line) < int(
+                checkpoint_every_lines
+            ):
                 return
         if not dry_run:
             if conn is None:
@@ -1477,7 +1926,9 @@ def _sync_file_to_sqlite(
                     ops_conn,
                     collector_key="jsonl_sql",
                     source_name=table,
-                    entity_key=ops_data_plane.normalize_entity_key(project_root, source_rel),
+                    entity_key=ops_data_plane.normalize_entity_key(
+                        project_root, source_rel
+                    ),
                     watermark_type="line_offset",
                     watermark_value=f"{int(last_line_seen)}:{int(last_offset_seen)}",
                     metadata={
@@ -1525,8 +1976,12 @@ def _sync_file_to_sqlite(
             cooldown_sleep_seconds += slept
 
     try:
-        for line_no, raw, next_offset in _iter_new_lines(file_path, start_line, start_offset_bytes):
-            if int(max_lines_per_file) > 0 and (int(line_no) - max(int(start_line), 0)) > int(max_lines_per_file):
+        for line_no, raw, next_offset in _iter_new_lines(
+            file_path, start_line, start_offset_bytes
+        ):
+            if int(max_lines_per_file) > 0 and (
+                int(line_no) - max(int(start_line), 0)
+            ) > int(max_lines_per_file):
                 break
             if int(max_bytes_per_file) > 0:
                 processed_lines = int(line_no) - max(int(start_line), 0)
@@ -1572,7 +2027,9 @@ def _sync_file_to_sqlite(
                 continue
 
             payload_bytes = len(payload.encode("utf-8"))
-            if int(oversize_payload_bytes) > 0 and payload_bytes > int(oversize_payload_bytes):
+            if int(oversize_payload_bytes) > 0 and payload_bytes > int(
+                oversize_payload_bytes
+            ):
                 invalid += 1
                 oversize_payloads += 1
                 exc = ValueError(
@@ -1624,7 +2081,9 @@ def _sync_file_to_sqlite(
                     latency_stream.add(latency_s)
 
             raw_schema = obj.get("log_schema_version")
-            metadata_obj = obj.get("metadata") if isinstance(obj.get("metadata"), dict) else {}
+            metadata_obj = (
+                obj.get("metadata") if isinstance(obj.get("metadata"), dict) else {}
+            )
             if raw_schema is None:
                 raw_schema = metadata_obj.get("log_schema_version")
             try:
@@ -1632,7 +2091,9 @@ def _sync_file_to_sqlite(
             except Exception:
                 observed_schema_version = 0
 
-            run_id_row, iter_id_row, decision_id, parent_decision_id, schema_version = _extract_correlation_fields(obj)
+            run_id_row, iter_id_row, decision_id, parent_decision_id, schema_version = (
+                _extract_correlation_fields(obj)
+            )
             (
                 source_broker,
                 source_provider,
@@ -1641,9 +2102,14 @@ def _sync_file_to_sqlite(
                 routing_lane,
                 source_quality_label,
             ) = _extract_route_fields(obj, source_rel=source_rel)
-            source_day_utc = _event_day_utc(event_ts, fallback_ts=datetime.now(timezone.utc))
+            source_day_utc = _event_day_utc(
+                event_ts, fallback_ts=datetime.now(timezone.utc)
+            )
             source_partition_key = f"{source_day_utc}:{source_stream}"
-            if ops_conn is not None and observed_schema_version != expected_schema_version:
+            if (
+                ops_conn is not None
+                and observed_schema_version != expected_schema_version
+            ):
                 _record_ops(
                     lambda: ops_data_plane.record_schema_drift(
                         ops_conn,
@@ -1652,7 +2118,11 @@ def _sync_file_to_sqlite(
                         line_no=int(line_no),
                         observed_schema_version=int(observed_schema_version),
                         expected_schema_version=int(expected_schema_version),
-                        drift_kind="missing_log_schema_version" if observed_schema_version <= 0 else "schema_version_mismatch",
+                        drift_kind=(
+                            "missing_log_schema_version"
+                            if observed_schema_version <= 0
+                            else "schema_version_mismatch"
+                        ),
                         payload_json=payload,
                         run_id=run_id_row or run_id,
                         iter_id=iter_id_row or iter_id,
@@ -1688,7 +2158,8 @@ def _sync_file_to_sqlite(
             rows_payload_bytes += int(payload_bytes)
 
             if len(rows) >= 1000 or (
-                int(sqlite_batch_max_bytes) > 0 and int(rows_payload_bytes) >= int(sqlite_batch_max_bytes)
+                int(sqlite_batch_max_bytes) > 0
+                and int(rows_payload_bytes) >= int(sqlite_batch_max_bytes)
             ):
                 flush_rows(checkpoint=True)
 
@@ -1710,6 +2181,7 @@ def _sync_file_to_sqlite(
         "cooldown_sleep_seconds": round(float(cooldown_sleep_seconds), 3),
         "last_line": int(last_line_seen),
         "last_offset_bytes": int(last_offset_seen),
+        "source_file_identity": source_file_identity,
     }
 
 
@@ -1723,14 +2195,24 @@ def _mysql_escape(s: str) -> str:
     )
 
 
-def _mysql_exec(mysql_bin: str, host: str, port: int, user: str, password: str, database: str, sql: str) -> None:
+def _mysql_exec(
+    mysql_bin: str,
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    database: str,
+    sql: str,
+) -> None:
     env = os.environ.copy()
     if password:
         env["MYSQL_PWD"] = password
     cmd = [mysql_bin, "-h", host, "-P", str(port), "-u", user, database, "-e", sql]
     proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
     if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or proc.stdout or "mysql command failed").strip())
+        raise RuntimeError(
+            (proc.stderr or proc.stdout or "mysql command failed").strip()
+        )
 
 
 def _mysql_exec_allow_duplicate(
@@ -1879,8 +2361,12 @@ def _sync_file_to_mysql(
         inserted += len(vals)
         vals = []
 
-    for line_no, raw, next_offset in _iter_new_lines(file_path, start_line, start_offset_bytes):
-        if int(max_lines_per_file) > 0 and (int(line_no) - max(int(start_line), 0)) > int(max_lines_per_file):
+    for line_no, raw, next_offset in _iter_new_lines(
+        file_path, start_line, start_offset_bytes
+    ):
+        if int(max_lines_per_file) > 0 and (
+            int(line_no) - max(int(start_line), 0)
+        ) > int(max_lines_per_file):
             break
         if int(max_bytes_per_file) > 0:
             processed_lines = int(line_no) - max(int(start_line), 0)
@@ -1909,7 +2395,9 @@ def _sync_file_to_mysql(
             continue
 
         payload_bytes = len(payload.encode("utf-8"))
-        if int(oversize_payload_bytes) > 0 and payload_bytes > int(oversize_payload_bytes):
+        if int(oversize_payload_bytes) > 0 and payload_bytes > int(
+            oversize_payload_bytes
+        ):
             invalid += 1
             oversize_payloads += 1
             exc = ValueError(
@@ -1937,7 +2425,9 @@ def _sync_file_to_mysql(
             if latency_stream is not None:
                 latency_stream.add(latency_s)
 
-        run_id_row, iter_id_row, decision_id, parent_decision_id, schema_version = _extract_correlation_fields(obj)
+        run_id_row, iter_id_row, decision_id, parent_decision_id, schema_version = (
+            _extract_correlation_fields(obj)
+        )
 
         source_file = _mysql_escape(str(file_path))
         source_rel_esc = _mysql_escape(source_rel)
@@ -2022,12 +2512,21 @@ def _health_file_shard_name(path: Path) -> str:
     return ""
 
 
-def _stale_decision_catch_up_requested(shard_name: str, path_contains: Optional[List[str]] = None) -> bool:
+def _stale_decision_catch_up_requested(
+    shard_name: str, path_contains: Optional[List[str]] = None
+) -> bool:
     if not _env_flag("SQL_LINK_SERVICE_STALE_DECISION_SOURCE_CATCH_UP", False):
         return False
-    if str(shard_name or "").strip() not in {"trading", "aggressive_trading", "crypto_trading"}:
+    if str(shard_name or "").strip() not in {
+        "trading",
+        "aggressive_trading",
+        "crypto_trading",
+    }:
         return False
-    return any("decision_" in str(token) or "trade_decisions_" in str(token) for token in (path_contains or []))
+    return any(
+        "decision_" in str(token) or "trade_decisions_" in str(token)
+        for token in (path_contains or [])
+    )
 
 
 def _fresh_idle_health_fast_path_allowed(
@@ -2042,34 +2541,58 @@ def _fresh_idle_health_fast_path_allowed(
         return False, {"reason": "disabled"}
     shard_name = _health_file_shard_name(health_file_path)
     sentinel_shards = {"health_fast", "writer_progress"}
-    if shard_name in sentinel_shards and not _env_flag("SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS", False):
+    if shard_name in sentinel_shards and not _env_flag(
+        "SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS", False
+    ):
         return False, {"reason": "sentinel_shard"}
     if _stale_decision_catch_up_requested(shard_name, path_contains):
         return False, {"reason": "stale_decision_catch_up", "shard": shard_name}
     health = _load_health_payload(health_file_path)
     if not health:
         return False, {"reason": "missing_health"}
-    status = str(health.get("overall_status") or health.get("status") or "").strip().lower()
+    status = (
+        str(health.get("overall_status") or health.get("status") or "").strip().lower()
+    )
     if status in {"error", "failed", "blocked"}:
         return False, {"reason": "last_health_not_clean", "status": status}
     timestamp = _parse_iso_utc(health.get("timestamp_utc"))
     if timestamp is None:
         return False, {"reason": "missing_timestamp"}
     age_seconds = max((datetime.now(timezone.utc) - timestamp).total_seconds(), 0.0)
-    max_age_seconds = max(_env_float("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", 90.0), 1.0)
+    max_age_seconds = max(
+        _env_float("SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS", 90.0), 1.0
+    )
     if age_seconds > max_age_seconds:
-        return False, {"reason": "health_stale", "age_seconds": round(age_seconds, 3), "max_age_seconds": max_age_seconds}
-    sqlite_bucket = health.get("sqlite") if isinstance(health.get("sqlite"), dict) else {}
-    sqlite_json_bucket = health.get("sqlite_json_files") if isinstance(health.get("sqlite_json_files"), dict) else {}
+        return False, {
+            "reason": "health_stale",
+            "age_seconds": round(age_seconds, 3),
+            "max_age_seconds": max_age_seconds,
+        }
+    sqlite_bucket = (
+        health.get("sqlite") if isinstance(health.get("sqlite"), dict) else {}
+    )
+    sqlite_json_bucket = (
+        health.get("sqlite_json_files")
+        if isinstance(health.get("sqlite_json_files"), dict)
+        else {}
+    )
     dirty_counts = {
-        "invalid": _health_counter(sqlite_bucket.get("invalid")) + _health_counter(health.get("invalid_lines")),
+        "invalid": _health_counter(sqlite_bucket.get("invalid"))
+        + _health_counter(health.get("invalid_lines")),
         "oversize_payloads": _health_counter(sqlite_bucket.get("oversize_payloads")),
         "ops_write_failures": _health_counter(sqlite_bucket.get("ops_write_failures")),
         "json_invalid": _health_counter(sqlite_json_bucket.get("invalid")),
     }
     if any(count > 0 for count in dirty_counts.values()):
-        return False, {"reason": "last_health_has_ingestion_errors", "shard": shard_name, "counts": dirty_counts}
-    pending_lines = max(_health_counter(sqlite_bucket.get("pending_lines")), _health_counter(health.get("pending_lines")))
+        return False, {
+            "reason": "last_health_has_ingestion_errors",
+            "shard": shard_name,
+            "counts": dirty_counts,
+        }
+    pending_lines = max(
+        _health_counter(sqlite_bucket.get("pending_lines")),
+        _health_counter(health.get("pending_lines")),
+    )
     pending_json_files = max(
         _health_counter(sqlite_json_bucket.get("pending_files")),
         _health_counter(sqlite_json_bucket.get("pending")),
@@ -2101,7 +2624,11 @@ def _fresh_idle_health_fast_path_allowed(
                 except Exception:
                     pass
             state_row = next(
-                (state_rows.get(key) for key in state_keys if isinstance(state_rows.get(key), dict)),
+                (
+                    state_rows.get(key)
+                    for key in state_keys
+                    if isinstance(state_rows.get(key), dict)
+                ),
                 None,
             )
             if not isinstance(state_row, dict):
@@ -2152,9 +2679,13 @@ def _journal_event_allowed(payload: Dict[str, Any]) -> bool:
         return True
     if not _env_flag("INGEST_JOURNAL_ENABLED", True):
         return False
-    if event == "file_start" and not _env_flag("INGEST_JOURNAL_FILE_START_ENABLED", True):
+    if event == "file_start" and not _env_flag(
+        "INGEST_JOURNAL_FILE_START_ENABLED", True
+    ):
         return False
-    if event == "file_checkpoint" and not _env_flag("INGEST_JOURNAL_CHECKPOINT_ENABLED", True):
+    if event == "file_checkpoint" and not _env_flag(
+        "INGEST_JOURNAL_CHECKPOINT_ENABLED", True
+    ):
         return False
     if (
         event in {"file_checkpoint", "file_complete"}
@@ -2167,7 +2698,9 @@ def _journal_event_allowed(payload: Dict[str, Any]) -> bool:
 
 def _journal_path_allowed(path: Path) -> bool:
     normalized = str(path).replace("\\", "/")
-    if "/governance/events/" in normalized and not _env_flag("INGEST_JOURNAL_DAILY_ENABLED", True):
+    if "/governance/events/" in normalized and not _env_flag(
+        "INGEST_JOURNAL_DAILY_ENABLED", True
+    ):
         return False
     return True
 
@@ -2181,16 +2714,30 @@ def _journal_event(paths: List[Path], payload: Dict[str, Any]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Link all project JSONL files to SQL (SQLite/MySQL).")
-    parser.add_argument("--project-root", default=str(Path(__file__).resolve().parents[1]))
+    parser = argparse.ArgumentParser(
+        description="Link all project JSONL files to SQL (SQLite/MySQL)."
+    )
+    parser.add_argument(
+        "--project-root", default=str(Path(__file__).resolve().parents[1])
+    )
     parser.add_argument("--mode", choices=["sqlite", "mysql", "both"], default="both")
-    parser.add_argument("--state-file", default=None, help="Path to incremental ingest state JSON.")
+    parser.add_argument(
+        "--state-file", default=None, help="Path to incremental ingest state JSON."
+    )
 
     parser.add_argument("--sqlite-db", default=None, help="SQLite database file path.")
     parser.add_argument("--sqlite-table", default="jsonl_records")
     parser.add_argument("--sqlite-json-table", default="json_file_records")
-    parser.add_argument("--sqlite-timeout-seconds", type=float, default=float(os.getenv("SQLITE_TIMEOUT_SECONDS", "60")))
-    parser.add_argument("--sqlite-lock-retries", type=int, default=int(os.getenv("SQLITE_LOCK_RETRIES", "8")))
+    parser.add_argument(
+        "--sqlite-timeout-seconds",
+        type=float,
+        default=float(os.getenv("SQLITE_TIMEOUT_SECONDS", "60")),
+    )
+    parser.add_argument(
+        "--sqlite-lock-retries",
+        type=int,
+        default=int(os.getenv("SQLITE_LOCK_RETRIES", "8")),
+    )
     parser.add_argument(
         "--sqlite-lock-retry-delay-seconds",
         type=float,
@@ -2202,14 +2749,26 @@ def main() -> int:
         default=int(os.getenv("SQLITE_STATE_CHECKPOINT_LINES", "10000")),
     )
 
-    parser.add_argument("--mysql-bin", default=os.getenv("MYSQL_BIN", "/opt/homebrew/bin/mysql"))
+    parser.add_argument(
+        "--mysql-bin", default=os.getenv("MYSQL_BIN", "/opt/homebrew/bin/mysql")
+    )
     parser.add_argument("--mysql-host", default=os.getenv("MYSQL_HOST", "127.0.0.1"))
-    parser.add_argument("--mysql-port", type=int, default=int(os.getenv("MYSQL_PORT", "3306")))
+    parser.add_argument(
+        "--mysql-port", type=int, default=int(os.getenv("MYSQL_PORT", "3306"))
+    )
     parser.add_argument("--mysql-user", default=os.getenv("MYSQL_USER", "root"))
     parser.add_argument("--mysql-password", default=os.getenv("MYSQL_PASSWORD", ""))
-    parser.add_argument("--mysql-database", default=os.getenv("MYSQL_DATABASE", "schwab_trading"))
-    parser.add_argument("--mysql-table", default=os.getenv("MYSQL_TABLE", "jsonl_records"))
-    parser.add_argument("--mysql-batch-size", type=int, default=int(os.getenv("MYSQL_BATCH_SIZE", "200")))
+    parser.add_argument(
+        "--mysql-database", default=os.getenv("MYSQL_DATABASE", "schwab_trading")
+    )
+    parser.add_argument(
+        "--mysql-table", default=os.getenv("MYSQL_TABLE", "jsonl_records")
+    )
+    parser.add_argument(
+        "--mysql-batch-size",
+        type=int,
+        default=int(os.getenv("MYSQL_BATCH_SIZE", "200")),
+    )
 
     parser.add_argument("--max-files", type=int, default=0)
     parser.add_argument(
@@ -2240,16 +2799,36 @@ def main() -> int:
         type=int,
         default=int(os.getenv("INGEST_MAX_DEFERRED_FILES", "2")),
     )
-    parser.add_argument("--top-pending-files", type=int, default=int(os.getenv("INGEST_TOP_PENDING_FILES", "10")))
-    parser.add_argument("--invalid-sample-limit", type=int, default=int(os.getenv("INGEST_INVALID_SAMPLE_LIMIT", "25")))
-    parser.add_argument("--invalid-log-file", default=os.getenv("INGEST_INVALID_LOG_FILE", ""))
+    parser.add_argument(
+        "--top-pending-files",
+        type=int,
+        default=int(os.getenv("INGEST_TOP_PENDING_FILES", "10")),
+    )
+    parser.add_argument(
+        "--invalid-sample-limit",
+        type=int,
+        default=int(os.getenv("INGEST_INVALID_SAMPLE_LIMIT", "25")),
+    )
+    parser.add_argument(
+        "--invalid-log-file", default=os.getenv("INGEST_INVALID_LOG_FILE", "")
+    )
     parser.add_argument("--journal-file", default=os.getenv("INGEST_JOURNAL_FILE", ""))
-    parser.add_argument("--journal-events-file", default=os.getenv("INGEST_JOURNAL_EVENTS_FILE", ""))
+    parser.add_argument(
+        "--journal-events-file", default=os.getenv("INGEST_JOURNAL_EVENTS_FILE", "")
+    )
     parser.add_argument("--health-file", default=os.getenv("INGEST_HEALTH_FILE", ""))
-    parser.add_argument("--include-streams", default=os.getenv("INGEST_INCLUDE_STREAMS", ""))
-    parser.add_argument("--exclude-streams", default=os.getenv("INGEST_EXCLUDE_STREAMS", ""))
-    parser.add_argument("--path-contains", default=os.getenv("INGEST_PATH_CONTAINS", ""))
-    parser.add_argument("--path-not-contains", default=os.getenv("INGEST_PATH_NOT_CONTAINS", ""))
+    parser.add_argument(
+        "--include-streams", default=os.getenv("INGEST_INCLUDE_STREAMS", "")
+    )
+    parser.add_argument(
+        "--exclude-streams", default=os.getenv("INGEST_EXCLUDE_STREAMS", "")
+    )
+    parser.add_argument(
+        "--path-contains", default=os.getenv("INGEST_PATH_CONTAINS", "")
+    )
+    parser.add_argument(
+        "--path-not-contains", default=os.getenv("INGEST_PATH_NOT_CONTAINS", "")
+    )
     parser.add_argument(
         "--ingest-flush-sleep-seconds",
         type=float,
@@ -2283,7 +2862,11 @@ def main() -> int:
         print(f"Project root missing: {project_root}")
         return 2
     maintenance_hold = maintenance_hold_snapshot(project_root)
-    if bool(maintenance_hold.get("active", False)) and not bool(args.dry_run):
+    if (
+        bool(maintenance_hold.get("active", False))
+        and not maintenance_hold_token_authorized(maintenance_hold)
+        and not bool(args.dry_run)
+    ):
         print(
             "link_jsonl_to_sql guarded_hold=runtime_maintenance_hold_active "
             f"reason={maintenance_hold.get('reason', 'runtime_maintenance')}"
@@ -2328,6 +2911,54 @@ def main() -> int:
         else (project_root / "governance" / "jsonl_sql_link_state.json")
     )
     state = _load_state(state_path)
+    day_utc = datetime.now(timezone.utc).strftime("%Y%m%d")
+    default_journal_latest = (
+        project_root
+        / "governance"
+        / "health"
+        / "jsonl_ingest_batch_journal_latest.jsonl"
+    )
+    default_journal_daily = (
+        project_root / "governance" / "events" / f"jsonl_ingest_batches_{day_utc}.jsonl"
+    )
+    journal_paths = [
+        (
+            Path(args.journal_file).resolve()
+            if args.journal_file
+            else default_journal_latest
+        ),
+        (
+            Path(args.journal_events_file).resolve()
+            if args.journal_events_file
+            else default_journal_daily
+        ),
+    ]
+    journal_resume_index: Dict[str, Any] = {
+        "journal_available": False,
+        "entries": 0,
+        "scanned_bytes": 0,
+    }
+    journal_state_recovery: List[Dict[str, Any]] = []
+    if args.mode in {"sqlite", "both"}:
+        journal_progress: Dict[str, Dict[str, Any]] = {}
+        for journal_path in journal_paths:
+            if not journal_path.exists() or not _journal_path_allowed(journal_path):
+                continue
+            journal_progress, journal_resume_index = _load_journal_resume_progress(
+                journal_path,
+                persist_index=not bool(args.dry_run),
+            )
+            break
+        sqlite_state = state.get("sqlite", {}) if isinstance(state, dict) else {}
+        if isinstance(sqlite_state, dict) and journal_progress:
+            journal_state_recovery = _reconcile_sqlite_state_with_journal(
+                files,
+                project_root=project_root,
+                sqlite_state=sqlite_state,
+                journal_progress=journal_progress,
+            )
+            if journal_state_recovery and not args.dry_run:
+                _save_state(state_path, state)
     files = _prioritize_jsonl_files_by_pending_bytes(
         files,
         project_root=project_root,
@@ -2350,20 +2981,26 @@ def main() -> int:
     else:
         print(f"Discovered JSON files: {len(json_files)}")
 
-    day_utc = datetime.now(timezone.utc).strftime("%Y%m%d")
-    default_invalid_log = project_root / "governance" / "events" / f"jsonl_ingestion_invalid_{day_utc}.jsonl"
-    invalid_log_path = Path(args.invalid_log_file).resolve() if args.invalid_log_file else default_invalid_log
-
-    default_journal_latest = project_root / "governance" / "health" / "jsonl_ingest_batch_journal_latest.jsonl"
-    default_journal_daily = project_root / "governance" / "events" / f"jsonl_ingest_batches_{day_utc}.jsonl"
-    journal_paths = [
-        Path(args.journal_file).resolve() if args.journal_file else default_journal_latest,
-        Path(args.journal_events_file).resolve() if args.journal_events_file else default_journal_daily,
-    ]
+    default_invalid_log = (
+        project_root
+        / "governance"
+        / "events"
+        / f"jsonl_ingestion_invalid_{day_utc}.jsonl"
+    )
+    invalid_log_path = (
+        Path(args.invalid_log_file).resolve()
+        if args.invalid_log_file
+        else default_invalid_log
+    )
     health_file_path = (
         Path(args.health_file).resolve()
         if args.health_file
-        else (project_root / "governance" / "health" / "jsonl_sql_ingestion_health_latest.json")
+        else (
+            project_root
+            / "governance"
+            / "health"
+            / "jsonl_sql_ingestion_health_latest.json"
+        )
     )
     fast_path_allowed, fast_path = _fresh_idle_health_fast_path_allowed(
         health_file_path,
@@ -2383,11 +3020,18 @@ def main() -> int:
 
     run_id = str(os.getenv("CORRELATION_RUN_ID", "") or "").strip()
     iter_id = str(os.getenv("CORRELATION_ITER_ID", "") or "").strip()
-    ingest_run_id = run_id or f"ingest-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}"
+    ingest_run_id = (
+        run_id
+        or f"ingest-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}"
+    )
 
     sqlite_conn: Optional[sqlite3.Connection] = None
     if args.mode in {"sqlite", "both"}:
-        sqlite_db = Path(args.sqlite_db).resolve() if args.sqlite_db else (project_root / "data" / "jsonl_link.sqlite3")
+        sqlite_db = (
+            Path(args.sqlite_db).resolve()
+            if args.sqlite_db
+            else (project_root / "data" / "jsonl_link.sqlite3")
+        )
         if not args.dry_run:
             sqlite_conn = connect_sqlite(
                 sqlite_db,
@@ -2435,13 +3079,13 @@ def main() -> int:
             "top_pending_files": [],
             "oversize_payloads": 0,
         },
-            "mysql": {
-                "pending_lines": 0,
-                "oldest_uningested_age_seconds": 0.0,
-                "files_with_pending": 0,
-                "top_pending_files": [],
-                "oversize_payloads": 0,
-            },
+        "mysql": {
+            "pending_lines": 0,
+            "oldest_uningested_age_seconds": 0.0,
+            "files_with_pending": 0,
+            "top_pending_files": [],
+            "oversize_payloads": 0,
+        },
     }
     cooldown_metrics = {
         "events": 0,
@@ -2451,6 +3095,7 @@ def main() -> int:
         "sqlite": {"all": LatencyAccumulator(), "by_stream": {}},
         "mysql": {"all": LatencyAccumulator(), "by_stream": {}},
     }
+    source_revision_resets: List[Dict[str, Any]] = []
 
     try:
         for fp in files:
@@ -2468,7 +3113,40 @@ def main() -> int:
 
             if args.mode in {"sqlite", "both"}:
                 progress = state["sqlite"].get(rel, {"last_line": 0, "mtime": 0.0})
-                start_line, start_offset, reset_reason = _derive_start_cursor(progress, st)
+                start_line, start_offset, reset_reason = _derive_start_cursor(
+                    progress, st
+                )
+                if (
+                    not args.dry_run
+                    and start_line > 0
+                    and _sqlite_source_revision_mismatch(
+                        sqlite_conn,
+                        args.sqlite_table,
+                        fp,
+                        rel,
+                        progress,
+                    )
+                ):
+                    source_revision_resets.append(
+                        {
+                            "source_rel": rel,
+                            "previous_line": int(start_line),
+                            "previous_offset_bytes": int(start_offset),
+                            "file_inode": int(st.st_ino),
+                            "reason": "source_revision_payload_mismatch",
+                        }
+                    )
+                    start_line = 0
+                    start_offset = 0
+                    reset_reason = "source_revision_payload_mismatch"
+                source_file_identity = _source_file_identity_for_cursor(
+                    sqlite_conn,
+                    args.sqlite_table,
+                    fp,
+                    rel,
+                    progress,
+                    start_line,
+                )
                 start_evt = {
                     "timestamp_utc": _now_utc(),
                     "event": "file_start",
@@ -2479,6 +3157,9 @@ def main() -> int:
                     "start_line": int(start_line),
                     "start_offset_bytes": int(start_offset),
                     "reset_reason": str(reset_reason),
+                    "source_file_identity": source_file_identity,
+                    "file_inode": int(st.st_ino),
+                    "file_size_bytes": int(st.st_size),
                 }
                 _journal_event(journal_paths, start_evt)
 
@@ -2493,9 +3174,12 @@ def main() -> int:
                         "mtime": float(checkpoint_st.st_mtime),
                         "file_inode": int(checkpoint_st.st_ino),
                         "file_size_bytes": int(checkpoint_st.st_size),
+                        "source_file_identity": source_file_identity,
                     }
                     _save_state(state_path, state)
-                    pending_lines = max(int(total_lines) - int(checkpoint["last_line"]), 0)
+                    pending_lines = max(
+                        int(total_lines) - int(checkpoint["last_line"]), 0
+                    )
                     _journal_event(
                         journal_paths,
                         {
@@ -2507,16 +3191,27 @@ def main() -> int:
                             "stream": stream,
                             "last_line": int(checkpoint["last_line"]),
                             "last_offset_bytes": int(checkpoint["last_offset_bytes"]),
+                            "source_file_identity": source_file_identity,
+                            "file_inode": int(checkpoint_st.st_ino),
+                            "file_size_bytes": int(checkpoint_st.st_size),
                             "inserted": int(checkpoint["inserted"]),
                             "invalid": int(checkpoint["invalid"]),
-                            "invalid_samples_logged": int(checkpoint["invalid_samples_logged"]),
-                            "oversize_payloads": int(checkpoint.get("oversize_payloads", 0) or 0),
-                            "ops_write_failures": int(checkpoint.get("ops_write_failures", 0) or 0),
+                            "invalid_samples_logged": int(
+                                checkpoint["invalid_samples_logged"]
+                            ),
+                            "oversize_payloads": int(
+                                checkpoint.get("oversize_payloads", 0) or 0
+                            ),
+                            "ops_write_failures": int(
+                                checkpoint.get("ops_write_failures", 0) or 0
+                            ),
                             "pending_lines": int(pending_lines),
                         },
                     )
 
-                lat_all, lat_stream = _ensure_latency_bucket(latency_metrics, "sqlite", stream)
+                lat_all, lat_stream = _ensure_latency_bucket(
+                    latency_metrics, "sqlite", stream
+                )
                 started_ts = time.time()
                 try:
                     result = _sync_file_to_sqlite(
@@ -2528,7 +3223,9 @@ def main() -> int:
                         start_offset,
                         args.dry_run,
                         lock_retries=max(args.sqlite_lock_retries, 0),
-                        lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                        lock_retry_delay_seconds=max(
+                            args.sqlite_lock_retry_delay_seconds, 0.01
+                        ),
                         latency_all=lat_all,
                         latency_stream=lat_stream,
                         invalid_log_path=invalid_log_path,
@@ -2539,11 +3236,20 @@ def main() -> int:
                         max_bytes_per_file=max(int(args.max_bytes_per_file), 0),
                         oversize_payload_bytes=max(int(args.oversize_payload_bytes), 0),
                         sqlite_batch_max_bytes=max(int(args.sqlite_batch_max_bytes), 0),
-                        checkpoint_every_lines=max(int(args.sqlite_state_checkpoint_lines), 0),
+                        checkpoint_every_lines=max(
+                            int(args.sqlite_state_checkpoint_lines), 0
+                        ),
                         checkpoint_cb=sqlite_checkpoint,
-                        flush_sleep_seconds=max(float(args.ingest_flush_sleep_seconds), 0.0),
-                        host_load_soft_cap=max(float(args.ingest_host_load_soft_cap), 0.0),
-                        host_load_sleep_seconds=max(float(args.ingest_host_load_sleep_seconds), 0.0),
+                        flush_sleep_seconds=max(
+                            float(args.ingest_flush_sleep_seconds), 0.0
+                        ),
+                        host_load_soft_cap=max(
+                            float(args.ingest_host_load_soft_cap), 0.0
+                        ),
+                        host_load_sleep_seconds=max(
+                            float(args.ingest_host_load_sleep_seconds), 0.0
+                        ),
+                        source_file_identity_override=source_file_identity,
                     )
                 except FileNotFoundError:
                     _journal_event(
@@ -2589,7 +3295,9 @@ def main() -> int:
                     lag_metrics["sqlite"].get("oversize_payloads", 0) or 0
                 ) + int(result.get("oversize_payloads", 0) or 0)
                 cooldown_metrics["events"] += int(result.get("cooldown_events", 0) or 0)
-                cooldown_metrics["sleep_seconds"] += float(result.get("cooldown_sleep_seconds", 0.0) or 0.0)
+                cooldown_metrics["sleep_seconds"] += float(
+                    result.get("cooldown_sleep_seconds", 0.0) or 0.0
+                )
 
                 try:
                     post_st = fp.stat()
@@ -2602,13 +3310,19 @@ def main() -> int:
                     "mtime": float(post_st.st_mtime),
                     "file_inode": int(post_st.st_ino),
                     "file_size_bytes": int(post_st.st_size),
+                    "source_file_identity": str(
+                        result.get("source_file_identity") or source_file_identity
+                    ),
                 }
 
                 pending_lines = max(int(total_lines) - int(result["last_line"]), 0)
                 oldest_age = max(time.time() - mtime, 0.0) if pending_lines > 0 else 0.0
                 lag_metrics["sqlite"]["pending_lines"] += pending_lines
                 lag_metrics["sqlite"]["oldest_uningested_age_seconds"] = max(
-                    float(lag_metrics["sqlite"].get("oldest_uningested_age_seconds", 0.0) or 0.0),
+                    float(
+                        lag_metrics["sqlite"].get("oldest_uningested_age_seconds", 0.0)
+                        or 0.0
+                    ),
                     float(oldest_age),
                 )
                 if pending_lines > 0:
@@ -2635,12 +3349,23 @@ def main() -> int:
                         "inserted": int(result["inserted"]),
                         "invalid": int(result["invalid"]),
                         "invalid_samples_logged": int(result["invalid_samples_logged"]),
-                        "oversize_payloads": int(result.get("oversize_payloads", 0) or 0),
-                        "ops_write_failures": int(result.get("ops_write_failures", 0) or 0),
+                        "oversize_payloads": int(
+                            result.get("oversize_payloads", 0) or 0
+                        ),
+                        "ops_write_failures": int(
+                            result.get("ops_write_failures", 0) or 0
+                        ),
                         "last_line": int(result["last_line"]),
                         "last_offset_bytes": int(result["last_offset_bytes"]),
+                        "source_file_identity": str(
+                            result.get("source_file_identity") or source_file_identity
+                        ),
+                        "file_inode": int(post_st.st_ino),
+                        "file_size_bytes": int(post_st.st_size),
                         "pending_lines": int(pending_lines),
-                        "duration_seconds": round(max(time.time() - started_ts, 0.0), 4),
+                        "duration_seconds": round(
+                            max(time.time() - started_ts, 0.0), 4
+                        ),
                     },
                 )
 
@@ -2652,7 +3377,9 @@ def main() -> int:
                 slept = _ingest_cooldown_sleep(
                     base_sleep_seconds=max(float(args.ingest_file_sleep_seconds), 0.0),
                     host_load_soft_cap=max(float(args.ingest_host_load_soft_cap), 0.0),
-                    host_load_sleep_seconds=max(float(args.ingest_host_load_sleep_seconds), 0.0),
+                    host_load_sleep_seconds=max(
+                        float(args.ingest_host_load_sleep_seconds), 0.0
+                    ),
                 )
                 if slept > 0.0:
                     cooldown_metrics["events"] += 1
@@ -2660,7 +3387,9 @@ def main() -> int:
 
             if args.mode in {"mysql", "both"}:
                 progress = state["mysql"].get(rel, {"last_line": 0, "mtime": 0.0})
-                start_line, start_offset, reset_reason = _derive_start_cursor(progress, st)
+                start_line, start_offset, reset_reason = _derive_start_cursor(
+                    progress, st
+                )
                 _journal_event(
                     journal_paths,
                     {
@@ -2676,7 +3405,9 @@ def main() -> int:
                     },
                 )
 
-                lat_all, lat_stream = _ensure_latency_bucket(latency_metrics, "mysql", stream)
+                lat_all, lat_stream = _ensure_latency_bucket(
+                    latency_metrics, "mysql", stream
+                )
                 started_ts = time.time()
                 try:
                     result = _sync_file_to_mysql(
@@ -2758,7 +3489,10 @@ def main() -> int:
                 oldest_age = max(time.time() - mtime, 0.0) if pending_lines > 0 else 0.0
                 lag_metrics["mysql"]["pending_lines"] += pending_lines
                 lag_metrics["mysql"]["oldest_uningested_age_seconds"] = max(
-                    float(lag_metrics["mysql"].get("oldest_uningested_age_seconds", 0.0) or 0.0),
+                    float(
+                        lag_metrics["mysql"].get("oldest_uningested_age_seconds", 0.0)
+                        or 0.0
+                    ),
                     float(oldest_age),
                 )
                 if pending_lines > 0:
@@ -2785,11 +3519,15 @@ def main() -> int:
                         "inserted": int(result["inserted"]),
                         "invalid": int(result["invalid"]),
                         "invalid_samples_logged": int(result["invalid_samples_logged"]),
-                        "oversize_payloads": int(result.get("oversize_payloads", 0) or 0),
+                        "oversize_payloads": int(
+                            result.get("oversize_payloads", 0) or 0
+                        ),
                         "last_line": int(result["last_line"]),
                         "last_offset_bytes": int(result["last_offset_bytes"]),
                         "pending_lines": int(pending_lines),
-                        "duration_seconds": round(max(time.time() - started_ts, 0.0), 4),
+                        "duration_seconds": round(
+                            max(time.time() - started_ts, 0.0), 4
+                        ),
                     },
                 )
 
@@ -2844,7 +3582,9 @@ def main() -> int:
                         fp,
                         args.dry_run,
                         lock_retries=max(args.sqlite_lock_retries, 0),
-                        lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                        lock_retry_delay_seconds=max(
+                            args.sqlite_lock_retry_delay_seconds, 0.01
+                        ),
                     )
                 except Exception as exc:
                     json_file_metrics["sqlite"]["invalid"] += 1
@@ -2875,7 +3615,9 @@ def main() -> int:
                     "payload_sha1": str(result["payload_sha1"]),
                 }
                 json_file_metrics["sqlite"]["inserted"] += int(result["inserted"])
-                json_file_metrics["sqlite"]["bytes"] += int(result["payload_size_bytes"])
+                json_file_metrics["sqlite"]["bytes"] += int(
+                    result["payload_size_bytes"]
+                )
 
                 _journal_event(
                     journal_paths,
@@ -2911,11 +3653,15 @@ def main() -> int:
             "sinks": {
                 "sqlite": {
                     "enabled": bool(sqlite_sink_enabled),
-                    "status": "active" if sqlite_sink_enabled else "disabled_by_link_mode",
+                    "status": (
+                        "active" if sqlite_sink_enabled else "disabled_by_link_mode"
+                    ),
                 },
                 "mysql": {
                     "enabled": bool(mysql_sink_enabled),
-                    "status": "active" if mysql_sink_enabled else "disabled_by_link_mode",
+                    "status": (
+                        "active" if mysql_sink_enabled else "disabled_by_link_mode"
+                    ),
                 },
             },
             "project_root": str(project_root),
@@ -2926,6 +3672,23 @@ def main() -> int:
             "json_files_discovered": int(len(json_files)),
             "invalid_log_file": str(invalid_log_path),
             "journal_files": [str(p) for p in journal_paths],
+            "journal_state_recovery": {
+                "active": bool(journal_state_recovery),
+                "recovered_source_count": len(journal_state_recovery),
+                "recovered_lines": sum(
+                    int(row.get("recovered_lines", 0) or 0)
+                    for row in journal_state_recovery
+                ),
+                "sources": journal_state_recovery[:100],
+                "index": journal_resume_index,
+                "policy": "same_inode_newer_durable_checkpoint_with_source_boundary_validation",
+            },
+            "source_revision_recovery": {
+                "active": bool(source_revision_resets),
+                "reset_source_count": len(source_revision_resets),
+                "sources": source_revision_resets[:100],
+                "policy": "payload_anchor_mismatch_creates_inode_scoped_source_revision",
+            },
             "filters": {
                 "include_streams": include_streams,
                 "exclude_streams": exclude_streams,
@@ -2940,9 +3703,13 @@ def main() -> int:
                 "flush_sleep_seconds": max(float(args.ingest_flush_sleep_seconds), 0.0),
                 "file_sleep_seconds": max(float(args.ingest_file_sleep_seconds), 0.0),
                 "host_load_soft_cap": max(float(args.ingest_host_load_soft_cap), 0.0),
-                "host_load_sleep_seconds": max(float(args.ingest_host_load_sleep_seconds), 0.0),
+                "host_load_sleep_seconds": max(
+                    float(args.ingest_host_load_sleep_seconds), 0.0
+                ),
                 "cooldown_events": int(cooldown_metrics["events"]),
-                "cooldown_sleep_seconds": round(float(cooldown_metrics["sleep_seconds"]), 3),
+                "cooldown_sleep_seconds": round(
+                    float(cooldown_metrics["sleep_seconds"]), 3
+                ),
                 "policy": "yield_jsonl_sql_catchup_when_host_load_is_hot",
             },
             "sqlite": {
@@ -2951,17 +3718,25 @@ def main() -> int:
                 "inserted": int(total_inserted["sqlite"]),
                 "invalid": int(total_invalid["sqlite"]),
                 "invalid_samples_logged": int(total_invalid_samples["sqlite"]),
-                "oversize_payloads": int(lag_metrics["sqlite"].get("oversize_payloads", 0) or 0),
-                "ops_write_failures": int(lag_metrics["sqlite"].get("ops_write_failures", 0) or 0),
+                "oversize_payloads": int(
+                    lag_metrics["sqlite"].get("oversize_payloads", 0) or 0
+                ),
+                "ops_write_failures": int(
+                    lag_metrics["sqlite"].get("ops_write_failures", 0) or 0
+                ),
                 "pending_lines": int(lag_metrics["sqlite"]["pending_lines"]),
-                "oldest_uningested_age_seconds": float(lag_metrics["sqlite"]["oldest_uningested_age_seconds"]),
+                "oldest_uningested_age_seconds": float(
+                    lag_metrics["sqlite"]["oldest_uningested_age_seconds"]
+                ),
                 "files_with_pending": int(lag_metrics["sqlite"]["files_with_pending"]),
                 "top_pending_files": list(lag_metrics["sqlite"]["top_pending_files"]),
             },
             "sqlite_json_files": {
                 "inserted": int(json_file_metrics["sqlite"]["inserted"]),
                 "invalid": int(json_file_metrics["sqlite"]["invalid"]),
-                "skipped_unchanged": int(json_file_metrics["sqlite"]["skipped_unchanged"]),
+                "skipped_unchanged": int(
+                    json_file_metrics["sqlite"]["skipped_unchanged"]
+                ),
                 "bytes": int(json_file_metrics["sqlite"]["bytes"]),
             },
             "mysql": {
@@ -2970,9 +3745,13 @@ def main() -> int:
                 "inserted": int(total_inserted["mysql"]),
                 "invalid": int(total_invalid["mysql"]),
                 "invalid_samples_logged": int(total_invalid_samples["mysql"]),
-                "oversize_payloads": int(lag_metrics["mysql"].get("oversize_payloads", 0) or 0),
+                "oversize_payloads": int(
+                    lag_metrics["mysql"].get("oversize_payloads", 0) or 0
+                ),
                 "pending_lines": int(lag_metrics["mysql"]["pending_lines"]),
-                "oldest_uningested_age_seconds": float(lag_metrics["mysql"]["oldest_uningested_age_seconds"]),
+                "oldest_uningested_age_seconds": float(
+                    lag_metrics["mysql"]["oldest_uningested_age_seconds"]
+                ),
                 "files_with_pending": int(lag_metrics["mysql"]["files_with_pending"]),
                 "top_pending_files": list(lag_metrics["mysql"]["top_pending_files"]),
             },

@@ -1,6 +1,6 @@
-import mlx.core as mx
-import mlx.nn as nn
-import mlx.optimizers as optim
+from core.mlx_runtime_guard import require_mlx
+
+mx, nn, optim = require_mlx()
 import numpy as np
 import json
 from datetime import datetime

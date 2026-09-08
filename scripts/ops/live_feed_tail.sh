@@ -9,6 +9,7 @@ HEALTH_DIR="$PROJECT_ROOT/governance/health"
 HEAVY_MARKER_FILE="$HEALTH_DIR/live_feed_heavy_view_latest.json"
 LIVEFEED_HEALTH_FILE="$HEALTH_DIR/livefeed_local_latest.json"
 LIVE_FEED_MAIN_PID="$$"
+LIVE_FEED_BOOTSTRAP_PID=""
 
 if [[ -f "$MEMORY_OVERRIDE_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -341,6 +342,7 @@ HEAVY_INCLUDE_ALL_DECISION_DIRS="${LIVE_FEED_HEAVY_INCLUDE_ALL_DECISION_DIRS:-0}
 HEAVY_MAX_FOLLOW_FILES="${LIVE_FEED_HEAVY_MAX_FOLLOW_FILES:-36}"
 HEAVY_TAIL_BYTES="${LIVE_FEED_HEAVY_TAIL_BYTES:-262144}"
 HEAVY_BOOTSTRAP_SNAPSHOT="${LIVE_FEED_HEAVY_BOOTSTRAP_SNAPSHOT:-1}"
+HEAVY_ASYNC_BOOTSTRAP="${LIVE_FEED_HEAVY_ASYNC_BOOTSTRAP:-1}"
 HEAVY_BOOTSTRAP_MAX_LINES="${LIVE_FEED_HEAVY_BOOTSTRAP_MAX_LINES:-80}"
 HEAVY_SNAPSHOT_MAX_LINES="${LIVE_FEED_HEAVY_SNAPSHOT_MAX_LINES:-180}"
 HEAVY_VISIBLE_KEEPALIVE_DEFAULT="${LIVE_FEED_HEAVY_VISIBLE_KEEPALIVE_DEFAULT:-1}"
@@ -363,6 +365,7 @@ KEEPALIVE_ENABLED="${LIVE_FEED_KEEPALIVE_ENABLED:-1}"
 KEEPALIVE_SECONDS="${LIVE_FEED_KEEPALIVE_SECONDS:-15}"
 STARTUP_STATUS_ENABLED="${LIVE_FEED_STARTUP_STATUS_ENABLED:-1}"
 DECISION_MAX_AGE_HOURS="${LIVE_FEED_DECISION_MAX_AGE_HOURS:-48}"
+STATUS_ARTIFACT_MAX_AGE_SECONDS="${LIVE_FEED_STATUS_ARTIFACT_MAX_AGE_SECONDS:-600}"
 PRESSURE_OPTIMIZED="0"
 
 if [[ "$HEAVY_REQUESTED" == "1" && "$LINES_EXPLICIT" != "1" ]]; then
@@ -397,6 +400,14 @@ fi
 if ! [[ "$HEAVY_BOOTSTRAP_MAX_LINES" =~ ^[0-9]+$ ]]; then
   HEAVY_BOOTSTRAP_MAX_LINES="80"
 fi
+case "${HEAVY_ASYNC_BOOTSTRAP:l}" in
+  1|true|yes|on)
+    HEAVY_ASYNC_BOOTSTRAP="1"
+    ;;
+  *)
+    HEAVY_ASYNC_BOOTSTRAP="0"
+    ;;
+esac
 if ! [[ "$HEAVY_SNAPSHOT_MAX_LINES" =~ ^[0-9]+$ ]]; then
   HEAVY_SNAPSHOT_MAX_LINES="180"
 fi
@@ -425,6 +436,9 @@ if ! [[ "$DECISION_SNAPSHOT_TAIL_BYTES" =~ ^[0-9]+$ ]]; then
 fi
 if ! [[ "$DECISION_MAX_AGE_HOURS" =~ ^[0-9]+$ ]]; then
   DECISION_MAX_AGE_HOURS="48"
+fi
+if ! [[ "$STATUS_ARTIFACT_MAX_AGE_SECONDS" =~ ^[0-9]+$ ]]; then
+  STATUS_ARTIFACT_MAX_AGE_SECONDS="600"
 fi
 
 if [[ "$HEAVY_REQUESTED" == "1" && "$SHOW_KEEPALIVE_EXPLICIT" != "1" ]]; then
@@ -795,6 +809,7 @@ write_heavy_marker() {
     printf '"tail_start_mode":"%s",' "$TAIL_START_MODE"
     printf '"tail_start_bytes":%s,' "$HEAVY_TAIL_BYTES"
     printf '"bootstrap_snapshot":%s,' "$HEAVY_BOOTSTRAP_SNAPSHOT"
+    printf '"async_bootstrap":%s,' "$HEAVY_ASYNC_BOOTSTRAP"
     printf '"bootstrap_max_lines":%s,' "$HEAVY_BOOTSTRAP_MAX_LINES"
     printf '"snapshot_max_lines":%s,' "$HEAVY_SNAPSHOT_MAX_LINES"
     printf '"decision_max_age_hours":%s,' "$DECISION_MAX_AGE_HOURS"
@@ -875,6 +890,9 @@ mark_heavy_inactive() {
 }
 
 cleanup_live_feed() {
+  if [[ -n "${LIVE_FEED_BOOTSTRAP_PID:-}" ]]; then
+    kill "$LIVE_FEED_BOOTSTRAP_PID" >/dev/null 2>&1 || true
+  fi
   if [[ -n "${LIVE_FEED_KEEPALIVE_PID:-}" ]]; then
     kill "$LIVE_FEED_KEEPALIVE_PID" >/dev/null 2>&1 || true
   fi
@@ -913,13 +931,17 @@ start_live_feed_keepalive() {
 
 emit_live_feed_keepalive() {
   local keepalive_count="${1:-0}"
+  local detail_snapshot_state="ready"
+  if [[ -n "${LIVE_FEED_BOOTSTRAP_PID:-}" ]] && kill -0 "$LIVE_FEED_BOOTSTRAP_PID" >/dev/null 2>&1; then
+    detail_snapshot_state="loading"
+  fi
   [[ "$SHOW_KEEPALIVE" == "1" && "$VISIBLE_KEEPALIVE_ALLOWED" == "1" ]] || return 0
-  printf 'live_feed_keepalive timestamp_utc=%s keepalive_count=%s source=%s heavy=%s files=%s following=1 important_only=%s waiting_for_new_matching_lines=1 next_keepalive_seconds=%s interrupt=ctrl-c\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$keepalive_count" "$SOURCE" "$HEAVY_REQUESTED" "${#files[@]}" "$IMPORTANT_ONLY" "$KEEPALIVE_SECONDS"
-  if [[ "$HEAVY_REQUESTED" == "1" && "$INCLUDE_DECISIONS" == "1" && "$KEEPALIVE_DECISION_SNAPSHOT" == "1" && "$KEEPALIVE_DECISION_EVERY" -gt 0 && ( "$keepalive_count" -eq 0 || $((keepalive_count % KEEPALIVE_DECISION_EVERY)) -eq 0 ) ]]; then
+  printf 'live_feed_keepalive timestamp_utc=%s keepalive_count=%s source=%s heavy=%s files=%s following=1 detail_snapshot=%s important_only=%s waiting_for_new_matching_lines=1 next_keepalive_seconds=%s interrupt=ctrl-c\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$keepalive_count" "$SOURCE" "$HEAVY_REQUESTED" "${#files[@]}" "$detail_snapshot_state" "$IMPORTANT_ONLY" "$KEEPALIVE_SECONDS"
+  if [[ "$detail_snapshot_state" == "ready" && "$HEAVY_REQUESTED" == "1" && "$INCLUDE_DECISIONS" == "1" && "$KEEPALIVE_DECISION_SNAPSHOT" == "1" && "$KEEPALIVE_DECISION_EVERY" -gt 0 && "$keepalive_count" -gt 0 && $((keepalive_count % KEEPALIVE_DECISION_EVERY)) -eq 0 ]]; then
     emit_livefeed_decision_paper_snapshot | truncate_live_lines 0 0 || true
   fi
-  if [[ "$HEAVY_REQUESTED" == "1" && "$STATUS_SNAPSHOT" == "1" && "$KEEPALIVE_STATUS_EVERY" -gt 0 && "$keepalive_count" -gt 0 && $((keepalive_count % KEEPALIVE_STATUS_EVERY)) -eq 0 ]]; then
+  if [[ "$detail_snapshot_state" == "ready" && "$HEAVY_REQUESTED" == "1" && "$STATUS_SNAPSHOT" == "1" && "$KEEPALIVE_STATUS_EVERY" -gt 0 && "$keepalive_count" -gt 0 && $((keepalive_count % KEEPALIVE_STATUS_EVERY)) -eq 0 ]]; then
     echo "live_feed_keepalive_status_snapshot=begin every=${KEEPALIVE_STATUS_EVERY} keepalive_count=${keepalive_count}"
     emit_livefeed_status_snapshot | truncate_live_lines 40 || true
     echo "live_feed_keepalive_status_snapshot=end"
@@ -1162,7 +1184,7 @@ truncate_live_lines() {
   function important_operator_line(line, lower) {
     lower = tolower(line)
     if (paper_mirror_selection_line(line)) return 0
-    if (line ~ /^\[(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-data|paper-profit|profit-hardening|paper-truth|decision-latest|decision-route)\]/) return 1
+    if (line ~ /^\[(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-plumbing|paper-data|paper-profit|profit-hardening|paper-truth|decision-latest|decision-route)\]/) return 1
     if (line ~ /\[Decision\]|\[decision\]|ExecutionIntent|ShadowLoop|RegimeCooldown|AdaptiveInterval/) return 1
     if (line ~ /"symbol"[[:space:]]*:/ && line ~ /"action"[[:space:]]*:|"master_action"[[:space:]]*:|"master_intent_action"[[:space:]]*:|"grand_action"[[:space:]]*:/) return 1
     if (line ~ /symbol=[^[:space:]]+/ && line ~ /action=|grand_action=|futures_action=|options_action=|master_action=/) return 1
@@ -1327,6 +1349,8 @@ truncate_live_lines() {
       guard_ok = bool_field(line, "ok")
       schema_valid = bool_field(line, "schema_valid")
       blocked_intent = bool_field(line, "master_guard_blocked_intent")
+      disposition = text_field(line, "decision_disposition")
+      blocking_stage = text_field(line, "decision_blocking_stage")
       reason = text_field(line, "reason")
       if (mode == "none" || mode == "null") mode = ""
       if (status == "" && blocked_intent == "true") status = "blocked"
@@ -1347,6 +1371,8 @@ truncate_live_lines() {
       out = append_token(out, "mode", mode)
       out = append_token(out, "driver", driver)
       out = append_token(out, "guard", guard)
+      out = append_token(out, "disposition", disposition)
+      out = append_token(out, "blocking_stage", blocking_stage)
       out = append_token(out, "reason", reason)
       out = append_token(out, "len", human_length(length(line)))
       print colorize_line(out)
@@ -1372,7 +1398,7 @@ emit_livefeed_status_snapshot() {
     status_py="$(command -v python3 || true)"
   fi
   [[ -n "$status_py" ]] || return 0
-  "$status_py" - "$PROJECT_ROOT" "$SOURCE" <<'PY'
+  "$status_py" - "$PROJECT_ROOT" "$SOURCE" "$STATUS_ARTIFACT_MAX_AGE_SECONDS" <<'PY'
 import json
 import os
 import re
@@ -1382,6 +1408,10 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 source = sys.argv[2]
+try:
+    status_artifact_max_age_seconds = max(float(sys.argv[3]), 1.0)
+except (IndexError, TypeError, ValueError):
+    status_artifact_max_age_seconds = 600.0
 health = root / "governance" / "health"
 external = root / "data" / "external_context"
 if str(root) not in sys.path:
@@ -1394,6 +1424,35 @@ def load(path: Path) -> dict:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def parse_timestamp(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def artifact_freshness(path: Path, payload: dict, *, max_age_seconds=None):
+    limit = status_artifact_max_age_seconds if max_age_seconds is None else max(float(max_age_seconds), 1.0)
+    timestamp = None
+    for key in ("timestamp_utc", "updated_at_utc", "generated_at_utc", "created_at_utc"):
+        timestamp = parse_timestamp(payload.get(key))
+        if timestamp is not None:
+            break
+    if timestamp is None:
+        try:
+            timestamp = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            timestamp = None
+    age_seconds = max((datetime.now(timezone.utc) - timestamp).total_seconds(), 0.0) if timestamp else None
+    return bool(payload and age_seconds is not None and age_seconds <= limit), age_seconds
 
 
 def nested(payload: dict, *keys: str):
@@ -1453,13 +1512,26 @@ def as_num(value) -> str:
     return f"{number:.3f}".rstrip("0").rstrip(".")
 
 
+def as_count(value) -> int:
+    try:
+        return max(int(float(value)), 0)
+    except Exception:
+        return 0
+
+
 print(f"live_feed_status_snapshot=begin source={source} timestamp_utc={datetime.now(timezone.utc).isoformat()}")
 
-feed = load(health / "livefeed_local_latest.json")
+feed_path = health / "livefeed_local_latest.json"
+feed = load(feed_path)
 if feed:
+    feed_fresh, feed_age = artifact_freshness(feed_path, feed)
+    feed_source_status = str(feed.get("status") or "unknown")
     print(
         "[feed] "
-        f"status={feed.get('status', 'unknown')} "
+        f"status={feed_source_status if feed_fresh else 'stale'} "
+        f"source_status={feed_source_status} "
+        f"fresh={as_bool(feed_fresh)} "
+        f"age={as_num(feed_age)} "
         f"alive={as_bool(feed.get('alive'))} "
         f"heavy={feed.get('heavy', '')} "
         f"files={feed.get('file_count', '')}"
@@ -1537,43 +1609,76 @@ except Exception as exc:
         f"owner=livefeed impact=paper_unverified error={compact(exc, 140)} action=livefeed-status-contract"
     )
 
-remote = load(health / "remote_alert_control_latest.json")
+remote_path = health / "remote_alert_control_latest.json"
+remote = load(remote_path)
 if remote:
+    remote_fresh, remote_age = artifact_freshness(remote_path, remote)
+    remote_source_status = str(remote.get("overall_status") or "unknown").strip().lower()
     backlog = remote.get("critical_backlog") if isinstance(remote.get("critical_backlog"), dict) else {}
     channels = remote.get("channels") if isinstance(remote.get("channels"), dict) else {}
+    unsent_count = as_count(backlog.get("unsent_count"))
+    unacked_count = as_count(backlog.get("unacked_count"))
+    stale_idle_snapshot = bool(
+        not remote_fresh
+        and remote_source_status in {"ready", "ok", "idle"}
+        and unsent_count == 0
+        and unacked_count == 0
+    )
+    remote_display_status = (
+        remote_source_status
+        if remote_fresh
+        else ("idle" if stale_idle_snapshot else "stale")
+    )
     print(
         "[alerts] "
-        f"status={remote.get('overall_status', 'unknown')} "
+        f"status={remote_display_status} "
+        f"source_status={remote_source_status} "
+        f"artifact_fresh={as_bool(remote_fresh)} "
+        f"expired_empty_snapshot={as_bool(stale_idle_snapshot)} "
+        f"age={as_num(remote_age)} "
         f"imessage={as_bool(channels.get('imessage_bridge'))} "
-        f"unsent={backlog.get('unsent_count', '')} "
-        f"unacked={backlog.get('unacked_count', '')}"
+        f"unsent={unsent_count} "
+        f"unacked={unacked_count} "
+        f"impact={'none' if stale_idle_snapshot else ('none' if remote_fresh else 'alert_delivery_unverified')}"
     )
 
-watchdog = load(health / "process_watchdog_latest.json")
+watchdog_path = health / "process_watchdog_latest.json"
+watchdog = load(watchdog_path)
 if watchdog:
+    watchdog_fresh, watchdog_age = artifact_freshness(watchdog_path, watchdog)
+    watchdog_source_status = str(watchdog.get("overall_status") or "unknown").strip().lower()
     intel = watchdog.get("watchdog_intelligence") if isinstance(watchdog.get("watchdog_intelligence"), dict) else {}
     restarts = watchdog.get("restarts") if isinstance(watchdog.get("restarts"), list) else []
     print(
         "[watchdog] "
-        f"status={watchdog.get('overall_status', 'unknown')} "
+        f"status={watchdog_source_status if watchdog_fresh else 'stale'} "
+        f"source_status={watchdog_source_status} "
+        f"fresh={as_bool(watchdog_fresh)} "
+        f"age={as_num(watchdog_age)} "
         f"grade={intel.get('grade', '')} "
         f"active_issues={intel.get('active_issue_count', '')} "
         f"restarts={len(restarts)}"
     )
 
-dashboard = load(health / "runtime_gate_dashboard_latest.json")
+dashboard_path = health / "runtime_gate_dashboard_latest.json"
+dashboard = load(dashboard_path)
 if dashboard:
+    dashboard_fresh, dashboard_age = artifact_freshness(dashboard_path, dashboard)
     overall = dashboard.get("overall") if isinstance(dashboard.get("overall"), dict) else {}
     active_attention = overall.get("attention") if isinstance(overall.get("attention"), list) else []
     managed_attention = overall.get("managed_attention") if isinstance(overall.get("managed_attention"), list) else []
-    dashboard_status = str(overall.get("status") or "unknown").strip().lower()
-    dashboard_level = "alert" if dashboard_status in {"critical", "blocked", "failed"} else ("watch" if dashboard_status in {"degraded", "warn", "warning"} else "ok")
+    dashboard_source_status = str(overall.get("status") or "unknown").strip().lower()
+    dashboard_status = dashboard_source_status if dashboard_fresh else "stale"
+    dashboard_level = "alert" if dashboard_status in {"critical", "blocked", "failed"} else ("watch" if dashboard_status in {"degraded", "warn", "warning", "stale"} else "ok")
     forensic_attention = overall.get("forensic_attention") if isinstance(overall.get("forensic_attention"), list) else []
     promotion_state = "evidence_pending" if "promotion_not_ready" in forensic_attention else "ready"
     print(
         "[dashboard] "
         f"level={dashboard_level} "
         f"status={dashboard_status} "
+        f"source_status={dashboard_source_status} "
+        f"fresh={as_bool(dashboard_fresh)} "
+        f"age={as_num(dashboard_age)} "
         f"ok={as_bool(overall.get('ok'))} "
         f"active={len(active_attention)} "
         f"managed={len(managed_attention)} "
@@ -1581,8 +1686,15 @@ if dashboard:
         f"attention={joined(active_attention, 160)}"
     )
 
-hdf5 = load(health / "hdf5_training_cache_latest.json")
+hdf5_path = health / "hdf5_training_cache_latest.json"
+hdf5 = load(hdf5_path)
 if hdf5:
+    hdf5_fresh, hdf5_age = artifact_freshness(
+        hdf5_path,
+        hdf5,
+        max_age_seconds=status_artifact_max_age_seconds * 6.0,
+    )
+    hdf5_source_status = str(hdf5.get("overall_status") or "unknown").strip().lower()
     cache = hdf5.get("cache") if isinstance(hdf5.get("cache"), dict) else {}
     freshness = hdf5.get("freshness_gate") if isinstance(hdf5.get("freshness_gate"), dict) else {}
     schema = hdf5.get("schema_validation") if isinstance(hdf5.get("schema_validation"), dict) else {}
@@ -1590,7 +1702,10 @@ if hdf5:
     speedup = bench.get("speedup_ratio", "")
     print(
         "[hdf5] "
-        f"status={hdf5.get('overall_status', 'unknown')} "
+        f"status={hdf5_source_status if hdf5_fresh else 'stale'} "
+        f"source_status={hdf5_source_status} "
+        f"fresh_artifact={as_bool(hdf5_fresh)} "
+        f"age={as_num(hdf5_age)} "
         f"fresh={as_bool(freshness.get('fresh'))} "
         f"schema={as_bool(schema.get('ok'))} "
         f"rows={cache.get('row_count', '')} "
@@ -1598,8 +1713,11 @@ if hdf5:
         f"speedup={speedup}"
     )
 
-coord = load(health / "coordination_state_latest.json")
+coord_path = health / "coordination_state_latest.json"
+coord = load(coord_path)
 if coord:
+    coord_fresh, coord_age = artifact_freshness(coord_path, coord)
+    coord_source_status = str(coord.get("overall_status") or "unknown").strip().lower()
     policies = coord.get("policies") if isinstance(coord.get("policies"), dict) else {}
     live = policies.get("live_orders") if isinstance(policies.get("live_orders"), dict) else {}
     paper = policies.get("paper_execution") if isinstance(policies.get("paper_execution"), dict) else {}
@@ -1608,7 +1726,10 @@ if coord:
     terminal = policies.get("terminal_restart") if isinstance(policies.get("terminal_restart"), dict) else {}
     print(
         "[coord] "
-        f"status={coord.get('overall_status', 'unknown')} "
+        f"status={coord_source_status if coord_fresh else 'stale'} "
+        f"source_status={coord_source_status} "
+        f"fresh={as_bool(coord_fresh)} "
+        f"age={as_num(coord_age)} "
         f"mode={coord.get('coordination_mode', '')} "
         f"live={as_bool(live.get('allowed'))} "
         f"paper={as_bool(paper.get('allowed'))} "
@@ -1755,11 +1876,15 @@ def decision_contract_state(original: dict[str, Any], normalized: dict[str, Any]
     return "unchecked"
 
 
-def newest_jsonl(pattern: str) -> Path | None:
+def newest_jsonl_per_parent(pattern: str) -> list[Path]:
     matches = [path for path in root.glob(pattern) if path.is_file() and path.suffix == ".jsonl"]
-    if not matches:
-        return None
-    return max(matches, key=lambda path: path.stat().st_mtime)
+    newest: dict[str, Path] = {}
+    for path in matches:
+        parent_key = str(path.parent)
+        current = newest.get(parent_key)
+        if current is None or path.stat().st_mtime > current.stat().st_mtime:
+            newest[parent_key] = path
+    return list(newest.values())
 
 
 def decision_candidates() -> list[Path]:
@@ -1767,22 +1892,33 @@ def decision_candidates() -> list[Path]:
     if source in {"schwab", "main", "all"}:
         patterns.extend(
             [
-                "governance/channels/decision/aggressive_equities_schwab/decision_*.jsonl",
-                "governance/channels/decision/conservative_equities_schwab/decision_*.jsonl",
-                "governance/channels/decision/dividend_equities_schwab/decision_*.jsonl",
-                "governance/channels/decision/bond_equities_schwab/decision_*.jsonl",
-                "governance/channels/decision/schwab_futures_equities_schwab/decision_*.jsonl",
+                "governance/channels/decision/*_equities_schwab/decision_*.jsonl",
                 "decision_explanations/shadow_equities/decision_explanations_*.jsonl",
+                "decision_explanations/shadow_schwab_futures_equities/decision_explanations_*.jsonl",
+            ]
+        )
+    if source in {"schwab_futures", "futures"}:
+        patterns.extend(
+            [
+                "governance/channels/decision/schwab_futures_equities_schwab/decision_*.jsonl",
                 "decision_explanations/shadow_schwab_futures_equities/decision_explanations_*.jsonl",
             ]
         )
     if source in {"coinbase", "main", "all"}:
         patterns.extend(
             [
-                "governance/channels/decision/default_crypto_schwab/decision_*.jsonl",
-                "governance/channels/decision/crypto_futures_crypto_schwab/decision_*.jsonl",
+                "governance/channels/decision/*_crypto_coinbase/decision_*.jsonl",
+                "governance/channels/decision/*_crypto_schwab/decision_*.jsonl",
                 "decision_explanations/shadow_crypto/decision_explanations_*.jsonl",
                 "decision_explanations/shadow_coinbase/decision_explanations_*.jsonl",
+                "decision_explanations/shadow_crypto_futures_crypto/decision_explanations_*.jsonl",
+            ]
+        )
+    if source in {"coinbase_futures", "futures"}:
+        patterns.extend(
+            [
+                "governance/channels/decision/crypto_futures_crypto_coinbase/decision_*.jsonl",
+                "governance/channels/decision/crypto_futures_crypto_schwab/decision_*.jsonl",
                 "decision_explanations/shadow_crypto_futures_crypto/decision_explanations_*.jsonl",
             ]
         )
@@ -1793,7 +1929,7 @@ def decision_candidates() -> list[Path]:
                 "decision_explanations/shadow_fx_equities/decision_explanations_*.jsonl",
             ]
         )
-    paths = [path for path in (newest_jsonl(pattern) for pattern in patterns) if path is not None]
+    paths = [path for pattern in patterns for path in newest_jsonl_per_parent(pattern)]
     deduped: dict[str, Path] = {str(path): path for path in paths}
     return sorted(deduped.values(), key=lambda path: path.stat().st_mtime, reverse=True)[:12]
 
@@ -1839,10 +1975,11 @@ def decision_action(payload: dict[str, Any]) -> Any:
 
 
 def emit_decisions() -> None:
-    rows: list[tuple[datetime, str]] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    rows: list[tuple[int, datetime, str]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
     unresolved_routes: list[str] = []
     for path in decision_candidates():
+        path_row_count = 0
         for line in reversed(recent_lines(path)):
             try:
                 payload = json.loads(line)
@@ -1871,10 +2008,325 @@ def emit_decisions() -> None:
             asset_class = compact(usable_route_label(route.get("asset_class") or normalized.get("asset_class")), 24)
             quality = compact(usable_route_label(route.get("source_quality_label") or normalized.get("source_quality_label")), 28)
             contract_state = decision_contract_state(payload, normalized)
+            disposition = compact(first_value(normalized, ("decision_disposition",)) or "", 32)
+            blocking_stage = compact(first_value(normalized, ("decision_blocking_stage",)) or "", 32)
+            flow = normalized.get("institutional_decision_flow")
+            if not isinstance(flow, dict):
+                flow = nested(normalized, "metadata", "institutional_decision_flow")
+            flow = flow if isinstance(flow, dict) else {}
+            flow_evaluation = flow.get("evaluation") if isinstance(flow.get("evaluation"), dict) else {}
+            flow_control = flow.get("control") if isinstance(flow.get("control"), dict) else {}
+            flow_summary = flow.get("operator_summary") if isinstance(flow.get("operator_summary"), dict) else {}
+            if not flow_summary and isinstance(flow_control.get("operator_summary"), dict):
+                flow_summary = flow_control.get("operator_summary")
+            flow_receipt = flow.get("policy_receipt") if isinstance(flow.get("policy_receipt"), dict) else {}
+            if not flow_receipt and isinstance(flow_evaluation.get("policy_receipt"), dict):
+                flow_receipt = flow_evaluation.get("policy_receipt")
+            flow_classification = compact(
+                first_value(normalized, ("institutional_decision_flow_classification",))
+                or flow_evaluation.get("classification")
+                or "",
+                36,
+            )
+            flow_disposition = compact(
+                first_value(normalized, ("institutional_decision_flow_disposition",))
+                or flow_control.get("disposition")
+                or "",
+                36,
+            )
+            flow_stage = compact(
+                first_value(normalized, ("institutional_decision_flow_blocking_stage",))
+                or flow_control.get("blocking_stage")
+                or "",
+                32,
+            )
+            flow_utility = as_num(
+                first_value(normalized, ("institutional_decision_flow_utility_norm",))
+                or flow_evaluation.get("decision_quality_utility_norm")
+            )
+            flow_quantity_multiplier = as_num(
+                first_value(normalized, ("institutional_decision_flow_quantity_multiplier",))
+                or flow_control.get("quantity_multiplier")
+            )
+            flow_evaluation_id = compact(
+                first_value(normalized, ("institutional_decision_flow_evaluation_id",))
+                or flow_evaluation.get("evaluation_id")
+                or flow_control.get("evaluation_id")
+                or "",
+                12,
+            )
+            flow_family = compact(
+                first_value(normalized, ("institutional_decision_flow_policy_family_id",))
+                or flow_receipt.get("policy_family_id")
+                or "",
+                32,
+            )
+            flow_policy = compact(
+                first_value(normalized, ("institutional_decision_flow_resolved_policy_id",))
+                or flow_receipt.get("resolved_policy_id")
+                or "",
+                24,
+            )
+            flow_execution_eligible = flow_receipt.get("execution_eligible")
+            flow_strategy = compact(
+                first_value(normalized, ("institutional_decision_flow_strategy_variant_id",))
+                or flow_receipt.get("strategy_variant_id")
+                or "",
+                28,
+            )
+            flow_definition = (
+                flow_evaluation.get("strategy_definition")
+                if isinstance(flow_evaluation.get("strategy_definition"), dict)
+                else {}
+            )
+            flow_horizon = compact(
+                first_value(normalized, ("institutional_decision_flow_horizon",))
+                or flow_definition.get("decision_horizon")
+                or "",
+                32,
+            )
+            flow_role = compact(
+                first_value(normalized, ("institutional_decision_flow_portfolio_role",))
+                or flow_definition.get("portfolio_role")
+                or "",
+                36,
+            )
+            flow_edge = compact(
+                first_value(normalized, ("institutional_decision_flow_primary_edge",))
+                or flow_definition.get("primary_edge")
+                or "",
+                42,
+            )
+            flow_action_semantics = (
+                flow_evaluation.get("action_semantics")
+                if isinstance(flow_evaluation.get("action_semantics"), dict)
+                else {}
+            )
+            flow_action_semantic = compact(
+                first_value(normalized, ("institutional_decision_flow_action_semantic",))
+                or flow_action_semantics.get("semantic")
+                or "",
+                28,
+            )
+            flow_quantitative = (
+                flow_evaluation.get("quantitative_evidence")
+                if isinstance(flow_evaluation.get("quantitative_evidence"), dict)
+                else {}
+            )
+            flow_quant_ready_raw = first_value(
+                normalized,
+                ("institutional_decision_flow_quantitative_evidence_ready",),
+            )
+            if flow_quant_ready_raw is None:
+                flow_quant_ready_raw = flow_quantitative.get("live_ready")
+            flow_quant_gaps_raw = first_value(
+                normalized,
+                ("institutional_decision_flow_quantitative_evidence_gaps",),
+            )
+            if not isinstance(flow_quant_gaps_raw, list):
+                flow_quant_gaps_raw = flow_quantitative.get("live_blockers", [])
+            flow_quant_gaps = compact(
+                ",".join(str(value) for value in flow_quant_gaps_raw[:3]),
+                72,
+            )
+            flow_challengers = (
+                flow_evaluation.get("research_challengers")
+                if isinstance(flow_evaluation.get("research_challengers"), dict)
+                else {}
+            )
+            flow_challenger_status = compact(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_challenger_status",),
+                )
+                or flow_challengers.get("status")
+                or "",
+                24,
+            )
+            flow_challenger_available = first_value(
+                normalized,
+                ("institutional_decision_flow_challenger_available_count",),
+            )
+            if flow_challenger_available is None:
+                flow_challenger_available = flow_challengers.get(
+                    "available_method_count"
+                )
+            flow_challenger_supported = first_value(
+                normalized,
+                ("institutional_decision_flow_challenger_supported_count",),
+            )
+            if flow_challenger_supported is None:
+                flow_challenger_supported = flow_challengers.get(
+                    "supported_method_count"
+                )
+            flow_challenger_total = first_value(
+                normalized,
+                ("institutional_decision_flow_challenger_method_count",),
+            )
+            if flow_challenger_total is None:
+                flow_challenger_total = flow_challengers.get("method_count")
+            flow_decision_state = compact(
+                first_value(normalized, ("institutional_decision_flow_decision_state",))
+                or flow_summary.get("decision_state")
+                or flow_classification
+                or "",
+                36,
+            )
+            flow_current_stage = compact(
+                first_value(normalized, ("institutional_decision_flow_current_stage",))
+                or flow_summary.get("current_stage")
+                or flow_stage
+                or "",
+                32,
+            )
+            flow_blocking_reason = compact(
+                first_value(normalized, ("institutional_decision_flow_blocking_reason_code",))
+                or flow_summary.get("blocking_reason_code")
+                or "",
+                48,
+            )
+            flow_regime_state = compact(
+                first_value(normalized, ("institutional_decision_flow_regime_state",))
+                or flow_summary.get("regime_state")
+                or "",
+                28,
+            )
+            flow_edge_state = compact(
+                first_value(normalized, ("institutional_decision_flow_edge_state",))
+                or flow_summary.get("edge_state")
+                or "",
+                32,
+            )
+            flow_transition = compact(
+                first_value(normalized, ("institutional_decision_flow_position_transition",))
+                or flow_summary.get("position_transition")
+                or flow_action_semantic
+                or "",
+                28,
+            )
+            flow_playbook = compact(
+                first_value(normalized, ("institutional_decision_flow_playbook_sha256",))
+                or flow_summary.get("decision_playbook_sha256")
+                or flow_receipt.get("decision_playbook_sha256")
+                or "",
+                12,
+            )
+            flow_summary_receipt = compact(
+                first_value(normalized, ("institutional_decision_flow_summary_sha256",))
+                or flow_summary.get("summary_sha256")
+                or "",
+                12,
+            )
+            flow_data_status = compact(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_ingestion_route_status",),
+                )
+                or flow_summary.get("ingestion_route_status")
+                or "",
+                24,
+            )
+            flow_data_state = compact(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_ingestion_route_state",),
+                )
+                or flow_summary.get("ingestion_route_state")
+                or "",
+                24,
+            )
+            flow_data_profile = compact(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_ingestion_route_profile_id",),
+                )
+                or flow_summary.get("ingestion_route_profile_id")
+                or "",
+                36,
+            )
+            flow_data_quality = as_num(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_ingestion_route_quality_norm",),
+                )
+                or flow_summary.get("ingestion_route_quality_norm")
+            )
+            flow_data_paper_coverage = as_num(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_ingestion_paper_coverage_norm",),
+                )
+                or flow_summary.get("ingestion_paper_coverage_norm")
+            )
+            flow_data_live_coverage = as_num(
+                first_value(
+                    normalized,
+                    ("institutional_decision_flow_ingestion_live_coverage_norm",),
+                )
+                or flow_summary.get("ingestion_live_coverage_norm")
+            )
+            flow_data_sources = first_value(
+                normalized,
+                (
+                    "institutional_decision_flow_ingestion_selected_producer_count",
+                ),
+            )
+            if flow_data_sources is None:
+                flow_data_sources = flow_summary.get(
+                    "ingestion_selected_producer_count"
+                )
+            flow_data_receipt = compact(
+                first_value(
+                    normalized,
+                    (
+                        "institutional_decision_flow_ingestion_route_summary_receipt_sha256",
+                    ),
+                )
+                or flow_summary.get("ingestion_route_summary_receipt_sha256")
+                or "",
+                12,
+            )
+            flow_progress = flow_summary.get("stage_progress")
+            if not isinstance(flow_progress, dict):
+                flow_progress = first_value(
+                    normalized,
+                    ("institutional_decision_flow_stage_progress",),
+                )
+            flow_progress = flow_progress if isinstance(flow_progress, dict) else {}
+            flow_paper_progress = flow_progress.get("paper") if isinstance(flow_progress.get("paper"), dict) else {}
+            flow_live_progress = flow_progress.get("live") if isinstance(flow_progress.get("live"), dict) else {}
+            flow_progress_text = ""
+            if flow_paper_progress or flow_live_progress:
+                flow_progress_text = (
+                    f"paper:{int(flow_paper_progress.get('passed', 0) or 0)}/"
+                    f"{int(flow_paper_progress.get('required', 0) or 0)},"
+                    f"live:{int(flow_live_progress.get('passed', 0) or 0)}/"
+                    f"{int(flow_live_progress.get('required', 0) or 0)}"
+                )
+            flow_paper_gate = compact(
+                flow_summary.get("paper_quality_gate_state") or "",
+                32,
+            )
+            flow_live_gate = compact(
+                flow_summary.get("live_quality_gate_state") or "",
+                36,
+            )
+            flow_reason_codes = flow_summary.get("reason_codes")
+            if not isinstance(flow_reason_codes, list):
+                flow_reason_codes = []
+            flow_reason_text = compact(
+                ",".join(str(value) for value in flow_reason_codes[:2]),
+                72,
+            )
             if not lane:
                 unresolved_routes.append(f"{profile}:{symbol}:{path.parent.name}")
                 lane = "unknown"
-            key = (symbol, profile, status, action)
+            flow_contract_class = (
+                "operator_summary"
+                if flow_summary_receipt and flow_playbook
+                else ("decision_flow" if flow_evaluation_id else "raw")
+            )
+            key = (symbol, profile, status, action, flow_contract_class)
             if key in seen:
                 continue
             seen.add(key)
@@ -1893,20 +2345,104 @@ def emit_decisions() -> None:
                 f"symbol={symbol}",
                 f"status={status}" if status else "",
                 f"action={action}",
+                f"disposition={disposition}" if disposition else "",
+                f"blocking_stage={blocking_stage}" if blocking_stage else "",
+                f"flow={flow_disposition}" if flow_disposition else "",
+                f"flow_class={flow_classification}" if flow_classification else "",
+                f"flow_stage={flow_stage}" if flow_stage else "",
+                f"flow_state={flow_decision_state}" if flow_decision_state else "",
+                f"flow_current={flow_current_stage}" if flow_current_stage else "",
+                f"flow_progress={flow_progress_text}" if flow_progress_text else "",
+                f"flow_blocker={flow_blocking_reason}" if flow_blocking_reason else "",
+                f"flow_regime={flow_regime_state}" if flow_regime_state else "",
+                f"flow_edge_state={flow_edge_state}" if flow_edge_state else "",
+                f"flow_transition={flow_transition}" if flow_transition else "",
+                f"flow_paper_gate={flow_paper_gate}" if flow_paper_gate else "",
+                f"flow_live_gate={flow_live_gate}" if flow_live_gate else "",
+                f"flow_reason={flow_reason_text}" if flow_reason_text else "",
+                f"flow_playbook={flow_playbook}" if flow_playbook else "",
+                f"flow_receipt={flow_summary_receipt}" if flow_summary_receipt else "",
+                f"flow_data_status={flow_data_status}" if flow_data_status else "",
+                f"flow_data_state={flow_data_state}" if flow_data_state else "",
+                f"flow_data_profile={flow_data_profile}" if flow_data_profile else "",
+                f"flow_data_quality={flow_data_quality}" if flow_data_quality else "",
+                (
+                    f"flow_data_paper={flow_data_paper_coverage}"
+                    if flow_data_paper_coverage
+                    else ""
+                ),
+                (
+                    f"flow_data_live={flow_data_live_coverage}"
+                    if flow_data_live_coverage
+                    else ""
+                ),
+                (
+                    f"flow_data_sources={int(flow_data_sources or 0)}"
+                    if flow_data_sources is not None
+                    else ""
+                ),
+                f"flow_data_receipt={flow_data_receipt}" if flow_data_receipt else "",
+                f"flow_utility={flow_utility}" if flow_utility else "",
+                f"flow_qty_cap={flow_quantity_multiplier}" if flow_quantity_multiplier else "",
+                f"flow_evidence={flow_evaluation_id}" if flow_evaluation_id else "",
+                f"flow_family={flow_family}" if flow_family else "",
+                f"flow_policy={flow_policy}" if flow_policy else "",
+                f"flow_strategy={flow_strategy}" if flow_strategy else "",
+                f"flow_horizon={flow_horizon}" if flow_horizon else "",
+                f"flow_role={flow_role}" if flow_role else "",
+                f"flow_edge={flow_edge}" if flow_edge else "",
+                f"flow_action_semantic={flow_action_semantic}" if flow_action_semantic else "",
+                (
+                    f"flow_quant_ready={str(bool(flow_quant_ready_raw)).lower()}"
+                    if flow_quant_ready_raw is not None
+                    else ""
+                ),
+                f"flow_quant_gaps={flow_quant_gaps}" if flow_quant_gaps else "",
+                (
+                    f"flow_challengers={flow_challenger_status}:"
+                    f"{int(flow_challenger_available or 0)}/"
+                    f"{int(flow_challenger_total or 0)}"
+                    if flow_challenger_status or flow_challenger_total is not None
+                    else ""
+                ),
+                (
+                    f"flow_challenger_supported={int(flow_challenger_supported or 0)}"
+                    if flow_challenger_supported is not None
+                    else ""
+                ),
+                (
+                    f"flow_execution_eligible={str(bool(flow_execution_eligible)).lower()}"
+                    if flow_execution_eligible is not None
+                    else ""
+                ),
                 f"score={score}" if score else "",
                 f"threshold={threshold}" if threshold else "",
                 f"schema={contract_state}",
                 f"file={path.parent.name}/{path.name}",
             ]
-            rows.append((parsed, " ".join(part for part in parts if part)))
-            if len(rows) >= max_lines:
+            flow_contract_priority = (
+                2
+                if flow_contract_class == "operator_summary"
+                else (1 if flow_contract_class == "decision_flow" else 0)
+            )
+            rows.append(
+                (
+                    flow_contract_priority,
+                    parsed,
+                    " ".join(part for part in parts if part),
+                )
+            )
+            path_row_count += 1
+            if path_row_count >= max_lines:
                 break
-        if len(rows) >= max_lines:
-            break
     if not rows:
         print("[decision-latest] status=none reason=no_recent_decision_jsonl")
         return
-    for _timestamp, line in sorted(rows, key=lambda item: item[0], reverse=True)[:max_lines]:
+    for _priority, _timestamp, line in sorted(
+        rows,
+        key=lambda item: (item[0], item[1]),
+        reverse=True,
+    )[:max_lines]:
         print(line)
     if unresolved_routes:
         examples = ",".join(dict.fromkeys(unresolved_routes))
@@ -1922,6 +2458,11 @@ def emit_paper() -> None:
     lane = load_json(health / "execution_lane_paper_latest.json")
     if lane:
         gateway = lane.get("execution_gateway") if isinstance(lane.get("execution_gateway"), dict) else {}
+        runtime_breaker = (
+            lane.get("runtime_execution_breaker")
+            if isinstance(lane.get("runtime_execution_breaker"), dict)
+            else {}
+        )
         print(
             "[paper] "
             f"level={'ok' if lane.get('auth_ok') and not lane.get('auth_error') else 'alert'} "
@@ -1932,8 +2473,59 @@ def emit_paper() -> None:
             f"pending_unknown={as_bool(lane.get('pending_rows_unknown'))} "
             f"approved_intents={gateway.get('approved_intents', '')} "
             f"pre_trade_orders={gateway.get('pre_trade_orders', '')} "
+            f"resident={as_bool(lane.get('execution_consumer_resident'))} "
+            f"new_exposure={as_bool(lane.get('accepting_new_exposure'))} "
+            f"breaker={runtime_breaker.get('status', '')} "
             f"auth_ok={as_bool(lane.get('auth_ok'))} "
             f"auth_error={compact(lane.get('auth_error'), 72)}"
+        )
+        evidence = (
+            lane.get("execution_result_evidence")
+            if isinstance(lane.get("execution_result_evidence"), dict)
+            else {}
+        )
+        plumbing_status = str(
+            lane.get("execution_plumbing_status")
+            or evidence.get("plumbing_status")
+            or "unknown"
+        )
+        plumbing_level = (
+            "alert"
+            if plumbing_status == "contract_or_consumer_failure"
+            else (
+                "ok"
+                if plumbing_status
+                in {
+                    "ready_executed",
+                    "ready_non_execution_activity",
+                    "idle_ready_waiting_for_intent",
+                    "protected_orchestration_only",
+                    "resident_runtime_safety_hold",
+                    "replay_safely_suppressed",
+                }
+                else "watch"
+            )
+        )
+        claims = (
+            lane.get("processing_claim_stats")
+            if isinstance(lane.get("processing_claim_stats"), dict)
+            else {}
+        )
+        print(
+            "[paper-plumbing] "
+            f"level={plumbing_level} "
+            f"status={plumbing_status} "
+            f"activity={evidence.get('activity_status', '')} "
+            f"latest={evidence.get('latest_non_stale_status', '')} "
+            f"reason={compact(evidence.get('latest_non_stale_reason'), 120)} "
+            f"executed={evidence.get('paper_executed_rows', 0)} "
+            f"policy_blocks={evidence.get('paper_standard_blocked_rows', 0)} "
+            f"runtime_holds={evidence.get('runtime_breaker_blocked_rows', 0)} "
+            f"replay_suppressed={evidence.get('replay_suppressed_rows', 0)} "
+            f"contract_failures={evidence.get('intent_contract_blocked_rows', 0)} "
+            f"consumer_failures={evidence.get('consumer_error_blocked_rows', 0)} "
+            f"claims_processing={claims.get('processing', 0)} "
+            f"claims_ambiguous={claims.get('ambiguous', 0)}"
         )
     standard = load_json(health / "paper_live_data_standard_latest.json")
     if standard:
@@ -2055,6 +2647,53 @@ def emit_paper() -> None:
             f"net_pnl={as_num(current.get('portfolio_net_pnl_total') or current.get('net_pnl') or recovery_current.get('net_pnl') or burn_down_current.get('net_pnl'))} "
             f"low_grade_blockers={low.get('active_blocker_count', '')}"
         )
+        paper_debt = (
+            profit.get("paper_debt_recovery_contract")
+            if isinstance(profit.get("paper_debt_recovery_contract"), dict)
+            else {}
+        )
+        if paper_debt:
+            attribution = (
+                paper_debt.get("candidate_attribution")
+                if isinstance(paper_debt.get("candidate_attribution"), dict)
+                else {}
+            )
+            velocity = (
+                paper_debt.get("recovery_velocity")
+                if isinstance(paper_debt.get("recovery_velocity"), dict)
+                else {}
+            )
+            risk = (
+                paper_debt.get("risk_budget")
+                if isinstance(paper_debt.get("risk_budget"), dict)
+                else {}
+            )
+            debt_state = str(paper_debt.get("state") or "unknown")
+            debt_level = (
+                "ok"
+                if paper_debt.get("live_promotion_ready", False)
+                else "alert"
+                if debt_state in {"evidence_unavailable", "paused_drawdown", "debt_worsening"}
+                else "watch"
+            )
+            print(
+                "[paper-debt] "
+                f"level={debt_level} "
+                f"age={age_text(profit.get('timestamp_utc'))} "
+                f"state={debt_state} "
+                f"baseline={as_num(paper_debt.get('baseline_debt_amount'))} "
+                f"remaining={as_num(paper_debt.get('remaining_debt_amount'))} "
+                f"progress={as_num(paper_debt.get('recovery_progress_norm'))} "
+                f"candidate={compact(attribution.get('candidate_id'), 40)} "
+                f"samples={attribution.get('sample_count', '')} "
+                f"days={attribution.get('observed_days', '')} "
+                f"attributed_pnl={as_num(attribution.get('total_candidate_attributed_pnl'))} "
+                f"velocity={as_num(velocity.get('actual_daily_net_improvement'))} "
+                f"entry_size_cap={as_num((paper_debt.get('runtime_enforcement') or {}).get('recovery_entry_size_multiplier_norm'))} "
+                f"paused={as_bool(risk.get('new_entries_paused'))} "
+                f"live_proof={as_bool(paper_debt.get('live_promotion_ready'))} "
+                f"live_execution=false"
+            )
     hardening = load_json(health / "profitability_hardening_latest.json")
     if hardening:
         valuation = hardening.get("derivative_valuation") if isinstance(hardening.get("derivative_valuation"), dict) else {}
@@ -2151,12 +2790,18 @@ run_filtered_snapshot() {
 
 drop_stale_bootstrap_state_lines() {
   awk '
-    /^\[(ALERT|WATCH|OK|INFO|FLOW)\][[:space:]]+\[(dashboard|storage|throttle|broker|auth|schwab-auth)\]/ { next }
-    /^\[(dashboard|storage|throttle|broker|auth|schwab-auth)\]/ { next }
+    /^\[(ALERT|WATCH|OK|INFO|FLOW)\][[:space:]]+\[(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-plumbing|paper-data|paper-profit|paper-debt|profit-hardening|paper-truth|profitability-truth|strategy-market-fit|alerts|watchdog|hdf5|coord|feed)\]/ { next }
+    /^\[(status-contract|system|collection|fx-provider|auth|schwab-auth|storage|throttle|soak|dashboard|paper|paper-plumbing|paper-data|paper-profit|paper-debt|profit-hardening|paper-truth|profitability-truth|strategy-market-fit|alerts|watchdog|hdf5|coord|feed)\]/ { next }
     /^\[(BrokerConfig|StorageRoute)\]/ { next }
     /BrokerConfig/ { next }
     /StorageRoute/ { next }
     { print; fflush() }
+  '
+}
+
+mark_historical_bootstrap_lines() {
+  awk '
+    { print "[history non_authoritative=true] " $0; fflush() }
   '
 }
 
@@ -2165,17 +2810,29 @@ run_filtered_state_safe_snapshot() {
   local line_limit="${2:-0}"
   if command -v rg >/dev/null 2>&1; then
     if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
-      tail_source_snapshot | rg --line-buffered -i -e "$pattern" | drop_stale_bootstrap_state_lines | truncate_live_lines "$line_limit"
+      tail_source_snapshot | drop_stale_bootstrap_state_lines | rg --line-buffered -i -e "$pattern" | mark_historical_bootstrap_lines | truncate_live_lines "$line_limit"
     else
-      tail_source_snapshot | rg --line-buffered -i -e "$pattern" | rg --line-buffered -v '^\[Decision\]' | drop_stale_bootstrap_state_lines | truncate_live_lines "$line_limit"
+      tail_source_snapshot | drop_stale_bootstrap_state_lines | rg --line-buffered -i -e "$pattern" | rg --line-buffered -v '^\[Decision\]' | mark_historical_bootstrap_lines | truncate_live_lines "$line_limit"
     fi
   else
     if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
-      tail_source_snapshot | grep --line-buffered -Ei "$pattern" | drop_stale_bootstrap_state_lines | truncate_live_lines "$line_limit"
+      tail_source_snapshot | drop_stale_bootstrap_state_lines | grep --line-buffered -Ei "$pattern" | mark_historical_bootstrap_lines | truncate_live_lines "$line_limit"
     else
-      tail_source_snapshot | grep --line-buffered -Ei "$pattern" | grep --line-buffered -Ev '^\[Decision\]' | drop_stale_bootstrap_state_lines | truncate_live_lines "$line_limit"
+      tail_source_snapshot | drop_stale_bootstrap_state_lines | grep --line-buffered -Ei "$pattern" | grep --line-buffered -Ev '^\[Decision\]' | mark_historical_bootstrap_lines | truncate_live_lines "$line_limit"
     fi
   fi
+}
+
+emit_livefeed_detail_snapshot() {
+  local pattern="$1"
+  echo "live_feed_detail_snapshot=begin mode=$TAIL_START_MODE bytes=$HEAVY_TAIL_BYTES authoritative_status=false"
+  if [[ "$INCLUDE_DECISIONS" == "1" ]]; then
+    emit_livefeed_decision_paper_snapshot | truncate_live_lines 0 0 || true
+  fi
+  echo "live_feed_bootstrap_snapshot=begin mode=$TAIL_START_MODE bytes=$HEAVY_TAIL_BYTES history=true authoritative_status=false"
+  run_filtered_state_safe_snapshot "$pattern" "$HEAVY_BOOTSTRAP_MAX_LINES" || true
+  echo "live_feed_bootstrap_snapshot=end history=true authoritative_status=false"
+  echo "live_feed_detail_snapshot=ready authoritative_status=current_snapshot"
 }
 
 filter_pat="$ops_pat|$json_pat"
@@ -2211,15 +2868,18 @@ if [[ "$SNAPSHOT" == "1" ]]; then
   exit 0
 fi
 
-if [[ "$HEAVY_REQUESTED" == "1" && "$HEAVY_BOOTSTRAP_SNAPSHOT" == "1" ]]; then
-  emit_livefeed_status_snapshot | truncate_live_lines 80 || true
-  echo "live_feed_bootstrap_snapshot=begin mode=$TAIL_START_MODE bytes=$HEAVY_TAIL_BYTES"
-  run_filtered_state_safe_snapshot "$filter_pat" "$HEAVY_BOOTSTRAP_MAX_LINES" || true
-  echo "live_feed_following=1 interrupt=ctrl-c"
-else
-  emit_livefeed_status_snapshot | truncate_live_lines 80 || true
-fi
+emit_livefeed_status_snapshot | truncate_live_lines 80 || true
 install_live_feed_trap
+if [[ "$HEAVY_REQUESTED" == "1" && "$HEAVY_BOOTSTRAP_SNAPSHOT" == "1" ]]; then
+  if [[ "$HEAVY_ASYNC_BOOTSTRAP" == "1" ]]; then
+    echo "live_feed_following=1 interrupt=ctrl-c detail_snapshot=loading detail_preserved=true"
+    emit_livefeed_detail_snapshot "$filter_pat" &
+    LIVE_FEED_BOOTSTRAP_PID=$!
+  else
+    emit_livefeed_detail_snapshot "$filter_pat"
+    echo "live_feed_following=1 interrupt=ctrl-c detail_snapshot=ready detail_preserved=true"
+  fi
+fi
 start_live_feed_keepalive
 if [[ "$HEAVY_REQUESTED" == "1" ]]; then
   emit_live_feed_keepalive "0"

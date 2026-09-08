@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "link_jsonl_to_sql.py"
 SPEC = importlib.util.spec_from_file_location("link_jsonl_to_sql_module", MODULE_PATH)
 if SPEC is None or SPEC.loader is None:
@@ -21,7 +20,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
     def test_ingest_cooldown_yields_when_host_load_exceeds_cap(self) -> None:
         sleeps: list[float] = []
         with mock.patch.object(MODULE.os, "getloadavg", return_value=(9.5, 7.0, 6.0)):
-            with mock.patch.object(MODULE.time, "sleep", side_effect=lambda seconds: sleeps.append(seconds)):
+            with mock.patch.object(
+                MODULE.time, "sleep", side_effect=lambda seconds: sleeps.append(seconds)
+            ):
                 slept = MODULE._ingest_cooldown_sleep(
                     base_sleep_seconds=0.05,
                     host_load_soft_cap=6.0,
@@ -46,26 +47,54 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             os.environ["INGEST_JOURNAL_ZERO_PENDING_ENABLED"] = "0"
             with tempfile.TemporaryDirectory() as td:
                 root = Path(td)
-                latest = root / "governance" / "health" / "jsonl_ingest_batch_journal_latest.jsonl"
-                daily = root / "governance" / "events" / "jsonl_ingest_batches_20260520.jsonl"
+                latest = (
+                    root
+                    / "governance"
+                    / "health"
+                    / "jsonl_ingest_batch_journal_latest.jsonl"
+                )
+                daily = (
+                    root
+                    / "governance"
+                    / "events"
+                    / "jsonl_ingest_batches_20260520.jsonl"
+                )
 
-                MODULE._journal_event([latest, daily], {"event": "file_start", "source_rel": "decisions/a.jsonl"})
                 MODULE._journal_event(
                     [latest, daily],
-                    {"event": "file_checkpoint", "source_rel": "decisions/a.jsonl", "pending_lines": 10},
+                    {"event": "file_start", "source_rel": "decisions/a.jsonl"},
                 )
                 MODULE._journal_event(
                     [latest, daily],
-                    {"event": "file_complete", "source_rel": "decisions/a.jsonl", "pending_lines": 0},
+                    {
+                        "event": "file_checkpoint",
+                        "source_rel": "decisions/a.jsonl",
+                        "pending_lines": 10,
+                    },
                 )
                 MODULE._journal_event(
                     [latest, daily],
-                    {"event": "file_complete", "source_rel": "decisions/b.jsonl", "pending_lines": 2},
+                    {
+                        "event": "file_complete",
+                        "source_rel": "decisions/a.jsonl",
+                        "pending_lines": 0,
+                    },
+                )
+                MODULE._journal_event(
+                    [latest, daily],
+                    {
+                        "event": "file_complete",
+                        "source_rel": "decisions/b.jsonl",
+                        "pending_lines": 2,
+                    },
                 )
 
                 self.assertTrue(latest.exists())
                 self.assertFalse(daily.exists())
-                rows = [json.loads(line) for line in latest.read_text(encoding="utf-8").splitlines()]
+                rows = [
+                    json.loads(line)
+                    for line in latest.read_text(encoding="utf-8").splitlines()
+                ]
 
             self.assertEqual([row["event"] for row in rows], ["file_complete"])
             self.assertEqual(rows[0]["source_rel"], "decisions/b.jsonl")
@@ -84,9 +113,18 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             os.environ["INGEST_JOURNAL_ERRORS_ALWAYS"] = "1"
             with tempfile.TemporaryDirectory() as td:
                 latest = Path(td) / "journal.jsonl"
-                MODULE._journal_event([latest], {"event": "file_complete", "source_rel": "decisions/a.jsonl"})
-                MODULE._journal_event([latest], {"event": "file_failed", "source_rel": "decisions/b.jsonl"})
-                rows = [json.loads(line) for line in latest.read_text(encoding="utf-8").splitlines()]
+                MODULE._journal_event(
+                    [latest],
+                    {"event": "file_complete", "source_rel": "decisions/a.jsonl"},
+                )
+                MODULE._journal_event(
+                    [latest],
+                    {"event": "file_failed", "source_rel": "decisions/b.jsonl"},
+                )
+                rows = [
+                    json.loads(line)
+                    for line in latest.read_text(encoding="utf-8").splitlines()
+                ]
 
             self.assertEqual([row["event"] for row in rows], ["file_failed"])
         finally:
@@ -112,7 +150,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             },
         }
 
-        run_id, iter_id, decision_id, parent_decision_id, schema_version = MODULE._extract_correlation_fields(row)
+        run_id, iter_id, decision_id, parent_decision_id, schema_version = (
+            MODULE._extract_correlation_fields(row)
+        )
 
         self.assertEqual(run_id, "run-top")
         self.assertEqual(iter_id, "iter-top")
@@ -131,7 +171,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             }
         }
 
-        run_id, iter_id, decision_id, parent_decision_id, schema_version = MODULE._extract_correlation_fields(row)
+        run_id, iter_id, decision_id, parent_decision_id, schema_version = (
+            MODULE._extract_correlation_fields(row)
+        )
 
         self.assertEqual(run_id, "run-meta")
         self.assertEqual(iter_id, "iter-meta")
@@ -144,8 +186,7 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             db_path = Path(td) / "ingest.sqlite3"
             conn = sqlite3.connect(str(db_path))
             try:
-                conn.execute(
-                    """
+                conn.execute("""
                     CREATE TABLE jsonl_records (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         source_file TEXT NOT NULL,
@@ -156,10 +197,12 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                         payload_json TEXT NOT NULL,
                         UNIQUE(source_file, line_no)
                     )
-                    """
-                )
+                    """)
                 MODULE._ensure_sqlite_schema(conn, "jsonl_records")
-                cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(jsonl_records)")}
+                cols = {
+                    str(row[1])
+                    for row in conn.execute("PRAGMA table_info(jsonl_records)")
+                }
             finally:
                 conn.close()
 
@@ -230,10 +273,19 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                 ).fetchone()
             finally:
                 conn.close()
-            with sqlite3.connect(str(root / "governance" / "ops_data_plane.sqlite3")) as ops_conn:
-                dead_letter_count = int(ops_conn.execute("SELECT COUNT(*) FROM ingest_dead_letters").fetchone()[0] or 0)
+            with sqlite3.connect(
+                str(root / "governance" / "ops_data_plane.sqlite3")
+            ) as ops_conn:
+                dead_letter_count = int(
+                    ops_conn.execute(
+                        "SELECT COUNT(*) FROM ingest_dead_letters"
+                    ).fetchone()[0]
+                    or 0
+                )
                 schema_drift_count = int(
-                    ops_conn.execute("SELECT COALESCE(SUM(occurrence_count), 0) FROM schema_drift_rollups").fetchone()[0]
+                    ops_conn.execute(
+                        "SELECT COALESCE(SUM(occurrence_count), 0) FROM schema_drift_rollups"
+                    ).fetchone()[0]
                     or 0
                 )
                 watermark = ops_conn.execute(
@@ -262,7 +314,14 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             db_path = root / "ingest.sqlite3"
-            jsonl_path = root / "governance" / "channels" / "api" / "default_crypto_coinbase" / "api_20260624.jsonl"
+            jsonl_path = (
+                root
+                / "governance"
+                / "channels"
+                / "api"
+                / "default_crypto_coinbase"
+                / "api_20260624.jsonl"
+            )
             jsonl_path.parent.mkdir(parents=True, exist_ok=True)
             jsonl_path.write_text(
                 json.dumps(
@@ -311,14 +370,25 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         self.assertEqual(result["inserted"], 1)
         self.assertEqual(
             row,
-            ("coinbase", "coinbase_ticker", "coinbase", "crypto", "coinbase_crypto", "exchange_native"),
+            (
+                "coinbase",
+                "coinbase_ticker",
+                "coinbase",
+                "crypto",
+                "coinbase_crypto",
+                "exchange_native",
+            ),
         )
 
-    def test_sync_file_to_sqlite_infers_signal_generation_source_path_route(self) -> None:
+    def test_sync_file_to_sqlite_infers_signal_generation_source_path_route(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             db_path = root / "ingest.sqlite3"
-            jsonl_path = root / "governance" / "events" / "signal_generation_20260624.jsonl"
+            jsonl_path = (
+                root / "governance" / "events" / "signal_generation_20260624.jsonl"
+            )
             jsonl_path.parent.mkdir(parents=True, exist_ok=True)
             jsonl_path.write_text(
                 json.dumps(
@@ -368,16 +438,42 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                 conn.close()
 
         self.assertEqual(result["inserted"], 1)
-        self.assertEqual(row, ("schwab", "schwab", "schwab", "equities", "schwab_equities", "broker_native"))
+        self.assertEqual(
+            row,
+            (
+                "schwab",
+                "schwab",
+                "schwab",
+                "equities",
+                "schwab_equities",
+                "broker_native",
+            ),
+        )
 
-    def test_sync_file_to_sqlite_uses_inode_identity_after_channel_rotation(self) -> None:
+    def test_sync_file_to_sqlite_uses_inode_identity_after_channel_rotation(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             db_path = root / "ingest.sqlite3"
-            jsonl_path = root / "governance" / "channels" / "decision" / "default_crypto_schwab" / "decision_20260522.jsonl"
+            jsonl_path = (
+                root
+                / "governance"
+                / "channels"
+                / "decision"
+                / "default_crypto_schwab"
+                / "decision_20260522.jsonl"
+            )
             jsonl_path.parent.mkdir(parents=True, exist_ok=True)
             jsonl_path.write_text(
-                json.dumps({"timestamp_utc": "2026-05-22T10:00:00+00:00", "symbol": "BTC-USD", "action": "HOLD"}) + "\n",
+                json.dumps(
+                    {
+                        "timestamp_utc": "2026-05-22T10:00:00+00:00",
+                        "symbol": "BTC-USD",
+                        "action": "HOLD",
+                    }
+                )
+                + "\n",
                 encoding="utf-8",
             )
 
@@ -405,7 +501,14 @@ class LinkJsonlToSqlTests(unittest.TestCase):
 
                 jsonl_path.unlink()
                 jsonl_path.write_text(
-                    json.dumps({"timestamp_utc": "2026-05-22T10:01:00+00:00", "symbol": "ETH-USD", "action": "HOLD"}) + "\n",
+                    json.dumps(
+                        {
+                            "timestamp_utc": "2026-05-22T10:01:00+00:00",
+                            "symbol": "ETH-USD",
+                            "action": "HOLD",
+                        }
+                    )
+                    + "\n",
                     encoding="utf-8",
                 )
                 second = MODULE._sync_file_to_sqlite(
@@ -426,7 +529,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                     iter_id="",
                 )
                 conn.commit()
-                rows = conn.execute("SELECT source_file, line_no, payload_json FROM jsonl_records ORDER BY id").fetchall()
+                rows = conn.execute(
+                    "SELECT source_file, line_no, payload_json FROM jsonl_records ORDER BY id"
+                ).fetchall()
             finally:
                 conn.close()
 
@@ -446,7 +551,14 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             jsonl_path = root / "decisions" / "large.jsonl"
             jsonl_path.parent.mkdir(parents=True, exist_ok=True)
             rows = [
-                json.dumps({"run_id": "run-1", "iter_id": "iter-1", "decision_id": f"d-{idx}", "value": idx})
+                json.dumps(
+                    {
+                        "run_id": "run-1",
+                        "iter_id": "iter-1",
+                        "decision_id": f"d-{idx}",
+                        "value": idx,
+                    }
+                )
                 for idx in range(2001)
             ]
             jsonl_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
@@ -474,7 +586,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                     checkpoint_every_lines=1000,
                     checkpoint_cb=lambda payload: checkpoints.append(dict(payload)),
                 )
-                row_count = conn.execute("SELECT COUNT(*) FROM jsonl_records").fetchone()[0]
+                row_count = conn.execute(
+                    "SELECT COUNT(*) FROM jsonl_records"
+                ).fetchone()[0]
             finally:
                 conn.close()
 
@@ -490,9 +604,19 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             db_path = root / "ingest.sqlite3"
-            jsonl_path = root / "governance" / "channels" / "runtime" / "default_crypto_schwab" / "runtime_20260101.jsonl"
+            jsonl_path = (
+                root
+                / "governance"
+                / "channels"
+                / "runtime"
+                / "default_crypto_schwab"
+                / "runtime_20260101.jsonl"
+            )
             jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-            jsonl_path.write_text("\n".join(json.dumps({"value": idx}) for idx in range(5)) + "\n", encoding="utf-8")
+            jsonl_path.write_text(
+                "\n".join(json.dumps({"value": idx}) for idx in range(5)) + "\n",
+                encoding="utf-8",
+            )
 
             conn = sqlite3.connect(str(db_path))
             try:
@@ -515,7 +639,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                     iter_id="",
                     max_lines_per_file=2,
                 )
-                row_count = conn.execute("SELECT COUNT(*) FROM jsonl_records").fetchone()[0]
+                row_count = conn.execute(
+                    "SELECT COUNT(*) FROM jsonl_records"
+                ).fetchone()[0]
             finally:
                 conn.close()
 
@@ -524,7 +650,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         self.assertGreater(result["last_offset_bytes"], 0)
         self.assertEqual(int(row_count), 2)
 
-    def test_sync_file_to_sqlite_dead_letters_oversize_payload_and_advances_cursor(self) -> None:
+    def test_sync_file_to_sqlite_dead_letters_oversize_payload_and_advances_cursor(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             db_path = root / "ingest.sqlite3"
@@ -564,10 +692,14 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                     oversize_payload_bytes=40,
                 )
                 conn.commit()
-                row_count = conn.execute("SELECT COUNT(*) FROM jsonl_records").fetchone()[0]
+                row_count = conn.execute(
+                    "SELECT COUNT(*) FROM jsonl_records"
+                ).fetchone()[0]
             finally:
                 conn.close()
-            with sqlite3.connect(str(root / "governance" / "ops_data_plane.sqlite3")) as ops_conn:
+            with sqlite3.connect(
+                str(root / "governance" / "ops_data_plane.sqlite3")
+            ) as ops_conn:
                 dead_letter = ops_conn.execute(
                     "SELECT error_class FROM ingest_dead_letters ORDER BY id DESC LIMIT 1"
                 ).fetchone()
@@ -585,7 +717,12 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             sqlite_db = root / "data" / "jsonl_link.sqlite3"
-            health_file = root / "governance" / "health" / "jsonl_sql_ingestion_health_latest.json"
+            health_file = (
+                root
+                / "governance"
+                / "health"
+                / "jsonl_sql_ingestion_health_latest.json"
+            )
             jsonl_path = root / "decisions" / "trade_decisions_20260101.jsonl"
             jsonl_path.parent.mkdir(parents=True, exist_ok=True)
             jsonl_path.write_text(json.dumps({"value": "ok"}) + "\n", encoding="utf-8")
@@ -653,7 +790,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                     encoding="utf-8",
                 )
 
-                allowed, detail = MODULE._fresh_idle_health_fast_path_allowed(health_file)
+                allowed, detail = MODULE._fresh_idle_health_fast_path_allowed(
+                    health_file
+                )
 
             self.assertTrue(allowed)
             self.assertEqual(detail["reason"], "fresh_idle_health")
@@ -696,7 +835,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                     encoding="utf-8",
                 )
 
-                allowed, detail = MODULE._fresh_idle_health_fast_path_allowed(health_file)
+                allowed, detail = MODULE._fresh_idle_health_fast_path_allowed(
+                    health_file
+                )
 
             self.assertFalse(allowed)
             self.assertEqual(detail["reason"], "last_health_has_ingestion_errors")
@@ -709,7 +850,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
-    def test_fresh_idle_health_fast_path_does_not_skip_pending_source_bytes(self) -> None:
+    def test_fresh_idle_health_fast_path_does_not_skip_pending_source_bytes(
+        self,
+    ) -> None:
         keys = [
             "SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS",
             "SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS",
@@ -722,7 +865,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             os.environ["SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS"] = "0"
             with tempfile.TemporaryDirectory() as td:
                 project_root = Path(td)
-                source = project_root / "governance" / "events" / "signal_generation.jsonl"
+                source = (
+                    project_root / "governance" / "events" / "signal_generation.jsonl"
+                )
                 source.parent.mkdir(parents=True, exist_ok=True)
                 source.write_text('{"row": 1}\n{"row": 2}\n', encoding="utf-8")
                 source_stat = source.stat()
@@ -769,7 +914,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
-    def test_fresh_idle_health_fast_path_yields_to_stale_decision_catch_up(self) -> None:
+    def test_fresh_idle_health_fast_path_yields_to_stale_decision_catch_up(
+        self,
+    ) -> None:
         keys = [
             "SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS",
             "SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS",
@@ -802,7 +949,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
 
                 allowed, detail = MODULE._fresh_idle_health_fast_path_allowed(
                     health_file,
-                    path_contains=["decisions/shadow_conservative_equities/trade_decisions_20260604.jsonl"],
+                    path_contains=[
+                        "decisions/shadow_conservative_equities/trade_decisions_20260604.jsonl"
+                    ],
                 )
 
             self.assertFalse(allowed)
@@ -843,7 +992,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
                     encoding="utf-8",
                 )
 
-                allowed, detail = MODULE._fresh_idle_health_fast_path_allowed(health_file)
+                allowed, detail = MODULE._fresh_idle_health_fast_path_allowed(
+                    health_file
+                )
 
             self.assertFalse(allowed)
             self.assertEqual(detail["reason"], "sentinel_shard")
@@ -871,7 +1022,10 @@ class LinkJsonlToSqlTests(unittest.TestCase):
 
         self.assertIn("data/misc.jsonl", rels)
         self.assertIn("decisions/trade_decisions_20260101.jsonl", rels)
-        self.assertLess(rels.index("decisions/trade_decisions_20260101.jsonl"), rels.index("data/misc.jsonl"))
+        self.assertLess(
+            rels.index("decisions/trade_decisions_20260101.jsonl"),
+            rels.index("data/misc.jsonl"),
+        )
 
     def test_discover_jsonl_files_writes_discovery_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -881,21 +1035,72 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             path.write_text("{}\n", encoding="utf-8")
 
             files = MODULE.discover_jsonl_files(root)
-            manifest_path = root / "governance" / "health" / "jsonl_discovery_manifest_latest.json"
+            manifest_path = (
+                root / "governance" / "health" / "jsonl_discovery_manifest_latest.json"
+            )
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
 
         self.assertEqual(files, [path])
         self.assertEqual(payload["file_count"], 1)
-        self.assertEqual(payload["files"][0]["source_rel"], "decisions/trade_decisions_20260101.jsonl")
+        self.assertEqual(
+            payload["files"][0]["source_rel"],
+            "decisions/trade_decisions_20260101.jsonl",
+        )
         self.assertEqual(payload["files"][0]["temperature"], "hot")
+
+    def test_discover_jsonl_files_excludes_rebuildable_canary_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cache = (
+                root
+                / "governance"
+                / "evidence"
+                / "canary_rollout_observations.jsonl"
+            )
+            source = root / "governance" / "events" / "signal_generation_20260101.jsonl"
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            source.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text("{}\n", encoding="utf-8")
+            source.write_text("{}\n", encoding="utf-8")
+
+            rels = {
+                str(path.relative_to(root))
+                for path in MODULE.discover_jsonl_files(root)
+            }
+
+        self.assertNotIn(
+            "governance/evidence/canary_rollout_observations.jsonl", rels
+        )
+        self.assertIn("governance/events/signal_generation_20260101.jsonl", rels)
 
     def test_discover_jsonl_files_skips_redundant_legacy_hot_channel_logs(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            legacy_runtime = root / "governance" / "events" / "runtime_events_20260417.jsonl"
-            legacy_api = root / "governance" / "events" / "api_calls_default_crypto_coinbase_20260417.jsonl"
-            channel_runtime = root / "governance" / "channels" / "runtime" / "default_equities_schwab" / "runtime_20260417.jsonl"
-            channel_api = root / "governance" / "channels" / "api" / "default_crypto_schwab" / "api_20260417.jsonl"
+            legacy_runtime = (
+                root / "governance" / "events" / "runtime_events_20260417.jsonl"
+            )
+            legacy_api = (
+                root
+                / "governance"
+                / "events"
+                / "api_calls_default_crypto_coinbase_20260417.jsonl"
+            )
+            channel_runtime = (
+                root
+                / "governance"
+                / "channels"
+                / "runtime"
+                / "default_equities_schwab"
+                / "runtime_20260417.jsonl"
+            )
+            channel_api = (
+                root
+                / "governance"
+                / "channels"
+                / "api"
+                / "default_crypto_schwab"
+                / "api_20260417.jsonl"
+            )
             for path in (legacy_runtime, legacy_api, channel_runtime, channel_api):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("{}\n", encoding="utf-8")
@@ -903,18 +1108,31 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             files = MODULE.discover_jsonl_files(root)
             rels = {str(p.relative_to(root)) for p in files}
 
-        self.assertIn("governance/channels/runtime/default_equities_schwab/runtime_20260417.jsonl", rels)
-        self.assertIn("governance/channels/api/default_crypto_schwab/api_20260417.jsonl", rels)
+        self.assertIn(
+            "governance/channels/runtime/default_equities_schwab/runtime_20260417.jsonl",
+            rels,
+        )
+        self.assertIn(
+            "governance/channels/api/default_crypto_schwab/api_20260417.jsonl", rels
+        )
         self.assertNotIn("governance/events/runtime_events_20260417.jsonl", rels)
-        self.assertNotIn("governance/events/api_calls_default_crypto_coinbase_20260417.jsonl", rels)
+        self.assertNotIn(
+            "governance/events/api_calls_default_crypto_coinbase_20260417.jsonl", rels
+        )
 
-    def test_classify_stream_treats_decision_channels_and_schema_violations_separately(self) -> None:
+    def test_classify_stream_treats_decision_channels_and_schema_violations_separately(
+        self,
+    ) -> None:
         self.assertEqual(
-            MODULE._classify_stream("governance/channels/decision/intraday_aggressive_equities_schwab/decision_20260417.jsonl"),
+            MODULE._classify_stream(
+                "governance/channels/decision/intraday_aggressive_equities_schwab/decision_20260417.jsonl"
+            ),
             "decisions",
         )
         self.assertEqual(
-            MODULE._classify_stream("governance/events/channel_schema_violations_20260417.jsonl"),
+            MODULE._classify_stream(
+                "governance/events/channel_schema_violations_20260417.jsonl"
+            ),
             "schema_violations",
         )
 
@@ -924,7 +1142,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             "external_context",
         )
         self.assertEqual(
-            MODULE._json_file_stream("exports/external_feeds/tradingeconomics/latest.json"),
+            MODULE._json_file_stream(
+                "exports/external_feeds/tradingeconomics/latest.json"
+            ),
             "external_feeds",
         )
         self.assertEqual(
@@ -932,14 +1152,18 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             "feature_store",
         )
         self.assertEqual(
-            MODULE._json_file_stream("governance/health/point_in_time_event_store_latest.json"),
+            MODULE._json_file_stream(
+                "governance/health/point_in_time_event_store_latest.json"
+            ),
             "event_store",
         )
 
     def test_json_file_filters_respect_include_streams(self) -> None:
         matched = MODULE._matches_rel_filters(
             source_rel="exports/external_context/sec_edgar_latest.json",
-            stream=MODULE._json_file_stream("exports/external_context/sec_edgar_latest.json"),
+            stream=MODULE._json_file_stream(
+                "exports/external_context/sec_edgar_latest.json"
+            ),
             include_streams=["external_context"],
             exclude_streams=[],
             path_contains=[],
@@ -947,7 +1171,9 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         )
         filtered = MODULE._matches_rel_filters(
             source_rel="exports/external_context/sec_edgar_latest.json",
-            stream=MODULE._json_file_stream("exports/external_context/sec_edgar_latest.json"),
+            stream=MODULE._json_file_stream(
+                "exports/external_context/sec_edgar_latest.json"
+            ),
             include_streams=["feature_store"],
             exclude_streams=[],
             path_contains=[],
@@ -957,10 +1183,14 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         self.assertTrue(matched)
         self.assertFalse(filtered)
 
-    def test_discover_json_files_includes_external_context_and_feature_store(self) -> None:
+    def test_discover_json_files_includes_external_context_and_feature_store(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            external_context = root / "exports" / "external_context" / "sec_edgar_latest.json"
+            external_context = (
+                root / "exports" / "external_context" / "sec_edgar_latest.json"
+            )
             feature_store = root / "governance" / "feature_store" / "latest.json"
             external_context.parent.mkdir(parents=True, exist_ok=True)
             feature_store.parent.mkdir(parents=True, exist_ok=True)
@@ -973,11 +1203,23 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         self.assertIn("exports/external_context/sec_edgar_latest.json", rels)
         self.assertIn("governance/feature_store/latest.json", rels)
 
-    def test_prioritize_jsonl_files_prefers_recent_hot_files_over_stale_hot_backlog(self) -> None:
+    def test_prioritize_jsonl_files_prefers_recent_hot_files_over_stale_hot_backlog(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            fresh = root / "decisions" / "shadow_aggressive_equities" / "trade_decisions_20260417.jsonl"
-            stale = root / "decisions" / "shadow_conservative_equities" / "trade_decisions_20260414.jsonl"
+            fresh = (
+                root
+                / "decisions"
+                / "shadow_aggressive_equities"
+                / "trade_decisions_20260417.jsonl"
+            )
+            stale = (
+                root
+                / "decisions"
+                / "shadow_conservative_equities"
+                / "trade_decisions_20260414.jsonl"
+            )
             fresh.parent.mkdir(parents=True, exist_ok=True)
             stale.parent.mkdir(parents=True, exist_ok=True)
             fresh.write_text("{}\n", encoding="utf-8")
@@ -995,13 +1237,28 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             )
             rels = [str(path.relative_to(root)) for path in prioritized]
 
-        self.assertEqual(rels[0], "decisions/shadow_aggressive_equities/trade_decisions_20260417.jsonl")
+        self.assertEqual(
+            rels[0],
+            "decisions/shadow_aggressive_equities/trade_decisions_20260417.jsonl",
+        )
 
-    def test_prioritize_jsonl_files_prefers_current_day_filename_over_newer_mtime_on_stale_file(self) -> None:
+    def test_prioritize_jsonl_files_prefers_current_day_filename_over_newer_mtime_on_stale_file(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            current_day = root / "governance" / "shadow_conservative_equities" / "master_control_20260417.jsonl"
-            stale_name = root / "governance" / "shadow_conservative_equities" / "master_control_20260415.jsonl"
+            current_day = (
+                root
+                / "governance"
+                / "shadow_conservative_equities"
+                / "master_control_20260417.jsonl"
+            )
+            stale_name = (
+                root
+                / "governance"
+                / "shadow_conservative_equities"
+                / "master_control_20260415.jsonl"
+            )
             current_day.parent.mkdir(parents=True, exist_ok=True)
             current_day.write_text("{}\n", encoding="utf-8")
             stale_name.write_text("{}\n", encoding="utf-8")
@@ -1017,7 +1274,10 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             )
             rels = [str(path.relative_to(root)) for path in prioritized]
 
-        self.assertEqual(rels[0], "governance/shadow_conservative_equities/master_control_20260417.jsonl")
+        self.assertEqual(
+            rels[0],
+            "governance/shadow_conservative_equities/master_control_20260417.jsonl",
+        )
 
     def test_discover_jsonl_files_refreshes_when_new_file_appears(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1043,12 +1303,25 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         self.assertEqual(second_pass[0], second)
         self.assertEqual(second_pass[1], first)
 
-    def test_prioritize_jsonl_files_keeps_hot_lane_ahead_of_deferred_and_cold(self) -> None:
+    def test_prioritize_jsonl_files_keeps_hot_lane_ahead_of_deferred_and_cold(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             decision_file = root / "decisions" / "trade_decisions_20260101.jsonl"
-            deferred_file = root / "governance" / "channels" / "runtime" / "runtime_events_20260101.jsonl"
-            cold_file = root / "governance" / "shadow_intraday_aggressive_equities" / "shadow_pnl_attribution_20260101.jsonl"
+            deferred_file = (
+                root
+                / "governance"
+                / "channels"
+                / "runtime"
+                / "runtime_events_20260101.jsonl"
+            )
+            cold_file = (
+                root
+                / "governance"
+                / "shadow_intraday_aggressive_equities"
+                / "shadow_pnl_attribution_20260101.jsonl"
+            )
             for path in (decision_file, deferred_file, cold_file):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("{}\n", encoding="utf-8")
@@ -1061,7 +1334,10 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             rels = [str(path.relative_to(root)) for path in ordered]
 
         self.assertEqual(rels[0], "decisions/trade_decisions_20260101.jsonl")
-        self.assertEqual(rels[-1], "governance/shadow_intraday_aggressive_equities/shadow_pnl_attribution_20260101.jsonl")
+        self.assertEqual(
+            rels[-1],
+            "governance/shadow_intraday_aggressive_equities/shadow_pnl_attribution_20260101.jsonl",
+        )
 
     def test_record_top_pending_includes_storage_and_stale_labels(self) -> None:
         rows = []
@@ -1081,11 +1357,25 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         self.assertEqual(rows[0]["ingestion_lane"], "deferred_lane")
         self.assertEqual(rows[0]["stale_age_bucket"], "stale_lt_7d")
 
-    def test_prioritize_jsonl_files_by_pending_bytes_prefers_largest_backlog(self) -> None:
+    def test_prioritize_jsonl_files_by_pending_bytes_prefers_largest_backlog(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            gate_file = root / "governance" / "channels" / "gate" / "default_crypto_schwab" / "gate_20260329.jsonl"
-            api_file = root / "governance" / "events" / "api_calls_default_crypto_coinbase_20260329.jsonl"
+            gate_file = (
+                root
+                / "governance"
+                / "channels"
+                / "gate"
+                / "default_crypto_schwab"
+                / "gate_20260329.jsonl"
+            )
+            api_file = (
+                root
+                / "governance"
+                / "events"
+                / "api_calls_default_crypto_coinbase_20260329.jsonl"
+            )
             gate_file.parent.mkdir(parents=True, exist_ok=True)
             api_file.parent.mkdir(parents=True, exist_ok=True)
             gate_file.write_text(("{}\n" * 1000), encoding="utf-8")
@@ -1105,13 +1395,30 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             )
 
         rels = [str(p.relative_to(root)) for p in prioritized]
-        self.assertEqual(rels[0], "governance/channels/gate/default_crypto_schwab/gate_20260329.jsonl")
+        self.assertEqual(
+            rels[0],
+            "governance/channels/gate/default_crypto_schwab/gate_20260329.jsonl",
+        )
 
-    def test_prioritize_jsonl_files_by_pending_bytes_prefers_hot_governance_paths(self) -> None:
+    def test_prioritize_jsonl_files_by_pending_bytes_prefers_hot_governance_paths(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            gate_logs = root / "governance" / "events" / "gate_logs_default_crypto_coinbase_20260329.jsonl"
-            runtime_file = root / "governance" / "channels" / "runtime" / "default_crypto_schwab" / "runtime_20260329.jsonl"
+            gate_logs = (
+                root
+                / "governance"
+                / "events"
+                / "gate_logs_default_crypto_coinbase_20260329.jsonl"
+            )
+            runtime_file = (
+                root
+                / "governance"
+                / "channels"
+                / "runtime"
+                / "default_crypto_schwab"
+                / "runtime_20260329.jsonl"
+            )
             gate_logs.parent.mkdir(parents=True, exist_ok=True)
             runtime_file.parent.mkdir(parents=True, exist_ok=True)
             gate_logs.write_text(("{}\n" * 400), encoding="utf-8")
@@ -1127,13 +1434,25 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             )
 
         rels = [str(p.relative_to(root)) for p in prioritized]
-        self.assertEqual(rels[0], "governance/events/gate_logs_default_crypto_coinbase_20260329.jsonl")
+        self.assertEqual(
+            rels[0],
+            "governance/events/gate_logs_default_crypto_coinbase_20260329.jsonl",
+        )
 
-    def test_prioritize_jsonl_files_by_pending_bytes_deprioritizes_deferred_analytics(self) -> None:
+    def test_prioritize_jsonl_files_by_pending_bytes_deprioritizes_deferred_analytics(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            decision_file = root / "decisions" / "shadow_crypto" / "trade_decisions_20260329.jsonl"
-            pnl_file = root / "governance" / "shadow_crypto" / "shadow_pnl_attribution_20260329.jsonl"
+            decision_file = (
+                root / "decisions" / "shadow_crypto" / "trade_decisions_20260329.jsonl"
+            )
+            pnl_file = (
+                root
+                / "governance"
+                / "shadow_crypto"
+                / "shadow_pnl_attribution_20260329.jsonl"
+            )
             decision_file.parent.mkdir(parents=True, exist_ok=True)
             pnl_file.parent.mkdir(parents=True, exist_ok=True)
             decision_file.write_text(("{}\n" * 100), encoding="utf-8")
@@ -1149,14 +1468,28 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             )
 
         rels = [str(p.relative_to(root)) for p in prioritized]
-        self.assertEqual(rels[0], "decisions/shadow_crypto/trade_decisions_20260329.jsonl")
+        self.assertEqual(
+            rels[0], "decisions/shadow_crypto/trade_decisions_20260329.jsonl"
+        )
 
     def test_limit_prioritized_jsonl_files_reserves_budget_for_core_paths(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            core_a = root / "decisions" / "shadow_crypto" / "trade_decisions_20260329.jsonl"
-            core_b = root / "decision_explanations" / "shadow_crypto" / "decision_explanations_20260329.jsonl"
-            deferred = root / "governance" / "shadow_crypto" / "shadow_pnl_attribution_20260329.jsonl"
+            core_a = (
+                root / "decisions" / "shadow_crypto" / "trade_decisions_20260329.jsonl"
+            )
+            core_b = (
+                root
+                / "decision_explanations"
+                / "shadow_crypto"
+                / "decision_explanations_20260329.jsonl"
+            )
+            deferred = (
+                root
+                / "governance"
+                / "shadow_crypto"
+                / "shadow_pnl_attribution_20260329.jsonl"
+            )
             for path in [core_a, core_b, deferred]:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(("{}\n" * 10), encoding="utf-8")
@@ -1177,11 +1510,23 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             ],
         )
 
-    def test_limit_prioritized_jsonl_files_allows_deferred_when_no_core_exists(self) -> None:
+    def test_limit_prioritized_jsonl_files_allows_deferred_when_no_core_exists(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            deferred_a = root / "governance" / "shadow_crypto" / "shadow_pnl_attribution_20260329.jsonl"
-            deferred_b = root / "governance" / "events" / "api_calls_default_crypto_coinbase_20260329.jsonl"
+            deferred_a = (
+                root
+                / "governance"
+                / "shadow_crypto"
+                / "shadow_pnl_attribution_20260329.jsonl"
+            )
+            deferred_b = (
+                root
+                / "governance"
+                / "events"
+                / "api_calls_default_crypto_coinbase_20260329.jsonl"
+            )
             for path in [deferred_a, deferred_b]:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(("{}\n" * 10), encoding="utf-8")
@@ -1194,13 +1539,27 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             )
 
         rels = [str(p.relative_to(root)) for p in kept]
-        self.assertEqual(rels, ["governance/shadow_crypto/shadow_pnl_attribution_20260329.jsonl"])
+        self.assertEqual(
+            rels, ["governance/shadow_crypto/shadow_pnl_attribution_20260329.jsonl"]
+        )
 
-    def test_limit_prioritized_jsonl_files_keeps_cold_lane_out_when_core_exists(self) -> None:
+    def test_limit_prioritized_jsonl_files_keeps_cold_lane_out_when_core_exists(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            core = root / "decisions" / "shadow_intraday_aggressive_equities" / "trade_decisions_20260329.jsonl"
-            cold = root / "governance" / "shadow_intraday_aggressive_equities" / "shadow_pnl_attribution_20260329.jsonl"
+            core = (
+                root
+                / "decisions"
+                / "shadow_intraday_aggressive_equities"
+                / "trade_decisions_20260329.jsonl"
+            )
+            cold = (
+                root
+                / "governance"
+                / "shadow_intraday_aggressive_equities"
+                / "shadow_pnl_attribution_20260329.jsonl"
+            )
             for path in [core, cold]:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(("{}\n" * 10), encoding="utf-8")
@@ -1213,7 +1572,12 @@ class LinkJsonlToSqlTests(unittest.TestCase):
             )
 
         rels = [str(p.relative_to(root)) for p in kept]
-        self.assertEqual(rels, ["decisions/shadow_intraday_aggressive_equities/trade_decisions_20260329.jsonl"])
+        self.assertEqual(
+            rels,
+            [
+                "decisions/shadow_intraday_aggressive_equities/trade_decisions_20260329.jsonl"
+            ],
+        )
 
     def test_derive_start_cursor_resets_on_inode_change(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1234,11 +1598,224 @@ class LinkJsonlToSqlTests(unittest.TestCase):
         self.assertEqual(offset, 0)
         self.assertEqual(reason, "inode_changed")
 
+    def test_journal_resume_index_keeps_highest_checkpoint_and_reads_appends(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            journal = Path(td) / "journal.jsonl"
+            rows = [
+                {
+                    "event": "file_complete",
+                    "mode": "sqlite",
+                    "source_rel": "governance/evidence/canary.jsonl",
+                    "last_line": 8,
+                    "last_offset_bytes": 24,
+                    "timestamp_utc": "2026-08-20T10:19:38+00:00",
+                },
+                {
+                    "event": "file_checkpoint",
+                    "mode": "sqlite",
+                    "source_rel": "governance/evidence/canary.jsonl",
+                    "last_line": 3,
+                    "last_offset_bytes": 9,
+                    "timestamp_utc": "2026-09-02T21:00:00+00:00",
+                },
+            ]
+            journal.write_text(
+                "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+            )
+
+            progress, first_detail = MODULE._load_journal_resume_progress(journal)
+            with open(journal, "a", encoding="utf-8") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "event": "file_checkpoint",
+                            "mode": "sqlite",
+                            "source_rel": "governance/evidence/canary.jsonl",
+                            "last_line": 9,
+                            "last_offset_bytes": 27,
+                            "timestamp_utc": "2026-09-02T21:01:00+00:00",
+                        }
+                    )
+                    + "\n"
+                )
+            appended_progress, appended_detail = MODULE._load_journal_resume_progress(
+                journal
+            )
+
+        self.assertEqual(progress["governance/evidence/canary.jsonl"]["last_line"], 8)
+        self.assertFalse(first_detail["index_reused"])
+        self.assertTrue(appended_detail["index_reused"])
+        self.assertGreater(appended_detail["scan_start_bytes"], 0)
+        self.assertEqual(
+            appended_progress["governance/evidence/canary.jsonl"]["last_line"], 9
+        )
+
+    def test_reconcile_sqlite_state_recovers_same_inode_durable_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "governance" / "evidence" / "canary.jsonl"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"{}\n" * 10)
+            st = source.stat()
+            source_rel = str(source.relative_to(root))
+            sqlite_state = {
+                source_rel: {
+                    "last_line": 2,
+                    "last_offset_bytes": 6,
+                    "mtime": st.st_mtime,
+                    "file_inode": st.st_ino,
+                    "file_size_bytes": st.st_size,
+                }
+            }
+            journal_progress = {
+                source_rel: {
+                    "last_line": 8,
+                    "last_offset_bytes": 24,
+                    "event": "file_complete",
+                }
+            }
+
+            recovered = MODULE._reconcile_sqlite_state_with_journal(
+                [source],
+                project_root=root,
+                sqlite_state=sqlite_state,
+                journal_progress=journal_progress,
+            )
+
+        self.assertEqual(sqlite_state[source_rel]["last_line"], 8)
+        self.assertEqual(sqlite_state[source_rel]["last_offset_bytes"], 24)
+        self.assertEqual(recovered[0]["recovered_lines"], 6)
+
+    def test_reconcile_sqlite_state_rejects_inode_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "decisions" / "current.jsonl"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"{}\n" * 10)
+            st = source.stat()
+            source_rel = str(source.relative_to(root))
+            sqlite_state = {
+                source_rel: {
+                    "last_line": 2,
+                    "last_offset_bytes": 6,
+                    "mtime": st.st_mtime,
+                    "file_inode": st.st_ino + 1,
+                    "file_size_bytes": st.st_size,
+                }
+            }
+
+            recovered = MODULE._reconcile_sqlite_state_with_journal(
+                [source],
+                project_root=root,
+                sqlite_state=sqlite_state,
+                journal_progress={
+                    source_rel: {"last_line": 8, "last_offset_bytes": 24}
+                },
+            )
+
+        self.assertEqual(recovered, [])
+        self.assertEqual(sqlite_state[source_rel]["last_line"], 2)
+
+    def test_rewritten_source_uses_inode_revision_without_colliding_with_old_rows(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "governance" / "evidence" / "canary.jsonl"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text('{"revision":"old"}\n', encoding="utf-8")
+            conn = sqlite3.connect(":memory:")
+            try:
+                MODULE._ensure_sqlite_schema(conn, "jsonl_records")
+                MODULE._sync_file_to_sqlite(
+                    conn,
+                    "jsonl_records",
+                    root,
+                    source,
+                    start_line=0,
+                    start_offset_bytes=0,
+                    dry_run=False,
+                    lock_retries=0,
+                    lock_retry_delay_seconds=0.01,
+                    latency_all=None,
+                    latency_stream=None,
+                    invalid_log_path=None,
+                    invalid_sample_limit=0,
+                    run_id="",
+                    iter_id="",
+                )
+                conn.commit()
+                source.write_text('{"revision":"new"}\n', encoding="utf-8")
+                source_rel = str(source.relative_to(root))
+
+                mismatch = MODULE._sqlite_source_revision_mismatch(
+                    conn,
+                    "jsonl_records",
+                    source,
+                    source_rel,
+                    {"last_line": 1, "source_file_identity": str(source)},
+                )
+                revision_identity = MODULE._source_file_identity_for_sqlite_insert(
+                    conn,
+                    "jsonl_records",
+                    source,
+                    source_rel,
+                    0,
+                )
+                resumed_identity = MODULE._source_file_identity_for_cursor(
+                    conn,
+                    "jsonl_records",
+                    source,
+                    source_rel,
+                    {"source_file_identity": revision_identity},
+                    1,
+                )
+                MODULE._sync_file_to_sqlite(
+                    conn,
+                    "jsonl_records",
+                    root,
+                    source,
+                    start_line=0,
+                    start_offset_bytes=0,
+                    dry_run=False,
+                    lock_retries=0,
+                    lock_retry_delay_seconds=0.01,
+                    latency_all=None,
+                    latency_stream=None,
+                    invalid_log_path=None,
+                    invalid_sample_limit=0,
+                    run_id="",
+                    iter_id="",
+                    source_file_identity_override=revision_identity,
+                )
+                conn.commit()
+                source_identities = [
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT source_file FROM jsonl_records WHERE source_rel=? ORDER BY id",
+                        (source_rel,),
+                    )
+                ]
+            finally:
+                conn.close()
+
+        self.assertTrue(mismatch)
+        self.assertIn("#inode=", revision_identity)
+        self.assertEqual(resumed_identity, revision_identity)
+        self.assertEqual(source_identities, [str(source), revision_identity])
+
     def test_main_marks_mysql_disabled_when_running_sqlite_only(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             sqlite_db = root / "data" / "jsonl_link.sqlite3"
-            health_file = root / "governance" / "health" / "jsonl_sql_ingestion_health_latest.json"
+            health_file = (
+                root
+                / "governance"
+                / "health"
+                / "jsonl_sql_ingestion_health_latest.json"
+            )
 
             original_argv = list(os.sys.argv)
             try:

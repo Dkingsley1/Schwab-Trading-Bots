@@ -1150,6 +1150,8 @@ def test_memory_pressure_intelligence_reserves_headroom_for_creative_apps(tmp_pa
     assert payload["classification"]["status"] == "foreground_headroom"
     assert payload["classification"]["recommended_p_core_worker_cap"] == 3
     assert payload["multitasking_headroom"]["level"] == "realtime_creative"
+    assert payload["operational_status"] == "ready"
+    assert payload["operational_ok"] is True
     assert payload["multitasking_headroom"]["training_allowed_by_multitasking"] is False
     assert payload["reopen_gate"]["safe_for_training"] is False
 

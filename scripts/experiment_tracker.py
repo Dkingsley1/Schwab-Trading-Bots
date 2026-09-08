@@ -1,4 +1,5 @@
 import argparse
+import gzip
 import hmac
 import hashlib
 import json
@@ -64,22 +65,32 @@ def _sign_payload(payload: dict[str, Any], secret: str) -> str:
 
 def _load_jsonl_rows(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    if not path.exists():
-        return rows
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            for raw in handle:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    payload = json.loads(line)
-                except Exception:
-                    continue
-                if isinstance(payload, dict):
+    seen_ids: set[str] = set()
+    for candidate in (path.with_name(f"{path.name}.gz"), path):
+        if not candidate.exists():
+            continue
+        opener = gzip.open if candidate.name.endswith(".gz") else open
+        try:
+            with opener(candidate, "rt", encoding="utf-8", errors="ignore") as handle:
+                for raw in handle:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    experiment_id = str(payload.get("experiment_id") or "").strip()
+                    if experiment_id and experiment_id in seen_ids:
+                        continue
+                    if experiment_id:
+                        seen_ids.add(experiment_id)
                     rows.append(payload)
-    except Exception:
-        return rows
+        except Exception:
+            continue
+    rows.sort(key=lambda row: str(row.get("timestamp_utc") or ""))
     return rows
 
 

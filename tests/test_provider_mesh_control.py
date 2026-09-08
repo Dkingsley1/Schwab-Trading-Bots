@@ -121,6 +121,7 @@ def test_provider_mesh_consumes_configured_capability_routing(tmp_path: Path) ->
     _write_json(
         health / "collector_capability_control_latest.json",
         {
+            "schema_version": 2,
             "ok": True,
             "paper_soak_ready": True,
             "live_promotion_ready": False,
@@ -130,6 +131,34 @@ def test_provider_mesh_consumes_configured_capability_routing(tmp_path: Path) ->
                 "bot_binding_count": 100,
                 "bot_binding_coverage_ratio": 1.0,
                 "subscription_profile_count": 12,
+                "ingestion_route_profile_count": 15,
+                "required_capability_independent_redundancy_ratio": 0.75,
+            },
+            "ingestion_routing_contract": {
+                "policy_id": "sleeve_ingestion_routing_v2",
+                "decision_stage": "02_data_qualification",
+                "decision_family_count": 15,
+                "runtime_route_count": 104,
+                "runtime_paper_ready_route_count": 91,
+                "runtime_live_ready_route_count": 18,
+                "average_profile_route_quality": 0.88,
+                "routing_artifact_receipt_sha256": "a" * 64,
+                "transport_contract": {
+                    "idempotency_required": True,
+                    "payload_digest_required": True,
+                    "source_timestamp_required": True,
+                    "bounded_response_size_required": True,
+                    "retry_only_transient_failures": True,
+                    "respect_retry_after": True,
+                    "redact_query_parameters_from_receipts": True,
+                    "watermark_on_success": True,
+                    "dead_letter_after_retry_exhaustion": True,
+                },
+            },
+            "ingestion_authority_contract": {
+                "paper_execution_authority": False,
+                "live_execution_authority": False,
+                "automatic_promotion_authority": False,
             },
             "current_collector_mapping": {"complete": True},
             "coverage_debt": {"gap_count": 10},
@@ -145,6 +174,10 @@ def test_provider_mesh_consumes_configured_capability_routing(tmp_path: Path) ->
     assert group["paper_soak_ready"] is True
     assert group["live_promotion_ready"] is False
     assert group["bot_bindings"] == 100
+    assert group["routing_contract_ready"] is True
+    assert group["runtime_routes"] == 104
+    assert group["runtime_paper_ready_routes"] == 91
+    assert group["transport_contract_complete"] is True
     assert "capability_coverage_debt_is_live_promotion_only" in payload["advisories"]
 
 

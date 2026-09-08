@@ -18,11 +18,23 @@ def test_system_drift_registry_payload_is_json_ready(tmp_path: Path) -> None:
     assert decoded["repairable_surface_count"] > 0
     assert decoded["family_counts"]
     assert all(isinstance(row["artifact_path"], str) for row in decoded["surfaces"])
-    assert {"paper_execution_truth_layer", "paper_profitability_control"} <= {row["name"] for row in decoded["surfaces"]}
-    assert decoded["recommended_commands"] == [["./scripts/ops/opsctl.sh", "system-drift-guard", "--json"]]
+    assert {
+        "paper_execution_truth_layer",
+        "paper_profitability_control",
+        "source_mutation_guard",
+    } <= {row["name"] for row in decoded["surfaces"]}
+    source_guard = next(
+        row for row in decoded["surfaces"] if row["name"] == "source_mutation_guard"
+    )
+    assert source_guard["repairable"] is False
+    assert decoded["recommended_commands"] == [
+        ["./scripts/ops/opsctl.sh", "system-drift-guard", "--json"]
+    ]
 
 
-def test_system_drift_registry_main_writes_artifact(monkeypatch, tmp_path: Path) -> None:
+def test_system_drift_registry_main_writes_artifact(
+    monkeypatch, tmp_path: Path
+) -> None:
     out_file = tmp_path / "governance" / "health" / "system_drift_registry_latest.json"
 
     monkeypatch.setattr(

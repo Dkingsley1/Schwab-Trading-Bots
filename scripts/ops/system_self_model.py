@@ -10,16 +10,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "system_self_model_latest.json"
-DEFAULT_MARKDOWN_PATH = PROJECT_ROOT / "exports" / "reports" / "operator" / "system_self_model_latest.md"
-DEFAULT_BRIEF_PATH = PROJECT_ROOT / "exports" / "reports" / "operator" / "system_self_brief_latest.md"
-DEFAULT_DEPENDENCY_MEMORY_PATH = PROJECT_ROOT / "governance" / "health" / "system_dependency_memory_latest.json"
-DEFAULT_FAILURE_MEMORY_PATH = PROJECT_ROOT / "governance" / "health" / "system_failure_memory_latest.json"
-DEFAULT_REGISTRY_DIFF_PATH = PROJECT_ROOT / "governance" / "health" / "system_registry_diff_latest.json"
-DEFAULT_UPGRADE_PLAN_PATH = PROJECT_ROOT / "governance" / "health" / "system_upgrade_optimizer_latest.json"
-SELF_MODEL_VERSION = "system_self_model_v2"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "system_self_model_latest.json"
+)
+DEFAULT_MARKDOWN_PATH = (
+    PROJECT_ROOT / "exports" / "reports" / "operator" / "system_self_model_latest.md"
+)
+DEFAULT_BRIEF_PATH = (
+    PROJECT_ROOT / "exports" / "reports" / "operator" / "system_self_brief_latest.md"
+)
+DEFAULT_DEPENDENCY_MEMORY_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "system_dependency_memory_latest.json"
+)
+DEFAULT_FAILURE_MEMORY_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "system_failure_memory_latest.json"
+)
+DEFAULT_REGISTRY_DIFF_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "system_registry_diff_latest.json"
+)
+DEFAULT_UPGRADE_PLAN_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "system_upgrade_optimizer_latest.json"
+)
+SELF_MODEL_VERSION = "system_self_model_v4"
 FALLBACK_ROOT_NAMES = {"data", "exports", "governance", "logs"}
 
 
@@ -88,9 +101,17 @@ def _load_json(path: Path) -> dict[str, Any]:
         rel_path = path.relative_to(PROJECT_ROOT)
     except Exception:
         rel_path = None
-    if rel_path is not None and rel_path.parts and rel_path.parts[0] in {"data", "exports", "governance", "logs"}:
+    if (
+        rel_path is not None
+        and rel_path.parts
+        and rel_path.parts[0] in {"data", "exports", "governance", "logs"}
+    ):
         candidates.append(PROJECT_ROOT / "local_fallback_storage" / rel_path)
-        external_root = Path(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "/Volumes/BOT_LOGS/schwab_trading_bot")).expanduser()
+        external_root = Path(
+            os.getenv(
+                "BOT_LOGS_EXTERNAL_PROJECT_ROOT", "/Volumes/BOT_LOGS/schwab_trading_bot"
+            )
+        ).expanduser()
         candidates.append(external_root / rel_path)
 
     best_payload: dict[str, Any] = {}
@@ -119,7 +140,9 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def _local_fallback_path(path: Path) -> Path | None:
@@ -155,7 +178,9 @@ def _write_text_with_local_fallback(path: Path, text: str) -> dict[str, str]:
 
 def _json_sha256(payload: Any) -> str:
     try:
-        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        encoded = json.dumps(
+            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
     except Exception:
         encoded = str(payload).encode("utf-8", errors="replace")
     return hashlib.sha256(encoded).hexdigest()
@@ -174,11 +199,21 @@ def _parse_iso(raw: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _payload_timestamp(payload: dict[str, Any], path: Path, now: datetime) -> tuple[str, float | None]:
-    for key in ("timestamp_utc", "updated_at_utc", "updated_at", "created_at", "generated_at_utc"):
+def _payload_timestamp(
+    payload: dict[str, Any], path: Path, now: datetime
+) -> tuple[str, float | None]:
+    for key in (
+        "timestamp_utc",
+        "updated_at_utc",
+        "updated_at",
+        "created_at",
+        "generated_at_utc",
+    ):
         parsed = _parse_iso(payload.get(key))
         if parsed is not None:
-            return parsed.isoformat(), round(max((now - parsed).total_seconds() / 60.0, 0.0), 3)
+            return parsed.isoformat(), round(
+                max((now - parsed).total_seconds() / 60.0, 0.0), 3
+            )
     try:
         mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
     except Exception:
@@ -235,14 +270,34 @@ def _status(payload: dict[str, Any], default: str = "missing") -> str:
 
 def _guarded_paper_management_context(health_root: Path) -> dict[str, Any]:
     dashboard = _load_json(health_root / "runtime_gate_dashboard_latest.json")
-    overall = dashboard.get("overall") if isinstance(dashboard.get("overall"), dict) else dashboard
+    health_fast = _load_json(health_root / "health_fast_latest.json")
+    soak = _load_json(health_root / "unattended_soak_readiness_latest.json")
+    paper_guard = _load_json(health_root / "runtime_paper_regression_guard_latest.json")
+    overall = (
+        dashboard.get("overall")
+        if isinstance(dashboard.get("overall"), dict)
+        else dashboard
+    )
     if not isinstance(overall, dict):
         overall = {}
-    context = overall.get("soak_management_context") if isinstance(overall.get("soak_management_context"), dict) else {}
-    dashboard_status = str(overall.get("status") or dashboard.get("overall_status") or dashboard.get("status") or "").strip().lower()
+    context = (
+        overall.get("soak_management_context")
+        if isinstance(overall.get("soak_management_context"), dict)
+        else {}
+    )
+    dashboard_status = (
+        str(
+            overall.get("status")
+            or dashboard.get("overall_status")
+            or dashboard.get("status")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     health_fast_status = str(context.get("health_fast_status") or "").strip().lower()
     paper_stage = str(context.get("paper_stage") or "").strip().lower()
-    enabled = bool(
+    dashboard_contract_enabled = bool(
         overall.get("ok", False)
         and dashboard_status in {"ok", "ready"}
         and bool(context.get("soak_ready", False))
@@ -250,44 +305,146 @@ def _guarded_paper_management_context(health_root: Path) -> dict[str, Any]:
         and paper_stage in {"armed", "ready", "paper_armed"}
         and health_fast_status in {"ready", "ok"}
     )
+
+    operational = (
+        health_fast.get("operational_readiness")
+        if isinstance(health_fast.get("operational_readiness"), dict)
+        else {}
+    )
+    guarded_paper = (
+        operational.get("guarded_paper")
+        if isinstance(operational.get("guarded_paper"), dict)
+        else {}
+    )
+    live_execution = (
+        operational.get("live_execution")
+        if isinstance(operational.get("live_execution"), dict)
+        else {}
+    )
+    authoritative_health_status = (
+        str(health_fast.get("overall_status") or health_fast.get("status") or "")
+        .strip()
+        .lower()
+    )
+    authoritative_soak_status = (
+        str(soak.get("overall_status") or soak.get("status") or "").strip().lower()
+    )
+    authoritative_paper_guard_status = (
+        str(paper_guard.get("overall_status") or paper_guard.get("status") or "")
+        .strip()
+        .lower()
+    )
+    authoritative_guarded_paper_status = (
+        str(guarded_paper.get("status") or "").strip().lower()
+    )
+    authoritative_live_execution_status = (
+        str(live_execution.get("status") or "").strip().lower()
+    )
+    authoritative_paper_stage = (
+        str(
+            guarded_paper.get("paper_ramp_stage")
+            or paper_guard.get("paper_stage")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    authoritative_contract_enabled = bool(
+        health_fast
+        and soak
+        and paper_guard
+        and bool(health_fast.get("ok", False))
+        and authoritative_health_status in {"ready", "guarded_ready"}
+        and bool(guarded_paper.get("ok", False))
+        and authoritative_guarded_paper_status in GUARDED_PAPER_READY_STATUSES
+        and authoritative_paper_stage in {"armed", "ready", "paper_armed"}
+        and authoritative_live_execution_status
+        in {"blocked_read_only", "locked", "read_only", "disabled"}
+        and bool(soak.get("ok", False))
+        and authoritative_soak_status == "ready"
+        and bool(paper_guard.get("ok", False))
+        and authoritative_paper_guard_status == "ready"
+    )
+    enabled = bool(dashboard_contract_enabled or authoritative_contract_enabled)
+    managed_by = (
+        "runtime_gate_dashboard"
+        if dashboard_contract_enabled
+        else (
+            "authoritative_guarded_paper_contract"
+            if authoritative_contract_enabled
+            else "none"
+        )
+    )
     return {
         "enabled": enabled,
-        "managed_by": "runtime_gate_dashboard",
+        "managed_by": managed_by,
+        "dashboard_contract_enabled": dashboard_contract_enabled,
+        "authoritative_contract_enabled": authoritative_contract_enabled,
         "dashboard_status": dashboard_status,
-        "soak_status": str(context.get("soak_status") or "").strip().lower(),
-        "soak_grade": str(context.get("soak_grade") or ""),
-        "paper_stage": paper_stage,
-        "health_fast_status": health_fast_status,
-        "raw_attention": _ordered_unique(overall.get("raw_attention") if isinstance(overall.get("raw_attention"), list) else []),
+        "soak_status": str(context.get("soak_status") or authoritative_soak_status)
+        .strip()
+        .lower(),
+        "soak_grade": str(context.get("soak_grade") or soak.get("overall_grade") or ""),
+        "paper_guard_status": authoritative_paper_guard_status,
+        "guarded_paper_status": authoritative_guarded_paper_status,
+        "live_execution_status": authoritative_live_execution_status,
+        "paper_stage": paper_stage or authoritative_paper_stage,
+        "health_fast_status": health_fast_status or authoritative_health_status,
+        "raw_attention": _ordered_unique(
+            overall.get("raw_attention")
+            if isinstance(overall.get("raw_attention"), list)
+            else []
+        ),
         "forensic_attention": _ordered_unique(
             overall.get("forensic_attention")
             if isinstance(overall.get("forensic_attention"), list)
-            else overall.get("raw_attention")
-            if isinstance(overall.get("raw_attention"), list)
-            else []
+            else (
+                overall.get("raw_attention")
+                if isinstance(overall.get("raw_attention"), list)
+                else []
+            )
         ),
     }
 
 
 def _master_infra_guarded_paper_debt(payload: dict[str, Any]) -> bool:
     metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
-    if _safe_int(metrics.get("blocked_check_count"), 0) > 0 or _safe_int(metrics.get("hard_failed_attempt_count"), 0) > 0:
+    if (
+        _safe_int(metrics.get("blocked_check_count"), 0) > 0
+        or _safe_int(metrics.get("hard_failed_attempt_count"), 0) > 0
+    ):
         return False
     checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
     non_ready = {
         str(row.get("name") or "").strip()
         for row in checks
-        if isinstance(row, dict) and str(row.get("status") or "").strip().lower() not in GUARDED_PAPER_READY_STATUSES
+        if isinstance(row, dict)
+        and str(row.get("status") or "").strip().lower()
+        not in GUARDED_PAPER_READY_STATUSES
     }
     return bool(non_ready) and non_ready <= GUARDED_PAPER_MASTER_INFRA_DEBTS
 
 
 def _data_plane_guarded_paper_debt(payload: dict[str, Any]) -> bool:
-    state = str(payload.get("runtime_clearance_state") or payload.get("recovery_state") or "").strip().lower()
+    state = (
+        str(
+            payload.get("runtime_clearance_state")
+            or payload.get("recovery_state")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     if state in GUARDED_PAPER_DATA_PLANE_STATES:
         return True
-    blockers = payload.get("blockers") if isinstance(payload.get("blockers"), list) else []
-    return not blockers and str(payload.get("recovery_state") or "").strip().lower() == "recovering_under_guard"
+    blockers = (
+        payload.get("blockers") if isinstance(payload.get("blockers"), list) else []
+    )
+    return (
+        not blockers
+        and str(payload.get("recovery_state") or "").strip().lower()
+        == "recovering_under_guard"
+    )
 
 
 def _normalize_guarded_paper_surface(
@@ -297,9 +454,79 @@ def _normalize_guarded_paper_surface(
     context: dict[str, Any],
 ) -> tuple[str, dict[str, Any]]:
     raw_status = str(status or "missing").strip().lower()
+    if name == "alpha_generation_control":
+        grades = (
+            payload.get("grades") if isinstance(payload.get("grades"), dict) else {}
+        )
+        if (
+            raw_status == "collecting_candidate_alpha_evidence"
+            and bool(payload.get("ok", False))
+            and str(grades.get("implementation_grade") or "").strip().upper() == "A+"
+            and not bool(payload.get("live_execution_authority", False))
+        ):
+            return (
+                "advisory",
+                {
+                    "raw_status": raw_status,
+                    "guarded_paper_advisory_only": True,
+                    "managed_by": "alpha_generation_control",
+                    "managed_control_state": "candidate_bound_economic_evidence_is_collecting",
+                },
+            )
+    if name == "alpha_concept_report":
+        grades = (
+            payload.get("grades") if isinstance(payload.get("grades"), dict) else {}
+        )
+        if (
+            raw_status == "collecting_candidate_evidence"
+            and bool(payload.get("ok", False))
+            and str(grades.get("implementation_grade") or "").strip().upper() == "A+"
+            and str(grades.get("catalog_routing_grade") or "").strip().upper() == "A+"
+            and not any(
+                bool(value)
+                for value in (payload.get("authority_contract") or {}).values()
+            )
+        ):
+            return (
+                "advisory",
+                {
+                    "raw_status": raw_status,
+                    "guarded_paper_advisory_only": True,
+                    "managed_by": "alpha_concept_report",
+                    "managed_control_state": "candidate_bound_alpha_measurements_are_collecting",
+                },
+            )
+    if name == "sleeve_alpha_toolbox":
+        coverage = (
+            payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+        )
+        if (
+            raw_status == "structurally_ready_collecting_candidate_evidence"
+            and bool(payload.get("ok", False))
+            and _safe_int(coverage.get("routed_sleeve_count"), 0)
+            == _safe_int(coverage.get("declared_sleeve_count"), -1)
+            and not any(
+                bool(value) for value in (payload.get("authority") or {}).values()
+            )
+        ):
+            return (
+                "advisory",
+                {
+                    "raw_status": raw_status,
+                    "guarded_paper_advisory_only": True,
+                    "managed_by": "sleeve_alpha_toolbox",
+                    "managed_control_state": "all_sleeves_routed_while_candidate_evidence_collects",
+                },
+            )
     if name == "runtime_gate_dashboard" and raw_status == "ok":
-        return "ready", {"raw_status": raw_status, "status_normalized_reason": "runtime_dashboard_ok_is_ready"}
-    if not bool(context.get("enabled", False)) or raw_status not in GUARDED_PAPER_SOFTENABLE_STATUSES:
+        return "ready", {
+            "raw_status": raw_status,
+            "status_normalized_reason": "runtime_dashboard_ok_is_ready",
+        }
+    if (
+        not bool(context.get("enabled", False))
+        or raw_status not in GUARDED_PAPER_SOFTENABLE_STATUSES
+    ):
         return status, {}
 
     reason = ""
@@ -333,14 +560,20 @@ def _normalize_guarded_paper_surface(
 
 
 def _worst_status(statuses: list[str]) -> str:
-    values = [str(status or "missing").strip() for status in statuses if str(status or "").strip()]
+    values = [
+        str(status or "missing").strip()
+        for status in statuses
+        if str(status or "").strip()
+    ]
     if not values:
         return "missing"
     return max(values, key=lambda item: STATUS_ORDER.get(item, 3))
 
 
 def _registry_rows(registry: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
+    rows = (
+        registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
+    )
     if not rows and isinstance(registry.get("bots"), list):
         rows = registry.get("bots") or []
     return [row for row in rows if isinstance(row, dict)]
@@ -348,14 +581,22 @@ def _registry_rows(registry: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _registry_identity(registry: dict[str, Any]) -> dict[str, Any]:
     rows = _registry_rows(registry)
-    summary = registry.get("summary") if isinstance(registry.get("summary"), dict) else {}
+    summary = (
+        registry.get("summary") if isinstance(registry.get("summary"), dict) else {}
+    )
     total = len(rows) or _safe_int(summary.get("total_bots"), 0)
-    active = sum(1 for row in rows if bool(row.get("active", False))) or _safe_int(summary.get("active_bots"), 0)
-    data_collection = sum(1 for row in rows if bool(row.get("data_collection_active", False))) or _safe_int(
+    active = sum(1 for row in rows if bool(row.get("active", False))) or _safe_int(
+        summary.get("active_bots"), 0
+    )
+    data_collection = sum(
+        1 for row in rows if bool(row.get("data_collection_active", False))
+    ) or _safe_int(
         summary.get("data_collection_active_bots"),
         0,
     )
-    training_excluded = sum(1 for row in rows if bool(row.get("training_excluded", False))) or _safe_int(
+    training_excluded = sum(
+        1 for row in rows if bool(row.get("training_excluded", False))
+    ) or _safe_int(
         summary.get("training_excluded_bots"),
         0,
     )
@@ -368,7 +609,9 @@ def _registry_identity(registry: dict[str, Any]) -> dict[str, Any]:
         sleeve = str(row.get("sleeve_profile") or row.get("slot_kind") or "").strip()
         if sleeve:
             sleeve_profiles.add(sleeve)
-        pack = str(row.get("capability_pack_slug") or row.get("capability_pack_version") or "").strip()
+        pack = str(
+            row.get("capability_pack_slug") or row.get("capability_pack_version") or ""
+        ).strip()
         if pack:
             capability_packs.add(pack)
     return {
@@ -377,14 +620,17 @@ def _registry_identity(registry: dict[str, Any]) -> dict[str, Any]:
         "data_collection_active_bots": data_collection,
         "training_excluded_bots": training_excluded,
         "collection_only_ratio": round(data_collection / max(active, 1), 4),
-        "sleeve_profile_count": len(sleeve_profiles) or _safe_int(summary.get("sleeve_profile_count"), 0),
+        "sleeve_profile_count": len(sleeve_profiles)
+        or _safe_int(summary.get("sleeve_profile_count"), 0),
         "capability_pack_count": len(capability_packs),
         "lifecycle_counts": lifecycle_counts,
         "summary_source": "registry_rows" if rows else "registry_summary",
     }
 
 
-def _surface_matrix(health_root: Path, project_root: Path, *, now: datetime | None = None) -> dict[str, dict[str, Any]]:
+def _surface_matrix(
+    health_root: Path, project_root: Path, *, now: datetime | None = None
+) -> dict[str, dict[str, Any]]:
     current = now or datetime.now(timezone.utc)
     guarded_paper_context = _guarded_paper_management_context(health_root)
     paths = {
@@ -392,74 +638,161 @@ def _surface_matrix(health_root: Path, project_root: Path, *, now: datetime | No
         "memory_efficiency": health_root / "memory_efficiency_control_latest.json",
         "runtime_throttle": health_root / "runtime_throttle_control_latest.json",
         "ingestion_storage": health_root / "ingestion_storage_control_latest.json",
-        "backpressure_drainer_fleet": health_root / "backpressure_drainer_fleet_latest.json",
-        "backpressure_super_drainer": health_root / "backpressure_super_drainer_latest.json",
-        "backpressure_super_drainer_memory": health_root / "backpressure_super_drainer_memory_latest.json",
-        "writer_cycle_coordinator": health_root / "writer_cycle_coordinator_latest.json",
-        "writer_process_intelligence": health_root / "writer_process_intelligence_latest.json",
-        "whole_system_intelligence": health_root / "whole_system_intelligence_latest.json",
+        "backpressure_drainer_fleet": health_root
+        / "backpressure_drainer_fleet_latest.json",
+        "backpressure_super_drainer": health_root
+        / "backpressure_super_drainer_latest.json",
+        "backpressure_super_drainer_memory": health_root
+        / "backpressure_super_drainer_memory_latest.json",
+        "writer_cycle_coordinator": health_root
+        / "writer_cycle_coordinator_latest.json",
+        "writer_process_intelligence": health_root
+        / "writer_process_intelligence_latest.json",
+        "whole_system_intelligence": health_root
+        / "whole_system_intelligence_latest.json",
         "system_signal_bus": health_root / "system_signal_bus_latest.json",
         "system_brain": health_root / "system_brain_latest.json",
-        "system_process_contracts": health_root / "system_process_contracts_latest.json",
-        "system_self_intelligence": health_root / "system_self_intelligence_latest.json",
+        "system_process_contracts": health_root
+        / "system_process_contracts_latest.json",
+        "system_role_contract": health_root / "system_role_contract_latest.json",
+        "system_self_intelligence": health_root
+        / "system_self_intelligence_latest.json",
         "codex_handoff": health_root / "codex_handoff_latest.json",
         "codex_operator_bridge": health_root / "codex_operator_bridge_latest.json",
-        "storage_backpressure_autopilot": health_root / "storage_backpressure_autopilot_latest.json",
+        "storage_backpressure_autopilot": health_root
+        / "storage_backpressure_autopilot_latest.json",
         "mlx_runtime": health_root / "mlx_runtime_audit_latest.json",
         "mlx_library": health_root / "mlx_library_upgrade_latest.json",
         "mlx_intelligence_router": health_root / "mlx_intelligence_router_latest.json",
-        "library_utilization_router": health_root / "library_utilization_router_latest.json",
+        "library_utilization_router": health_root
+        / "library_utilization_router_latest.json",
         "quant_model_control": health_root / "quant_model_control_latest.json",
         "global_halt": health_root / "global_killswitch_latest.json",
         "process_watchdog": health_root / "process_watchdog_latest.json",
         "auth_lease_manager": health_root / "auth_lease_manager_latest.json",
-        "data_plane_recovery": health_root / "data_plane_recovery_controller_latest.json",
-        "live_runtime_separation": health_root / "live_runtime_separation_control_latest.json",
+        "data_plane_recovery": health_root
+        / "data_plane_recovery_controller_latest.json",
+        "live_runtime_separation": health_root
+        / "live_runtime_separation_control_latest.json",
         "use_mode_compliance": health_root / "use_mode_compliance_guard_latest.json",
-        "commercial_readiness": health_root / "commercial_readiness_control_latest.json",
+        "commercial_readiness": health_root
+        / "commercial_readiness_control_latest.json",
         "master_infra": health_root / "master_infrastructure_supervisor_latest.json",
         "artifact_freshness": health_root / "artifact_freshness_slo_latest.json",
         "training_quality": health_root / "training_quality_control_latest.json",
         "bot_quality": health_root / "bot_quality_autopilot_latest.json",
-        "capital_growth_intelligence": health_root / "capital_growth_intelligence_latest.json",
-        "capital_growth_awareness": health_root / "capital_growth_awareness_bridge_latest.json",
-        "capital_rotation_control": health_root / "capital_rotation_control_latest.json",
-        "schwab_indicator_intelligence": health_root / "schwab_indicator_intelligence_latest.json",
-        "system_expansion_execution": health_root / "system_expansion_execution_layer_latest.json",
+        "capital_growth_intelligence": health_root
+        / "capital_growth_intelligence_latest.json",
+        "capital_growth_awareness": health_root
+        / "capital_growth_awareness_bridge_latest.json",
+        "capital_rotation_control": health_root
+        / "capital_rotation_control_latest.json",
+        "schwab_indicator_intelligence": health_root
+        / "schwab_indicator_intelligence_latest.json",
+        "system_expansion_execution": health_root
+        / "system_expansion_execution_layer_latest.json",
         "provider_mesh": health_root / "provider_mesh_latest.json",
-        "core_materialization": health_root / "core_bot_materialization_guard_latest.json",
+        "core_materialization": health_root
+        / "core_bot_materialization_guard_latest.json",
         "runtime_gate_dashboard": health_root / "runtime_gate_dashboard_latest.json",
         "storage_resilience": health_root / "storage_resilience_control_latest.json",
-        "incident_auto_halt": project_root / "governance" / "alerts" / "incident_auto_halt_latest.json",
+        "incident_auto_halt": project_root
+        / "governance"
+        / "alerts"
+        / "incident_auto_halt_latest.json",
     }
+    if (project_root / "config" / "profitability_self_assessment_v1.json").is_file():
+        paths["profitability_self_assessment"] = (
+            health_root / "profitability_self_assessment_latest.json"
+        )
+    if (project_root / "config" / "alpha_generation_control_v1.json").is_file():
+        paths["alpha_generation_control"] = (
+            health_root / "alpha_generation_control_latest.json"
+        )
+    if (project_root / "config" / "alpha_concept_registry_v1.json").is_file():
+        paths["alpha_concept_report"] = (
+            project_root
+            / "governance"
+            / "research"
+            / "alpha_concept_report_latest.json"
+        )
+    if (project_root / "config" / "sleeve_alpha_toolbox_v1.json").is_file():
+        paths["sleeve_alpha_toolbox"] = (
+            project_root
+            / "governance"
+            / "research"
+            / "sleeve_alpha_toolbox_latest.json"
+        )
+    if (project_root / "config" / "authoritative_systems_v1.json").is_file():
+        paths["authoritative_systems"] = (
+            health_root / "authoritative_systems_control_latest.json"
+        )
+    if (project_root / "config" / "research_data_platform_v1.json").is_file():
+        paths["research_data_platform"] = (
+            health_root / "research_data_platform_control_latest.json"
+        )
+    if (
+        project_root / "config" / "institutional_research_extensions_v1.json"
+    ).is_file():
+        paths["institutional_research_extensions"] = (
+            health_root / "institutional_research_extensions_control_latest.json"
+        )
     matrix: dict[str, dict[str, Any]] = {}
     for name, path in paths.items():
         payload = _load_json(path)
         status = _status(payload)
-        if name == "runtime_gate_dashboard" and isinstance(payload.get("overall"), dict):
+        if name == "runtime_gate_dashboard" and isinstance(
+            payload.get("overall"), dict
+        ):
             status = str((payload.get("overall") or {}).get("status") or status)
         if name == "incident_auto_halt" and payload and status == "missing":
             status = "ready"
         if name == "global_halt" and payload:
             status = "blocked" if bool(payload.get("halt", False)) else "ready"
         if name == "process_watchdog" and payload:
-            alerts = payload.get("alerts") if isinstance(payload.get("alerts"), list) else []
-            rows = payload.get("status") if isinstance(payload.get("status"), list) else []
+            alerts = (
+                payload.get("alerts") if isinstance(payload.get("alerts"), list) else []
+            )
+            rows = (
+                payload.get("status") if isinstance(payload.get("status"), list) else []
+            )
             watched_rows = [row for row in rows if isinstance(row, dict)]
-            any_down = any(not bool(row.get("process_live", row.get("running", 0))) for row in watched_rows)
+            any_down = any(
+                not bool(row.get("process_live", row.get("running", 0)))
+                for row in watched_rows
+            )
             status = "degraded" if alerts or any_down else "ready"
         raw_status = status
-        status, status_metadata = _normalize_guarded_paper_surface(name, status, payload, guarded_paper_context)
-        if name == "runtime_gate_dashboard" and bool(guarded_paper_context.get("enabled", False)):
+        status, status_metadata = _normalize_guarded_paper_surface(
+            name, status, payload, guarded_paper_context
+        )
+        if name == "runtime_gate_dashboard" and bool(
+            guarded_paper_context.get("enabled", False)
+        ):
             status_metadata.update(
                 {
                     "guarded_paper_context_enabled": True,
+                    "guarded_paper_context_managed_by": str(
+                        guarded_paper_context.get("managed_by") or ""
+                    ),
+                    "dashboard_contract_enabled": bool(
+                        guarded_paper_context.get("dashboard_contract_enabled", False)
+                    ),
+                    "authoritative_contract_enabled": bool(
+                        guarded_paper_context.get(
+                            "authoritative_contract_enabled", False
+                        )
+                    ),
                     "soak_grade": str(guarded_paper_context.get("soak_grade") or ""),
                     "paper_stage": str(guarded_paper_context.get("paper_stage") or ""),
-                    "health_fast_status": str(guarded_paper_context.get("health_fast_status") or ""),
+                    "health_fast_status": str(
+                        guarded_paper_context.get("health_fast_status") or ""
+                    ),
                 }
             )
-        timestamp, age_minutes = _payload_timestamp(payload, path, current) if payload else ("", None)
+        timestamp, age_minutes = (
+            _payload_timestamp(payload, path, current) if payload else ("", None)
+        )
         matrix[name] = {
             "status": status,
             "raw_status": str(status_metadata.get("raw_status") or raw_status),
@@ -469,34 +802,68 @@ def _surface_matrix(health_root: Path, project_root: Path, *, now: datetime | No
             "age_minutes": age_minutes,
             "payload_sha256": _json_sha256(payload) if payload else "",
             "payload_hash_short": _json_sha256(payload)[:12] if payload else "",
-            **{key: value for key, value in status_metadata.items() if key != "raw_status"},
+            **{
+                key: value
+                for key, value in status_metadata.items()
+                if key != "raw_status"
+            },
         }
     return matrix
 
 
-def _resource_awareness(memory: dict[str, Any], throttle: dict[str, Any], storage: dict[str, Any]) -> dict[str, Any]:
-    cotenant = memory.get("cotenant_awareness") if isinstance(memory.get("cotenant_awareness"), dict) else {}
-    memory_snapshot = memory.get("memory_snapshot") if isinstance(memory.get("memory_snapshot"), dict) else {}
-    storage_snapshot = memory.get("storage_snapshot") if isinstance(memory.get("storage_snapshot"), dict) else {}
+def _resource_awareness(
+    memory: dict[str, Any], throttle: dict[str, Any], storage: dict[str, Any]
+) -> dict[str, Any]:
+    cotenant = (
+        memory.get("cotenant_awareness")
+        if isinstance(memory.get("cotenant_awareness"), dict)
+        else {}
+    )
+    memory_snapshot = (
+        memory.get("memory_snapshot")
+        if isinstance(memory.get("memory_snapshot"), dict)
+        else {}
+    )
+    storage_snapshot = (
+        memory.get("storage_snapshot")
+        if isinstance(memory.get("storage_snapshot"), dict)
+        else {}
+    )
     throttle_memory = str(throttle.get("memory_pressure_level") or "normal")
     throttle_profile = str(throttle.get("throttle_profile") or "")
     storage_status = _status(storage)
     status = "ready"
-    if _status(memory) == "blocked" or throttle_memory == "high" or storage_status == "blocked":
+    if (
+        _status(memory) == "blocked"
+        or throttle_memory == "high"
+        or storage_status == "blocked"
+    ):
         status = "blocked"
-    elif _status(memory) in {"needs_work", "degraded"} or throttle_memory == "elevated" or storage_status in {"needs_work", "degraded"}:
+    elif (
+        _status(memory) in {"needs_work", "degraded"}
+        or throttle_memory == "elevated"
+        or storage_status in {"needs_work", "degraded"}
+    ):
         status = "degraded"
-    elif str(cotenant.get("mode") or "") in {"managed_cotenant", "guarded_cotenant"} or throttle_profile in {"soft_cap", "sustain"}:
+    elif str(cotenant.get("mode") or "") in {
+        "managed_cotenant",
+        "guarded_cotenant",
+    } or throttle_profile in {"soft_cap", "sustain"}:
         status = "advisory"
     return {
         "status": status,
         "memory_guard_status": _status(memory),
         "runtime_throttle_status": _status(throttle),
         "storage_status": storage_status,
-        "memory_pressure_state": str(memory_snapshot.get("memory_pressure_state") or ""),
+        "memory_pressure_state": str(
+            memory_snapshot.get("memory_pressure_state") or ""
+        ),
         "memory_pressure_kind": str(memory_snapshot.get("memory_pressure_kind") or ""),
         "swap_used_gb": _safe_float(memory_snapshot.get("swap_used_gb"), 0.0),
-        "storage_pressure_index": _safe_float(storage_snapshot.get("pressure_index"), _safe_float(storage.get("pressure_index"), 0.0)),
+        "storage_pressure_index": _safe_float(
+            storage_snapshot.get("pressure_index"),
+            _safe_float(storage.get("pressure_index"), 0.0),
+        ),
         "recommended_profile": str(memory.get("recommended_profile") or ""),
         "cotenant_awareness": cotenant,
         "runtime_throttle_profile": throttle_profile,
@@ -509,58 +876,146 @@ def _host_pressure_intelligence(
     mlx_router: dict[str, Any],
     library_router: dict[str, Any],
 ) -> dict[str, Any]:
-    memory_snapshot = memory.get("memory_snapshot") if isinstance(memory.get("memory_snapshot"), dict) else {}
-    cpu_snapshot = memory.get("cpu_snapshot") if isinstance(memory.get("cpu_snapshot"), dict) else {}
-    cotenant = memory.get("cotenant_awareness") if isinstance(memory.get("cotenant_awareness"), dict) else {}
-    mlx_caps = mlx_router.get("runtime_caps") if isinstance(mlx_router.get("runtime_caps"), dict) else {}
-    library_caps = library_router.get("runtime_caps") if isinstance(library_router.get("runtime_caps"), dict) else {}
+    memory_snapshot = (
+        memory.get("memory_snapshot")
+        if isinstance(memory.get("memory_snapshot"), dict)
+        else {}
+    )
+    cpu_snapshot = (
+        memory.get("cpu_snapshot")
+        if isinstance(memory.get("cpu_snapshot"), dict)
+        else {}
+    )
+    cotenant = (
+        memory.get("cotenant_awareness")
+        if isinstance(memory.get("cotenant_awareness"), dict)
+        else {}
+    )
+    mlx_caps = (
+        mlx_router.get("runtime_caps")
+        if isinstance(mlx_router.get("runtime_caps"), dict)
+        else {}
+    )
+    library_caps = (
+        library_router.get("runtime_caps")
+        if isinstance(library_router.get("runtime_caps"), dict)
+        else {}
+    )
 
-    memory_level = str(throttle.get("memory_pressure_level") or mlx_caps.get("memory_pressure_level") or "").strip().lower()
+    memory_level = (
+        str(
+            throttle.get("memory_pressure_level")
+            or mlx_caps.get("memory_pressure_level")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     if not memory_level:
-        memory_state = str(memory_snapshot.get("memory_pressure_state") or "").strip().lower()
-        memory_level = "high" if memory_state in {"red", "critical"} else "elevated" if memory_state in {"yellow", "orange"} else "normal"
+        memory_state = (
+            str(memory_snapshot.get("memory_pressure_state") or "").strip().lower()
+        )
+        memory_level = (
+            "high"
+            if memory_state in {"red", "critical"}
+            else "elevated" if memory_state in {"yellow", "orange"} else "normal"
+        )
 
     host_saturation_score = _safe_float(
         throttle.get("host_saturation_score"),
-        _safe_float(mlx_caps.get("host_saturation_score"), _safe_float(cpu_snapshot.get("host_saturation_score"), 0.0)),
+        _safe_float(
+            mlx_caps.get("host_saturation_score"),
+            _safe_float(cpu_snapshot.get("host_saturation_score"), 0.0),
+        ),
     )
-    cpu_level = str(throttle.get("cpu_pressure_level") or mlx_caps.get("cpu_pressure_level") or cpu_snapshot.get("cpu_pressure_level") or "").strip().lower()
+    cpu_level = (
+        str(
+            throttle.get("cpu_pressure_level")
+            or mlx_caps.get("cpu_pressure_level")
+            or cpu_snapshot.get("cpu_pressure_level")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     if not cpu_level:
-        cpu_level = "high" if host_saturation_score >= 85.0 else "elevated" if host_saturation_score >= 65.0 else "watch" if host_saturation_score >= 45.0 else "normal"
+        cpu_level = (
+            "high"
+            if host_saturation_score >= 85.0
+            else (
+                "elevated"
+                if host_saturation_score >= 65.0
+                else "watch" if host_saturation_score >= 45.0 else "normal"
+            )
+        )
 
-    throttle_profile = str(throttle.get("throttle_profile") or mlx_caps.get("throttle_profile") or library_caps.get("throttle_profile") or "observe").strip().lower()
-    open_apps = cotenant.get("open_apps") if isinstance(cotenant.get("open_apps"), list) else []
+    throttle_profile = (
+        str(
+            throttle.get("throttle_profile")
+            or mlx_caps.get("throttle_profile")
+            or library_caps.get("throttle_profile")
+            or "observe"
+        )
+        .strip()
+        .lower()
+    )
+    open_apps = (
+        cotenant.get("open_apps") if isinstance(cotenant.get("open_apps"), list) else []
+    )
     open_app_count = _safe_int(cotenant.get("open_app_count"), len(open_apps))
-    cotenant_active = bool(cotenant.get("active", False) or cotenant.get("mode") in {"managed_cotenant", "guarded_cotenant", "pressure_aware_cotenant"})
+    cotenant_active = bool(
+        cotenant.get("active", False)
+        or cotenant.get("mode")
+        in {"managed_cotenant", "guarded_cotenant", "pressure_aware_cotenant"}
+    )
 
     posture = "max_throughput"
     status = "ready"
     if memory_level == "high" or cpu_level == "high" or host_saturation_score >= 85.0:
         status = "blocked"
         posture = "protect_live"
-    elif memory_level == "elevated" or cpu_level == "elevated" or host_saturation_score >= 65.0 or throttle_profile == "protect_live":
+    elif (
+        memory_level == "elevated"
+        or cpu_level == "elevated"
+        or host_saturation_score >= 65.0
+        or throttle_profile == "protect_live"
+    ):
         status = "degraded"
         posture = "protect_live" if throttle_profile == "protect_live" else "sustain"
-    elif cpu_level == "watch" or host_saturation_score >= 45.0 or throttle_profile in {"soft_cap", "sustain"} or cotenant_active:
+    elif (
+        cpu_level == "watch"
+        or host_saturation_score >= 45.0
+        or throttle_profile in {"soft_cap", "sustain"}
+        or cotenant_active
+    ):
         status = "advisory"
         posture = "foreground_safe"
 
     return {
         "status": status,
         "memory_pressure_level": memory_level,
-        "memory_pressure_state": str(memory_snapshot.get("memory_pressure_state") or ""),
+        "memory_pressure_state": str(
+            memory_snapshot.get("memory_pressure_state") or ""
+        ),
         "memory_free_pct": _safe_float(memory_snapshot.get("memory_free_pct"), 0.0),
         "swap_used_gb": _safe_float(memory_snapshot.get("swap_used_gb"), 0.0),
-        "compressed_store_gb": _safe_float(memory_snapshot.get("compressed_store_gb"), _safe_float(memory_snapshot.get("compressor_gb"), 0.0)),
+        "compressed_store_gb": _safe_float(
+            memory_snapshot.get("compressed_store_gb"),
+            _safe_float(memory_snapshot.get("compressor_gb"), 0.0),
+        ),
         "cpu_pressure_level": cpu_level,
         "host_saturation_score": round(float(host_saturation_score), 3),
         "throttle_profile": throttle_profile,
         "recommended_intelligence_posture": posture,
         "mlx_runtime_profile": str(mlx_caps.get("profile") or ""),
-        "mlx_max_concurrent_jobs": _safe_int(mlx_caps.get("max_concurrent_mlx_jobs"), 0),
+        "mlx_max_concurrent_jobs": _safe_int(
+            mlx_caps.get("max_concurrent_mlx_jobs"), 0
+        ),
         "mlx_heavy_vlm_enabled": bool(mlx_caps.get("heavy_vlm_enabled", False)),
         "library_runtime_profile": str(library_caps.get("profile") or ""),
-        "library_max_report_render_jobs": _safe_int(library_caps.get("max_report_render_jobs"), 0),
+        "library_max_report_render_jobs": _safe_int(
+            library_caps.get("max_report_render_jobs"), 0
+        ),
         "cotenant_active": cotenant_active,
         "open_app_count": open_app_count,
         "open_apps": [str(app) for app in open_apps[:12]],
@@ -571,15 +1026,33 @@ def _host_pressure_intelligence(
 
 
 def _mlx_intelligence_awareness(router: dict[str, Any]) -> dict[str, Any]:
-    coverage = router.get("library_coverage") if isinstance(router.get("library_coverage"), dict) else {}
-    route_coverage = router.get("route_coverage") if isinstance(router.get("route_coverage"), dict) else {}
-    caps = router.get("runtime_caps") if isinstance(router.get("runtime_caps"), dict) else {}
-    matrix = router.get("library_utilization_matrix") if isinstance(router.get("library_utilization_matrix"), dict) else {}
+    coverage = (
+        router.get("library_coverage")
+        if isinstance(router.get("library_coverage"), dict)
+        else {}
+    )
+    route_coverage = (
+        router.get("route_coverage")
+        if isinstance(router.get("route_coverage"), dict)
+        else {}
+    )
+    caps = (
+        router.get("runtime_caps")
+        if isinstance(router.get("runtime_caps"), dict)
+        else {}
+    )
+    matrix = (
+        router.get("library_utilization_matrix")
+        if isinstance(router.get("library_utilization_matrix"), dict)
+        else {}
+    )
     status = _status(router)
     return {
         "status": status,
         "library_coverage_ratio": _safe_float(coverage.get("coverage_ratio"), 0.0),
-        "route_coverage_ratio": _safe_float(route_coverage.get("route_coverage_ratio"), 0.0),
+        "route_coverage_ratio": _safe_float(
+            route_coverage.get("route_coverage_ratio"), 0.0
+        ),
         "mapped_library_ratio": _safe_float(matrix.get("mapped_library_ratio"), 0.0),
         "missing_package_count": _safe_int(coverage.get("missing_count"), 0),
         "blocked_lane_count": _safe_int(route_coverage.get("blocked_lane_count"), 0),
@@ -591,21 +1064,46 @@ def _mlx_intelligence_awareness(router: dict[str, Any]) -> dict[str, Any]:
         "memory_pressure_level": str(caps.get("memory_pressure_level") or ""),
         "host_saturation_score": _safe_float(caps.get("host_saturation_score"), 0.0),
         "host_pressure_state": str(caps.get("host_pressure_state") or ""),
-        "utilization_contract": str(((router.get("control_contract") or {}).get("safe_utilization_goal")) or ""),
+        "utilization_contract": str(
+            ((router.get("control_contract") or {}).get("safe_utilization_goal")) or ""
+        ),
     }
 
 
 def _library_utilization_awareness(router: dict[str, Any]) -> dict[str, Any]:
-    coverage = router.get("coverage") if isinstance(router.get("coverage"), dict) else {}
-    caps = router.get("runtime_caps") if isinstance(router.get("runtime_caps"), dict) else {}
-    matrix = router.get("library_utilization_matrix") if isinstance(router.get("library_utilization_matrix"), dict) else {}
-    contract = router.get("control_contract") if isinstance(router.get("control_contract"), dict) else {}
+    coverage = (
+        router.get("coverage") if isinstance(router.get("coverage"), dict) else {}
+    )
+    caps = (
+        router.get("runtime_caps")
+        if isinstance(router.get("runtime_caps"), dict)
+        else {}
+    )
+    matrix = (
+        router.get("library_utilization_matrix")
+        if isinstance(router.get("library_utilization_matrix"), dict)
+        else {}
+    )
+    contract = (
+        router.get("control_contract")
+        if isinstance(router.get("control_contract"), dict)
+        else {}
+    )
     return {
         "status": _status(router),
-        "managed_non_mlx_package_count": _safe_int(coverage.get("managed_non_mlx_package_count"), 0),
-        "locked_non_mlx_package_count": _safe_int(coverage.get("locked_non_mlx_package_count"), 0),
-        "mapped_package_ratio": _safe_float(matrix.get("mapped_package_ratio"), _safe_float(coverage.get("coverage_ratio"), 0.0)),
-        "locked_runtime_ok_ratio": _safe_float(coverage.get("locked_runtime_ok_ratio"), 0.0),
+        "managed_non_mlx_package_count": _safe_int(
+            coverage.get("managed_non_mlx_package_count"), 0
+        ),
+        "locked_non_mlx_package_count": _safe_int(
+            coverage.get("locked_non_mlx_package_count"), 0
+        ),
+        "mapped_package_ratio": _safe_float(
+            matrix.get("mapped_package_ratio"),
+            _safe_float(coverage.get("coverage_ratio"), 0.0),
+        ),
+        "locked_runtime_ok_ratio": _safe_float(
+            coverage.get("locked_runtime_ok_ratio"), 0.0
+        ),
         "missing_runtime_count": _safe_int(coverage.get("missing_runtime_count"), 0),
         "version_mismatch_count": _safe_int(coverage.get("version_mismatch_count"), 0),
         "runtime_profile": str(caps.get("profile") or ""),
@@ -621,10 +1119,26 @@ def _drainer_intelligence_awareness(
     coordinator: dict[str, Any],
     storage_autopilot: dict[str, Any],
 ) -> dict[str, Any]:
-    fleet_active = fleet.get("active_drainer") if isinstance(fleet.get("active_drainer"), dict) else {}
-    super_summary = super_drainer.get("summary") if isinstance(super_drainer.get("summary"), dict) else {}
-    super_guardrails = super_drainer.get("guardrails") if isinstance(super_drainer.get("guardrails"), dict) else {}
-    super_settings = super_drainer.get("settings") if isinstance(super_drainer.get("settings"), dict) else {}
+    fleet_active = (
+        fleet.get("active_drainer")
+        if isinstance(fleet.get("active_drainer"), dict)
+        else {}
+    )
+    super_summary = (
+        super_drainer.get("summary")
+        if isinstance(super_drainer.get("summary"), dict)
+        else {}
+    )
+    super_guardrails = (
+        super_drainer.get("guardrails")
+        if isinstance(super_drainer.get("guardrails"), dict)
+        else {}
+    )
+    super_settings = (
+        super_drainer.get("settings")
+        if isinstance(super_drainer.get("settings"), dict)
+        else {}
+    )
     intelligence_layer = (
         super_drainer.get("drainer_intelligence_layer")
         if isinstance(super_drainer.get("drainer_intelligence_layer"), dict)
@@ -635,38 +1149,71 @@ def _drainer_intelligence_awareness(
         if isinstance(intelligence_layer.get("decision_packet"), dict)
         else {}
     )
-    coordinator_summary = coordinator.get("summary") if isinstance(coordinator.get("summary"), dict) else {}
-    coordinator_writer = coordinator.get("writer_state_after_wait") if isinstance(coordinator.get("writer_state_after_wait"), dict) else {}
-    autopilot_metrics = storage_autopilot.get("metrics") if isinstance(storage_autopilot.get("metrics"), dict) else {}
-
-    single_writer_guard = bool(super_guardrails.get("single_writer_only", False)) and not bool(
-        super_guardrails.get("starts_parallel_sql_writers", True)
+    coordinator_summary = (
+        coordinator.get("summary")
+        if isinstance(coordinator.get("summary"), dict)
+        else {}
     )
+    coordinator_writer = (
+        coordinator.get("writer_state_after_wait")
+        if isinstance(coordinator.get("writer_state_after_wait"), dict)
+        else {}
+    )
+    autopilot_metrics = (
+        storage_autopilot.get("metrics")
+        if isinstance(storage_autopilot.get("metrics"), dict)
+        else {}
+    )
+
+    single_writer_guard = bool(
+        super_guardrails.get("single_writer_only", False)
+    ) and not bool(super_guardrails.get("starts_parallel_sql_writers", True))
     super_status = _status(super_drainer)
     intelligence_status = _status(intelligence_layer)
     fleet_status = _status(fleet)
     coordinator_status = _status(coordinator)
-    active_drainer = str(super_drainer.get("active_drainer") or fleet_active.get("name") or "")
-    target_met = bool(super_drainer.get("target_met_final", False) or super_drainer.get("target_met_initially", False))
+    active_drainer = str(
+        super_drainer.get("active_drainer") or fleet_active.get("name") or ""
+    )
+    target_met = bool(
+        super_drainer.get("target_met_final", False)
+        or super_drainer.get("target_met_initially", False)
+    )
     waves_run = _safe_int(super_summary.get("waves_run"), 0)
     final_pending = _safe_int(super_summary.get("final_pending_lines"), 0)
     progress_waves = _safe_int(super_summary.get("progress_waves"), 0)
-    writer_active = bool(coordinator_writer.get("active", False) or coordinator_summary.get("writer_active_after_wait", False))
+    writer_active = bool(
+        coordinator_writer.get("active", False)
+        or coordinator_summary.get("writer_active_after_wait", False)
+    )
 
     status = "ready"
     if super_drainer and not single_writer_guard:
         status = "blocked"
-    elif intelligence_layer and intelligence_status in {"blocked", "critical", "degraded"} and not target_met:
+    elif (
+        intelligence_layer
+        and intelligence_status in {"blocked", "critical", "degraded"}
+        and not target_met
+    ):
         status = "degraded"
     elif super_status in {"apply_failed", "stalled", "blocked", "critical"}:
         status = "degraded"
-    elif coordinator_status in {"apply_failed", "timed_out_waiting_for_writer", "blocked", "critical"}:
+    elif coordinator_status in {
+        "apply_failed",
+        "timed_out_waiting_for_writer",
+        "blocked",
+        "critical",
+    }:
         status = "degraded"
     elif fleet_status == "blocked" and not target_met:
         status = "degraded"
-    elif writer_active and not bool(coordinator_summary.get("writer_progress_observed", False)):
+    elif writer_active and not bool(
+        coordinator_summary.get("writer_progress_observed", False)
+    ):
         status = "advisory"
-    elif target_met or final_pending <= _safe_int(super_settings.get("target_pending_lines"), 5000):
+    elif target_met or final_pending <= _safe_int(
+        super_settings.get("target_pending_lines"), 5000
+    ):
         status = "ready"
     elif waves_run and progress_waves:
         status = "advisory"
@@ -682,22 +1229,38 @@ def _drainer_intelligence_awareness(
         "ready_drainer_count": _safe_int(fleet.get("ready_drainer_count"), 0),
         "ready_drainer_names": list(super_drainer.get("ready_drainer_names") or []),
         "target_met": target_met,
-        "target_pending_lines": _safe_int(super_settings.get("target_pending_lines"), 5000),
+        "target_pending_lines": _safe_int(
+            super_settings.get("target_pending_lines"), 5000
+        ),
         "final_pending_lines": final_pending,
         "planned_wave_count": _safe_int(super_settings.get("planned_wave_count"), 0),
         "waves_run": waves_run,
         "progress_waves": progress_waves,
-        "stop_reason": str(super_drainer.get("stop_reason") or super_summary.get("stop_reason") or ""),
+        "stop_reason": str(
+            super_drainer.get("stop_reason") or super_summary.get("stop_reason") or ""
+        ),
         "intelligence_action": str(intelligence_decision.get("action") or ""),
-        "intelligence_confidence": _safe_float(intelligence_decision.get("confidence"), 0.0),
+        "intelligence_confidence": _safe_float(
+            intelligence_decision.get("confidence"), 0.0
+        ),
         "intelligence_risk_flags": list(intelligence_decision.get("risk_flags") or []),
-        "intelligence_next_ready_drainer": str(intelligence_decision.get("next_ready_drainer") or ""),
+        "intelligence_next_ready_drainer": str(
+            intelligence_decision.get("next_ready_drainer") or ""
+        ),
         "single_writer_guard": single_writer_guard,
         "writer_active": writer_active,
-        "writer_progress_observed": bool(coordinator_summary.get("writer_progress_observed", False)),
-        "backpressure_actionable": bool(autopilot_metrics.get("backpressure_actionable", False)),
+        "writer_progress_observed": bool(
+            coordinator_summary.get("writer_progress_observed", False)
+        ),
+        "backpressure_actionable": bool(
+            autopilot_metrics.get("backpressure_actionable", False)
+        ),
         "assigned_infrabots": list(super_drainer.get("assigned_infrabots") or []),
-        "grandmaster_context_packet": super_drainer.get("grandmaster_context_packet") if isinstance(super_drainer.get("grandmaster_context_packet"), dict) else {},
+        "grandmaster_context_packet": (
+            super_drainer.get("grandmaster_context_packet")
+            if isinstance(super_drainer.get("grandmaster_context_packet"), dict)
+            else {}
+        ),
         "control_contract": "drainer_stack_is_part_of_self_model_resource_awareness_and_uses_single_writer_wave_coordination",
     }
 
@@ -708,11 +1271,31 @@ def _writer_process_awareness(
     process_watchdog: dict[str, Any],
     process_fanout: dict[str, Any],
 ) -> dict[str, Any]:
-    decision = writer_intelligence.get("decision_packet") if isinstance(writer_intelligence.get("decision_packet"), dict) else {}
-    writer_health = writer_intelligence.get("writer_health") if isinstance(writer_intelligence.get("writer_health"), dict) else {}
-    topology = writer_intelligence.get("process_topology") if isinstance(writer_intelligence.get("process_topology"), dict) else {}
-    safety = writer_intelligence.get("safety_envelope") if isinstance(writer_intelligence.get("safety_envelope"), dict) else {}
-    coordinator_summary = coordinator.get("summary") if isinstance(coordinator.get("summary"), dict) else {}
+    decision = (
+        writer_intelligence.get("decision_packet")
+        if isinstance(writer_intelligence.get("decision_packet"), dict)
+        else {}
+    )
+    writer_health = (
+        writer_intelligence.get("writer_health")
+        if isinstance(writer_intelligence.get("writer_health"), dict)
+        else {}
+    )
+    topology = (
+        writer_intelligence.get("process_topology")
+        if isinstance(writer_intelligence.get("process_topology"), dict)
+        else {}
+    )
+    safety = (
+        writer_intelligence.get("safety_envelope")
+        if isinstance(writer_intelligence.get("safety_envelope"), dict)
+        else {}
+    )
+    coordinator_summary = (
+        coordinator.get("summary")
+        if isinstance(coordinator.get("summary"), dict)
+        else {}
+    )
     status = _status(writer_intelligence)
     if status == "missing":
         status = "degraded" if coordinator or process_watchdog else "missing"
@@ -732,26 +1315,52 @@ def _writer_process_awareness(
         "action": str(decision.get("action") or ""),
         "confidence": _safe_float(decision.get("confidence"), 0.0),
         "writer_state": str(writer_health.get("state") or ""),
-        "writer_active": bool(writer_health.get("active", coordinator_summary.get("writer_active_after_wait", False))),
-        "writer_progress_age_minutes": _safe_float(writer_health.get("progress_age_minutes"), 0.0),
-        "expanded_writer_lane_count": _safe_int(decision.get("expanded_writer_lane_count"), 0),
+        "writer_active": bool(
+            writer_health.get(
+                "active", coordinator_summary.get("writer_active_after_wait", False)
+            )
+        ),
+        "writer_progress_age_minutes": _safe_float(
+            writer_health.get("progress_age_minutes"), 0.0
+        ),
+        "expanded_writer_lane_count": _safe_int(
+            decision.get("expanded_writer_lane_count"), 0
+        ),
         "hot_lane_count": _safe_int(decision.get("hot_lane_count"), 0),
         "warm_lane_count": _safe_int(decision.get("warm_lane_count"), 0),
         "cold_lane_count": _safe_int(decision.get("cold_lane_count"), 0),
         "risk_flags": list(decision.get("risk_flags") or []),
         "single_writer_guard": bool(safety.get("single_writer_only", False))
         and not bool(safety.get("starts_parallel_sql_writers", True)),
-        "max_parallel_sql_writers": _safe_int(safety.get("max_parallel_sql_writers"), 1),
-        "process_trim_before_expansion": bool(safety.get("process_trim_before_expansion", False)),
+        "max_parallel_sql_writers": _safe_int(
+            safety.get("max_parallel_sql_writers"), 1
+        ),
+        "process_trim_before_expansion": bool(
+            safety.get("process_trim_before_expansion", False)
+        ),
         "writer_recovery_required": bool(safety.get("writer_recovery_required", False)),
-        "playbook": writer_intelligence.get("process_playbook") if isinstance(writer_intelligence.get("process_playbook"), list) else [],
+        "playbook": (
+            writer_intelligence.get("process_playbook")
+            if isinstance(writer_intelligence.get("process_playbook"), list)
+            else []
+        ),
         "control_contract": "writer_process_intelligence_expands_shard_lanes_and_process_diagnostics_while_preserving_one_sql_writer",
     }
 
 
-def _whole_system_intelligence_awareness(whole_system: dict[str, Any]) -> dict[str, Any]:
-    signal_bus = whole_system.get("system_signal_bus") if isinstance(whole_system.get("system_signal_bus"), dict) else {}
-    system_brain = whole_system.get("system_brain") if isinstance(whole_system.get("system_brain"), dict) else {}
+def _whole_system_intelligence_awareness(
+    whole_system: dict[str, Any],
+) -> dict[str, Any]:
+    signal_bus = (
+        whole_system.get("system_signal_bus")
+        if isinstance(whole_system.get("system_signal_bus"), dict)
+        else {}
+    )
+    system_brain = (
+        whole_system.get("system_brain")
+        if isinstance(whole_system.get("system_brain"), dict)
+        else {}
+    )
     process_contracts = (
         whole_system.get("system_process_contracts")
         if isinstance(whole_system.get("system_process_contracts"), dict)
@@ -762,15 +1371,49 @@ def _whole_system_intelligence_awareness(whole_system: dict[str, Any]) -> dict[s
         if isinstance(whole_system.get("system_self_intelligence"), dict)
         else {}
     )
-    codex_handoff = whole_system.get("codex_handoff") if isinstance(whole_system.get("codex_handoff"), dict) else {}
-    signal_summary = signal_bus.get("summary") if isinstance(signal_bus.get("summary"), dict) else {}
-    decision = system_brain.get("decision_packet") if isinstance(system_brain.get("decision_packet"), dict) else {}
-    attention = codex_handoff.get("attention_packet") if isinstance(codex_handoff.get("attention_packet"), dict) else {}
-    self_reflex = self_intelligence.get("reflex") if isinstance(self_intelligence.get("reflex"), dict) else {}
-    self_uncertainty = self_intelligence.get("uncertainty") if isinstance(self_intelligence.get("uncertainty"), dict) else {}
-    self_causal = self_intelligence.get("causal_diagnosis") if isinstance(self_intelligence.get("causal_diagnosis"), dict) else {}
-    self_effect = self_intelligence.get("action_effectiveness") if isinstance(self_intelligence.get("action_effectiveness"), dict) else {}
-    self_routing = self_intelligence.get("integration_routing") if isinstance(self_intelligence.get("integration_routing"), dict) else {}
+    codex_handoff = (
+        whole_system.get("codex_handoff")
+        if isinstance(whole_system.get("codex_handoff"), dict)
+        else {}
+    )
+    signal_summary = (
+        signal_bus.get("summary") if isinstance(signal_bus.get("summary"), dict) else {}
+    )
+    decision = (
+        system_brain.get("decision_packet")
+        if isinstance(system_brain.get("decision_packet"), dict)
+        else {}
+    )
+    attention = (
+        codex_handoff.get("attention_packet")
+        if isinstance(codex_handoff.get("attention_packet"), dict)
+        else {}
+    )
+    self_reflex = (
+        self_intelligence.get("reflex")
+        if isinstance(self_intelligence.get("reflex"), dict)
+        else {}
+    )
+    self_uncertainty = (
+        self_intelligence.get("uncertainty")
+        if isinstance(self_intelligence.get("uncertainty"), dict)
+        else {}
+    )
+    self_causal = (
+        self_intelligence.get("causal_diagnosis")
+        if isinstance(self_intelligence.get("causal_diagnosis"), dict)
+        else {}
+    )
+    self_effect = (
+        self_intelligence.get("action_effectiveness")
+        if isinstance(self_intelligence.get("action_effectiveness"), dict)
+        else {}
+    )
+    self_routing = (
+        self_intelligence.get("integration_routing")
+        if isinstance(self_intelligence.get("integration_routing"), dict)
+        else {}
+    )
     status = _status(whole_system)
     if status == "missing":
         status = "missing"
@@ -789,15 +1432,23 @@ def _whole_system_intelligence_awareness(whole_system: dict[str, Any]) -> dict[s
         "codex_handoff_status": _status(codex_handoff),
         "signal_count": _safe_int(signal_summary.get("signal_count"), 0),
         "loaded_signal_count": _safe_int(signal_summary.get("loaded_signal_count"), 0),
-        "top_risk": str(decision.get("top_risk") or signal_summary.get("top_risk") or ""),
+        "top_risk": str(
+            decision.get("top_risk") or signal_summary.get("top_risk") or ""
+        ),
         "action": str(decision.get("action") or ""),
         "operating_mode": str(decision.get("operating_mode") or ""),
         "confidence": _safe_float(decision.get("confidence"), 0.0),
-        "safe_next_command": decision.get("safe_next_command") if isinstance(decision.get("safe_next_command"), list) else [],
+        "safe_next_command": (
+            decision.get("safe_next_command")
+            if isinstance(decision.get("safe_next_command"), list)
+            else []
+        ),
         "do_not_do": list(decision.get("do_not_do") or []),
         "risk_flags": list(decision.get("risk_flags") or []),
         "contract_count": _safe_int(process_contracts.get("contract_count"), 0),
-        "blocked_contract_count": _safe_int(process_contracts.get("blocked_contract_count"), 0),
+        "blocked_contract_count": _safe_int(
+            process_contracts.get("blocked_contract_count"), 0
+        ),
         "self_reflex_action": str(self_reflex.get("action") or ""),
         "self_uncertainty_level": str(self_uncertainty.get("level") or ""),
         "self_uncertainty_score": _safe_int(self_uncertainty.get("score"), 0),
@@ -808,23 +1459,59 @@ def _whole_system_intelligence_awareness(whole_system: dict[str, Any]) -> dict[s
         "self_integration_owner": str(self_routing.get("primary_owner") or ""),
         "codex_needs": list(attention.get("needs_codex") or []),
         "codex_handoff_channel": "artifact_handoff",
-        "proactive_codex_delivery": bool(
-            ((codex_handoff.get("communication_contract") or {}).get("proactive_delivery_to_codex"))
-        )
-        if isinstance(codex_handoff.get("communication_contract"), dict)
-        else False,
+        "proactive_codex_delivery": (
+            bool(
+                (
+                    (codex_handoff.get("communication_contract") or {}).get(
+                        "proactive_delivery_to_codex"
+                    )
+                )
+            )
+            if isinstance(codex_handoff.get("communication_contract"), dict)
+            else False
+        ),
         "control_contract": "whole_system_intelligence_normalizes_signals_selects_next_safe_infrastructure_action_enforces_process_contracts_reads_self_causal_effect_routing_and_writes_codex_handoff",
     }
 
 
-def _system_self_intelligence_awareness(self_intelligence: dict[str, Any]) -> dict[str, Any]:
-    trend = self_intelligence.get("trend") if isinstance(self_intelligence.get("trend"), dict) else {}
-    uncertainty = self_intelligence.get("uncertainty") if isinstance(self_intelligence.get("uncertainty"), dict) else {}
-    memory = self_intelligence.get("learning_memory") if isinstance(self_intelligence.get("learning_memory"), dict) else {}
-    action_effect = self_intelligence.get("action_effectiveness") if isinstance(self_intelligence.get("action_effectiveness"), dict) else {}
-    causal = self_intelligence.get("causal_diagnosis") if isinstance(self_intelligence.get("causal_diagnosis"), dict) else {}
-    routing = self_intelligence.get("integration_routing") if isinstance(self_intelligence.get("integration_routing"), dict) else {}
-    reflex = self_intelligence.get("reflex") if isinstance(self_intelligence.get("reflex"), dict) else {}
+def _system_self_intelligence_awareness(
+    self_intelligence: dict[str, Any],
+) -> dict[str, Any]:
+    trend = (
+        self_intelligence.get("trend")
+        if isinstance(self_intelligence.get("trend"), dict)
+        else {}
+    )
+    uncertainty = (
+        self_intelligence.get("uncertainty")
+        if isinstance(self_intelligence.get("uncertainty"), dict)
+        else {}
+    )
+    memory = (
+        self_intelligence.get("learning_memory")
+        if isinstance(self_intelligence.get("learning_memory"), dict)
+        else {}
+    )
+    action_effect = (
+        self_intelligence.get("action_effectiveness")
+        if isinstance(self_intelligence.get("action_effectiveness"), dict)
+        else {}
+    )
+    causal = (
+        self_intelligence.get("causal_diagnosis")
+        if isinstance(self_intelligence.get("causal_diagnosis"), dict)
+        else {}
+    )
+    routing = (
+        self_intelligence.get("integration_routing")
+        if isinstance(self_intelligence.get("integration_routing"), dict)
+        else {}
+    )
+    reflex = (
+        self_intelligence.get("reflex")
+        if isinstance(self_intelligence.get("reflex"), dict)
+        else {}
+    )
     return {
         "status": _status(self_intelligence),
         "trajectory": str(trend.get("trajectory") or ""),
@@ -835,30 +1522,54 @@ def _system_self_intelligence_awareness(self_intelligence: dict[str, Any]) -> di
         "missing_signal_count": len(list(uncertainty.get("missing_signals") or [])),
         "stale_signal_count": len(list(uncertainty.get("stale_signals") or [])),
         "conflict_count": len(list(uncertainty.get("conflicting_signals") or [])),
-        "contract_violation_count": len(list(uncertainty.get("contract_violations") or [])),
-        "same_action_repeat_count": _safe_int(memory.get("same_action_repeat_count"), 0),
+        "contract_violation_count": len(
+            list(uncertainty.get("contract_violations") or [])
+        ),
+        "same_action_repeat_count": _safe_int(
+            memory.get("same_action_repeat_count"), 0
+        ),
         "action_effect_verdict": str(action_effect.get("verdict") or ""),
-        "same_action_run_length": _safe_int(action_effect.get("same_action_run_length"), 0),
+        "same_action_run_length": _safe_int(
+            action_effect.get("same_action_run_length"), 0
+        ),
         "causal_root": str(causal.get("primary_root_cause") or ""),
         "causal_confidence": _safe_float(causal.get("confidence"), 0.0),
         "integration_route_mode": str(routing.get("route_mode") or ""),
         "primary_owner": str(routing.get("primary_owner") or ""),
-        "capability_gap_count": len(list(self_intelligence.get("capability_gaps") or [])),
+        "capability_gap_count": len(
+            list(self_intelligence.get("capability_gaps") or [])
+        ),
         "reflex_action": str(reflex.get("action") or ""),
-        "reflex_blocks_brain_action": bool(reflex.get("blocks_brain_action_until_refreshed", False)),
+        "reflex_blocks_brain_action": bool(
+            reflex.get("blocks_brain_action_until_refreshed", False)
+        ),
         "self_questions": list(self_intelligence.get("self_questions") or []),
         "control_contract": "system_self_intelligence_compares_prior_runs_tracks_uncertainty_scores_action_effects_diagnoses_causes_routes_consumers_and_can_request_pre_action_refreshes_before_the_brain_acts",
     }
 
 
 def _codex_operator_bridge_awareness(bridge: dict[str, Any]) -> dict[str, Any]:
-    attention = bridge.get("attention_packet") if isinstance(bridge.get("attention_packet"), dict) else {}
-    sections = bridge.get("sections") if isinstance(bridge.get("sections"), dict) else {}
-    paper = sections.get("paper_trading") if isinstance(sections.get("paper_trading"), dict) else {}
-    training = sections.get("training") if isinstance(sections.get("training"), dict) else {}
+    attention = (
+        bridge.get("attention_packet")
+        if isinstance(bridge.get("attention_packet"), dict)
+        else {}
+    )
+    sections = (
+        bridge.get("sections") if isinstance(bridge.get("sections"), dict) else {}
+    )
+    paper = (
+        sections.get("paper_trading")
+        if isinstance(sections.get("paper_trading"), dict)
+        else {}
+    )
+    training = (
+        sections.get("training") if isinstance(sections.get("training"), dict) else {}
+    )
     writer = sections.get("writer") if isinstance(sections.get("writer"), dict) else {}
     memory = sections.get("memory") if isinstance(sections.get("memory"), dict) else {}
-    livefeed = sections.get("livefeed") if isinstance(sections.get("livefeed"), dict) else {}
+    livefeed = (
+        sections.get("livefeed") if isinstance(sections.get("livefeed"), dict) else {}
+    )
     day = paper.get("day") if isinstance(paper.get("day"), dict) else {}
     return {
         "status": _status(bridge),
@@ -871,28 +1582,44 @@ def _codex_operator_bridge_awareness(bridge: dict[str, Any]) -> dict[str, Any]:
         "paper_day_net_pnl": _safe_float(day.get("ending_net_pnl_total"), 0.0),
         "paper_day_change": _safe_float(day.get("change_vs_previous_day"), 0.0),
         "training_launch_allowed": bool(training.get("launch_allowed", False)),
-        "training_recommended_batch_size": _safe_int(training.get("recommended_batch_size"), 0),
-        "training_launch_blockers": [str(item) for item in list(training.get("launch_blockers") or [])],
+        "training_recommended_batch_size": _safe_int(
+            training.get("recommended_batch_size"), 0
+        ),
+        "training_launch_blockers": [
+            str(item) for item in list(training.get("launch_blockers") or [])
+        ],
         "writer_active": bool(writer.get("active", False)),
         "writer_completed_shards": _safe_int(writer.get("completed_shard_count"), 0),
         "writer_planned_shards": _safe_int(writer.get("planned_shard_count"), 0),
         "memory_classification": str(memory.get("classification") or ""),
         "memory_safe_for_training": bool(memory.get("safe_for_training", False)),
         "livefeed_alive": bool(livefeed.get("alive", False)),
-        "communication_contract": attention.get("communication_contract")
-        if isinstance(attention.get("communication_contract"), dict)
-        else {
-            "delivery_channel": "artifact_handoff",
-            "proactive_delivery_to_codex": False,
-        },
+        "communication_contract": (
+            attention.get("communication_contract")
+            if isinstance(attention.get("communication_contract"), dict)
+            else {
+                "delivery_channel": "artifact_handoff",
+                "proactive_delivery_to_codex": False,
+            }
+        ),
         "control_contract": "codex_operator_bridge_packages_trade_state_training_gates_writer_memory_livefeed_notifications_safe_commands_and_guardrails_for_fast_codex_handoffs",
     }
 
 
-def _bot_awareness(identity: dict[str, Any], core_materialization: dict[str, Any]) -> dict[str, Any]:
-    materialization_summary = core_materialization.get("summary") if isinstance(core_materialization.get("summary"), dict) else {}
-    missing_modules = _safe_int(materialization_summary.get("missing_core_module_count"), 0)
-    duplicate_versions = _safe_int(materialization_summary.get("duplicate_core_version_count"), 0)
+def _bot_awareness(
+    identity: dict[str, Any], core_materialization: dict[str, Any]
+) -> dict[str, Any]:
+    materialization_summary = (
+        core_materialization.get("summary")
+        if isinstance(core_materialization.get("summary"), dict)
+        else {}
+    )
+    missing_modules = _safe_int(
+        materialization_summary.get("missing_core_module_count"), 0
+    )
+    duplicate_versions = _safe_int(
+        materialization_summary.get("duplicate_core_version_count"), 0
+    )
     status = "ready"
     if missing_modules or duplicate_versions:
         status = "degraded"
@@ -907,9 +1634,90 @@ def _bot_awareness(identity: dict[str, Any], core_materialization: dict[str, Any
     }
 
 
-def _failure_memory(global_halt: dict[str, Any], incident: dict[str, Any], cockpit: dict[str, Any]) -> dict[str, Any]:
-    adaptive = cockpit.get("adaptive_posture") if isinstance(cockpit.get("adaptive_posture"), dict) else {}
-    hard_blockers = adaptive.get("hard_blockers") if isinstance(adaptive.get("hard_blockers"), list) else []
+def _system_role_contract_awareness(role_contract: dict[str, Any]) -> dict[str, Any]:
+    summary = (
+        role_contract.get("summary")
+        if isinstance(role_contract.get("summary"), dict)
+        else {}
+    )
+    hierarchy = (
+        role_contract.get("hierarchy")
+        if isinstance(role_contract.get("hierarchy"), dict)
+        else {}
+    )
+    safety = (
+        role_contract.get("safety_contract")
+        if isinstance(role_contract.get("safety_contract"), dict)
+        else {}
+    )
+    blockers = (
+        role_contract.get("blockers")
+        if isinstance(role_contract.get("blockers"), list)
+        else []
+    )
+    ready = bool(
+        role_contract.get("ok") is True
+        and str(role_contract.get("grade") or "").upper() == "A+"
+        and str(role_contract.get("operating_mode") or "")
+        == "enforced_responsibility_contracts"
+        and _safe_float(summary.get("registry_role_coverage_ratio"), 0.0) >= 1.0
+        and _safe_int(summary.get("authority_conflict_count"), 0) == 0
+        and not blockers
+    )
+    return {
+        "status": "ready" if ready else ("blocked" if role_contract else "missing"),
+        "grade": str(role_contract.get("grade") or ""),
+        "operating_mode": str(role_contract.get("operating_mode") or ""),
+        "role_count": _safe_int(summary.get("role_count"), 0),
+        "component_count": _safe_int(summary.get("component_count"), 0),
+        "state_domain_count": _safe_int(summary.get("state_domain_count"), 0),
+        "control_surface_binding_count": _safe_int(
+            summary.get("control_surface_binding_count"), 0
+        ),
+        "exclusive_action_count": _safe_int(summary.get("exclusive_action_count"), 0),
+        "operating_plane_count": _safe_int(summary.get("operating_plane_count"), 0),
+        "classified_action_count": _safe_int(summary.get("classified_action_count"), 0),
+        "action_lease_count": _safe_int(summary.get("action_lease_count"), 0),
+        "escalation_route_count": _safe_int(summary.get("escalation_route_count"), 0),
+        "registry_role_coverage_ratio": _safe_float(
+            summary.get("registry_role_coverage_ratio"), 0.0
+        ),
+        "authority_conflict_count": _safe_int(
+            summary.get("authority_conflict_count"), 0
+        ),
+        "planes": (
+            hierarchy.get("planes") if isinstance(hierarchy.get("planes"), dict) else {}
+        ),
+        "non_bypassable_roles": (
+            hierarchy.get("non_bypassable_roles")
+            if isinstance(hierarchy.get("non_bypassable_roles"), list)
+            else []
+        ),
+        "single_writer_state_domains": bool(
+            safety.get("single_writer_state_domains", False)
+        ),
+        "fail_closed_unknown_actions": bool(
+            safety.get("fail_closed_unknown_actions", False)
+        ),
+        "sensitive_action_leases": bool(safety.get("sensitive_action_leases", False)),
+        "blockers": blockers,
+        "control_contract": "one_declared_writer_per_mutable_domain_explicit_execution_authority_and_fail_closed_unknown_actions",
+    }
+
+
+def _failure_memory(
+    global_halt: dict[str, Any], incident: dict[str, Any], cockpit: dict[str, Any]
+) -> dict[str, Any]:
+    adaptive = (
+        cockpit.get("adaptive_posture")
+        if isinstance(cockpit.get("adaptive_posture"), dict)
+        else {}
+    )
+    hard_blockers = (
+        adaptive.get("hard_blockers")
+        if isinstance(adaptive.get("hard_blockers"), list)
+        else []
+    )
     global_halt_active = bool(global_halt.get("halt", False))
     incident_status = _status(incident, "ready" if incident else "missing")
     status = "ready"
@@ -923,10 +1731,16 @@ def _failure_memory(global_halt: dict[str, Any], incident: dict[str, Any], cockp
         "status": status,
         "global_halt_active": global_halt_active,
         "global_halt_action": str(global_halt.get("action") or "none"),
-        "global_halt_reasons": global_halt.get("reasons") if isinstance(global_halt.get("reasons"), list) else [],
+        "global_halt_reasons": (
+            global_halt.get("reasons")
+            if isinstance(global_halt.get("reasons"), list)
+            else []
+        ),
         "hard_blockers": hard_blockers,
         "incident_status": incident_status,
-        "latest_incident_event": str(incident.get("event") or incident.get("status") or ""),
+        "latest_incident_event": str(
+            incident.get("event") or incident.get("status") or ""
+        ),
         "memory_contract": "capture_halts_tripwires_backpressure_feed_cuts_and_guard_blocks_as_replayable_causes",
     }
 
@@ -939,23 +1753,62 @@ def _halt_recovery_intelligence(
     live_runtime: dict[str, Any],
     storage: dict[str, Any],
 ) -> dict[str, Any]:
-    clear_blockers = global_halt.get("clear_blockers") if isinstance(global_halt.get("clear_blockers"), list) else []
-    degraded_clear_blockers = global_halt.get("degraded_clear_blockers") if isinstance(global_halt.get("degraded_clear_blockers"), list) else []
-    halt_payload = global_halt.get("global_halt_payload") if isinstance(global_halt.get("global_halt_payload"), dict) else {}
-    halt_details = halt_payload.get("details") if isinstance(halt_payload.get("details"), dict) else {}
+    clear_blockers = (
+        global_halt.get("clear_blockers")
+        if isinstance(global_halt.get("clear_blockers"), list)
+        else []
+    )
+    degraded_clear_blockers = (
+        global_halt.get("degraded_clear_blockers")
+        if isinstance(global_halt.get("degraded_clear_blockers"), list)
+        else []
+    )
+    halt_payload = (
+        global_halt.get("global_halt_payload")
+        if isinstance(global_halt.get("global_halt_payload"), dict)
+        else {}
+    )
+    halt_details = (
+        halt_payload.get("details")
+        if isinstance(halt_payload.get("details"), dict)
+        else {}
+    )
     halt_active = bool(global_halt.get("halt", False))
-    clear_ready = bool(global_halt.get("clear_ready", False) or (halt_active and not clear_blockers))
-    halt_reason = str(halt_payload.get("reason") or ",".join(str(x) for x in (global_halt.get("reasons") or []) if str(x).strip()) or global_halt.get("action") or "none")
+    clear_ready = bool(
+        global_halt.get("clear_ready", False) or (halt_active and not clear_blockers)
+    )
+    halt_reason = str(
+        halt_payload.get("reason")
+        or ",".join(
+            str(x) for x in (global_halt.get("reasons") or []) if str(x).strip()
+        )
+        or global_halt.get("action")
+        or "none"
+    )
 
     auth_status = _status(auth_lease, "missing")
     lease_state = str(auth_lease.get("lease_state") or "")
-    lease_budget = auth_lease.get("lease_budget") if isinstance(auth_lease.get("lease_budget"), dict) else {}
+    lease_budget = (
+        auth_lease.get("lease_budget")
+        if isinstance(auth_lease.get("lease_budget"), dict)
+        else {}
+    )
     expires_in = _safe_float(lease_budget.get("expires_in_seconds"), 0.0)
     min_lease = _safe_float(lease_budget.get("min_lease_seconds"), 1200.0)
-    broker_state = auth_lease.get("broker_state") if isinstance(auth_lease.get("broker_state"), dict) else {}
+    broker_state = (
+        auth_lease.get("broker_state")
+        if isinstance(auth_lease.get("broker_state"), dict)
+        else {}
+    )
     auth_reason = str(broker_state.get("auth_reason") or "")
-    fallback_ladder = auth_lease.get("fallback_ladder") if isinstance(auth_lease.get("fallback_ladder"), list) else []
-    auth_ok = bool(broker_state.get("auth_ok", False) or broker_state.get("broker_ready", False))
+    fallback_ladder = (
+        auth_lease.get("fallback_ladder")
+        if isinstance(auth_lease.get("fallback_ladder"), list)
+        else []
+    )
+    auth_ok = bool(
+        broker_state.get("auth_ok", False) or broker_state.get("broker_ready", False)
+    )
     broker_operable = bool(broker_state.get("broker_operable", False))
     auth_refresh_needed = bool(
         auth_status in {"blocked", "critical", "degraded", "needs_work"}
@@ -970,18 +1823,31 @@ def _halt_recovery_intelligence(
             lease_state in {"critical", "expired"}
             or auth_status in {"blocked", "critical"}
             or "auth_succeeded_but_token_not_ready" in auth_reason
-            or (expires_in and expires_in < _safe_float(lease_budget.get("critical_lease_seconds"), 600.0))
+            or (
+                expires_in
+                and expires_in
+                < _safe_float(lease_budget.get("critical_lease_seconds"), 600.0)
+            )
         )
     )
 
-    process_rows = process_watchdog.get("status") if isinstance(process_watchdog.get("status"), list) else []
+    process_rows = (
+        process_watchdog.get("status")
+        if isinstance(process_watchdog.get("status"), list)
+        else []
+    )
     watched_names = {"all_sleeves", "coinbase_loop", "coinbase_futures_loop"}
     down_targets = [
         str(row.get("name"))
         for row in process_rows
-        if str(row.get("name")) in watched_names and not bool(row.get("process_live", False))
+        if str(row.get("name")) in watched_names
+        and not bool(row.get("process_live", False))
     ]
-    paused_by_global_halt = any(bool(row.get("global_halt_active", False)) for row in process_rows if str(row.get("name")) in watched_names)
+    paused_by_global_halt = any(
+        bool(row.get("global_halt_active", False))
+        for row in process_rows
+        if str(row.get("name")) in watched_names
+    )
     restarted_targets = [
         str(row.get("name"))
         for row in process_rows
@@ -990,16 +1856,43 @@ def _halt_recovery_intelligence(
 
     data_status = _status(data_plane, "missing")
     data_recovery = str(data_plane.get("recovery_state") or "")
-    global_metrics = global_halt.get("metrics") if isinstance(global_halt.get("metrics"), dict) else {}
-    runtime_clearance = str(data_plane.get("runtime_clearance_state") or global_metrics.get("runtime_clearance_state") or "")
-    storage_backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
-    queue_depth = _safe_int(data_plane.get("queue_depth"), _safe_int(storage_backpressure.get("total_pending_lines", storage.get("total_pending_lines")), 0))
-    live_plane = live_runtime.get("live_plane") if isinstance(live_runtime.get("live_plane"), dict) else {}
+    global_metrics = (
+        global_halt.get("metrics")
+        if isinstance(global_halt.get("metrics"), dict)
+        else {}
+    )
+    runtime_clearance = str(
+        data_plane.get("runtime_clearance_state")
+        or global_metrics.get("runtime_clearance_state")
+        or ""
+    )
+    storage_backpressure = (
+        storage.get("backpressure")
+        if isinstance(storage.get("backpressure"), dict)
+        else {}
+    )
+    queue_depth = _safe_int(
+        data_plane.get("queue_depth"),
+        _safe_int(
+            storage_backpressure.get(
+                "total_pending_lines", storage.get("total_pending_lines")
+            ),
+            0,
+        ),
+    )
+    live_plane = (
+        live_runtime.get("live_plane")
+        if isinstance(live_runtime.get("live_plane"), dict)
+        else {}
+    )
     all_sleeves_running = any(
-        str(row.get("name")) == "all_sleeves" and bool(row.get("process_live", row.get("running", 0)))
+        str(row.get("name")) == "all_sleeves"
+        and bool(row.get("process_live", row.get("running", 0)))
         for row in process_rows
     )
-    live_lane_running = bool(live_plane.get("live_lane_running", False) or all_sleeves_running)
+    live_lane_running = bool(
+        live_plane.get("live_lane_running", False) or all_sleeves_running
+    )
 
     needs = []
     if operator_auth_required:
@@ -1008,48 +1901,99 @@ def _halt_recovery_intelligence(
         needs.append("refresh_or_confirm_broker_auth_lease")
     if clear_blockers:
         needs.append("clear_hard_halt_blockers")
-    if data_status in {"blocked", "critical", "degraded", "needs_work"} or runtime_clearance:
+    if (
+        data_status in {"blocked", "critical", "degraded", "needs_work"}
+        or runtime_clearance
+    ):
         needs.append("let_data_plane_recovery_and_runtime_clearance_settle")
     if halt_active and down_targets:
         needs.append("clear_halt_before_relaunching_live_sleeves")
     elif (not halt_active) and down_targets:
         needs.append("relaunch_and_verify_live_sleeves")
 
-    recovery_sequence: list[list[str]] = [["./scripts/ops/opsctl.sh", "global-halt-refresh", "--json"]]
+    recovery_sequence: list[list[str]] = [
+        ["./scripts/ops/opsctl.sh", "global-halt-refresh", "--json"]
+    ]
     if auth_refresh_needed:
         recovery_sequence.append(["./scripts/ops/opsctl.sh", "token-refresh", "--json"])
     if operator_auth_required:
-        recovery_sequence.append(["./scripts/ops/opsctl.sh", "token-refresh-interactive", "--force", "--json"])
+        recovery_sequence.append(
+            [
+                "./scripts/ops/opsctl.sh",
+                "token-refresh-interactive",
+                "--force",
+                "--json",
+            ]
+        )
     if halt_active and clear_ready and not clear_blockers:
-        recovery_sequence.append(["./scripts/ops/opsctl.sh", "global-halt-auto-clear", "--json"])
+        recovery_sequence.append(
+            ["./scripts/ops/opsctl.sh", "global-halt-auto-clear", "--json"]
+        )
     if (not halt_active) or clear_ready:
         recovery_sequence.append(["./scripts/ops/opsctl.sh", "livefeed-refresh"])
     if queue_depth or data_status in {"blocked", "critical", "degraded", "needs_work"}:
-        recovery_sequence.append(["./scripts/ops/opsctl.sh", "backpressure-drainers", "--apply", "--ttl-seconds", "900", "--json"])
-    recovery_sequence.extend([
-        ["./scripts/ops/opsctl.sh", "health-fast", "--json"],
-        ["./scripts/ops/opsctl.sh", "system-self-model", "--json"],
-    ])
+        recovery_sequence.append(
+            [
+                "./scripts/ops/opsctl.sh",
+                "backpressure-drainers",
+                "--apply",
+                "--ttl-seconds",
+                "900",
+                "--json",
+            ]
+        )
+    recovery_sequence.extend(
+        [
+            ["./scripts/ops/opsctl.sh", "health-fast", "--json"],
+            ["./scripts/ops/opsctl.sh", "system-self-model", "--json"],
+        ]
+    )
 
     if operator_auth_required:
-        next_safe_command = ["./scripts/ops/opsctl.sh", "token-refresh-interactive", "--force", "--json"]
+        next_safe_command = [
+            "./scripts/ops/opsctl.sh",
+            "token-refresh-interactive",
+            "--force",
+            "--json",
+        ]
     elif halt_active and auth_refresh_needed:
         next_safe_command = ["./scripts/ops/opsctl.sh", "token-refresh", "--json"]
     elif halt_active and clear_ready and not clear_blockers:
-        next_safe_command = ["./scripts/ops/opsctl.sh", "global-halt-auto-clear", "--json"]
+        next_safe_command = [
+            "./scripts/ops/opsctl.sh",
+            "global-halt-auto-clear",
+            "--json",
+        ]
     elif halt_active:
         next_safe_command = ["./scripts/ops/opsctl.sh", "global-halt-refresh", "--json"]
     elif down_targets:
         next_safe_command = ["./scripts/ops/opsctl.sh", "livefeed-refresh"]
-    elif queue_depth or data_status in {"blocked", "critical", "degraded", "needs_work"}:
-        next_safe_command = ["./scripts/ops/opsctl.sh", "backpressure-drainers", "--apply", "--ttl-seconds", "900", "--json"]
+    elif queue_depth or data_status in {
+        "blocked",
+        "critical",
+        "degraded",
+        "needs_work",
+    }:
+        next_safe_command = [
+            "./scripts/ops/opsctl.sh",
+            "backpressure-drainers",
+            "--apply",
+            "--ttl-seconds",
+            "900",
+            "--json",
+        ]
     else:
         next_safe_command = ["./scripts/ops/opsctl.sh", "health-fast", "--json"]
 
     status = "ready"
     if halt_active or operator_auth_required:
         status = "blocked"
-    elif down_targets or data_status in {"blocked", "critical", "degraded", "needs_work"} or runtime_clearance or auth_refresh_needed:
+    elif (
+        down_targets
+        or data_status in {"blocked", "critical", "degraded", "needs_work"}
+        or runtime_clearance
+        or auth_refresh_needed
+    ):
         status = "advisory"
 
     return {
@@ -1091,68 +2035,296 @@ def _halt_recovery_intelligence(
 
 def _dependency_edges() -> list[dict[str, str]]:
     return [
-        {"from": "resource_guard", "to": "memory_efficiency", "reason": "memory and co-tenant context"},
-        {"from": "memory_efficiency", "to": "runtime_throttle", "reason": "host profile and pressure caps"},
-        {"from": "runtime_throttle", "to": "host_pressure_intelligence", "reason": "CPU, memory, swap, and open-app pressure state"},
-        {"from": "memory_efficiency", "to": "host_pressure_intelligence", "reason": "memory pressure, compression, swap, and co-tenant awareness"},
-        {"from": "host_pressure_intelligence", "to": "mlx_intelligence_router", "reason": "caps MLX jobs from CPU and unified-memory state"},
-        {"from": "host_pressure_intelligence", "to": "library_utilization_router", "reason": "caps non-MLX support lanes from CPU and foreground app state"},
-        {"from": "host_pressure_intelligence", "to": "backpressure_super_drainer", "reason": "drain waves respect CPU, memory, and foreground app pressure"},
-        {"from": "runtime_throttle", "to": "mlx_runtime", "reason": "shared CPU/GPU memory and MLX batch pressure"},
-        {"from": "mlx_runtime", "to": "mlx_intelligence_router", "reason": "MLX package and runtime readiness"},
-        {"from": "mlx_library", "to": "mlx_intelligence_router", "reason": "pinned MLX library bundle coverage"},
-        {"from": "mlx_intelligence_router", "to": "quant_model_control", "reason": "MLX workload routing and runtime caps"},
-        {"from": "runtime_throttle", "to": "library_utilization_router", "reason": "non-MLX library worker caps and backend defaults"},
-        {"from": "library_utilization_router", "to": "operator_cockpit", "reason": "library lane coverage and runtime support posture"},
-        {"from": "ingestion_storage", "to": "operator_cockpit", "reason": "backpressure readiness"},
-        {"from": "ingestion_storage", "to": "backpressure_drainer_fleet", "reason": "queue pressure and lane scoring"},
-        {"from": "backpressure_drainer_fleet", "to": "backpressure_super_drainer", "reason": "focused lane candidate selection"},
-        {"from": "backpressure_super_drainer", "to": "writer_cycle_coordinator", "reason": "bounded wave execution through one SQL writer"},
-        {"from": "writer_process_intelligence", "to": "writer_cycle_coordinator", "reason": "writer health, process topology, and shard-lane expansion advice"},
-        {"from": "process_fanout_guard", "to": "writer_process_intelligence", "reason": "writer expansion waits when host process fanout is over budget"},
-        {"from": "writer_cycle_coordinator", "to": "ingestion_storage", "reason": "post-wave storage refresh and drain progress"},
-        {"from": "backpressure_super_drainer", "to": "system_self_model", "reason": "drainer state vector for platform awareness"},
-        {"from": "memory_efficiency", "to": "system_signal_bus", "reason": "resource signal normalized for whole-system decisions"},
-        {"from": "runtime_throttle", "to": "system_signal_bus", "reason": "host pressure signal normalized for whole-system decisions"},
-        {"from": "ingestion_storage", "to": "system_signal_bus", "reason": "storage and backpressure signal normalized for whole-system decisions"},
-        {"from": "writer_process_intelligence", "to": "system_signal_bus", "reason": "writer state feeds the whole-system signal bus"},
-        {"from": "drainer_intelligence", "to": "system_signal_bus", "reason": "drainer action feeds the whole-system signal bus"},
-        {"from": "system_signal_bus", "to": "system_brain", "reason": "ranked signals drive the next safe infrastructure action"},
-        {"from": "system_process_contracts", "to": "system_brain", "reason": "authority boundaries and concurrency limits constrain system decisions"},
-        {"from": "system_brain", "to": "system_self_intelligence", "reason": "self-intelligence evaluates repeated actions, action effects, uncertainty, and trend before action"},
-        {"from": "system_signal_bus", "to": "system_self_intelligence", "reason": "self-intelligence compares normalized signals against prior runs, causal diagnosis, and memory"},
-        {"from": "system_self_intelligence", "to": "system_brain", "reason": "pre-action reflexes, action-effect verdicts, and causal routes can request refreshes before the brain action is trusted"},
-        {"from": "system_brain", "to": "codex_handoff", "reason": "safe next action and do-not-do rules become a Codex attention packet"},
-        {"from": "system_self_intelligence", "to": "codex_handoff", "reason": "uncertainty, causal root, action effect, route owner, and self-questions sharpen the Codex attention packet"},
-        {"from": "whole_system_intelligence", "to": "system_self_model", "reason": "whole-system brain becomes a first-class self-model awareness domain"},
-        {"from": "capital_growth_intelligence", "to": "capital_growth_awareness", "reason": "money-tree policy normalized into role-specific awareness packets"},
-        {"from": "capital_growth_awareness", "to": "grand_master", "reason": "portfolio-level money-growth arbitration and live-money block state"},
-        {"from": "capital_growth_awareness", "to": "masters", "reason": "per-sleeve growth, repair, and quarantine rules"},
-        {"from": "capital_growth_awareness", "to": "sub_bots", "reason": "evidence, label, precision, and disconfirmation collection rules"},
-        {"from": "capital_growth_awareness", "to": "master_infra", "reason": "storage, training, fill, attribution, and position-ledger freshness enforcement"},
-        {"from": "capital_growth_awareness", "to": "system_self_model", "reason": "money-tree awareness becomes part of the shared self-model bus"},
-        {"from": "use_mode_compliance", "to": "system_self_model", "reason": "personal, commercial, customer, marketing, and live authority boundaries become first-class awareness"},
-        {"from": "use_mode_compliance", "to": "live_canary_readiness_contract", "reason": "live-money canary must pass use-mode and commercial-boundary evidence before promotion"},
-        {"from": "commercial_readiness", "to": "system_self_model", "reason": "seven-section commercial product readiness becomes a first-class awareness domain"},
-        {"from": "commercial_readiness", "to": "live_canary_readiness_contract", "reason": "paid, public, customer-facing, funds, claims, and privacy/security blockers constrain promotion"},
-        {"from": "schwab_indicator_intelligence", "to": "system_expansion_execution", "reason": "Schwab study and strategy catalog feeds the indicator-to-feature bridge lane"},
-        {"from": "capital_rotation_control", "to": "system_expansion_execution", "reason": "paper-only sleeve rotation pressure feeds capital simulator v2"},
-        {"from": "system_architecture_contract_graph", "to": "system_expansion_execution", "reason": "blocked, degraded, and stale nodes feed self-healing and stale-surface expansion lanes"},
-        {"from": "runtime_throttle", "to": "system_expansion_execution", "reason": "runtime pressure feeds predictive stability, collector utility, and sleeve safe modes"},
-        {"from": "system_expansion_execution", "to": "system_self_model", "reason": "12-lane expansion execution becomes a first-class self-model awareness surface"},
-        {"from": "global_halt", "to": "operator_cockpit", "reason": "live collection clearance"},
-        {"from": "master_infra", "to": "operator_cockpit", "reason": "process lane ownership"},
-        {"from": "system_self_model", "to": "grand_master", "reason": "compressed self-state packet"},
+        {
+            "from": "resource_guard",
+            "to": "memory_efficiency",
+            "reason": "memory and co-tenant context",
+        },
+        {
+            "from": "memory_efficiency",
+            "to": "runtime_throttle",
+            "reason": "host profile and pressure caps",
+        },
+        {
+            "from": "runtime_throttle",
+            "to": "host_pressure_intelligence",
+            "reason": "CPU, memory, swap, and open-app pressure state",
+        },
+        {
+            "from": "memory_efficiency",
+            "to": "host_pressure_intelligence",
+            "reason": "memory pressure, compression, swap, and co-tenant awareness",
+        },
+        {
+            "from": "host_pressure_intelligence",
+            "to": "mlx_intelligence_router",
+            "reason": "caps MLX jobs from CPU and unified-memory state",
+        },
+        {
+            "from": "host_pressure_intelligence",
+            "to": "library_utilization_router",
+            "reason": "caps non-MLX support lanes from CPU and foreground app state",
+        },
+        {
+            "from": "host_pressure_intelligence",
+            "to": "backpressure_super_drainer",
+            "reason": "drain waves respect CPU, memory, and foreground app pressure",
+        },
+        {
+            "from": "runtime_throttle",
+            "to": "mlx_runtime",
+            "reason": "shared CPU/GPU memory and MLX batch pressure",
+        },
+        {
+            "from": "mlx_runtime",
+            "to": "mlx_intelligence_router",
+            "reason": "MLX package and runtime readiness",
+        },
+        {
+            "from": "mlx_library",
+            "to": "mlx_intelligence_router",
+            "reason": "pinned MLX library bundle coverage",
+        },
+        {
+            "from": "mlx_intelligence_router",
+            "to": "quant_model_control",
+            "reason": "MLX workload routing and runtime caps",
+        },
+        {
+            "from": "runtime_throttle",
+            "to": "library_utilization_router",
+            "reason": "non-MLX library worker caps and backend defaults",
+        },
+        {
+            "from": "library_utilization_router",
+            "to": "operator_cockpit",
+            "reason": "library lane coverage and runtime support posture",
+        },
+        {
+            "from": "ingestion_storage",
+            "to": "operator_cockpit",
+            "reason": "backpressure readiness",
+        },
+        {
+            "from": "ingestion_storage",
+            "to": "backpressure_drainer_fleet",
+            "reason": "queue pressure and lane scoring",
+        },
+        {
+            "from": "backpressure_drainer_fleet",
+            "to": "backpressure_super_drainer",
+            "reason": "focused lane candidate selection",
+        },
+        {
+            "from": "backpressure_super_drainer",
+            "to": "writer_cycle_coordinator",
+            "reason": "bounded wave execution through one SQL writer",
+        },
+        {
+            "from": "writer_process_intelligence",
+            "to": "writer_cycle_coordinator",
+            "reason": "writer health, process topology, and shard-lane expansion advice",
+        },
+        {
+            "from": "process_fanout_guard",
+            "to": "writer_process_intelligence",
+            "reason": "writer expansion waits when host process fanout is over budget",
+        },
+        {
+            "from": "writer_cycle_coordinator",
+            "to": "ingestion_storage",
+            "reason": "post-wave storage refresh and drain progress",
+        },
+        {
+            "from": "backpressure_super_drainer",
+            "to": "system_self_model",
+            "reason": "drainer state vector for platform awareness",
+        },
+        {
+            "from": "memory_efficiency",
+            "to": "system_signal_bus",
+            "reason": "resource signal normalized for whole-system decisions",
+        },
+        {
+            "from": "runtime_throttle",
+            "to": "system_signal_bus",
+            "reason": "host pressure signal normalized for whole-system decisions",
+        },
+        {
+            "from": "ingestion_storage",
+            "to": "system_signal_bus",
+            "reason": "storage and backpressure signal normalized for whole-system decisions",
+        },
+        {
+            "from": "writer_process_intelligence",
+            "to": "system_signal_bus",
+            "reason": "writer state feeds the whole-system signal bus",
+        },
+        {
+            "from": "drainer_intelligence",
+            "to": "system_signal_bus",
+            "reason": "drainer action feeds the whole-system signal bus",
+        },
+        {
+            "from": "system_signal_bus",
+            "to": "system_brain",
+            "reason": "ranked signals drive the next safe infrastructure action",
+        },
+        {
+            "from": "system_process_contracts",
+            "to": "system_brain",
+            "reason": "authority boundaries and concurrency limits constrain system decisions",
+        },
+        {
+            "from": "system_brain",
+            "to": "system_self_intelligence",
+            "reason": "self-intelligence evaluates repeated actions, action effects, uncertainty, and trend before action",
+        },
+        {
+            "from": "system_signal_bus",
+            "to": "system_self_intelligence",
+            "reason": "self-intelligence compares normalized signals against prior runs, causal diagnosis, and memory",
+        },
+        {
+            "from": "system_self_intelligence",
+            "to": "system_brain",
+            "reason": "pre-action reflexes, action-effect verdicts, and causal routes can request refreshes before the brain action is trusted",
+        },
+        {
+            "from": "system_brain",
+            "to": "codex_handoff",
+            "reason": "safe next action and do-not-do rules become a Codex attention packet",
+        },
+        {
+            "from": "system_self_intelligence",
+            "to": "codex_handoff",
+            "reason": "uncertainty, causal root, action effect, route owner, and self-questions sharpen the Codex attention packet",
+        },
+        {
+            "from": "whole_system_intelligence",
+            "to": "system_self_model",
+            "reason": "whole-system brain becomes a first-class self-model awareness domain",
+        },
+        {
+            "from": "capital_growth_intelligence",
+            "to": "capital_growth_awareness",
+            "reason": "money-tree policy normalized into role-specific awareness packets",
+        },
+        {
+            "from": "capital_growth_awareness",
+            "to": "grand_master",
+            "reason": "portfolio-level money-growth arbitration and live-money block state",
+        },
+        {
+            "from": "capital_growth_awareness",
+            "to": "masters",
+            "reason": "per-sleeve growth, repair, and quarantine rules",
+        },
+        {
+            "from": "capital_growth_awareness",
+            "to": "sub_bots",
+            "reason": "evidence, label, precision, and disconfirmation collection rules",
+        },
+        {
+            "from": "capital_growth_awareness",
+            "to": "master_infra",
+            "reason": "storage, training, fill, attribution, and position-ledger freshness enforcement",
+        },
+        {
+            "from": "capital_growth_awareness",
+            "to": "system_self_model",
+            "reason": "money-tree awareness becomes part of the shared self-model bus",
+        },
+        {
+            "from": "profitability_self_assessment",
+            "to": "system_self_model",
+            "reason": "candidate-bound economic evidence, historical ledger context, and eight tuning lanes become first-class awareness",
+        },
+        {
+            "from": "profitability_self_assessment",
+            "to": "system_needs_intelligence",
+            "reason": "the next safe profitability need is routed from current-candidate evidence instead of historical debt alone",
+        },
+        {
+            "from": "use_mode_compliance",
+            "to": "system_self_model",
+            "reason": "personal, commercial, customer, marketing, and live authority boundaries become first-class awareness",
+        },
+        {
+            "from": "use_mode_compliance",
+            "to": "live_canary_readiness_contract",
+            "reason": "live-money canary must pass use-mode and commercial-boundary evidence before promotion",
+        },
+        {
+            "from": "commercial_readiness",
+            "to": "system_self_model",
+            "reason": "seven-section commercial product readiness becomes a first-class awareness domain",
+        },
+        {
+            "from": "commercial_readiness",
+            "to": "live_canary_readiness_contract",
+            "reason": "paid, public, customer-facing, funds, claims, and privacy/security blockers constrain promotion",
+        },
+        {
+            "from": "schwab_indicator_intelligence",
+            "to": "system_expansion_execution",
+            "reason": "Schwab study and strategy catalog feeds the indicator-to-feature bridge lane",
+        },
+        {
+            "from": "capital_rotation_control",
+            "to": "system_expansion_execution",
+            "reason": "paper-only sleeve rotation pressure feeds capital simulator v2",
+        },
+        {
+            "from": "system_architecture_contract_graph",
+            "to": "system_expansion_execution",
+            "reason": "blocked, degraded, and stale nodes feed self-healing and stale-surface expansion lanes",
+        },
+        {
+            "from": "runtime_throttle",
+            "to": "system_expansion_execution",
+            "reason": "runtime pressure feeds predictive stability, collector utility, and sleeve safe modes",
+        },
+        {
+            "from": "system_expansion_execution",
+            "to": "system_self_model",
+            "reason": "12-lane expansion execution becomes a first-class self-model awareness surface",
+        },
+        {
+            "from": "global_halt",
+            "to": "operator_cockpit",
+            "reason": "live collection clearance",
+        },
+        {
+            "from": "master_infra",
+            "to": "operator_cockpit",
+            "reason": "process lane ownership",
+        },
+        {
+            "from": "system_self_model",
+            "to": "grand_master",
+            "reason": "compressed self-state packet",
+        },
     ]
 
 
-def _dependency_awareness(surface_matrix: dict[str, dict[str, Any]], cockpit: dict[str, Any]) -> dict[str, Any]:
-    hardening = cockpit.get("hardening_scorecard") if isinstance(cockpit.get("hardening_scorecard"), dict) else {}
+def _dependency_awareness(
+    surface_matrix: dict[str, dict[str, Any]], cockpit: dict[str, Any]
+) -> dict[str, Any]:
+    hardening = (
+        cockpit.get("hardening_scorecard")
+        if isinstance(cockpit.get("hardening_scorecard"), dict)
+        else {}
+    )
     blocked_surfaces = sorted(
-        name for name, row in surface_matrix.items() if str(row.get("status") or "") == "blocked"
+        name
+        for name, row in surface_matrix.items()
+        if str(row.get("status") or "") == "blocked"
     )
     degraded_surfaces = sorted(
-        name for name, row in surface_matrix.items() if str(row.get("status") or "") in {"degraded", "needs_work"}
+        name
+        for name, row in surface_matrix.items()
+        if str(row.get("status") or "") in {"degraded", "needs_work"}
     )
     edges = _dependency_edges()
     status = "ready"
@@ -1164,18 +2336,37 @@ def _dependency_awareness(surface_matrix: dict[str, dict[str, Any]], cockpit: di
         "status": status,
         "blocked_surfaces": blocked_surfaces,
         "degraded_surfaces": degraded_surfaces,
-        "process_ownership_canonical": bool(hardening.get("process_ownership_canonical", False)),
+        "process_ownership_canonical": bool(
+            hardening.get("process_ownership_canonical", False)
+        ),
         "edge_count": len(edges),
         "edges": edges,
     }
 
 
-def _growth_awareness(identity: dict[str, Any], memory: dict[str, Any], cockpit: dict[str, Any]) -> dict[str, Any]:
-    expansion = memory.get("expansion_session") if isinstance(memory.get("expansion_session"), dict) else {}
-    adaptive = cockpit.get("adaptive_posture") if isinstance(cockpit.get("adaptive_posture"), dict) else {}
-    pressure_level = str(expansion.get("pressure_level") or adaptive.get("pressure_level") or "normal")
-    active_bots = _safe_int(identity.get("active_bots"), _safe_int(adaptive.get("active_bots"), 0))
-    collection_bots = _safe_int(identity.get("data_collection_active_bots"), _safe_int(adaptive.get("data_collection_active_bots"), 0))
+def _growth_awareness(
+    identity: dict[str, Any], memory: dict[str, Any], cockpit: dict[str, Any]
+) -> dict[str, Any]:
+    expansion = (
+        memory.get("expansion_session")
+        if isinstance(memory.get("expansion_session"), dict)
+        else {}
+    )
+    adaptive = (
+        cockpit.get("adaptive_posture")
+        if isinstance(cockpit.get("adaptive_posture"), dict)
+        else {}
+    )
+    pressure_level = str(
+        expansion.get("pressure_level") or adaptive.get("pressure_level") or "normal"
+    )
+    active_bots = _safe_int(
+        identity.get("active_bots"), _safe_int(adaptive.get("active_bots"), 0)
+    )
+    collection_bots = _safe_int(
+        identity.get("data_collection_active_bots"),
+        _safe_int(adaptive.get("data_collection_active_bots"), 0),
+    )
     status = "ready"
     if pressure_level == "massive" and collection_bots >= 700:
         status = "advisory"
@@ -1184,8 +2375,557 @@ def _growth_awareness(identity: dict[str, Any], memory: dict[str, Any], cockpit:
         "pressure_level": pressure_level,
         "active_bots": active_bots,
         "data_collection_active_bots": collection_bots,
-        "sleeve_profile_count": _safe_int(identity.get("sleeve_profile_count"), _safe_int(expansion.get("sleeve_profile_count"), 0)),
+        "sleeve_profile_count": _safe_int(
+            identity.get("sleeve_profile_count"),
+            _safe_int(expansion.get("sleeve_profile_count"), 0),
+        ),
         "growth_contract": "new_expansions_must_land_as_collection_only_with_rollups_throttles_and_materialized_core_files",
+    }
+
+
+def _profitability_awareness(assessment: dict[str, Any]) -> dict[str, Any]:
+    if not assessment:
+        return {
+            "status": "missing",
+            "system_statement": "Candidate-bound profitability assessment is missing.",
+            "candidate_id": "",
+            "implementation_grade": "",
+            "economic_evidence_grade": "",
+            "candidate_post_cost_samples": 0,
+            "need_count": 0,
+            "live_execution_authority": False,
+        }
+    binding = (
+        assessment.get("candidate_binding")
+        if isinstance(assessment.get("candidate_binding"), dict)
+        else {}
+    )
+    grades = (
+        assessment.get("grades") if isinstance(assessment.get("grades"), dict) else {}
+    )
+    measurement = (
+        assessment.get("measurement")
+        if isinstance(assessment.get("measurement"), dict)
+        else {}
+    )
+    claims = (
+        assessment.get("claims") if isinstance(assessment.get("claims"), dict) else {}
+    )
+    developmental = (
+        assessment.get("developmental_soak_learning")
+        if isinstance(assessment.get("developmental_soak_learning"), dict)
+        else {}
+    )
+    identity_consistent = bool(binding.get("identity_consistent", False))
+    economic_ready = bool(grades.get("economic_evidence_ready", False))
+    status = "ready" if economic_ready and identity_consistent else "advisory"
+    if (
+        not identity_consistent
+        or str(assessment.get("overall_status") or "").lower() == "blocked"
+    ):
+        status = "blocked"
+    return {
+        "status": status,
+        "assessment_status": str(
+            assessment.get("assessment_status")
+            or assessment.get("overall_status")
+            or "missing"
+        ),
+        "candidate_evidence_status": str(assessment.get("overall_status") or "missing"),
+        "system_statement": str(assessment.get("system_statement") or ""),
+        "candidate_id": str(
+            binding.get("candidate_id") or measurement.get("candidate_id") or ""
+        ),
+        "candidate_identity_consistent": identity_consistent,
+        "candidate_identity_complete": bool(binding.get("identity_complete", False)),
+        "implementation_grade": str(grades.get("implementation_grade") or ""),
+        "implementation_score": _safe_float(grades.get("implementation_score"), 0.0),
+        "economic_evidence_grade": str(grades.get("economic_evidence_grade") or ""),
+        "economic_evidence_score": _safe_float(
+            grades.get("economic_evidence_score"), 0.0
+        ),
+        "economic_evidence_ready": economic_ready,
+        "candidate_post_cost_samples": _safe_int(
+            measurement.get("candidate_post_cost_sample_count"), 0
+        ),
+        "historical_active_book_net_pnl": _safe_float(
+            measurement.get("historical_active_book_net_pnl"), 0.0
+        ),
+        "historical_pnl_is_current_candidate_evidence": bool(
+            claims.get("historical_loss_is_current_candidate_evidence", False)
+        ),
+        "developmental_learning_status": str(developmental.get("status") or "missing"),
+        "accepted_generation_count": _safe_int(
+            developmental.get("accepted_generation_count"), 0
+        ),
+        "attributable_generation_count": _safe_int(
+            developmental.get("attributable_generation_count"), 0
+        ),
+        "mature_developmental_generation_count": _safe_int(
+            developmental.get("mature_developmental_generation_count"), 0
+        ),
+        "observed_negative_delta_generation_count": _safe_int(
+            developmental.get("observed_negative_delta_generation_count"), 0
+        ),
+        "bounded_paper_action_count": len(
+            developmental.get("bounded_paper_action_plan")
+            if isinstance(developmental.get("bounded_paper_action_plan"), list)
+            else []
+        ),
+        "accepted_generation_history_informs_developmental_actions": bool(
+            claims.get(
+                "accepted_generation_history_informs_developmental_actions", False
+            )
+        ),
+        "accepted_generation_history_is_live_promotion_evidence": False,
+        "clean_720_hour_live_promotion_gate_unchanged": True,
+        "need_count": len(
+            assessment.get("needs") if isinstance(assessment.get("needs"), list) else []
+        ),
+        "next_safe_action": (
+            assessment.get("next_safe_action")
+            if isinstance(assessment.get("next_safe_action"), dict)
+            else {}
+        ),
+        "live_execution_authority": bool(claims.get("live_execution_authority", False)),
+        "control_contract": "candidate_bound_profitability_truth_is_separate_from_historical_ledger_and_live_authority",
+    }
+
+
+def _alpha_generation_awareness(control: dict[str, Any]) -> dict[str, Any]:
+    if not control:
+        return {
+            "status": "missing",
+            "implementation_grade": "",
+            "economic_evidence_grade": "",
+            "evidence_ready_controls": 0,
+            "control_count": 10,
+            "selected_sleeves": [],
+            "cash_weight": 1.0,
+            "expansion_frozen": True,
+            "live_execution_authority": False,
+        }
+    grades = control.get("grades") if isinstance(control.get("grades"), dict) else {}
+    cross = (
+        control.get("cross_sleeve_alpha")
+        if isinstance(control.get("cross_sleeve_alpha"), dict)
+        else {}
+    )
+    implementation_ready = bool(
+        grades.get("implementation_grade") == "A+" and control.get("ok", False)
+    )
+    economic_ready = bool(grades.get("economic_evidence_ready", False))
+    status = "ready" if implementation_ready and economic_ready else "advisory"
+    if not implementation_ready:
+        status = "blocked"
+    return {
+        "status": status,
+        "candidate_id": str(
+            (control.get("candidate_binding") or {}).get("candidate_id")
+            if isinstance(control.get("candidate_binding"), dict)
+            else ""
+        ),
+        "implementation_grade": str(grades.get("implementation_grade") or ""),
+        "implementation_score": _safe_float(grades.get("implementation_score"), 0.0),
+        "economic_evidence_grade": str(grades.get("economic_evidence_grade") or ""),
+        "economic_evidence_score": _safe_float(
+            grades.get("economic_evidence_score"), 0.0
+        ),
+        "economic_evidence_ready": economic_ready,
+        "evidence_ready_controls": _safe_int(
+            grades.get("economic_evidence_ready_controls"), 0
+        ),
+        "control_count": _safe_int(grades.get("economic_evidence_control_count"), 10),
+        "qualified_sleeve_count": _safe_int(cross.get("qualified_sleeve_count"), 0),
+        "selected_sleeves": list(cross.get("selected_sleeves") or []),
+        "cash_weight": _safe_float(cross.get("cash_weight"), 1.0),
+        "shared_trade_logic_allowed": False,
+        "automatic_allocation_allowed": False,
+        "expansion_frozen": bool(
+            (control.get("strategy_expansion_freeze") or {}).get("active", True)
+            if isinstance(control.get("strategy_expansion_freeze"), dict)
+            else True
+        ),
+        "live_execution_authority": False,
+        "control_contract": "share_context_across_sleeves_but_allocate_only_to_candidate_bound_positive_residual_alpha",
+    }
+
+
+def _alpha_concept_awareness(report: dict[str, Any]) -> dict[str, Any]:
+    if not report:
+        return {
+            "status": "missing",
+            "implementation_grade": "",
+            "catalog_routing_grade": "",
+            "candidate_evidence_grade": "",
+            "economic_support_grade": "",
+            "measurement_engine_count": 16,
+            "implemented_measurement_engine_count": 0,
+            "candidate_evidence_ready_count": 0,
+            "candidate_evidence_measurement_count": 15,
+            "economically_supported_count": 0,
+            "concept_count": 0,
+            "family_count": 0,
+            "top_collection_priorities": [],
+            "authority_contract": {},
+            "authority_clear": False,
+            "live_execution_authority": False,
+        }
+    grades = report.get("grades") if isinstance(report.get("grades"), dict) else {}
+    catalog = (
+        report.get("catalog_summary")
+        if isinstance(report.get("catalog_summary"), dict)
+        else {}
+    )
+    authority = (
+        report.get("authority_contract")
+        if isinstance(report.get("authority_contract"), dict)
+        else {}
+    )
+    authority_clear = bool(authority) and not any(
+        bool(value) for value in authority.values()
+    )
+    implementation_ready = bool(
+        report.get("ok", False)
+        and str(grades.get("implementation_grade") or "").upper() == "A+"
+        and str(grades.get("catalog_routing_grade") or "").upper() == "A+"
+        and authority_clear
+    )
+    evidence_ready = bool(
+        _safe_int(report.get("evidence_ready_measurement_engine_count"), 0)
+        == _safe_int(report.get("candidate_evidence_measurement_engine_count"), 10)
+    )
+    status = (
+        "blocked"
+        if not implementation_ready
+        else "ready" if evidence_ready else "advisory"
+    )
+    priorities = [
+        str(row.get("gap_id") or "")
+        for row in (report.get("collection_priorities") or [])[:5]
+        if isinstance(row, dict) and str(row.get("gap_id") or "")
+    ]
+    return {
+        "status": status,
+        "candidate_id": str(
+            (report.get("candidate_binding") or {}).get("candidate_id")
+            if isinstance(report.get("candidate_binding"), dict)
+            else ""
+        ),
+        "implementation_grade": str(grades.get("implementation_grade") or ""),
+        "catalog_routing_grade": str(grades.get("catalog_routing_grade") or ""),
+        "candidate_evidence_grade": str(grades.get("candidate_evidence_grade") or ""),
+        "economic_support_grade": str(grades.get("economic_support_grade") or ""),
+        "measurement_engine_count": _safe_int(
+            report.get("measurement_engine_count"), 16
+        ),
+        "implemented_measurement_engine_count": _safe_int(
+            report.get("implemented_measurement_engine_count"), 0
+        ),
+        "candidate_evidence_ready_count": _safe_int(
+            report.get("evidence_ready_measurement_engine_count"), 0
+        ),
+        "candidate_evidence_measurement_count": _safe_int(
+            report.get("candidate_evidence_measurement_engine_count"), 15
+        ),
+        "economically_supported_count": _safe_int(
+            report.get("economically_supported_measurement_engine_count"), 0
+        ),
+        "concept_count": _safe_int(catalog.get("concept_count"), 0),
+        "family_count": _safe_int(catalog.get("family_count"), 0),
+        "top_collection_priorities": priorities,
+        "authority_contract": dict(authority),
+        "authority_clear": authority_clear,
+        "profitability_guaranteed": False,
+        "live_execution_authority": False,
+        "control_contract": "implementation_catalog_candidate_evidence_and_economic_support_are_separate_truths",
+    }
+
+
+def _sleeve_alpha_toolbox_awareness(control: dict[str, Any]) -> dict[str, Any]:
+    coverage = (
+        control.get("coverage") if isinstance(control.get("coverage"), dict) else {}
+    )
+    authority = (
+        control.get("authority") if isinstance(control.get("authority"), dict) else {}
+    )
+    routed = _safe_int(coverage.get("routed_sleeve_count"), 0)
+    declared = _safe_int(coverage.get("declared_sleeve_count"), 0)
+    evidence_ready = _safe_int(coverage.get("candidate_evidence_ready_sleeve_count"), 0)
+    authority_clear = bool(authority) and not any(
+        bool(value) for value in authority.values()
+    )
+    structurally_ready = bool(
+        control.get("ok", False)
+        and declared > 0
+        and routed == declared
+        and _safe_int(coverage.get("missing_sleeve_count"), 0) == 0
+        and _safe_int(
+            (coverage.get("policy_match_source_counts") or {}).get(
+                "default_fallback", 0
+            ),
+            0,
+        )
+        == 0
+        and authority_clear
+    )
+    status = (
+        "blocked"
+        if not structurally_ready
+        else "ready" if evidence_ready == declared else "advisory"
+    )
+    return {
+        "status": status,
+        "structural_status": str(control.get("overall_status") or "missing"),
+        "candidate_id": str(
+            (control.get("candidate_binding") or {}).get("candidate_id")
+            if isinstance(control.get("candidate_binding"), dict)
+            else ""
+        ),
+        "declared_sleeve_count": declared,
+        "routed_sleeve_count": routed,
+        "candidate_evidence_ready_sleeve_count": evidence_ready,
+        "policy_family_count": len(coverage.get("policy_family_counts") or {}),
+        "default_fallback_route_count": _safe_int(
+            (coverage.get("policy_match_source_counts") or {}).get(
+                "default_fallback", 0
+            ),
+            0,
+        ),
+        "axis_collection_state": list(control.get("axis_collection_state") or []),
+        "authority_clear": authority_clear,
+        "profitability_guaranteed": False,
+        "live_execution_authority": False,
+        "control_contract": "route_candidate_bound_diagnostics_to_every_required_sleeve_axis_without_order_or_promotion_authority",
+    }
+
+
+def _generation_attribution_awareness(report: dict[str, Any]) -> dict[str, Any]:
+    comparison = (
+        report.get("comparison") if isinstance(report.get("comparison"), dict) else {}
+    )
+    soak = (
+        report.get("cumulative_soak_context")
+        if isinstance(report.get("cumulative_soak_context"), dict)
+        else {}
+    )
+    chain = (
+        report.get("candidate_event_chain")
+        if isinstance(report.get("candidate_event_chain"), dict)
+        else {}
+    )
+    status = "missing"
+    if report:
+        status = "blocked" if not bool(chain.get("valid", False)) else "advisory"
+        if bool(
+            comparison.get("identity_bound_behavior_comparison_ready", False)
+        ) and bool(comparison.get("economic_comparison_ready", False)):
+            status = "ready"
+    return {
+        "status": status,
+        "from_generation": _safe_int(comparison.get("from_generation"), 0),
+        "to_generation": _safe_int(comparison.get("to_generation"), 0),
+        "behavior_comparison_ready": bool(
+            comparison.get("behavior_comparison_ready", False)
+        ),
+        "identity_bound_behavior_comparison_ready": bool(
+            comparison.get("identity_bound_behavior_comparison_ready", False)
+        ),
+        "legacy_window_association_involved": bool(
+            comparison.get("legacy_window_association_involved", False)
+        ),
+        "economic_comparison_ready": bool(
+            comparison.get("economic_comparison_ready", False)
+        ),
+        "cumulative_soak_elapsed_hours": _safe_float(
+            soak.get("main_soak_elapsed_hours"), 0.0
+        ),
+        "active_runtime_evidence_hours": _safe_float(
+            soak.get("main_soak_active_runtime_evidence_hours"), 0.0
+        ),
+        "historical_segments_grade_current_candidate": False,
+        "association_is_causal_proof": False,
+        "live_execution_authority": False,
+        "control_contract": "cumulative_segmented_soak_context_plus_candidate_generation_attribution_with_explicit_legacy_and_causal_limits",
+    }
+
+
+def _authoritative_systems_awareness(control: dict[str, Any]) -> dict[str, Any]:
+    external = (
+        control.get("external_evidence")
+        if isinstance(control.get("external_evidence"), dict)
+        else {}
+    )
+    items = external.get("items") if isinstance(external.get("items"), dict) else {}
+    needs = sorted(str(key) for key, ready in items.items() if not bool(ready))
+    structural_ready = bool(
+        control.get("ok", False)
+        and _safe_int(control.get("ready_control_count"), 0)
+        == _safe_int(control.get("control_target"), 17)
+        and _safe_int(control.get("reference_count"), 0)
+        == _safe_int(control.get("reference_target"), 29)
+    )
+    status = "blocked" if control and not structural_ready else "advisory"
+    if structural_ready and not needs:
+        status = "ready"
+    return {
+        "status": status,
+        "structural_status": str(control.get("overall_status") or "missing"),
+        "structural_grade": str(control.get("grade") or "unknown"),
+        "grade_scope": str(
+            control.get("grade_scope") or "local structural implementation only"
+        ),
+        "reference_count": _safe_int(control.get("reference_count"), 0),
+        "reference_target": _safe_int(control.get("reference_target"), 29),
+        "ready_control_count": _safe_int(control.get("ready_control_count"), 0),
+        "control_count": _safe_int(control.get("control_count"), 0),
+        "external_evidence_ready_count": _safe_int(external.get("ready_count"), 0),
+        "external_evidence_count": _safe_int(external.get("item_count"), 9),
+        "external_observation_needs": needs,
+        "synthetic_probes_are_external_evidence": False,
+        "paper_impact": str(external.get("paper_impact") or "none"),
+        "live_execution_authority": bool(
+            control.get("live_execution_authority", False)
+        ),
+        "next_safe_command": [
+            "./scripts/ops/opsctl.sh",
+            "authoritative-systems",
+            "--json",
+        ],
+        "control_contract": "local_structural_readiness_external_observations_profitability_and_live_authority_remain_separate_truths",
+    }
+
+
+def _research_data_platform_awareness(control: dict[str, Any]) -> dict[str, Any]:
+    catalog = control.get("catalog") if isinstance(control.get("catalog"), dict) else {}
+    source_value = (
+        control.get("source_value")
+        if isinstance(control.get("source_value"), dict)
+        else {}
+    )
+    evidence = (
+        control.get("evidence_controls")
+        if isinstance(control.get("evidence_controls"), dict)
+        else {}
+    )
+    candidate = (
+        control.get("candidate_binding")
+        if isinstance(control.get("candidate_binding"), dict)
+        else {}
+    )
+    implementation_ready = _safe_int(control.get("implementation_ready_count"), 0)
+    implementation_count = _safe_int(control.get("implementation_control_count"), 10)
+    evidence_ready = _safe_int(control.get("evidence_ready_count"), 0)
+    evidence_count = _safe_int(control.get("evidence_control_count"), 10)
+    structural_ready = bool(
+        control.get("ok", False)
+        and implementation_count == 10
+        and implementation_ready == implementation_count
+    )
+    if control and not structural_ready:
+        status = "blocked"
+    elif structural_ready and evidence_ready == evidence_count:
+        status = "ready"
+    else:
+        status = "advisory"
+    needs = sorted(
+        str(capability_id)
+        for capability_id, row in evidence.items()
+        if isinstance(row, dict) and not bool(row.get("ready"))
+    )
+    return {
+        "status": status,
+        "structural_status": str(control.get("overall_status") or "missing"),
+        "implementation_grade": str(control.get("implementation_grade") or "unknown"),
+        "implementation_ready_count": implementation_ready,
+        "implementation_control_count": implementation_count,
+        "evidence_ready_count": evidence_ready,
+        "evidence_control_count": evidence_count,
+        "evidence_needs": needs,
+        "data_product_ready_count": _safe_int(catalog.get("ready_product_count"), 0),
+        "data_product_count": _safe_int(catalog.get("data_product_count"), 0),
+        "decision_family_count": _safe_int(catalog.get("decision_family_count"), 0),
+        "source_value_qualified_count": _safe_int(
+            source_value.get("qualified_count"), 0
+        ),
+        "source_value_count": _safe_int(source_value.get("source_count"), 0),
+        "candidate_id": str(candidate.get("candidate_id") or "none"),
+        "candidate_bound": bool(candidate.get("bound", False)),
+        "paper_soak_ready": bool(control.get("paper_soak_ready", False)),
+        "paper_impact": str(control.get("paper_impact") or "none"),
+        "live_promotion_ready": bool(control.get("live_promotion_ready", False)),
+        "live_execution_authority": False,
+        "next_safe_command": [
+            "./scripts/ops/opsctl.sh",
+            "research-data-platform",
+            "--json",
+        ],
+        "control_contract": "catalog_entitlement_pit_alpha_source_value_simulation_slo_and_reproducibility_truths_remain_separate_from_profitability_and_order_authority",
+    }
+
+
+def _institutional_research_extensions_awareness(
+    control: dict[str, Any],
+) -> dict[str, Any]:
+    evidence = (
+        control.get("evidence_controls")
+        if isinstance(control.get("evidence_controls"), dict)
+        else {}
+    )
+    candidate = (
+        control.get("candidate_binding")
+        if isinstance(control.get("candidate_binding"), dict)
+        else {}
+    )
+    influences = (
+        control.get("firm_influences")
+        if isinstance(control.get("firm_influences"), dict)
+        else {}
+    )
+    implementation_ready = _safe_int(control.get("implementation_ready_count"), 0)
+    implementation_count = _safe_int(control.get("implementation_control_count"), 8)
+    evidence_ready = _safe_int(control.get("evidence_ready_count"), 0)
+    evidence_count = _safe_int(control.get("evidence_control_count"), 8)
+    structural_ready = bool(
+        control.get("ok", False)
+        and implementation_count == 8
+        and implementation_ready == implementation_count
+    )
+    if control and not structural_ready:
+        status = "blocked"
+    elif structural_ready and evidence_ready == evidence_count:
+        status = "ready"
+    else:
+        status = "advisory"
+    needs = sorted(
+        str(control_id)
+        for control_id, row in evidence.items()
+        if isinstance(row, dict) and not bool(row.get("ready"))
+    )
+    return {
+        "status": status,
+        "structural_status": str(control.get("overall_status") or "missing"),
+        "implementation_grade": str(control.get("implementation_grade") or "unknown"),
+        "implementation_ready_count": implementation_ready,
+        "implementation_control_count": implementation_count,
+        "evidence_ready_count": evidence_ready,
+        "evidence_control_count": evidence_count,
+        "evidence_needs": needs,
+        "firm_reference_count": _safe_int(influences.get("reference_count"), 0),
+        "firm_organization_count": _safe_int(influences.get("organization_count"), 0),
+        "candidate_id": str(candidate.get("candidate_id") or "none"),
+        "candidate_bound": bool(candidate.get("bound", False)),
+        "paper_soak_ready": bool(control.get("paper_soak_ready", False)),
+        "paper_impact": str(control.get("paper_impact") or "none"),
+        "reset_soak_clock": bool(control.get("reset_soak_clock", False)),
+        "live_promotion_ready": bool(control.get("live_promotion_ready", False)),
+        "live_execution_authority": False,
+        "next_safe_command": [
+            "./scripts/ops/opsctl.sh",
+            "institutional-research-extensions",
+            "--json",
+        ],
+        "control_contract": "factor_incident_change_risk_cost_dag_versioning_and_valuation_structure_remains_separate_from_candidate_evidence_profitability_and_order_authority",
     }
 
 
@@ -1208,55 +2948,122 @@ def _use_mode_compliance_awareness(use_mode: dict[str, Any]) -> dict[str, Any]:
             "customer_order_execution_allowed": False,
             "raw_profitability_is_not_live_money_proof": True,
             "needs": ["refresh_use_mode_compliance_guard"],
-            "next_safe_command": ["./scripts/ops/opsctl.sh", "use-mode-compliance", "--json"],
+            "next_safe_command": [
+                "./scripts/ops/opsctl.sh",
+                "use-mode-compliance",
+                "--json",
+            ],
             "control_contract": "commercial_customer_facing_and_personal_use_boundaries_must_be_explicit_before_live_or_public_use",
         }
-    commercial = use_mode.get("commercial_use") if isinstance(use_mode.get("commercial_use"), dict) else {}
-    personal = use_mode.get("personal_use") if isinstance(use_mode.get("personal_use"), dict) else {}
+    commercial = (
+        use_mode.get("commercial_use")
+        if isinstance(use_mode.get("commercial_use"), dict)
+        else {}
+    )
+    personal = (
+        use_mode.get("personal_use")
+        if isinstance(use_mode.get("personal_use"), dict)
+        else {}
+    )
     personal_autonomy = (
         personal.get("operator_grade_personal_autonomy")
         if isinstance(personal.get("operator_grade_personal_autonomy"), dict)
         else {}
     )
-    authority = use_mode.get("authority_boundaries") if isinstance(use_mode.get("authority_boundaries"), dict) else {}
-    commercial_blockers = [str(item) for item in commercial.get("blockers", []) if str(item).strip()] if isinstance(commercial.get("blockers"), list) else []
+    authority = (
+        use_mode.get("authority_boundaries")
+        if isinstance(use_mode.get("authority_boundaries"), dict)
+        else {}
+    )
+    commercial_blockers = (
+        [str(item) for item in commercial.get("blockers", []) if str(item).strip()]
+        if isinstance(commercial.get("blockers"), list)
+        else []
+    )
     personal_autonomy_blockers = (
-        [str(item) for item in personal_autonomy.get("blockers", []) if str(item).strip()]
+        [
+            str(item)
+            for item in personal_autonomy.get("blockers", [])
+            if str(item).strip()
+        ]
         if isinstance(personal_autonomy.get("blockers"), list)
         else []
     )
     awareness_status = "ready"
-    if guard_status == "blocked" or commercial_blockers or bool(authority.get("live_execution_authority", False)):
+    if (
+        guard_status == "blocked"
+        or commercial_blockers
+        or bool(authority.get("live_execution_authority", False))
+    ):
         awareness_status = "blocked"
-    elif guard_status in {"needs_work", "degraded", "warning"} or not bool(personal.get("perfect_personal_use_ready", False)):
+    elif guard_status in {"needs_work", "degraded", "warning"} or not bool(
+        personal.get("perfect_personal_use_ready", False)
+    ):
         awareness_status = "advisory"
     return {
         "status": awareness_status,
         "use_mode": str(use_mode.get("use_mode") or "personal"),
         "guard_status": guard_status or "missing",
         "personal_grade": str(personal.get("grade") or "unknown"),
-        "perfect_personal_use_ready": bool(personal.get("perfect_personal_use_ready", False)),
-        "operator_grade_personal_autonomy_ready": bool(personal_autonomy.get("ready", False)),
+        "perfect_personal_use_ready": bool(
+            personal.get("perfect_personal_use_ready", False)
+        ),
+        "operator_grade_personal_autonomy_ready": bool(
+            personal_autonomy.get("ready", False)
+        ),
         "personal_strength_tier": str(personal_autonomy.get("tier") or "unknown"),
         "personal_strength_score": _safe_float(personal_autonomy.get("score"), 0.0),
         "personal_strength_blocker_count": len(personal_autonomy_blockers),
         "personal_strength_blockers": personal_autonomy_blockers,
-        "next_after_production_personal": str(personal_autonomy.get("next_after_production") or "operator_grade_personal_autonomy"),
-        "personal_live_money_ready": bool(personal.get("personal_live_money_ready", False)),
-        "commercial_use_intent_detected": bool(commercial.get("commercial_use_intent_detected", False)),
-        "commercial_clearance_status": str(commercial.get("commercial_clearance_status") or ""),
+        "next_after_production_personal": str(
+            personal_autonomy.get("next_after_production")
+            or "operator_grade_personal_autonomy"
+        ),
+        "personal_live_money_ready": bool(
+            personal.get("personal_live_money_ready", False)
+        ),
+        "commercial_use_intent_detected": bool(
+            commercial.get("commercial_use_intent_detected", False)
+        ),
+        "commercial_clearance_status": str(
+            commercial.get("commercial_clearance_status") or ""
+        ),
         "commercial_blocker_count": len(commercial_blockers),
         "commercial_blockers": commercial_blockers,
-        "live_execution_authority": bool(authority.get("live_execution_authority", False)),
+        "live_execution_authority": bool(
+            authority.get("live_execution_authority", False)
+        ),
         "customer_funds_allowed": bool(authority.get("customer_funds_allowed", False)),
-        "customer_order_execution_allowed": bool(authority.get("customer_order_execution_allowed", False)),
-        "raw_profitability_is_not_live_money_proof": bool(authority.get("raw_profitability_is_not_live_money_proof", True)),
+        "customer_order_execution_allowed": bool(
+            authority.get("customer_order_execution_allowed", False)
+        ),
+        "raw_profitability_is_not_live_money_proof": bool(
+            authority.get("raw_profitability_is_not_live_money_proof", True)
+        ),
         "needs": [
-            *([] if bool(personal.get("perfect_personal_use_ready", False)) else ["resolve_personal_use_posture_blockers"]),
-            *([] if bool(personal_autonomy.get("ready", False)) else ["clear_operator_grade_personal_autonomy_blockers"]),
-            *([] if not commercial_blockers else ["clear_commercial_boundary_blockers_before_public_or_customer_use"]),
+            *(
+                []
+                if bool(personal.get("perfect_personal_use_ready", False))
+                else ["resolve_personal_use_posture_blockers"]
+            ),
+            *(
+                []
+                if bool(personal_autonomy.get("ready", False))
+                else ["clear_operator_grade_personal_autonomy_blockers"]
+            ),
+            *(
+                []
+                if not commercial_blockers
+                else [
+                    "clear_commercial_boundary_blockers_before_public_or_customer_use"
+                ]
+            ),
         ],
-        "next_safe_command": ["./scripts/ops/opsctl.sh", "use-mode-compliance", "--json"],
+        "next_safe_command": [
+            "./scripts/ops/opsctl.sh",
+            "use-mode-compliance",
+            "--json",
+        ],
         "control_contract": "personal_a_plus_is_guarded_paper_data_collection_readiness_operator_grade_personal_autonomy_is_the_next_private_use_bar_commercial_or_customer_use_requires_explicit_review_evidence",
     }
 
@@ -1277,37 +3084,80 @@ def _commercial_readiness_awareness(commercial: dict[str, Any]) -> dict[str, Any
             "blockers": [],
             "live_execution_authority": False,
             "needs": ["refresh_commercial_readiness_control"],
-            "next_safe_command": ["./scripts/ops/opsctl.sh", "commercial-readiness", "--json"],
+            "next_safe_command": [
+                "./scripts/ops/opsctl.sh",
+                "commercial-readiness",
+                "--json",
+            ],
             "control_contract": "seven_section_commercial_readiness_must_be_visible_before_public_customer_or_paid_use",
         }
-    authority = commercial.get("authority_boundaries") if isinstance(commercial.get("authority_boundaries"), dict) else {}
-    blockers = [str(item) for item in commercial.get("blockers", []) if str(item).strip()] if isinstance(commercial.get("blockers"), list) else []
+    authority = (
+        commercial.get("authority_boundaries")
+        if isinstance(commercial.get("authority_boundaries"), dict)
+        else {}
+    )
+    blockers = (
+        [str(item) for item in commercial.get("blockers", []) if str(item).strip()]
+        if isinstance(commercial.get("blockers"), list)
+        else []
+    )
     status = "ready"
-    if guard_status == "blocked" or blockers or bool(authority.get("live_execution_authority", False)):
+    if (
+        guard_status == "blocked"
+        or blockers
+        or bool(authority.get("live_execution_authority", False))
+    ):
         status = "blocked"
-    elif bool(commercial.get("commercial_intent", False)) and not bool(commercial.get("commercial_release_ready", False)):
+    elif bool(commercial.get("commercial_intent", False)) and not bool(
+        commercial.get("commercial_release_ready", False)
+    ):
         status = "advisory"
     return {
         "status": status,
         "guard_status": guard_status or "missing",
-        "commercial_product_mode": str(commercial.get("commercial_product_mode") or "personal_only"),
+        "commercial_product_mode": str(
+            commercial.get("commercial_product_mode") or "personal_only"
+        ),
         "commercial_intent": bool(commercial.get("commercial_intent", False)),
-        "commercial_release_ready": bool(commercial.get("commercial_release_ready", False)),
-        "commercial_release_blocked": bool(commercial.get("commercial_release_blocked", False)),
+        "commercial_release_ready": bool(
+            commercial.get("commercial_release_ready", False)
+        ),
+        "commercial_release_blocked": bool(
+            commercial.get("commercial_release_blocked", False)
+        ),
         "grade": str(commercial.get("grade") or "unknown"),
         "ready_section_count": _safe_int(commercial.get("ready_section_count"), 0),
         "section_count": _safe_int(commercial.get("section_count"), 0),
         "blocked_section_count": _safe_int(commercial.get("blocked_section_count"), 0),
         "blockers": blockers,
-        "live_execution_authority": bool(authority.get("live_execution_authority", False)),
+        "live_execution_authority": bool(
+            authority.get("live_execution_authority", False)
+        ),
         "customer_funds_allowed": bool(authority.get("customer_funds_allowed", False)),
-        "customer_order_execution_allowed": bool(authority.get("customer_order_execution_allowed", False)),
-        "seven_section_contract": commercial.get("seven_section_contract") if isinstance(commercial.get("seven_section_contract"), dict) else {},
+        "customer_order_execution_allowed": bool(
+            authority.get("customer_order_execution_allowed", False)
+        ),
+        "seven_section_contract": (
+            commercial.get("seven_section_contract")
+            if isinstance(commercial.get("seven_section_contract"), dict)
+            else {}
+        ),
         "needs": [
             *([] if not blockers else ["clear_commercial_readiness_blockers"]),
-            *([] if bool(commercial.get("commercial_release_ready", False)) or not bool(commercial.get("commercial_intent", False)) else ["complete_commercial_release_packet_before_public_or_customer_use"]),
+            *(
+                []
+                if bool(commercial.get("commercial_release_ready", False))
+                or not bool(commercial.get("commercial_intent", False))
+                else [
+                    "complete_commercial_release_packet_before_public_or_customer_use"
+                ]
+            ),
         ],
-        "next_safe_command": ["./scripts/ops/opsctl.sh", "commercial-readiness", "--json"],
+        "next_safe_command": [
+            "./scripts/ops/opsctl.sh",
+            "commercial-readiness",
+            "--json",
+        ],
         "control_contract": "commercial_modes_reviews_marketing_claims_customer_funds_evidence_packet_self_awareness_and_security_privacy_are_first_class_boundaries",
     }
 
@@ -1339,15 +3189,36 @@ def _dependency_memory(
     *,
     now: datetime,
 ) -> dict[str, Any]:
-    previous_last_good = previous.get("last_good_snapshots") if isinstance(previous.get("last_good_snapshots"), dict) else {}
+    previous_last_good = (
+        previous.get("last_good_snapshots")
+        if isinstance(previous.get("last_good_snapshots"), dict)
+        else {}
+    )
     last_good: dict[str, dict[str, Any]] = {
-        str(name): row for name, row in previous_last_good.items() if isinstance(row, dict)
+        str(name): row
+        for name, row in previous_last_good.items()
+        if isinstance(row, dict)
     }
     stale_sources: list[dict[str, Any]] = []
     managed_stale_sources: list[dict[str, Any]] = []
-    ready_like = {"ready", "ok", "watch", "advisory", "thin", "steady_state", "applied_with_followups", "handoff_requested"}
-    dashboard_row = surface_matrix.get("runtime_gate_dashboard") if isinstance(surface_matrix.get("runtime_gate_dashboard"), dict) else {}
-    guarded_paper_context_enabled = bool(dashboard_row.get("guarded_paper_context_enabled", False))
+    ready_like = {
+        "ready",
+        "ok",
+        "watch",
+        "advisory",
+        "thin",
+        "steady_state",
+        "applied_with_followups",
+        "handoff_requested",
+    }
+    dashboard_row = (
+        surface_matrix.get("runtime_gate_dashboard")
+        if isinstance(surface_matrix.get("runtime_gate_dashboard"), dict)
+        else {}
+    )
+    guarded_paper_context_enabled = bool(
+        dashboard_row.get("guarded_paper_context_enabled", False)
+    )
 
     for name, row in surface_matrix.items():
         status = str(row.get("status") or "missing")
@@ -1358,11 +3229,17 @@ def _dependency_memory(
             last_good[name] = {
                 "status": status,
                 "payload_sha256": payload_hash,
-                "payload_hash_short": str(row.get("payload_hash_short") or payload_hash[:12]),
+                "payload_hash_short": str(
+                    row.get("payload_hash_short") or payload_hash[:12]
+                ),
                 "timestamp_utc": str(row.get("timestamp_utc") or now.isoformat()),
             }
         if isinstance(age_minutes, (int, float)):
-            stale_limit = 90.0 if name in {"global_halt", "memory_efficiency", "runtime_throttle"} else 360.0
+            stale_limit = (
+                90.0
+                if name in {"global_halt", "memory_efficiency", "runtime_throttle"}
+                else 360.0
+            )
             if float(age_minutes) > stale_limit:
                 row_payload = {
                     "surface": name,
@@ -1370,7 +3247,11 @@ def _dependency_memory(
                     "stale_limit_minutes": stale_limit,
                     "status": status,
                 }
-                if guarded_paper_context_enabled and name in GUARDED_PAPER_OPTIONAL_STALE_SURFACES and status in ready_like:
+                if (
+                    guarded_paper_context_enabled
+                    and name in GUARDED_PAPER_OPTIONAL_STALE_SURFACES
+                    and status in ready_like
+                ):
                     row_payload.update(
                         {
                             "managed_by": "runtime_gate_dashboard",
@@ -1398,7 +3279,11 @@ def _dependency_memory(
             }
         )
 
-    blocked_edges = [edge for edge in edge_health if str(edge.get("edge_status") or "") in {"blocked", "critical"}]
+    blocked_edges = [
+        edge
+        for edge in edge_health
+        if str(edge.get("edge_status") or "") in {"blocked", "critical"}
+    ]
     degraded_edges = [
         edge
         for edge in edge_health
@@ -1462,26 +3347,52 @@ def _failure_memory_index(
             "source": "global_killswitch",
             "severity": "blocked" if halt_active else "ready",
             "state": "active" if halt_active else "clear",
-            "reason": ",".join(str(item) for item in (global_halt.get("reasons") or []) if str(item).strip()) or str(global_halt.get("action") or "none"),
+            "reason": ",".join(
+                str(item)
+                for item in (global_halt.get("reasons") or [])
+                if str(item).strip()
+            )
+            or str(global_halt.get("action") or "none"),
         }
     )
 
     if incident:
-        incident_event = str(incident.get("event") or incident.get("status") or "state_update")
-        failed_checks = incident.get("failed_checks") if isinstance(incident.get("failed_checks"), list) else []
+        incident_event = str(
+            incident.get("event") or incident.get("status") or "state_update"
+        )
+        failed_checks = (
+            incident.get("failed_checks")
+            if isinstance(incident.get("failed_checks"), list)
+            else []
+        )
         events.append(
             {
                 "timestamp_utc": str(incident.get("timestamp_utc") or now.isoformat()),
                 "event_type": "incident_auto_halt",
                 "source": "incident_auto_halt",
-                "severity": "blocked" if bool(incident.get("halt", False)) else ("degraded" if failed_checks else "ready"),
+                "severity": (
+                    "blocked"
+                    if bool(incident.get("halt", False))
+                    else ("degraded" if failed_checks else "ready")
+                ),
                 "state": incident_event,
-                "reason": ",".join(str(item) for item in failed_checks if str(item).strip()) or "none",
+                "reason": ",".join(
+                    str(item) for item in failed_checks if str(item).strip()
+                )
+                or "none",
             }
         )
 
-    adaptive = cockpit.get("adaptive_posture") if isinstance(cockpit.get("adaptive_posture"), dict) else {}
-    for blocker in adaptive.get("hard_blockers") if isinstance(adaptive.get("hard_blockers"), list) else []:
+    adaptive = (
+        cockpit.get("adaptive_posture")
+        if isinstance(cockpit.get("adaptive_posture"), dict)
+        else {}
+    )
+    for blocker in (
+        adaptive.get("hard_blockers")
+        if isinstance(adaptive.get("hard_blockers"), list)
+        else []
+    ):
         events.append(
             {
                 "timestamp_utc": now.isoformat(),
@@ -1493,8 +3404,15 @@ def _failure_memory_index(
             }
         )
 
-    backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
-    pending_lines = _safe_int(backpressure.get("total_pending_lines"), _safe_int(backpressure.get("core_pending_lines"), 0))
+    backpressure = (
+        storage.get("backpressure")
+        if isinstance(storage.get("backpressure"), dict)
+        else {}
+    )
+    pending_lines = _safe_int(
+        backpressure.get("total_pending_lines"),
+        _safe_int(backpressure.get("core_pending_lines"), 0),
+    )
     pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
     if pending_lines or pressure_index > 0:
         events.append(
@@ -1503,7 +3421,11 @@ def _failure_memory_index(
                 "event_type": "backpressure",
                 "source": "ingestion_storage",
                 "severity": "degraded" if pressure_index >= 0.5 else "advisory",
-                "state": str(storage.get("severity") or storage.get("overall_status") or "observed"),
+                "state": str(
+                    storage.get("severity")
+                    or storage.get("overall_status")
+                    or "observed"
+                ),
                 "reason": f"pending_lines={pending_lines} pressure_index={pressure_index:.3f}",
             }
         )
@@ -1522,8 +3444,16 @@ def _failure_memory_index(
         )
 
     if bool(tripwire.get("active", False)):
-        incidents = tripwire.get("active_incidents") if isinstance(tripwire.get("active_incidents"), list) else []
-        targets = ",".join(str(row.get("target") or "") for row in incidents if isinstance(row, dict) and str(row.get("target") or "").strip())
+        incidents = (
+            tripwire.get("active_incidents")
+            if isinstance(tripwire.get("active_incidents"), list)
+            else []
+        )
+        targets = ",".join(
+            str(row.get("target") or "")
+            for row in incidents
+            if isinstance(row, dict) and str(row.get("target") or "").strip()
+        )
         events.append(
             {
                 "timestamp_utc": str(tripwire.get("timestamp_utc") or now.isoformat()),
@@ -1535,7 +3465,11 @@ def _failure_memory_index(
             }
         )
 
-    previous_events = previous.get("recent_events") if isinstance(previous.get("recent_events"), list) else []
+    previous_events = (
+        previous.get("recent_events")
+        if isinstance(previous.get("recent_events"), list)
+        else []
+    )
     merged: dict[str, dict[str, Any]] = {}
     for raw in previous_events:
         if not isinstance(raw, dict):
@@ -1560,14 +3494,20 @@ def _failure_memory_index(
                 "last_seen_utc": event.get("timestamp_utc") or now.isoformat(),
                 "seen_count": 1,
             }
-    recent_events = sorted(merged.values(), key=lambda row: str(row.get("last_seen_utc") or ""))[-120:]
+    recent_events = sorted(
+        merged.values(), key=lambda row: str(row.get("last_seen_utc") or "")
+    )[-120:]
     active_risk_events = [
         row
         for row in events
-        if str(row.get("severity") or "") in {"blocked", "critical", "degraded", "needs_work"}
+        if str(row.get("severity") or "")
+        in {"blocked", "critical", "degraded", "needs_work"}
     ]
     status = "ready"
-    if any(str(row.get("severity") or "") in {"blocked", "critical"} for row in active_risk_events):
+    if any(
+        str(row.get("severity") or "") in {"blocked", "critical"}
+        for row in active_risk_events
+    ):
         status = "blocked"
     elif active_risk_events:
         status = "degraded"
@@ -1600,24 +3540,35 @@ def _registry_projection(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "slot_kind": str(row.get("slot_kind") or ""),
             "tier": str(row.get("tier") or row.get("bot_tier") or ""),
             "capability_pack_slug": str(row.get("capability_pack_slug") or ""),
-            "system_self_awareness_version": str(row.get("system_self_awareness_version") or ""),
+            "system_self_awareness_version": str(
+                row.get("system_self_awareness_version") or ""
+            ),
         }
         projection[bot_id] = {"fingerprint": _json_sha256(summary), "summary": summary}
     return projection
 
 
-def _registry_diff_memory(registry: dict[str, Any], previous: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+def _registry_diff_memory(
+    registry: dict[str, Any], previous: dict[str, Any], *, now: datetime
+) -> dict[str, Any]:
     current = _registry_projection(registry)
-    previous_map = previous.get("bot_fingerprints") if isinstance(previous.get("bot_fingerprints"), dict) else {}
+    previous_map = (
+        previous.get("bot_fingerprints")
+        if isinstance(previous.get("bot_fingerprints"), dict)
+        else {}
+    )
     added = sorted(bot_id for bot_id in current if bot_id not in previous_map)
     removed = sorted(bot_id for bot_id in previous_map if bot_id not in current)
     changed = sorted(
         bot_id
         for bot_id, row in current.items()
         if bot_id in previous_map
-        and str((previous_map.get(bot_id) or {}).get("fingerprint") or "") != str(row.get("fingerprint") or "")
+        and str((previous_map.get(bot_id) or {}).get("fingerprint") or "")
+        != str(row.get("fingerprint") or "")
     )
-    fingerprint = _json_sha256({bot_id: row.get("fingerprint") for bot_id, row in sorted(current.items())})
+    fingerprint = _json_sha256(
+        {bot_id: row.get("fingerprint") for bot_id, row in sorted(current.items())}
+    )
     previous_fingerprint = str(previous.get("registry_fingerprint") or "")
     if not previous_map:
         status = "baseline"
@@ -1632,7 +3583,9 @@ def _registry_diff_memory(registry: dict[str, Any], previous: dict[str, Any], *,
         "diff_status": status,
         "registry_fingerprint": fingerprint,
         "previous_registry_fingerprint": previous_fingerprint,
-        "fingerprint_changed": bool(previous_fingerprint and previous_fingerprint != fingerprint),
+        "fingerprint_changed": bool(
+            previous_fingerprint and previous_fingerprint != fingerprint
+        ),
         "current_bot_count": len(current),
         "previous_bot_count": len(previous_map),
         "added_count": len(added),
@@ -1648,15 +3601,21 @@ def _registry_diff_memory(registry: dict[str, Any], previous: dict[str, Any], *,
 
 def _compact_registry_diff_memory(payload: dict[str, Any]) -> dict[str, Any]:
     return {
-        key: value
-        for key, value in payload.items()
-        if key not in {"bot_fingerprints"}
+        key: value for key, value in payload.items() if key not in {"bot_fingerprints"}
     }
 
 
-def _self_reporting_awareness(cockpit: dict[str, Any], surface_matrix: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    loaded_count = sum(1 for row in surface_matrix.values() if bool(row.get("loaded", False)))
-    recommended_actions = cockpit.get("recommended_actions") if isinstance(cockpit.get("recommended_actions"), list) else []
+def _self_reporting_awareness(
+    cockpit: dict[str, Any], surface_matrix: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    loaded_count = sum(
+        1 for row in surface_matrix.values() if bool(row.get("loaded", False))
+    )
+    recommended_actions = (
+        cockpit.get("recommended_actions")
+        if isinstance(cockpit.get("recommended_actions"), list)
+        else []
+    )
     status = "ready" if loaded_count >= 6 else "degraded"
     return {
         "status": status,
@@ -1791,11 +3750,16 @@ def _writer_process_intelligence_wired(project_root: Path = PROJECT_ROOT) -> boo
         "writer_progress",
         "admission_evidence",
     ]
-    return all(marker in f"{writer_text}\n{coordinator_text}\n{opsctl_text}\n{shard_text}" for marker in required_markers)
+    return all(
+        marker in f"{writer_text}\n{coordinator_text}\n{opsctl_text}\n{shard_text}"
+        for marker in required_markers
+    )
 
 
 def _whole_system_intelligence_wired(project_root: Path = PROJECT_ROOT) -> bool:
-    coordinator_path = project_root / "scripts" / "ops" / "system_intelligence_coordinator.py"
+    coordinator_path = (
+        project_root / "scripts" / "ops" / "system_intelligence_coordinator.py"
+    )
     opsctl_path = project_root / "scripts" / "ops" / "opsctl.sh"
     try:
         coordinator_text = coordinator_path.read_text(encoding="utf-8")
@@ -1815,7 +3779,9 @@ def _whole_system_intelligence_wired(project_root: Path = PROJECT_ROOT) -> bool:
         "global_safety_contract",
         "system-intelligence",
     ]
-    return all(marker in f"{coordinator_text}\n{opsctl_text}" for marker in required_markers)
+    return all(
+        marker in f"{coordinator_text}\n{opsctl_text}" for marker in required_markers
+    )
 
 
 def _implementation_flags(project_root: Path = PROJECT_ROOT) -> dict[str, bool]:
@@ -1874,7 +3840,9 @@ def _optimization_plan(
             "priority": "critical",
             "upgrade": "convert active global halts into a safe precheck, clearance, relaunch, and verification plan",
             "benefit": "lets the intelligence layer know why the halt happened, what it needs, and which bounded command should run next",
-            "implemented": bool(implementation_flags.get("halt_recovery_intelligence", False)),
+            "implemented": bool(
+                implementation_flags.get("halt_recovery_intelligence", False)
+            ),
         },
         {
             "rank": 5,
@@ -1890,7 +3858,9 @@ def _optimization_plan(
             "priority": "critical",
             "upgrade": "join CPU pressure, memory pressure, swap, host saturation, and open-app co-tenancy into one intelligence routing state",
             "benefit": "lets the platform brain downshift MLX, reporting, training, and drainer work before foreground apps or live collection feel pressure",
-            "implemented": bool(implementation_flags.get("host_pressure_intelligence", False)),
+            "implemented": bool(
+                implementation_flags.get("host_pressure_intelligence", False)
+            ),
         },
         {
             "rank": 7,
@@ -1922,7 +3892,9 @@ def _optimization_plan(
             "priority": "high",
             "upgrade": "route non-MLX libraries through owner lanes while keeping MLX as the default live intelligence backend",
             "benefit": "turns the rest of the dependency stack into governed support lanes instead of idle or competing backends",
-            "implemented": bool(implementation_flags.get("library_utilization_brain", False)),
+            "implemented": bool(
+                implementation_flags.get("library_utilization_brain", False)
+            ),
         },
         {
             "rank": 11,
@@ -1930,7 +3902,9 @@ def _optimization_plan(
             "priority": "critical",
             "upgrade": "make the drainer fleet, super-drainer, writer coordinator, and storage autopilot part of the self-model state vector",
             "benefit": "lets the platform brain reason about backlog pressure, active drain lanes, wave progress, and single-writer safety before halts or expansions",
-            "implemented": bool(implementation_flags.get("drainer_intelligence", False)),
+            "implemented": bool(
+                implementation_flags.get("drainer_intelligence", False)
+            ),
         },
         {
             "rank": 12,
@@ -1938,7 +3912,9 @@ def _optimization_plan(
             "priority": "critical",
             "upgrade": "give the SQL writer layer its own health, process-topology, shard-lane, and recovery decision packet",
             "benefit": "expands writer throughput with targeted shard lanes while preserving the single-writer lock and process fanout guardrails",
-            "implemented": bool(implementation_flags.get("writer_process_intelligence", False)),
+            "implemented": bool(
+                implementation_flags.get("writer_process_intelligence", False)
+            ),
         },
         {
             "rank": 13,
@@ -1946,7 +3922,9 @@ def _optimization_plan(
             "priority": "critical",
             "upgrade": "join signal bus, system brain, process contracts, and Codex handoff into one whole-system intelligence coordinator",
             "benefit": "lets the platform select one safe next infrastructure move and hand Codex a concise attention packet",
-            "implemented": bool(implementation_flags.get("whole_system_intelligence", False)),
+            "implemented": bool(
+                implementation_flags.get("whole_system_intelligence", False)
+            ),
         },
         {
             "rank": 14,
@@ -1954,20 +3932,27 @@ def _optimization_plan(
             "priority": "critical",
             "upgrade": "add trend memory, action-effect scoring, causal diagnosis, integration routing, contract checks, and pre-action reflexes to the whole-system brain",
             "benefit": "keeps the brain from acting on stale or contradictory signals, teaches it when repeated actions are not clearing pressure, and routes the next move to the right consumer",
-            "implemented": bool(implementation_flags.get("system_self_intelligence", False)),
+            "implemented": bool(
+                implementation_flags.get("system_self_intelligence", False)
+            ),
         },
     ]
     degraded = [
         name
         for name, row in domains.items()
-        if str(row.get("status") or "") in {"advisory", "needs_work", "degraded", "blocked"}
+        if str(row.get("status") or "")
+        in {"advisory", "needs_work", "degraded", "blocked"}
     ]
     blocked_surfaces = [
-        name for name, row in surface_matrix.items() if str(row.get("status") or "") == "blocked"
+        name
+        for name, row in surface_matrix.items()
+        if str(row.get("status") or "") == "blocked"
     ]
     for item in plan:
         implemented = bool(item.get("implemented", False))
-        item["triggered_by_current_state"] = (item["lane"] in degraded or bool(blocked_surfaces)) and not implemented
+        item["triggered_by_current_state"] = (
+            item["lane"] in degraded or bool(blocked_surfaces)
+        ) and not implemented
     return plan
 
 
@@ -1986,12 +3971,25 @@ def _advanced_upgrade_backlog(
     active_bots = _safe_int((domains.get("bot_awareness") or {}).get("active_bots"), 0)
     active_risk_events = _safe_int(failure_index.get("active_risk_event_count"), 0)
     stale_sources = _safe_int(dependency_memory.get("stale_source_count"), 0)
-    mlx_router_status = str((surface_matrix.get("mlx_intelligence_router") or {}).get("status") or "missing")
-    library_router_status = str((surface_matrix.get("library_utilization_router") or {}).get("status") or "missing")
-    drainer = domains.get("drainer_intelligence") if isinstance(domains.get("drainer_intelligence"), dict) else {}
+    mlx_router_status = str(
+        (surface_matrix.get("mlx_intelligence_router") or {}).get("status") or "missing"
+    )
+    library_router_status = str(
+        (surface_matrix.get("library_utilization_router") or {}).get("status")
+        or "missing"
+    )
+    drainer = (
+        domains.get("drainer_intelligence")
+        if isinstance(domains.get("drainer_intelligence"), dict)
+        else {}
+    )
     drainer_status = str(drainer.get("status") or "missing")
     drainer_target_met = bool(drainer.get("target_met", False))
-    host_pressure = domains.get("host_pressure_intelligence") if isinstance(domains.get("host_pressure_intelligence"), dict) else {}
+    host_pressure = (
+        domains.get("host_pressure_intelligence")
+        if isinstance(domains.get("host_pressure_intelligence"), dict)
+        else {}
+    )
     host_pressure_status = str(host_pressure.get("status") or "missing")
     return [
         {
@@ -2007,7 +4005,11 @@ def _advanced_upgrade_backlog(
             "upgrade": "route MLX model, simulation, and quant-pricing workloads through the same cotenant-aware throttle and shared-memory budget",
             "triggered": bool(
                 mlx_router_status not in {"ready", "advisory"}
-                or (active_bots >= 700 and (domains.get("mlx_intelligence_awareness") or {}).get("status") in {"missing", "blocked", "degraded"})
+                or (
+                    active_bots >= 700
+                    and (domains.get("mlx_intelligence_awareness") or {}).get("status")
+                    in {"missing", "blocked", "degraded"}
+                )
             ),
             "benefit": "keeps MLX fast without letting GPU/shared-memory work starve collectors, SQL writers, or foreground apps",
         },
@@ -2022,14 +4024,18 @@ def _advanced_upgrade_backlog(
             "rank": 4,
             "lane": "drainer_self_intelligence",
             "upgrade": "feed super-drainer strategy, memory, active lane, target clearance, and writer safety into the self-model and Grand Master packet",
-            "triggered": bool(drainer_status not in {"ready", "advisory"} or not drainer_target_met),
+            "triggered": bool(
+                drainer_status not in {"ready", "advisory"} or not drainer_target_met
+            ),
             "benefit": "lets the platform choose drain, wait, throttle, or expand based on queue physiology instead of raw backlog files",
         },
         {
             "rank": 5,
             "lane": "host_pressure_reflex_layer",
             "upgrade": "feed CPU, memory, swap, host saturation, and co-running apps into MLX caps, library caps, drainer waves, and training cadence",
-            "triggered": bool(host_pressure_status in {"advisory", "degraded", "blocked"}),
+            "triggered": bool(
+                host_pressure_status in {"advisory", "degraded", "blocked"}
+            ),
             "benefit": "keeps live data and paper trading smooth while still using the intelligence layer aggressively when the Mac is clear",
         },
         {
@@ -2050,7 +4056,10 @@ def _advanced_upgrade_backlog(
             "rank": 8,
             "lane": "hot_path_storage_budget",
             "upgrade": "assign per-surface hot/warm/cold storage budgets and degrade report/explanation writes before trading-path writes",
-            "triggered": bool("storage_tier_policy" in blocked_or_degraded or "artifact_freshness" in blocked_or_degraded),
+            "triggered": bool(
+                "storage_tier_policy" in blocked_or_degraded
+                or "artifact_freshness" in blocked_or_degraded
+            ),
             "benefit": "protects paper/live collection when reports, artifacts, or explainers grow too fast",
         },
         {
@@ -2071,7 +4080,10 @@ def _advanced_upgrade_backlog(
             "rank": 11,
             "lane": "registry_growth_governance",
             "upgrade": "require every new bot wave to emit expected storage, CPU, labels, training horizon, teacher lineage, and rollback metadata",
-            "triggered": bool(registry_diff.get("fingerprint_changed") or registry_diff.get("diff_status") == "baseline"),
+            "triggered": bool(
+                registry_diff.get("fingerprint_changed")
+                or registry_diff.get("diff_status") == "baseline"
+            ),
             "benefit": "keeps future expansion clean and auditable",
         },
         {
@@ -2100,7 +4112,9 @@ def _upgrade_optimizer_payload(
         for row in payload.get("upgrades_and_optimizations", [])
         if isinstance(row, dict) and bool(row.get("triggered_by_current_state", False))
     ]
-    advanced_triggered = [row for row in advanced_backlog if bool(row.get("triggered", False))]
+    advanced_triggered = [
+        row for row in advanced_backlog if bool(row.get("triggered", False))
+    ]
     return {
         "timestamp_utc": now.isoformat(),
         "schema_version": 1,
@@ -2111,14 +4125,22 @@ def _upgrade_optimizer_payload(
         "implemented_lanes": [str(row.get("lane") or "") for row in implemented],
         "active_upgrade_lanes": [str(row.get("lane") or "") for row in triggered],
         "next_generation_backlog": advanced_backlog,
-        "top_next_actions": [str(row.get("upgrade") or "") for row in advanced_triggered[:4]],
+        "top_next_actions": [
+            str(row.get("upgrade") or "") for row in advanced_triggered[:4]
+        ],
         "optimizer_contract": "rank_next_safe_platform_brain_stabilization_and_optimization_work",
     }
 
 
 def _render_markdown(payload: dict[str, Any]) -> str:
-    identity = payload.get("identity") if isinstance(payload.get("identity"), dict) else {}
-    domains = payload.get("awareness_domains") if isinstance(payload.get("awareness_domains"), dict) else {}
+    identity = (
+        payload.get("identity") if isinstance(payload.get("identity"), dict) else {}
+    )
+    domains = (
+        payload.get("awareness_domains")
+        if isinstance(payload.get("awareness_domains"), dict)
+        else {}
+    )
     lines = [
         "# System Self Model",
         "",
@@ -2140,19 +4162,47 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         if not isinstance(row, dict):
             continue
         implemented = " (implemented)" if row.get("implemented") else ""
-        lines.append(f"- `{row.get('lane', '')}`{implemented}: {row.get('upgrade', '')}")
+        lines.append(
+            f"- `{row.get('lane', '')}`{implemented}: {row.get('upgrade', '')}"
+        )
     lines.extend(["", "## Self Summary", "", str(payload.get("self_summary") or "")])
     return "\n".join(lines) + "\n"
 
 
 def _render_self_brief(payload: dict[str, Any]) -> str:
-    identity = payload.get("identity") if isinstance(payload.get("identity"), dict) else {}
-    domains = payload.get("awareness_domains") if isinstance(payload.get("awareness_domains"), dict) else {}
-    surface_matrix = payload.get("surface_matrix") if isinstance(payload.get("surface_matrix"), dict) else {}
-    dependency_memory = payload.get("dependency_memory") if isinstance(payload.get("dependency_memory"), dict) else {}
-    failure_index = payload.get("failure_memory_index") if isinstance(payload.get("failure_memory_index"), dict) else {}
-    registry_diff = payload.get("registry_diff_memory") if isinstance(payload.get("registry_diff_memory"), dict) else {}
-    optimizer = payload.get("upgrade_optimizer") if isinstance(payload.get("upgrade_optimizer"), dict) else {}
+    identity = (
+        payload.get("identity") if isinstance(payload.get("identity"), dict) else {}
+    )
+    domains = (
+        payload.get("awareness_domains")
+        if isinstance(payload.get("awareness_domains"), dict)
+        else {}
+    )
+    surface_matrix = (
+        payload.get("surface_matrix")
+        if isinstance(payload.get("surface_matrix"), dict)
+        else {}
+    )
+    dependency_memory = (
+        payload.get("dependency_memory")
+        if isinstance(payload.get("dependency_memory"), dict)
+        else {}
+    )
+    failure_index = (
+        payload.get("failure_memory_index")
+        if isinstance(payload.get("failure_memory_index"), dict)
+        else {}
+    )
+    registry_diff = (
+        payload.get("registry_diff_memory")
+        if isinstance(payload.get("registry_diff_memory"), dict)
+        else {}
+    )
+    optimizer = (
+        payload.get("upgrade_optimizer")
+        if isinstance(payload.get("upgrade_optimizer"), dict)
+        else {}
+    )
 
     blocked = [
         name
@@ -2162,10 +4212,19 @@ def _render_self_brief(payload: dict[str, Any]) -> str:
     degraded = [
         name
         for name, row in surface_matrix.items()
-        if isinstance(row, dict) and str(row.get("status") or "") in {"degraded", "needs_work"}
+        if isinstance(row, dict)
+        and str(row.get("status") or "") in {"degraded", "needs_work"}
     ]
-    top_actions = optimizer.get("top_next_actions") if isinstance(optimizer.get("top_next_actions"), list) else []
-    failure_awareness = domains.get("failure_memory") if isinstance(domains.get("failure_memory"), dict) else {}
+    top_actions = (
+        optimizer.get("top_next_actions")
+        if isinstance(optimizer.get("top_next_actions"), list)
+        else []
+    )
+    failure_awareness = (
+        domains.get("failure_memory")
+        if isinstance(domains.get("failure_memory"), dict)
+        else {}
+    )
     global_halt_active = bool(failure_awareness.get("global_halt_active", False))
     lines = [
         "# System Self Brief",
@@ -2192,6 +4251,13 @@ def _render_self_brief(payload: dict[str, Any]) -> str:
         f"- Self-intelligence: `{((domains.get('system_self_intelligence') or {}).get('status') or '')}` reflex `{((domains.get('system_self_intelligence') or {}).get('reflex_action') or 'none')}` uncertainty `{((domains.get('system_self_intelligence') or {}).get('uncertainty_level') or '')}` root `{((domains.get('system_self_intelligence') or {}).get('causal_root') or 'none')}` effect `{((domains.get('system_self_intelligence') or {}).get('action_effect_verdict') or 'none')}` route `{((domains.get('system_self_intelligence') or {}).get('integration_route_mode') or 'none')}`",
         f"- Codex operator bridge: `{((domains.get('codex_operator_bridge') or {}).get('status') or '')}` needs `{((domains.get('codex_operator_bridge') or {}).get('needs_codex_count') or 0)}` paper day PnL `{((domains.get('codex_operator_bridge') or {}).get('paper_day_net_pnl') or 0.0)}` training batch `{((domains.get('codex_operator_bridge') or {}).get('training_recommended_batch_size') or 0)}`",
         f"- Core materialization: `{((domains.get('bot_awareness') or {}).get('materialization_status') or '')}`",
+        f"- Candidate profitability: `{((domains.get('profitability_awareness') or {}).get('candidate_id') or 'none')}` implementation `{((domains.get('profitability_awareness') or {}).get('implementation_grade') or 'unknown')}` economic `{((domains.get('profitability_awareness') or {}).get('economic_evidence_grade') or 'unknown')}` samples `{((domains.get('profitability_awareness') or {}).get('candidate_post_cost_samples') or 0)}`",
+        f"- Alpha lifecycle: implementation `{((domains.get('alpha_generation_awareness') or {}).get('implementation_grade') or 'unknown')}` economic `{((domains.get('alpha_generation_awareness') or {}).get('economic_evidence_grade') or 'unknown')}` controls `{((domains.get('alpha_generation_awareness') or {}).get('evidence_ready_controls') or 0)}/{((domains.get('alpha_generation_awareness') or {}).get('control_count') or 10)}` selected sleeves `{len(((domains.get('alpha_generation_awareness') or {}).get('selected_sleeves') or []))}` cash `{((domains.get('alpha_generation_awareness') or {}).get('cash_weight') if (domains.get('alpha_generation_awareness') or {}).get('cash_weight') is not None else 1.0)}` expansion frozen `{((domains.get('alpha_generation_awareness') or {}).get('expansion_frozen') if (domains.get('alpha_generation_awareness') or {}).get('expansion_frozen') is not None else True)}`",
+        f"- Alpha concept laboratory: implementation `{((domains.get('alpha_concept_awareness') or {}).get('implementation_grade') or 'unknown')}` catalog `{((domains.get('alpha_concept_awareness') or {}).get('catalog_routing_grade') or 'unknown')}` candidate evidence `{((domains.get('alpha_concept_awareness') or {}).get('candidate_evidence_ready_count') or 0)}/{((domains.get('alpha_concept_awareness') or {}).get('candidate_evidence_measurement_count') or 15)}` economic `{((domains.get('alpha_concept_awareness') or {}).get('economic_support_grade') or 'unknown')}` concepts `{((domains.get('alpha_concept_awareness') or {}).get('concept_count') or 0)}`",
+        f"- Sleeve alpha toolbox: `{((domains.get('sleeve_alpha_toolbox_awareness') or {}).get('status') or 'missing')}` routed `{((domains.get('sleeve_alpha_toolbox_awareness') or {}).get('routed_sleeve_count') or 0)}/{((domains.get('sleeve_alpha_toolbox_awareness') or {}).get('declared_sleeve_count') or 0)}` candidate-evidence-ready `{((domains.get('sleeve_alpha_toolbox_awareness') or {}).get('candidate_evidence_ready_sleeve_count') or 0)}` fallback routes `{((domains.get('sleeve_alpha_toolbox_awareness') or {}).get('default_fallback_route_count') or 0)}`",
+        f"- Generation attribution: `{((domains.get('generation_attribution_awareness') or {}).get('status') or 'missing')}` G{((domains.get('generation_attribution_awareness') or {}).get('from_generation') or 0)} to G{((domains.get('generation_attribution_awareness') or {}).get('to_generation') or 0)} cumulative soak `{((domains.get('generation_attribution_awareness') or {}).get('cumulative_soak_elapsed_hours') or 0.0)}`h identity-bound comparison `{((domains.get('generation_attribution_awareness') or {}).get('identity_bound_behavior_comparison_ready') or False)}`",
+        f"- Authoritative controls: `{((domains.get('authoritative_systems_awareness') or {}).get('ready_control_count') or 0)}/{((domains.get('authoritative_systems_awareness') or {}).get('control_count') or 0)}` external evidence `{((domains.get('authoritative_systems_awareness') or {}).get('external_evidence_ready_count') or 0)}/{((domains.get('authoritative_systems_awareness') or {}).get('external_evidence_count') or 0)}` paper impact `{((domains.get('authoritative_systems_awareness') or {}).get('paper_impact') or 'none')}`",
+        f"- Responsibility contract: `{((domains.get('system_role_contract') or {}).get('status') or '')}` roles `{((domains.get('system_role_contract') or {}).get('role_count') or 0)}` domains `{((domains.get('system_role_contract') or {}).get('state_domain_count') or 0)}` conflicts `{((domains.get('system_role_contract') or {}).get('authority_conflict_count') or 0)}`",
         f"- Global halt active: `{global_halt_active}`",
         f"- Registry diff memory: `{registry_diff.get('diff_status', '')}`",
         "",
@@ -2222,7 +4288,9 @@ def _render_self_brief(payload: dict[str, Any]) -> str:
 
 
 def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in payload.items() if not str(key).startswith("_")}
+    return {
+        key: value for key, value in payload.items() if not str(key).startswith("_")
+    }
 
 
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
@@ -2238,9 +4306,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     writer_cycle = _load_json(health_root / "writer_cycle_coordinator_latest.json")
     writer_process = _load_json(health_root / "writer_process_intelligence_latest.json")
     whole_system = _load_json(health_root / "whole_system_intelligence_latest.json")
-    system_self_intelligence = _load_json(health_root / "system_self_intelligence_latest.json")
-    codex_operator_bridge = _load_json(health_root / "codex_operator_bridge_latest.json")
-    storage_autopilot = _load_json(health_root / "storage_backpressure_autopilot_latest.json")
+    system_self_intelligence = _load_json(
+        health_root / "system_self_intelligence_latest.json"
+    )
+    codex_operator_bridge = _load_json(
+        health_root / "codex_operator_bridge_latest.json"
+    )
+    storage_autopilot = _load_json(
+        health_root / "storage_backpressure_autopilot_latest.json"
+    )
     mlx_router = _load_json(health_root / "mlx_intelligence_router_latest.json")
     library_router = _load_json(health_root / "library_utilization_router_latest.json")
     global_halt = _load_json(health_root / "global_killswitch_latest.json")
@@ -2248,19 +4322,63 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     process_fanout = _load_json(health_root / "process_fanout_guard_latest.json")
     auth_lease = _load_json(health_root / "auth_lease_manager_latest.json")
     data_plane = _load_json(health_root / "data_plane_recovery_controller_latest.json")
-    live_runtime = _load_json(health_root / "live_runtime_separation_control_latest.json")
+    live_runtime = _load_json(
+        health_root / "live_runtime_separation_control_latest.json"
+    )
     use_mode = _load_json(health_root / "use_mode_compliance_guard_latest.json")
-    commercial_readiness = _load_json(health_root / "commercial_readiness_control_latest.json")
-    incident = _load_json(project_root / "governance" / "alerts" / "incident_auto_halt_latest.json")
-    core_materialization = _load_json(health_root / "core_bot_materialization_guard_latest.json")
+    commercial_readiness = _load_json(
+        health_root / "commercial_readiness_control_latest.json"
+    )
+    profitability_assessment = _load_json(
+        health_root / "profitability_self_assessment_latest.json"
+    )
+    alpha_generation_control = _load_json(
+        health_root / "alpha_generation_control_latest.json"
+    )
+    alpha_concept_report = _load_json(
+        project_root / "governance" / "research" / "alpha_concept_report_latest.json"
+    )
+    sleeve_alpha_toolbox = _load_json(
+        project_root / "governance" / "research" / "sleeve_alpha_toolbox_latest.json"
+    )
+    generation_attribution = _load_json(
+        project_root
+        / "governance"
+        / "research"
+        / "generation_behavior_attribution_latest.json"
+    )
+    authoritative_systems = _load_json(
+        health_root / "authoritative_systems_control_latest.json"
+    )
+    research_data_platform = _load_json(
+        health_root / "research_data_platform_control_latest.json"
+    )
+    institutional_research_extensions = _load_json(
+        health_root / "institutional_research_extensions_control_latest.json"
+    )
+    system_role_contract = _load_json(health_root / "system_role_contract_latest.json")
+    incident = _load_json(
+        project_root / "governance" / "alerts" / "incident_auto_halt_latest.json"
+    )
+    core_materialization = _load_json(
+        health_root / "core_bot_materialization_guard_latest.json"
+    )
     tripwire = _load_json(health_root / "shadow_watchdog_tripwire_latest.json")
-    previous_dependency_memory = _load_json(health_root / "system_dependency_memory_latest.json")
-    previous_failure_memory = _load_json(health_root / "system_failure_memory_latest.json")
-    previous_registry_diff = _load_json(health_root / "system_registry_diff_latest.json")
+    previous_dependency_memory = _load_json(
+        health_root / "system_dependency_memory_latest.json"
+    )
+    previous_failure_memory = _load_json(
+        health_root / "system_failure_memory_latest.json"
+    )
+    previous_registry_diff = _load_json(
+        health_root / "system_registry_diff_latest.json"
+    )
 
     identity = _registry_identity(registry)
     surface_matrix = _surface_matrix(health_root, project_root, now=now)
-    dependency_memory = _dependency_memory(surface_matrix, previous_dependency_memory, now=now)
+    dependency_memory = _dependency_memory(
+        surface_matrix, previous_dependency_memory, now=now
+    )
     failure_index = _failure_memory_index(
         global_halt=global_halt,
         incident=incident,
@@ -2271,23 +4389,117 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         previous=previous_failure_memory,
         now=now,
     )
-    registry_diff_full = _registry_diff_memory(registry, previous_registry_diff, now=now)
+    registry_diff_full = _registry_diff_memory(
+        registry, previous_registry_diff, now=now
+    )
     registry_diff = _compact_registry_diff_memory(registry_diff_full)
     domains = {
         "resource_awareness": _resource_awareness(memory, throttle, storage),
-        "host_pressure_intelligence": _host_pressure_intelligence(memory, throttle, mlx_router, library_router),
+        "host_pressure_intelligence": _host_pressure_intelligence(
+            memory, throttle, mlx_router, library_router
+        ),
         "mlx_intelligence_awareness": _mlx_intelligence_awareness(mlx_router),
         "library_utilization_awareness": _library_utilization_awareness(library_router),
-        "drainer_intelligence": _drainer_intelligence_awareness(drainer_fleet, super_drainer, writer_cycle, storage_autopilot),
-        "writer_process_intelligence": _writer_process_awareness(writer_process, writer_cycle, process_watchdog, process_fanout),
+        "drainer_intelligence": _drainer_intelligence_awareness(
+            drainer_fleet, super_drainer, writer_cycle, storage_autopilot
+        ),
+        "writer_process_intelligence": _writer_process_awareness(
+            writer_process, writer_cycle, process_watchdog, process_fanout
+        ),
         "whole_system_intelligence": _whole_system_intelligence_awareness(whole_system),
-        "system_self_intelligence": _system_self_intelligence_awareness(system_self_intelligence),
-        "codex_operator_bridge": _codex_operator_bridge_awareness(codex_operator_bridge),
+        "system_self_intelligence": _system_self_intelligence_awareness(
+            system_self_intelligence
+        ),
+        "codex_operator_bridge": _codex_operator_bridge_awareness(
+            codex_operator_bridge
+        ),
         "bot_awareness": _bot_awareness(identity, core_materialization),
+        "system_role_contract": _system_role_contract_awareness(system_role_contract),
         "failure_memory": _failure_memory(global_halt, incident, cockpit),
-        "halt_recovery_intelligence": _halt_recovery_intelligence(global_halt, process_watchdog, auth_lease, data_plane, live_runtime, storage),
+        "halt_recovery_intelligence": _halt_recovery_intelligence(
+            global_halt, process_watchdog, auth_lease, data_plane, live_runtime, storage
+        ),
         "dependency_awareness": _dependency_awareness(surface_matrix, cockpit),
         "growth_awareness": _growth_awareness(identity, memory, cockpit),
+        **(
+            {
+                "profitability_awareness": _profitability_awareness(
+                    profitability_assessment
+                )
+            }
+            if profitability_assessment
+            or (
+                project_root / "config" / "profitability_self_assessment_v1.json"
+            ).is_file()
+            else {}
+        ),
+        **(
+            {
+                "alpha_generation_awareness": _alpha_generation_awareness(
+                    alpha_generation_control
+                )
+            }
+            if alpha_generation_control
+            or (project_root / "config" / "alpha_generation_control_v1.json").is_file()
+            else {}
+        ),
+        **(
+            {"alpha_concept_awareness": _alpha_concept_awareness(alpha_concept_report)}
+            if alpha_concept_report
+            or (project_root / "config" / "alpha_concept_registry_v1.json").is_file()
+            else {}
+        ),
+        **(
+            {
+                "sleeve_alpha_toolbox_awareness": _sleeve_alpha_toolbox_awareness(
+                    sleeve_alpha_toolbox
+                )
+            }
+            if sleeve_alpha_toolbox
+            or (project_root / "config" / "sleeve_alpha_toolbox_v1.json").is_file()
+            else {}
+        ),
+        **(
+            {
+                "generation_attribution_awareness": _generation_attribution_awareness(
+                    generation_attribution
+                )
+            }
+            if generation_attribution
+            else {}
+        ),
+        **(
+            {
+                "authoritative_systems_awareness": _authoritative_systems_awareness(
+                    authoritative_systems
+                )
+            }
+            if authoritative_systems
+            or (project_root / "config" / "authoritative_systems_v1.json").is_file()
+            else {}
+        ),
+        **(
+            {
+                "research_data_platform_awareness": _research_data_platform_awareness(
+                    research_data_platform
+                )
+            }
+            if research_data_platform
+            or (project_root / "config" / "research_data_platform_v1.json").is_file()
+            else {}
+        ),
+        **(
+            {
+                "institutional_research_extensions_awareness": _institutional_research_extensions_awareness(
+                    institutional_research_extensions
+                )
+            }
+            if institutional_research_extensions
+            or (
+                project_root / "config" / "institutional_research_extensions_v1.json"
+            ).is_file()
+            else {}
+        ),
         "use_mode_compliance": _use_mode_compliance_awareness(use_mode),
         "commercial_readiness": _commercial_readiness_awareness(commercial_readiness),
         "self_reporting": _self_reporting_awareness(cockpit, surface_matrix),
@@ -2299,12 +4511,130 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         overall_status = "blocked"
 
     implementation_flags = _implementation_flags(project_root)
-    optimization_plan = _optimization_plan(domains, surface_matrix, implementation_flags=implementation_flags)
+    optimization_plan = _optimization_plan(
+        domains, surface_matrix, implementation_flags=implementation_flags
+    )
     blocked_or_degraded = [
         name
         for name, row in surface_matrix.items()
         if str(row.get("status") or "") in {"blocked", "degraded", "needs_work"}
     ]
+    profitability_clause = ""
+    profitability_domain = (
+        domains.get("profitability_awareness")
+        if isinstance(domains.get("profitability_awareness"), dict)
+        else {}
+    )
+    if profitability_domain:
+        profitability_clause = (
+            f"candidate profitability {profitability_domain.get('candidate_id') or 'none'} "
+            f"implementation={profitability_domain.get('implementation_grade') or 'unknown'} "
+            f"economic={profitability_domain.get('economic_evidence_grade') or 'unknown'} "
+            f"samples={profitability_domain.get('candidate_post_cost_samples', 0)} "
+            f"developmental_generations={profitability_domain.get('attributable_generation_count', 0)}/"
+            f"{profitability_domain.get('accepted_generation_count', 0)}, "
+        )
+    authoritative_clause = ""
+    authoritative_domain = (
+        domains.get("authoritative_systems_awareness")
+        if isinstance(domains.get("authoritative_systems_awareness"), dict)
+        else {}
+    )
+    if authoritative_domain:
+        authoritative_clause = (
+            f"authoritative controls {authoritative_domain.get('ready_control_count', 0)}/"
+            f"{authoritative_domain.get('control_count', 0)} external="
+            f"{authoritative_domain.get('external_evidence_ready_count', 0)}/"
+            f"{authoritative_domain.get('external_evidence_count', 0)}, "
+        )
+    research_data_clause = ""
+    research_data_domain = (
+        domains.get("research_data_platform_awareness")
+        if isinstance(domains.get("research_data_platform_awareness"), dict)
+        else {}
+    )
+    if research_data_domain:
+        research_data_clause = (
+            f"research data platform implementation="
+            f"{research_data_domain.get('implementation_ready_count', 0)}/"
+            f"{research_data_domain.get('implementation_control_count', 10)} "
+            f"evidence={research_data_domain.get('evidence_ready_count', 0)}/"
+            f"{research_data_domain.get('evidence_control_count', 10)} "
+            f"products={research_data_domain.get('data_product_ready_count', 0)}/"
+            f"{research_data_domain.get('data_product_count', 0)}, "
+        )
+    institutional_extensions_clause = ""
+    institutional_extensions_domain = (
+        domains.get("institutional_research_extensions_awareness")
+        if isinstance(domains.get("institutional_research_extensions_awareness"), dict)
+        else {}
+    )
+    if institutional_extensions_domain:
+        institutional_extensions_clause = (
+            f"institutional research extensions implementation="
+            f"{institutional_extensions_domain.get('implementation_ready_count', 0)}/"
+            f"{institutional_extensions_domain.get('implementation_control_count', 8)} "
+            f"evidence={institutional_extensions_domain.get('evidence_ready_count', 0)}/"
+            f"{institutional_extensions_domain.get('evidence_control_count', 8)} "
+            f"firm_refs={institutional_extensions_domain.get('firm_reference_count', 0)}, "
+        )
+    alpha_clause = ""
+    alpha_domain = (
+        domains.get("alpha_generation_awareness")
+        if isinstance(domains.get("alpha_generation_awareness"), dict)
+        else {}
+    )
+    if alpha_domain:
+        alpha_clause = (
+            f"alpha lifecycle implementation={alpha_domain.get('implementation_grade') or 'unknown'} "
+            f"economic={alpha_domain.get('economic_evidence_grade') or 'unknown'} "
+            f"controls={alpha_domain.get('evidence_ready_controls', 0)}/"
+            f"{alpha_domain.get('control_count', 10)} "
+            f"selected_sleeves={len(alpha_domain.get('selected_sleeves') or [])} "
+            f"cash={alpha_domain.get('cash_weight', 1.0):.2f}, "
+        )
+    alpha_concept_clause = ""
+    alpha_concept_domain = (
+        domains.get("alpha_concept_awareness")
+        if isinstance(domains.get("alpha_concept_awareness"), dict)
+        else {}
+    )
+    if alpha_concept_domain:
+        alpha_concept_clause = (
+            f"alpha concepts implementation={alpha_concept_domain.get('implementation_grade') or 'unknown'} "
+            f"catalog={alpha_concept_domain.get('catalog_routing_grade') or 'unknown'} "
+            f"candidate_evidence={alpha_concept_domain.get('candidate_evidence_ready_count', 0)}/"
+            f"{alpha_concept_domain.get('candidate_evidence_measurement_count', 15)} "
+            f"economic={alpha_concept_domain.get('economic_support_grade') or 'unknown'}, "
+        )
+    sleeve_alpha_clause = ""
+    sleeve_alpha_domain = (
+        domains.get("sleeve_alpha_toolbox_awareness")
+        if isinstance(domains.get("sleeve_alpha_toolbox_awareness"), dict)
+        else {}
+    )
+    if sleeve_alpha_domain:
+        sleeve_alpha_clause = (
+            f"sleeve alpha toolbox={sleeve_alpha_domain.get('status') or 'unknown'} "
+            f"routed={sleeve_alpha_domain.get('routed_sleeve_count', 0)}/"
+            f"{sleeve_alpha_domain.get('declared_sleeve_count', 0)} "
+            f"candidate_ready={sleeve_alpha_domain.get('candidate_evidence_ready_sleeve_count', 0)} "
+            f"fallbacks={sleeve_alpha_domain.get('default_fallback_route_count', 0)}, "
+        )
+    generation_clause = ""
+    generation_domain = (
+        domains.get("generation_attribution_awareness")
+        if isinstance(domains.get("generation_attribution_awareness"), dict)
+        else {}
+    )
+    if generation_domain:
+        generation_clause = (
+            f"generation attribution G{generation_domain.get('from_generation', 0)}-"
+            f"G{generation_domain.get('to_generation', 0)} "
+            f"status={generation_domain.get('status') or 'unknown'} "
+            f"cumulative_soak={generation_domain.get('cumulative_soak_elapsed_hours', 0.0):.2f}h "
+            f"legacy_window={generation_domain.get('legacy_window_association_involved', False)}, "
+        )
     self_summary = (
         f"System self-model sees {identity['active_bots']} active bots, "
         f"{identity['data_collection_active_bots']} collection-active bots, "
@@ -2331,15 +4661,29 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         f"halt recovery mode {domains['halt_recovery_intelligence']['status']} "
         f"next={ ' '.join(domains['halt_recovery_intelligence']['next_safe_command']) if domains['halt_recovery_intelligence'].get('next_safe_command') else 'none' }, "
         f"growth pressure {domains['growth_awareness']['pressure_level']}, "
+        f"{profitability_clause}"
+        f"{alpha_clause}"
+        f"{alpha_concept_clause}"
+        f"{sleeve_alpha_clause}"
+        f"{generation_clause}"
+        f"{authoritative_clause}"
+        f"{research_data_clause}"
+        f"{institutional_extensions_clause}"
         f"use-mode boundary {domains['use_mode_compliance']['status']} "
         f"mode={domains['use_mode_compliance']['use_mode']} "
         f"personal_grade={domains['use_mode_compliance']['personal_grade']}, "
         f"commercial readiness {domains['commercial_readiness']['status']} "
         f"mode={domains['commercial_readiness']['commercial_product_mode']} "
         f"grade={domains['commercial_readiness']['grade']}, "
+        f"responsibility contract {domains['system_role_contract']['status']} "
+        f"roles={domains['system_role_contract']['role_count']} "
+        f"domains={domains['system_role_contract']['state_domain_count']} "
+        f"authority_conflicts={domains['system_role_contract']['authority_conflict_count']}, "
         f"and {len(blocked_or_degraded)} blocked/degraded watched surfaces."
     )
-    advanced_backlog = _advanced_upgrade_backlog(domains, dependency_memory, failure_index, registry_diff, surface_matrix)
+    advanced_backlog = _advanced_upgrade_backlog(
+        domains, dependency_memory, failure_index, registry_diff, surface_matrix
+    )
     payload = {
         "timestamp_utc": now.isoformat(),
         "schema_version": 1,
@@ -2378,6 +4722,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "system_signal_bus",
                 "system_brain",
                 "system_process_contracts",
+                "system_role_contract",
                 "system_self_intelligence",
                 "system_self_intelligence_memory",
                 "codex_handoff",
@@ -2390,48 +4735,145 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "system_expansion_execution",
                 "use_mode_compliance",
                 "commercial_readiness",
+                "profitability_self_assessment",
+                "alpha_generation_control",
+                "alpha_concept_report",
+                "sleeve_alpha_toolbox",
+                "generation_behavior_attribution",
+                "authoritative_systems_control",
+                "research_data_platform_control",
+                "institutional_research_extensions_control",
             ],
         },
         "source_files": {
             "registry": str(project_root / "master_bot_registry.json"),
             "operator_cockpit": str(health_root / "operator_cockpit_latest.json"),
-            "memory_efficiency": str(health_root / "memory_efficiency_control_latest.json"),
-            "runtime_throttle": str(health_root / "runtime_throttle_control_latest.json"),
-            "ingestion_storage": str(health_root / "ingestion_storage_control_latest.json"),
-            "backpressure_drainer_fleet": str(health_root / "backpressure_drainer_fleet_latest.json"),
-            "backpressure_super_drainer": str(health_root / "backpressure_super_drainer_latest.json"),
-            "backpressure_super_drainer_memory": str(health_root / "backpressure_super_drainer_memory_latest.json"),
-            "writer_cycle_coordinator": str(health_root / "writer_cycle_coordinator_latest.json"),
-            "writer_process_intelligence": str(health_root / "writer_process_intelligence_latest.json"),
-            "whole_system_intelligence": str(health_root / "whole_system_intelligence_latest.json"),
+            "memory_efficiency": str(
+                health_root / "memory_efficiency_control_latest.json"
+            ),
+            "runtime_throttle": str(
+                health_root / "runtime_throttle_control_latest.json"
+            ),
+            "ingestion_storage": str(
+                health_root / "ingestion_storage_control_latest.json"
+            ),
+            "backpressure_drainer_fleet": str(
+                health_root / "backpressure_drainer_fleet_latest.json"
+            ),
+            "backpressure_super_drainer": str(
+                health_root / "backpressure_super_drainer_latest.json"
+            ),
+            "backpressure_super_drainer_memory": str(
+                health_root / "backpressure_super_drainer_memory_latest.json"
+            ),
+            "writer_cycle_coordinator": str(
+                health_root / "writer_cycle_coordinator_latest.json"
+            ),
+            "writer_process_intelligence": str(
+                health_root / "writer_process_intelligence_latest.json"
+            ),
+            "whole_system_intelligence": str(
+                health_root / "whole_system_intelligence_latest.json"
+            ),
             "system_signal_bus": str(health_root / "system_signal_bus_latest.json"),
             "system_brain": str(health_root / "system_brain_latest.json"),
-            "system_process_contracts": str(health_root / "system_process_contracts_latest.json"),
-            "system_self_intelligence": str(health_root / "system_self_intelligence_latest.json"),
-            "system_self_intelligence_memory": str(project_root / "governance" / "system_intelligence" / "self_intelligence_memory.jsonl"),
+            "system_process_contracts": str(
+                health_root / "system_process_contracts_latest.json"
+            ),
+            "system_self_intelligence": str(
+                health_root / "system_self_intelligence_latest.json"
+            ),
+            "system_self_intelligence_memory": str(
+                project_root
+                / "governance"
+                / "system_intelligence"
+                / "self_intelligence_memory.jsonl"
+            ),
             "codex_handoff": str(health_root / "codex_handoff_latest.json"),
-            "codex_operator_bridge": str(health_root / "codex_operator_bridge_latest.json"),
-            "storage_backpressure_autopilot": str(health_root / "storage_backpressure_autopilot_latest.json"),
+            "codex_operator_bridge": str(
+                health_root / "codex_operator_bridge_latest.json"
+            ),
+            "storage_backpressure_autopilot": str(
+                health_root / "storage_backpressure_autopilot_latest.json"
+            ),
             "mlx_runtime": str(health_root / "mlx_runtime_audit_latest.json"),
             "mlx_library": str(health_root / "mlx_library_upgrade_latest.json"),
-            "mlx_intelligence_router": str(health_root / "mlx_intelligence_router_latest.json"),
-            "library_utilization_router": str(health_root / "library_utilization_router_latest.json"),
+            "mlx_intelligence_router": str(
+                health_root / "mlx_intelligence_router_latest.json"
+            ),
+            "library_utilization_router": str(
+                health_root / "library_utilization_router_latest.json"
+            ),
             "quant_model_control": str(health_root / "quant_model_control_latest.json"),
-            "capital_rotation_control": str(health_root / "capital_rotation_control_latest.json"),
-            "schwab_indicator_intelligence": str(health_root / "schwab_indicator_intelligence_latest.json"),
-            "system_expansion_execution": str(health_root / "system_expansion_execution_layer_latest.json"),
+            "capital_rotation_control": str(
+                health_root / "capital_rotation_control_latest.json"
+            ),
+            "schwab_indicator_intelligence": str(
+                health_root / "schwab_indicator_intelligence_latest.json"
+            ),
+            "system_expansion_execution": str(
+                health_root / "system_expansion_execution_layer_latest.json"
+            ),
             "global_halt": str(health_root / "global_killswitch_latest.json"),
             "process_watchdog": str(health_root / "process_watchdog_latest.json"),
-            "process_fanout_guard": str(health_root / "process_fanout_guard_latest.json"),
+            "process_fanout_guard": str(
+                health_root / "process_fanout_guard_latest.json"
+            ),
             "auth_lease_manager": str(health_root / "auth_lease_manager_latest.json"),
-            "data_plane_recovery": str(health_root / "data_plane_recovery_controller_latest.json"),
-            "live_runtime_separation": str(health_root / "live_runtime_separation_control_latest.json"),
-            "use_mode_compliance": str(health_root / "use_mode_compliance_guard_latest.json"),
-            "commercial_readiness": str(health_root / "commercial_readiness_control_latest.json"),
+            "data_plane_recovery": str(
+                health_root / "data_plane_recovery_controller_latest.json"
+            ),
+            "live_runtime_separation": str(
+                health_root / "live_runtime_separation_control_latest.json"
+            ),
+            "use_mode_compliance": str(
+                health_root / "use_mode_compliance_guard_latest.json"
+            ),
+            "commercial_readiness": str(
+                health_root / "commercial_readiness_control_latest.json"
+            ),
+            "profitability_self_assessment": str(
+                health_root / "profitability_self_assessment_latest.json"
+            ),
+            "alpha_generation_control": str(
+                health_root / "alpha_generation_control_latest.json"
+            ),
+            "alpha_concept_report": str(
+                project_root
+                / "governance"
+                / "research"
+                / "alpha_concept_report_latest.json"
+            ),
+            "sleeve_alpha_toolbox": str(
+                project_root
+                / "governance"
+                / "research"
+                / "sleeve_alpha_toolbox_latest.json"
+            ),
+            "generation_behavior_attribution": str(
+                project_root
+                / "governance"
+                / "research"
+                / "generation_behavior_attribution_latest.json"
+            ),
+            "authoritative_systems_control": str(
+                health_root / "authoritative_systems_control_latest.json"
+            ),
+            "research_data_platform_control": str(
+                health_root / "research_data_platform_control_latest.json"
+            ),
+            "institutional_research_extensions_control": str(
+                health_root / "institutional_research_extensions_control_latest.json"
+            ),
+            "system_role_contract": str(
+                health_root / "system_role_contract_latest.json"
+            ),
         },
         "_registry_diff_memory_full": registry_diff_full,
     }
-    payload["upgrade_optimizer"] = _upgrade_optimizer_payload(payload, advanced_backlog, now=now)
+    payload["upgrade_optimizer"] = _upgrade_optimizer_payload(
+        payload, advanced_backlog, now=now
+    )
     return payload
 
 
@@ -2449,31 +4891,76 @@ def write_outputs(
     public_payload = _public_payload(payload)
     _write_json(out_path, public_payload)
     report_outputs: dict[str, dict[str, str]] = {}
-    report_outputs["markdown"] = _write_text_with_local_fallback(markdown_path, _render_markdown(public_payload))
+    report_outputs["markdown"] = _write_text_with_local_fallback(
+        markdown_path, _render_markdown(public_payload)
+    )
     if brief_path is not None:
-        report_outputs["brief"] = _write_text_with_local_fallback(brief_path, _render_self_brief(public_payload))
-    if any(result.get("storage_mode") == "local_fallback" for result in report_outputs.values()):
+        report_outputs["brief"] = _write_text_with_local_fallback(
+            brief_path, _render_self_brief(public_payload)
+        )
+    if any(
+        result.get("storage_mode") == "local_fallback"
+        for result in report_outputs.values()
+    ):
         public_payload["report_outputs"] = report_outputs
         _write_json(out_path, public_payload)
     if dependency_memory_path is not None:
-        _write_json(dependency_memory_path, payload.get("dependency_memory") if isinstance(payload.get("dependency_memory"), dict) else {})
+        _write_json(
+            dependency_memory_path,
+            (
+                payload.get("dependency_memory")
+                if isinstance(payload.get("dependency_memory"), dict)
+                else {}
+            ),
+        )
     if failure_memory_path is not None:
-        _write_json(failure_memory_path, payload.get("failure_memory_index") if isinstance(payload.get("failure_memory_index"), dict) else {})
+        _write_json(
+            failure_memory_path,
+            (
+                payload.get("failure_memory_index")
+                if isinstance(payload.get("failure_memory_index"), dict)
+                else {}
+            ),
+        )
     if registry_diff_path is not None:
         full_registry_diff = payload.get("_registry_diff_memory_full")
-        _write_json(registry_diff_path, full_registry_diff if isinstance(full_registry_diff, dict) else payload.get("registry_diff_memory") if isinstance(payload.get("registry_diff_memory"), dict) else {})
+        _write_json(
+            registry_diff_path,
+            (
+                full_registry_diff
+                if isinstance(full_registry_diff, dict)
+                else (
+                    payload.get("registry_diff_memory")
+                    if isinstance(payload.get("registry_diff_memory"), dict)
+                    else {}
+                )
+            ),
+        )
     if upgrade_plan_path is not None:
-        _write_json(upgrade_plan_path, payload.get("upgrade_optimizer") if isinstance(payload.get("upgrade_optimizer"), dict) else {})
+        _write_json(
+            upgrade_plan_path,
+            (
+                payload.get("upgrade_optimizer")
+                if isinstance(payload.get("upgrade_optimizer"), dict)
+                else {}
+            ),
+        )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build the operational self-model for the trading-bot platform.")
+    parser = argparse.ArgumentParser(
+        description="Build the operational self-model for the trading-bot platform."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--markdown-file", default=str(DEFAULT_MARKDOWN_PATH))
     parser.add_argument("--brief-file", default=str(DEFAULT_BRIEF_PATH))
-    parser.add_argument("--dependency-memory-file", default=str(DEFAULT_DEPENDENCY_MEMORY_PATH))
-    parser.add_argument("--failure-memory-file", default=str(DEFAULT_FAILURE_MEMORY_PATH))
+    parser.add_argument(
+        "--dependency-memory-file", default=str(DEFAULT_DEPENDENCY_MEMORY_PATH)
+    )
+    parser.add_argument(
+        "--failure-memory-file", default=str(DEFAULT_FAILURE_MEMORY_PATH)
+    )
     parser.add_argument("--registry-diff-file", default=str(DEFAULT_REGISTRY_DIFF_PATH))
     parser.add_argument("--upgrade-plan-file", default=str(DEFAULT_UPGRADE_PLAN_PATH))
     parser.add_argument("--json", action="store_true")

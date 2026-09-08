@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import shutil
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,11 @@ else:
     from core.storage_mounts import resolve_external_storage
     from .long_runtime_common import iso_now, write_payload
 
+from core.storage_router import inspect_storage_path
+from scripts.ops.raw_training_compaction_intelligence import (
+    _file_identity,
+    _sync_directory,
+)
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "deep_cold_storage_layer_latest.json"
 DEFAULT_MANIFEST_NAME = "deep_cold_manifest.jsonl"
@@ -74,6 +81,13 @@ def _gb(value: int | float) -> float:
 
 
 def _disk_usage_snapshot(path: Path) -> dict[str, int | None]:
+    if _is_protected_volume(path):
+        return {
+            "total_bytes": None,
+            "used_bytes": None,
+            "free_bytes": None,
+            "device_id": None,
+        }
     probe = path.expanduser()
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
@@ -383,8 +397,7 @@ def _volume_name(path: Path) -> str:
 
 
 def _is_protected_volume(path: Path) -> bool:
-    volume = _volume_name(path)
-    return volume in PROTECTED_VOLUME_NAMES
+    return inspect_storage_path(path).get("status") not in {"present", "missing"}
 
 
 def _relative_to_any(path: Path, roots: list[tuple[str, Path]]) -> str:
@@ -429,11 +442,11 @@ def _deep_cold_state(*, rel: str, value: str, age_days: float, suffix: str) -> s
 
 
 def _iter_candidate_files(stale_root: Path, *, min_size_bytes: int) -> list[Path]:
-    if not stale_root.exists():
+    if _is_protected_volume(stale_root) or not stale_root.exists():
         return []
     rows: list[Path] = []
     for path in stale_root.rglob("*"):
-        if not path.is_file() or path.is_symlink():
+        if _is_protected_volume(path) or path.is_symlink() or not path.is_file():
             continue
         try:
             size = path.stat().st_size
@@ -512,6 +525,28 @@ def _copy_with_sha256(source: Path, target: Path) -> tuple[str, int]:
 
 
 def _copy_verify_then_symlink(source: Path, target: Path) -> dict[str, Any]:
+    if _is_protected_volume(source) or _is_protected_volume(target):
+        return {
+            "source": str(source),
+            "target": str(target),
+            "reason": "protected_or_unavailable_route",
+            "source_replaced_with_symlink": False,
+        }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock = target.with_name(f".{target.name}.offload.lock")
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "a+") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {
+                "reason": "offload_target_busy",
+                "source_replaced_with_symlink": False,
+            }
+        return _copy_verify_then_symlink_locked(source, target)
+
+
+def _copy_verify_then_symlink_locked(source: Path, target: Path) -> dict[str, Any]:
     result: dict[str, Any] = {
         "source": str(source),
         "target": str(target),
@@ -532,8 +567,11 @@ def _copy_verify_then_symlink(source: Path, target: Path) -> dict[str, Any]:
     if not source.exists() or not source.is_file():
         result.update({"skipped": True, "reason": "source_missing_or_not_file"})
         return result
+    if target.is_symlink() or source.resolve() == target.resolve():
+        return {**result, "reason": "invalid_or_symlink_target"}
 
     source_stat_before = source.stat()
+    source_identity = _file_identity(source)
     source_size = _safe_int(source_stat_before.st_size)
     result["bytes"] = source_size
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -541,8 +579,14 @@ def _copy_verify_then_symlink(source: Path, target: Path) -> dict[str, Any]:
     if final_target.exists():
         target_size = _safe_int(final_target.stat().st_size)
         if target_size == source_size:
+            verified_existing_identity = _file_identity(final_target)
             source_hash = _sha256(source)
             target_hash = _sha256(final_target)
+            if _file_identity(final_target) != verified_existing_identity:
+                return {
+                    **result,
+                    "reason": "existing_target_changed_during_verification",
+                }
             result.update(
                 {
                     "verified_size_match": True,
@@ -552,7 +596,11 @@ def _copy_verify_then_symlink(source: Path, target: Path) -> dict[str, Any]:
                 }
             )
             if source_hash != target_hash:
-                result["verified_size_match"] = False
+                return {
+                    **result,
+                    "reason": "existing_target_content_mismatch",
+                    "verified_size_match": False,
+                }
         else:
             stamp = iso_now().replace(":", "").replace("+", "_")
             final_target = target.with_name(f"{target.stem}.{stamp}{target.suffix}")
@@ -560,15 +608,23 @@ def _copy_verify_then_symlink(source: Path, target: Path) -> dict[str, Any]:
     if not result["verified_sha256_match"]:
         tmp = final_target.with_name(f".{final_target.name}.tmp")
         try:
+            if _is_protected_volume(tmp) or tmp.is_symlink():
+                raise ValueError("unsafe_temporary_route")
             source_hash, resumed_bytes = _copy_with_sha256(source, tmp)
             source_stat_after = source.stat()
             copied_size = _safe_int(tmp.stat().st_size)
+            copied_identity = _file_identity(tmp)
             target_hash = _sha256(tmp)
             source_stable = bool(
                 source_stat_after.st_size == source_stat_before.st_size
                 and source_stat_after.st_mtime_ns == source_stat_before.st_mtime_ns
             )
-            if copied_size != source_size or source_hash != target_hash or not source_stable:
+            if (
+                copied_size != source_size
+                or source_hash != target_hash
+                or not source_stable
+                or _file_identity(tmp) != copied_identity
+            ):
                 try:
                     tmp.unlink()
                 except Exception:
@@ -585,7 +641,9 @@ def _copy_verify_then_symlink(source: Path, target: Path) -> dict[str, Any]:
                     }
                 )
                 return result
-            os.replace(tmp, final_target)
+            os.link(tmp, final_target)
+            tmp.unlink()
+            _sync_directory(final_target.parent)
             result.update(
                 {
                     "copied": True,
@@ -607,9 +665,46 @@ def _copy_verify_then_symlink(source: Path, target: Path) -> dict[str, Any]:
         return result
 
     try:
-        source.unlink()
-        source.symlink_to(final_target)
+        target_identity = _file_identity(final_target)
+        if _file_identity(source) != source_identity:
+            raise RuntimeError("source_changed_before_release")
+        with final_target.open("rb") as durable:
+            os.fsync(durable.fileno())
+        proof = final_target.with_name(final_target.name + ".restore_proofs.jsonl")
+        if _is_protected_volume(proof):
+            raise ValueError("unsafe_restore_proof_route")
+        fd = os.open(
+            proof, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600
+        )
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        **result,
+                        "timestamp_utc": iso_now(),
+                        "phase": "verified_before_atomic_source_replacement",
+                    }
+                )
+                + "\n"
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        _sync_directory(final_target.parent)
+        link = source.with_name(f".{source.name}.offload_link_{uuid.uuid4().hex}")
+        try:
+            link.symlink_to(final_target.absolute())
+            if (
+                _file_identity(source) != source_identity
+                or _file_identity(final_target) != target_identity
+            ):
+                raise RuntimeError("source_or_archive_changed_before_release")
+            os.replace(link, source)
+            result["source_replaced_with_symlink"] = True
+            _sync_directory(source.parent)
+        finally:
+            link.unlink(missing_ok=True)
         result["source_replaced_with_symlink"] = True
+        result["restore_proof_path"] = str(proof)
     except Exception as exc:
         result["reason"] = f"symlink_replace_failed:{exc}"
     return result
@@ -647,7 +742,11 @@ def _apply_second_cold_moves(
     scope_candidates = [
         row
         for row in rows
-        if (include_critical or str(row.get("economic_value") or "") != "critical")
+        if (
+            include_critical
+            or str(row.get("economic_value") or "") != "critical"
+            or row.get("artifact_class") == "closed_compressed_history"
+        )
         and str(row.get("path") or "").strip()
         and not bool(row.get("source_replaced_with_symlink", False))
         and (
@@ -691,7 +790,15 @@ def _apply_second_cold_moves(
         if bool(action.get("source_replaced_with_symlink", False)):
             moved_bytes += _safe_int(action.get("bytes"), size)
 
-    failed = [row for row in actions if not bool(row.get("source_replaced_with_symlink", False)) and not bool(row.get("skipped", False))]
+    failed = [
+        row
+        for row in actions
+        if (
+            not bool(row.get("source_replaced_with_symlink", False))
+            or bool(row.get("reason"))
+        )
+        and not bool(row.get("skipped", False))
+    ]
     release_target_met = bool(release_target_bytes <= 0 or moved_bytes >= release_target_bytes)
     if failed:
         status = "partial"
@@ -888,6 +995,7 @@ def build_payload(
     include_critical: bool = False,
     include_local_quarantine: bool = False,
     include_failover_backups: bool = False,
+    include_compressed_history: bool = False,
     adaptive: bool = False,
     adaptive_release_target_gb: float = 0.0,
     source_free_target_gb: float = 0.0,
@@ -897,7 +1005,15 @@ def build_payload(
 ) -> dict[str, Any]:
     external = resolve_external_storage()
     external_root = external.external_root
-    if _is_protected_volume(external_root):
+    if any(
+        _is_protected_volume(path)
+        for path in (
+            external_root,
+            project_root,
+            second_cold_root or project_root,
+            manifest_path or project_root,
+        )
+    ):
         payload = {
             "timestamp_utc": iso_now(),
             "schema_version": 1,
@@ -990,6 +1106,8 @@ def build_payload(
         )
     seen_roots: dict[str, tuple[str, Path, bool]] = {}
     for artifact_class, root, requires_hold in candidate_roots:
+        if _is_protected_volume(root):
+            continue
         try:
             seen_roots[str(root.resolve())] = (artifact_class, root, requires_hold)
         except Exception:
@@ -1020,7 +1138,12 @@ def build_payload(
     if include_failover_backups:
         failover_root = project_root / "local_fallback_storage" / "data"
         for path in sorted(failover_root.glob("*.pre_local_failover_*.bak")):
-            if not path.is_file() or path.is_symlink() or _safe_int(path.stat().st_size, 0) < min_size_bytes:
+            if (
+                _is_protected_volume(path)
+                or path.is_symlink()
+                or not path.is_file()
+                or _safe_int(path.stat().st_size, 0) < min_size_bytes
+            ):
                 continue
             raw_path = str(path.absolute())
             if raw_path in seen_paths:
@@ -1036,6 +1159,35 @@ def build_payload(
                     economic_value="high",
                 )
             )
+
+    if include_compressed_history:
+        for family in ("decisions", "decision_explanations"):
+            for path in _iter_candidate_files(
+                project_root / family, min_size_bytes=min_size_bytes
+            ):
+                if (
+                    not path.name.endswith(".jsonl.gz")
+                    or _file_age_days(path, now=now) < 1
+                ):
+                    continue
+                tokens = path.name.replace(".", "_").split("_")
+                days = [
+                    token
+                    for token in tokens
+                    if len(token) == 8 and token.isdigit() and token.startswith("20")
+                ]
+                if not days or max(days) >= now.strftime("%Y%m%d"):
+                    continue
+                rows.append(
+                    _candidate_row(
+                        path,
+                        rel_roots=rel_roots,
+                        now=now,
+                        artifact_class="closed_compressed_history",
+                        requires_maintenance_hold=False,
+                        economic_value="critical" if family == "decisions" else "high",
+                    )
+                )
 
     adaptive_source_device_id = _safe_int(adaptive_release.get("source_device_id"), -1) if adaptive else None
     for row in rows:
@@ -1296,6 +1448,11 @@ def main() -> int:
     parser.add_argument("--adaptive", action="store_true", default=_env_truthy("BOT_DEEP_COLD_ADAPTIVE"))
     parser.add_argument("--include-local-quarantine", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--include-failover-backups", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument(
+        "--include-compressed-history",
+        action="store_true",
+        help="Include dated, closed gzip decision history older than 24 hours; preserve paths through verified archive links.",
+    )
     parser.add_argument("--adaptive-release-target-gb", type=float, default=0.0)
     parser.add_argument("--source-free-target-gb", type=float, default=0.0)
     parser.add_argument("--source-free-path", default="")
@@ -1323,7 +1480,7 @@ def main() -> int:
         else {"applied": False, "reason": "no_copy_wave"}
     )
     payload = build_payload(
-        Path(args.project_root).resolve(),
+        Path(args.project_root).expanduser(),
         apply=bool(args.apply),
         min_size_mb=float(args.min_size_mb),
         top_n=int(args.top_n),
@@ -1335,10 +1492,15 @@ def main() -> int:
         include_critical=bool(args.include_critical),
         include_local_quarantine=include_local_quarantine,
         include_failover_backups=include_failover_backups,
+        include_compressed_history=bool(args.include_compressed_history),
         adaptive=bool(args.adaptive),
         adaptive_release_target_gb=float(args.adaptive_release_target_gb),
         source_free_target_gb=float(args.source_free_target_gb),
-        source_free_path=Path(args.source_free_path).expanduser() if str(args.source_free_path or "").strip() else None,
+        source_free_path=(
+            Path(args.source_free_path).expanduser()
+            if str(args.source_free_path or "").strip()
+            else None
+        ),
         planning_horizon_days=float(args.planning_horizon_days),
         destination_reserve_gb=float(args.destination_reserve_gb),
     )

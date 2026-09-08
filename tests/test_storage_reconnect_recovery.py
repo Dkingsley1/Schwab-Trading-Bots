@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -18,75 +17,146 @@ def _write_json(path: Path, payload: str) -> None:
     path.write_text(payload, encoding="utf-8")
 
 
-def test_storage_reconnect_regression_guard_contract_is_ready() -> None:
-    payload = guard_src.build_payload(PROJECT_ROOT, check_launchd=False, check_swift_parse=False)
-
-    assert payload["contract_ok"] is True
-    assert payload["missing_contracts"] == []
-    assert payload["regression_guard_contract"]["requires_split_brain_reconcile"] is True
-    assert payload["regression_guard_contract"]["requires_storage_pressure_clearance"] is True
-    assert payload["regression_guard_contract"]["requires_global_halt_auto_clear"] is True
-    assert payload["regression_guard_contract"]["requires_auto_failback_opt_in"] is True
-    assert payload["regression_guard_contract"]["requires_local_override_mount_suppression"] is True
-    assert payload["regression_guard_contract"]["requires_transactional_sqlite_local_failover"] is True
-    assert payload["regression_guard_contract"]["requires_swift_semantic_typecheck"] is True
-    assert payload["regression_guard_contract"]["requires_atomic_transition_state"] is True
-    assert payload["regression_guard_contract"]["requires_standby_disconnect_restart_suppression"] is True
-    assert payload["regression_guard_contract"]["requires_external_write_certification"] is True
-    assert payload["regression_guard_contract"]["requires_compiled_runtime_binary"] is True
-
-
-def test_storage_reconnect_guard_flags_external_sqlite_dependency_in_local_mode(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
+def _write_reconnect_contract_files(project_root: Path) -> None:
     scripts_ops = project_root / "scripts" / "ops"
     scripts_ops.mkdir(parents=True)
     guard_contract = "\n".join(guard_src.REQUIRED_GUARD_SNIPPETS.values())
     opsctl_contract = "\n".join(guard_src.REQUIRED_OPSCTL_SNIPPETS.values())
-    (scripts_ops / "storage_eject_guard.swift").write_text(guard_contract, encoding="utf-8")
+    runner_contract = "\n".join(guard_src.REQUIRED_RUNNER_SNIPPETS.values())
+    (scripts_ops / "storage_eject_guard.swift").write_text(
+        guard_contract, encoding="utf-8"
+    )
     (scripts_ops / "opsctl.sh").write_text(opsctl_contract, encoding="utf-8")
-    (scripts_ops / "storage_sqlite_local_failover.py").write_text("# contract\n", encoding="utf-8")
-    (scripts_ops / "run_storage_eject_guard_launchd.sh").write_text("#!/bin/zsh\n", encoding="utf-8")
-    (project_root / "scripts" / "install_storage_eject_guard_launchd.sh").write_text("#!/bin/zsh\n", encoding="utf-8")
+    (scripts_ops / "storage_sqlite_local_failover.py").write_text(
+        "# contract\n", encoding="utf-8"
+    )
+    (scripts_ops / "run_storage_eject_guard_launchd.sh").write_text(
+        runner_contract, encoding="utf-8"
+    )
+    (project_root / "scripts" / "install_storage_eject_guard_launchd.sh").write_text(
+        "#!/bin/zsh\n", encoding="utf-8"
+    )
+
+
+def test_storage_reconnect_regression_guard_contract_is_ready() -> None:
+    payload = guard_src.build_payload(
+        PROJECT_ROOT, check_launchd=False, check_swift_parse=False
+    )
+
+    assert payload["contract_ok"] is True
+    assert payload["missing_contracts"] == []
+    assert (
+        payload["regression_guard_contract"]["requires_split_brain_reconcile"] is True
+    )
+    assert (
+        payload["regression_guard_contract"]["requires_storage_pressure_clearance"]
+        is True
+    )
+    assert (
+        payload["regression_guard_contract"]["requires_global_halt_auto_clear"] is True
+    )
+    assert payload["regression_guard_contract"]["requires_auto_failback_opt_in"] is True
+    assert (
+        payload["regression_guard_contract"][
+            "requires_local_override_mount_suppression"
+        ]
+        is True
+    )
+    assert (
+        payload["regression_guard_contract"][
+            "requires_transactional_sqlite_local_failover"
+        ]
+        is True
+    )
+    assert (
+        payload["regression_guard_contract"]["requires_swift_semantic_typecheck"]
+        is True
+    )
+    assert (
+        payload["regression_guard_contract"]["requires_atomic_transition_state"] is True
+    )
+    assert (
+        payload["regression_guard_contract"][
+            "requires_standby_disconnect_restart_suppression"
+        ]
+        is True
+    )
+    assert (
+        payload["regression_guard_contract"]["requires_external_write_certification"]
+        is True
+    )
+    assert (
+        payload["regression_guard_contract"]["requires_compiled_runtime_binary"] is True
+    )
+    assert payload["regression_guard_contract"]["requires_unsafe_eject_denial"] is True
+    assert payload["regression_guard_contract"]["requires_flap_cooldown"] is True
+    assert payload["regression_guard_contract"]["requires_mount_backoff"] is True
+    assert payload["regression_guard_contract"]["requires_event_ledger"] is True
+    assert payload["regression_guard_contract"]["requires_mount_stabilization"] is True
+    assert (
+        payload["regression_guard_contract"]["requires_bounded_spotlight_timeout"]
+        is True
+    )
+    assert (
+        payload["regression_guard_contract"][
+            "requires_runner_rebuild_when_source_newer"
+        ]
+        is True
+    )
+
+
+def test_storage_reconnect_guard_flags_external_sqlite_dependency_in_local_mode(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_reconnect_contract_files(project_root)
     health = project_root / "governance" / "health"
     _write_json(
         health / "storage_failback_sync_latest.json",
         '{"mode":"local_fallback","certified_mode":"local_fallback","sqlite_skip_report":{"entries":[{"relative_path":"data/jsonl_link.sqlite3","classification":"active_external_route"}]}}\n',
     )
-    _write_json(health / "storage_mount_guard_latest.json", '{"external_available":true}\n')
-    _write_json(health / "ingestion_storage_control_latest.json", '{"overall_status":"ready"}\n')
+    _write_json(
+        health / "storage_mount_guard_latest.json", '{"external_available":true}\n'
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json", '{"overall_status":"ready"}\n'
+    )
 
-    payload = guard_src.build_payload(project_root, check_launchd=False, check_swift_parse=False)
+    payload = guard_src.build_payload(
+        project_root, check_launchd=False, check_swift_parse=False
+    )
 
     assert payload["contract_ok"] is True
     assert "local_mode_external_sqlite_route" in payload["live_recovery"]["blockers"]
-    assert payload["live_recovery"]["external_sqlite_routes"] == ["data/jsonl_link.sqlite3"]
-    assert "storage-sqlite-local-failover --apply" in " ".join(payload["recommended_actions"])
+    assert payload["live_recovery"]["external_sqlite_routes"] == [
+        "data/jsonl_link.sqlite3"
+    ]
+    assert "storage-sqlite-local-failover --apply" in " ".join(
+        payload["recommended_actions"]
+    )
 
 
-def test_storage_reconnect_guard_allows_intentional_local_hot_storage(tmp_path: Path) -> None:
+def test_storage_reconnect_guard_allows_intentional_local_hot_storage(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
-    scripts_ops = project_root / "scripts" / "ops"
-    scripts_ops.mkdir(parents=True)
-    (scripts_ops / "storage_eject_guard.swift").write_text(
-        "\n".join(guard_src.REQUIRED_GUARD_SNIPPETS.values()), encoding="utf-8"
-    )
-    (scripts_ops / "opsctl.sh").write_text(
-        "\n".join(guard_src.REQUIRED_OPSCTL_SNIPPETS.values()), encoding="utf-8"
-    )
-    (scripts_ops / "storage_sqlite_local_failover.py").write_text("# contract\n", encoding="utf-8")
-    (scripts_ops / "run_storage_eject_guard_launchd.sh").write_text("#!/bin/zsh\n", encoding="utf-8")
-    (project_root / "scripts" / "install_storage_eject_guard_launchd.sh").write_text(
-        "#!/bin/zsh\n", encoding="utf-8"
-    )
+    _write_reconnect_contract_files(project_root)
     health = project_root / "governance" / "health"
-    _write_json(health / "storage_failback_sync_latest.json", '{"certified_mode":"local_fallback"}\n')
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        '{"certified_mode":"local_fallback"}\n',
+    )
     _write_json(
         health / "storage_mount_guard_latest.json",
         '{"external_available":false,"external_required_for_hot_path":false,"probe_skipped_external_io":true}\n',
     )
-    _write_json(health / "ingestion_storage_control_latest.json", '{"overall_status":"ready"}\n')
+    _write_json(
+        health / "ingestion_storage_control_latest.json", '{"overall_status":"ready"}\n'
+    )
 
-    payload = guard_src.build_payload(project_root, check_launchd=False, check_swift_parse=False)
+    payload = guard_src.build_payload(
+        project_root, check_launchd=False, check_swift_parse=False
+    )
 
     assert payload["overall_status"] == "ready"
     assert "external_mount_unavailable" not in payload["live_recovery"]["blockers"]
@@ -94,34 +164,63 @@ def test_storage_reconnect_guard_allows_intentional_local_hot_storage(tmp_path: 
     assert payload["live_recovery"]["external_probe_skipped"] is True
 
 
-def test_storage_reconnect_guard_uses_ready_transition_for_external_availability(tmp_path: Path) -> None:
+def test_storage_reconnect_guard_ignores_unlatched_halt_clear_blockers(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
-    scripts_ops = project_root / "scripts" / "ops"
-    scripts_ops.mkdir(parents=True)
-    (scripts_ops / "storage_eject_guard.swift").write_text(
-        "\n".join(guard_src.REQUIRED_GUARD_SNIPPETS.values()), encoding="utf-8"
-    )
-    (scripts_ops / "opsctl.sh").write_text(
-        "\n".join(guard_src.REQUIRED_OPSCTL_SNIPPETS.values()), encoding="utf-8"
-    )
-    (scripts_ops / "storage_sqlite_local_failover.py").write_text("# contract\n", encoding="utf-8")
-    (scripts_ops / "run_storage_eject_guard_launchd.sh").write_text("#!/bin/zsh\n", encoding="utf-8")
-    (project_root / "scripts" / "install_storage_eject_guard_launchd.sh").write_text(
-        "#!/bin/zsh\n", encoding="utf-8"
-    )
+    _write_reconnect_contract_files(project_root)
     health = project_root / "governance" / "health"
-    _write_json(health / "storage_failback_sync_latest.json", '{"certified_mode":"local_fallback"}\n')
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        '{"certified_mode":"local_fallback"}\n',
+    )
+    _write_json(
+        health / "storage_mount_guard_latest.json",
+        '{"external_available":false,"external_required_for_hot_path":false,"probe_skipped_external_io":true}\n',
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json", '{"overall_status":"ready"}\n'
+    )
+    _write_json(
+        health / "global_killswitch_latest.json",
+        '{"halt":false,"halt_required":false,"would_rehalt":false,"clear_blockers":["write_path_recovery_pending"]}\n',
+    )
+
+    payload = guard_src.build_payload(
+        project_root, check_launchd=False, check_swift_parse=False
+    )
+
+    assert payload["overall_status"] == "ready"
+    assert "global_halt_clear_blocked" not in payload["live_recovery"]["blockers"]
+    assert payload["live_recovery"]["halt_clear_needed"] is False
+    assert payload["live_recovery"]["halt_latched_or_required"] is False
+
+
+def test_storage_reconnect_guard_uses_ready_transition_for_external_availability(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_reconnect_contract_files(project_root)
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        '{"certified_mode":"local_fallback"}\n',
+    )
     _write_json(
         health / "storage_mount_guard_latest.json",
         '{"external_available":false,"external_required_for_hot_path":true,"probe_skipped_external_io":true}\n',
     )
-    _write_json(health / "ingestion_storage_control_latest.json", '{"overall_status":"ready"}\n')
+    _write_json(
+        health / "ingestion_storage_control_latest.json", '{"overall_status":"ready"}\n'
+    )
     _write_json(
         health / "storage_eject_guard_latest.json",
         '{"overall_status":"ready","event":"external_available_standby","external_available":true}\n',
     )
 
-    payload = guard_src.build_payload(project_root, check_launchd=False, check_swift_parse=False)
+    payload = guard_src.build_payload(
+        project_root, check_launchd=False, check_swift_parse=False
+    )
 
     assert payload["overall_status"] == "ready"
     assert payload["live_recovery"]["external_available"] is True
@@ -129,12 +228,96 @@ def test_storage_reconnect_guard_uses_ready_transition_for_external_availability
     assert "external_mount_unavailable" not in payload["live_recovery"]["blockers"]
 
 
-def test_storage_reconnect_infrabot_plans_safe_repairs(tmp_path: Path, monkeypatch) -> None:
+def test_storage_reconnect_guard_reports_flap_cooldown(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_reconnect_contract_files(project_root)
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        '{"certified_mode":"local_fallback"}\n',
+    )
+    _write_json(
+        health / "storage_mount_guard_latest.json",
+        '{"external_available":true,"external_required_for_hot_path":true}\n',
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json", '{"overall_status":"ready"}\n'
+    )
+    _write_json(
+        health / "storage_eject_guard_latest.json",
+        (
+            '{"overall_status":"ready","event":"external_available_flap_cooldown",'
+            '"external_available":true,'
+            '"flap_control":{"active":true,"recent_disappear_count":2},'
+            '"mount_control":{"failure_count":1}}\n'
+        ),
+    )
+
+    payload = guard_src.build_payload(
+        project_root, check_launchd=False, check_swift_parse=False
+    )
+
+    assert payload["overall_status"] == "degraded"
+    assert "storage_eject_flap_cooldown_active" in payload["live_recovery"]["blockers"]
+    assert payload["live_recovery"]["flap_cooldown_active"] is True
+    assert payload["live_recovery"]["recent_disappear_count"] == 2
+    assert payload["live_recovery"]["mount_failure_count"] == 1
+
+
+def test_storage_reconnect_infrabot_tracks_flap_cooldown(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "storage_reconnect_regression_guard_latest.json",
+        (
+            '{"overall_status":"degraded","contract_ok":true,'
+            '"automation":{"launchd":{"running":true,"plist_exists":true},'
+            '"runtime_binary":{"ready":true},"transition_state":{"status":"ready"}},'
+            '"live_recovery":{"flap_cooldown_active":true,"recent_disappear_count":2,'
+            '"total_pending_lines":0}}\n'
+        ),
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        '{"overall_status":"ready","backpressure":{"total_pending_lines":0}}\n',
+    )
+    _write_json(
+        health / "global_risk_killswitch_latest.json", '{"clear_blockers":[]}\n'
+    )
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        '{"overall_status":"ready","write_failure_count":0,"hot_path_over_budget_bytes":0}\n',
+    )
+    monkeypatch.setattr(
+        bot_src,
+        "_guard_payload",
+        lambda project_root, timeout_sec: guard_src.load_json(
+            health / "storage_reconnect_regression_guard_latest.json"
+        ),
+    )
+
+    payload = bot_src.build_payload(project_root, apply=False, timeout_sec=90)
+
+    names = [row["name"] for row in payload["repair_plan"]]
+    assert names == ["storage_flap_cooldown_status_refresh"]
+    assert payload["metrics"]["flap_cooldown_active"] is True
+    assert payload["metrics"]["recent_disappear_count"] == 2
+
+
+def test_storage_reconnect_infrabot_plans_safe_repairs(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     (project_root / "scripts" / "ops").mkdir(parents=True)
-    (project_root / "scripts" / "install_storage_eject_guard_launchd.sh").write_text("#!/bin/zsh\n", encoding="utf-8")
-    (project_root / "scripts" / "ops" / "opsctl.sh").write_text("#!/bin/zsh\n", encoding="utf-8")
+    (project_root / "scripts" / "install_storage_eject_guard_launchd.sh").write_text(
+        "#!/bin/zsh\n", encoding="utf-8"
+    )
+    (project_root / "scripts" / "ops" / "opsctl.sh").write_text(
+        "#!/bin/zsh\n", encoding="utf-8"
+    )
     _write_json(
         health / "storage_reconnect_regression_guard_latest.json",
         '{"overall_status":"degraded","contract_ok":true,"automation":{"launchd":{"running":false,"plist_exists":false}},"live_recovery":{"split_brain_unresolved_conflicts":1,"total_pending_lines":50000}}\n',
@@ -151,7 +334,13 @@ def test_storage_reconnect_infrabot_plans_safe_repairs(tmp_path: Path, monkeypat
         health / "data_plane_recovery_controller_latest.json",
         '{"overall_status":"degraded","queue_depth":50000,"write_failure_count":1,"hot_path_over_budget_bytes":4096}\n',
     )
-    monkeypatch.setattr(bot_src, "_guard_payload", lambda project_root, timeout_sec: guard_src.load_json(health / "storage_reconnect_regression_guard_latest.json"))
+    monkeypatch.setattr(
+        bot_src,
+        "_guard_payload",
+        lambda project_root, timeout_sec: guard_src.load_json(
+            health / "storage_reconnect_regression_guard_latest.json"
+        ),
+    )
 
     payload = bot_src.build_payload(project_root, apply=False, timeout_sec=90)
 
@@ -162,14 +351,18 @@ def test_storage_reconnect_infrabot_plans_safe_repairs(tmp_path: Path, monkeypat
     assert "global_halt_safe_refresh" in names
     assert "global_halt_safe_auto_clear" in names
     assert payload["metrics"]["repair_plan_count"] == len(names)
-    split_plan = next(row for row in payload["repair_plan"] if row["name"] == "split_brain_reconcile")
+    split_plan = next(
+        row for row in payload["repair_plan"] if row["name"] == "split_brain_reconcile"
+    )
     assert "--force-failback-timeout-sec" in split_plan["cmd"]
     assert split_plan["timeout_sec"] <= 75
     assert payload["metrics"]["max_repair_step_timeout_sec"] <= 90
     assert payload["metrics"]["data_plane_storage_halt_needed"] is True
 
 
-def test_storage_reconnect_infrabot_ignores_non_storage_data_plane_catchup(tmp_path: Path, monkeypatch) -> None:
+def test_storage_reconnect_infrabot_ignores_non_storage_data_plane_catchup(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     _write_json(
@@ -180,18 +373,75 @@ def test_storage_reconnect_infrabot_ignores_non_storage_data_plane_catchup(tmp_p
         health / "ingestion_storage_control_latest.json",
         '{"overall_status":"ready","backpressure":{"total_pending_lines":7023}}\n',
     )
-    _write_json(health / "global_risk_killswitch_latest.json", '{"clear_blockers":[]}\n')
+    _write_json(
+        health / "global_risk_killswitch_latest.json", '{"clear_blockers":[]}\n'
+    )
     _write_json(
         health / "data_plane_recovery_controller_latest.json",
         '{"overall_status":"degraded","recovery_state":"recovering_under_guard","queue_depth":4599,"write_failure_count":0,"hot_path_over_budget_bytes":0}\n',
     )
-    monkeypatch.setattr(bot_src, "_guard_payload", lambda project_root, timeout_sec: guard_src.load_json(health / "storage_reconnect_regression_guard_latest.json"))
+    monkeypatch.setattr(
+        bot_src,
+        "_guard_payload",
+        lambda project_root, timeout_sec: guard_src.load_json(
+            health / "storage_reconnect_regression_guard_latest.json"
+        ),
+    )
 
     payload = bot_src.build_payload(project_root, apply=False, timeout_sec=90)
 
     assert payload["overall_status"] == "ready"
     assert payload["repair_plan"] == []
     assert payload["metrics"]["data_plane_storage_halt_needed"] is False
+
+
+def test_storage_reconnect_infrabot_routes_unlatched_write_recovery_to_aftercare(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "storage_reconnect_regression_guard_latest.json",
+        (
+            '{"overall_status":"ready","contract_ok":true,'
+            '"automation":{"launchd":{"running":true,"plist_exists":true},'
+            '"runtime_binary":{"ready":true},"transition_state":{"status":"ready"}},'
+            '"live_recovery":{"split_brain_unresolved_conflicts":0,'
+            '"total_pending_lines":5089}}\n'
+        ),
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        '{"overall_status":"ready","backpressure":{"total_pending_lines":5089}}\n',
+    )
+    _write_json(
+        health / "global_killswitch_latest.json",
+        '{"halt":false,"halt_required":false,"would_rehalt":false,"clear_blockers":["write_path_recovery_pending"]}\n',
+    )
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        (
+            '{"overall_status":"degraded","recovery_state":"recovering_under_guard",'
+            '"queue_depth":5089,"write_failure_count":5,'
+            '"hot_path_over_budget_bytes":0}\n'
+        ),
+    )
+    monkeypatch.setattr(
+        bot_src,
+        "_guard_payload",
+        lambda project_root, timeout_sec: guard_src.load_json(
+            health / "storage_reconnect_regression_guard_latest.json"
+        ),
+    )
+
+    payload = bot_src.build_payload(project_root, apply=False, timeout_sec=90)
+
+    names = [row["name"] for row in payload["repair_plan"]]
+    assert names == ["data_plane_recovery_aftercare"]
+    assert "global_halt_safe_refresh" not in names
+    assert "global_halt_safe_auto_clear" not in names
+    assert payload["metrics"]["halt_clear_needed"] is False
+    assert payload["metrics"]["data_plane_storage_halt_needed"] is True
 
 
 def test_storage_reconnect_infrabot_truncates_large_child_output() -> None:
@@ -201,7 +451,9 @@ def test_storage_reconnect_infrabot_truncates_large_child_output() -> None:
     assert len(tail) < 140
 
 
-def test_infrastructure_autofix_assigns_storage_reconnect_infrabot(tmp_path: Path, monkeypatch) -> None:
+def test_infrastructure_autofix_assigns_storage_reconnect_infrabot(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     _write_json(

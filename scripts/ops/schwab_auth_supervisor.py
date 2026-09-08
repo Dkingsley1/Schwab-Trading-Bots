@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import signal
 import socket
 import subprocess
@@ -133,6 +134,34 @@ def _parse_etime(raw: str) -> int:
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
+def _command_tokens(command: str) -> list[str]:
+    try:
+        return shlex.split(str(command or ""))
+    except ValueError:
+        return str(command or "").split()
+
+
+def _is_auth_refresh_command(command: str) -> bool:
+    tokens = _command_tokens(command)
+    for index, token in enumerate(tokens[:4]):
+        if Path(token).name != "schwab_auth_refresh.py":
+            continue
+        if index == 0:
+            return True
+        launcher = Path(tokens[index - 1]).name.lower()
+        return launcher.startswith("python") or launcher in {"pypy", "pypy3"}
+    return False
+
+
+def _is_test_runner_command(command: str) -> bool:
+    tokens = [Path(token).name.lower() for token in _command_tokens(command)]
+    return any(
+        token in {"pytest", "py.test", "unittest"}
+        or token.startswith("pytest-")
+        for token in tokens
+    )
+
+
 def _list_auth_processes() -> list[ProcessRow]:
     try:
         proc = subprocess.run(
@@ -144,24 +173,30 @@ def _list_auth_processes() -> list[ProcessRow]:
         )
     except Exception:
         return []
-    rows: list[ProcessRow] = []
+    parsed_rows: list[ProcessRow] = []
+    process_commands: dict[int, str] = {}
     for line in (proc.stdout or "").splitlines():
-        if "schwab_auth_refresh.py" not in line:
-            continue
         parts = line.strip().split(None, 3)
         if len(parts) < 4:
             continue
         pid = _safe_int(parts[0], 0)
-        if pid <= 0 or pid == os.getpid():
+        if pid <= 0:
             continue
-        rows.append(
-            ProcessRow(
-                pid=pid,
-                ppid=_safe_int(parts[1], 0),
-                elapsed_seconds=_parse_etime(parts[2]),
-                command=parts[3],
-            )
+        row = ProcessRow(
+            pid=pid,
+            ppid=_safe_int(parts[1], 0),
+            elapsed_seconds=_parse_etime(parts[2]),
+            command=parts[3],
         )
+        parsed_rows.append(row)
+        process_commands[pid] = row.command
+    rows: list[ProcessRow] = []
+    for row in parsed_rows:
+        if row.pid == os.getpid() or not _is_auth_refresh_command(row.command):
+            continue
+        if _is_test_runner_command(process_commands.get(row.ppid, "")):
+            continue
+        rows.append(row)
     return rows
 
 

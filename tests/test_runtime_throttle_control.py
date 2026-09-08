@@ -3,7 +3,6 @@ import signal
 import sys
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -26,17 +25,53 @@ def test_runtime_throttle_classifies_paper_execution_lane_separately() -> None:
     assert classification["throttle_candidate"] is True
 
 
-def test_runtime_throttle_classifies_shadow_runners_as_paper_downshift_lanes() -> None:
+def test_runtime_throttle_classifies_shadow_runners_as_protected_market_decisions() -> (
+    None
+):
     classification = src._classify_process(
         "/repo/.venv/bin/python /repo/scripts/run_parallel_shadows.py --broker schwab --interval-seconds 60"
     )
 
-    assert classification["category"] == "paper_execution"
-    assert classification["priority_tier"] == "paper_shadow_downshift"
+    assert classification["category"] == "market_decision"
+    assert classification["priority_tier"] == "protected"
+    assert classification["throttle_candidate"] is False
+
+
+def test_runtime_throttle_protects_process_lifecycle_supervisors() -> None:
+    for command in (
+        "/repo/.venv/bin/python /repo/scripts/ops/process_watchdog.py --json",
+        "/repo/.venv/bin/python /repo/scripts/shadow_watchdog.py --watch-coinbase",
+    ):
+        classification = src._classify_process(command)
+        assert classification == {
+            "category": "critical_supervisor",
+            "priority_tier": "protected",
+            "throttle_candidate": False,
+        }
+
+        assert (
+            src._target_nice_for_candidate(
+                classification,
+                {"BOT_CPU_WORKLOAD_POLICY_LOCKED": "1"},
+            )
+            == 0
+        )
+
+
+def test_runtime_throttle_prefers_explicit_shadow_workload_marker() -> None:
+    classification = src._classify_process(
+        "/repo/.venv/bin/python /repo/scripts/run_shadow_training_loop.py "
+        "--runtime-cpu-class data_collection --broker schwab"
+    )
+
+    assert classification["category"] == "data_collection"
+    assert classification["priority_tier"] == "data_collection_downshift"
     assert classification["throttle_candidate"] is True
 
 
-def test_runtime_throttle_classifies_training_requalification_as_research_pressure() -> None:
+def test_runtime_throttle_classifies_training_requalification_as_research_pressure() -> (
+    None
+):
     classification = src._classify_process(
         "/repo/.venv/bin/python /repo/scripts/ops/training_requalification_lane.py --write-queue --json"
     )
@@ -61,10 +96,14 @@ def test_runtime_throttle_classifies_training_requalification_as_research_pressu
 
     assert candidates
     assert candidates[0]["pid"] == 5152
-    assert candidates[0]["throttle_reason"] == "research_training_loop_under_host_pressure"
+    assert (
+        candidates[0]["throttle_reason"] == "research_training_loop_under_host_pressure"
+    )
 
 
-def test_runtime_throttle_classifies_strategy_research_lane_as_research_pressure() -> None:
+def test_runtime_throttle_classifies_strategy_research_lane_as_research_pressure() -> (
+    None
+):
     classification = src._classify_process(
         "/repo/.venv/bin/python /repo/scripts/strategy_research_lane.py --day 20260801 --max-rows 4000"
     )
@@ -108,11 +147,22 @@ def test_runtime_throttle_never_marks_resource_guard_sensor_as_pauseable() -> No
     }
 
 
-def test_runtime_throttle_pauses_blocked_paper_execution_consumer(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_throttle_pauses_blocked_paper_execution_consumer(
+    tmp_path: Path, monkeypatch
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -133,8 +183,15 @@ def test_runtime_throttle_pauses_blocked_paper_execution_consumer(tmp_path: Path
     )
     runtime_snapshot = {
         "cpu_count": 12,
-        "load_averages": {"one_minute": 7.2, "five_minutes": 5.5, "fifteen_minutes": 5.0},
-        "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+        "load_averages": {
+            "one_minute": 7.2,
+            "five_minutes": 5.5,
+            "fifteen_minutes": 5.0,
+        },
+        "thermal": {
+            "thermal_warning_active": False,
+            "performance_warning_active": False,
+        },
         "vm_stat": {},
         "top_processes": [
             {
@@ -157,7 +214,13 @@ def test_runtime_throttle_pauses_blocked_paper_execution_consumer(tmp_path: Path
 
     def fake_run_apply(command: list[str]) -> dict:
         calls.append(command)
-        return {"command": command, "returncode": 0, "ok": True, "stdout": "", "stderr": ""}
+        return {
+            "command": command,
+            "returncode": 0,
+            "ok": True,
+            "stdout": "",
+            "stderr": "",
+        }
 
     def fake_kill(pid: int, sig: int) -> None:
         kills.append((pid, sig))
@@ -173,11 +236,20 @@ def test_runtime_throttle_pauses_blocked_paper_execution_consumer(tmp_path: Path
         registry_path=tmp_path / "master_bot_registry.json",
         max_renice_processes=4,
     )
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
 
     assert payload["paper_execution_policy"]["pause_paper_execution"] is True
-    assert payload["paper_execution_pause_candidates"][0]["terminate_when_apply"] is False
-    assert payload["runtime_saturation_governor_v2"]["paper_live_data_policy"]["paper_execution_consumer_paused"] is True
+    assert (
+        payload["paper_execution_pause_candidates"][0]["terminate_when_apply"] is False
+    )
+    assert (
+        payload["runtime_saturation_governor_v2"]["paper_live_data_policy"][
+            "paper_execution_consumer_paused"
+        ]
+        is True
+    )
     assert "PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE=1" in override
     assert "PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED=0" in override
     assert "PAPER_RECONCILIATION_HEARTBEAT_WHEN_PAUSED=1" in override
@@ -186,7 +258,9 @@ def test_runtime_throttle_pauses_blocked_paper_execution_consumer(tmp_path: Path
     assert any(cmd[:2] == ["renice", "-n"] for cmd in calls)
 
 
-def test_runtime_throttle_keeps_full_force_paper_open_on_pressure_only_ramp_blocker() -> None:
+def test_runtime_throttle_keeps_full_force_paper_open_on_pressure_only_ramp_blocker() -> (
+    None
+):
     policy = src._paper_execution_pressure_pause_policy(
         {
             "artifact_present": True,
@@ -216,11 +290,16 @@ def test_runtime_throttle_keeps_full_force_paper_open_on_pressure_only_ramp_bloc
     assert policy["paper_execution_allowed"] is True
     assert policy["pause_paper_execution"] is False
     assert policy["pressure_pause_bypassed"] is True
-    assert policy["pressure_pause_bypass_reason"] == "full_force_paper_ramp_pressure_only_blocker"
+    assert (
+        policy["pressure_pause_bypass_reason"]
+        == "full_force_paper_ramp_pressure_only_blocker"
+    )
     assert policy["pressure_recovery_probe"] is True
 
 
-def test_runtime_throttle_capacity_limits_full_force_paper_instead_of_pausing_cpu_pressure() -> None:
+def test_runtime_throttle_capacity_limits_full_force_paper_instead_of_pausing_cpu_pressure() -> (
+    None
+):
     policy = src._paper_execution_pressure_pause_policy(
         {
             "artifact_present": True,
@@ -254,14 +333,20 @@ def test_runtime_throttle_capacity_limits_full_force_paper_instead_of_pausing_cp
     assert policy["paper_execution_allowed"] is True
     assert policy["pause_paper_execution"] is False
     assert policy["pressure_pause_bypassed"] is True
-    assert policy["pressure_pause_bypass_reason"] == "full_force_paper_ramp_capacity_limited_low_priority_soak"
+    assert (
+        policy["pressure_pause_bypass_reason"]
+        == "full_force_paper_ramp_capacity_limited_low_priority_soak"
+    )
     assert policy["capacity_limited_paper_execution"] is True
 
     overrides = src._runtime_env_overrides(
         "soft_cap",
         "normal",
         "elevated",
-        paper_capacity_contract={"full_force_stabilization_required": True, "mode": "full_force_buffered"},
+        paper_capacity_contract={
+            "full_force_stabilization_required": True,
+            "mode": "full_force_buffered",
+        },
         paper_execution_policy=policy,
     )
     assert overrides["PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED"] == "1"
@@ -319,23 +404,37 @@ def test_runtime_throttle_keeps_bounded_niced_paper_research_writer_mix_open() -
         "sustain",
         "normal",
         "high",
-        paper_capacity_contract={"full_force_stabilization_required": True, "mode": "full_force_guarded"},
+        paper_capacity_contract={
+            "full_force_stabilization_required": True,
+            "mode": "full_force_guarded",
+        },
         paper_execution_policy=policy,
     )
 
     assert policy["paper_execution_allowed"] is True
     assert policy["pause_paper_execution"] is False
-    assert policy["pressure_pause_bypass_reason"] == "full_force_paper_ramp_bounded_low_priority_soak"
+    assert (
+        policy["pressure_pause_bypass_reason"]
+        == "full_force_paper_ramp_bounded_low_priority_soak"
+    )
     assert overrides["PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE"] == "0"
     assert overrides["PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED"] == "1"
     assert overrides["PAPER_400_RAMP_BLOCKED_RUNTIME_PAUSE"] == "0"
     assert overrides["INLINE_PAPER_EXECUTION_ENABLED"] == "1"
 
 
-def test_runtime_throttle_keeps_bounded_dominant_niced_research_and_paper_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_keeps_bounded_dominant_niced_research_and_paper_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
     _write_json(
         health_root / "live_runtime_separation_control_latest.json",
         {"release_contract": {"live_lane_should_be_read_only": True}},
@@ -370,7 +469,11 @@ def test_runtime_throttle_keeps_bounded_dominant_niced_research_and_paper_ready(
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for idx in range(700)
             ]
         },
@@ -380,8 +483,15 @@ def test_runtime_throttle_keeps_bounded_dominant_niced_research_and_paper_ready(
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 14.0, "five_minutes": 10.0, "fifteen_minutes": 9.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 14.0,
+                "five_minutes": 10.0,
+                "fifteen_minutes": 9.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -420,12 +530,17 @@ def test_runtime_throttle_keeps_bounded_dominant_niced_research_and_paper_ready(
     assert payload["overall_status"] == "ready"
     assert advisory["measurements"]["full_force_paper_ramp_guarded_ready"] is True
     assert advisory["measurements"]["paper_ramp_pressure_recovery_probe"] is True
-    assert advisory["reason"] == "paper_ramp_pressure_only_cycle_recovery_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"]
+        == "paper_ramp_pressure_only_cycle_recovery_is_guarded_runtime_ready"
+    )
     assert payload["paper_execution_policy"]["paper_execution_allowed"] is True
     assert payload["paper_execution_policy"]["pause_paper_execution"] is False
 
 
-def test_runtime_throttle_pauses_paper_when_research_exceeds_bounded_soak_limit() -> None:
+def test_runtime_throttle_pauses_paper_when_research_exceeds_bounded_soak_limit() -> (
+    None
+):
     policy = src._paper_execution_pressure_pause_policy(
         {
             "artifact_present": True,
@@ -465,7 +580,9 @@ def test_runtime_throttle_pauses_paper_when_research_exceeds_bounded_soak_limit(
     assert policy["reason"] == "paper_execution_cpu_pressure"
 
 
-def test_runtime_throttle_downshifts_full_force_paper_without_restart_when_other_lanes_are_hot() -> None:
+def test_runtime_throttle_downshifts_full_force_paper_without_restart_when_other_lanes_are_hot() -> (
+    None
+):
     policy = src._paper_execution_pressure_pause_policy(
         {
             "artifact_present": True,
@@ -502,22 +619,40 @@ def test_runtime_throttle_downshifts_full_force_paper_without_restart_when_other
     assert policy["pause_paper_execution"] is False
     assert policy["pressure_pause_active"] is False
     assert policy["pressure_pause_bypassed"] is True
-    assert policy["pressure_pause_bypass_reason"] == "full_force_paper_ramp_elevated_compute_downshift_without_restart"
+    assert (
+        policy["pressure_pause_bypass_reason"]
+        == "full_force_paper_ramp_elevated_compute_downshift_without_restart"
+    )
     assert policy["capacity_limited_paper_execution"] is True
 
 
-def test_runtime_throttle_downshifts_hot_coinbase_paper_feed_without_terminating_collection(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_throttle_downshifts_hot_coinbase_paper_feed_without_terminating_collection(
+    tmp_path: Path, monkeypatch
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
             "overall_status": "ready",
             "severity": "stable",
             "pressure_index": 0.0,
-            "backpressure": {"core_pending_lines": 0, "total_pending_lines": 0, "oldest_pending_age_seconds": 0.0},
+            "backpressure": {
+                "core_pending_lines": 0,
+                "total_pending_lines": 0,
+                "oldest_pending_age_seconds": 0.0,
+            },
         },
     )
     _write_json(
@@ -526,8 +661,15 @@ def test_runtime_throttle_downshifts_hot_coinbase_paper_feed_without_terminating
     )
     runtime_snapshot = {
         "cpu_count": 10,
-        "load_averages": {"one_minute": 8.0, "five_minutes": 6.8, "fifteen_minutes": 18.0},
-        "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+        "load_averages": {
+            "one_minute": 8.0,
+            "five_minutes": 6.8,
+            "fifteen_minutes": 18.0,
+        },
+        "thermal": {
+            "thermal_warning_active": False,
+            "performance_warning_active": False,
+        },
         "vm_stat": {},
         "top_processes": [
             {
@@ -561,7 +703,13 @@ def test_runtime_throttle_downshifts_hot_coinbase_paper_feed_without_terminating
 
     def fake_run_apply(command: list[str]) -> dict:
         calls.append(command)
-        return {"command": command, "returncode": 0, "ok": True, "stdout": "", "stderr": ""}
+        return {
+            "command": command,
+            "returncode": 0,
+            "ok": True,
+            "stdout": "",
+            "stderr": "",
+        }
 
     def fake_kill(pid: int, sig: int) -> None:
         kills.append((pid, sig))
@@ -577,37 +725,70 @@ def test_runtime_throttle_downshifts_hot_coinbase_paper_feed_without_terminating
         registry_path=tmp_path / "master_bot_registry.json",
         max_renice_processes=4,
     )
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
 
     assert payload["paper_execution_policy"]["reason"] == "paper_execution_cpu_pressure"
     assert payload["paper_execution_policy"]["pressure_pause_active"] is True
     assert payload["paper_execution_pause_candidates"]
-    assert all(row["terminate_when_apply"] is False for row in payload["paper_execution_pause_candidates"])
-    assert all(row["continuity_exempt"] is True for row in payload["paper_execution_pause_candidates"])
+    assert all(
+        row["terminate_when_apply"] is False
+        for row in payload["paper_execution_pause_candidates"]
+    )
+    assert all(
+        row["continuity_exempt"] is True
+        for row in payload["paper_execution_pause_candidates"]
+    )
     assert "PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE=1" in override
     assert result["paper_execution_pause"]["successful_count"] == 0
     assert all(sig != src.signal.SIGTERM for _, sig in kills)
 
 
-def test_runtime_throttle_pauses_hot_paper_execution_under_elevated_bot_owned_pressure(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_throttle_pauses_hot_paper_execution_under_elevated_bot_owned_pressure(
+    tmp_path: Path, monkeypatch
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
             "overall_status": "ready",
             "severity": "stable",
             "pressure_index": 0.0,
-            "backpressure": {"core_pending_lines": 0, "total_pending_lines": 0, "oldest_pending_age_seconds": 0.0},
+            "backpressure": {
+                "core_pending_lines": 0,
+                "total_pending_lines": 0,
+                "oldest_pending_age_seconds": 0.0,
+            },
         },
     )
-    _write_json(health_root / "paper_400_ramp_latest.json", {"stage": "armed", "ok": True, "armed": True, "blockers": []})
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {"stage": "armed", "ok": True, "armed": True, "blockers": []},
+    )
     runtime_snapshot = {
         "cpu_count": 10,
-        "load_averages": {"one_minute": 6.4, "five_minutes": 8.8, "fifteen_minutes": 9.2},
-        "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+        "load_averages": {
+            "one_minute": 6.4,
+            "five_minutes": 8.8,
+            "fifteen_minutes": 9.2,
+        },
+        "thermal": {
+            "thermal_warning_active": False,
+            "performance_warning_active": False,
+        },
         "vm_stat": {},
         "top_processes": [
             {
@@ -630,7 +811,13 @@ def test_runtime_throttle_pauses_hot_paper_execution_under_elevated_bot_owned_pr
 
     def fake_run_apply(command: list[str]) -> dict:
         calls.append(command)
-        return {"command": command, "returncode": 0, "ok": True, "stdout": "", "stderr": ""}
+        return {
+            "command": command,
+            "returncode": 0,
+            "ok": True,
+            "stdout": "",
+            "stderr": "",
+        }
 
     def fake_kill(pid: int, sig: int) -> None:
         kills.append((pid, sig))
@@ -646,19 +833,30 @@ def test_runtime_throttle_pauses_hot_paper_execution_under_elevated_bot_owned_pr
         registry_path=tmp_path / "master_bot_registry.json",
         max_renice_processes=4,
     )
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
 
     assert payload["compute_pressure_level"] == "elevated"
     assert payload["paper_execution_policy"]["reason"] == "paper_execution_cpu_pressure"
     assert payload["paper_execution_policy"]["pressure_pause_active"] is True
-    assert payload["paper_execution_pause_candidates"][0]["terminate_when_apply"] is True
-    assert payload["runtime_saturation_governor_v2"]["paper_live_data_policy"]["paper_execution_consumer_paused"] is True
+    assert (
+        payload["paper_execution_pause_candidates"][0]["terminate_when_apply"] is True
+    )
+    assert (
+        payload["runtime_saturation_governor_v2"]["paper_live_data_policy"][
+            "paper_execution_consumer_paused"
+        ]
+        is True
+    )
     assert "PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED=0" in override
     assert result["paper_execution_pause"]["successful_count"] == 1
     assert (76121, src.signal.SIGTERM) in kills
 
 
-def test_runtime_throttle_downshifts_supervised_full_force_paper_workers_without_restart() -> None:
+def test_runtime_throttle_downshifts_supervised_full_force_paper_workers_without_restart() -> (
+    None
+):
     policy = src._paper_execution_pressure_pause_policy(
         {
             "artifact_present": True,
@@ -704,11 +902,16 @@ def test_runtime_throttle_downshifts_supervised_full_force_paper_workers_without
     assert policy["paper_execution_allowed"] is True
     assert policy["pause_paper_execution"] is False
     assert policy["pressure_pause_bypassed"] is True
-    assert policy["pressure_pause_bypass_reason"] == "supervised_full_force_paper_soak_downshift_without_restart"
+    assert (
+        policy["pressure_pause_bypass_reason"]
+        == "supervised_full_force_paper_soak_downshift_without_restart"
+    )
     assert policy["capacity_limited_paper_execution"] is True
 
 
-def test_runtime_throttle_never_terminates_supervised_soak_worker_for_cpu_only_pause() -> None:
+def test_runtime_throttle_never_terminates_supervised_soak_worker_for_cpu_only_pause() -> (
+    None
+):
     candidates = src._paper_execution_pressure_candidates(
         [
             {
@@ -738,7 +941,9 @@ def test_runtime_throttle_never_terminates_supervised_soak_worker_for_cpu_only_p
     assert candidates[0]["continuity_exempt"] is True
 
 
-def test_runtime_guard_sigstops_hot_research_until_training_gate_clears(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_guard_sigstops_hot_research_until_training_gate_clears(
+    tmp_path: Path, monkeypatch
+) -> None:
     calls: list[tuple[int, int]] = []
 
     def fake_kill(pid: int, sig: int) -> None:
@@ -767,7 +972,9 @@ def test_runtime_guard_sigstops_hot_research_until_training_gate_clears(tmp_path
     ]
     state_path = tmp_path / "pause_state.json"
 
-    paused = src._apply_research_training_pause(tmp_path, candidates, payload, state_path=state_path)
+    paused = src._apply_research_training_pause(
+        tmp_path, candidates, payload, state_path=state_path
+    )
 
     assert paused["pause_requested"] is True
     assert paused["successful_count"] == 1
@@ -784,7 +991,9 @@ def test_runtime_guard_sigstops_hot_research_until_training_gate_clears(tmp_path
             "throttle_profile": "normal",
             "compute_pressure_level": "normal",
             "memory_pressure_level": "normal",
-            "runtime_saturation_governor_v2": {"training_policy": {"training_paused": False}},
+            "runtime_saturation_governor_v2": {
+                "training_policy": {"training_paused": False}
+            },
         },
         state_path=state_path,
     )
@@ -812,7 +1021,9 @@ def test_runtime_throttle_includes_medium_hot_research_under_sustain() -> None:
     assert candidates
     assert candidates[0]["pid"] == 5150
     assert candidates[0]["pause_exempt"] is True
-    assert candidates[0]["pause_exempt_reason"] == "live_soak_shadow_loop_downshift_only"
+    assert (
+        candidates[0]["pause_exempt_reason"] == "live_soak_shadow_loop_downshift_only"
+    )
 
 
 def test_runtime_env_overrides_soft_cap_carries_support_spawn_contract() -> None:
@@ -849,8 +1060,15 @@ def test_full_force_paper_keeps_cooling_controls_under_soft_cap() -> None:
         "soft_cap",
         "normal",
         "elevated",
-        paper_capacity_contract={"full_force_stabilization_required": True, "mode": "full_force_buffered"},
-        paper_execution_policy={"artifact_present": True, "paper_execution_allowed": True, "pause_paper_execution": False},
+        paper_capacity_contract={
+            "full_force_stabilization_required": True,
+            "mode": "full_force_buffered",
+        },
+        paper_execution_policy={
+            "artifact_present": True,
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+        },
     )
 
     assert overrides["PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED"] == "1"
@@ -884,11 +1102,22 @@ def test_drain_friendly_sql_overrides_honor_smooth_load_shape_cap(monkeypatch) -
     assert overrides["SQL_LINK_WRITER_NICE"] == "4"
 
 
-def test_runtime_throttle_applies_mac_fluidity_foreground_first_overrides(tmp_path: Path) -> None:
+def test_runtime_throttle_applies_mac_fluidity_foreground_first_overrides(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -911,8 +1140,15 @@ def test_runtime_throttle_applies_mac_fluidity_foreground_first_overrides(tmp_pa
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 6.0, "five_minutes": 3.0, "fifteen_minutes": 2.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 6.0,
+                "five_minutes": 3.0,
+                "fifteen_minutes": 2.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -946,7 +1182,9 @@ def test_runtime_throttle_applies_mac_fluidity_foreground_first_overrides(tmp_pa
         registry_path=tmp_path / "master_bot_registry.json",
         max_renice_processes=0,
     )
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
 
     assert result["mac_fluidity_contract"]["fluidity_band"] == "guarded_smooth"
     assert "MAC_FLUIDITY_CONTRACT_ENABLED=1" in override
@@ -989,7 +1227,9 @@ def test_silky_mac_fluidity_preserves_support_process_isolation() -> None:
     assert contract["env_overrides"]["MACRO_YTDLP_SUPPORT_NICE"] == "12"
 
 
-def test_mac_fluidity_contract_pauses_hot_research_when_foreground_needs_headroom() -> None:
+def test_mac_fluidity_contract_pauses_hot_research_when_foreground_needs_headroom() -> (
+    None
+):
     contract = src._mac_fluidity_contract(
         overall_status="degraded",
         throttle_profile="soft_cap",
@@ -1017,11 +1257,16 @@ def test_mac_fluidity_contract_pauses_hot_research_when_foreground_needs_headroo
     assert contract["fluidity_band"] == "guarded_smooth"
     assert contract["research_pause_recommended"] is True
     assert contract["env_overrides"]["MAC_FLUIDITY_RESEARCH_PAUSE"] == "1"
-    assert contract["env_overrides"]["TRAINING_RUNTIME_GOVERNOR_MODE"] == "paused_for_mac_fluidity"
+    assert (
+        contract["env_overrides"]["TRAINING_RUNTIME_GOVERNOR_MODE"]
+        == "paused_for_mac_fluidity"
+    )
     assert contract["env_overrides"]["TRAINING_RUNTIME_MAX_PARALLEL"] == "0"
 
 
-def test_mac_fluidity_contract_pauses_research_on_writer_contention_even_when_score_ready() -> None:
+def test_mac_fluidity_contract_pauses_research_on_writer_contention_even_when_score_ready() -> (
+    None
+):
     contract = src._mac_fluidity_contract(
         overall_status="advisory",
         throttle_profile="soft_cap",
@@ -1054,7 +1299,9 @@ def test_mac_fluidity_contract_pauses_research_on_writer_contention_even_when_sc
     assert contract["env_overrides"]["RUNTIME_RESEARCH_TRAINING_PAUSE_LIMIT"] == "8"
 
 
-def test_mac_fluidity_contract_freezes_hot_support_maintenance_when_storage_is_clear() -> None:
+def test_mac_fluidity_contract_freezes_hot_support_maintenance_when_storage_is_clear() -> (
+    None
+):
     contract = src._mac_fluidity_contract(
         overall_status="advisory",
         throttle_profile="soft_cap",
@@ -1086,7 +1333,9 @@ def test_mac_fluidity_contract_freezes_hot_support_maintenance_when_storage_is_c
     assert contract["env_overrides"]["SUPPORT_MAINTENANCE_CONCURRENCY"] == "0"
 
 
-def test_strained_mac_fluidity_preserves_bounded_micro_canary_when_backlog_and_memory_are_clear() -> None:
+def test_strained_mac_fluidity_preserves_bounded_micro_canary_when_backlog_and_memory_are_clear() -> (
+    None
+):
     governor = src._runtime_saturation_governor_v2(
         saturation_score=46.0,
         throttle_profile="sustain",
@@ -1096,7 +1345,10 @@ def test_strained_mac_fluidity_preserves_bounded_micro_canary_when_backlog_and_m
         storage_oldest_pending_age_seconds=0.0,
         support_trim_candidates=[],
         research_training_trim_candidates=[],
-        paper_execution_policy={"pause_paper_execution": False, "paper_execution_allowed": True},
+        paper_execution_policy={
+            "pause_paper_execution": False,
+            "paper_execution_allowed": True,
+        },
         paper_execution_pause_candidates=[],
     )
 
@@ -1125,10 +1377,15 @@ def test_strained_mac_fluidity_preserves_bounded_micro_canary_when_backlog_and_m
         runtime_saturation_governor=governor,
     )
 
-    assert governor["training_policy"]["reason"] == "bounded_compute_pressure_micro_canary"
+    assert (
+        governor["training_policy"]["reason"] == "bounded_compute_pressure_micro_canary"
+    )
     assert governor["training_policy"]["max_parallel_trainings"] == 1
     assert contract["fluidity_band"] == "strained"
-    assert contract["env_overrides"]["TRAINING_RUNTIME_GOVERNOR_MODE"] == "micro_canary_only"
+    assert (
+        contract["env_overrides"]["TRAINING_RUNTIME_GOVERNOR_MODE"]
+        == "micro_canary_only"
+    )
     assert contract["env_overrides"]["TRAINING_RUNTIME_MAX_PARALLEL"] == "1"
     assert contract["env_overrides"]["MAC_FLUIDITY_BOUNDED_CANARY"] == "1"
 
@@ -1196,21 +1453,32 @@ def test_sql_writer_fluidity_contract_bounds_governance_tail_shard() -> None:
 
     assert contract["active"] is True
     assert contract["tier"] == "guarded_relief"
-    assert contract["env_overrides"]["SQL_LINK_SERVICE_PROGRESS_HEARTBEAT_SECONDS"] == "20"
+    assert (
+        contract["env_overrides"]["SQL_LINK_SERVICE_PROGRESS_HEARTBEAT_SECONDS"] == "20"
+    )
     assert contract["env_overrides"]["SQL_LINK_SERVICE_SMART_SHARD_PARALLELISM"] == "1"
     assert contract["env_overrides"]["SQL_LINK_SERVICE_HOT_SHARD_LANE_CAP"] == "1"
     assert contract["env_overrides"]["SQL_LINK_SERVICE_WARM_SHARD_LANE_CAP"] == "1"
     assert contract["env_overrides"]["SQL_LINK_SERVICE_COLD_SHARD_LANE_CAP"] == "1"
-    assert contract["env_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES"] == "8"
-    assert contract["env_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_TIMEOUT_SECONDS"] == "180"
-    assert contract["env_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_SQLITE_BATCH_MAX_BYTES"] == str(12 * 1024 * 1024)
+    assert (
+        contract["env_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES"] == "8"
+    )
+    assert (
+        contract["env_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_TIMEOUT_SECONDS"]
+        == "180"
+    )
+    assert contract["env_overrides"][
+        "SQL_LINK_SERVICE_SHARD_GOVERNANCE_SQLITE_BATCH_MAX_BYTES"
+    ] == str(12 * 1024 * 1024)
     assert contract["env_overrides"]["INGEST_HOST_LOAD_SOFT_CAP"] == "6.0"
     assert contract["env_overrides"]["INGEST_HOST_LOAD_SLEEP_SECONDS"] == "0.50"
     assert contract["env_overrides"]["INGEST_FLUSH_SLEEP_SECONDS"] == "0.05"
     assert contract["env_overrides"]["INGEST_FILE_SLEEP_SECONDS"] == "0.25"
 
 
-def test_runtime_throttle_control_protects_core_lanes_and_flags_support_jobs(tmp_path: Path) -> None:
+def test_runtime_throttle_control_protects_core_lanes_and_flags_support_jobs(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(
         health_root / "resource_guard_latest.json",
@@ -1250,7 +1518,11 @@ def test_runtime_throttle_control_protects_core_lanes_and_flags_support_jobs(tmp
 
     runtime_snapshot = {
         "cpu_count": 12,
-        "load_averages": {"one_minute": 13.2, "five_minutes": 11.4, "fifteen_minutes": 9.8},
+        "load_averages": {
+            "one_minute": 13.2,
+            "five_minutes": 11.4,
+            "fifteen_minutes": 9.8,
+        },
         "thermal": {
             "thermal_warning_active": False,
             "performance_warning_active": False,
@@ -1326,10 +1598,15 @@ def test_runtime_throttle_control_protects_core_lanes_and_flags_support_jobs(tmp
     assert governor["training_policy"]["max_parallel_trainings"] == 0
     assert governor["paper_live_data_policy"]["protect_paper_execution_queue"] is True
     assert payload["upgrade_track"]["upgradeable"] is True
-    assert any("off-hours throttle windows" in action for action in payload["recommended_actions"])
+    assert any(
+        "off-hours throttle windows" in action
+        for action in payload["recommended_actions"]
+    )
 
 
-def test_runtime_throttle_control_escalates_to_protect_live_when_thermal_pressure_hits(tmp_path: Path) -> None:
+def test_runtime_throttle_control_escalates_to_protect_live_when_thermal_pressure_hits(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(
         health_root / "resource_guard_latest.json",
@@ -1359,7 +1636,11 @@ def test_runtime_throttle_control_escalates_to_protect_live_when_thermal_pressur
 
     runtime_snapshot = {
         "cpu_count": 10,
-        "load_averages": {"one_minute": 15.0, "five_minutes": 13.5, "fifteen_minutes": 11.8},
+        "load_averages": {
+            "one_minute": 15.0,
+            "five_minutes": 13.5,
+            "fifteen_minutes": 11.8,
+        },
         "thermal": {
             "thermal_warning_active": True,
             "performance_warning_active": True,
@@ -1379,7 +1660,9 @@ def test_runtime_throttle_control_escalates_to_protect_live_when_thermal_pressur
     assert payload["release_contract"]["live_lane_should_be_read_only"] is True
 
 
-def test_runtime_throttle_does_not_call_memory_high_when_memory_efficiency_is_storage_blocked(tmp_path: Path) -> None:
+def test_runtime_throttle_does_not_call_memory_high_when_memory_efficiency_is_storage_blocked(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(
         health_root / "resource_guard_latest.json",
@@ -1411,8 +1694,15 @@ def test_runtime_throttle_does_not_call_memory_high_when_memory_efficiency_is_st
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 4.0, "five_minutes": 4.0, "fifteen_minutes": 4.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 4.0,
+                "five_minutes": 4.0,
+                "fifteen_minutes": 4.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -1423,7 +1713,9 @@ def test_runtime_throttle_does_not_call_memory_high_when_memory_efficiency_is_st
     assert payload["memory_pressure_level"] == "normal"
 
 
-def test_runtime_throttle_counts_only_explicit_paper_live_data_capacity(tmp_path: Path) -> None:
+def test_runtime_throttle_counts_only_explicit_paper_live_data_capacity(
+    tmp_path: Path,
+) -> None:
     _write_json(
         tmp_path / "master_bot_registry.json",
         {
@@ -1450,13 +1742,17 @@ def test_runtime_throttle_counts_only_explicit_paper_live_data_capacity(tmp_path
         },
     )
 
-    counts = src._registry_capacity_counts(tmp_path, registry_path=tmp_path / "master_bot_registry.json")
+    counts = src._registry_capacity_counts(
+        tmp_path, registry_path=tmp_path / "master_bot_registry.json"
+    )
 
     assert counts["active_bot_count"] == 3
     assert counts["paper_tagged_count"] == 2
 
 
-def test_runtime_throttle_apply_cools_sql_writer_when_backlog_is_green(tmp_path: Path) -> None:
+def test_runtime_throttle_apply_cools_sql_writer_when_backlog_is_green(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(
         health_root / "resource_guard_latest.json",
@@ -1466,7 +1762,10 @@ def test_runtime_throttle_apply_cools_sql_writer_when_backlog_is_green(tmp_path:
             "swap_used_gb": 24.0,
         },
     )
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "blocked"})
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "blocked"},
+    )
     _write_json(
         health_root / "live_runtime_separation_control_latest.json",
         {"release_contract": {"live_lane_should_be_read_only": True}},
@@ -1487,8 +1786,15 @@ def test_runtime_throttle_apply_cools_sql_writer_when_backlog_is_green(tmp_path:
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 3.0, "five_minutes": 3.0, "fifteen_minutes": 3.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 3.0,
+                "five_minutes": 3.0,
+                "fifteen_minutes": 3.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -1503,12 +1809,17 @@ def test_runtime_throttle_apply_cools_sql_writer_when_backlog_is_green(tmp_path:
         max_renice_processes=0,
     )
 
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
 
     assert payload["throttle_profile"] == "protect_live"
     assert payload["storage_stabilization"]["drain_friendly_sql_required"] is True
     assert result["storage_drain_active"] is True
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_HOST_COOLING_ACTIVE"] == "1"
+    assert (
+        result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_HOST_COOLING_ACTIVE"]
+        == "1"
+    )
     assert "SQL_LINK_SERVICE_HOST_COOLING_ACTIVE=1" in override
     assert "SQL_LINK_SERVICE_INTERVAL_SECONDS=180" in override
     assert "SQL_LINK_SERVICE_INTERVAL_SECONDS=12" not in override
@@ -1538,7 +1849,9 @@ def test_runtime_throttle_writes_idle_sql_cooling_when_backlog_is_clean() -> Non
     assert overrides["SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES"] == "1"
     assert overrides["SQL_LINK_WRITER_BACKGROUND_POLICY"] == "1"
     assert overrides["SQL_LINK_WRITER_NICE"] == "18"
-    assert overrides["SQL_LINK_CHILD_WRITER_CPU_POLICY"] == "foreground_safe_idle_backlog"
+    assert (
+        overrides["SQL_LINK_CHILD_WRITER_CPU_POLICY"] == "foreground_safe_idle_backlog"
+    )
 
 
 def test_runtime_throttle_apply_retires_hot_clean_backlog_sql_children(
@@ -1550,7 +1863,13 @@ def test_runtime_throttle_apply_retires_hot_clean_backlog_sql_children(
 
     def fake_run_apply(command: list[str]) -> dict:
         calls.append(command)
-        return {"command": command, "returncode": 0, "ok": True, "stdout": "", "stderr": ""}
+        return {
+            "command": command,
+            "returncode": 0,
+            "ok": True,
+            "stdout": "",
+            "stderr": "",
+        }
 
     def fake_kill(pid: int, sig: int) -> None:
         kills.append((pid, sig))
@@ -1629,12 +1948,22 @@ def test_runtime_throttle_apply_retires_hot_clean_backlog_sql_children(
         registry_path=tmp_path / "master_bot_registry.json",
         max_renice_processes=4,
     )
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
 
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_IDLE_BACKLOG_COOLDOWN"] == "1"
-    assert result["sql_writer_fluidity_contract"]["reason"] == "storage_writer_heat_after_clean_backlog_is_being_retired"
+    assert (
+        result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_IDLE_BACKLOG_COOLDOWN"]
+        == "1"
+    )
+    assert (
+        result["sql_writer_fluidity_contract"]["reason"]
+        == "storage_writer_heat_after_clean_backlog_is_being_retired"
+    )
     assert result["storage_writer_cooling"]["successful_count"] == 2
-    assert any(cmd[:3] == ["renice", "-n", "18"] and cmd[-1] == "34211" for cmd in calls)
+    assert any(
+        cmd[:3] == ["renice", "-n", "18"] and cmd[-1] == "34211" for cmd in calls
+    )
     assert (34211, src.signal.SIGTERM) in kills
     assert (34217, src.signal.SIGTERM) in kills
     assert (34299, src.signal.SIGTERM) not in kills
@@ -1652,7 +1981,13 @@ def test_runtime_throttle_cools_excess_sql_children_when_fluidity_lane_cap_is_ac
 
     def fake_run_apply(command: list[str]) -> dict:
         calls.append(command)
-        return {"command": command, "returncode": 0, "ok": True, "stdout": "", "stderr": ""}
+        return {
+            "command": command,
+            "returncode": 0,
+            "ok": True,
+            "stdout": "",
+            "stderr": "",
+        }
 
     def fake_kill(pid: int, sig: int) -> None:
         kills.append((pid, sig))
@@ -1750,14 +2085,18 @@ def test_runtime_throttle_cools_excess_sql_children_when_fluidity_lane_cap_is_ac
     )
 
     assert result["sql_writer_fluidity_contract"]["tier"] == "guarded_relief"
-    assert result["storage_writer_cooling"]["reason"] == "fluidity_lane_cap_writer_cooling"
+    assert (
+        result["storage_writer_cooling"]["reason"] == "fluidity_lane_cap_writer_cooling"
+    )
     assert result["storage_writer_cooling"]["successful_count"] == 2
     assert (45201, src.signal.SIGTERM) in kills
     assert (45202, src.signal.SIGTERM) in kills
     assert (45203, src.signal.SIGTERM) not in kills
 
 
-def test_runtime_throttle_coordinates_concentrated_core_sql_drain(tmp_path: Path) -> None:
+def test_runtime_throttle_coordinates_concentrated_core_sql_drain(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
     _write_json(
         health_root / "resource_guard_latest.json",
@@ -1767,7 +2106,10 @@ def test_runtime_throttle_coordinates_concentrated_core_sql_drain(tmp_path: Path
             "swap_used_gb": 24.0,
         },
     )
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "blocked"})
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "blocked"},
+    )
     _write_json(
         health_root / "live_runtime_separation_control_latest.json",
         {"release_contract": {"live_lane_should_be_read_only": True}},
@@ -1805,8 +2147,15 @@ def test_runtime_throttle_coordinates_concentrated_core_sql_drain(tmp_path: Path
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 3.0, "five_minutes": 3.0, "fifteen_minutes": 3.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 3.0,
+                "five_minutes": 3.0,
+                "fifteen_minutes": 3.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -1821,18 +2170,30 @@ def test_runtime_throttle_coordinates_concentrated_core_sql_drain(tmp_path: Path
         max_renice_processes=0,
     )
 
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
     coordination = payload["storage_stabilization"]["sql_writer_coordination"]
 
     assert coordination["concentrated_core_drain"] is True
     assert coordination["recommended_merge_max_seconds_per_cycle"] == 90
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "1"
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"] == "90"
+    assert (
+        result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_PREPROCESS_WORKERS"]
+        == "1"
+    )
+    assert (
+        result["drain_friendly_sql_overrides"][
+            "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE"
+        ]
+        == "90"
+    )
     assert "SQL_LINK_SERVICE_CONCENTRATED_CORE_DRAIN=1" in override
     assert "SQL_LINK_SERVICE_SHARD_LINK_TIMEOUT_SECONDS=420" in override
     assert "SQL_LINK_SERVICE_PREPROCESS_WORKERS=1" in override
     assert "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE=90" in override
-    assert "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE=12000" in override
+    assert (
+        "SQL_LINK_SERVICE_SHARD_AGGRESSIVE_TRADING_MAX_LINES_PER_FILE=12000" in override
+    )
 
 
 def test_runtime_throttle_apply_preserves_selected_writer_lane_cap_under_storage_pressure(
@@ -1875,9 +2236,14 @@ def test_runtime_throttle_apply_preserves_selected_writer_lane_cap_under_storage
         max_renice_processes=0,
     )
 
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
 
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "3"
+    assert (
+        result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_PREPROCESS_WORKERS"]
+        == "3"
+    )
     assert "BACKLOG_PCORE_PREPROCESS_WORKERS=3" in override
     assert "SQL_LINK_SERVICE_PREPROCESS_WORKERS=3" in override
     assert "SQL_LINK_SERVICE_SHARD_WRITER_LANES=3" in override
@@ -1906,7 +2272,10 @@ def test_runtime_throttle_apply_keeps_stable_storage_overlay_on_single_writer(
         },
         "storage_stabilization": {
             "drain_friendly_sql_required": True,
-            "sql_writer_coordination": {"concentrated_core_drain": False, "total_pending_lines": 374},
+            "sql_writer_coordination": {
+                "concentrated_core_drain": False,
+                "total_pending_lines": 374,
+            },
         },
         "p_core_runtime_feedback": {
             "preprocess_worker_budget": 7,
@@ -1927,19 +2296,64 @@ def test_runtime_throttle_apply_keeps_stable_storage_overlay_on_single_writer(
         max_renice_processes=0,
     )
 
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
 
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_HOST_COOLING_ACTIVE"] == "1"
-    assert result["drain_friendly_sql_overrides"]["BACKLOG_PCORE_PREPROCESS_WORKERS"] == "1"
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "1"
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_SHARD_WRITER_LANES"] == "1"
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES"] == "1"
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_INTERVAL_SECONDS"] == "12"
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_PROGRESS_HEARTBEAT_SECONDS"] == "20"
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_SMART_SHARD_PARALLELISM"] == "1"
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_COLD_SHARD_LANE_CAP"] == "1"
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES"] == "10"
-    assert result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_SHARD_GOVERNANCE_TIMEOUT_SECONDS"] == "240"
+    assert (
+        result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_HOST_COOLING_ACTIVE"]
+        == "1"
+    )
+    assert (
+        result["drain_friendly_sql_overrides"]["BACKLOG_PCORE_PREPROCESS_WORKERS"]
+        == "1"
+    )
+    assert (
+        result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_PREPROCESS_WORKERS"]
+        == "1"
+    )
+    assert (
+        result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_SHARD_WRITER_LANES"]
+        == "1"
+    )
+    assert (
+        result["drain_friendly_sql_overrides"][
+            "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES"
+        ]
+        == "1"
+    )
+    assert (
+        result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_INTERVAL_SECONDS"]
+        == "12"
+    )
+    assert (
+        result["drain_friendly_sql_overrides"][
+            "SQL_LINK_SERVICE_PROGRESS_HEARTBEAT_SECONDS"
+        ]
+        == "20"
+    )
+    assert (
+        result["drain_friendly_sql_overrides"][
+            "SQL_LINK_SERVICE_SMART_SHARD_PARALLELISM"
+        ]
+        == "1"
+    )
+    assert (
+        result["drain_friendly_sql_overrides"]["SQL_LINK_SERVICE_COLD_SHARD_LANE_CAP"]
+        == "1"
+    )
+    assert (
+        result["drain_friendly_sql_overrides"][
+            "SQL_LINK_SERVICE_SHARD_GOVERNANCE_MAX_FILES"
+        ]
+        == "10"
+    )
+    assert (
+        result["drain_friendly_sql_overrides"][
+            "SQL_LINK_SERVICE_SHARD_GOVERNANCE_TIMEOUT_SECONDS"
+        ]
+        == "240"
+    )
     assert "SQL_LINK_SERVICE_HOST_COOLING_ACTIVE=1" in override
     assert "BACKLOG_PCORE_PREPROCESS_WORKERS=1" in override
     assert "SQL_LINK_SERVICE_SHARD_WRITER_LANES=1" in override
@@ -1958,8 +2372,14 @@ def test_runtime_payload_ignores_stale_lane_cap_when_pcore_operator_override_is_
 ) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES", "1")
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
     _write_json(
         health_root / "live_runtime_separation_control_latest.json",
         {"release_contract": {"live_lane_should_be_read_only": True}},
@@ -1997,8 +2417,15 @@ def test_runtime_payload_ignores_stale_lane_cap_when_pcore_operator_override_is_
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 3.0, "five_minutes": 3.0, "fifteen_minutes": 3.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 3.0,
+                "five_minutes": 3.0,
+                "fifteen_minutes": 3.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -2014,10 +2441,18 @@ def test_runtime_payload_ignores_stale_lane_cap_when_pcore_operator_override_is_
     assert feedback["configured_smooth_cap_ignored_for_operator_override"] is True
 
 
-def test_runtime_throttle_marks_bounded_sql_overlay_support_pressure_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_bounded_sql_overlay_support_pressure_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 2.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 2.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
     _write_json(
         health_root / "live_runtime_separation_control_latest.json",
         {"release_contract": {"live_lane_should_be_read_only": True}},
@@ -2055,8 +2490,15 @@ def test_runtime_throttle_marks_bounded_sql_overlay_support_pressure_ready(tmp_p
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 6.39, "five_minutes": 5.86, "fifteen_minutes": 5.74},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 6.39,
+                "five_minutes": 5.86,
+                "fifteen_minutes": 5.74,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -2082,7 +2524,10 @@ def test_runtime_throttle_marks_bounded_sql_overlay_support_pressure_ready(tmp_p
                     "throttle_candidate": False,
                 },
             ],
-            "category_cpu": {"support_maintenance": 70.4, "interactive_cotenant": 111.6},
+            "category_cpu": {
+                "support_maintenance": 70.4,
+                "interactive_cotenant": 111.6,
+            },
             "category_counts": {"support_maintenance": 1, "interactive_cotenant": 1},
         },
     )
@@ -2090,12 +2535,23 @@ def test_runtime_throttle_marks_bounded_sql_overlay_support_pressure_ready(tmp_p
     advisory = payload["soft_cap_advisory_reclassification"]
     assert payload["overall_status"] == "ready"
     assert advisory["active"] is True
-    assert advisory["reason"] == "niced_support_pressure_after_green_backpressure_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"]
+        == "niced_support_pressure_after_green_backpressure_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["overlay_runtime_relief_active"] is True
     assert advisory["measurements"]["support_low_priority_guarded_ready"] is True
-    assert payload["runtime_snapshot"]["storage_pressure"]["overlay_relief_contract"]["active"] is True
+    assert (
+        payload["runtime_snapshot"]["storage_pressure"]["overlay_relief_contract"][
+            "active"
+        ]
+        is True
+    )
     assert payload["mac_fluidity_contract"]["storage_clear_for_fluidity"] is True
-    assert payload["mac_fluidity_contract"]["measurements"]["overlay_fluidity_managed"] is True
+    assert (
+        payload["mac_fluidity_contract"]["measurements"]["overlay_fluidity_managed"]
+        is True
+    )
 
 
 def test_heavy_livefeed_is_operator_observability_not_support_trim() -> None:
@@ -2183,7 +2639,10 @@ def test_runtime_throttle_surfaces_p_core_backlog_feedback(tmp_path: Path) -> No
                     "active": True,
                     "policy": "p_core_preprocess_single_sql_writer",
                     "preprocess_worker_budget": 4,
-                    "training_pcore_gate": {"allowed_when_backlog_green": True, "max_workers": 2},
+                    "training_pcore_gate": {
+                        "allowed_when_backlog_green": True,
+                        "max_workers": 2,
+                    },
                 }
             },
         },
@@ -2193,12 +2652,31 @@ def test_runtime_throttle_surfaces_p_core_backlog_feedback(tmp_path: Path) -> No
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 2.0, "five_minutes": 2.0, "fifteen_minutes": 2.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 2.0,
+                "five_minutes": 2.0,
+                "fifteen_minutes": 2.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
-                {"pid": 1, "nice": 8, "cpu_percent": 5.0, "category": "support_maintenance", "priority_tier": "throttle_first"},
-                {"pid": 2, "nice": 0, "cpu_percent": 4.0, "category": "operator_observability", "priority_tier": "operator_visible"},
+                {
+                    "pid": 1,
+                    "nice": 8,
+                    "cpu_percent": 5.0,
+                    "category": "support_maintenance",
+                    "priority_tier": "throttle_first",
+                },
+                {
+                    "pid": 2,
+                    "nice": 0,
+                    "cpu_percent": 4.0,
+                    "category": "operator_observability",
+                    "priority_tier": "operator_visible",
+                },
             ],
             "category_cpu": {},
             "category_counts": {},
@@ -2212,7 +2690,9 @@ def test_runtime_throttle_surfaces_p_core_backlog_feedback(tmp_path: Path) -> No
     assert feedback["top_process_nice_distribution"] == {"8": 1, "0": 1}
 
 
-def test_runtime_throttle_p_core_feedback_honors_smooth_lane_cap(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_throttle_p_core_feedback_honors_smooth_lane_cap(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES", "2")
     health_root = tmp_path / "governance" / "health"
     _write_json(health_root / "resource_guard_latest.json", {})
@@ -2239,8 +2719,15 @@ def test_runtime_throttle_p_core_feedback_honors_smooth_lane_cap(monkeypatch, tm
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 2.0, "five_minutes": 2.0, "fifteen_minutes": 2.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 2.0,
+                "five_minutes": 2.0,
+                "fifteen_minutes": 2.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -2304,18 +2791,169 @@ def test_paper_shadow_downshift_uses_paper_nice_not_research_nice(monkeypatch) -
     monkeypatch.delenv("PAPER_SHADOW_RUNTIME_NICE", raising=False)
 
     target = src._target_nice_for_candidate(
-        {"category": "paper_execution", "priority_tier": "paper_shadow_downshift", "throttle_candidate": True},
+        {
+            "category": "paper_execution",
+            "priority_tier": "paper_shadow_downshift",
+            "throttle_candidate": True,
+        },
         {},
     )
 
     assert target == 12
 
 
+def test_locked_critical_targets_use_their_own_priority_ceilings() -> None:
+    env = {"BOT_CPU_WORKLOAD_POLICY_LOCKED": "1"}
+
+    assert src._target_nice_for_candidate({"category": "live_execution"}, env) == 0
+    assert src._target_nice_for_candidate({"category": "market_decision"}, env) == 4
+    assert (
+        src._target_nice_for_candidate({"category": "operator_observability"}, env)
+        == 10
+    )
+
+
+def test_locked_paper_priority_reports_managed_restart_debt(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(src.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(
+        src,
+        "_run_apply_command",
+        lambda command: calls.append(command)
+        or {
+            "command": command,
+            "returncode": 0,
+            "ok": True,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+
+    result = src._apply_process_throttle(
+        [
+            {
+                "pid": 4242,
+                "nice": 20,
+                "cpu_percent": 1.0,
+                "command": "python scripts/run_execution_lane.py --mode paper",
+                "category": "paper_execution",
+                "priority_tier": "paper_gate_controlled",
+                "priority_audit": True,
+            }
+        ],
+        max_processes=1,
+        env_overrides={
+            "BOT_CPU_WORKLOAD_POLICY_LOCKED": "1",
+            "BOT_CPU_TASKPOLICY_SELF_HEAL": "1",
+            "PAPER_EXECUTION_RUNTIME_NICE": "0",
+        },
+    )
+
+    process = result["processes"][0]
+    assert result["successful_count"] == 0
+    assert result["managed_restart_required_count"] == 1
+    assert process["workload_class"] == "paper_execution"
+    assert process["priority_compliant_before"] is False
+    assert process["priority_compliant_after_action"] is False
+    assert process["managed_restart_required"] is True
+    assert process["priority_audit"] is True
+    assert process["renice"]["reason"] == "managed_restart_required_priority_ceiling"
+    assert ["taskpolicy", "-B", "-p", "4242"] in calls
+    assert not any(command[:2] == ["renice", "-n"] for command in calls)
+
+
+def test_critical_priority_audit_is_independent_of_cpu_heat() -> None:
+    audited = src._critical_priority_audit_candidates(
+        [
+            {"pid": 11, "nice": 20, "cpu_percent": 0.0, "category": "paper_execution"},
+            {"pid": 12, "nice": 4, "cpu_percent": 0.0, "category": "market_decision"},
+            {"pid": 13, "nice": 12, "cpu_percent": 99.0, "category": "data_collection"},
+            {
+                "pid": 14,
+                "nice": 0,
+                "cpu_percent": 0.0,
+                "category": "critical_supervisor",
+            },
+        ],
+        {"BOT_CPU_WORKLOAD_POLICY_LOCKED": "1"},
+    )
+
+    assert [row["pid"] for row in audited] == [11, 12, 14]
+    assert all(row["priority_audit"] is True for row in audited)
+
+
+def test_critical_priority_contract_degrades_on_inherited_priority_debt() -> None:
+    contract = src._critical_priority_contract(
+        [
+            {"pid": 11, "nice": 20, "cpu_percent": 0.0, "category": "paper_execution"},
+            {"pid": 12, "nice": 4, "cpu_percent": 0.0, "category": "market_decision"},
+        ],
+        {"BOT_CPU_WORKLOAD_POLICY_LOCKED": "1", "PAPER_EXECUTION_RUNTIME_NICE": "0"},
+    )
+
+    assert contract["overall_status"] == "degraded"
+    assert contract["managed_restart_required_count"] == 1
+    assert contract["authority"]["may_restart_processes"] is False
+
+
+def test_locked_data_collection_priority_self_deprioritizes(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(src.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(
+        src,
+        "_run_apply_command",
+        lambda command: calls.append(command)
+        or {
+            "command": command,
+            "returncode": 0,
+            "ok": True,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+
+    result = src._apply_process_throttle(
+        [
+            {
+                "pid": 5252,
+                "nice": 6,
+                "cpu_percent": 25.0,
+                "command": "python scripts/run_shadow_training_loop.py --runtime-cpu-class data_collection",
+                "category": "data_collection",
+                "priority_tier": "data_collection_downshift",
+            }
+        ],
+        max_processes=1,
+        env_overrides={
+            "BOT_CPU_WORKLOAD_POLICY_LOCKED": "1",
+            "BOT_CPU_DATA_COLLECTION_MIN_NICE": "12",
+        },
+    )
+
+    process = result["processes"][0]
+    assert result["successful_count"] == 1
+    assert result["managed_restart_required_count"] == 0
+    assert process["workload_class"] == "data_collection"
+    assert process["target_nice"] == 12
+    assert process["renice_delta"] == 6
+    assert process["priority_compliant_after_action"] is True
+    assert ["renice", "-n", "6", "-p", "5252"] in calls
+
+
 def test_runtime_throttle_attributes_macos_system_pressure(tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 1.2})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 1.2},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
 
     classified = src._classify_process("/usr/libexec/spotlightknowledged.updater -u")
     assert classified["category"] == "system_cotenant"
@@ -2326,8 +2964,15 @@ def test_runtime_throttle_attributes_macos_system_pressure(tmp_path: Path) -> No
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 9.0, "five_minutes": 6.0, "fifteen_minutes": 4.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 9.0,
+                "five_minutes": 6.0,
+                "fifteen_minutes": 4.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -2379,23 +3024,54 @@ def test_runtime_throttle_recognizes_distributed_niced_research_pressure() -> No
             "category": "research_training",
             "command": "python scripts/run_shadow_training_loop.py --broker schwab",
         }
-        for index, (nice, cpu) in enumerate([(18, 12.0), (18, 11.0), (15, 10.0), (18, 10.0)])
+        for index, (nice, cpu) in enumerate(
+            [(18, 12.0), (18, 11.0), (15, 10.0), (18, 10.0)]
+        )
     ]
 
     attribution = src._host_pressure_attribution(domains, processes)
 
     assert attribution["research_training_hot"] is True
     assert attribution["research_hot_low_priority"] is True
-    assert attribution["low_priority_evidence_mode"]["research_training"] == "distributed_aggregate_hot"
+    assert (
+        attribution["low_priority_evidence_mode"]["research_training"]
+        == "distributed_aggregate_hot"
+    )
 
 
-def test_runtime_throttle_distributed_research_evidence_rejects_unniced_worker() -> None:
+def test_runtime_throttle_distributed_research_evidence_rejects_unniced_worker() -> (
+    None
+):
     domains = {"research_training": {"cpu_percent": 43.0}}
     processes = [
-        {"pid": 7101, "nice": 18, "cpu_percent": 12.0, "category": "research_training", "command": "niced"},
-        {"pid": 7102, "nice": 0, "cpu_percent": 11.0, "category": "research_training", "command": "unniced"},
-        {"pid": 7103, "nice": 18, "cpu_percent": 10.0, "category": "research_training", "command": "niced"},
-        {"pid": 7104, "nice": 18, "cpu_percent": 10.0, "category": "research_training", "command": "niced"},
+        {
+            "pid": 7101,
+            "nice": 18,
+            "cpu_percent": 12.0,
+            "category": "research_training",
+            "command": "niced",
+        },
+        {
+            "pid": 7102,
+            "nice": 0,
+            "cpu_percent": 11.0,
+            "category": "research_training",
+            "command": "unniced",
+        },
+        {
+            "pid": 7103,
+            "nice": 18,
+            "cpu_percent": 10.0,
+            "category": "research_training",
+            "command": "niced",
+        },
+        {
+            "pid": 7104,
+            "nice": 18,
+            "cpu_percent": 10.0,
+            "category": "research_training",
+            "command": "niced",
+        },
     ]
 
     attribution = src._host_pressure_attribution(domains, processes)
@@ -2404,11 +3080,22 @@ def test_runtime_throttle_distributed_research_evidence_rejects_unniced_worker()
     assert attribution["research_hot_low_priority"] is False
 
 
-def test_runtime_throttle_attributes_pmset_log_as_macos_system_pressure(tmp_path: Path) -> None:
+def test_runtime_throttle_attributes_pmset_log_as_macos_system_pressure(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 1.2})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 1.2},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
 
     classified = src._classify_process("/usr/bin/pmset -g log")
     assert classified["category"] == "system_cotenant"
@@ -2419,11 +3106,26 @@ def test_runtime_throttle_attributes_pmset_log_as_macos_system_pressure(tmp_path
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 6.0, "five_minutes": 5.0, "fifteen_minutes": 3.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 6.0,
+                "five_minutes": 5.0,
+                "fifteen_minutes": 3.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
-                {"pid": 909, "nice": 0, "cpu_percent": 55.0, "mem_percent": 0.1, "elapsed": "00:04", "command": "/usr/bin/pmset -g log", **classified}
+                {
+                    "pid": 909,
+                    "nice": 0,
+                    "cpu_percent": 55.0,
+                    "mem_percent": 0.1,
+                    "elapsed": "00:04",
+                    "command": "/usr/bin/pmset -g log",
+                    **classified,
+                }
             ],
             "category_cpu": {"system_cotenant": 55.0},
             "category_counts": {"system_cotenant": 1},
@@ -2436,18 +3138,36 @@ def test_runtime_throttle_attributes_pmset_log_as_macos_system_pressure(tmp_path
     assert attribution["unknown_cpu_percent"] == 0.0
 
 
-def test_runtime_throttle_marks_system_secondary_when_bot_owned_support_dominates(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_system_secondary_when_bot_owned_support_dominates(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 1.2})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 1.2},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
 
     payload = src.build_payload(
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 6.0, "five_minutes": 5.0, "fifteen_minutes": 3.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 6.0,
+                "five_minutes": 5.0,
+                "fifteen_minutes": 3.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -2500,7 +3220,11 @@ def test_runtime_throttle_marks_system_secondary_when_bot_owned_support_dominate
                 "research_training": 80.0,
                 "system_cotenant": 90.0,
             },
-            "category_counts": {"support_maintenance": 2, "research_training": 1, "system_cotenant": 1},
+            "category_counts": {
+                "support_maintenance": 2,
+                "research_training": 1,
+                "system_cotenant": 1,
+            },
         },
     )
 
@@ -2512,22 +3236,44 @@ def test_runtime_throttle_marks_system_secondary_when_bot_owned_support_dominate
     assert "trim support maintenance" in " ".join(payload["recommended_actions"])
 
 
-def test_runtime_throttle_reclassifies_bounded_foreground_system_mix_as_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_reclassifies_bounded_foreground_system_mix_as_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
-        {"overall_status": "ready", "pressure_index": 0.01, "backpressure": {"core_pending_lines": 20, "total_pending_lines": 25}},
+        {
+            "overall_status": "ready",
+            "pressure_index": 0.01,
+            "backpressure": {"core_pending_lines": 20, "total_pending_lines": 25},
+        },
     )
 
     payload = src.build_payload(
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 5.5, "five_minutes": 4.0, "fifteen_minutes": 3.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 5.5,
+                "five_minutes": 4.0,
+                "fifteen_minutes": 3.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -2565,11 +3311,22 @@ def test_runtime_throttle_reclassifies_bounded_foreground_system_mix_as_advisory
     assert advisory["measurements"]["foreground_system_guarded"] is True
 
 
-def test_runtime_throttle_reclassifies_guarded_external_cotenant_mix_as_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_reclassifies_guarded_external_cotenant_mix_as_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -2592,8 +3349,15 @@ def test_runtime_throttle_reclassifies_guarded_external_cotenant_mix_as_advisory
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 10.6, "five_minutes": 8.9, "fifteen_minutes": 8.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 10.6,
+                "five_minutes": 8.9,
+                "fifteen_minutes": 8.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -2658,21 +3422,38 @@ def test_runtime_throttle_reclassifies_guarded_external_cotenant_mix_as_advisory
 
     assert payload["throttle_profile"] == "sustain"
     assert payload["runtime_saturation_governor_v2"]["saturation_band"] == "guarded"
-    assert payload["runtime_saturation_governor_v2"]["training_policy"]["training_paused"] is True
+    assert (
+        payload["runtime_saturation_governor_v2"]["training_policy"]["training_paused"]
+        is True
+    )
     assert payload["host_pressure_attribution"]["external_pressure_dominant"] is True
     assert payload["host_pressure_attribution"]["bot_owned_pressure_dominant"] is False
     assert payload["overall_status"] == "advisory"
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["active"] is True
-    assert advisory["reason"] == "external_cotenant_pressure_is_guarded_advisory_not_bot_runtime_degradation"
+    assert (
+        advisory["reason"]
+        == "external_cotenant_pressure_is_guarded_advisory_not_bot_runtime_degradation"
+    )
     assert advisory["measurements"]["external_cotenant_guarded"] is True
 
 
-def test_runtime_throttle_reclassifies_external_high_compute_as_capacity_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_reclassifies_external_high_compute_as_capacity_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -2695,8 +3476,15 @@ def test_runtime_throttle_reclassifies_external_high_compute_as_capacity_advisor
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 12.8, "five_minutes": 9.5, "fifteen_minutes": 8.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 12.8,
+                "five_minutes": 9.5,
+                "fifteen_minutes": 8.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -2762,21 +3550,38 @@ def test_runtime_throttle_reclassifies_external_high_compute_as_capacity_advisor
     assert payload["throttle_profile"] == "sustain"
     assert payload["compute_pressure_level"] == "high"
     assert payload["runtime_saturation_governor_v2"]["saturation_band"] == "guarded"
-    assert payload["runtime_saturation_governor_v2"]["training_policy"]["training_paused"] is True
+    assert (
+        payload["runtime_saturation_governor_v2"]["training_policy"]["training_paused"]
+        is True
+    )
     assert payload["host_pressure_attribution"]["external_pressure_dominant"] is True
     assert payload["host_pressure_attribution"]["bot_owned_pressure_dominant"] is False
     assert payload["overall_status"] == "advisory"
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["active"] is True
-    assert advisory["reason"] == "external_high_compute_pressure_is_capacity_limited_advisory_not_bot_runtime_degradation"
+    assert (
+        advisory["reason"]
+        == "external_high_compute_pressure_is_capacity_limited_advisory_not_bot_runtime_degradation"
+    )
     assert advisory["measurements"]["external_high_compute_guarded"] is True
 
 
-def test_runtime_throttle_marks_single_green_storage_writer_as_guarded_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_single_green_storage_writer_as_guarded_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -2798,7 +3603,11 @@ def test_runtime_throttle_marks_single_green_storage_writer_as_guarded_ready(tmp
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for idx in range(700)
             ]
         },
@@ -2808,8 +3617,15 @@ def test_runtime_throttle_marks_single_green_storage_writer_as_guarded_ready(tmp
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 12.8, "five_minutes": 7.0, "fifteen_minutes": 2.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 12.8,
+                "five_minutes": 7.0,
+                "fifteen_minutes": 2.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -2834,17 +3650,31 @@ def test_runtime_throttle_marks_single_green_storage_writer_as_guarded_ready(tmp
     assert payload["overall_status"] == "ready"
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["active"] is True
-    assert advisory["reason"] == "single_bounded_storage_writer_after_green_backpressure_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"]
+        == "single_bounded_storage_writer_after_green_backpressure_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["storage_writer_cooling_guarded_ready"] is True
     assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
     assert payload["paper_capacity_contract"]["compute_pressure_limited"] is False
 
 
-def test_runtime_throttle_marks_soft_cap_storage_writer_as_guarded_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_soft_cap_storage_writer_as_guarded_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -2866,7 +3696,11 @@ def test_runtime_throttle_marks_soft_cap_storage_writer_as_guarded_ready(tmp_pat
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for idx in range(700)
             ]
         },
@@ -2876,8 +3710,15 @@ def test_runtime_throttle_marks_soft_cap_storage_writer_as_guarded_ready(tmp_pat
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 8.8, "five_minutes": 8.1, "fifteen_minutes": 9.2},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 8.8,
+                "five_minutes": 8.1,
+                "fifteen_minutes": 9.2,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -2912,15 +3753,29 @@ def test_runtime_throttle_marks_soft_cap_storage_writer_as_guarded_ready(tmp_pat
     assert payload["compute_pressure_level"] == "elevated"
     assert payload["overall_status"] == "ready"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "single_bounded_storage_writer_after_green_backpressure_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"]
+        == "single_bounded_storage_writer_after_green_backpressure_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["storage_writer_cooling_guarded_ready"] is True
 
 
-def test_runtime_throttle_keeps_single_bounded_writer_ready_above_legacy_ceiling(tmp_path: Path) -> None:
+def test_runtime_throttle_keeps_single_bounded_writer_ready_above_legacy_ceiling(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -2943,8 +3798,15 @@ def test_runtime_throttle_keeps_single_bounded_writer_ready_above_legacy_ceiling
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 12.0, "five_minutes": 8.0, "fifteen_minutes": 8.8},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 12.0,
+                "five_minutes": 8.0,
+                "fifteen_minutes": 8.8,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -2967,15 +3829,29 @@ def test_runtime_throttle_keeps_single_bounded_writer_ready_above_legacy_ceiling
     assert payload["host_saturation_score"] > 62.0
     assert payload["overall_status"] == "ready"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "single_bounded_storage_writer_after_green_backpressure_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"]
+        == "single_bounded_storage_writer_after_green_backpressure_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["storage_writer_cooling_guarded_ready"] is True
 
 
-def test_runtime_throttle_marks_normal_compute_storage_writer_as_guarded_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_normal_compute_storage_writer_as_guarded_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -2998,8 +3874,15 @@ def test_runtime_throttle_marks_normal_compute_storage_writer_as_guarded_ready(t
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 6.0, "five_minutes": 3.0, "fifteen_minutes": 2.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 6.0,
+                "five_minutes": 3.0,
+                "fifteen_minutes": 2.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -3036,23 +3919,45 @@ def test_runtime_throttle_marks_normal_compute_storage_writer_as_guarded_ready(t
                     "throttle_candidate": False,
                 },
             ],
-            "category_cpu": {"storage_writer": 92.0, "operator_observability": 28.0, "system_cotenant": 45.0},
-            "category_counts": {"storage_writer": 1, "operator_observability": 1, "system_cotenant": 1},
+            "category_cpu": {
+                "storage_writer": 92.0,
+                "operator_observability": 28.0,
+                "system_cotenant": 45.0,
+            },
+            "category_counts": {
+                "storage_writer": 1,
+                "operator_observability": 1,
+                "system_cotenant": 1,
+            },
         },
     )
 
     assert payload["compute_pressure_level"] == "normal"
     assert payload["overall_status"] == "ready"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "single_bounded_storage_writer_after_green_backpressure_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"]
+        == "single_bounded_storage_writer_after_green_backpressure_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["storage_writer_cooling_guarded_ready"] is True
 
 
-def test_runtime_throttle_marks_clear_storage_writer_burst_as_guarded_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_clear_storage_writer_burst_as_guarded_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -3075,8 +3980,15 @@ def test_runtime_throttle_marks_clear_storage_writer_burst_as_guarded_ready(tmp_
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 4.05, "five_minutes": 4.2, "fifteen_minutes": 4.6},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 4.05,
+                "five_minutes": 4.2,
+                "fifteen_minutes": 4.6,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -3113,133 +4025,44 @@ def test_runtime_throttle_marks_clear_storage_writer_burst_as_guarded_ready(tmp_
                     "throttle_candidate": False,
                 },
             ],
-            "category_cpu": {"storage_writer": 117.5, "operator_observability": 24.4, "interactive_cotenant": 147.7},
-            "category_counts": {"storage_writer": 1, "operator_observability": 1, "interactive_cotenant": 1},
+            "category_cpu": {
+                "storage_writer": 117.5,
+                "operator_observability": 24.4,
+                "interactive_cotenant": 147.7,
+            },
+            "category_counts": {
+                "storage_writer": 1,
+                "operator_observability": 1,
+                "interactive_cotenant": 1,
+            },
         },
     )
 
     assert payload["compute_pressure_level"] == "normal"
     assert payload["overall_status"] == "ready"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "bounded_storage_writer_burst_after_clear_backpressure_is_guarded_runtime_ready"
-    assert advisory["measurements"]["storage_writer_burst_complete_guarded_ready"] is True
+    assert (
+        advisory["reason"]
+        == "bounded_storage_writer_burst_after_clear_backpressure_is_guarded_runtime_ready"
+    )
+    assert (
+        advisory["measurements"]["storage_writer_burst_complete_guarded_ready"] is True
+    )
     assert advisory["measurements"]["storage_writer_cooling_guarded_ready"] is False
 
 
-def test_runtime_throttle_marks_pending_support_pressure_live_read_only_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_pending_support_pressure_live_read_only_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
     _write_json(
-        health_root / "ingestion_storage_control_latest.json",
-        {
-            "overall_status": "ready",
-            "recommended_operating_mode": "live_full",
-            "severity": "stable",
-            "pressure_index": 0.025,
-            "storage": {"backlog_drain_status": "steady_state"},
-            "backpressure": {
-                "core_pending_lines": 374,
-                "total_pending_lines": 374,
-                "pending_lines_threshold": 15000,
-                "oldest_pending_age_seconds": 0.0,
-                "oldest_age_threshold_seconds": 240.0,
-            },
-        },
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
     )
-
-    payload = src.build_payload(
-        tmp_path,
-        runtime_snapshot={
-            "cpu_count": 10,
-            "load_averages": {"one_minute": 9.8, "five_minutes": 6.2, "fifteen_minutes": 6.7},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
-            "vm_stat": {},
-            "top_processes": [
-                {
-                    "pid": 501,
-                    "nice": 0,
-                    "cpu_percent": 49.0,
-                    "mem_percent": 0.1,
-                    "elapsed": "00:04",
-                    "command": "python scripts/ops/storage_failback_sync.py --json",
-                    "category": "support_maintenance",
-                    "priority_tier": "throttle_first",
-                    "throttle_candidate": True,
-                }
-            ],
-            "category_cpu": {"support_maintenance": 49.0},
-            "category_counts": {"support_maintenance": 1},
-        },
-    )
-
-    assert payload["overall_status"] == "ready"
-    assert payload["ok"] is True
-    advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "support_throttle_pending_after_green_backpressure_is_guarded_runtime_ready"
-    assert advisory["measurements"]["support_throttle_pending_guarded"] is True
-    assert advisory["measurements"]["support_throttle_pending_guarded_ready"] is True
-
-
-def test_runtime_throttle_marks_niced_support_pressure_live_read_only_ready(tmp_path: Path) -> None:
-    health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
     _write_json(
-        health_root / "ingestion_storage_control_latest.json",
-        {
-            "overall_status": "ready",
-            "recommended_operating_mode": "live_full",
-            "severity": "stable",
-            "pressure_index": 0.025,
-            "storage": {"backlog_drain_status": "steady_state"},
-            "backpressure": {
-                "core_pending_lines": 374,
-                "total_pending_lines": 374,
-                "pending_lines_threshold": 15000,
-                "oldest_pending_age_seconds": 0.0,
-                "oldest_age_threshold_seconds": 240.0,
-            },
-        },
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
     )
-
-    payload = src.build_payload(
-        tmp_path,
-        runtime_snapshot={
-            "cpu_count": 10,
-            "load_averages": {"one_minute": 9.8, "five_minutes": 6.2, "fifteen_minutes": 6.7},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
-            "vm_stat": {},
-            "top_processes": [
-                {
-                    "pid": 501,
-                    "nice": 20,
-                    "cpu_percent": 145.0,
-                    "mem_percent": 0.1,
-                    "elapsed": "00:04",
-                    "command": "python scripts/ops/creative_cotenant_guard.py apply --json",
-                    "category": "support_maintenance",
-                    "priority_tier": "throttle_first",
-                    "throttle_candidate": True,
-                }
-            ],
-            "category_cpu": {"support_maintenance": 145.0},
-            "category_counts": {"support_maintenance": 1},
-        },
-    )
-
-    assert payload["overall_status"] == "ready"
-    advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "niced_support_pressure_after_green_backpressure_is_guarded_runtime_ready"
-    assert advisory["measurements"]["support_low_priority_guarded_ready"] is True
-
-
-def test_runtime_throttle_keeps_niced_support_plus_hot_paper_advisory(tmp_path: Path) -> None:
-    health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
     _write_json(
         health_root / "live_runtime_separation_control_latest.json",
         {"release_contract": {"live_lane_should_be_read_only": True}},
@@ -3266,8 +4089,167 @@ def test_runtime_throttle_keeps_niced_support_plus_hot_paper_advisory(tmp_path: 
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 9.8, "five_minutes": 6.2, "fifteen_minutes": 6.7},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 9.8,
+                "five_minutes": 6.2,
+                "fifteen_minutes": 6.7,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
+            "vm_stat": {},
+            "top_processes": [
+                {
+                    "pid": 501,
+                    "nice": 0,
+                    "cpu_percent": 49.0,
+                    "mem_percent": 0.1,
+                    "elapsed": "00:04",
+                    "command": "python scripts/ops/storage_failback_sync.py --json",
+                    "category": "support_maintenance",
+                    "priority_tier": "throttle_first",
+                    "throttle_candidate": True,
+                }
+            ],
+            "category_cpu": {"support_maintenance": 49.0},
+            "category_counts": {"support_maintenance": 1},
+        },
+    )
+
+    assert payload["overall_status"] == "ready"
+    assert payload["ok"] is True
+    advisory = payload["soft_cap_advisory_reclassification"]
+    assert (
+        advisory["reason"]
+        == "support_throttle_pending_after_green_backpressure_is_guarded_runtime_ready"
+    )
+    assert advisory["measurements"]["support_throttle_pending_guarded"] is True
+    assert advisory["measurements"]["support_throttle_pending_guarded_ready"] is True
+
+
+def test_runtime_throttle_marks_niced_support_pressure_live_read_only_ready(
+    tmp_path: Path,
+) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "recommended_operating_mode": "live_full",
+            "severity": "stable",
+            "pressure_index": 0.025,
+            "storage": {"backlog_drain_status": "steady_state"},
+            "backpressure": {
+                "core_pending_lines": 374,
+                "total_pending_lines": 374,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 0.0,
+                "oldest_age_threshold_seconds": 240.0,
+            },
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {
+                "one_minute": 9.8,
+                "five_minutes": 6.2,
+                "fifteen_minutes": 6.7,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
+            "vm_stat": {},
+            "top_processes": [
+                {
+                    "pid": 501,
+                    "nice": 20,
+                    "cpu_percent": 145.0,
+                    "mem_percent": 0.1,
+                    "elapsed": "00:04",
+                    "command": "python scripts/ops/creative_cotenant_guard.py apply --json",
+                    "category": "support_maintenance",
+                    "priority_tier": "throttle_first",
+                    "throttle_candidate": True,
+                }
+            ],
+            "category_cpu": {"support_maintenance": 145.0},
+            "category_counts": {"support_maintenance": 1},
+        },
+    )
+
+    assert payload["overall_status"] == "ready"
+    advisory = payload["soft_cap_advisory_reclassification"]
+    assert (
+        advisory["reason"]
+        == "niced_support_pressure_after_green_backpressure_is_guarded_runtime_ready"
+    )
+    assert advisory["measurements"]["support_low_priority_guarded_ready"] is True
+
+
+def test_runtime_throttle_keeps_niced_support_plus_hot_paper_advisory(
+    tmp_path: Path,
+) -> None:
+    health_root = tmp_path / "governance" / "health"
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "recommended_operating_mode": "live_full",
+            "severity": "stable",
+            "pressure_index": 0.025,
+            "storage": {"backlog_drain_status": "steady_state"},
+            "backpressure": {
+                "core_pending_lines": 374,
+                "total_pending_lines": 374,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 0.0,
+                "oldest_age_threshold_seconds": 240.0,
+            },
+        },
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        runtime_snapshot={
+            "cpu_count": 10,
+            "load_averages": {
+                "one_minute": 9.8,
+                "five_minutes": 6.2,
+                "fifteen_minutes": 6.7,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -3300,17 +4282,30 @@ def test_runtime_throttle_keeps_niced_support_plus_hot_paper_advisory(tmp_path: 
 
     assert payload["overall_status"] == "advisory"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "support_pressure_is_already_niced_and_guarded_advisory"
+    assert (
+        advisory["reason"] == "support_pressure_is_already_niced_and_guarded_advisory"
+    )
     assert advisory["measurements"]["support_low_priority_guarded"] is True
     assert advisory["measurements"]["support_low_priority_guarded_ready"] is False
     assert advisory["measurements"]["paper_execution_hot"] is True
 
 
-def test_runtime_throttle_marks_bounded_writer_plus_support_pressure_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_bounded_writer_plus_support_pressure_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -3332,7 +4327,11 @@ def test_runtime_throttle_marks_bounded_writer_plus_support_pressure_ready(tmp_p
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for idx in range(700)
             ]
         },
@@ -3342,8 +4341,15 @@ def test_runtime_throttle_marks_bounded_writer_plus_support_pressure_ready(tmp_p
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 8.8, "five_minutes": 6.2, "fifteen_minutes": 8.1},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 8.8,
+                "five_minutes": 6.2,
+                "fifteen_minutes": 8.1,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -3377,7 +4383,10 @@ def test_runtime_throttle_marks_bounded_writer_plus_support_pressure_ready(tmp_p
     assert payload["overall_status"] == "ready"
     assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "bounded_writer_and_support_throttle_pending_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"]
+        == "bounded_writer_and_support_throttle_pending_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["bounded_writer_with_support_guarded_ready"] is True
     assert advisory["measurements"]["support_throttle_pending_guarded_ready"] is True
 
@@ -3427,12 +4436,26 @@ def test_runtime_throttle_bounds_niced_support_and_writer_sampling_hysteresis() 
     ready = src._soft_cap_low_pressure_advisory(**kwargs)
 
     assert ready["to_status"] == "ready"
-    assert ready["reason"] == "bounded_writer_and_niced_support_sampling_hysteresis_is_guarded_runtime_ready"
+    assert (
+        ready["reason"]
+        == "bounded_writer_and_niced_support_sampling_hysteresis_is_guarded_runtime_ready"
+    )
     assert ready["measurements"]["bounded_writer_with_support_guarded_ready"] is True
     assert ready["measurements"]["bounded_writer_support_base_cpu_bounded"] is False
-    assert ready["measurements"]["bounded_writer_support_sampling_hysteresis_guarded"] is True
-    assert ready["thresholds"]["max_guarded_ready_bounded_writer_support_cpu_percent"] == 90.0
-    assert ready["thresholds"]["max_guarded_ready_bounded_writer_support_hysteresis_cpu_percent"] == 94.5
+    assert (
+        ready["measurements"]["bounded_writer_support_sampling_hysteresis_guarded"]
+        is True
+    )
+    assert (
+        ready["thresholds"]["max_guarded_ready_bounded_writer_support_cpu_percent"]
+        == 90.0
+    )
+    assert (
+        ready["thresholds"][
+            "max_guarded_ready_bounded_writer_support_hysteresis_cpu_percent"
+        ]
+        == 94.5
+    )
 
     over_limit_attribution = dict(attribution)
     over_limit_attribution["throttle_candidate_support_cpu_percent"] = 94.6
@@ -3442,10 +4465,314 @@ def test_runtime_throttle_bounds_niced_support_and_writer_sampling_hysteresis() 
 
     assert over_limit["to_status"] == "advisory"
     assert over_limit["measurements"]["runtime_ready_guarded"] is False
-    assert over_limit["measurements"]["bounded_writer_support_sampling_hysteresis_guarded"] is False
+    assert (
+        over_limit["measurements"]["bounded_writer_support_sampling_hysteresis_guarded"]
+        is False
+    )
 
 
-def test_runtime_throttle_keeps_bounded_elevated_full_force_paper_guarded_ready() -> None:
+def test_runtime_throttle_marks_bounded_writer_and_quiet_protected_lane_ready() -> None:
+    attribution = {
+        "foreground_app_cpu_percent": 24.0,
+        "macos_system_cpu_percent": 72.0,
+        "operator_observability_cpu_percent": 0.0,
+        "protected_live_or_macro_cpu_percent": 36.0,
+        "bot_owned_cpu_percent": 82.0,
+        "throttle_candidate_support_cpu_percent": 0.0,
+        "storage_writer_cpu_percent": 46.0,
+        "paper_execution_cpu_percent": 0.0,
+        "research_training_cpu_percent": 0.0,
+        "external_pressure_dominant": False,
+        "bot_owned_pressure_dominant": True,
+        "support_jobs_hot": False,
+        "paper_execution_hot": False,
+        "research_training_hot": False,
+        "storage_writer_hot": True,
+        "protected_work_hot": False,
+    }
+
+    ready = src._soft_cap_low_pressure_advisory(
+        overall_status="degraded",
+        throttle_profile="soft_cap",
+        saturation_score=39.0,
+        compute_pressure_level="normal",
+        memory_pressure_level="normal",
+        storage_pressure_index=0.0,
+        storage_fresh_overflow=True,
+        thermal_warning_active=False,
+        performance_warning_active=False,
+        host_pressure_attribution=attribution,
+        live_read_only=True,
+        storage_severity="stable",
+        storage_core_pending_lines=0,
+        storage_total_pending_lines=0,
+        storage_pending_threshold=15000,
+        storage_oldest_pending_age_seconds=0.0,
+        storage_oldest_age_threshold_seconds=240.0,
+        storage_overlay_relief={"bounded": True},
+        paper_execution_policy={
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+            "armed": True,
+            "ok": True,
+        },
+        full_force_paper_required=True,
+    )
+
+    assert ready["to_status"] == "ready"
+    assert ready["reason"] == (
+        "bounded_writer_and_quiet_protected_lane_is_guarded_runtime_ready"
+    )
+    assert ready["measurements"][
+        "bounded_writer_with_quiet_protected_lane_guarded_ready"
+    ] is True
+
+    attribution["protected_live_or_macro_cpu_percent"] = 75.1
+    over_limit = src._soft_cap_low_pressure_advisory(
+        **{
+            "overall_status": "degraded",
+            "throttle_profile": "soft_cap",
+            "saturation_score": 39.0,
+            "compute_pressure_level": "normal",
+            "memory_pressure_level": "normal",
+            "storage_pressure_index": 0.0,
+            "storage_fresh_overflow": True,
+            "thermal_warning_active": False,
+            "performance_warning_active": False,
+            "host_pressure_attribution": attribution,
+            "live_read_only": True,
+            "storage_severity": "stable",
+            "storage_core_pending_lines": 0,
+            "storage_total_pending_lines": 0,
+            "storage_pending_threshold": 15000,
+            "storage_oldest_pending_age_seconds": 0.0,
+            "storage_oldest_age_threshold_seconds": 240.0,
+            "storage_overlay_relief": {"bounded": True},
+            "paper_execution_policy": {
+                "paper_execution_allowed": True,
+                "pause_paper_execution": False,
+                "armed": True,
+                "ok": True,
+            },
+            "full_force_paper_required": True,
+        }
+    )
+    assert over_limit["measurements"][
+        "bounded_writer_with_quiet_protected_lane_guarded_ready"
+    ] is False
+
+
+def test_runtime_throttle_marks_single_core_protected_lane_ready() -> None:
+    attribution = {
+        "foreground_app_cpu_percent": 10.0,
+        "macos_system_cpu_percent": 70.0,
+        "operator_observability_cpu_percent": 0.0,
+        "protected_live_or_macro_cpu_percent": 101.0,
+        "bot_owned_cpu_percent": 104.5,
+        "throttle_candidate_support_cpu_percent": 0.0,
+        "storage_writer_cpu_percent": 0.0,
+        "paper_execution_cpu_percent": 0.0,
+        "research_training_cpu_percent": 3.5,
+        "external_pressure_dominant": False,
+        "bot_owned_pressure_dominant": True,
+        "support_jobs_hot": False,
+        "paper_execution_hot": False,
+        "research_training_hot": False,
+        "storage_writer_hot": False,
+        "protected_work_hot": True,
+    }
+    kwargs = {
+        "overall_status": "degraded",
+        "throttle_profile": "soft_cap",
+        "saturation_score": 38.8,
+        "compute_pressure_level": "normal",
+        "memory_pressure_level": "normal",
+        "storage_pressure_index": 0.0,
+        "storage_fresh_overflow": True,
+        "thermal_warning_active": False,
+        "performance_warning_active": False,
+        "host_pressure_attribution": attribution,
+        "live_read_only": True,
+        "storage_severity": "stable",
+        "storage_core_pending_lines": 0,
+        "storage_total_pending_lines": 0,
+        "storage_pending_threshold": 15000,
+        "storage_oldest_pending_age_seconds": 0.0,
+        "storage_oldest_age_threshold_seconds": 240.0,
+        "storage_overlay_relief": {"bounded": True},
+        "paper_execution_policy": {
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+            "armed": True,
+            "ok": True,
+        },
+        "full_force_paper_required": True,
+    }
+
+    ready = src._soft_cap_low_pressure_advisory(**kwargs)
+
+    assert ready["to_status"] == "ready"
+    assert ready["reason"] == (
+        "bounded_read_only_protected_lane_after_green_backpressure_is_guarded_runtime_ready"
+    )
+    assert ready["measurements"]["bounded_protected_lane_guarded_ready"] is True
+
+    attribution["protected_live_or_macro_cpu_percent"] = 39.0
+    attribution["bot_owned_cpu_percent"] = 42.5
+    attribution["protected_work_hot"] = False
+    quiet_lane = src._soft_cap_low_pressure_advisory(**kwargs)
+
+    assert quiet_lane["to_status"] == "ready"
+    assert quiet_lane["measurements"]["bounded_protected_lane_guarded_ready"] is True
+
+    attribution["protected_live_or_macro_cpu_percent"] = 125.1
+    attribution["bot_owned_cpu_percent"] = 128.6
+    attribution["protected_work_hot"] = True
+    over_limit = src._soft_cap_low_pressure_advisory(**kwargs)
+
+    assert over_limit["measurements"]["bounded_protected_lane_guarded_ready"] is False
+
+
+def test_runtime_throttle_marks_bounded_read_only_capacity_envelope_ready() -> None:
+    attribution = {
+        "foreground_app_cpu_percent": 28.0,
+        "macos_system_cpu_percent": 36.0,
+        "operator_observability_cpu_percent": 0.0,
+        "protected_live_or_macro_cpu_percent": 54.5,
+        "bot_owned_cpu_percent": 94.0,
+        "throttle_candidate_support_cpu_percent": 39.5,
+        "storage_writer_cpu_percent": 0.0,
+        "paper_execution_cpu_percent": 0.0,
+        "research_training_cpu_percent": 0.0,
+        "external_pressure_dominant": False,
+        "bot_owned_pressure_dominant": True,
+        "system_secondary_to_bot_owned": True,
+        "system_cotenant_hot": True,
+        "support_jobs_hot": True,
+        "support_hot_low_priority": True,
+        "paper_execution_hot": False,
+        "research_training_hot": False,
+        "storage_writer_hot": False,
+        "protected_work_hot": True,
+    }
+    kwargs = {
+        "overall_status": "degraded",
+        "throttle_profile": "soft_cap",
+        "saturation_score": 35.9,
+        "compute_pressure_level": "normal",
+        "memory_pressure_level": "normal",
+        "storage_pressure_index": 0.0,
+        "storage_fresh_overflow": True,
+        "thermal_warning_active": False,
+        "performance_warning_active": False,
+        "host_pressure_attribution": attribution,
+        "live_read_only": True,
+        "storage_severity": "stable",
+        "storage_core_pending_lines": 0,
+        "storage_total_pending_lines": 0,
+        "storage_pending_threshold": 15000,
+        "storage_oldest_pending_age_seconds": 0.0,
+        "storage_oldest_age_threshold_seconds": 240.0,
+        "storage_overlay_relief": {"bounded": True},
+        "paper_execution_policy": {
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+            "armed": True,
+            "ok": True,
+        },
+        "full_force_paper_required": True,
+    }
+
+    ready = src._soft_cap_low_pressure_advisory(**kwargs)
+
+    assert ready["to_status"] == "ready"
+    assert ready["reason"] == (
+        "bounded_read_only_runtime_capacity_envelope_is_guarded_ready"
+    )
+    assert ready["measurements"][
+        "bounded_read_only_capacity_envelope_guarded_ready"
+    ] is True
+
+    attribution["support_hot_low_priority"] = False
+    unsafe_priority = src._soft_cap_low_pressure_advisory(**kwargs)
+
+    assert unsafe_priority["measurements"][
+        "bounded_read_only_capacity_envelope_guarded_ready"
+    ] is False
+
+
+def test_runtime_throttle_manages_bounded_macos_and_niced_support_mix() -> None:
+    attribution = {
+        "foreground_app_cpu_percent": 24.43,
+        "macos_system_cpu_percent": 159.643,
+        "operator_observability_cpu_percent": 0.0,
+        "protected_live_or_macro_cpu_percent": 3.49,
+        "bot_owned_cpu_percent": 195.127,
+        "throttle_candidate_support_cpu_percent": 157.713,
+        "storage_writer_cpu_percent": 33.924,
+        "paper_execution_cpu_percent": 0.0,
+        "research_training_cpu_percent": 0.0,
+        "system_cotenant_hot": True,
+        "external_pressure_dominant": True,
+        "bot_owned_pressure_dominant": False,
+        "support_jobs_hot": True,
+        "support_hot_low_priority": True,
+        "paper_execution_hot": False,
+        "research_training_hot": False,
+        "storage_writer_hot": False,
+        "protected_work_hot": False,
+    }
+    kwargs = {
+        "overall_status": "degraded",
+        "throttle_profile": "soft_cap",
+        "saturation_score": 50.47,
+        "compute_pressure_level": "normal",
+        "memory_pressure_level": "normal",
+        "storage_pressure_index": 0.0,
+        "storage_fresh_overflow": True,
+        "thermal_warning_active": False,
+        "performance_warning_active": False,
+        "host_pressure_attribution": attribution,
+        "live_read_only": True,
+        "storage_severity": "stable",
+        "storage_core_pending_lines": 0,
+        "storage_total_pending_lines": 0,
+        "storage_pending_threshold": 15000,
+        "storage_oldest_pending_age_seconds": 0.0,
+        "storage_oldest_age_threshold_seconds": 240.0,
+        "storage_overlay_relief": {"bounded": True},
+        "paper_execution_policy": {
+            "paper_execution_allowed": True,
+            "pause_paper_execution": False,
+            "armed": True,
+            "ok": True,
+        },
+        "full_force_paper_required": True,
+    }
+
+    advisory = src._soft_cap_low_pressure_advisory(**kwargs)
+
+    assert advisory["active"] is True
+    assert advisory["to_status"] == "advisory"
+    assert (
+        advisory["reason"]
+        == "macos_and_niced_support_mix_is_bounded_advisory_not_paper_degradation"
+    )
+    assert advisory["measurements"]["support_system_mix_guarded_advisory"] is True
+
+    attribution["throttle_candidate_support_cpu_percent"] = 160.01
+    over_limit = src._soft_cap_low_pressure_advisory(
+        **{**kwargs, "host_pressure_attribution": attribution}
+    )
+
+    assert over_limit["active"] is False
+    assert over_limit["to_status"] == "degraded"
+    assert over_limit["measurements"]["support_system_mix_guarded_advisory"] is False
+
+
+def test_runtime_throttle_keeps_bounded_elevated_full_force_paper_guarded_ready() -> (
+    None
+):
     attribution = {
         "bot_owned_cpu_percent": 135.2,
         "paper_execution_cpu_percent": 128.4,
@@ -3492,16 +4819,34 @@ def test_runtime_throttle_keeps_bounded_elevated_full_force_paper_guarded_ready(
     )
 
     assert advisory["to_status"] == "ready"
-    assert advisory["reason"] == "full_force_paper_ramp_pressure_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"] == "full_force_paper_ramp_pressure_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["full_force_paper_ramp_guarded_ready"] is True
-    assert advisory["thresholds"]["max_guarded_ready_full_force_elevated_host_saturation_score"] == 62.0
+    assert (
+        advisory["thresholds"][
+            "max_guarded_ready_full_force_elevated_host_saturation_score"
+        ]
+        == 62.0
+    )
 
 
-def test_runtime_throttle_marks_bounded_writer_plus_low_priority_paper_shadow_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_bounded_writer_plus_low_priority_paper_shadow_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -3524,8 +4869,15 @@ def test_runtime_throttle_marks_bounded_writer_plus_low_priority_paper_shadow_re
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 8.8, "five_minutes": 6.2, "fifteen_minutes": 8.1},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 8.8,
+                "five_minutes": 6.2,
+                "fifteen_minutes": 8.1,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -3558,18 +4910,40 @@ def test_runtime_throttle_marks_bounded_writer_plus_low_priority_paper_shadow_re
 
     assert payload["overall_status"] == "ready"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "bounded_writer_and_low_priority_paper_shadow_is_guarded_runtime_ready"
-    assert advisory["measurements"]["bounded_writer_with_paper_shadow_guarded_ready"] is True
+    assert (
+        advisory["reason"]
+        == "bounded_writer_and_low_priority_paper_shadow_is_guarded_runtime_ready"
+    )
+    assert (
+        advisory["measurements"]["bounded_writer_with_paper_shadow_guarded_ready"]
+        is True
+    )
     assert advisory["measurements"]["paper_hot_low_priority"] is True
 
 
-def test_runtime_throttle_treats_armed_paper_ramp_writer_heat_as_guarded_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_treats_armed_paper_ramp_writer_heat_as_guarded_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
-    _write_json(health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"})
-    _write_json(health_root / "paper_400_ramp_latest.json", {"stage": "armed", "armed": True, "ok": True, "blockers": []})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
+    _write_json(
+        health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"}
+    )
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {"stage": "armed", "armed": True, "ok": True, "blockers": []},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -3591,7 +4965,11 @@ def test_runtime_throttle_treats_armed_paper_ramp_writer_heat_as_guarded_ready(t
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for idx in range(700)
             ]
         },
@@ -3601,8 +4979,15 @@ def test_runtime_throttle_treats_armed_paper_ramp_writer_heat_as_guarded_ready(t
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 6.1, "five_minutes": 5.2, "fifteen_minutes": 5.4},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 6.1,
+                "five_minutes": 5.2,
+                "fifteen_minutes": 5.4,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -3653,21 +5038,43 @@ def test_runtime_throttle_treats_armed_paper_ramp_writer_heat_as_guarded_ready(t
     )
 
     assert payload["overall_status"] == "ready"
-    assert payload["release_contract"]["effective_live_read_only_reason"] == "paper_trade_lock"
+    assert (
+        payload["release_contract"]["effective_live_read_only_reason"]
+        == "paper_trade_lock"
+    )
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "full_force_paper_ramp_writer_pressure_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"]
+        == "full_force_paper_ramp_writer_pressure_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["full_force_paper_ramp_guarded_ready"] is True
     assert advisory["measurements"]["paper_execution_allowed"] is True
     assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
 
 
-def test_runtime_throttle_keeps_niced_coinbase_fanout_and_writer_guarded_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_keeps_niced_coinbase_fanout_and_writer_guarded_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
-    _write_json(health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"})
-    _write_json(health_root / "paper_400_ramp_latest.json", {"stage": "armed", "armed": True, "ok": True, "blockers": []})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
+    _write_json(
+        health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"}
+    )
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {"stage": "armed", "armed": True, "ok": True, "blockers": []},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -3689,7 +5096,11 @@ def test_runtime_throttle_keeps_niced_coinbase_fanout_and_writer_guarded_ready(t
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for idx in range(700)
             ]
         },
@@ -3699,8 +5110,15 @@ def test_runtime_throttle_keeps_niced_coinbase_fanout_and_writer_guarded_ready(t
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 5.8, "five_minutes": 5.7, "fifteen_minutes": 5.6},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 5.8,
+                "five_minutes": 5.7,
+                "fifteen_minutes": 5.6,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -3744,18 +5162,38 @@ def test_runtime_throttle_keeps_niced_coinbase_fanout_and_writer_guarded_ready(t
 
     assert payload["overall_status"] == "ready"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "full_force_paper_sampling_hysteresis_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"]
+        == "full_force_paper_sampling_hysteresis_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["full_force_paper_ramp_guarded_ready"] is True
     assert advisory["measurements"]["full_force_paper_base_cpu_bounded"] is False
-    assert advisory["measurements"]["full_force_paper_sampling_hysteresis_guarded"] is True
-    assert advisory["thresholds"]["max_guarded_ready_full_force_paper_cpu_percent"] == 240.0
-    assert advisory["thresholds"]["max_guarded_ready_full_force_paper_hysteresis_cpu_percent"] == 252.0
-    assert advisory["thresholds"]["max_guarded_ready_full_force_bot_owned_hysteresis_cpu_percent"] == 357.0
+    assert (
+        advisory["measurements"]["full_force_paper_sampling_hysteresis_guarded"] is True
+    )
+    assert (
+        advisory["thresholds"]["max_guarded_ready_full_force_paper_cpu_percent"]
+        == 240.0
+    )
+    assert (
+        advisory["thresholds"][
+            "max_guarded_ready_full_force_paper_hysteresis_cpu_percent"
+        ]
+        == 252.0
+    )
+    assert (
+        advisory["thresholds"][
+            "max_guarded_ready_full_force_bot_owned_hysteresis_cpu_percent"
+        ]
+        == 357.0
+    )
     assert payload["paper_execution_policy"]["paper_execution_allowed"] is True
     assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
 
 
-def test_runtime_throttle_sampling_hysteresis_does_not_hide_a_real_capacity_breach() -> None:
+def test_runtime_throttle_sampling_hysteresis_does_not_hide_a_real_capacity_breach() -> (
+    None
+):
     attribution = {
         "bot_owned_cpu_percent": 351.391,
         "paper_execution_cpu_percent": 252.1,
@@ -3799,16 +5237,35 @@ def test_runtime_throttle_sampling_hysteresis_does_not_hide_a_real_capacity_brea
     assert advisory["to_status"] == "advisory"
     assert advisory["measurements"]["runtime_ready_guarded"] is False
     assert advisory["measurements"]["full_force_paper_ramp_guarded_ready"] is False
-    assert advisory["measurements"]["full_force_paper_sampling_hysteresis_guarded"] is False
+    assert (
+        advisory["measurements"]["full_force_paper_sampling_hysteresis_guarded"]
+        is False
+    )
 
 
-def test_runtime_throttle_keeps_high_compute_full_paper_ramp_guarded_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_keeps_high_compute_full_paper_ramp_guarded_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
-    _write_json(health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"})
-    _write_json(health_root / "paper_400_ramp_latest.json", {"stage": "armed", "armed": True, "ok": True, "blockers": []})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
+    _write_json(
+        health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"}
+    )
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {"stage": "armed", "armed": True, "ok": True, "blockers": []},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -3830,7 +5287,11 @@ def test_runtime_throttle_keeps_high_compute_full_paper_ramp_guarded_ready(tmp_p
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for idx in range(700)
             ]
         },
@@ -3840,8 +5301,15 @@ def test_runtime_throttle_keeps_high_compute_full_paper_ramp_guarded_ready(tmp_p
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 12.8, "five_minutes": 9.5, "fifteen_minutes": 8.2},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 12.8,
+                "five_minutes": 9.5,
+                "fifteen_minutes": 8.2,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -3908,7 +5376,10 @@ def test_runtime_throttle_keeps_high_compute_full_paper_ramp_guarded_ready(tmp_p
     assert payload["compute_pressure_level"] == "high"
     assert payload["overall_status"] == "ready"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "full_force_paper_ramp_writer_pressure_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"]
+        == "full_force_paper_ramp_writer_pressure_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["full_force_paper_ramp_guarded_ready"] is True
     assert advisory["measurements"]["paper_hot_low_priority"] is True
     assert advisory["measurements"]["support_jobs_hot"] is True
@@ -3920,13 +5391,29 @@ def test_runtime_throttle_keeps_high_compute_full_paper_ramp_guarded_ready(tmp_p
     assert payload["paper_capacity_contract"]["compute_pressure_limited"] is False
 
 
-def test_runtime_throttle_keeps_high_compute_paper_only_full_ramp_guarded_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_keeps_high_compute_paper_only_full_ramp_guarded_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
-    _write_json(health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"})
-    _write_json(health_root / "paper_400_ramp_latest.json", {"stage": "armed", "armed": True, "ok": True, "blockers": []})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
+    _write_json(
+        health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"}
+    )
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {"stage": "armed", "armed": True, "ok": True, "blockers": []},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -3948,7 +5435,11 @@ def test_runtime_throttle_keeps_high_compute_paper_only_full_ramp_guarded_ready(
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for idx in range(700)
             ]
         },
@@ -3958,8 +5449,15 @@ def test_runtime_throttle_keeps_high_compute_paper_only_full_ramp_guarded_ready(
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 12.8, "five_minutes": 9.5, "fifteen_minutes": 8.2},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 12.8,
+                "five_minutes": 9.5,
+                "fifteen_minutes": 8.2,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -3983,7 +5481,9 @@ def test_runtime_throttle_keeps_high_compute_paper_only_full_ramp_guarded_ready(
     assert payload["compute_pressure_level"] == "high"
     assert payload["overall_status"] == "ready"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "full_force_paper_ramp_pressure_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"] == "full_force_paper_ramp_pressure_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["full_force_paper_ramp_guarded_ready"] is True
     assert advisory["measurements"]["storage_writer_hot"] is False
     assert payload["paper_execution_policy"]["paper_execution_allowed"] is True
@@ -3992,13 +5492,29 @@ def test_runtime_throttle_keeps_high_compute_paper_only_full_ramp_guarded_ready(
     assert payload["paper_capacity_contract"]["compute_pressure_limited"] is False
 
 
-def test_runtime_throttle_marks_low_priority_paper_heat_as_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_low_priority_paper_heat_as_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
-    _write_json(health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"})
-    _write_json(health_root / "paper_400_ramp_latest.json", {"stage": "armed", "armed": True, "ok": True, "blockers": []})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
+    _write_json(
+        health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"}
+    )
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {"stage": "armed", "armed": True, "ok": True, "blockers": []},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -4021,8 +5537,15 @@ def test_runtime_throttle_marks_low_priority_paper_heat_as_advisory(tmp_path: Pa
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 4.0, "five_minutes": 4.2, "fifteen_minutes": 4.1},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 4.0,
+                "five_minutes": 4.2,
+                "fifteen_minutes": 4.1,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -4074,14 +5597,22 @@ def test_runtime_throttle_marks_low_priority_paper_heat_as_advisory(tmp_path: Pa
 
     assert payload["overall_status"] == "advisory"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "low_priority_paper_execution_pressure_is_guarded_advisory"
+    assert (
+        advisory["reason"]
+        == "low_priority_paper_execution_pressure_is_guarded_advisory"
+    )
     assert advisory["measurements"]["paper_lane_low_priority_guarded"] is True
     assert advisory["measurements"]["paper_execution_allowed"] is True
 
 
-def test_runtime_throttle_marks_paper_heat_with_green_os_memory_as_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_paper_heat_with_green_os_memory_as_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
     _write_json(
         health_root / "memory_efficiency_control_latest.json",
         {
@@ -4096,9 +5627,17 @@ def test_runtime_throttle_marks_paper_heat_with_green_os_memory_as_advisory(tmp_
             },
         },
     )
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
-    _write_json(health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"})
-    _write_json(health_root / "paper_400_ramp_latest.json", {"stage": "armed", "armed": True, "ok": True, "blockers": []})
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
+    _write_json(
+        health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"}
+    )
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {"stage": "armed", "armed": True, "ok": True, "blockers": []},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -4121,8 +5660,15 @@ def test_runtime_throttle_marks_paper_heat_with_green_os_memory_as_advisory(tmp_
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 4.0, "five_minutes": 4.2, "fifteen_minutes": 4.1},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 4.0,
+                "five_minutes": 4.2,
+                "fifteen_minutes": 4.1,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -4161,15 +5707,24 @@ def test_runtime_throttle_marks_paper_heat_with_green_os_memory_as_advisory(tmp_
 
     assert payload["overall_status"] == "advisory"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "low_priority_paper_execution_pressure_is_guarded_advisory"
+    assert (
+        advisory["reason"]
+        == "low_priority_paper_execution_pressure_is_guarded_advisory"
+    )
     assert advisory["measurements"]["paper_ramp_memory_guarded"] is True
     assert advisory["measurements"]["paper_lane_low_priority_guarded"] is True
 
 
-def test_runtime_throttle_treats_managed_critical_compression_as_normal_memory() -> None:
+def test_runtime_throttle_treats_managed_critical_compression_as_normal_memory() -> (
+    None
+):
     assert (
         src._memory_pressure_level(
-            {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 11.445},
+            {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "swap_used_gb": 11.445,
+            },
             {
                 "overall_status": "needs_work",
                 "reasons": ["compressed_memory_critical"],
@@ -4189,9 +5744,14 @@ def test_runtime_throttle_treats_managed_critical_compression_as_normal_memory()
     )
 
 
-def test_runtime_throttle_marks_clean_backlog_writer_cooldown_as_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_clean_backlog_writer_cooldown_as_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
     _write_json(
         health_root / "memory_efficiency_control_latest.json",
         {
@@ -4206,7 +5766,10 @@ def test_runtime_throttle_marks_clean_backlog_writer_cooldown_as_advisory(tmp_pa
             },
         },
     )
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -4229,8 +5792,15 @@ def test_runtime_throttle_marks_clean_backlog_writer_cooldown_as_advisory(tmp_pa
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 5.0, "five_minutes": 5.0, "fifteen_minutes": 4.5},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 5.0,
+                "five_minutes": 5.0,
+                "fifteen_minutes": 4.5,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -4269,17 +5839,34 @@ def test_runtime_throttle_marks_clean_backlog_writer_cooldown_as_advisory(tmp_pa
 
     assert payload["overall_status"] == "advisory"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "bounded_storage_writer_after_green_backpressure_is_guarded_advisory"
+    assert (
+        advisory["reason"]
+        == "bounded_storage_writer_after_green_backpressure_is_guarded_advisory"
+    )
     assert advisory["measurements"]["storage_writer_cooling_guarded_advisory"] is True
     assert advisory["measurements"]["plain_storage_clear_guarded_ready"] is True
 
 
-def test_runtime_throttle_marks_bounded_writer_paper_research_mix_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_bounded_writer_paper_research_mix_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
-    _write_json(health_root / "paper_400_ramp_latest.json", {"stage": "armed", "armed": True, "ok": True, "blockers": []})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {"stage": "armed", "armed": True, "ok": True, "blockers": []},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -4301,7 +5888,11 @@ def test_runtime_throttle_marks_bounded_writer_paper_research_mix_ready(tmp_path
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for idx in range(700)
             ]
         },
@@ -4311,8 +5902,15 @@ def test_runtime_throttle_marks_bounded_writer_paper_research_mix_ready(tmp_path
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 8.8, "five_minutes": 6.2, "fifteen_minutes": 5.9},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 8.8,
+                "five_minutes": 6.2,
+                "fifteen_minutes": 5.9,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -4379,17 +5977,31 @@ def test_runtime_throttle_marks_bounded_writer_paper_research_mix_ready(tmp_path
     assert payload["compute_pressure_level"] == "elevated"
     assert payload["overall_status"] == "ready"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "bounded_bot_owned_writer_paper_research_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"]
+        == "bounded_bot_owned_writer_paper_research_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["bounded_bot_owned_runtime_guarded_ready"] is True
     assert advisory["measurements"]["storage_writer_cooling_guarded_ready"] is False
     assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
 
 
-def test_runtime_throttle_marks_bounded_read_only_protected_lane_as_guarded_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_bounded_read_only_protected_lane_as_guarded_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -4411,7 +6023,11 @@ def test_runtime_throttle_marks_bounded_read_only_protected_lane_as_guarded_read
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for idx in range(700)
             ]
         },
@@ -4421,8 +6037,15 @@ def test_runtime_throttle_marks_bounded_read_only_protected_lane_as_guarded_read
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 4.2, "five_minutes": 6.0, "fifteen_minutes": 7.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 4.2,
+                "five_minutes": 6.0,
+                "fifteen_minutes": 7.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -4477,16 +6100,30 @@ def test_runtime_throttle_marks_bounded_read_only_protected_lane_as_guarded_read
     assert payload["overall_status"] == "ready"
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["active"] is True
-    assert advisory["reason"] == "bounded_read_only_protected_lane_after_green_backpressure_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"]
+        == "bounded_read_only_protected_lane_after_green_backpressure_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["bounded_protected_lane_guarded_ready"] is True
     assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
 
 
-def test_runtime_throttle_reclassifies_external_high_compute_with_bounded_storage_overlay(tmp_path: Path) -> None:
+def test_runtime_throttle_reclassifies_external_high_compute_with_bounded_storage_overlay(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -4508,7 +6145,11 @@ def test_runtime_throttle_reclassifies_external_high_compute_with_bounded_storag
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{i}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{i}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for i in range(700)
             ]
         },
@@ -4518,8 +6159,15 @@ def test_runtime_throttle_reclassifies_external_high_compute_with_bounded_storag
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 12.5, "five_minutes": 10.0, "fifteen_minutes": 8.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 12.5,
+                "five_minutes": 10.0,
+                "fifteen_minutes": 8.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -4574,7 +6222,10 @@ def test_runtime_throttle_reclassifies_external_high_compute_with_bounded_storag
     assert payload["overall_status"] == "advisory"
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["active"] is True
-    assert advisory["reason"] == "external_high_compute_with_bounded_storage_overlay_is_capacity_limited_advisory"
+    assert (
+        advisory["reason"]
+        == "external_high_compute_with_bounded_storage_overlay_is_capacity_limited_advisory"
+    )
     assert advisory["measurements"]["bounded_storage_overlay_guarded"] is True
     assert advisory["measurements"]["storage_ready_for_runtime_advisory"] is True
     assert payload["paper_capacity_contract"]["attribution_capacity_advisory"] is True
@@ -4582,11 +6233,22 @@ def test_runtime_throttle_reclassifies_external_high_compute_with_bounded_storag
     assert payload["paper_capacity_contract"]["pressure_limited"] is False
 
 
-def test_runtime_throttle_reclassifies_external_cotenant_with_bounded_storage_overlay(tmp_path: Path) -> None:
+def test_runtime_throttle_reclassifies_external_cotenant_with_bounded_storage_overlay(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -4609,8 +6271,15 @@ def test_runtime_throttle_reclassifies_external_cotenant_with_bounded_storage_ov
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 9.0, "five_minutes": 8.0, "fifteen_minutes": 6.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 9.0,
+                "five_minutes": 8.0,
+                "fifteen_minutes": 6.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -4652,16 +6321,30 @@ def test_runtime_throttle_reclassifies_external_cotenant_with_bounded_storage_ov
     assert payload["overall_status"] == "advisory"
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["active"] is True
-    assert advisory["reason"] == "external_cotenant_with_bounded_storage_overlay_is_advisory_not_bot_runtime_degradation"
+    assert (
+        advisory["reason"]
+        == "external_cotenant_with_bounded_storage_overlay_is_advisory_not_bot_runtime_degradation"
+    )
     assert advisory["measurements"]["external_cotenant_guarded"] is True
     assert advisory["measurements"]["bounded_storage_overlay_guarded"] is True
 
 
-def test_runtime_throttle_promotes_low_bot_owned_bounded_overlay_to_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_promotes_low_bot_owned_bounded_overlay_to_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -4684,8 +6367,15 @@ def test_runtime_throttle_promotes_low_bot_owned_bounded_overlay_to_ready(tmp_pa
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 9.0, "five_minutes": 8.0, "fifteen_minutes": 6.6},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 9.0,
+                "five_minutes": 8.0,
+                "fifteen_minutes": 6.6,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -4743,26 +6433,51 @@ def test_runtime_throttle_promotes_low_bot_owned_bounded_overlay_to_ready(tmp_pa
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["active"] is True
     assert advisory["to_status"] == "ready"
-    assert advisory["reason"] == "external_cotenant_with_bounded_storage_overlay_is_guarded_runtime_ready"
+    assert (
+        advisory["reason"]
+        == "external_cotenant_with_bounded_storage_overlay_is_guarded_runtime_ready"
+    )
     assert advisory["measurements"]["runtime_ready_guarded"] is True
 
 
-def test_runtime_throttle_reclassifies_niced_support_secondary_system_as_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_reclassifies_niced_support_secondary_system_as_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
-        {"overall_status": "ready", "pressure_index": 0.01, "backpressure": {"core_pending_lines": 20, "total_pending_lines": 25}},
+        {
+            "overall_status": "ready",
+            "pressure_index": 0.01,
+            "backpressure": {"core_pending_lines": 20, "total_pending_lines": 25},
+        },
     )
 
     payload = src.build_payload(
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 7.5, "five_minutes": 5.0, "fifteen_minutes": 3.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 7.5,
+                "five_minutes": 5.0,
+                "fifteen_minutes": 3.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -4796,7 +6511,10 @@ def test_runtime_throttle_reclassifies_niced_support_secondary_system_as_advisor
     assert payload["overall_status"] == "advisory"
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["active"] is True
-    assert advisory["reason"] == "niced_support_maintenance_with_secondary_system_pressure_is_guarded_advisory"
+    assert (
+        advisory["reason"]
+        == "niced_support_maintenance_with_secondary_system_pressure_is_guarded_advisory"
+    )
     assert advisory["measurements"]["support_low_priority_guarded"] is True
 
 
@@ -4913,11 +6631,22 @@ def test_report_and_cleanup_helpers_are_support_throttle_candidates() -> None:
     assert coverage_gap["throttle_candidate"] is True
 
 
-def test_full_force_paper_capacity_adds_buffered_runtime_overrides(tmp_path: Path) -> None:
+def test_full_force_paper_capacity_adds_buffered_runtime_overrides(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -4936,8 +6665,12 @@ def test_full_force_paper_capacity_adds_buffered_runtime_overrides(tmp_path: Pat
                 {
                     "bot_id": f"brain_refinery_v{i}_paper_capacity_test_bot",
                     "active": True,
-                    "lifecycle_state": "data_collection_only" if i % 2 else "shadow_candidate",
-                    "sleeve_profile": "options" if i % 7 == 0 else "intraday_aggressive",
+                    "lifecycle_state": (
+                        "data_collection_only" if i % 2 else "shadow_candidate"
+                    ),
+                    "sleeve_profile": (
+                        "options" if i % 7 == 0 else "intraday_aggressive"
+                    ),
                 }
                 for i in range(700)
             ]
@@ -4948,8 +6681,15 @@ def test_full_force_paper_capacity_adds_buffered_runtime_overrides(tmp_path: Pat
         tmp_path,
         runtime_snapshot={
             "cpu_count": 12,
-            "load_averages": {"one_minute": 2.4, "five_minutes": 2.0, "fifteen_minutes": 1.8},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 2.4,
+                "five_minutes": 2.0,
+                "fifteen_minutes": 1.8,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -4963,22 +6703,43 @@ def test_full_force_paper_capacity_adds_buffered_runtime_overrides(tmp_path: Pat
         registry_path=tmp_path / "master_bot_registry.json",
         max_renice_processes=0,
     )
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
-    registry = json.loads((tmp_path / "master_bot_registry.json").read_text(encoding="utf-8"))
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
+    registry = json.loads(
+        (tmp_path / "master_bot_registry.json").read_text(encoding="utf-8")
+    )
 
-    assert payload["paper_capacity_contract"]["full_force_stabilization_required"] is True
+    assert (
+        payload["paper_capacity_contract"]["full_force_stabilization_required"] is True
+    )
     assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
     assert "PAPER_RUNTIME_CONTROL_REFRESH_SECONDS=240" in override
     assert "JSONL_BUFFER_MAX_ITEMS=240" in override
     assert "SQL_LINK_SERVICE_INTERVAL_SECONDS=12" in override
     assert result["collector_guard"]["full_force_paper_stabilization"] is True
-    assert registry["sub_bots"][0]["paper_execution_queue_policy"] == "buffered_jsonl_batching"
+    assert (
+        registry["sub_bots"][0]["paper_execution_queue_policy"]
+        == "buffered_jsonl_batching"
+    )
 
 
-def test_runtime_throttle_collector_guard_uses_candidate_for_canonical_source_by_default(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_throttle_collector_guard_uses_candidate_for_canonical_source_by_default(
+    tmp_path: Path, monkeypatch
+) -> None:
     registry_path = tmp_path / "master_bot_registry.json"
-    candidate_path = tmp_path / "governance" / "health" / "runtime_throttle_registry_candidate_latest.json"
-    guard_path = tmp_path / "governance" / "health" / "runtime_throttle_source_write_guard_latest.json"
+    candidate_path = (
+        tmp_path
+        / "governance"
+        / "health"
+        / "runtime_throttle_registry_candidate_latest.json"
+    )
+    guard_path = (
+        tmp_path
+        / "governance"
+        / "health"
+        / "runtime_throttle_source_write_guard_latest.json"
+    )
     _write_json(
         registry_path,
         {
@@ -5018,7 +6779,10 @@ def test_runtime_throttle_collector_guard_uses_candidate_for_canonical_source_by
     assert result["registry_source_write_blocked"] is True
     assert result["registry_source_written"] is False
     assert registry_path.read_text(encoding="utf-8") == source_before
-    assert candidate["sub_bots"][0]["paper_runtime_stability_mode"] == "full_force_buffered"
+    assert (
+        candidate["sub_bots"][0]["paper_runtime_stability_mode"]
+        == "full_force_buffered"
+    )
     assert guard_path.exists()
 
     allowed = src._apply_registry_collector_guard(
@@ -5033,14 +6797,27 @@ def test_runtime_throttle_collector_guard_uses_candidate_for_canonical_source_by
 
     assert allowed["registry_source_write_blocked"] is False
     assert allowed["registry_source_written"] is True
-    assert source["sub_bots"][0]["paper_runtime_stability_mode"] == "full_force_buffered"
+    assert (
+        source["sub_bots"][0]["paper_runtime_stability_mode"] == "full_force_buffered"
+    )
 
 
-def test_runtime_throttle_does_not_protect_live_on_cool_raw_live_sql_overlay_pressure(tmp_path: Path) -> None:
+def test_runtime_throttle_does_not_protect_live_on_cool_raw_live_sql_overlay_pressure(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -5079,8 +6856,15 @@ def test_runtime_throttle_does_not_protect_live_on_cool_raw_live_sql_overlay_pre
         tmp_path,
         runtime_snapshot={
             "cpu_count": 12,
-            "load_averages": {"one_minute": 2.0, "five_minutes": 1.7, "fifteen_minutes": 1.6},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 2.0,
+                "five_minutes": 1.7,
+                "fifteen_minutes": 1.6,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -5090,15 +6874,32 @@ def test_runtime_throttle_does_not_protect_live_on_cool_raw_live_sql_overlay_pre
 
     assert payload["throttle_profile"] != "protect_live"
     assert payload["paper_capacity_contract"]["storage_pressure_limited"] is False
-    assert payload["paper_capacity_contract"]["storage_overlay_capacity_relief"]["active"] is True
-    assert payload["runtime_snapshot"]["storage_pressure"]["overlay_capacity_relief"] is True
+    assert (
+        payload["paper_capacity_contract"]["storage_overlay_capacity_relief"]["active"]
+        is True
+    )
+    assert (
+        payload["runtime_snapshot"]["storage_pressure"]["overlay_capacity_relief"]
+        is True
+    )
 
 
-def test_runtime_throttle_uses_overlay_raw_live_estimate_for_capacity_relief(tmp_path: Path) -> None:
+def test_runtime_throttle_uses_overlay_raw_live_estimate_for_capacity_relief(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -5145,8 +6946,15 @@ def test_runtime_throttle_uses_overlay_raw_live_estimate_for_capacity_relief(tmp
         tmp_path,
         runtime_snapshot={
             "cpu_count": 12,
-            "load_averages": {"one_minute": 2.0, "five_minutes": 1.7, "fifteen_minutes": 1.6},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 2.0,
+                "five_minutes": 1.7,
+                "fifteen_minutes": 1.6,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -5159,14 +6967,28 @@ def test_runtime_throttle_uses_overlay_raw_live_estimate_for_capacity_relief(tmp
     assert payload["paper_capacity_contract"]["storage_pressure_limited"] is False
     assert overlay["active"] is True
     assert overlay["raw_live"]["source"] == "effective_raw_live.raw_live_estimate"
-    assert payload["runtime_snapshot"]["storage_pressure"]["overlay_capacity_relief"] is True
+    assert (
+        payload["runtime_snapshot"]["storage_pressure"]["overlay_capacity_relief"]
+        is True
+    )
 
 
-def test_runtime_throttle_prefers_bounded_effective_raw_live_for_capacity_relief(tmp_path: Path) -> None:
+def test_runtime_throttle_prefers_bounded_effective_raw_live_for_capacity_relief(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -5214,8 +7036,15 @@ def test_runtime_throttle_prefers_bounded_effective_raw_live_for_capacity_relief
         tmp_path,
         runtime_snapshot={
             "cpu_count": 12,
-            "load_averages": {"one_minute": 2.0, "five_minutes": 1.7, "fifteen_minutes": 1.6},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 2.0,
+                "five_minutes": 1.7,
+                "fifteen_minutes": 1.6,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -5229,14 +7058,28 @@ def test_runtime_throttle_prefers_bounded_effective_raw_live_for_capacity_relief
     assert overlay["active"] is True
     assert overlay["raw_live"]["source"] == "sql_ingestion_overlay_pressure"
     assert overlay["raw_live"]["total_pending_lines"] == 5980
-    assert payload["runtime_snapshot"]["storage_pressure"]["overlay_capacity_relief"] is True
+    assert (
+        payload["runtime_snapshot"]["storage_pressure"]["overlay_capacity_relief"]
+        is True
+    )
 
 
-def test_runtime_throttle_uses_managed_support_overlay_pressure_view(tmp_path: Path) -> None:
+def test_runtime_throttle_uses_managed_support_overlay_pressure_view(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -5268,8 +7111,15 @@ def test_runtime_throttle_uses_managed_support_overlay_pressure_view(tmp_path: P
         tmp_path,
         runtime_snapshot={
             "cpu_count": 12,
-            "load_averages": {"one_minute": 1.5, "five_minutes": 1.7, "fifteen_minutes": 1.6},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 1.5,
+                "five_minutes": 1.7,
+                "fifteen_minutes": 1.6,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -5291,11 +7141,22 @@ def test_runtime_throttle_uses_managed_support_overlay_pressure_view(tmp_path: P
     assert overlay["active"] is True
 
 
-def test_runtime_throttle_uses_explicit_empty_sql_overlay_for_storage_relief(tmp_path: Path) -> None:
+def test_runtime_throttle_uses_explicit_empty_sql_overlay_for_storage_relief(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -5331,8 +7192,15 @@ def test_runtime_throttle_uses_explicit_empty_sql_overlay_for_storage_relief(tmp
         tmp_path,
         runtime_snapshot={
             "cpu_count": 12,
-            "load_averages": {"one_minute": 2.0, "five_minutes": 1.7, "fifteen_minutes": 1.6},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 2.0,
+                "five_minutes": 1.7,
+                "fifteen_minutes": 1.6,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -5346,14 +7214,28 @@ def test_runtime_throttle_uses_explicit_empty_sql_overlay_for_storage_relief(tmp
     assert overlay["active"] is True
     assert overlay["direct_sql_overlay_clear"] is True
     assert overlay["raw_storage_pressure_index"] > 1.0
-    assert payload["mac_fluidity_contract"]["measurements"]["storage_total_pending_lines"] == 0
+    assert (
+        payload["mac_fluidity_contract"]["measurements"]["storage_total_pending_lines"]
+        == 0
+    )
 
 
-def test_runtime_throttle_preserves_lower_capability_pack_sampling(tmp_path: Path) -> None:
+def test_runtime_throttle_preserves_lower_capability_pack_sampling(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "yellow", "swap_used_gb": 9.0})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "degraded"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "yellow", "swap_used_gb": 9.0},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "degraded"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -5390,8 +7272,15 @@ def test_runtime_throttle_preserves_lower_capability_pack_sampling(tmp_path: Pat
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 8.0, "five_minutes": 7.0, "fifteen_minutes": 6.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 8.0,
+                "five_minutes": 7.0,
+                "fifteen_minutes": 6.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {"interactive_cotenant": 40.0},
@@ -5405,7 +7294,9 @@ def test_runtime_throttle_preserves_lower_capability_pack_sampling(tmp_path: Pat
         registry_path=tmp_path / "master_bot_registry.json",
         max_renice_processes=0,
     )
-    registry = json.loads((tmp_path / "master_bot_registry.json").read_text(encoding="utf-8"))
+    registry = json.loads(
+        (tmp_path / "master_bot_registry.json").read_text(encoding="utf-8")
+    )
     row = registry["sub_bots"][0]
 
     assert result["collector_guard"]["policy"]["sample_rate"] == 0.3
@@ -5415,7 +7306,10 @@ def test_runtime_throttle_preserves_lower_capability_pack_sampling(tmp_path: Pat
 
 def test_runtime_throttle_consumes_memory_cotenant_awareness(tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
     _write_json(
         health_root / "memory_efficiency_control_latest.json",
         {
@@ -5433,7 +7327,10 @@ def test_runtime_throttle_consumes_memory_cotenant_awareness(tmp_path: Path) -> 
             },
         },
     )
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -5450,8 +7347,15 @@ def test_runtime_throttle_consumes_memory_cotenant_awareness(tmp_path: Path) -> 
         tmp_path,
         runtime_snapshot={
             "cpu_count": 12,
-            "load_averages": {"one_minute": 1.2, "five_minutes": 1.0, "fifteen_minutes": 1.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 1.2,
+                "five_minutes": 1.0,
+                "fifteen_minutes": 1.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -5465,7 +7369,9 @@ def test_runtime_throttle_consumes_memory_cotenant_awareness(tmp_path: Path) -> 
         registry_path=tmp_path / "master_bot_registry.json",
         max_renice_processes=0,
     )
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
 
     assert payload["overall_status"] == "advisory"
     assert payload["throttle_profile"] == "soft_cap"
@@ -5474,11 +7380,22 @@ def test_runtime_throttle_consumes_memory_cotenant_awareness(tmp_path: Path) -> 
     assert result["env_override_count"] >= 5
 
 
-def test_runtime_throttle_marks_low_pressure_external_soft_cap_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_low_pressure_external_soft_cap_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -5495,8 +7412,15 @@ def test_runtime_throttle_marks_low_pressure_external_soft_cap_advisory(tmp_path
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 6.0, "five_minutes": 4.0, "fifteen_minutes": 4.8},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 6.0,
+                "five_minutes": 4.0,
+                "fifteen_minutes": 4.8,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -5569,7 +7493,9 @@ def test_runtime_process_cpu_delta_replaces_stale_ps_average() -> None:
 
 
 def test_runtime_process_cpu_window_median_rejects_isolated_burst() -> None:
-    rows = [{"pid": 101, "cpu_percent": 82.0, "command": "periodic execution health update"}]
+    rows = [
+        {"pid": 101, "cpu_percent": 82.0, "command": "periodic execution health update"}
+    ]
 
     sampled, metadata = src._apply_process_cpu_sample_windows(
         rows,
@@ -5588,7 +7514,9 @@ def test_runtime_process_cpu_window_median_rejects_isolated_burst() -> None:
 
 
 def test_runtime_process_cpu_window_median_preserves_sustained_pressure() -> None:
-    rows = [{"pid": 101, "cpu_percent": 82.0, "command": "sustained execution workload"}]
+    rows = [
+        {"pid": 101, "cpu_percent": 82.0, "command": "sustained execution workload"}
+    ]
 
     sampled, metadata = src._apply_process_cpu_sample_windows(
         rows,
@@ -5614,7 +7542,11 @@ def test_runtime_payload_exposes_process_cpu_sampling_contract(tmp_path: Path) -
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 1.0, "five_minutes": 1.0, "fifteen_minutes": 1.0},
+            "load_averages": {
+                "one_minute": 1.0,
+                "five_minutes": 1.0,
+                "fifteen_minutes": 1.0,
+            },
             "thermal": {},
             "vm_stat": {},
             "top_processes": [],
@@ -5675,11 +7607,22 @@ def test_runtime_throttle_does_not_relieve_hard_raw_live_pressure() -> None:
     assert relief["bounded_raw_live_relief"] is False
 
 
-def test_runtime_throttle_marks_guarded_foreground_sustain_as_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_guarded_foreground_sustain_as_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -5702,8 +7645,15 @@ def test_runtime_throttle_marks_guarded_foreground_sustain_as_advisory(tmp_path:
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 12.0, "five_minutes": 5.0, "fifteen_minutes": 4.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 12.0,
+                "five_minutes": 5.0,
+                "fifteen_minutes": 4.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -5728,15 +7678,29 @@ def test_runtime_throttle_marks_guarded_foreground_sustain_as_advisory(tmp_path:
     assert payload["ok"] is True
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["active"] is True
-    assert advisory["reason"] == "foreground_cotenant_pressure_is_guarded_advisory_not_bot_runtime_degradation"
+    assert (
+        advisory["reason"]
+        == "foreground_cotenant_pressure_is_guarded_advisory_not_bot_runtime_degradation"
+    )
     assert advisory["measurements"]["foreground_guarded"] is True
 
 
-def test_runtime_throttle_marks_foreground_pressure_with_clean_storage_as_guarded_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_foreground_pressure_with_clean_storage_as_guarded_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -5759,8 +7723,15 @@ def test_runtime_throttle_marks_foreground_pressure_with_clean_storage_as_guarde
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 11.25, "five_minutes": 8.7, "fifteen_minutes": 7.8},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 11.25,
+                "five_minutes": 8.7,
+                "fifteen_minutes": 7.8,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -5797,8 +7768,16 @@ def test_runtime_throttle_marks_foreground_pressure_with_clean_storage_as_guarde
                     "throttle_candidate": False,
                 },
             ],
-            "category_cpu": {"interactive_cotenant": 71.0, "unclassified": 29.0, "operator_observability": 21.3},
-            "category_counts": {"interactive_cotenant": 1, "unclassified": 1, "operator_observability": 1},
+            "category_cpu": {
+                "interactive_cotenant": 71.0,
+                "unclassified": 29.0,
+                "operator_observability": 21.3,
+            },
+            "category_counts": {
+                "interactive_cotenant": 1,
+                "unclassified": 1,
+                "operator_observability": 1,
+            },
         },
     )
 
@@ -5814,11 +7793,22 @@ def test_runtime_throttle_marks_foreground_pressure_with_clean_storage_as_guarde
     assert advisory["measurements"]["bot_owned_non_operator_cpu_percent"] == 0.0
 
 
-def test_runtime_throttle_marks_system_cotenant_pressure_with_clean_storage_as_guarded_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_system_cotenant_pressure_with_clean_storage_as_guarded_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -5841,8 +7831,15 @@ def test_runtime_throttle_marks_system_cotenant_pressure_with_clean_storage_as_g
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 4.3, "five_minutes": 6.8, "fifteen_minutes": 7.2},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 4.3,
+                "five_minutes": 6.8,
+                "fifteen_minutes": 7.2,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -5876,16 +7873,32 @@ def test_runtime_throttle_marks_system_cotenant_pressure_with_clean_storage_as_g
     assert payload["overall_status"] == "ready"
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["to_status"] == "ready"
-    assert advisory["reason"] == "external_cotenant_pressure_with_clean_storage_is_guarded_runtime_ready"
-    assert advisory["measurements"]["plain_external_live_read_only_guarded_ready"] is True
+    assert (
+        advisory["reason"]
+        == "external_cotenant_pressure_with_clean_storage_is_guarded_runtime_ready"
+    )
+    assert (
+        advisory["measurements"]["plain_external_live_read_only_guarded_ready"] is True
+    )
     assert advisory["measurements"]["runtime_ready_guarded"] is True
 
 
-def test_runtime_throttle_marks_niced_support_pressure_as_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_niced_support_pressure_as_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -5902,8 +7915,15 @@ def test_runtime_throttle_marks_niced_support_pressure_as_advisory(tmp_path: Pat
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 12.0, "five_minutes": 5.0, "fifteen_minutes": 4.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 12.0,
+                "five_minutes": 5.0,
+                "fifteen_minutes": 4.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -5928,16 +7948,29 @@ def test_runtime_throttle_marks_niced_support_pressure_as_advisory(tmp_path: Pat
     assert payload["host_pressure_attribution"]["support_hot_low_priority"] is True
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["active"] is True
-    assert advisory["reason"] == "support_pressure_is_already_niced_and_guarded_advisory"
+    assert (
+        advisory["reason"] == "support_pressure_is_already_niced_and_guarded_advisory"
+    )
     assert advisory["measurements"]["support_low_priority_guarded"] is True
     assert advisory["measurements"]["storage_fresh_overflow"] is True
 
 
-def test_runtime_throttle_marks_bounded_writer_support_and_read_only_protected_lane_ready(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_bounded_writer_support_and_read_only_protected_lane_ready(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -5960,8 +7993,15 @@ def test_runtime_throttle_marks_bounded_writer_support_and_read_only_protected_l
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 6.0, "five_minutes": 4.0, "fifteen_minutes": 4.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 6.0,
+                "five_minutes": 4.0,
+                "fifteen_minutes": 4.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -6054,16 +8094,33 @@ def test_runtime_throttle_marks_bounded_writer_support_and_read_only_protected_l
     assert payload["ok"] is True
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["active"] is True
-    assert advisory["reason"] == "bounded_writer_support_and_read_only_protected_lane_is_guarded_runtime_ready"
-    assert advisory["measurements"]["bounded_writer_support_protected_guarded_ready"] is True
+    assert (
+        advisory["reason"]
+        == "bounded_writer_support_and_read_only_protected_lane_is_guarded_runtime_ready"
+    )
+    assert (
+        advisory["measurements"]["bounded_writer_support_protected_guarded_ready"]
+        is True
+    )
     assert payload["mac_fluidity_contract"]["overall_status"] == "ready"
 
 
-def test_runtime_throttle_marks_operator_observability_pressure_as_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_operator_observability_pressure_as_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -6080,8 +8137,15 @@ def test_runtime_throttle_marks_operator_observability_pressure_as_advisory(tmp_
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 12.0, "five_minutes": 5.0, "fifteen_minutes": 4.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 12.0,
+                "five_minutes": 5.0,
+                "fifteen_minutes": 4.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -6110,12 +8174,26 @@ def test_runtime_throttle_marks_operator_observability_pressure_as_advisory(tmp_
     assert advisory["measurements"]["operator_observability_guarded"] is True
 
 
-def test_runtime_throttle_keeps_paper_capacity_open_under_operator_observability_high_compute(tmp_path: Path) -> None:
+def test_runtime_throttle_keeps_paper_capacity_open_under_operator_observability_high_compute(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
-    _write_json(health_root / "paper_400_ramp_latest.json", {"stage": "armed", "armed": True, "ok": True, "blockers": []})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {"stage": "armed", "armed": True, "ok": True, "blockers": []},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -6137,7 +8215,11 @@ def test_runtime_throttle_keeps_paper_capacity_open_under_operator_observability
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for idx in range(700)
             ]
         },
@@ -6147,8 +8229,15 @@ def test_runtime_throttle_keeps_paper_capacity_open_under_operator_observability
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 13.0, "five_minutes": 8.0, "fifteen_minutes": 4.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 13.0,
+                "five_minutes": 8.0,
+                "fifteen_minutes": 4.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -6182,19 +8271,35 @@ def test_runtime_throttle_keeps_paper_capacity_open_under_operator_observability
     assert payload["compute_pressure_level"] == "high"
     assert payload["overall_status"] == "advisory"
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "operator_observability_high_compute_pressure_is_capacity_limited_advisory_not_bot_runtime_degradation"
-    assert advisory["measurements"]["operator_observability_high_compute_guarded"] is True
+    assert (
+        advisory["reason"]
+        == "operator_observability_high_compute_pressure_is_capacity_limited_advisory_not_bot_runtime_degradation"
+    )
+    assert (
+        advisory["measurements"]["operator_observability_high_compute_guarded"] is True
+    )
     assert payload["paper_execution_policy"]["paper_execution_allowed"] is True
     assert payload["paper_execution_policy"]["pause_paper_execution"] is False
     assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
     assert payload["paper_capacity_contract"]["compute_pressure_limited"] is False
 
 
-def test_runtime_throttle_marks_bounded_protected_work_as_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_bounded_protected_work_as_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -6211,8 +8316,15 @@ def test_runtime_throttle_marks_bounded_protected_work_as_advisory(tmp_path: Pat
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 7.0, "five_minutes": 4.0, "fifteen_minutes": 3.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 7.0,
+                "five_minutes": 4.0,
+                "fifteen_minutes": 3.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -6240,11 +8352,22 @@ def test_runtime_throttle_marks_bounded_protected_work_as_advisory(tmp_path: Pat
     assert advisory["measurements"]["protected_work_guarded"] is True
 
 
-def test_runtime_throttle_marks_niced_research_pressure_as_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_niced_research_pressure_as_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -6261,8 +8384,15 @@ def test_runtime_throttle_marks_niced_research_pressure_as_advisory(tmp_path: Pa
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 7.0, "five_minutes": 5.0, "fifteen_minutes": 3.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 7.0,
+                "five_minutes": 5.0,
+                "fifteen_minutes": 3.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -6287,19 +8417,33 @@ def test_runtime_throttle_marks_niced_research_pressure_as_advisory(tmp_path: Pa
     assert payload["host_pressure_attribution"]["research_training_hot"] is True
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["active"] is True
-    assert advisory["reason"] == "research_training_pressure_is_already_niced_and_guarded_advisory"
+    assert (
+        advisory["reason"]
+        == "research_training_pressure_is_already_niced_and_guarded_advisory"
+    )
     assert advisory["measurements"]["research_low_priority_guarded"] is True
 
 
-def test_runtime_throttle_marks_full_force_paper_and_research_mix_as_soak_advisory(tmp_path: Path) -> None:
+def test_runtime_throttle_marks_full_force_paper_and_research_mix_as_soak_advisory(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
     _write_json(
         health_root / "live_runtime_separation_control_latest.json",
         {"release_contract": {"live_lane_should_be_read_only": True}},
     )
-    _write_json(health_root / "paper_400_ramp_latest.json", {"stage": "armed", "armed": True, "ok": True, "blockers": []})
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {"stage": "armed", "armed": True, "ok": True, "blockers": []},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -6336,8 +8480,15 @@ def test_runtime_throttle_marks_full_force_paper_and_research_mix_as_soak_adviso
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 9.0, "five_minutes": 6.0, "fifteen_minutes": 5.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 9.0,
+                "five_minutes": 6.0,
+                "fifteen_minutes": 5.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -6417,17 +8568,34 @@ def test_runtime_throttle_marks_full_force_paper_and_research_mix_as_soak_adviso
     assert payload["ok"] is True
     advisory = payload["soft_cap_advisory_reclassification"]
     assert advisory["active"] is True
-    assert advisory["reason"] == "full_force_paper_and_research_pressure_is_soak_guarded_advisory"
-    assert advisory["measurements"]["full_force_paper_research_mix_guarded_advisory"] is True
+    assert (
+        advisory["reason"]
+        == "full_force_paper_and_research_pressure_is_soak_guarded_advisory"
+    )
+    assert (
+        advisory["measurements"]["full_force_paper_research_mix_guarded_advisory"]
+        is True
+    )
     assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
     assert payload["paper_capacity_contract"]["attribution_capacity_advisory"] is True
 
 
-def test_runtime_throttle_downgrades_protect_live_for_stoppable_background_research(tmp_path: Path) -> None:
+def test_runtime_throttle_downgrades_protect_live_for_stoppable_background_research(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -6449,7 +8617,11 @@ def test_runtime_throttle_downgrades_protect_live_for_stoppable_background_resea
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for idx in range(700)
             ]
         },
@@ -6459,8 +8631,15 @@ def test_runtime_throttle_downgrades_protect_live_for_stoppable_background_resea
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 20.0, "five_minutes": 13.0, "fifteen_minutes": 12.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 20.0,
+                "five_minutes": 13.0,
+                "fifteen_minutes": 12.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -6507,17 +8686,36 @@ def test_runtime_throttle_downgrades_protect_live_for_stoppable_background_resea
     assert payload["overall_status"] == "advisory"
     assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "research_training_pressure_is_already_niced_and_guarded_advisory"
+    assert (
+        advisory["reason"]
+        == "research_training_pressure_is_already_niced_and_guarded_advisory"
+    )
     assert advisory["measurements"]["research_low_priority_guarded"] is True
 
 
-def test_runtime_throttle_downgrades_protect_live_when_paper_lane_is_guarded(tmp_path: Path) -> None:
+def test_runtime_throttle_downgrades_protect_live_when_paper_lane_is_guarded(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
-    _write_json(health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"})
-    _write_json(health_root / "paper_400_ramp_latest.json", {"stage": "armed", "armed": True, "ok": True, "blockers": []})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
+    _write_json(
+        health_root / "PAPER_TRADE_LOCK.flag", {"policy": "live_data_paper_trade_only"}
+    )
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {"stage": "armed", "armed": True, "ok": True, "blockers": []},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -6539,7 +8737,11 @@ def test_runtime_throttle_downgrades_protect_live_when_paper_lane_is_guarded(tmp
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": f"paper_capacity_bot_{idx}", "active": True, "lifecycle_state": "active"}
+                {
+                    "bot_id": f"paper_capacity_bot_{idx}",
+                    "active": True,
+                    "lifecycle_state": "active",
+                }
                 for idx in range(700)
             ]
         },
@@ -6549,8 +8751,15 @@ def test_runtime_throttle_downgrades_protect_live_when_paper_lane_is_guarded(tmp
         tmp_path,
         runtime_snapshot={
             "cpu_count": 10,
-            "load_averages": {"one_minute": 20.0, "five_minutes": 13.0, "fifteen_minutes": 12.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 20.0,
+                "five_minutes": 13.0,
+                "fifteen_minutes": 12.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [
                 {
@@ -6625,22 +8834,38 @@ def test_runtime_throttle_downgrades_protect_live_when_paper_lane_is_guarded(tmp
     )
 
     assert payload["protect_live_autonomic_reclassification"]["active"] is True
-    assert payload["protect_live_autonomic_reclassification"]["paper_lane_guarded_for_autonomic_relief"] is True
+    assert (
+        payload["protect_live_autonomic_reclassification"][
+            "paper_lane_guarded_for_autonomic_relief"
+        ]
+        is True
+    )
     assert payload["throttle_profile"] == "sustain"
     assert payload["overall_status"] == "advisory"
     assert payload["paper_execution_policy"]["paper_execution_allowed"] is True
     assert payload["paper_execution_policy"]["pause_paper_execution"] is False
     assert payload["paper_capacity_contract"]["ready_for_700_bot_paper"] is True
     advisory = payload["soft_cap_advisory_reclassification"]
-    assert advisory["reason"] == "support_pressure_is_already_niced_and_guarded_advisory"
+    assert (
+        advisory["reason"] == "support_pressure_is_already_niced_and_guarded_advisory"
+    )
     assert advisory["measurements"]["support_low_priority_guarded"] is True
 
 
 def test_runtime_throttle_consumes_mlx_intelligence_router_caps(tmp_path: Path) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -6686,8 +8911,15 @@ def test_runtime_throttle_consumes_mlx_intelligence_router_caps(tmp_path: Path) 
         tmp_path,
         runtime_snapshot={
             "cpu_count": 12,
-            "load_averages": {"one_minute": 1.2, "five_minutes": 1.0, "fifteen_minutes": 1.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 1.2,
+                "five_minutes": 1.0,
+                "fifteen_minutes": 1.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -6701,14 +8933,18 @@ def test_runtime_throttle_consumes_mlx_intelligence_router_caps(tmp_path: Path) 
         registry_path=tmp_path / "master_bot_registry.json",
         max_renice_processes=0,
     )
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
 
     assert payload["mlx_intelligence_contract"]["active"] is True
     assert payload["mlx_intelligence_contract"]["library_coverage_ratio"] == 1.0
     assert "MLX_INTELLIGENCE_ROUTER_ENABLED=1" in override
     assert "MLX_INTELLIGENCE_TENSOR_BATCH_CAP=48" in override
     assert "MLX_INTELLIGENCE_SCHEDULER_MODE=bounded_direct_stable" in override
-    assert "MLX_INTELLIGENCE_ALLOWED_LANES=tensor_quant_core,embedding_memory" in override
+    assert (
+        "MLX_INTELLIGENCE_ALLOWED_LANES=tensor_quant_core,embedding_memory" in override
+    )
     assert "MLX_INTELLIGENCE_REOPEN_STAGE=bounded_direct_stable" in override
     assert "MLX_INTELLIGENCE_TOKEN_BUDGET=10" in override
     assert result["env_override_count"] >= 4
@@ -6744,11 +8980,22 @@ def test_runtime_throttle_keeps_blocked_mlx_router_safety_caps_active() -> None:
     assert contract["p_core_preprocess_workers"] == 4
 
 
-def test_runtime_throttle_consumes_library_utilization_router_caps_and_keeps_mlx_default(tmp_path: Path) -> None:
+def test_runtime_throttle_consumes_library_utilization_router_caps_and_keeps_mlx_default(
+    tmp_path: Path,
+) -> None:
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "green", "swap_used_gb": 0.1})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": False}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "green", "swap_used_gb": 0.1},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": False}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -6791,8 +9038,15 @@ def test_runtime_throttle_consumes_library_utilization_router_caps_and_keeps_mlx
         tmp_path,
         runtime_snapshot={
             "cpu_count": 12,
-            "load_averages": {"one_minute": 1.2, "five_minutes": 1.0, "fifteen_minutes": 1.0},
-            "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+            "load_averages": {
+                "one_minute": 1.2,
+                "five_minutes": 1.0,
+                "fifteen_minutes": 1.0,
+            },
+            "thermal": {
+                "thermal_warning_active": False,
+                "performance_warning_active": False,
+            },
             "vm_stat": {},
             "top_processes": [],
             "category_cpu": {},
@@ -6806,7 +9060,9 @@ def test_runtime_throttle_consumes_library_utilization_router_caps_and_keeps_mlx
         registry_path=tmp_path / "master_bot_registry.json",
         max_renice_processes=0,
     )
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
 
     assert payload["library_utilization_contract"]["active"] is True
     assert payload["library_utilization_contract"]["default_ml_backend"] == "mlx"
@@ -6816,15 +9072,25 @@ def test_runtime_throttle_consumes_library_utilization_router_caps_and_keeps_mlx
     assert result["env_override_count"] >= 5
 
 
-
-def test_protect_live_downshifts_simulated_shadow_training_loops(tmp_path: Path, monkeypatch) -> None:
+def test_protect_live_downshifts_simulated_shadow_training_loops(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("BOT_CPU_EFFICIENCY_SATURATION_GUARD", "0")
     monkeypatch.delenv("RUNTIME_THROTTLE_RESEARCH_NICE", raising=False)
     monkeypatch.delenv("RUNTIME_THROTTLE_USE_TASKPOLICY_BACKGROUND", raising=False)
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "yellow", "swap_used_gb": 9.0})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "degraded"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "yellow", "swap_used_gb": 9.0},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "degraded"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -6838,8 +9104,15 @@ def test_protect_live_downshifts_simulated_shadow_training_loops(tmp_path: Path,
     )
     runtime_snapshot = {
         "cpu_count": 10,
-        "load_averages": {"one_minute": 13.5, "five_minutes": 12.0, "fifteen_minutes": 11.0},
-        "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+        "load_averages": {
+            "one_minute": 13.5,
+            "five_minutes": 12.0,
+            "fifteen_minutes": 11.0,
+        },
+        "thermal": {
+            "thermal_warning_active": False,
+            "performance_warning_active": False,
+        },
         "vm_stat": {},
         "top_processes": [
             {
@@ -6860,7 +9133,13 @@ def test_protect_live_downshifts_simulated_shadow_training_loops(tmp_path: Path,
 
     def fake_run_apply(command: list[str]) -> dict:
         calls.append(command)
-        return {"command": command, "returncode": 0, "ok": True, "stdout": "", "stderr": ""}
+        return {
+            "command": command,
+            "returncode": 0,
+            "ok": True,
+            "stdout": "",
+            "stderr": "",
+        }
 
     monkeypatch.setattr(src, "_run_apply_command", fake_run_apply)
     monkeypatch.setattr(src.os, "kill", lambda pid, sig: None)
@@ -6873,17 +9152,24 @@ def test_protect_live_downshifts_simulated_shadow_training_loops(tmp_path: Path,
         registry_path=tmp_path / "master_bot_registry.json",
         max_renice_processes=4,
     )
-    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(encoding="utf-8")
+    override = (tmp_path / "config" / ".env.runtime_resource_guard_override").read_text(
+        encoding="utf-8"
+    )
 
     assert payload["throttle_profile"] == "protect_live"
-    assert payload["research_training_trim_candidates"][0]["throttle_reason"] == "simulated_training_loop_under_host_pressure"
+    assert (
+        payload["research_training_trim_candidates"][0]["throttle_reason"]
+        == "simulated_training_loop_under_host_pressure"
+    )
     assert result["process_throttle"]["attempted_count"] == 1
     assert any(cmd[:3] == ["renice", "-n", "20"] for cmd in calls)
     assert "SHADOW_LOOP_PRESSURE_INTERVAL_FLOOR_ENABLED=1" in override
     assert "SHADOW_LOOP_PROTECT_LIVE_EXTRA_INTERVAL_SECONDS=30" in override
 
 
-def test_runtime_throttle_pauses_all_hot_research_candidates_up_to_limit(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_throttle_pauses_all_hot_research_candidates_up_to_limit(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("RUNTIME_RESEARCH_TRAINING_PAUSE_LIMIT", "4")
     signals: list[tuple[int, signal.Signals | int]] = []
 
@@ -6892,7 +9178,10 @@ def test_runtime_throttle_pauses_all_hot_research_candidates_up_to_limit(tmp_pat
 
     payload = {
         "runtime_saturation_governor_v2": {
-            "training_policy": {"training_paused": True, "reason": "host_saturation_or_memory_pressure"}
+            "training_policy": {
+                "training_paused": True,
+                "reason": "host_saturation_or_memory_pressure",
+            }
         },
         "throttle_profile": "sustain",
         "compute_pressure_level": "elevated",
@@ -6922,6 +9211,58 @@ def test_runtime_throttle_pauses_all_hot_research_candidates_up_to_limit(tmp_pat
     assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == [101, 102, 103]
 
 
+def test_soft_cap_background_pressure_pauses_with_hysteresis() -> None:
+    hot = {
+        "throttle_profile": "soft_cap",
+        "host_saturation_score": 53.0,
+        "host_pressure_attribution": {
+            "host_saturation_score": 53.0,
+            "support_jobs_hot": True,
+            "research_training_hot": True,
+        },
+    }
+
+    assert src._support_maintenance_pause_requested(hot) == (
+        True,
+        "runtime_soft_cap_support_pressure",
+    )
+    assert src._research_training_pause_requested(hot) == (
+        True,
+        "runtime_soft_cap_research_pressure",
+    )
+
+    cooling = {
+        "throttle_profile": "soft_cap",
+        "host_saturation_score": 45.0,
+        "host_pressure_attribution": {
+            "host_saturation_score": 45.0,
+            "support_jobs_hot": False,
+            "research_training_hot": False,
+        },
+    }
+    assert src._support_maintenance_pause_requested(
+        cooling, previously_paused=True
+    )[0] is True
+    assert src._research_training_pause_requested(
+        cooling, previously_paused=True
+    )[0] is True
+
+    cooled = {
+        **cooling,
+        "host_saturation_score": 39.0,
+        "host_pressure_attribution": {
+            **cooling["host_pressure_attribution"],
+            "host_saturation_score": 39.0,
+        },
+    }
+    assert src._support_maintenance_pause_requested(
+        cooled, previously_paused=True
+    )[0] is False
+    assert src._research_training_pause_requested(
+        cooled, previously_paused=True
+    )[0] is False
+
+
 def test_runtime_throttle_keeps_live_soak_shadow_loops_running_for_mac_fluidity_watch(
     tmp_path: Path,
     monkeypatch,
@@ -6933,7 +9274,10 @@ def test_runtime_throttle_keeps_live_soak_shadow_loops_running_for_mac_fluidity_
 
     payload = {
         "runtime_saturation_governor_v2": {
-            "training_policy": {"training_paused": False, "reason": "runtime_training_ready"}
+            "training_policy": {
+                "training_paused": False,
+                "reason": "runtime_training_ready",
+            }
         },
         "throttle_profile": "soft_cap",
         "compute_pressure_level": "elevated",
@@ -6977,7 +9321,9 @@ def test_runtime_throttle_keeps_live_soak_shadow_loops_running_for_mac_fluidity_
     assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == []
 
 
-def test_runtime_throttle_pauses_simulated_research_for_mac_fluidity_watch(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_throttle_pauses_simulated_research_for_mac_fluidity_watch(
+    tmp_path: Path, monkeypatch
+) -> None:
     signals: list[tuple[int, signal.Signals | int]] = []
 
     def fake_kill(pid: int, sig: signal.Signals | int) -> None:
@@ -6985,7 +9331,10 @@ def test_runtime_throttle_pauses_simulated_research_for_mac_fluidity_watch(tmp_p
 
     payload = {
         "runtime_saturation_governor_v2": {
-            "training_policy": {"training_paused": False, "reason": "runtime_training_ready"}
+            "training_policy": {
+                "training_paused": False,
+                "reason": "runtime_training_ready",
+            }
         },
         "throttle_profile": "soft_cap",
         "compute_pressure_level": "elevated",
@@ -7052,7 +9401,10 @@ def test_runtime_throttle_resumes_previously_paused_live_soak_shadow_loop(
     )
     payload = {
         "runtime_saturation_governor_v2": {
-            "training_policy": {"training_paused": False, "reason": "runtime_training_ready"}
+            "training_policy": {
+                "training_paused": False,
+                "reason": "runtime_training_ready",
+            }
         },
         "throttle_profile": "soft_cap",
         "compute_pressure_level": "elevated",
@@ -7062,7 +9414,9 @@ def test_runtime_throttle_resumes_previously_paused_live_soak_shadow_loop(
 
     monkeypatch.setattr(src.os, "kill", fake_kill)
 
-    result = src._apply_research_training_pause(tmp_path, [], payload, state_path=state_path)
+    result = src._apply_research_training_pause(
+        tmp_path, [], payload, state_path=state_path
+    )
 
     assert result["pause_requested"] is True
     assert result["resume_successful_count"] == 1
@@ -7071,7 +9425,9 @@ def test_runtime_throttle_resumes_previously_paused_live_soak_shadow_loop(
     assert state["paused_processes"] == []
 
 
-def test_runtime_throttle_pauses_support_maintenance_for_mac_fluidity_watch(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_throttle_pauses_support_maintenance_for_mac_fluidity_watch(
+    tmp_path: Path, monkeypatch
+) -> None:
     signals: list[tuple[int, signal.Signals | int]] = []
 
     def fake_kill(pid: int, sig: signal.Signals | int) -> None:
@@ -7118,7 +9474,9 @@ def test_runtime_throttle_pauses_support_maintenance_for_mac_fluidity_watch(tmp_
     assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == [801]
 
 
-def test_runtime_throttle_does_not_pause_storage_recovery_owner_during_storage_pressure(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_throttle_does_not_pause_storage_recovery_owner_during_storage_pressure(
+    tmp_path: Path, monkeypatch
+) -> None:
     signals: list[tuple[int, signal.Signals | int]] = []
 
     def fake_kill(pid: int, sig: signal.Signals | int) -> None:
@@ -7174,7 +9532,9 @@ def test_runtime_throttle_does_not_pause_storage_recovery_owner_during_storage_p
     assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == [901]
 
 
-def test_runtime_throttle_does_not_pause_resource_guard_sensor(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_throttle_does_not_pause_resource_guard_sensor(
+    tmp_path: Path, monkeypatch
+) -> None:
     signals: list[tuple[int, signal.Signals | int]] = []
     payload = {
         "mac_fluidity_contract": {
@@ -7210,7 +9570,9 @@ def test_runtime_throttle_does_not_pause_authorized_retention_during_maintenance
     signals: list[tuple[int, signal.Signals | int]] = []
 
     monkeypatch.setattr(src.os, "kill", lambda pid, sig: signals.append((pid, sig)))
-    monkeypatch.setattr(src, "maintenance_hold_snapshot", lambda _root: {"active": True})
+    monkeypatch.setattr(
+        src, "maintenance_hold_snapshot", lambda _root: {"active": True}
+    )
     payload = {
         "mac_fluidity_contract": {
             "support_pause_recommended": True,
@@ -7237,18 +9599,79 @@ def test_runtime_throttle_does_not_pause_authorized_retention_during_maintenance
     assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == []
 
 
-def test_efficiency_guard_keeps_research_throttle_off_background_taskpolicy(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_throttle_does_not_pause_storage_failback_workers_during_maintenance_hold(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    signals: list[tuple[int, signal.Signals | int]] = []
+    monkeypatch.setattr(src.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(
+        src, "maintenance_hold_snapshot", lambda _root: {"active": True}
+    )
+    payload = {
+        "mac_fluidity_contract": {
+            "support_pause_recommended": True,
+        },
+    }
+    candidates = [
+        {
+            "pid": pid,
+            "category": "support_maintenance",
+            "cpu_percent": 88.0,
+            "command": f"python {command} --apply --json",
+        }
+        for pid, command in enumerate(
+            (
+                "scripts/ops/storage_split_brain_reconciler.py",
+                "scripts/ops/storage_failback_sync.py",
+                "scripts/ops/storage_transition_coordinator.py",
+            ),
+            start=910,
+        )
+    ]
+
+    result = src._apply_support_maintenance_pause(
+        tmp_path,
+        candidates,
+        payload,
+        state_path=tmp_path / "runtime_support_pause_state.json",
+    )
+
+    assert result["pause_requested"] is True
+    assert result["successful_count"] == 0
+    assert [pid for pid, sig in signals if sig == signal.SIGSTOP] == []
+
+
+def test_efficiency_guard_keeps_research_throttle_off_background_taskpolicy(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("BOT_CPU_EFFICIENCY_SATURATION_GUARD", "1")
     monkeypatch.setenv("SLEEVE_NICE_SPECIALIZED", "8")
     monkeypatch.delenv("RUNTIME_THROTTLE_USE_TASKPOLICY_BACKGROUND", raising=False)
     health_root = tmp_path / "governance" / "health"
-    _write_json(health_root / "resource_guard_latest.json", {"memory_pressure_state": "yellow", "swap_used_gb": 9.0})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"overall_status": "degraded"})
-    _write_json(health_root / "live_runtime_separation_control_latest.json", {"release_contract": {"live_lane_should_be_read_only": True}})
+    _write_json(
+        health_root / "resource_guard_latest.json",
+        {"memory_pressure_state": "yellow", "swap_used_gb": 9.0},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"overall_status": "degraded"},
+    )
+    _write_json(
+        health_root / "live_runtime_separation_control_latest.json",
+        {"release_contract": {"live_lane_should_be_read_only": True}},
+    )
     runtime_snapshot = {
         "cpu_count": 10,
-        "load_averages": {"one_minute": 13.5, "five_minutes": 12.0, "fifteen_minutes": 11.0},
-        "thermal": {"thermal_warning_active": False, "performance_warning_active": False},
+        "load_averages": {
+            "one_minute": 13.5,
+            "five_minutes": 12.0,
+            "fifteen_minutes": 11.0,
+        },
+        "thermal": {
+            "thermal_warning_active": False,
+            "performance_warning_active": False,
+        },
         "vm_stat": {},
         "top_processes": [
             {
@@ -7270,7 +9693,13 @@ def test_efficiency_guard_keeps_research_throttle_off_background_taskpolicy(tmp_
 
     def fake_run_apply(command: list[str]) -> dict:
         calls.append(command)
-        return {"command": command, "returncode": 0, "ok": True, "stdout": "", "stderr": ""}
+        return {
+            "command": command,
+            "returncode": 0,
+            "ok": True,
+            "stdout": "",
+            "stderr": "",
+        }
 
     monkeypatch.setattr(src, "_run_apply_command", fake_run_apply)
     monkeypatch.setattr(src.os, "kill", lambda pid, sig: None)

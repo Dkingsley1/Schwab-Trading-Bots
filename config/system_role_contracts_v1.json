@@ -1,0 +1,970 @@
+{
+  "schema_version": 1,
+  "policy_id": "system_responsibility_and_authority_v1",
+  "operating_mode": "enforced_responsibility_contracts",
+  "required_role_fields": [
+    "role_id",
+    "display_name",
+    "tier",
+    "purpose",
+    "allowed_inputs",
+    "owned_outputs",
+    "write_authority",
+    "execution_authority",
+    "triggers",
+    "freshness_slo",
+    "failure_behavior",
+    "resource_budget",
+    "escalation_owner",
+    "evidence_outputs",
+    "forbidden_actions",
+    "allowed_actions"
+  ],
+  "taxonomies": {
+    "execution_modes": [
+      {"id": "observe", "order_authority": false},
+      {"id": "recommend", "order_authority": false},
+      {"id": "paper", "order_authority": "paper_only"},
+      {"id": "live", "order_authority": "explicit_candidate_bound_only"}
+    ],
+    "freshness_classes": [
+      {"id": "realtime", "default_max_age_seconds": 15},
+      {"id": "near_realtime", "default_max_age_seconds": 300},
+      {"id": "operational", "default_max_age_seconds": 900},
+      {"id": "daily", "default_max_age_seconds": 86400},
+      {"id": "immutable", "default_max_age_seconds": 315360000}
+    ],
+    "failure_classes": [
+      {"id": "isolate_source", "default_action": "quarantine_affected_source"},
+      {"id": "abstain", "default_action": "emit_no_trade_or_no_decision"},
+      {"id": "fail_closed", "default_action": "deny_mutation"},
+      {"id": "bounded_repair", "default_action": "repair_with_cooldown_and_circuit"},
+      {"id": "escalate", "default_action": "require_operator_review"}
+    ],
+    "resource_profiles": [
+      {"id": "io_light", "priority": "utility", "max_parallelism": 4},
+      {"id": "compute_bounded", "priority": "utility", "max_parallelism": 2},
+      {"id": "latency_sensitive", "priority": "high", "max_parallelism": 1},
+      {"id": "single_flight_heavy", "priority": "background", "max_parallelism": 1},
+      {"id": "control_plane", "priority": "high", "max_parallelism": 1}
+    ],
+    "lifecycle_states": [
+      "defined",
+      "shadow",
+      "paper_eligible",
+      "paper_active",
+      "promotion_review",
+      "live_canary_eligible",
+      "quarantined",
+      "retired"
+    ],
+    "configuration_precedence": [
+      "safety_flags",
+      "candidate_bound_runtime_state",
+      "operator_override",
+      "runtime_profile",
+      "policy_json",
+      "environment_default",
+      "code_default"
+    ],
+    "severity_classes": [
+      "info",
+      "watch",
+      "degraded",
+      "blocked",
+      "critical"
+    ],
+    "action_classes": {
+      "read_only": ["collect_data", "normalize_context", "score_signal"],
+      "data_mutation": ["append_observation", "publish_context"],
+      "advisory": ["recommend_trade", "aggregate_signal", "allocate_shadow_weight", "emit_order_intent", "rank_sleeves", "allocate_shadow_capital", "coordinate_policy"],
+      "governance": ["validate_evidence", "validate_authority", "classify_bot", "publish_evidence", "set_risk_limit", "promote_candidate", "write_candidate_state"],
+      "execution": ["paper_submit", "live_submit", "veto_trade", "record_execution_attempt"],
+      "truth": ["record_truth", "reconcile_broker"],
+      "operations": ["emit_health", "report_health", "publish_dashboard", "write_state", "manage_storage", "manage_artifact_lifecycle", "restart_process", "repair_infrastructure"],
+      "research": ["train_model", "publish_model_candidate"]
+    }
+  },
+  "hierarchy": {
+    "planes": {
+      "data_plane": ["data_collector", "context_processor"],
+      "decision_plane": ["strategy_bot", "sleeve_manager", "master_coordinator", "grand_master_coordinator"],
+      "control_plane": ["risk_governance", "promotion_governance"],
+      "execution_plane": ["paper_execution_gateway", "live_execution_gateway"],
+      "truth_plane": ["truth_reconciliation"],
+      "operations_plane": ["infrastructure_maintainer", "observability_reporter", "training_research", "evaluation_auditor"]
+    },
+    "decision_flow": [
+      "data_collector",
+      "context_processor",
+      "strategy_bot",
+      "sleeve_manager",
+      "master_coordinator",
+      "grand_master_coordinator",
+      "risk_governance",
+      "paper_execution_gateway",
+      "live_execution_gateway",
+      "truth_reconciliation"
+    ],
+    "non_bypassable_roles": [
+      "risk_governance",
+      "live_execution_gateway",
+      "truth_reconciliation"
+    ],
+    "rules": {
+      "collectors_never_decide_or_trade": true,
+      "strategies_never_submit_orders": true,
+      "masters_never_bypass_risk": true,
+      "risk_may_veto_but_never_originate_signals": true,
+      "execution_is_the_only_order_writer": true,
+      "truth_never_rewrites_outcomes": true,
+      "infrastructure_never_changes_trade_logic": true,
+      "dashboards_never_invent_canonical_truth": true,
+      "grand_master_cannot_grant_itself_authority": true
+    }
+  },
+  "operator_brain_boundary": {
+    "boundary_id": "trading_brain_ops_brain_v1",
+    "purpose": "Keep trading-experiment changes separate from operational hardening while current-candidate paper evidence is being collected.",
+    "trading_brain": {
+      "display_name": "Trading Brain",
+      "definition": "The decision and strategy layer that changes market selection, sleeve parameters, signal thresholds, entry and exit logic, sizing, promotion criteria, or profitability evidence semantics.",
+      "scope": [
+        "sleeve_parameters",
+        "entry_exit_logic",
+        "signal_thresholds",
+        "market_regime_interpretation",
+        "risk_and_position_sizing",
+        "candidate_identity",
+        "profitability_evidence",
+        "promotion_gates"
+      ],
+      "characteristics": {
+        "primary_inputs": [
+          "point_in_time_market_context",
+          "sleeve_characteristics",
+          "candidate_bound_post_cost_evidence",
+          "risk_and_execution_policy",
+          "promotion_gate_state"
+        ],
+        "owned_decisions": [
+          "what_market_condition_is_being_interpreted",
+          "which_sleeves_fit_the_condition",
+          "what_strategy_logic_would_change_candidate_behavior",
+          "what_evidence_is_required_before_profitability_can_be_claimed"
+        ],
+        "operator_questions_it_answers": [
+          "why_is_this_sleeve_favored_or_downshifted",
+          "what_would_need_to_be_true_before_parameters_change",
+          "what_profitability_evidence_is_missing",
+          "what_market_pattern_is_the_system_observing"
+        ],
+        "failure_modes": [
+          "overfitting_to_choppy_market_noise",
+          "changing_parameters_mid_candidate_window",
+          "mistaking_historical_loss_recovery_for_current_candidate_edge",
+          "promoting_without_post_cost_persistence"
+        ],
+        "evidence_it_must_preserve": [
+          "candidate_identity",
+          "post_cost_samples",
+          "observed_days",
+          "independent_fills",
+          "promotion_gate_semantics"
+        ]
+      },
+      "categories": [
+        {
+          "category_id": "market_decision",
+          "label": "Market Decision",
+          "purpose": "Interprets market regime, symbol opportunity, sleeve priority, signal confidence, and where the platform thinks money may be moving.",
+          "scope": [
+            "market_regime_interpretation",
+            "symbol_selection",
+            "sleeve_prioritization",
+            "signal_confidence",
+            "money_flow_context"
+          ],
+          "current_posture": "read_only_or_paper_observation_only",
+          "allowed_actions": [
+            "explain_market_read",
+            "collect_pattern_context",
+            "summarize_money_flow_without_changing_trade_logic"
+          ],
+          "frozen_or_review_actions": [
+            "change_regime_model",
+            "change_sleeve_priority_formula",
+            "expand_trade_admission_parameters"
+          ]
+        },
+        {
+          "category_id": "strategy_logic",
+          "label": "Strategy Logic",
+          "purpose": "Owns entries, exits, thresholds, feature weights, model choice, sleeve-specific parameters, and decision formulas.",
+          "scope": [
+            "entry_exit_logic",
+            "signal_thresholds",
+            "feature_weights",
+            "model_selection",
+            "sleeve_parameters"
+          ],
+          "current_posture": "frozen_except_candidate_preserving_bug_fixes",
+          "allowed_actions": [
+            "inspect_logic",
+            "explain_current_parameters",
+            "fix_runtime_bug_without_behavior_change"
+          ],
+          "frozen_or_review_actions": [
+            "relax_thresholds",
+            "change_entries_or_exits",
+            "change_feature_weights",
+            "swap_models"
+          ]
+        },
+        {
+          "category_id": "risk_execution_policy",
+          "label": "Risk and Execution Policy",
+          "purpose": "Controls sizing, paper execution admission, live authority, loss recovery limits, spread controls, quote age controls, and escalation gates.",
+          "scope": [
+            "position_sizing",
+            "risk_limits",
+            "paper_execution_admission",
+            "live_execution_authority",
+            "loss_recovery_policy"
+          ],
+          "current_posture": "locked_no_live_authority_change",
+          "allowed_actions": [
+            "read_only_review",
+            "paper_only_evidence_under_existing_policy",
+            "report_policy_blockers"
+          ],
+          "frozen_or_review_actions": [
+            "increase_size",
+            "force_trade",
+            "weaken_spread_or_quote_age_controls",
+            "grant_live_authority"
+          ]
+        },
+        {
+          "category_id": "candidate_evidence",
+          "label": "Candidate Evidence",
+          "purpose": "Protects current candidate identity, post-cost observations, observed days, independent fills, and promotion proof semantics.",
+          "scope": [
+            "candidate_identity",
+            "post_cost_samples",
+            "observed_days",
+            "independent_fills",
+            "promotion_gates"
+          ],
+          "current_posture": "collecting_do_not_reset",
+          "allowed_actions": [
+            "refresh_reports",
+            "collect_candidate_bound_rows",
+            "explain_missing_profitability_evidence"
+          ],
+          "frozen_or_review_actions": [
+            "reset_candidate",
+            "reinterpret_old_losses_as_candidate_evidence",
+            "promote_without_evidence",
+            "change_profitability_semantics"
+          ]
+        }
+      ],
+      "current_posture": "freeze_except_bug_fixes_while_candidate_collects_evidence",
+      "allowed_during_collection": [
+        "read_only_analysis",
+        "bug_fixes_that_preserve_candidate_identity",
+        "paper_only_evidence_collection_under_existing_controls"
+      ],
+      "requires_explicit_operator_review": [
+        "threshold_relaxation",
+        "sleeve_parameter_change",
+        "entry_exit_logic_change",
+        "sizing_policy_change",
+        "candidate_reset",
+        "promotion_gate_change",
+        "live_execution_authority_change"
+      ]
+    },
+    "ops_brain": {
+      "display_name": "Ops Brain",
+      "definition": "The runtime, storage, data freshness, queue, writer, reporting, notification, recovery, and observability layer that keeps the platform healthy without changing trade logic or execution authority.",
+      "scope": [
+        "storage_cleanup",
+        "writer_locks",
+        "queue_backpressure",
+        "feed_freshness",
+        "log_rotation",
+        "health_checks",
+        "daily_reports",
+        "notifications",
+        "artifact_consistency",
+        "watchdog_recovery"
+      ],
+      "characteristics": {
+        "primary_inputs": [
+          "disk_and_volume_pressure",
+          "writer_lock_state",
+          "queue_backlog",
+          "source_freshness",
+          "artifact_health",
+          "process_supervision_state"
+        ],
+        "owned_decisions": [
+          "what_runtime_repair_is_safe_now",
+          "which_artifacts_need_refresh",
+          "which queues or writers need guarded drain",
+          "which reports should surface operator needs"
+        ],
+        "operator_questions_it_answers": [
+          "is_this_a_storage_or_writer_problem",
+          "is_the_system_degraded_for_operational_reasons",
+          "what_can_be_repaired_without_changing_trading_logic",
+          "what_should_be_refreshed_before_interpreting_performance"
+        ],
+        "failure_modes": [
+          "stale_artifacts_presented_as_current_truth",
+          "parallel_writer_or_duplicate_drainer_creation",
+          "storage_cleanup_deleting_evidence",
+          "runtime_restart_mutating_trading_parameters"
+        ],
+        "evidence_it_must_preserve": [
+          "audit_logs",
+          "candidate_evidence",
+          "source_receipts",
+          "writer_state_receipts",
+          "operator_handoff_history"
+        ]
+      },
+      "categories": [
+        {
+          "category_id": "storage_runtime",
+          "label": "Storage and Runtime",
+          "purpose": "Keeps disk, BOT_LOGS, SQLite/WAL files, retention, and local runtime pressure inside safe operating bounds.",
+          "scope": [
+            "disk_pressure",
+            "BOT_LOGS",
+            "sqlite_wal",
+            "retention",
+            "local_runtime_pressure"
+          ],
+          "current_posture": "safe_to_harden_with_guards",
+          "allowed_actions": [
+            "guarded_cleanup",
+            "checkpoint_or_compact",
+            "quota_report",
+            "retention_policy_enforcement"
+          ],
+          "never_actions": [
+            "delete_protected_volumes",
+            "wipe_audit_trail",
+            "remove_current_candidate_evidence"
+          ]
+        },
+        {
+          "category_id": "writer_queue",
+          "label": "Writer and Queue",
+          "purpose": "Maintains single-writer safety, queue backpressure, lock health, drainers, and handoff plumbing.",
+          "scope": [
+            "writer_locks",
+            "single_writer",
+            "queue_backpressure",
+            "drainers",
+            "handoff_plumbing"
+          ],
+          "current_posture": "safe_to_repair_serially",
+          "allowed_actions": [
+            "release_completed_locks",
+            "run_single_writer_drain",
+            "measure_backlog",
+            "repair_handoff_plumbing"
+          ],
+          "never_actions": [
+            "parallel_sql_writers",
+            "force_handoff_without_guard",
+            "bypass_single_writer_contract"
+          ]
+        },
+        {
+          "category_id": "data_freshness",
+          "label": "Data Freshness",
+          "purpose": "Refreshes feed state, source receipts, market context artifacts, and stale health artifacts without inventing source truth.",
+          "scope": [
+            "feed_freshness",
+            "source_receipts",
+            "artifact_staleness",
+            "market_context_refresh",
+            "source_quality"
+          ],
+          "current_posture": "safe_to_refresh",
+          "allowed_actions": [
+            "refresh_sources",
+            "rebuild_context_artifacts",
+            "report_unknown_context",
+            "preserve_source_quality_gates"
+          ],
+          "never_actions": [
+            "invent_missing_source_truth",
+            "weaken_source_quality_gates",
+            "treat_stale_context_as_current"
+          ]
+        },
+        {
+          "category_id": "observability_reporting",
+          "label": "Observability and Reporting",
+          "purpose": "Improves operator reports, daily notifications, handoff artifacts, dashboards, needs statements, and communication clarity.",
+          "scope": [
+            "operator_reports",
+            "daily_notifications",
+            "handoff_artifacts",
+            "dashboards",
+            "needs_communication"
+          ],
+          "current_posture": "safe_to_improve",
+          "allowed_actions": [
+            "render_reports",
+            "add_readouts",
+            "improve_explanations",
+            "surface_exact_needs"
+          ],
+          "never_actions": [
+            "claim_profitability",
+            "change_canonical_truth",
+            "hide_blockers"
+          ]
+        },
+        {
+          "category_id": "process_recovery",
+          "label": "Process Recovery",
+          "purpose": "Supervises watchdogs, launchd jobs, guarded restarts, failure recovery, and resource-pressure relief.",
+          "scope": [
+            "watchdogs",
+            "launchd",
+            "supervised_restart",
+            "resource_pressure",
+            "failure_recovery"
+          ],
+          "current_posture": "safe_when_guarded",
+          "allowed_actions": [
+            "restart_supervised_processes_when_guarded",
+            "apply_pressure_relief",
+            "restore_expected_watchdogs",
+            "verify_recovery_result"
+          ],
+          "never_actions": [
+            "restart_trading_with_new_parameters",
+            "disable_killswitch",
+            "grant_live_authority"
+          ]
+        }
+      ],
+      "current_posture": "safe_to_harden_while_trading_brain_collects_evidence",
+      "allowed_during_collection": [
+        "repair_storage_or_backpressure",
+        "refresh_stale_artifacts",
+        "fix_writer_or_feed_plumbing",
+        "improve_operator_reporting",
+        "add_non_trading_observability",
+        "restart_supervised_processes_when_guarded"
+      ]
+    },
+    "boundary_rules": {
+      "trading_brain_changes_may_reset_or_invalidate_candidate_evidence": true,
+      "ops_brain_never_changes_trade_logic": true,
+      "ops_brain_never_grants_live_authority": true,
+      "paper_collection_controls_may_collect_more_evidence_without_live_authority": true,
+      "live_money_authority_remains_separate": true,
+      "operator_question_default_route": "classify_first_then_apply_only_ops_safe_repairs"
+    },
+    "routing_matrix": {
+      "classification_rule": "Classify each operator request by brain and category before changing files or running operational commands.",
+      "safe_now": [
+        "ops_brain.storage_runtime",
+        "ops_brain.writer_queue",
+        "ops_brain.data_freshness",
+        "ops_brain.observability_reporting",
+        "ops_brain.process_recovery"
+      ],
+      "freeze_now": [
+        "trading_brain.strategy_logic",
+        "trading_brain.risk_execution_policy",
+        "trading_brain.candidate_evidence"
+      ],
+      "read_only_now": [
+        "trading_brain.market_decision"
+      ],
+      "review_required": [
+        "trading_brain.market_decision.parameter_expansion",
+        "trading_brain.strategy_logic.parameter_change",
+        "trading_brain.risk_execution_policy.authority_change",
+        "trading_brain.candidate_evidence.reset_or_promotion"
+      ]
+    },
+    "hardening_invariants": {
+      "required_category_fields": [
+        "category_id",
+        "purpose",
+        "scope",
+        "current_posture"
+      ],
+      "required_trading_categories": [
+        "market_decision",
+        "strategy_logic",
+        "risk_execution_policy",
+        "candidate_evidence"
+      ],
+      "required_ops_categories": [
+        "storage_runtime",
+        "writer_queue",
+        "data_freshness",
+        "observability_reporting",
+        "process_recovery"
+      ],
+      "category_ids_must_be_unique": true,
+      "routing_references_must_resolve": true,
+      "safe_now_routes_must_be_ops_only": true,
+      "freeze_now_routes_must_be_trading_only": true,
+      "read_only_routes_may_be_trading_market_decision_only": true,
+      "candidate_evidence_category_must_remain_frozen": true,
+      "live_authority_changes_must_remain_review_required": true,
+      "ops_allowed_actions_must_not_mutate_trade_logic": true
+    },
+    "handoff_language": {
+      "summary": "Trading Brain is frozen except bug fixes; Ops Brain can keep being hardened.",
+      "trading_freeze_reason": "Current candidate profitability evidence needs a stable decision surface across post-cost samples and observed days.",
+      "safe_work_now": "storage, writer locks, feed freshness, queue pressure, reports, notifications, artifact consistency, and watchdog recovery",
+      "frozen_work_now": "sleeve parameters, entry and exit logic, signal thresholds, sizing, candidate identity, promotion gates, and live authority"
+    }
+  },
+  "roles": [
+    {
+      "role_id": "data_collector",
+      "display_name": "Data Collector",
+      "tier": "data_plane_ingress",
+      "purpose": "Acquire, timestamp, validate, and append source observations with provenance.",
+      "allowed_inputs": ["approved_external_sources", "broker_market_data", "collector_schedule", "symbol_universe"],
+      "owned_outputs": ["raw_observation_events", "source_health_evidence"],
+      "write_authority": ["append_only_raw_observation_events"],
+      "execution_authority": {"observe": true, "recommend": false, "paper_trade": false, "risk_veto": false, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["scheduled_poll", "provider_event", "market_session_event"],
+      "freshness_slo": {"class": "near_realtime", "max_age_seconds": 600},
+      "failure_behavior": {"class": "isolate_source", "default_action": "quarantine_affected_source_and_preserve_last_good"},
+      "resource_budget": {"profile": "io_light", "max_parallelism": 8, "memory_mb_soft": 1024},
+      "escalation_owner": "infrastructure_maintainer",
+      "evidence_outputs": ["source_provenance_receipt", "collector_heartbeat", "schema_validation_result"],
+      "forbidden_actions": ["recommend_trade", "emit_order_intent", "paper_submit", "live_submit", "promote_candidate", "rewrite_truth"],
+      "allowed_actions": ["collect_data", "append_observation", "emit_health"]
+    },
+    {
+      "role_id": "context_processor",
+      "display_name": "Context Processor",
+      "tier": "data_plane_context",
+      "purpose": "Normalize and synchronize macro, micro, event, regime, and market context without creating order authority.",
+      "allowed_inputs": ["raw_observation_events", "approved_reference_data", "point_in_time_lineage"],
+      "owned_outputs": ["canonical_context_snapshot", "context_provenance"],
+      "write_authority": ["canonical_context_snapshot"],
+      "execution_authority": {"observe": true, "recommend": false, "paper_trade": false, "risk_veto": false, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["new_observation_batch", "scheduled_context_refresh"],
+      "freshness_slo": {"class": "near_realtime", "max_age_seconds": 600},
+      "failure_behavior": {"class": "fail_closed", "default_action": "mark_context_unknown_and_exclude_dependent_decisions"},
+      "resource_budget": {"profile": "compute_bounded", "max_parallelism": 2, "memory_mb_soft": 1536},
+      "escalation_owner": "infrastructure_maintainer",
+      "evidence_outputs": ["context_lineage_receipt", "source_alignment_report", "freshness_report"],
+      "forbidden_actions": ["emit_order_intent", "paper_submit", "live_submit", "promote_candidate", "rewrite_truth"],
+      "allowed_actions": ["normalize_context", "publish_context", "emit_health"]
+    },
+    {
+      "role_id": "strategy_bot",
+      "display_name": "Strategy Bot",
+      "tier": "decision_plane_hypothesis",
+      "purpose": "Produce scored, attributable market hypotheses within a declared sleeve and regime mandate.",
+      "allowed_inputs": ["canonical_context_snapshot", "approved_features", "model_artifact", "read_only_metadata"],
+      "owned_outputs": ["strategy_signal_events", "strategy_explanation"],
+      "write_authority": ["append_only_strategy_signal_events"],
+      "execution_authority": {"observe": true, "recommend": true, "paper_trade": false, "risk_veto": false, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["feature_snapshot_ready", "strategy_schedule"],
+      "freshness_slo": {"class": "near_realtime", "max_age_seconds": 900},
+      "failure_behavior": {"class": "abstain", "default_action": "emit_no_signal_and_quarantine_invalid_model"},
+      "resource_budget": {"profile": "compute_bounded", "max_parallelism": 4, "memory_mb_soft": 2048},
+      "escalation_owner": "sleeve_manager",
+      "evidence_outputs": ["signal_provenance", "confidence_score", "regime_compatibility", "feature_receipt"],
+      "forbidden_actions": ["paper_submit", "live_submit", "set_risk_limit", "promote_candidate", "rewrite_truth"],
+      "allowed_actions": ["score_signal", "recommend_trade", "emit_health"]
+    },
+    {
+      "role_id": "sleeve_manager",
+      "display_name": "Sleeve Manager",
+      "tier": "decision_plane_sleeve",
+      "purpose": "Aggregate specialized strategy evidence within one mandate and emit bounded order intentions.",
+      "allowed_inputs": ["strategy_signal_events", "canonical_context_snapshot", "sleeve_policy", "risk_read_only_limits"],
+      "owned_outputs": ["sleeve_order_intents", "sleeve_consensus_evidence"],
+      "write_authority": ["append_only_sleeve_order_intents"],
+      "execution_authority": {"observe": true, "recommend": true, "paper_trade": false, "risk_veto": false, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["strategy_batch_ready", "sleeve_schedule"],
+      "freshness_slo": {"class": "near_realtime", "max_age_seconds": 900},
+      "failure_behavior": {"class": "abstain", "default_action": "abstain_when_diversity_or_confidence_is_insufficient"},
+      "resource_budget": {"profile": "compute_bounded", "max_parallelism": 2, "memory_mb_soft": 1024},
+      "escalation_owner": "master_coordinator",
+      "evidence_outputs": ["consensus_receipt", "diversity_score", "weight_cap_events"],
+      "forbidden_actions": ["paper_submit", "live_submit", "bypass_risk", "promote_candidate", "rewrite_truth"],
+      "allowed_actions": ["aggregate_signal", "allocate_shadow_weight", "emit_order_intent", "emit_health"]
+    },
+    {
+      "role_id": "master_coordinator",
+      "display_name": "Master Coordinator",
+      "tier": "decision_plane_master",
+      "purpose": "Rank sleeves and coordinate shadow or paper recommendations without bypassing governance.",
+      "allowed_inputs": ["sleeve_order_intents", "sleeve_evidence", "portfolio_context", "risk_read_only_limits"],
+      "owned_outputs": ["master_allocation_plan", "ranked_sleeve_recommendations"],
+      "write_authority": ["master_allocation_plan"],
+      "execution_authority": {"observe": true, "recommend": true, "paper_trade": false, "risk_veto": false, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["sleeve_consensus_ready", "allocation_cycle"],
+      "freshness_slo": {"class": "operational", "max_age_seconds": 1800},
+      "failure_behavior": {"class": "abstain", "default_action": "retain_last_safe_allocation_and_emit_no_new_intent"},
+      "resource_budget": {"profile": "control_plane", "max_parallelism": 1, "memory_mb_soft": 1024},
+      "escalation_owner": "grand_master_coordinator",
+      "evidence_outputs": ["allocation_receipt", "ranking_explanation", "constraint_report"],
+      "forbidden_actions": ["paper_submit", "live_submit", "bypass_risk", "self_promote", "rewrite_truth"],
+      "allowed_actions": ["rank_sleeves", "allocate_shadow_capital", "recommend_trade", "emit_health"]
+    },
+    {
+      "role_id": "grand_master_coordinator",
+      "display_name": "Grand Master Coordinator",
+      "tier": "decision_plane_global",
+      "purpose": "Coordinate global policy, resource allocation, and cross-sleeve priorities without granting execution authority.",
+      "allowed_inputs": ["master_allocation_plan", "portfolio_context", "system_health", "governance_policy"],
+      "owned_outputs": ["global_coordination_policy", "cross_sleeve_priority_packet"],
+      "write_authority": ["global_coordination_policy"],
+      "execution_authority": {"observe": true, "recommend": true, "paper_trade": false, "risk_veto": false, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["master_plan_ready", "global_policy_cycle"],
+      "freshness_slo": {"class": "operational", "max_age_seconds": 3600},
+      "failure_behavior": {"class": "escalate", "default_action": "freeze_new_allocations_and_require_operator_review"},
+      "resource_budget": {"profile": "control_plane", "max_parallelism": 1, "memory_mb_soft": 1024},
+      "escalation_owner": "operator",
+      "evidence_outputs": ["global_policy_receipt", "cross_sleeve_conflict_report", "resource_allocation_receipt"],
+      "forbidden_actions": ["paper_submit", "live_submit", "grant_execution_authority", "self_promote", "rewrite_truth"],
+      "allowed_actions": ["coordinate_policy", "rank_sleeves", "recommend_trade", "emit_health"]
+    },
+    {
+      "role_id": "risk_governance",
+      "display_name": "Risk and Governance",
+      "tier": "control_plane_risk",
+      "purpose": "Apply non-bypassable limits, approve or veto intentions, and fail closed on ambiguous risk state.",
+      "allowed_inputs": ["order_intents", "portfolio_truth", "risk_policy", "candidate_state", "system_health"],
+      "owned_outputs": ["risk_decision_state", "veto_events", "effective_risk_limits"],
+      "write_authority": ["risk_decision_state"],
+      "execution_authority": {"observe": true, "recommend": false, "paper_trade": false, "risk_veto": true, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["order_intent_received", "risk_state_changed", "halt_event"],
+      "freshness_slo": {"class": "realtime", "max_age_seconds": 15},
+      "failure_behavior": {"class": "fail_closed", "default_action": "deny_new_risk_and_preserve_verified_risk_reduction"},
+      "resource_budget": {"profile": "latency_sensitive", "max_parallelism": 1, "memory_mb_soft": 512},
+      "escalation_owner": "operator",
+      "evidence_outputs": ["risk_decision_receipt", "limit_snapshot", "veto_reason"],
+      "forbidden_actions": ["originate_signal", "paper_submit", "live_submit", "self_promote", "rewrite_truth"],
+      "allowed_actions": ["veto_trade", "set_risk_limit", "write_state", "emit_health"]
+    },
+    {
+      "role_id": "promotion_governance",
+      "display_name": "Promotion Governance",
+      "tier": "control_plane_promotion",
+      "purpose": "Evaluate candidate evidence and record promotion state while preserving explicit human live approval.",
+      "allowed_inputs": ["candidate_evidence", "paper_truth", "risk_clearance", "operator_approval"],
+      "owned_outputs": ["production_candidate_state", "promotion_decision_receipt"],
+      "write_authority": ["production_candidate_state"],
+      "execution_authority": {"observe": true, "recommend": true, "paper_trade": false, "risk_veto": false, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["candidate_change", "promotion_review", "operator_approval"],
+      "freshness_slo": {"class": "operational", "max_age_seconds": 3600},
+      "failure_behavior": {"class": "fail_closed", "default_action": "hold_candidate_and_deny_promotion"},
+      "resource_budget": {"profile": "control_plane", "max_parallelism": 1, "memory_mb_soft": 512},
+      "escalation_owner": "operator",
+      "evidence_outputs": ["candidate_event_chain", "promotion_gate_receipt", "scope_fingerprints"],
+      "forbidden_actions": ["paper_submit", "live_submit", "self_approve_live", "rewrite_truth"],
+      "allowed_actions": ["promote_candidate", "write_candidate_state", "publish_evidence", "emit_health"]
+    },
+    {
+      "role_id": "paper_execution_gateway",
+      "display_name": "Paper Execution Gateway",
+      "tier": "execution_plane_paper",
+      "purpose": "Consume approved paper intentions and produce simulated broker-faithful executions.",
+      "allowed_inputs": ["risk_approved_paper_intents", "paper_broker_state", "execution_policy"],
+      "owned_outputs": ["paper_execution_attempts", "paper_fill_events"],
+      "write_authority": ["paper_order_submission"],
+      "execution_authority": {"observe": true, "recommend": false, "paper_trade": true, "risk_veto": false, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["approved_paper_intent"],
+      "freshness_slo": {"class": "realtime", "max_age_seconds": 30},
+      "failure_behavior": {"class": "fail_closed", "default_action": "reject_or_defer_paper_intent_and_record_reason"},
+      "resource_budget": {"profile": "latency_sensitive", "max_parallelism": 1, "memory_mb_soft": 768},
+      "escalation_owner": "risk_governance",
+      "evidence_outputs": ["paper_order_receipt", "simulated_fill_receipt", "execution_realism_metrics"],
+      "forbidden_actions": ["originate_signal", "live_submit", "promote_candidate", "rewrite_truth"],
+      "allowed_actions": ["paper_submit", "record_execution_attempt", "emit_health"]
+    },
+    {
+      "role_id": "live_execution_gateway",
+      "display_name": "Live Execution Gateway",
+      "tier": "execution_plane_live",
+      "purpose": "Act as the sole live order writer after every candidate, risk, account, and allowlist gate clears.",
+      "allowed_inputs": ["risk_approved_live_intents", "candidate_bound_allowlist", "pinned_account", "broker_state"],
+      "owned_outputs": ["live_order_attempts", "broker_submission_receipts"],
+      "write_authority": ["live_order_submission"],
+      "execution_authority": {"observe": true, "recommend": false, "paper_trade": false, "risk_veto": false, "live_submit": true, "automatic_promotion": false},
+      "triggers": ["explicitly_approved_live_intent"],
+      "freshness_slo": {"class": "realtime", "max_age_seconds": 15},
+      "failure_behavior": {"class": "fail_closed", "default_action": "reject_submission_except_verified_risk_reducing_exit"},
+      "resource_budget": {"profile": "latency_sensitive", "max_parallelism": 1, "memory_mb_soft": 768},
+      "escalation_owner": "risk_governance",
+      "evidence_outputs": ["firewall_decision_receipt", "broker_submission_receipt", "candidate_binding_receipt"],
+      "forbidden_actions": ["originate_signal", "grant_live_authority", "promote_candidate", "rewrite_truth"],
+      "allowed_actions": ["live_submit", "record_execution_attempt", "emit_health"]
+    },
+    {
+      "role_id": "truth_reconciliation",
+      "display_name": "Truth and Reconciliation",
+      "tier": "truth_plane",
+      "purpose": "Record append-only execution facts and reconcile broker, account, position, and fill state.",
+      "allowed_inputs": ["execution_attempts", "broker_receipts", "account_positions", "fill_events"],
+      "owned_outputs": ["execution_truth", "reconciliation_state", "position_truth"],
+      "write_authority": ["execution_truth"],
+      "execution_authority": {"observe": true, "recommend": false, "paper_trade": false, "risk_veto": false, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["execution_event", "broker_reconcile_cycle", "account_snapshot"],
+      "freshness_slo": {"class": "near_realtime", "max_age_seconds": 300},
+      "failure_behavior": {"class": "fail_closed", "default_action": "mark_truth_unreconciled_and_block_promotion_or_new_live_risk"},
+      "resource_budget": {"profile": "control_plane", "max_parallelism": 1, "memory_mb_soft": 1024},
+      "escalation_owner": "risk_governance",
+      "evidence_outputs": ["reconciliation_receipt", "immutable_fill_identity", "position_diff"],
+      "forbidden_actions": ["originate_signal", "paper_submit", "live_submit", "rewrite_truth", "promote_candidate"],
+      "allowed_actions": ["record_truth", "reconcile_broker", "emit_health"]
+    },
+    {
+      "role_id": "infrastructure_maintainer",
+      "display_name": "Infrastructure Maintainer",
+      "tier": "operations_plane_repair",
+      "purpose": "Maintain runtime, storage, freshness, and process health through bounded, auditable repairs.",
+      "allowed_inputs": ["health_artifacts", "repair_requests", "resource_pressure", "operator_policy"],
+      "owned_outputs": ["repair_events", "infrastructure_state", "process_lifecycle"],
+      "write_authority": ["declared_infrastructure_state_domains_only"],
+      "execution_authority": {"observe": true, "recommend": false, "paper_trade": false, "risk_veto": false, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["health_violation", "scheduled_maintenance", "operator_command"],
+      "freshness_slo": {"class": "operational", "max_age_seconds": 900},
+      "failure_behavior": {"class": "bounded_repair", "default_action": "retry_with_cooldown_then_open_circuit_and_escalate"},
+      "resource_budget": {"profile": "control_plane", "max_parallelism": 2, "memory_mb_soft": 1024},
+      "escalation_owner": "operator",
+      "evidence_outputs": ["repair_receipt", "before_after_health", "action_lease_receipt"],
+      "forbidden_actions": ["change_trade_logic", "originate_signal", "paper_submit", "live_submit", "promote_candidate", "rewrite_truth"],
+      "allowed_actions": ["restart_process", "repair_infrastructure", "manage_storage", "manage_artifact_lifecycle", "write_state", "emit_health"]
+    },
+    {
+      "role_id": "observability_reporter",
+      "display_name": "Observability Reporter",
+      "tier": "operations_plane_reporting",
+      "purpose": "Render canonical facts and grades without mutating the facts being reported.",
+      "allowed_inputs": ["canonical_health_artifacts", "execution_truth", "candidate_state", "role_contract_state"],
+      "owned_outputs": ["canonical_health_reporting", "operator_dashboard", "system_self_model"],
+      "write_authority": ["reporting_views_only"],
+      "execution_authority": {"observe": true, "recommend": false, "paper_trade": false, "risk_veto": false, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["health_refresh", "operator_request", "scheduled_report"],
+      "freshness_slo": {"class": "near_realtime", "max_age_seconds": 600},
+      "failure_behavior": {"class": "fail_closed", "default_action": "mark_view_stale_and_preserve_source_status"},
+      "resource_budget": {"profile": "io_light", "max_parallelism": 2, "memory_mb_soft": 1024},
+      "escalation_owner": "infrastructure_maintainer",
+      "evidence_outputs": ["source_receipt_set", "grade_explanation", "artifact_age_matrix"],
+      "forbidden_actions": ["invent_truth", "repair_source_state", "paper_submit", "live_submit", "promote_candidate", "rewrite_truth"],
+      "allowed_actions": ["report_health", "publish_dashboard", "emit_health"]
+    },
+    {
+      "role_id": "training_research",
+      "display_name": "Training and Research",
+      "tier": "operations_plane_training",
+      "purpose": "Train and evaluate candidate models under single-flight, resource, lineage, and holdout controls.",
+      "allowed_inputs": ["approved_training_dataset", "labels", "feature_schema", "training_policy"],
+      "owned_outputs": ["model_candidates", "training_evidence", "lineage_receipts"],
+      "write_authority": ["training_model_artifacts"],
+      "execution_authority": {"observe": true, "recommend": true, "paper_trade": false, "risk_veto": false, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["approved_training_window", "targeted_retrain_request"],
+      "freshness_slo": {"class": "daily", "max_age_seconds": 259200},
+      "failure_behavior": {"class": "abstain", "default_action": "retain_champion_and_quarantine_failed_candidate"},
+      "resource_budget": {"profile": "single_flight_heavy", "max_parallelism": 1, "memory_mb_soft": 8192},
+      "escalation_owner": "evaluation_auditor",
+      "evidence_outputs": ["training_lineage", "holdout_metrics", "resource_usage_receipt"],
+      "forbidden_actions": ["self_promote", "paper_submit", "live_submit", "rewrite_truth", "mutate_holdout"],
+      "allowed_actions": ["train_model", "publish_model_candidate", "emit_health"]
+    },
+    {
+      "role_id": "evaluation_auditor",
+      "display_name": "Evaluation and Audit",
+      "tier": "operations_plane_evaluation",
+      "purpose": "Validate organization, evidence, capabilities, authority, and model quality without granting execution.",
+      "allowed_inputs": ["registry", "candidate_evidence", "control_surfaces", "role_contracts", "model_metrics"],
+      "owned_outputs": ["evaluation_evidence", "organization_metadata", "authority_health"],
+      "write_authority": ["evaluation_and_metadata_views_only"],
+      "execution_authority": {"observe": true, "recommend": true, "paper_trade": false, "risk_veto": false, "live_submit": false, "automatic_promotion": false},
+      "triggers": ["candidate_change", "daily_verify", "policy_change", "operator_request"],
+      "freshness_slo": {"class": "operational", "max_age_seconds": 3600},
+      "failure_behavior": {"class": "fail_closed", "default_action": "block_affected_promotion_and_publish_exact_contract_failure"},
+      "resource_budget": {"profile": "compute_bounded", "max_parallelism": 2, "memory_mb_soft": 2048},
+      "escalation_owner": "promotion_governance",
+      "evidence_outputs": ["validation_receipt", "coverage_report", "conflict_report"],
+      "forbidden_actions": ["paper_submit", "live_submit", "self_promote", "rewrite_truth", "repair_runtime_directly"],
+      "allowed_actions": ["validate_evidence", "validate_authority", "classify_bot", "publish_evidence", "emit_health"]
+    }
+  ],
+  "components": [
+    {"component_id": "collector_runtime", "role_id": "data_collector", "source_paths": ["scripts/run_shadow_training_loop.py", "core/registry_backed_collection_bot.py"], "allowed_actions": ["collect_data", "append_observation", "emit_health"], "state_domains": ["raw_observation_events"]},
+    {"component_id": "context_mesh", "role_id": "context_processor", "source_paths": ["scripts/collect_decision_context_mesh.py", "core/decision_context_mesh.py"], "allowed_actions": ["normalize_context", "publish_context", "emit_health"], "state_domains": ["canonical_context_snapshot"]},
+    {"component_id": "strategy_fleet", "role_id": "strategy_bot", "source_paths": ["core/bot_catalog.json", "master_bot_registry.json"], "allowed_actions": ["score_signal", "recommend_trade", "emit_health"], "state_domains": ["strategy_signal_events"]},
+    {"component_id": "sleeve_ensemble", "role_id": "sleeve_manager", "source_paths": ["core/hierarchical_ensemble.py", "scripts/run_all_sleeves.py"], "allowed_actions": ["aggregate_signal", "allocate_shadow_weight", "emit_order_intent", "emit_health"], "state_domains": ["sleeve_order_intents"]},
+    {"component_id": "master_coordinator", "role_id": "master_coordinator", "source_paths": ["core/master_bot.py", "scripts/run_master_bot.py"], "allowed_actions": ["rank_sleeves", "allocate_shadow_capital", "recommend_trade", "emit_health"], "state_domains": ["master_allocation_plan"]},
+    {"component_id": "grand_master_coordinator", "role_id": "grand_master_coordinator", "source_paths": ["core/master_grandmaster_evidence.py", "scripts/ops/master_grandmaster_profitability_trainer.py"], "allowed_actions": ["coordinate_policy", "rank_sleeves", "recommend_trade", "emit_health"], "state_domains": ["global_coordination_policy"]},
+    {"component_id": "risk_governance_controller", "role_id": "risk_governance", "source_paths": ["core/risk_engine.py", "scripts/global_risk_killswitch.py", "scripts/ops/profitability_evidence_firewall.py"], "allowed_actions": ["veto_trade", "set_risk_limit", "write_state", "emit_health"], "state_domains": ["risk_decision_state"]},
+    {"component_id": "paper_execution_gateway", "role_id": "paper_execution_gateway", "source_paths": ["scripts/run_execution_lane.py", "core/base_trader.py"], "allowed_actions": ["paper_submit", "record_execution_attempt", "emit_health"], "state_domains": ["paper_order_submission"]},
+    {"component_id": "live_execution_gateway", "role_id": "live_execution_gateway", "source_paths": ["scripts/run_execution_lane.py", "core/base_trader.py", "core/live_execution_controls.py"], "allowed_actions": ["live_submit", "record_execution_attempt", "emit_health"], "state_domains": ["live_order_submission"]},
+    {"component_id": "execution_truth_ledger", "role_id": "truth_reconciliation", "source_paths": ["core/live_order_ledger.py", "core/live_canary_graduation.py", "scripts/ops/live_canary_closeout.py", "scripts/ops/paper_execution_truth_layer.py", "scripts/ops/runtime_paper_regression_guard.py"], "allowed_actions": ["record_truth", "reconcile_broker", "emit_health"], "state_domains": ["execution_truth"]},
+    {"component_id": "process_restart_controller", "role_id": "infrastructure_maintainer", "source_paths": ["scripts/ops/process_watchdog.py", "scripts/shadow_watchdog.py"], "allowed_actions": ["restart_process", "repair_infrastructure", "emit_health"], "state_domains": ["process_lifecycle"]},
+    {"component_id": "storage_lifecycle_controller", "role_id": "infrastructure_maintainer", "source_paths": ["scripts/ops/local_storage_reserve_guard.py", "scripts/ops/storage_disaster_recovery.py"], "source_patterns": ["scripts/ops/*storage*.py"], "allowed_actions": ["manage_storage", "repair_infrastructure", "write_state", "emit_health"], "state_domains": ["storage_lifecycle"]},
+    {"component_id": "soak_reliability_controller", "role_id": "infrastructure_maintainer", "source_paths": ["scripts/ops/soak_reliability_sentinel.py", "scripts/ops/soak_self_healing_control.py"], "allowed_actions": ["repair_infrastructure", "write_state", "emit_health"], "state_domains": ["soak_reliability_state"]},
+    {"component_id": "artifact_lifecycle_controller", "role_id": "infrastructure_maintainer", "source_paths": ["scripts/ops/artifact_freshness_slo.py"], "allowed_actions": ["manage_artifact_lifecycle", "emit_health"], "state_domains": ["artifact_freshness_state"]},
+    {"component_id": "production_resilience_controller", "role_id": "infrastructure_maintainer", "source_paths": ["scripts/ops/production_resilience_control.py"], "allowed_actions": ["repair_infrastructure", "write_state", "emit_health"], "state_domains": ["production_resilience_state"]},
+    {"component_id": "observability_reporter", "role_id": "observability_reporter", "source_paths": ["scripts/observability_exporter.py", "scripts/ops/runtime_gate_dashboard.py", "scripts/ops/system_self_model.py"], "allowed_actions": ["report_health", "publish_dashboard", "emit_health"], "state_domains": ["canonical_health_reporting"]},
+    {"component_id": "bot_organization_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/bot_organization_control.py"], "allowed_actions": ["classify_bot", "publish_evidence", "emit_health"], "state_domains": ["bot_organization_metadata"]},
+    {"component_id": "collector_capability_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/capability_materialization_control.py", "scripts/ops/collector_capability_control.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["collector_capability_metadata"]},
+    {"component_id": "strategy_quality_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/bot_profitability_scalability_control.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["strategy_quality_evidence"]},
+    {"component_id": "master_grandmaster_evidence_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/master_grandmaster_evidence_control.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["master_grandmaster_evidence"]},
+    {"component_id": "investor_readiness_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/investor_readiness_control.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["investor_readiness_evidence"]},
+    {"component_id": "training_orchestrator", "role_id": "training_research", "source_paths": ["scripts/weekly_retrain.py", "scripts/retrain_orchestrator.py"], "allowed_actions": ["train_model", "publish_model_candidate", "emit_health"], "state_domains": ["training_model_artifacts"]},
+    {"component_id": "production_candidate_controller", "role_id": "promotion_governance", "source_paths": ["scripts/ops/production_excellence_control.py", "scripts/ops/release_freeze_guard.py"], "allowed_actions": ["promote_candidate", "write_candidate_state", "publish_evidence", "emit_health"], "state_domains": ["production_candidate_state"]},
+    {"component_id": "source_integrity_guard", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/source_mutation_guard.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["source_integrity_evidence"]},
+    {"component_id": "system_role_contract_controller", "role_id": "evaluation_auditor", "source_paths": ["core/system_role_contracts.py", "scripts/ops/system_role_contract_control.py"], "allowed_actions": ["validate_authority", "publish_evidence", "emit_health"], "state_domains": ["system_role_contract_health"]},
+    {"component_id": "sleeve_strategy_specialization_controller", "role_id": "evaluation_auditor", "source_paths": ["core/sleeve_strategy_specialization.py", "scripts/sleeve_strategy_specialization_report.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["sleeve_strategy_specialization_evidence"]},
+    {"component_id": "profitability_adversarial_drill_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/profitability_adversarial_drill.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["profitability_adversarial_drill_evidence"]},
+    {"component_id": "paper_behavior_intervention_drill_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/paper_behavior_intervention_drill.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["paper_behavior_intervention_drill_evidence"]},
+    {"component_id": "trading_behavior_drill_program_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/trading_behavior_drill_program.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["trading_behavior_drill_program_evidence"]},
+    {"component_id": "paper_profitability_runtime_controller", "role_id": "risk_governance", "source_paths": ["core/paper_behavior_interventions.py", "scripts/ops/paper_profitability_control.py"], "allowed_actions": ["set_risk_limit", "write_state", "emit_health"], "state_domains": ["paper_profitability_runtime_control"]},
+    {"component_id": "live_canary_boundary_controller", "role_id": "promotion_governance", "source_paths": ["core/live_canary_preflight.py", "scripts/ops/live_canary_preflight.py"], "allowed_actions": ["publish_evidence", "emit_health"], "state_domains": ["live_canary_operator_boundary"]},
+    {"component_id": "live_canary_evidence_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/live_canary_dress_rehearsal.py", "scripts/ops/live_canary_graduation.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["live_canary_dress_rehearsal_evidence", "live_canary_graduation_evidence"]},
+    {"component_id": "schwab_account_binding_controller", "role_id": "evaluation_auditor", "source_paths": ["scripts/ops/schwab_account_hash_keychain_sync.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["schwab_account_binding_evidence"]},
+    {"component_id": "sleeve_scalability_selector_controller", "role_id": "evaluation_auditor", "source_paths": ["core/sleeve_scalability_selector.py", "scripts/ops/sleeve_scalability_selector.py"], "allowed_actions": ["validate_evidence", "publish_evidence", "emit_health"], "state_domains": ["sleeve_scalability_advice"]}
+  ],
+  "state_domains": [
+    {"domain_id": "raw_observation_events", "writer_component_id": "collector_runtime", "required_action": "append_observation", "resource_patterns": ["logs/shadow/**/*.jsonl"], "reader_roles": ["context_processor", "evaluation_auditor"]},
+    {"domain_id": "canonical_context_snapshot", "writer_component_id": "context_mesh", "required_action": "publish_context", "resource_patterns": ["governance/context/*_latest.json"], "reader_roles": ["strategy_bot", "sleeve_manager", "evaluation_auditor"]},
+    {"domain_id": "strategy_signal_events", "writer_component_id": "strategy_fleet", "required_action": "score_signal", "resource_patterns": ["governance/signals/**/*.jsonl"], "reader_roles": ["sleeve_manager", "evaluation_auditor"]},
+    {"domain_id": "sleeve_order_intents", "writer_component_id": "sleeve_ensemble", "required_action": "emit_order_intent", "resource_patterns": ["governance/execution_intents/sleeve_*.jsonl"], "reader_roles": ["master_coordinator", "risk_governance"]},
+    {"domain_id": "master_allocation_plan", "writer_component_id": "master_coordinator", "required_action": "allocate_shadow_capital", "resource_patterns": ["governance/master/master_allocation_latest.json"], "reader_roles": ["grand_master_coordinator", "risk_governance"]},
+    {"domain_id": "global_coordination_policy", "writer_component_id": "grand_master_coordinator", "required_action": "coordinate_policy", "resource_patterns": ["governance/master/global_coordination_latest.json"], "reader_roles": ["risk_governance", "observability_reporter"]},
+    {"domain_id": "risk_decision_state", "writer_component_id": "risk_governance_controller", "required_action": "write_state", "resource_patterns": ["governance/runtime/risk_decision_state.json"], "reader_roles": ["paper_execution_gateway", "live_execution_gateway", "truth_reconciliation"]},
+    {"domain_id": "paper_order_submission", "writer_component_id": "paper_execution_gateway", "required_action": "paper_submit", "resource_patterns": ["governance/execution/paper_order_attempts_*.jsonl"], "reader_roles": ["truth_reconciliation", "evaluation_auditor"]},
+    {"domain_id": "live_order_submission", "writer_component_id": "live_execution_gateway", "required_action": "live_submit", "resource_patterns": ["governance/execution/live_order_attempts_*.jsonl"], "reader_roles": ["truth_reconciliation", "risk_governance", "evaluation_auditor"]},
+    {"domain_id": "execution_truth", "writer_component_id": "execution_truth_ledger", "required_action": "record_truth", "resource_patterns": ["governance/runtime/live_order_ledger.sqlite3", "governance/health/paper_execution_truth_layer_latest.json", "governance/health/runtime_paper_regression_guard_latest.json", "governance/health/live_canary_closeout_latest.json", "governance/evidence/live_canary_closeout_receipts.jsonl"], "reader_roles": ["risk_governance", "promotion_governance", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "process_lifecycle", "writer_component_id": "process_restart_controller", "required_action": "restart_process", "resource_patterns": ["governance/health/process_watchdog_state.json", "governance/watchdog/watchdog_events_*.jsonl"], "reader_roles": ["infrastructure_maintainer", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "storage_lifecycle", "writer_component_id": "storage_lifecycle_controller", "required_action": "manage_storage", "resource_patterns": ["governance/health/storage_disaster_recovery_state.json", "config/.env.local_storage_reserve_override"], "reader_roles": ["infrastructure_maintainer", "observability_reporter"]},
+    {"domain_id": "soak_reliability_state", "writer_component_id": "soak_reliability_controller", "required_action": "write_state", "resource_patterns": ["governance/runtime/soak_reliability_sentinel_state.json", "governance/health/soak_self_healing_state.json"], "reader_roles": ["infrastructure_maintainer", "observability_reporter", "promotion_governance"]},
+    {"domain_id": "artifact_freshness_state", "writer_component_id": "artifact_lifecycle_controller", "required_action": "manage_artifact_lifecycle", "resource_patterns": ["governance/health/artifact_freshness_slo_latest.json"], "reader_roles": ["infrastructure_maintainer", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "production_resilience_state", "writer_component_id": "production_resilience_controller", "required_action": "write_state", "resource_patterns": ["governance/health/production_resilience_control_latest.json"], "reader_roles": ["infrastructure_maintainer", "observability_reporter", "promotion_governance"]},
+    {"domain_id": "canonical_health_reporting", "writer_component_id": "observability_reporter", "required_action": "publish_dashboard", "resource_patterns": ["governance/health/runtime_gate_dashboard_latest.json", "governance/health/system_self_model_latest.json", "governance/health/independent_runtime_monitor_latest.json"], "reader_roles": ["operator", "grand_master_coordinator", "risk_governance", "promotion_governance"]},
+    {"domain_id": "bot_organization_metadata", "writer_component_id": "bot_organization_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/bot_organization_latest.json", "governance/bot_organization/bot_hierarchy_latest.json"], "reader_roles": ["sleeve_manager", "master_coordinator", "evaluation_auditor"]},
+    {"domain_id": "collector_capability_metadata", "writer_component_id": "collector_capability_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/collector_capabilities/materialized_capabilities_latest.json", "governance/health/collector_capability_control_latest.json", "governance/collector_capabilities/bot_subscriptions_latest.json"], "reader_roles": ["data_collector", "context_processor", "evaluation_auditor"]},
+    {"domain_id": "strategy_quality_evidence", "writer_component_id": "strategy_quality_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/bot_profitability_scalability_latest.json", "governance/bot_organization/bot_profitability_scalability_latest.json"], "reader_roles": ["master_coordinator", "promotion_governance", "evaluation_auditor"]},
+    {"domain_id": "master_grandmaster_evidence", "writer_component_id": "master_grandmaster_evidence_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/master_grandmaster_evidence_v2_latest.json", "governance/master_grandmaster/evidence_packets_v2_latest.json"], "reader_roles": ["grand_master_coordinator", "promotion_governance", "observability_reporter"]},
+    {"domain_id": "investor_readiness_evidence", "writer_component_id": "investor_readiness_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/investor_readiness_control_latest.json", "exports/reports/operator/investor_readiness_packet_latest.md", "exports/reports/investor/paper_performance_tear_sheet_latest.md", "exports/investor_data_room/index_latest.json", "exports/investor_data_room/README_latest.md"], "reader_roles": ["operator", "promotion_governance", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "training_model_artifacts", "writer_component_id": "training_orchestrator", "required_action": "train_model", "resource_patterns": ["models/**/*.npz", "governance/training_diagnostics/*_latest.json"], "reader_roles": ["strategy_bot", "evaluation_auditor", "promotion_governance"]},
+    {"domain_id": "production_candidate_state", "writer_component_id": "production_candidate_controller", "required_action": "write_candidate_state", "resource_patterns": ["governance/runtime/production_candidate_state.json", "governance/runtime/release_freeze_window.json"], "reader_roles": ["risk_governance", "live_execution_gateway", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "source_integrity_evidence", "writer_component_id": "source_integrity_guard", "required_action": "publish_evidence", "resource_patterns": ["governance/health/source_mutation_guard_latest.json"], "reader_roles": ["operator", "promotion_governance", "infrastructure_maintainer", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "system_role_contract_health", "writer_component_id": "system_role_contract_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/system_role_contract_latest.json"], "reader_roles": ["operator", "infrastructure_maintainer", "observability_reporter", "promotion_governance"]},
+    {"domain_id": "sleeve_strategy_specialization_evidence", "writer_component_id": "sleeve_strategy_specialization_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/research/sleeve_strategy_specialization_latest.json", "governance/research/sleeve_strategy_contracts_latest.json", "governance/research/sleeve_strategy_library_latest.json", "governance/research/sleeve_strategy_families_latest.json"], "reader_roles": ["strategy_bot", "sleeve_manager", "master_coordinator", "promotion_governance", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "profitability_adversarial_drill_evidence", "writer_component_id": "profitability_adversarial_drill_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/research/profitability_adversarial_drill_latest.json"], "reader_roles": ["operator", "strategy_bot", "sleeve_manager", "master_coordinator", "promotion_governance", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "paper_behavior_intervention_drill_evidence", "writer_component_id": "paper_behavior_intervention_drill_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/research/paper_behavior_intervention_drill_latest.json"], "reader_roles": ["operator", "strategy_bot", "sleeve_manager", "master_coordinator", "risk_governance", "promotion_governance", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "trading_behavior_drill_program_evidence", "writer_component_id": "trading_behavior_drill_program_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/research/trading_behavior_drill_program_latest.json", "governance/research/trading_behavior_drill_runs/*.json"], "reader_roles": ["operator", "strategy_bot", "sleeve_manager", "master_coordinator", "risk_governance", "promotion_governance", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "paper_profitability_runtime_control", "writer_component_id": "paper_profitability_runtime_controller", "required_action": "write_state", "resource_patterns": ["governance/health/paper_runtime_profitability_controls_latest.json"], "reader_roles": ["strategy_bot", "sleeve_manager", "master_coordinator", "grand_master_coordinator", "paper_execution_gateway", "risk_governance", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "live_canary_operator_boundary", "writer_component_id": "live_canary_boundary_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/runtime/live_canary_operator_attestation.json", "governance/runtime/live_canary_allowlist.json"], "reader_roles": ["operator", "risk_governance", "live_execution_gateway", "promotion_governance", "truth_reconciliation", "evaluation_auditor"]},
+    {"domain_id": "live_canary_dress_rehearsal_evidence", "writer_component_id": "live_canary_evidence_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/live_canary_dress_rehearsal_latest.json"], "reader_roles": ["operator", "risk_governance", "promotion_governance", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "live_canary_graduation_evidence", "writer_component_id": "live_canary_evidence_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/live_canary_graduation_latest.json"], "reader_roles": ["operator", "master_coordinator", "risk_governance", "promotion_governance", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "schwab_account_binding_evidence", "writer_component_id": "schwab_account_binding_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/schwab_account_hash_keychain_sync_latest.json"], "reader_roles": ["operator", "risk_governance", "promotion_governance", "observability_reporter", "evaluation_auditor"]},
+    {"domain_id": "sleeve_scalability_advice", "writer_component_id": "sleeve_scalability_selector_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/sleeve_scalability_selector_latest.json"], "reader_roles": ["operator", "master_coordinator", "risk_governance", "promotion_governance", "observability_reporter", "evaluation_auditor"]}
+  ],
+  "registry_role_bindings": {
+    "signal_sub_bot": "strategy_bot",
+    "options_sub_bot": "strategy_bot",
+    "futures_sub_bot": "strategy_bot",
+    "macro_sub_bot": "strategy_bot",
+    "crypto_sub_bot": "strategy_bot",
+    "infrastructure_bot": "infrastructure_maintainer",
+    "infrastructure_sub_bot": "infrastructure_maintainer"
+  },
+  "control_surface_bindings": {
+    "local_storage_reserve_override": "storage_lifecycle_controller",
+    "soak_reliability_sentinel_state": "soak_reliability_controller",
+    "soak_self_healing_state": "soak_reliability_controller",
+    "live_order_ledger": "execution_truth_ledger",
+    "storage_disaster_recovery_state": "storage_lifecycle_controller",
+    "runtime_paper_regression_truth": "execution_truth_ledger",
+    "paper_execution_truth": "execution_truth_ledger",
+    "profitability_evidence_firewall": "risk_governance_controller",
+    "artifact_freshness_slo": "artifact_lifecycle_controller",
+    "production_candidate_state": "production_candidate_controller",
+    "production_candidate_event_chain": "production_candidate_controller",
+    "source_mutation_guard_evidence": "source_integrity_guard",
+    "release_freeze_window": "production_candidate_controller",
+    "independent_runtime_monitor": "observability_reporter",
+    "production_resilience_control": "production_resilience_controller",
+    "bot_organization_health": "bot_organization_controller",
+    "bot_hierarchy_catalog": "bot_organization_controller",
+    "collector_capability_materialization": "collector_capability_controller",
+    "collector_capability_health": "collector_capability_controller",
+    "collector_capability_bot_subscriptions": "collector_capability_controller",
+    "bot_profitability_scalability_health": "strategy_quality_controller",
+    "bot_profitability_scalability_manifest": "strategy_quality_controller",
+    "master_grandmaster_evidence_v2_health": "master_grandmaster_evidence_controller",
+    "master_grandmaster_evidence_v2_packets": "master_grandmaster_evidence_controller",
+    "investor_readiness_health": "investor_readiness_controller",
+    "investor_readiness_packet": "investor_readiness_controller",
+    "investor_paper_tear_sheet": "investor_readiness_controller",
+    "investor_data_room_index": "investor_readiness_controller",
+    "investor_data_room_readme": "investor_readiness_controller",
+    "system_role_contract_health": "system_role_contract_controller",
+    "sleeve_strategy_specialization_health": "sleeve_strategy_specialization_controller",
+    "sleeve_strategy_contract_registry": "sleeve_strategy_specialization_controller",
+    "sleeve_strategy_library_registry": "sleeve_strategy_specialization_controller",
+    "sleeve_strategy_family_registry": "sleeve_strategy_specialization_controller",
+    "profitability_adversarial_drill_evidence": "profitability_adversarial_drill_controller",
+    "paper_behavior_intervention_drill_evidence": "paper_behavior_intervention_drill_controller",
+    "trading_behavior_drill_program_evidence": "trading_behavior_drill_program_controller",
+    "paper_profitability_runtime_control": "paper_profitability_runtime_controller",
+    "live_canary_operator_attestation": "live_canary_boundary_controller",
+    "live_canary_candidate_allowlist": "live_canary_boundary_controller",
+    "schwab_account_hash_keychain_sync_health": "schwab_account_binding_controller",
+    "live_canary_connected_dress_rehearsal_health": "live_canary_evidence_controller",
+    "live_canary_graduation_health": "live_canary_evidence_controller",
+    "live_canary_closeout_health": "execution_truth_ledger",
+    "live_canary_closeout_receipts": "execution_truth_ledger",
+    "sleeve_scalability_selector_health": "sleeve_scalability_selector_controller"
+  },
+  "exclusive_action_owners": {
+    "paper_submit": "paper_execution_gateway",
+    "live_submit": "live_execution_gateway",
+    "veto_trade": "risk_governance_controller",
+    "record_truth": "execution_truth_ledger",
+    "restart_process": "process_restart_controller",
+    "manage_storage": "storage_lifecycle_controller",
+    "publish_dashboard": "observability_reporter",
+    "promote_candidate": "production_candidate_controller",
+    "write_candidate_state": "production_candidate_controller"
+  },
+  "action_leases": {
+    "restart_process": {"required": true, "path": "governance/locks/process_restart_authority.lock"},
+    "paper_submit": {"required": true, "path": "governance/locks/paper_order_submission_authority.lock"},
+    "live_submit": {"required": true, "path": "governance/locks/live_order_submission_authority.lock"},
+    "promote_candidate": {"required": true, "path": "governance/locks/production_candidate_authority.lock"},
+    "write_candidate_state": {"required": true, "path": "governance/locks/production_candidate_authority.lock"}
+  },
+  "safety_contract": {
+    "single_writer_state_domains": true,
+    "fail_closed_unknown_actions": true,
+    "explicit_execution_authority": true,
+    "sensitive_action_leases": true,
+    "role_self_escalation": false,
+    "automatic_live_authority_grant": false,
+    "automatic_promotion_authority": false,
+    "truth_rewrite_authority": false,
+    "profitability_guaranteed": false
+  }
+}

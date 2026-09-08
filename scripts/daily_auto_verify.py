@@ -66,6 +66,8 @@ PROGRESS_PATH = PROJECT_ROOT / "governance" / "health" / "daily_auto_verify_prog
 STALE_PROGRESS_MAX_AGE_SECONDS = int(os.getenv("DAILY_AUTO_VERIFY_STALE_PROGRESS_MAX_AGE_SECONDS", "7200"))
 NON_OPERATIONAL_EVIDENCE_CHECKS = {
     "snapshot_coverage_sentinel",
+    "snapshot_coverage_training",
+    "paper_replay_training",
     "feature_store_manifest",
     "retrain_schema_compatibility_guard",
     "promotion_packet_builder",
@@ -86,9 +88,11 @@ DEFAULT_FRESHNESS_FILE_GROUPS = [
         PROJECT_ROOT / "governance" / "health" / "sql_link_service_latest.json",
     ],
     [PROJECT_ROOT / "governance" / "health" / "snapshot_coverage_latest.json"],
+    [PROJECT_ROOT / "governance" / "health" / "snapshot_coverage_training_latest.json"],
     [PROJECT_ROOT / "governance" / "health" / "live_reconciliation_slo_latest.json"],
     [PROJECT_ROOT / "governance" / "health" / "promotion_quality_gate_latest.json"],
     [PROJECT_ROOT / "governance" / "health" / "paper_replay_drill_latest.json"],
+    [PROJECT_ROOT / "governance" / "health" / "paper_replay_training_latest.json"],
     [PROJECT_ROOT / "governance" / "health" / "paper_reconciliation_slo_latest.json"],
     [PROJECT_ROOT / "governance" / "health" / "replay_hash_registry_guard_latest.json"],
     [PROJECT_ROOT / "governance" / "health" / "paper_execution_calibration_latest.json"],
@@ -632,6 +636,7 @@ def _timeout_for_check(name: str, slow_timeout_sec: int) -> int:
     slow_names = {
         "daily_runtime_summary",
         "snapshot_coverage_sentinel",
+        "snapshot_coverage_training",
         "guardrail_triprate_sentinel",
         "execution_queue_stress_bot",
         "state_snapshot_drill",
@@ -750,6 +755,19 @@ def main() -> int:
             ("daily_runtime_summary", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "daily_runtime_summary.py"), "--day", day, "--json"], 5000),
             ("replay_preopen_sanity", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "replay_preopen_sanity_check.py"), "--hours", "24", "--json"], 5000),
             ("snapshot_coverage_sentinel", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "snapshot_coverage_sentinel.py"), "--json"], 5000),
+            (
+                "snapshot_coverage_training",
+                [
+                    str(VENV_PY),
+                    str(PROJECT_ROOT / "scripts" / "snapshot_coverage_sentinel.py"),
+                    "--hours",
+                    "24",
+                    "--out-file",
+                    str(PROJECT_ROOT / "governance" / "health" / "snapshot_coverage_training_latest.json"),
+                    "--json",
+                ],
+                5000,
+            ),
             ("schema_migration_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "schema_migration_guard.py"), "--json"], 5000),
             ("bot_support_owner_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "bot_support_owner_guard.py"), "--json"], 5000),
             ("feature_store_manifest", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "feature_store_manifest.py"), "--json"], 5000),
@@ -770,6 +788,19 @@ def main() -> int:
             ("weekly_gate_blocker_report", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "weekly_gate_blocker_report.py"), "--json"], 5000),
             ("replay_end_to_end_deterministic", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "replay_end_to_end_deterministic.py"), "--json"], 5000),
             ("paper_replay_drill", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "paper_replay_drill.py"), "--hours", "24", "--json"], 5000),
+            (
+                "paper_replay_training",
+                [
+                    str(VENV_PY),
+                    str(PROJECT_ROOT / "scripts" / "paper_replay_drill.py"),
+                    "--hours",
+                    "336",
+                    "--out-file",
+                    str(PROJECT_ROOT / "governance" / "health" / "paper_replay_training_latest.json"),
+                    "--json",
+                ],
+                5000,
+            ),
             ("replay_hash_registry_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "replay_hash_registry_guard.py"), "--json"], 5000),
             ("cohort_drift_baseline_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "cohort_drift_baseline_guard.py"), "--json"], 5000),
             ("live_reconciliation_slo_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "live_reconciliation_slo_guard.py"), "--json"], 5000),
@@ -788,6 +819,7 @@ def main() -> int:
             ("storage_resilience_control", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "storage_resilience_control.py"), "--fast", "--json"], 5000),
             ("ingestion_storage_control", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "ingestion_storage_control.py"), "--json"], 5000),
             ("blackstart_recovery", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "blackstart_recovery.py"), "--json"], 5000),
+            ("system_role_contract", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "system_role_contract_control.py"), "--json"], 5000),
         ]
         for name, cmd, stdout_limit in common_zero_checks:
             ok_predicate = (lambda rc: rc == 0)

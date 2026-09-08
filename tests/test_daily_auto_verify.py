@@ -48,6 +48,7 @@ def test_daily_verify_keeps_runtime_failure_operationally_blocking() -> None:
 
 def test_nightly_resilience_check_uses_slow_timeout_budget() -> None:
     assert daily_auto_verify._timeout_for_check("nightly_resilience_check", 300) == 300
+    assert daily_auto_verify._timeout_for_check("snapshot_coverage_training", 300) == 300
     assert daily_auto_verify._timeout_for_check("replay_preopen_sanity", 300) == 45
     assert daily_auto_verify._timeout_for_check("session_ready", 300) == daily_auto_verify.DEFAULT_CMD_TIMEOUT_SEC
 

@@ -1626,3 +1626,39 @@ def test_calibration_abstention_control_retires_unsafe_loosen_override(tmp_path:
     assert payload["recommendations"][0]["direct_loosen_allowed"] is False
     assert bot_id not in overrides["bot_overrides"]
     assert overrides["retired_overrides"][0]["reason"] == "unsafe_direct_loosen_retired"
+
+
+def test_calibration_abstention_control_sanitizes_nested_regime_overrides() -> None:
+    payload = {
+        "candidate_binding": {"candidate_id": "candidate-1", "generation": 1},
+        "recommendations": [],
+        "family_recommendations": [],
+    }
+    existing = {
+        "bot_overrides": {},
+        "family_overrides": {},
+        "regime_overrides": {
+            "dividend": {
+                "risk_on": {
+                    "mode": "tighten",
+                    "acted_prob_threshold_uplift": 0.03,
+                },
+                "risk_off": {
+                    "mode": "loosen",
+                    "acted_prob_threshold_uplift": -0.04,
+                },
+            }
+        },
+    }
+
+    overrides = calibration_src.build_override_payload(payload, existing)
+
+    assert set(overrides["regime_overrides"]["dividend"]) == {"risk_on"}
+    retained = overrides["regime_overrides"]["dividend"]["risk_on"]
+    assert retained["mode"] == "tighten"
+    assert retained["valid_candidate_id"] == "candidate-1"
+    assert {
+        "scope": "regime",
+        "key": "dividend:risk_off",
+        "reason": "unsafe_direct_loosen_retired",
+    } in overrides["retired_overrides"]

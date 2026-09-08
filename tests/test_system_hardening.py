@@ -1,9 +1,8 @@
 import json
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
@@ -20,7 +19,9 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_collector_mesh_adds_ten_observation_only_streams_with_fail_closed_central_bank_context() -> None:
+def test_collector_mesh_adds_ten_observation_only_streams_with_fail_closed_central_bank_context() -> (
+    None
+):
     specs = collector_contracts.ORGANIC_EVIDENCE_COLLECTOR_SPECS
     names = [str(spec["name"]) for spec in specs]
 
@@ -31,7 +32,9 @@ def test_collector_mesh_adds_ten_observation_only_streams_with_fail_closed_centr
         "decision_critical_source_context",
         "evidence_accrual",
     }
-    central_bank = next(spec for spec in specs if spec["name"] == "central_bank_liquidity_context")
+    central_bank = next(
+        spec for spec in specs if spec["name"] == "central_bank_liquidity_context"
+    )
     optional_specs = [spec for spec in specs if spec is not central_bank]
     assert central_bank["required"] is True
     assert central_bank["safe_to_degrade"] is False
@@ -44,7 +47,10 @@ def test_collector_mesh_adds_ten_observation_only_streams_with_fail_closed_centr
 
 
 def test_organic_collector_progress_requires_real_evidence_counts() -> None:
-    spec = {"collector_class": "evidence_accrual", "organic_minimums": {"capture_count": 100}}
+    spec = {
+        "collector_class": "evidence_accrual",
+        "organic_minimums": {"capture_count": 100},
+    }
 
     accumulating = collector_contracts._organic_readiness(
         spec,
@@ -72,7 +78,9 @@ def test_organic_collector_progress_requires_real_evidence_counts() -> None:
     assert ready["progress"] == 1.0
 
 
-def test_organic_collector_reports_partial_lineage_progress_without_clearing_gate() -> None:
+def test_organic_collector_reports_partial_lineage_progress_without_clearing_gate() -> (
+    None
+):
     spec = {
         "collector_class": "evidence_accrual",
         "organic_truthy_paths": ["strict_ok"],
@@ -85,7 +93,10 @@ def test_organic_collector_reports_partial_lineage_progress_without_clearing_gat
         health_ok=False,
         payload_present=True,
         payload_nonempty=True,
-        health_payload={"strict_ok": False, "point_in_time": {"snapshot_coverage_ratio": 0.375}},
+        health_payload={
+            "strict_ok": False,
+            "point_in_time": {"snapshot_coverage_ratio": 0.375},
+        },
         payload_body={},
     )
 
@@ -93,12 +104,19 @@ def test_organic_collector_reports_partial_lineage_progress_without_clearing_gat
     assert payload["progress"] == 0.5
     assert "collector_health_not_ok" in payload["blockers"]
     assert "truthy_requirement_not_met:strict_ok" in payload["blockers"]
-    assert "ratio_target_not_met:point_in_time.snapshot_coverage_ratio:0.375/0.75" in payload["blockers"]
+    assert (
+        "ratio_target_not_met:point_in_time.snapshot_coverage_ratio:0.375/0.75"
+        in payload["blockers"]
+    )
 
 
-def test_run_cached_collector_skips_when_expected_artifact_is_fresh(tmp_path, monkeypatch, capsys) -> None:
+def test_run_cached_collector_skips_when_expected_artifact_is_fresh(
+    tmp_path, monkeypatch, capsys
+) -> None:
     expected = tmp_path / "governance" / "health" / "collector.json"
-    _write_json(expected, {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True})
+    _write_json(
+        expected, {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True}
+    )
     cache_root = tmp_path / "cache"
     ops_db = tmp_path / "governance" / "ops_data_plane.sqlite3"
     monkeypatch.setenv("BOT_OPS_CONTROL_DB", str(ops_db))
@@ -138,10 +156,16 @@ def test_run_cached_collector_skips_when_expected_artifact_is_fresh(tmp_path, mo
     assert row == ("demo", 1)
 
 
-def test_run_cached_collector_runs_when_any_expected_artifact_is_missing(tmp_path, monkeypatch, capsys) -> None:
+def test_run_cached_collector_runs_when_any_expected_artifact_is_missing(
+    tmp_path, monkeypatch, capsys
+) -> None:
     expected = tmp_path / "governance" / "health" / "collector.json"
-    missing_payload = tmp_path / "exports" / "external_context" / "collector_payload.json"
-    _write_json(expected, {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True})
+    missing_payload = (
+        tmp_path / "exports" / "external_context" / "collector_payload.json"
+    )
+    _write_json(
+        expected, {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True}
+    )
     cache_root = tmp_path / "cache"
     ops_db = tmp_path / "governance" / "ops_data_plane.sqlite3"
     monkeypatch.setenv("BOT_OPS_CONTROL_DB", str(ops_db))
@@ -184,12 +208,17 @@ def test_collector_contracts_reports_required_failures(tmp_path, monkeypatch) ->
     spec = {
         "name": "demo_required",
         "health_path": tmp_path / "governance" / "health" / "demo_required.json",
-        "payload_path": tmp_path / "exports" / "external_context" / "demo_required.json",
+        "payload_path": tmp_path
+        / "exports"
+        / "external_context"
+        / "demo_required.json",
         "freshness_minutes": 30,
         "required": True,
         "safe_to_degrade": False,
     }
-    _write_json(Path(spec["health_path"]), {"timestamp_utc": now.isoformat(), "ok": False})
+    _write_json(
+        Path(spec["health_path"]), {"timestamp_utc": now.isoformat(), "ok": False}
+    )
 
     monkeypatch.setattr(collector_contracts, "COLLECTOR_SPECS", [spec])
     monkeypatch.setattr(
@@ -199,7 +228,11 @@ def test_collector_contracts_reports_required_failures(tmp_path, monkeypatch) ->
     )
 
     rc = collector_contracts.main()
-    payload = json.loads((tmp_path / "governance" / "health" / "collector_contracts_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (
+            tmp_path / "governance" / "health" / "collector_contracts_latest.json"
+        ).read_text(encoding="utf-8")
+    )
 
     assert rc == 2
     assert payload["required_failures"] == ["demo_required"]
@@ -209,17 +242,82 @@ def test_collector_contracts_reports_required_failures(tmp_path, monkeypatch) ->
     assert "source_status" in payload["rows"][0]
 
 
-def test_storage_tier_policy_summarizes_hot_and_warm_files(tmp_path, monkeypatch) -> None:
-    (tmp_path / "decisions").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "decision_explanations" / "shadow_default").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "decisions" / "trade_decisions_20260101.jsonl").write_text("{}\n", encoding="utf-8")
-    (tmp_path / "decision_explanations" / "shadow_default" / "decision_explanations_20260101.jsonl").write_text("{}\n", encoding="utf-8")
+def test_collector_contracts_rejects_fresh_health_with_stale_payload(
+    tmp_path, monkeypatch
+) -> None:
+    now = datetime.now(timezone.utc)
+    spec = {
+        "name": "paired_required",
+        "health_path": tmp_path / "governance" / "health" / "paired_required.json",
+        "payload_path": tmp_path
+        / "exports"
+        / "external_context"
+        / "paired_required.json",
+        "freshness_minutes": 30,
+        "required": True,
+        "safe_to_degrade": False,
+    }
+    _write_json(
+        Path(spec["health_path"]), {"timestamp_utc": now.isoformat(), "ok": True}
+    )
+    _write_json(
+        Path(spec["payload_path"]),
+        {"timestamp_utc": (now - timedelta(hours=2)).isoformat(), "rows": [1]},
+    )
 
-    monkeypatch.setattr(sys, "argv", ["storage_tier_policy.py", "--project-root", str(tmp_path)])
+    monkeypatch.setattr(collector_contracts, "COLLECTOR_SPECS", [spec])
+    monkeypatch.setattr(
+        sys, "argv", ["collector_contracts.py", "--project-root", str(tmp_path)]
+    )
+
+    rc = collector_contracts.main()
+    payload = json.loads(
+        (
+            tmp_path / "governance" / "health" / "collector_contracts_latest.json"
+        ).read_text(encoding="utf-8")
+    )
+    row = payload["rows"][0]
+
+    assert rc == 2
+    assert payload["required_failures"] == ["paired_required"]
+    assert row["fresh"] is False
+    assert row["artifact_pair_contract"]["health_fresh"] is True
+    assert row["artifact_pair_contract"]["payload_fresh"] is False
+    assert row["artifact_pair_contract"]["blockers"] == ["payload_artifact_stale"]
+
+
+def test_storage_tier_policy_summarizes_hot_and_warm_files(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "decisions").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "decision_explanations" / "shadow_default").mkdir(
+        parents=True, exist_ok=True
+    )
+    (tmp_path / "decisions" / "trade_decisions_20260101.jsonl").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    (
+        tmp_path
+        / "decision_explanations"
+        / "shadow_default"
+        / "decision_explanations_20260101.jsonl"
+    ).write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys, "argv", ["storage_tier_policy.py", "--project-root", str(tmp_path)]
+    )
     rc = storage_tier_policy.main()
-    payload = json.loads((tmp_path / "governance" / "health" / "storage_tier_policy_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (
+            tmp_path / "governance" / "health" / "storage_tier_policy_latest.json"
+        ).read_text(encoding="utf-8")
+    )
+    offload_manifest = (
+        tmp_path / "governance" / "health" / "storage_tier_offload_manifest_latest.json"
+    )
 
     assert rc == 0
+    assert offload_manifest.exists()
     assert payload["by_temperature"]["hot"]["files"] == 1
     assert payload["by_temperature"]["warm"]["files"] == 1
     assert payload["by_economic_value"]["critical"]["files"] == 1

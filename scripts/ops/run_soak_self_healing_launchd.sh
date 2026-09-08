@@ -23,12 +23,28 @@ export BOT_UNATTENDED_SOAK_ACTIVE=1
 # The always-on sentinel is intentionally outside the maintenance-slot gate.
 # It performs only bounded allowlisted refreshes and publishes whether heavy
 # repair is actually required.
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/soak_reliability_sentinel.py" --apply --json
+if ! "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/soak_reliability_sentinel.py" \
+  --apply \
+  --json \
+  --max-actions 3; then
+  print -u2 "soak_self_healing sentinel=attention continuing_to_readiness_and_guarded_repair=1"
+fi
 
-if [[ -f "$PROJECT_ROOT/governance/runtime/soak_self_healing_request.json" ]] && \
-  command -v jq >/dev/null 2>&1 && \
-  jq -e '.active == true and .heavy_repair_required == true and (.severity == "critical" or .severity == "proactive")' "$PROJECT_ROOT/governance/runtime/soak_self_healing_request.json" >/dev/null 2>&1; then
-  export MAINTENANCE_SLOT_DEFER_OUTSIDE_QUIET_WINDOW=0
+# Renew the lightweight walk-away certificate on every polling cycle. Heavy
+# maintenance may be deferred, but that must not let a healthy soak certificate
+# age past the live-feed safety TTL.
+if ! "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/unattended_soak_readiness.py" \
+  --target-days "${SOAK_SELF_HEAL_TARGET_DAYS:-30}" \
+  --json; then
+  print -u2 "soak_self_healing lightweight_readiness_refresh=failed continuing_to_guarded_repair=1"
+fi
+
+# Storage pressure needs a bounded opportunity before the ordinary quiet-hours
+# gate. This mode retains the self-healing lock and fresh host/hold admission;
+# it cannot run cache rebuilds, training, broad repairs, or release operations.
+if ! nice -n 15 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/soak_self_healing_control.py" \
+  --storage-recovery-only --apply --json; then
+  print -u2 "soak_self_healing bounded_storage_recovery=attention continuing_to_guarded_repair=1"
 fi
 
 "$PROJECT_ROOT/scripts/ops/run_guarded_maintenance.sh" soak_self_healing \

@@ -4,7 +4,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -19,14 +18,34 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
-def test_storage_resilience_control_scores_warm_failover_and_checksums(tmp_path: Path) -> None:
+def test_storage_resilience_control_scores_warm_failover_and_checksums(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     (project_root / "local_fallback_storage").mkdir(parents=True, exist_ok=True)
-    _write_json(project_root / "governance" / "health" / "storage_mount_guard_latest.json", {"external_available": True})
-    _write_json(project_root / "governance" / "health" / "storage_failback_sync_latest.json", {"mode": "external"})
-    _write_json(project_root / "governance" / "health" / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
-    _write_json(project_root / "exports" / "state_snapshot_drills" / "latest.json", {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True})
-    _write_json(project_root / "governance" / "health" / "daily_auto_verify_latest.json", {"ok": True})
+    _write_json(
+        project_root / "governance" / "health" / "storage_mount_guard_latest.json",
+        {"external_available": True},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "storage_failback_sync_latest.json",
+        {"mode": "external"},
+    )
+    _write_json(
+        project_root
+        / "governance"
+        / "health"
+        / "storage_split_brain_reconciler_latest.json",
+        {"summary": {"unresolved_conflicts": 0}},
+    )
+    _write_json(
+        project_root / "exports" / "state_snapshot_drills" / "latest.json",
+        {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "daily_auto_verify_latest.json",
+        {"ok": True},
+    )
 
     payload = resilience_src.build_payload(project_root)
 
@@ -35,55 +54,126 @@ def test_storage_resilience_control_scores_warm_failover_and_checksums(tmp_path:
     assert payload["checksum_scrub"]["targets"]
 
 
-def test_storage_resilience_control_fast_mode_skips_large_db_quick_check(tmp_path: Path) -> None:
+def test_storage_resilience_control_fast_mode_skips_large_db_quick_check(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
-    (project_root / "local_fallback_storage" / "data").mkdir(parents=True, exist_ok=True)
+    (project_root / "local_fallback_storage" / "data").mkdir(
+        parents=True, exist_ok=True
+    )
     (project_root / "data").mkdir(parents=True, exist_ok=True)
     (project_root / "governance").mkdir(parents=True, exist_ok=True)
-    _write_json(project_root / "governance" / "health" / "storage_mount_guard_latest.json", {"external_available": True})
-    _write_json(project_root / "governance" / "health" / "storage_failback_sync_latest.json", {"mode": "external"})
-    _write_json(project_root / "governance" / "health" / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
-    _write_json(project_root / "exports" / "state_snapshot_drills" / "latest.json", {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True})
-    _write_json(project_root / "governance" / "health" / "daily_auto_verify_latest.json", {"ok": True})
+    _write_json(
+        project_root / "governance" / "health" / "storage_mount_guard_latest.json",
+        {"external_available": True},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "storage_failback_sync_latest.json",
+        {"mode": "external"},
+    )
+    _write_json(
+        project_root
+        / "governance"
+        / "health"
+        / "storage_split_brain_reconciler_latest.json",
+        {"summary": {"unresolved_conflicts": 0}},
+    )
+    _write_json(
+        project_root / "exports" / "state_snapshot_drills" / "latest.json",
+        {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "daily_auto_verify_latest.json",
+        {"ok": True},
+    )
     (project_root / "data" / "jsonl_link.sqlite3").write_bytes(b"0" * 2048)
 
-    payload = resilience_src.build_payload(project_root, fast=True, max_quick_check_db_gb=0.000001)
+    payload = resilience_src.build_payload(
+        project_root, fast=True, max_quick_check_db_gb=0.000001
+    )
 
     assert payload["integrity_mode"] == "fast"
-    assert payload["database_integrity_checks"][0]["quick_check"] == "skipped_fast_mode_large_db"
+    assert (
+        payload["database_integrity_checks"][0]["quick_check"]
+        == "skipped_fast_mode_large_db"
+    )
 
 
-def test_storage_resilience_control_fast_zero_threshold_skips_db_quick_check(tmp_path: Path) -> None:
+def test_storage_resilience_control_fast_zero_threshold_skips_db_quick_check(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     (project_root / "data").mkdir(parents=True, exist_ok=True)
     (project_root / "local_fallback_storage").mkdir(parents=True, exist_ok=True)
-    _write_json(project_root / "governance" / "health" / "storage_mount_guard_latest.json", {"external_available": True})
-    _write_json(project_root / "governance" / "health" / "storage_failback_sync_latest.json", {"mode": "external"})
-    _write_json(project_root / "governance" / "health" / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
-    _write_json(project_root / "exports" / "state_snapshot_drills" / "latest.json", {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True})
-    _write_json(project_root / "governance" / "health" / "daily_auto_verify_latest.json", {"ok": True})
+    _write_json(
+        project_root / "governance" / "health" / "storage_mount_guard_latest.json",
+        {"external_available": True},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "storage_failback_sync_latest.json",
+        {"mode": "external"},
+    )
+    _write_json(
+        project_root
+        / "governance"
+        / "health"
+        / "storage_split_brain_reconciler_latest.json",
+        {"summary": {"unresolved_conflicts": 0}},
+    )
+    _write_json(
+        project_root / "exports" / "state_snapshot_drills" / "latest.json",
+        {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "daily_auto_verify_latest.json",
+        {"ok": True},
+    )
     (project_root / "data" / "jsonl_link.sqlite3").write_bytes(b"tiny")
 
-    payload = resilience_src.build_payload(project_root, fast=True, max_quick_check_db_gb=0)
+    payload = resilience_src.build_payload(
+        project_root, fast=True, max_quick_check_db_gb=0
+    )
 
     assert payload["integrity_mode"] == "fast"
-    assert payload["database_integrity_checks"][0]["quick_check"] == "skipped_fast_mode_large_db"
+    assert (
+        payload["database_integrity_checks"][0]["quick_check"]
+        == "skipped_fast_mode_large_db"
+    )
 
 
-def test_storage_resilience_control_uses_local_fallback_for_broken_routed_sqlite(tmp_path: Path) -> None:
+def test_storage_resilience_control_uses_local_fallback_for_broken_routed_sqlite(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     routed_db = project_root / "data" / "jsonl_link.sqlite3"
     missing_external_db = tmp_path / "missing_bot_logs" / "data" / "jsonl_link.sqlite3"
-    fallback_db = project_root / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"
+    fallback_db = (
+        project_root / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"
+    )
     routed_db.parent.mkdir(parents=True, exist_ok=True)
     fallback_db.parent.mkdir(parents=True, exist_ok=True)
     routed_db.symlink_to(missing_external_db)
     with sqlite3.connect(fallback_db) as conn:
         conn.execute("CREATE TABLE rows(id INTEGER PRIMARY KEY)")
-    _write_json(project_root / "governance" / "health" / "storage_mount_guard_latest.json", {"external_available": False})
-    _write_json(project_root / "governance" / "health" / "storage_failback_sync_latest.json", {"mode": "local_fallback"})
-    _write_json(project_root / "governance" / "health" / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
-    _write_json(project_root / "governance" / "health" / "daily_auto_verify_latest.json", {"ok": True})
+    _write_json(
+        project_root / "governance" / "health" / "storage_mount_guard_latest.json",
+        {"external_available": False},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "storage_failback_sync_latest.json",
+        {"mode": "local_fallback"},
+    )
+    _write_json(
+        project_root
+        / "governance"
+        / "health"
+        / "storage_split_brain_reconciler_latest.json",
+        {"summary": {"unresolved_conflicts": 0}},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "daily_auto_verify_latest.json",
+        {"ok": True},
+    )
 
     payload = resilience_src.build_payload(project_root)
 
@@ -93,7 +183,9 @@ def test_storage_resilience_control_uses_local_fallback_for_broken_routed_sqlite
     assert primary_check["ok"] is True
 
 
-def test_storage_resilience_accepts_verified_local_hot_external_archive_topology(tmp_path: Path) -> None:
+def test_storage_resilience_accepts_verified_local_hot_external_archive_topology(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     (project_root / "local_fallback_storage").mkdir(parents=True, exist_ok=True)
     health = project_root / "governance" / "health"
@@ -106,8 +198,13 @@ def test_storage_resilience_accepts_verified_local_hot_external_archive_topology
             "probe_skipped_external_io": True,
         },
     )
-    _write_json(health / "storage_failback_sync_latest.json", {"mode": "local_fallback"})
-    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(
+        health / "storage_failback_sync_latest.json", {"mode": "local_fallback"}
+    )
+    _write_json(
+        health / "storage_split_brain_reconciler_latest.json",
+        {"summary": {"unresolved_conflicts": 0}},
+    )
     _write_json(
         health / "storage_retention_unison_latest.json",
         {
@@ -118,7 +215,7 @@ def test_storage_resilience_accepts_verified_local_hot_external_archive_topology
                     "protected": False,
                     "free_gb": 300.0,
                 }
-            }
+            },
         },
     )
     _write_json(
@@ -138,26 +235,155 @@ def test_storage_resilience_accepts_verified_local_hot_external_archive_topology
 
 def test_operator_cockpit_aggregates_upgrade_surfaces(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    _write_json(project_root / "governance" / "health" / "runtime_gate_dashboard_latest.json", {"overall": {"status": "degraded", "ok": False, "attention": ["storage_resilience_control_needs_work"]}})
-    _write_json(project_root / "governance" / "health" / "platform_control_plane_latest.json", {"institutional_readiness": {"overall_status": "advancing"}})
-    _write_json(project_root / "governance" / "health" / "training_report_latest.json", {"overall_status": "blocked"})
-    _write_json(project_root / "governance" / "health" / "training_quality_control_latest.json", {"overall_status": "blocked"})
-    _write_json(project_root / "governance" / "health" / "ingestion_storage_control_latest.json", {"overall_status": "blocked", "top_actions": ["drain core lane"]})
-    _write_json(project_root / "governance" / "health" / "ingestion_storage_governor_latest.json", {"profile": "critical_backpressure", "top_actions": ["normalize SQL route"], "sql_primary_db": {"route_drift": True}})
-    _write_json(project_root / "governance" / "health" / "storage_tier_policy_latest.json", {"overall_status": "degraded", "pressure": {"hot_path_over_budget_bytes": 2048}, "upgrade_plan": {"recommended_actions": ["split hot and cold storage"]}})
-    _write_json(project_root / "governance" / "health" / "training_runtime_control_latest.json", {"overall_status": "blocked", "snapshot_ready": False, "precompute_targets": [{"bot_id": "brain_refinery_v43_intraday_ultrafast_proxy"}], "recommended_actions": ["refresh runtime snapshot"]})
-    _write_json(project_root / "governance" / "health" / "external_backlog_drain_latest.json", {"overall_status": "ready", "top_actions": ["run external backlog drain"], "recommended_now": True})
-    _write_json(project_root / "governance" / "health" / "ingestion_priority_queue_latest.json", {"top_actions": ["drain queue"]})
-    _write_json(project_root / "governance" / "health" / "storage_resilience_control_latest.json", {"overall_status": "needs_work", "top_actions": ["refresh restore drill"]})
-    _write_json(project_root / "governance" / "health" / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 1}})
-    _write_json(project_root / "governance" / "health" / "training_requalification_latest.json", {"recommended_actions": ["build requalification lane"]})
-    _write_json(project_root / "governance" / "walk_forward" / "coverage_seed_latest.json", {"overall_status": "needs_coverage", "coverage_shortfall_bots": 4, "seed_queue": [{"bot_id": "brain_refinery_v10_seasonal"}], "recommended_actions": ["seed coverage"]})
-    _write_json(project_root / "governance" / "health" / "regime_control_plane_latest.json", {"overall_status": "thin", "regime_state": "mixed_transition", "stance_label": "neutral", "recommended_actions": ["backfill regime memory"]})
-    _write_json(project_root / "governance" / "health" / "supportability_control_latest.json", {"overall_status": "blocked", "supportability": {"active_supportability_score": 0.0}, "teacher_student": {"students_without_teachers": 3}, "recommended_actions": ["assign teachers"]})
-    _write_json(project_root / "governance" / "health" / "calibration_abstention_control_latest.json", {"top_actions": ["tighten thresholds"], "overall_status": "needs_tuning"})
-    _write_json(project_root / "governance" / "health" / "paper_execution_calibration_latest.json", {"overall_status": "needs_tuning", "metrics": {"mae_bps": 18.5}, "top_actions": ["prioritize profile-level recalibration"]})
-    _write_json(project_root / "governance" / "health" / "roster_expansion_slots_latest.json", {"overall_status": "degraded", "summary": {"registered_slot_count": 6, "missing_slot_count": 4}, "recommended_actions": ["register missing roster slots"]})
-    _write_json(project_root / "governance" / "health" / "daily_verify_auto_remediation_bot_latest.json", {"recommended_actions": ["remediate"], "overall_status": "pending"})
+    _write_json(
+        project_root / "governance" / "health" / "runtime_gate_dashboard_latest.json",
+        {
+            "overall": {
+                "status": "degraded",
+                "ok": False,
+                "attention": ["storage_resilience_control_needs_work"],
+            }
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "platform_control_plane_latest.json",
+        {"institutional_readiness": {"overall_status": "advancing"}},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_report_latest.json",
+        {"overall_status": "blocked"},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_quality_control_latest.json",
+        {"overall_status": "blocked"},
+    )
+    _write_json(
+        project_root
+        / "governance"
+        / "health"
+        / "ingestion_storage_control_latest.json",
+        {"overall_status": "blocked", "top_actions": ["drain core lane"]},
+    )
+    _write_json(
+        project_root
+        / "governance"
+        / "health"
+        / "ingestion_storage_governor_latest.json",
+        {
+            "profile": "critical_backpressure",
+            "top_actions": ["normalize SQL route"],
+            "sql_primary_db": {"route_drift": True},
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "storage_tier_policy_latest.json",
+        {
+            "overall_status": "degraded",
+            "pressure": {"hot_path_over_budget_bytes": 2048},
+            "upgrade_plan": {"recommended_actions": ["split hot and cold storage"]},
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_runtime_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "snapshot_ready": False,
+            "precompute_targets": [
+                {"bot_id": "brain_refinery_v43_intraday_ultrafast_proxy"}
+            ],
+            "recommended_actions": ["refresh runtime snapshot"],
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "external_backlog_drain_latest.json",
+        {
+            "overall_status": "ready",
+            "top_actions": ["run external backlog drain"],
+            "recommended_now": True,
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "ingestion_priority_queue_latest.json",
+        {"top_actions": ["drain queue"]},
+    )
+    _write_json(
+        project_root
+        / "governance"
+        / "health"
+        / "storage_resilience_control_latest.json",
+        {"overall_status": "needs_work", "top_actions": ["refresh restore drill"]},
+    )
+    _write_json(
+        project_root
+        / "governance"
+        / "health"
+        / "storage_split_brain_reconciler_latest.json",
+        {"summary": {"unresolved_conflicts": 1}},
+    )
+    _write_json(
+        project_root / "governance" / "health" / "training_requalification_latest.json",
+        {"recommended_actions": ["build requalification lane"]},
+    )
+    _write_json(
+        project_root / "governance" / "walk_forward" / "coverage_seed_latest.json",
+        {
+            "overall_status": "needs_coverage",
+            "coverage_shortfall_bots": 4,
+            "seed_queue": [{"bot_id": "brain_refinery_v10_seasonal"}],
+            "recommended_actions": ["seed coverage"],
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "regime_control_plane_latest.json",
+        {
+            "overall_status": "thin",
+            "regime_state": "mixed_transition",
+            "stance_label": "neutral",
+            "recommended_actions": ["backfill regime memory"],
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "supportability_control_latest.json",
+        {
+            "overall_status": "blocked",
+            "supportability": {"active_supportability_score": 0.0},
+            "teacher_student": {"students_without_teachers": 3},
+            "recommended_actions": ["assign teachers"],
+        },
+    )
+    _write_json(
+        project_root
+        / "governance"
+        / "health"
+        / "calibration_abstention_control_latest.json",
+        {"top_actions": ["tighten thresholds"], "overall_status": "needs_tuning"},
+    )
+    _write_json(
+        project_root
+        / "governance"
+        / "health"
+        / "paper_execution_calibration_latest.json",
+        {
+            "overall_status": "needs_tuning",
+            "metrics": {"mae_bps": 18.5},
+            "top_actions": ["prioritize profile-level recalibration"],
+        },
+    )
+    _write_json(
+        project_root / "governance" / "health" / "roster_expansion_slots_latest.json",
+        {
+            "overall_status": "degraded",
+            "summary": {"registered_slot_count": 6, "missing_slot_count": 4},
+            "recommended_actions": ["register missing roster slots"],
+        },
+    )
+    _write_json(
+        project_root
+        / "governance"
+        / "health"
+        / "daily_verify_auto_remediation_bot_latest.json",
+        {"recommended_actions": ["remediate"], "overall_status": "pending"},
+    )
 
     payload = cockpit_src.build_payload(project_root)
 
@@ -173,15 +399,22 @@ def test_operator_cockpit_aggregates_upgrade_surfaces(tmp_path: Path) -> None:
     assert "split hot and cold storage" in payload["recommended_actions"]
     assert "refresh runtime snapshot" in payload["recommended_actions"]
     assert "register missing roster slots" in payload["recommended_actions"]
-    assert payload["surfaces"]["ingestion_storage_governor"]["status"] == "critical_backpressure"
+    assert (
+        payload["surfaces"]["ingestion_storage_governor"]["status"]
+        == "critical_backpressure"
+    )
     assert payload["surfaces"]["training_runtime_control"]["status"] == "blocked"
     assert payload["surfaces"]["roster_expansion_slots"]["status"] == "degraded"
     assert payload["surfaces"]["regime_control_plane"]["status"] == "thin"
     assert payload["surfaces"]["external_backlog_drain"]["status"] == "ready"
-    assert payload["surfaces"]["daily_verify_auto_remediation_bot"]["status"] == "pending"
+    assert (
+        payload["surfaces"]["daily_verify_auto_remediation_bot"]["status"] == "pending"
+    )
 
 
-def test_operator_cockpit_surfaces_production_readiness_and_soak_controls(tmp_path: Path) -> None:
+def test_operator_cockpit_surfaces_production_readiness_and_soak_controls(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     _write_json(
@@ -205,14 +438,21 @@ def test_operator_cockpit_surfaces_production_readiness_and_soak_controls(tmp_pa
     payload = cockpit_src.build_payload(project_root)
 
     assert payload["upgrade_lanes"]["production_readiness"]["status"] == "guarded"
-    assert payload["upgrade_lanes"]["production_readiness"]["summary"] == "domains=8 blocked=0 live_allowed=0"
+    assert (
+        payload["upgrade_lanes"]["production_readiness"]["summary"]
+        == "domains=8 blocked=0 live_allowed=0"
+    )
     assert payload["upgrade_lanes"]["production_soak"]["status"] == "guarded"
-    assert payload["upgrade_lanes"]["production_soak"]["summary"] == "controls=8 blocked=0"
+    assert (
+        payload["upgrade_lanes"]["production_soak"]["summary"] == "controls=8 blocked=0"
+    )
     assert payload["surfaces"]["production_readiness_control"]["status"] == "guarded"
     assert payload["surfaces"]["production_soak_enhancement"]["status"] == "guarded"
 
 
-def test_operator_cockpit_keeps_expanded_collection_green_with_adaptive_followups(tmp_path: Path) -> None:
+def test_operator_cockpit_keeps_expanded_collection_green_with_adaptive_followups(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     _write_json(
@@ -235,7 +475,9 @@ def test_operator_cockpit_keeps_expanded_collection_green_with_adaptive_followup
         },
     )
     _write_json(health / "training_report_latest.json", {"overall_status": "blocked"})
-    _write_json(health / "training_quality_control_latest.json", {"overall_status": "blocked"})
+    _write_json(
+        health / "training_quality_control_latest.json", {"overall_status": "blocked"}
+    )
     _write_json(
         health / "ingestion_storage_control_latest.json",
         {
@@ -253,13 +495,30 @@ def test_operator_cockpit_keeps_expanded_collection_green_with_adaptive_followup
             "writer_shedding": {"active": False},
         },
     )
-    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "ready", "recommended_now": False, "material_drain_recommended": False})
-    _write_json(health / "external_backlog_retry_bot_latest.json", {"overall_status": "applied_with_followups", "recommended_actions": ["retry again"]})
+    _write_json(
+        health / "external_backlog_drain_latest.json",
+        {
+            "overall_status": "ready",
+            "recommended_now": False,
+            "material_drain_recommended": False,
+        },
+    )
+    _write_json(
+        health / "external_backlog_retry_bot_latest.json",
+        {
+            "overall_status": "applied_with_followups",
+            "recommended_actions": ["retry again"],
+        },
+    )
     _write_json(
         health / "memory_efficiency_control_latest.json",
         {
             "overall_status": "needs_work",
-            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 0.4},
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "swap_used_gb": 0.4,
+            },
             "expansion_session": {
                 "total_bots": 869,
                 "active_bots": 814,
@@ -280,25 +539,46 @@ def test_operator_cockpit_keeps_expanded_collection_green_with_adaptive_followup
             }
         },
     )
-    _write_json(health / "global_killswitch_latest.json", {"halt": False, "action": "none", "reasons": []})
+    _write_json(
+        health / "global_killswitch_latest.json",
+        {"halt": False, "action": "none", "reasons": []},
+    )
     _write_json(
         health / "storage_tier_policy_latest.json",
         {
             "overall_status": "blocked",
             "pressure": {"hot_path_over_budget_bytes": 2048},
-            "upgrade_plan": {"top_hot_path_families": [{"family": "sql_link_shards", "bytes": 4096}]},
+            "upgrade_plan": {
+                "top_hot_path_families": [{"family": "sql_link_shards", "bytes": 4096}]
+            },
         },
     )
     _write_json(
         health / "live_runtime_separation_control_latest.json",
         {
             "overall_status": "degraded",
-            "shared_host_pressure": {"contention_score": 2, "signals": {"swap_pressure_elevated": False, "restart_storm_present": False}},
+            "shared_host_pressure": {
+                "contention_score": 2,
+                "signals": {
+                    "swap_pressure_elevated": False,
+                    "restart_storm_present": False,
+                },
+            },
             "clearance_plan": {"clearance_state": "awaiting_coverage_cycles"},
         },
     )
-    _write_json(health / "runtime_snapshot_cache_control_latest.json", {"overall_status": "degraded", "cache_health": {"snapshot_ready": True}})
-    _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "degraded", "lease_state": "warning", "lease_budget": {"expires_in_seconds": 1800, "critical_lease_seconds": 600}})
+    _write_json(
+        health / "runtime_snapshot_cache_control_latest.json",
+        {"overall_status": "degraded", "cache_health": {"snapshot_ready": True}},
+    )
+    _write_json(
+        health / "auth_lease_manager_latest.json",
+        {
+            "overall_status": "degraded",
+            "lease_state": "warning",
+            "lease_budget": {"expires_in_seconds": 1800, "critical_lease_seconds": 600},
+        },
+    )
     _write_json(
         health / "rolling_restart_controller_latest.json",
         {
@@ -319,7 +599,9 @@ def test_operator_cockpit_keeps_expanded_collection_green_with_adaptive_followup
         {
             "overall_status": "blocked",
             "sla_summary": {"stale_required": 1},
-            "artifacts": [{"name": "process_watchdog", "required": True, "stale": True}],
+            "artifacts": [
+                {"name": "process_watchdog", "required": True, "stale": True}
+            ],
         },
     )
     _write_json(
@@ -327,8 +609,14 @@ def test_operator_cockpit_keeps_expanded_collection_green_with_adaptive_followup
         {
             "overall_status": "blocked",
             "upgrade_lanes": {
-                "runtime_separation": {"status": "blocked", "summary": "contention_score=4"},
-                "operator_cockpit_contract": {"status": "degraded", "summary": "recommended_actions=14"},
+                "runtime_separation": {
+                    "status": "blocked",
+                    "summary": "contention_score=4",
+                },
+                "operator_cockpit_contract": {
+                    "status": "degraded",
+                    "summary": "recommended_actions=14",
+                },
             },
         },
     )
@@ -367,18 +655,37 @@ def test_operator_cockpit_keeps_expanded_collection_green_with_adaptive_followup
     assert "memory_efficiency_control_needs_work" not in payload["recommended_actions"]
 
 
-def test_operator_cockpit_manages_proof_debt_when_paper_soak_is_green(tmp_path: Path) -> None:
+def test_operator_cockpit_manages_proof_debt_when_paper_soak_is_green(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     _write_json(
         health / "runtime_gate_dashboard_latest.json",
-        {"overall": {"status": "degraded", "ok": False, "attention": ["training_quality_control_blocked", "daily_auto_verify_not_ok"]}},
+        {
+            "overall": {
+                "status": "degraded",
+                "ok": False,
+                "attention": [
+                    "training_quality_control_blocked",
+                    "daily_auto_verify_not_ok",
+                ],
+            }
+        },
     )
-    _write_json(health / "unattended_soak_readiness_latest.json", {"ok": True, "overall_status": "ready", "safe_to_leave_unattended": True})
-    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {"ok": True, "overall_status": "ready", "safe_to_leave_unattended": True},
+    )
+    _write_json(
+        health / "runtime_paper_regression_guard_latest.json",
+        {"ok": True, "overall_status": "ready"},
+    )
     _write_json(health / "process_watchdog_latest.json", {"overall_status": "ready"})
     _write_json(health / "training_report_latest.json", {"overall_status": "blocked"})
-    _write_json(health / "training_quality_control_latest.json", {"overall_status": "blocked"})
+    _write_json(
+        health / "training_quality_control_latest.json", {"overall_status": "blocked"}
+    )
     _write_json(
         health / "ingestion_storage_control_latest.json",
         {
@@ -387,33 +694,79 @@ def test_operator_cockpit_manages_proof_debt_when_paper_soak_is_green(tmp_path: 
             "pressure_index": 0.01,
             "steady_state": {"target_status": {"steady_state_ready": True}},
             "queue_watermarks": {"breaches": {"hard": [], "elevated": []}},
-            "backpressure": {"total_pending_lines": 100, "core_pending_lines": 50, "estimated_total_drain_minutes": 0.0},
+            "backpressure": {
+                "total_pending_lines": 100,
+                "core_pending_lines": 50,
+                "estimated_total_drain_minutes": 0.0,
+            },
             "storage": {"backlog_drain_recommended_now": False},
             "writer_shedding": {"active": False},
         },
     )
-    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "blocked", "recommended_now": True})
+    _write_json(
+        health / "external_backlog_drain_latest.json",
+        {"overall_status": "blocked", "recommended_now": True},
+    )
     _write_json(
         health / "memory_efficiency_control_latest.json",
         {
             "overall_status": "ready",
-            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 0.4},
-            "expansion_session": {"total_bots": 900, "active_bots": 850, "data_collection_active_bots": 850, "sleeve_profile_count": 12},
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "swap_used_gb": 0.4,
+            },
+            "expansion_session": {
+                "total_bots": 900,
+                "active_bots": 850,
+                "data_collection_active_bots": 850,
+                "sleeve_profile_count": 12,
+            },
         },
     )
-    _write_json(project_root / "master_bot_registry.json", {"summary": {"total_bots": 900, "active_bots": 850, "data_collection_active_bots": 850, "sleeve_profile_count": 12}})
-    _write_json(health / "global_killswitch_latest.json", {"halt": False, "action": "none", "reasons": []})
+    _write_json(
+        project_root / "master_bot_registry.json",
+        {
+            "summary": {
+                "total_bots": 900,
+                "active_bots": 850,
+                "data_collection_active_bots": 850,
+                "sleeve_profile_count": 12,
+            }
+        },
+    )
+    _write_json(
+        health / "global_killswitch_latest.json",
+        {"halt": False, "action": "none", "reasons": []},
+    )
     _write_json(health / "storage_tier_policy_latest.json", {"overall_status": "ready"})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"overall_status": "ready"})
-    _write_json(health / "runtime_snapshot_cache_control_latest.json", {"overall_status": "ready", "cache_health": {"snapshot_ready": True}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health / "runtime_snapshot_cache_control_latest.json",
+        {"overall_status": "ready", "cache_health": {"snapshot_ready": True}},
+    )
     _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready"})
-    _write_json(health / "rolling_restart_controller_latest.json", {"overall_status": "ready"})
-    _write_json(health / "artifact_freshness_slo_latest.json", {"overall_status": "ready", "sla_summary": {"stale_required": 0}})
+    _write_json(
+        health / "rolling_restart_controller_latest.json", {"overall_status": "ready"}
+    )
+    _write_json(
+        health / "artifact_freshness_slo_latest.json",
+        {"overall_status": "ready", "sla_summary": {"stale_required": 0}},
+    )
     _write_json(health / "blackstart_recovery_latest.json", {"overall_status": "ready"})
-    _write_json(health / "sleeve_isolation_guard_latest.json", {"overall_status": "ready"})
-    _write_json(health / "remote_alert_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "sleeve_isolation_guard_latest.json", {"overall_status": "ready"}
+    )
+    _write_json(
+        health / "remote_alert_control_latest.json", {"overall_status": "ready"}
+    )
     _write_json(health / "storage_quota_guard_latest.json", {"overall_status": "ready"})
-    _write_json(health / "chaos_drill_coordinator_latest.json", {"overall_status": "blocked"})
+    _write_json(
+        health / "chaos_drill_coordinator_latest.json", {"overall_status": "blocked"}
+    )
     _write_json(
         health / "master_infrastructure_supervisor_latest.json",
         {
@@ -434,18 +787,34 @@ def test_operator_cockpit_manages_proof_debt_when_paper_soak_is_green(tmp_path: 
 
     assert payload["overall_status"] == "ready"
     assert payload["adaptive_posture"]["paper_soak_ready"] is True
-    assert payload["readiness_domains"]["training_and_promotion"]["status"] == "managed_paper_soak"
+    assert (
+        payload["readiness_domains"]["training_and_promotion"]["status"]
+        == "managed_paper_soak"
+    )
     assert "training_quality_control" in payload["managed_proof_debt"]
-    assert payload["surfaces"]["training_quality_control"]["status"] == "managed_paper_soak"
-    assert payload["surfaces"]["chaos_drill_coordinator"]["status"] == "managed_paper_soak"
+    assert (
+        payload["surfaces"]["training_quality_control"]["status"]
+        == "managed_paper_soak"
+    )
+    assert (
+        payload["surfaces"]["chaos_drill_coordinator"]["status"] == "managed_paper_soak"
+    )
     assert "training_quality_control_blocked" not in payload["recommended_actions"]
 
 
-def test_operator_cockpit_manages_stateful_sql_soft_quota_during_green_soak(tmp_path: Path) -> None:
+def test_operator_cockpit_manages_stateful_sql_soft_quota_during_green_soak(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
-    _write_json(health / "unattended_soak_readiness_latest.json", {"ok": True, "overall_status": "ready", "safe_to_leave_unattended": True})
-    _write_json(health / "runtime_paper_regression_guard_latest.json", {"ok": True, "overall_status": "ready"})
+    _write_json(
+        health / "unattended_soak_readiness_latest.json",
+        {"ok": True, "overall_status": "ready", "safe_to_leave_unattended": True},
+    )
+    _write_json(
+        health / "runtime_paper_regression_guard_latest.json",
+        {"ok": True, "overall_status": "ready"},
+    )
     _write_json(
         health / "ingestion_storage_control_latest.json",
         {
@@ -454,22 +823,39 @@ def test_operator_cockpit_manages_stateful_sql_soft_quota_during_green_soak(tmp_
             "pressure_index": 0.01,
             "steady_state": {"target_status": {"steady_state_ready": True}},
             "queue_watermarks": {"breaches": {"hard": [], "elevated": []}},
-            "backpressure": {"total_pending_lines": 100, "core_pending_lines": 50, "estimated_total_drain_minutes": 0.0},
+            "backpressure": {
+                "total_pending_lines": 100,
+                "core_pending_lines": 50,
+                "estimated_total_drain_minutes": 0.0,
+            },
             "storage": {"backlog_drain_recommended_now": False},
             "writer_shedding": {"active": False},
         },
     )
-    _write_json(health / "external_backlog_drain_latest.json", {"overall_status": "ready", "recommended_now": False})
+    _write_json(
+        health / "external_backlog_drain_latest.json",
+        {"overall_status": "ready", "recommended_now": False},
+    )
     _write_json(
         health / "memory_efficiency_control_latest.json",
         {
             "overall_status": "ready",
-            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "none", "swap_used_gb": 0.4},
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "swap_used_gb": 0.4,
+            },
         },
     )
-    _write_json(health / "global_killswitch_latest.json", {"halt": False, "action": "none", "reasons": []})
+    _write_json(
+        health / "global_killswitch_latest.json",
+        {"halt": False, "action": "none", "reasons": []},
+    )
     _write_json(health / "process_watchdog_latest.json", {"overall_status": "ready"})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready"},
+    )
     _write_json(
         health / "storage_quota_guard_latest.json",
         {
@@ -495,19 +881,32 @@ def test_operator_cockpit_manages_stateful_sql_soft_quota_during_green_soak(tmp_
     payload = cockpit_src.build_payload(project_root)
 
     assert payload["overall_status"] == "ready"
-    assert payload["long_run_lanes"]["storage_quota_guard"]["status"] == "managed_paper_soak"
+    assert (
+        payload["long_run_lanes"]["storage_quota_guard"]["status"]
+        == "managed_paper_soak"
+    )
     assert payload["surfaces"]["storage_quota_guard"]["status"] == "managed_paper_soak"
 
 
-def test_operator_cockpit_keeps_storage_steady_when_sql_overlay_clears_raw_backlog(tmp_path: Path) -> None:
+def test_operator_cockpit_keeps_storage_steady_when_sql_overlay_clears_raw_backlog(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     _write_json(
         health / "runtime_gate_dashboard_latest.json",
-        {"overall": {"status": "ready", "ok": True, "attention": ["external_backlog_drain_recommended"]}},
+        {
+            "overall": {
+                "status": "ready",
+                "ok": True,
+                "attention": ["external_backlog_drain_recommended"],
+            }
+        },
     )
     _write_json(health / "training_report_latest.json", {"overall_status": "blocked"})
-    _write_json(health / "training_quality_control_latest.json", {"overall_status": "blocked"})
+    _write_json(
+        health / "training_quality_control_latest.json", {"overall_status": "blocked"}
+    )
     _write_json(
         health / "ingestion_storage_control_latest.json",
         {
@@ -539,13 +938,21 @@ def test_operator_cockpit_keeps_storage_steady_when_sql_overlay_clears_raw_backl
     )
     _write_json(
         health / "external_backlog_drain_latest.json",
-        {"overall_status": "drain_active", "recommended_now": True, "material_drain_recommended": True},
+        {
+            "overall_status": "drain_active",
+            "recommended_now": True,
+            "material_drain_recommended": True,
+        },
     )
     _write_json(
         health / "memory_efficiency_control_latest.json",
         {
             "overall_status": "ready",
-            "memory_snapshot": {"memory_pressure_state": "green", "memory_pressure_kind": "normal", "swap_used_gb": 0.4},
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "normal",
+                "swap_used_gb": 0.4,
+            },
             "expansion_session": {
                 "total_bots": 1771,
                 "active_bots": 1732,
@@ -555,19 +962,49 @@ def test_operator_cockpit_keeps_storage_steady_when_sql_overlay_clears_raw_backl
             },
         },
     )
-    _write_json(project_root / "master_bot_registry.json", {"summary": {"total_bots": 1771, "active_bots": 1732, "data_collection_active_bots": 1732, "sleeve_profile_count": 6}})
-    _write_json(health / "global_killswitch_latest.json", {"halt": False, "action": "none", "reasons": []})
+    _write_json(
+        project_root / "master_bot_registry.json",
+        {
+            "summary": {
+                "total_bots": 1771,
+                "active_bots": 1732,
+                "data_collection_active_bots": 1732,
+                "sleeve_profile_count": 6,
+            }
+        },
+    )
+    _write_json(
+        health / "global_killswitch_latest.json",
+        {"halt": False, "action": "none", "reasons": []},
+    )
     _write_json(health / "storage_tier_policy_latest.json", {"overall_status": "ready"})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"overall_status": "ready"})
-    _write_json(health / "runtime_snapshot_cache_control_latest.json", {"overall_status": "ready", "cache_health": {"snapshot_ready": True}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health / "runtime_snapshot_cache_control_latest.json",
+        {"overall_status": "ready", "cache_health": {"snapshot_ready": True}},
+    )
     _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready"})
-    _write_json(health / "rolling_restart_controller_latest.json", {"overall_status": "ready"})
-    _write_json(health / "artifact_freshness_slo_latest.json", {"overall_status": "ready", "sla_summary": {"stale_required": 0}})
+    _write_json(
+        health / "rolling_restart_controller_latest.json", {"overall_status": "ready"}
+    )
+    _write_json(
+        health / "artifact_freshness_slo_latest.json",
+        {"overall_status": "ready", "sla_summary": {"stale_required": 0}},
+    )
     _write_json(health / "blackstart_recovery_latest.json", {"overall_status": "ready"})
-    _write_json(health / "sleeve_isolation_guard_latest.json", {"overall_status": "ready"})
-    _write_json(health / "remote_alert_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "sleeve_isolation_guard_latest.json", {"overall_status": "ready"}
+    )
+    _write_json(
+        health / "remote_alert_control_latest.json", {"overall_status": "ready"}
+    )
     _write_json(health / "storage_quota_guard_latest.json", {"overall_status": "ready"})
-    _write_json(health / "chaos_drill_coordinator_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "chaos_drill_coordinator_latest.json", {"overall_status": "ready"}
+    )
     _write_json(
         health / "master_infrastructure_supervisor_latest.json",
         {
@@ -591,9 +1028,331 @@ def test_operator_cockpit_keeps_storage_steady_when_sql_overlay_clears_raw_backl
     assert payload["readiness_domains"]["storage_backpressure"]["status"] == "ready"
 
 
-def test_daily_verify_auto_remediation_bot_builds_actionable_plan(tmp_path: Path) -> None:
+def test_operator_cockpit_keeps_small_bounded_storage_tail_steady() -> None:
+    storage = {
+        "overall_status": "ready",
+        "severity": "stable",
+        "pressure_index": 0.175,
+        "steady_state": {"target_status": {"steady_state_ready": True}},
+        "queue_watermarks": {"breaches": {"hard": [], "elevated": []}},
+        "backpressure": {
+            "total_pending_lines": 4700,
+            "core_pending_lines": 3266,
+            "estimated_total_drain_minutes": 5.0,
+        },
+        "storage": {"backlog_drain_recommended_now": True},
+        "writer_shedding": {"active": False},
+    }
+
+    assert cockpit_src._is_storage_steady(storage, {"recommended_now": True}) is True
+
+
+def test_operator_cockpit_contains_transient_pressure_index_target_debt() -> None:
+    storage = {
+        "overall_status": "ready",
+        "severity": "stable",
+        "pressure_index": 0.576,
+        "steady_state": {
+            "quality_score": 99.0,
+            "target_status": {
+                "steady_state_ready": False,
+                "target_breaches": ["pressure_index"],
+            },
+        },
+        "queue_watermarks": {
+            "overall_status": "ready",
+            "breaches": {"hard": [], "elevated": [], "target": []},
+        },
+        "backpressure": {
+            "total_pending_lines": 2619,
+            "core_pending_lines": 1748,
+            "estimated_total_drain_minutes": 0.18,
+        },
+        "storage": {"backlog_drain_recommended_now": True},
+        "writer_shedding": {"active": False},
+    }
+
+    assert cockpit_src._is_storage_steady(storage, {"recommended_now": True}) is True
+
+
+def test_operator_cockpit_downgrades_contained_master_infra_debt_to_advisory() -> None:
+    master_infra = {
+        "overall_status": "blocked",
+        "operator_followups": [],
+        "hardening_scorecard": {
+            "truth_layer_ready": True,
+            "storage_route_certified": True,
+            "process_ownership_canonical": True,
+            "command_surface_clean": True,
+            "launchd_jobs_installed": True,
+        },
+        "checks": [
+            {"name": "governance_artifact_freshness", "status": "blocked"},
+            {"name": "self_auditing_infra_bots", "status": "blocked"},
+        ],
+    }
+
+    assert (
+        cockpit_src._master_infra_status(
+            master_infra,
+            storage_steady=True,
+            process_ready=True,
+        )
+        == "advisory"
+    )
+
+
+def test_operator_cockpit_reports_degradation_containment_for_evidence_debt(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
-    _write_json(project_root / "governance" / "health" / "daily_auto_verify_latest.json", {"failed_checks": ["replay_hash_registry_guard", "db_integrity"]})
+    health = project_root / "governance" / "health"
+    _write_json(
+        health / "runtime_gate_dashboard_latest.json",
+        {
+            "overall": {
+                "status": "warn",
+                "ok": False,
+                "attention": ["promotion_not_ready"],
+            }
+        },
+    )
+    _write_json(health / "training_report_latest.json", {"overall_status": "blocked"})
+    _write_json(
+        health / "training_quality_control_latest.json", {"overall_status": "blocked"}
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.01,
+            "steady_state": {"target_status": {"steady_state_ready": True}},
+            "queue_watermarks": {"breaches": {"hard": [], "elevated": []}},
+            "backpressure": {
+                "total_pending_lines": 100,
+                "core_pending_lines": 50,
+                "estimated_total_drain_minutes": 0.0,
+            },
+            "storage": {"backlog_drain_recommended_now": False},
+            "writer_shedding": {"active": False},
+        },
+    )
+    _write_json(
+        health / "external_backlog_drain_latest.json", {"overall_status": "ready"}
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {
+            "overall_status": "ready",
+            "memory_snapshot": {
+                "memory_pressure_state": "green",
+                "memory_pressure_kind": "none",
+                "swap_used_gb": 0.4,
+            },
+        },
+    )
+    _write_json(health / "global_killswitch_latest.json", {"halt": False})
+    _write_json(health / "process_watchdog_latest.json", {"overall_status": "ready"})
+    _write_json(health / "storage_tier_policy_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(
+        health / "runtime_snapshot_cache_control_latest.json",
+        {"overall_status": "ready"},
+    )
+    _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "rolling_restart_controller_latest.json", {"overall_status": "ready"}
+    )
+    _write_json(
+        health / "artifact_freshness_slo_latest.json", {"overall_status": "ready"}
+    )
+    _write_json(health / "blackstart_recovery_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "sleeve_isolation_guard_latest.json", {"overall_status": "ready"}
+    )
+    _write_json(
+        health / "remote_alert_control_latest.json", {"overall_status": "ready"}
+    )
+    _write_json(health / "storage_quota_guard_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "chaos_drill_coordinator_latest.json", {"overall_status": "ready"}
+    )
+    _write_json(
+        health / "source_verification_latest.json",
+        {
+            "overall_status": "degraded",
+            "source_runtime_contract": {
+                "decision_critical_sources_ready": True,
+                "decision_critical_blockers": [],
+                "decision_context_debt": ["decision_context_mesh"],
+                "optional_enrichment_debt": [],
+            },
+        },
+    )
+    _write_json(
+        health / "bot_organization_latest.json",
+        {
+            "overall_status": "ready_with_review_debt",
+            "tripwire_summary": {"blocking_tripwire_count": 0},
+        },
+    )
+    _write_json(
+        health / "bot_profitability_scalability_latest.json",
+        {
+            "overall_status": "ready_with_evidence_debt",
+            "control_grade": "A+",
+            "profitability_diagnosis": {"profitability_claim_ready": False},
+        },
+    )
+    _write_json(
+        health / "sleeve_scalability_selector_latest.json",
+        {
+            "overall_status": "ready_with_evidence_debt",
+            "control_ready": True,
+            "recommendation_ready": False,
+        },
+    )
+    _write_json(
+        health / "master_grandmaster_evidence_v2_latest.json",
+        {
+            "overall_status": "ready_with_evidence_debt",
+            "structural_grade": "A+",
+            "paper_coordination_ready": True,
+            "grand_master": {"automatic_live_promotion_allowed": False},
+        },
+    )
+    _write_json(
+        health / "master_infrastructure_supervisor_latest.json",
+        {
+            "overall_status": "blocked",
+            "operator_followups": [],
+            "hardening_scorecard": {
+                "truth_layer_ready": True,
+                "storage_route_certified": True,
+                "process_ownership_canonical": True,
+                "command_surface_clean": True,
+                "launchd_jobs_installed": True,
+            },
+            "checks": [
+                {"name": "process_lane_ownership", "status": "ready"},
+                {"name": "governance_artifact_freshness", "status": "blocked"},
+                {"name": "self_auditing_infra_bots", "status": "blocked"},
+            ],
+        },
+    )
+    _write_json(
+        health / "degradation_swarm_coordinator_latest.json",
+        {
+            "overall_status": "executed_with_followups",
+            "swarm": {
+                "active_assignment_count": 5,
+                "safe_executable_assignment_count": 4,
+                "active_sections": ["ops_brain", "trading_brain"],
+                "active_phase_order": ["observe", "repair", "verify"],
+            },
+            "execution_summary": {
+                "executed_count": 0,
+                "effective_completed_count": 4,
+            },
+            "operating_model": {
+                "active_sections": ["ops_brain", "trading_brain"],
+                "active_phase_order": ["observe", "repair", "verify"],
+                "refinement_backlog": [
+                    {
+                        "lane": "source_verification",
+                        "section": "trading_brain",
+                        "need": "context_sources_need_release_criteria_and_confidence_budget",
+                    }
+                ],
+                "sections": {
+                    "ops_brain": {"lanes": ["storage_reserve"]},
+                    "trading_brain": {"lanes": ["source_verification"]},
+                },
+            },
+        },
+    )
+
+    payload = cockpit_src.build_payload(project_root)
+
+    assert payload["adaptive_posture"]["collection_surface_ready"] is True
+    assert (
+        payload["adaptive_posture"]["degradation_containment_status"]
+        == "contained_degradation"
+    )
+    assert payload["degradation_containment"]["status"] == "contained_degradation"
+    assert payload["degradation_containment"]["safe_to_keep_collecting"] is True
+    assert payload["degradation_containment"]["safe_to_train_or_promote"] is False
+    assert (
+        "source_verification"
+        in payload["degradation_containment"]["contained_degradation_lanes"]
+    )
+    assert (
+        payload["degradation_containment"]["lanes"]["source_verification"]["status"]
+        == "context_debt"
+    )
+    assert (
+        payload["degradation_containment"]["lanes"]["ops_self_audit"]["contained"]
+        is True
+    )
+    assert payload["adaptive_posture"]["degradation_swarm_active_sections"] == [
+        "ops_brain",
+        "trading_brain",
+    ]
+    assert payload["adaptive_posture"]["degradation_swarm_phase_order"] == [
+        "observe",
+        "repair",
+        "verify",
+    ]
+    assert payload["long_run_lanes"]["degradation_swarm"]["summary"] == (
+        "assignments=5 safe_executable=4 completed=4 current_run=0 sections=2 refine=1"
+    )
+    assert payload["degradation_swarm_operating_model"]["refinement_backlog_count"] == 1
+    storage_contract = payload["storage_lifecycle_contract"]
+    assert storage_contract["complete"] is True
+    assert storage_contract["domain"] == "storage_lifecycle"
+    assert "starting_competing_sqlite_writers" in storage_contract["blocked_authority"]
+
+    _write_json(
+        health / "master_grandmaster_evidence_v2_latest.json",
+        {
+            "overall_status": "operational_hold",
+            "structural_grade": "A+",
+            "paper_coordination_ready": False,
+            "operational_holds": ["master_grandmaster_runtime_capacity_not_ready"],
+            "grand_master": {"automatic_live_promotion_allowed": False},
+        },
+    )
+
+    payload = cockpit_src.build_payload(project_root)
+
+    assert payload["degradation_containment"]["status"] == "contained_degradation"
+    assert (
+        payload["degradation_containment"]["lanes"]["master_grandmaster"]["contained"]
+        is True
+    )
+    assert (
+        "master_grandmaster"
+        in payload["degradation_containment"]["contained_degradation_lanes"]
+    )
+    assert (
+        "master_grandmaster"
+        not in payload["degradation_containment"]["uncontained_lanes"]
+    )
+    assert payload["degradation_containment"]["safe_to_train_or_promote"] is False
+
+
+def test_daily_verify_auto_remediation_bot_builds_actionable_plan(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "governance" / "health" / "daily_auto_verify_latest.json",
+        {"failed_checks": ["replay_hash_registry_guard", "db_integrity"]},
+    )
 
     payload = remediation_src.build_payload(project_root, apply=False)
 
@@ -602,7 +1361,9 @@ def test_daily_verify_auto_remediation_bot_builds_actionable_plan(tmp_path: Path
     assert all(row["actionable"] for row in payload["attempts"])
 
 
-def test_daily_verify_auto_remediation_resolves_signed_seed_ready_promotion_packet(tmp_path: Path, monkeypatch) -> None:
+def test_daily_verify_auto_remediation_resolves_signed_seed_ready_promotion_packet(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     _write_json(
         project_root / "governance" / "health" / "daily_auto_verify_latest.json",
@@ -614,7 +1375,10 @@ def test_daily_verify_auto_remediation_resolves_signed_seed_ready_promotion_pack
             "signing_material_ready": True,
             "trained_models_complete": True,
             "signature": {"status": "verified", "verified": True},
-            "replayability_contract": {"hash_bundle_complete": True, "exact_replay_ready": True},
+            "replayability_contract": {
+                "hash_bundle_complete": True,
+                "exact_replay_ready": True,
+            },
             "gate_results": {
                 "training_success_confirmed": False,
                 "feature_store_manifest_strict_ok": True,

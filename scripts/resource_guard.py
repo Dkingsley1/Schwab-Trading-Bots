@@ -668,13 +668,22 @@ def main() -> int:
     parser.add_argument("--min-memory-free-pct", type=float, default=float(os.getenv("RESOURCE_GUARD_MIN_MEMORY_FREE_PCT", "10")))
     parser.add_argument("--max-editing-cpu", type=float, default=float(os.getenv("RESOURCE_GUARD_MAX_EDITING_CPU", "180")))
     parser.add_argument("--emit-path", default=None)
+    parser.add_argument(
+        "--ignore-support-freeze",
+        action="store_true",
+        help="Evaluate real resource pressure even when support work is paused. Intended only for hard-deadline risk evidence.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
     emit = Path(args.emit_path).resolve() if args.emit_path else (project_root / "governance" / "health" / "resource_guard_latest.json")
     freeze_contract = support_maintenance_freeze_contract(project_root, "resource_guard")
-    if bool(freeze_contract.get("active", False)) and _support_freeze_blocks_profile(args.profile):
+    if (
+        bool(freeze_contract.get("active", False))
+        and _support_freeze_blocks_profile(args.profile)
+        and not args.ignore_support_freeze
+    ):
         payload = frozen_health_payload(emit, freeze_contract, ok=True)
         payload.update(
             {

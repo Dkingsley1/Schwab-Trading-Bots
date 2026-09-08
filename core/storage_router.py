@@ -5,12 +5,17 @@ import os
 import filecmp
 import shutil
 import time
+import stat
+from collections import deque
 from fnmatch import fnmatchcase
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from core.runtime_maintenance import maintenance_hold_snapshot
+from core.runtime_maintenance import (
+    maintenance_hold_snapshot,
+    maintenance_hold_token_authorized,
+)
 from core.storage_mounts import resolve_external_storage_paths
 
 DEFAULT_EXTERNAL_MOUNT = "/Volumes/BOT_LOGS"
@@ -80,6 +85,68 @@ def _resolve_link_target(link_path: Path) -> Path | None:
     if not target.is_absolute():
         target = (link_path.parent / target)
     return _normalized_path_no_io(target)
+
+
+def inspect_storage_path(path: Path | str) -> dict[str, object]:
+    """Inspect one route, stopping before any metadata access to protected storage.
+
+    This is a bounded, point-in-time observation, not a writer lease, integrity
+    check, or authorization to move data. Walk symlink components so a protected
+    target is rejected before Path.resolve() could traverse it.
+    """
+    original = Path(path).expanduser()
+    if not original.is_absolute():
+        original = Path.cwd() / original
+    pending = deque(original.parts[1:])
+    current = Path("/")
+    links: list[dict[str, str]] = []
+    result: dict[str, object] = {
+        "logical_path": str(original),
+        "resolved_path": "",
+        "status": "inspection_error",
+        "symlinks": links,
+        "integrity_verified": False,
+        "delete_authority": False,
+    }
+    try:
+        while pending:
+            part = pending.popleft()
+            if part == "..":
+                current = current.parent
+                continue
+            candidate = current / part
+            candidate_text = str(candidate).casefold()
+            if candidate_text == "/volumes/video" or candidate_text.startswith("/volumes/video/"):
+                result.update(status="protected_path", resolved_path=str(candidate))
+                return result
+            info = candidate.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                if len(links) >= 40:
+                    result.update(status="symlink_loop", resolved_path=str(candidate))
+                    return result
+                target = Path(os.readlink(candidate))
+                links.append({"path": str(candidate), "target": str(target)})
+                if target.is_absolute():
+                    current = Path("/")
+                    pending.extendleft(reversed(target.parts[1:]))
+                else:
+                    pending.extendleft(reversed(target.parts))
+            else:
+                if pending and not stat.S_ISDIR(info.st_mode):
+                    raise NotADirectoryError(str(candidate))
+                current = candidate
+        info = current.lstat()
+        result.update(
+            status="present",
+            resolved_path=str(current),
+            kind="directory" if stat.S_ISDIR(info.st_mode) else "file",
+            size_bytes=info.st_size if stat.S_ISREG(info.st_mode) else None,
+        )
+    except FileNotFoundError:
+        result.update(status="missing", resolved_path=str(candidate.joinpath(*pending)))
+    except OSError as exc:
+        result.update(error_type=type(exc).__name__, resolved_path=str(current))
+    return result
 
 
 def _is_writable_directory(path: Path) -> bool:
@@ -642,9 +709,10 @@ def route_runtime_storage(
 ) -> StorageRoutingResult:
     root = Path(project_root).resolve()
     maintenance_hold = maintenance_hold_snapshot(root)
-    if bool(maintenance_hold.get("active", False)) and not _env_flag(
-        "BOT_STORAGE_ROUTE_ALLOW_DURING_MAINTENANCE",
-        "0",
+    if (
+        bool(maintenance_hold.get("active", False))
+        and not maintenance_hold_token_authorized(maintenance_hold)
+        and not _env_flag("BOT_STORAGE_ROUTE_ALLOW_DURING_MAINTENANCE", "0")
     ):
         raise RuntimeError("runtime_maintenance_hold_blocks_storage_route_mutation")
     local_root = Path(

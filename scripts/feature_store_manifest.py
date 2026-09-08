@@ -191,7 +191,12 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     feature_versions_path = project_root / "governance" / "feature_versions" / "latest.json"
     feature_versions = _load_json(feature_versions_path)
     prior_manifest = _load_json(project_root / "governance" / "feature_store" / "latest.json")
-    coverage = _load_json(health_root / "snapshot_coverage_latest.json")
+    coverage, coverage_path = _load_first_json(
+        [
+            health_root / "snapshot_coverage_training_latest.json",
+            health_root / "snapshot_coverage_latest.json",
+        ]
+    )
     event_store = _load_json(health_root / "point_in_time_event_store_latest.json")
     retrain_scorecard = _load_json(health_root / "retrain_scorecard_latest.json")
     trade_behavior_dataset, trade_behavior_dataset_path = _load_first_json(
@@ -338,6 +343,8 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "event_join_keys": ["join_key", "category", "timestamp_utc"],
         "snapshot_coverage_ratio": round(coverage_ratio, 6),
         "snapshot_coverage_floor": round(min_coverage_ratio, 6),
+        "snapshot_coverage_window_hours": _safe_int(coverage.get("window_hours"), 0),
+        "snapshot_coverage_source": str(coverage_path),
         "rows_with_snapshot_id": _safe_int(coverage.get("rows_with_snapshot_id"), 0),
         "unique_snapshot_ids": _safe_int(coverage.get("unique_snapshot_ids"), 0),
         "event_count": event_count,
@@ -621,7 +628,7 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "evidence": {
             "runtime_training_snapshot": str(health_root / "runtime_training_snapshot_latest.json"),
             "feature_versions": str(feature_versions_path),
-            "snapshot_coverage": str(health_root / "snapshot_coverage_latest.json"),
+            "snapshot_coverage": str(coverage_path),
             "point_in_time_event_store": str(health_root / "point_in_time_event_store_latest.json"),
             "retrain_scorecard": str(health_root / "retrain_scorecard_latest.json"),
             "trade_behavior_dataset": trade_behavior_dataset_path_text,

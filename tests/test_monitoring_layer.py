@@ -5,7 +5,6 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -22,7 +21,29 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _write_ready_bot_organization(health_root: Path, now: datetime) -> None:
     _write_json(
-        health_root.parent / "collector_capabilities" / "materialized_capabilities_latest.json",
+        health_root / "system_role_contract_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+            "grade": "A+",
+            "operating_mode": "enforced_responsibility_contracts",
+            "summary": {
+                "role_count": 15,
+                "component_count": 23,
+                "state_domain_count": 23,
+                "control_surface_binding_count": 22,
+                "exclusive_action_count": 9,
+                "registry_role_coverage_ratio": 1.0,
+                "authority_conflict_count": 0,
+            },
+            "blockers": [],
+        },
+    )
+    _write_json(
+        health_root.parent
+        / "collector_capabilities"
+        / "materialized_capabilities_latest.json",
         {
             "timestamp_utc": now.isoformat(),
             "ok": True,
@@ -86,6 +107,21 @@ def _write_ready_bot_organization(health_root: Path, now: datetime) -> None:
         },
     )
     _write_json(
+        health_root / "sleeve_scalability_selector_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+            "grade": "A+",
+            "structural_grade": "A+",
+            "selection_mode": "evidence_bound_shadow_planning",
+            "eligible_sleeve_count": 1,
+            "selected_sleeve_count": 1,
+            "live_execution_allowed": False,
+            "blockers": [],
+        },
+    )
+    _write_json(
         health_root / "master_grandmaster_evidence_v2_latest.json",
         {
             "timestamp_utc": now.isoformat(),
@@ -116,8 +152,16 @@ def test_health_gates_prefers_freshest_ingestion_payload(tmp_path: Path) -> None
     newer = tmp_path / "jsonl_sql_ingestion_health_trading_latest.json"
     now = datetime.now(timezone.utc)
 
-    _write_json(older, {"timestamp_utc": (now - timedelta(hours=3)).isoformat(), "sqlite": {"pending_lines": 90}})
-    _write_json(newer, {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 5}})
+    _write_json(
+        older,
+        {
+            "timestamp_utc": (now - timedelta(hours=3)).isoformat(),
+            "sqlite": {"pending_lines": 90},
+        },
+    )
+    _write_json(
+        newer, {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 5}}
+    )
 
     payload, source = health_gates._freshest_non_empty_json([older, newer])
 
@@ -125,7 +169,9 @@ def test_health_gates_prefers_freshest_ingestion_payload(tmp_path: Path) -> None
     assert payload["sqlite"]["pending_lines"] == 5
 
 
-def test_health_gates_does_not_hard_gate_tiny_old_ingestion_tail(tmp_path: Path, monkeypatch) -> None:
+def test_health_gates_does_not_hard_gate_tiny_old_ingestion_tail(
+    tmp_path: Path, monkeypatch
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     sql_root = tmp_path / "exports" / "sql_reports"
@@ -138,12 +184,19 @@ def test_health_gates_does_not_hard_gate_tiny_old_ingestion_tail(tmp_path: Path,
             "watchdog_restarts": "0",
         },
     )
-    _write_json(sql_root / "daily_runtime_summary_latest.json", {"timestamp_utc": now.isoformat(), "watchdog": {"restarts": 0}})
+    _write_json(
+        sql_root / "daily_runtime_summary_latest.json",
+        {"timestamp_utc": now.isoformat(), "watchdog": {"restarts": 0}},
+    )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
         {
             "timestamp_utc": now.isoformat(),
-            "sqlite": {"pending_lines": 999, "oldest_uningested_age_seconds": 3131.7, "invalid": 0},
+            "sqlite": {
+                "pending_lines": 999,
+                "oldest_uningested_age_seconds": 3131.7,
+                "invalid": 0,
+            },
         },
     )
     _write_json(
@@ -157,10 +210,14 @@ def test_health_gates_does_not_hard_gate_tiny_old_ingestion_tail(tmp_path: Path,
         },
     )
 
-    monkeypatch.setattr(sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)]
+    )
     rc = health_gates.main()
 
-    payload = json.loads((health_root / "health_gates_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health_root / "health_gates_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["hard_gate_triggered"] is False
@@ -173,8 +230,18 @@ def test_daily_auto_verify_resolves_best_freshness_artifact(tmp_path: Path) -> N
     original_groups = daily_auto_verify.DEFAULT_FRESHNESS_FILE_GROUPS
     try:
         daily_auto_verify.PROJECT_ROOT = tmp_path
-        old_file = tmp_path / "governance" / "health" / "jsonl_sql_ingestion_health_latest.json"
-        new_file = tmp_path / "governance" / "health" / "jsonl_sql_ingestion_health_trading_latest.json"
+        old_file = (
+            tmp_path
+            / "governance"
+            / "health"
+            / "jsonl_sql_ingestion_health_latest.json"
+        )
+        new_file = (
+            tmp_path
+            / "governance"
+            / "health"
+            / "jsonl_sql_ingestion_health_trading_latest.json"
+        )
         now = datetime.now(timezone.utc)
         _write_json(old_file, {"timestamp_utc": (now - timedelta(hours=2)).isoformat()})
         _write_json(new_file, {"timestamp_utc": now.isoformat()})
@@ -188,26 +255,51 @@ def test_daily_auto_verify_resolves_best_freshness_artifact(tmp_path: Path) -> N
         daily_auto_verify.DEFAULT_FRESHNESS_FILE_GROUPS = original_groups
 
 
-def test_runtime_gate_dashboard_ignores_stale_daily_verify_failures_when_fresh_gates_are_green(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_ignores_stale_daily_verify_failures_when_fresh_gates_are_green(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
 
     _write_json(
         health_root / "session_ready_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
     )
     _write_json(
         health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 99.9, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.9,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
     )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
-        {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
     )
     _write_json(
         health_root / "sql_link_service_progress_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running", "current_step": "merge_primary"},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "current_step": "merge_primary",
+        },
     )
     _write_json(
         health_root / "daily_auto_verify_latest.json",
@@ -218,48 +310,244 @@ def test_runtime_gate_dashboard_ignores_stale_daily_verify_failures_when_fresh_g
             "completed_checks": 39,
         },
     )
-    _write_json(health_root / "replay_hash_registry_guard_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "failed_checks": []})
-    _write_json(health_root / "promotion_quality_gate_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "failed_checks": []})
+    _write_json(
+        health_root / "replay_hash_registry_guard_latest.json",
+        {"timestamp_utc": now.isoformat(), "ok": True, "failed_checks": []},
+    )
+    _write_json(
+        health_root / "promotion_quality_gate_latest.json",
+        {"timestamp_utc": now.isoformat(), "ok": True, "failed_checks": []},
+    )
     _write_json(
         walk_root / "new_bot_graduation_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "maturity": {"mature_bots": 8}, "immature_active_count": 0},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "maturity": {"mature_bots": 8},
+            "immature_active_count": 0,
+        },
     )
     _write_json(
         walk_root / "promotion_readiness_latest.json",
-        {"timestamp_utc": now.isoformat(), "promote_ok": True, "considered_bots": 5, "failed_bots": 0, "fail_share": 0.0},
+        {
+            "timestamp_utc": now.isoformat(),
+            "promote_ok": True,
+            "considered_bots": 5,
+            "failed_bots": 0,
+            "fail_share": 0.0,
+        },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
     assert "daily_auto_verify_not_ok" not in payload["overall"]["attention"]
-    assert payload["artifacts"]["daily_auto_verify"]["summary"]["effective_failed_checks"] == []
-    assert sorted(payload["artifacts"]["daily_auto_verify"]["summary"]["resolved_failed_checks"]) == [
+    assert (
+        payload["artifacts"]["daily_auto_verify"]["summary"]["effective_failed_checks"]
+        == []
+    )
+    assert sorted(
+        payload["artifacts"]["daily_auto_verify"]["summary"]["resolved_failed_checks"]
+    ) == [
         "new_bot_graduation_gate",
         "replay_hash_registry_guard",
     ]
 
 
-def test_runtime_gate_dashboard_dedupes_daily_verify_when_only_promotion_gate_remains(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_manages_safe_cross_cadence_snapshot_skew(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=35)).isoformat(),
+            "hard_gate_triggered": False,
+        },
+    )
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "armed": True,
+            "blocked_reasons": [],
+        },
+    )
+    _write_json(
+        health_root / "unattended_soak_readiness_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=36)).isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+        },
+    )
+    _write_json(
+        health_root / "all_sleeves_launcher_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+            "launcher_readiness_contract": {
+                "collection_fanout_ready": True,
+                "paper_execution_ready": True,
+                "readiness_status": "ready",
+                "execution_attention": [],
+            },
+        },
+    )
+
+    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
+    contract = payload["safety_evidence_snapshot"]
+
+    assert "safety_evidence_snapshot_skew" not in payload["overall"]["attention"]
+    assert contract["consistent"] is True
+    assert contract["raw_consistent"] is False
+    assert contract["managed_cadence_skew"] is True
+    assert contract["current_sources_agree_safe"] is True
+    assert contract["stale_sources"] == ["unattended_soak_readiness"]
+
+
+def test_runtime_gate_dashboard_manages_guarded_execution_snapshot_skew(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=35)).isoformat(),
+            "hard_gate_triggered": False,
+        },
+    )
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "armed": True,
+            "blocked_reasons": [],
+        },
+    )
+    _write_json(
+        health_root / "unattended_soak_readiness_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=36)).isoformat(),
+            "ok": False,
+            "overall_status": "blocked",
+        },
+    )
+    _write_json(
+        health_root / "all_sleeves_launcher_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "guarded_ready",
+            "launcher_readiness_contract": {
+                "collection_fanout_ready": True,
+                "paper_execution_ready": False,
+                "readiness_status": "resident_execution_safety_hold",
+                "execution_attention": [],
+            },
+        },
+    )
+
+    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
+    contract = payload["safety_evidence_snapshot"]
+
+    assert "safety_evidence_snapshot_skew" not in payload["overall"]["attention"]
+    assert "paper_execution_safety_guard_active" in payload["overall"]["attention"]
+    assert contract["consistent"] is True
+    assert contract["managed_cadence_skew"] is True
+    assert contract["current_sources_agree_safe"] is False
+    assert contract["current_sources_safe_or_execution_guarded"] is True
+    assert contract["current_guarded_execution_sources"] == ["all_sleeves_launcher"]
+    assert contract["current_conflict_sources"] == []
+
+
+def test_runtime_gate_dashboard_keeps_snapshot_skew_degraded_on_current_safety_conflict(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=35)).isoformat(),
+            "hard_gate_triggered": True,
+        },
+    )
+    _write_json(
+        health_root / "paper_400_ramp_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "armed": True,
+            "blocked_reasons": [],
+        },
+    )
+
+    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
+    contract = payload["safety_evidence_snapshot"]
+
+    assert "safety_evidence_snapshot_skew" in payload["overall"]["attention"]
+    assert contract["consistent"] is False
+    assert contract["managed_cadence_skew"] is False
+    assert contract["current_sources_agree_safe"] is False
+
+
+def test_runtime_gate_dashboard_dedupes_daily_verify_when_only_promotion_gate_remains(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
 
     _write_json(
         health_root / "session_ready_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
     )
     _write_json(
         health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 99.9, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.9,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
     )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
-        {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
     )
     _write_json(
         health_root / "sql_link_service_progress_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running", "current_step": "merge_primary"},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "current_step": "merge_primary",
+        },
     )
     _write_json(
         health_root / "daily_auto_verify_latest.json",
@@ -270,27 +558,60 @@ def test_runtime_gate_dashboard_dedupes_daily_verify_when_only_promotion_gate_re
             "completed_checks": 39,
         },
     )
-    _write_json(health_root / "replay_hash_registry_guard_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "failed_checks": []})
-    _write_json(health_root / "promotion_quality_gate_latest.json", {"timestamp_utc": now.isoformat(), "ok": False, "failed_checks": ["promotion_gate_blocked"]})
+    _write_json(
+        health_root / "replay_hash_registry_guard_latest.json",
+        {"timestamp_utc": now.isoformat(), "ok": True, "failed_checks": []},
+    )
+    _write_json(
+        health_root / "promotion_quality_gate_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": False,
+            "failed_checks": ["promotion_gate_blocked"],
+        },
+    )
     _write_json(
         walk_root / "new_bot_graduation_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "maturity": {"mature_bots": 8}, "immature_active_count": 0},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "maturity": {"mature_bots": 8},
+            "immature_active_count": 0,
+        },
     )
     _write_json(
         walk_root / "promotion_readiness_latest.json",
-        {"timestamp_utc": now.isoformat(), "promote_ok": False, "considered_bots": 5, "failed_bots": 3, "fail_share": 0.6},
+        {
+            "timestamp_utc": now.isoformat(),
+            "promote_ok": False,
+            "considered_bots": 5,
+            "failed_bots": 3,
+            "fail_share": 0.6,
+        },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
     assert "promotion_not_ready" in payload["overall"]["attention"]
     assert "daily_auto_verify_not_ok" not in payload["overall"]["attention"]
-    assert payload["artifacts"]["daily_auto_verify"]["summary"]["effective_failed_checks"] == ["promotion_quality_gate"]
+    assert payload["artifacts"]["daily_auto_verify"]["summary"][
+        "effective_failed_checks"
+    ] == ["promotion_quality_gate"]
 
 
-def test_runtime_gate_dashboard_resolves_signed_seed_ready_promotion_packet_daily_failure(tmp_path: Path) -> None:
-    packet_path = tmp_path / "governance" / "champion_challenger" / "promotion_packet_latest.json"
+def test_runtime_gate_dashboard_resolves_signed_seed_ready_promotion_packet_daily_failure(
+    tmp_path: Path,
+) -> None:
+    packet_path = (
+        tmp_path / "governance" / "champion_challenger" / "promotion_packet_latest.json"
+    )
     _write_json(
         packet_path,
         {
@@ -299,7 +620,10 @@ def test_runtime_gate_dashboard_resolves_signed_seed_ready_promotion_packet_dail
             "signing_material_ready": True,
             "trained_models_complete": True,
             "signature": {"status": "verified", "verified": True},
-            "replayability_contract": {"hash_bundle_complete": True, "exact_replay_ready": True},
+            "replayability_contract": {
+                "hash_bundle_complete": True,
+                "exact_replay_ready": True,
+            },
             "gate_results": {
                 "training_success_confirmed": False,
                 "feature_store_manifest_strict_ok": True,
@@ -317,28 +641,57 @@ def test_runtime_gate_dashboard_resolves_signed_seed_ready_promotion_packet_dail
     assert resolved == ["promotion_packet_builder"]
 
 
-def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
     _write_ready_bot_organization(health_root, now)
 
-    _write_json(health_root / "session_ready_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "checks": []})
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {"timestamp_utc": now.isoformat(), "ok": True, "checks": []},
+    )
     _write_json(
         health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 91.5, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.0}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 91.5,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.0},
+        },
     )
     _write_json(
         health_root / "sql_link_service_progress_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running", "current_step": "merge_primary"},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "current_step": "merge_primary",
+        },
     )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
-        {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}, "files_discovered": 1},
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+            "files_discovered": 1,
+        },
     )
     _write_json(
         health_root / "unattended_soak_readiness_latest.json",
-        {"timestamp_utc": now.isoformat(), "overall_status": "ready", "overall_grade": "A+", "safe_to_leave_unattended": True},
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall_status": "ready",
+            "overall_grade": "A+",
+            "safe_to_leave_unattended": True,
+        },
     )
     _write_json(
         health_root / "runtime_paper_regression_guard_latest.json",
@@ -353,7 +706,10 @@ def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(tmp_pa
             "paper_stage": "armed",
         },
     )
-    _write_json(health_root / "health_fast_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "overall_status": "ready"})
+    _write_json(
+        health_root / "health_fast_latest.json",
+        {"timestamp_utc": now.isoformat(), "ok": True, "overall_status": "ready"},
+    )
     _write_json(
         health_root / "daily_auto_verify_latest.json",
         {
@@ -388,7 +744,17 @@ def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(tmp_pa
             "overall_status": "ready",
             "severity": "stable",
             "pressure_index": 0.405,
-            "continuous_run_soak_contract": {"status": "watch", "soak_ready": True, "blockers": []},
+            "continuous_run_soak_contract": {
+                "status": "watch",
+                "soak_ready": True,
+                "blockers": [],
+            },
+            "backpressure": {"effective_pressure_clear": True},
+            "storage": {
+                "raw_aged_backlog_candidate_files": 5,
+                "aged_backlog_candidate_files": 0,
+                "aged_backlog_candidate_files_suppressed_by_effective_pressure": True,
+            },
         },
     )
     _write_json(
@@ -399,9 +765,12 @@ def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(tmp_pa
             "recommended_now": True,
             "material_drain_recommended": True,
             "writer_busy": True,
-            "aged_candidate_files": 0,
+            "aged_candidate_files": 5,
             "candidate_files": 0,
-            "follow_through": {"status": "handoff_requested", "progress_state": "requested_live_writer"},
+            "follow_through": {
+                "status": "handoff_requested",
+                "progress_state": "requested_live_writer",
+            },
         },
     )
     _write_json(
@@ -431,7 +800,12 @@ def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(tmp_pa
     )
     _write_json(
         health_root / "infrastructure_autofix_bot_latest.json",
-        {"timestamp_utc": now.isoformat(), "overall_status": "blocked", "applyable_repair_count": 7, "operator_followups": []},
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall_status": "blocked",
+            "applyable_repair_count": 7,
+            "operator_followups": [],
+        },
     )
     _write_json(
         health_root / "live_runtime_separation_control_latest.json",
@@ -439,7 +813,10 @@ def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(tmp_pa
             "timestamp_utc": now.isoformat(),
             "overall_status": "degraded",
             "live_plane": {"ready": True},
-            "release_contract": {"live_lane_should_be_read_only": True, "promotions_should_wait_for_cold_lane": True},
+            "release_contract": {
+                "live_lane_should_be_read_only": True,
+                "promotions_should_wait_for_cold_lane": True,
+            },
             "shared_host_pressure": {
                 "restart_storms": 0,
                 "restart_storm_contention_count": 0,
@@ -455,7 +832,11 @@ def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(tmp_pa
             "policies": {
                 "live_orders": {
                     "allowed": False,
-                    "blockers": ["paper_trade_lock_active", "runtime_release_live_read_only", "live_runtime_release_read_only"],
+                    "blockers": [
+                        "paper_trade_lock_active",
+                        "runtime_release_live_read_only",
+                        "live_runtime_release_read_only",
+                    ],
                 },
                 "paper_execution": {"allowed": True, "paper_trade_lock_active": True},
                 "terminal_restart": {"safe": True},
@@ -465,14 +846,35 @@ def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(tmp_pa
     )
     _write_json(
         health_root / "storage_quota_guard_latest.json",
-        {"timestamp_utc": now.isoformat(), "overall_status": "degraded", "quota_summary": {"hard_breaches": 0, "soft_breaches": 1, "blocked_families": []}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall_status": "degraded",
+            "quota_summary": {
+                "hard_breaches": 0,
+                "soft_breaches": 1,
+                "blocked_families": [],
+            },
+        },
     )
     _write_json(
         health_root / "runtime_snapshot_cache_control_latest.json",
-        {"timestamp_utc": now.isoformat(), "overall_status": "degraded", "cache_health": {"snapshot_ready": True}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall_status": "degraded",
+            "cache_health": {"snapshot_ready": True},
+        },
     )
-    _write_json(walk_root / "promotion_readiness_latest.json", {"timestamp_utc": now.isoformat(), "promote_ok": False})
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        walk_root / "promotion_readiness_latest.json",
+        {"timestamp_utc": now.isoformat(), "promote_ok": False},
+    )
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
     managed = {row["attention"] for row in payload["overall"]["managed_controls"]}
@@ -486,6 +888,8 @@ def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(tmp_pa
         "live_runtime_separation_control_needs_work",
         "coordination_state_control_blocked",
         "storage_quota_guard_needs_work",
+        "external_backlog_drain_recommended",
+        "external_backlog_drain_writer_busy",
         "external_backlog_retry_bot_followups",
     }.issubset(managed)
     assert payload["overall"]["raw_attention"] == []
@@ -493,8 +897,12 @@ def test_runtime_gate_dashboard_manages_paper_soak_cold_lane_degradations(tmp_pa
     assert "daily_auto_verify_not_ok" in payload["overall"]["managed_attention"]
 
 
-def test_runtime_gate_dashboard_accepts_verified_bounded_transient_storage_drain(tmp_path: Path) -> None:
-    health_path = tmp_path / "governance" / "health" / "ingestion_storage_control_latest.json"
+def test_runtime_gate_dashboard_accepts_verified_bounded_transient_storage_drain(
+    tmp_path: Path,
+) -> None:
+    health_path = (
+        tmp_path / "governance" / "health" / "ingestion_storage_control_latest.json"
+    )
     _write_json(
         health_path,
         {
@@ -532,7 +940,11 @@ def test_runtime_gate_dashboard_accepts_verified_bounded_transient_storage_drain
     artifacts = {
         "ingestion_storage_control": {
             "path": str(health_path),
-            "summary": {"overall_status": "ready", "severity": "stable", "pressure_index": 0.62},
+            "summary": {
+                "overall_status": "ready",
+                "severity": "stable",
+                "pressure_index": 0.62,
+            },
         }
     }
 
@@ -543,28 +955,55 @@ def test_runtime_gate_dashboard_accepts_verified_bounded_transient_storage_drain
     payload["bounded_recovery_contract"]["drain_delta_signal_observed"] = False
     _write_json(health_path, payload)
 
-    assert runtime_gate_dashboard._ingestion_soak_ready_for_dashboard(artifacts) is False
+    assert (
+        runtime_gate_dashboard._ingestion_soak_ready_for_dashboard(artifacts) is False
+    )
 
 
-def test_runtime_gate_dashboard_resolves_recovered_nightly_resilience_and_artifact_freshness(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_resolves_recovered_nightly_resilience_and_artifact_freshness(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
 
     _write_json(
         health_root / "session_ready_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
     )
     _write_json(
         health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 99.9, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.9,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
     )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
-        {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
     )
     _write_json(
         health_root / "sql_link_service_progress_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running", "current_step": "merge_primary"},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "current_step": "merge_primary",
+        },
     )
     nightly_path = health_root / "nightly_resilience_latest.json"
     _write_json(
@@ -573,7 +1012,11 @@ def test_runtime_gate_dashboard_resolves_recovered_nightly_resilience_and_artifa
             "timestamp_utc": now.isoformat(),
             "ok": True,
             "failed_checks": [],
-            "metrics": {"watchdog_process_count": 1, "shadow_loop_process_count": 4, "watchdog_log_age_minutes": 1.2},
+            "metrics": {
+                "watchdog_process_count": 1,
+                "shadow_loop_process_count": 4,
+                "watchdog_log_age_minutes": 1.2,
+            },
         },
     )
     _write_json(
@@ -602,26 +1045,74 @@ def test_runtime_gate_dashboard_resolves_recovered_nightly_resilience_and_artifa
             },
         },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
     assert "daily_auto_verify_not_ok" not in payload["overall"]["attention"]
-    assert payload["artifacts"]["daily_auto_verify"]["summary"]["effective_failed_checks"] == []
-    assert sorted(payload["artifacts"]["daily_auto_verify"]["summary"]["resolved_failed_checks"]) == [
+    assert (
+        payload["artifacts"]["daily_auto_verify"]["summary"]["effective_failed_checks"]
+        == []
+    )
+    assert sorted(
+        payload["artifacts"]["daily_auto_verify"]["summary"]["resolved_failed_checks"]
+    ) == [
         "artifact_freshness",
         "nightly_resilience_check",
     ]
 
 
-def test_runtime_gate_dashboard_surfaces_storage_governor_route_drift(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_surfaces_storage_governor_route_drift(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
 
-    _write_json(health_root / "session_ready_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []})
-    _write_json(health_root / "health_gates_latest.json", {"timestamp_utc": now.isoformat(), "data_quality_score": 99.0, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.0}})
-    _write_json(health_root / "jsonl_sql_ingestion_health_trading_latest.json", {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}})
-    _write_json(health_root / "sql_link_service_progress_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running", "current_step": "merge_primary"})
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
+    )
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.0,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.0},
+        },
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
+    )
+    _write_json(
+        health_root / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "current_step": "merge_primary",
+        },
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -631,7 +1122,10 @@ def test_runtime_gate_dashboard_surfaces_storage_governor_route_drift(tmp_path: 
             "severity": "critical",
             "pressure_index": 4.2,
             "recommended_operating_mode": "maintenance_only",
-            "backpressure": {"estimated_core_drain_minutes": 95.0, "estimated_total_drain_minutes": 420.0},
+            "backpressure": {
+                "estimated_core_drain_minutes": 95.0,
+                "estimated_total_drain_minutes": 420.0,
+            },
             "storage": {"retention_debt_gb": 11.0},
         },
     )
@@ -645,7 +1139,13 @@ def test_runtime_gate_dashboard_surfaces_storage_governor_route_drift(tmp_path: 
             "throttle_controls": {"deferred_files_budget": 0, "cold_files_budget": 0},
         },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
@@ -654,14 +1154,51 @@ def test_runtime_gate_dashboard_surfaces_storage_governor_route_drift(tmp_path: 
     assert payload["storage"]["sql_primary_route_drift"] is True
 
 
-def test_runtime_gate_dashboard_surfaces_external_backlog_drain_signal(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_surfaces_external_backlog_drain_signal(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
 
-    _write_json(health_root / "session_ready_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []})
-    _write_json(health_root / "health_gates_latest.json", {"timestamp_utc": now.isoformat(), "data_quality_score": 98.0, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.0}})
-    _write_json(health_root / "jsonl_sql_ingestion_health_trading_latest.json", {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}})
-    _write_json(health_root / "sql_link_service_progress_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running", "current_step": "merge_primary"})
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
+    )
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 98.0,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.0},
+        },
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
+    )
+    _write_json(
+        health_root / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "current_step": "merge_primary",
+        },
+    )
     _write_json(
         health_root / "external_backlog_drain_latest.json",
         {
@@ -676,7 +1213,13 @@ def test_runtime_gate_dashboard_surfaces_external_backlog_drain_signal(tmp_path:
             "drain_overrides": {"deferred_files_budget": 6, "cold_files_budget": 2},
         },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
@@ -686,14 +1229,51 @@ def test_runtime_gate_dashboard_surfaces_external_backlog_drain_signal(tmp_path:
     assert payload["storage"]["backlog_drain_follow_through_status"] == "completed"
 
 
-def test_runtime_gate_dashboard_treats_progressing_follow_through_as_non_stalled(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_treats_progressing_follow_through_as_non_stalled(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
 
-    _write_json(health_root / "session_ready_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []})
-    _write_json(health_root / "health_gates_latest.json", {"timestamp_utc": now.isoformat(), "data_quality_score": 98.0, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.0}})
-    _write_json(health_root / "jsonl_sql_ingestion_health_trading_latest.json", {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}})
-    _write_json(health_root / "sql_link_service_progress_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running", "current_step": "merge_primary"})
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
+    )
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 98.0,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.0},
+        },
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
+    )
+    _write_json(
+        health_root / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "current_step": "merge_primary",
+        },
+    )
     _write_json(
         health_root / "external_backlog_drain_latest.json",
         {
@@ -703,7 +1283,11 @@ def test_runtime_gate_dashboard_treats_progressing_follow_through_as_non_stalled
             "recommended_now": True,
             "writer_busy": True,
             "aged_candidate_files": 3,
-            "follow_through": {"status": "timed_out", "progress_state": "progressing", "progress_observed": True},
+            "follow_through": {
+                "status": "timed_out",
+                "progress_state": "progressing",
+                "progress_observed": True,
+            },
             "off_hours_window": {"active": True},
             "drain_overrides": {"deferred_files_budget": 6, "cold_files_budget": 2},
         },
@@ -716,27 +1300,80 @@ def test_runtime_gate_dashboard_treats_progressing_follow_through_as_non_stalled
             "overall_status": "applied_progressing",
             "actionable": True,
             "backlog_needed": True,
-            "drain_result": {"follow_through_status": "timed_out", "follow_through_progress_state": "progressing", "follow_through_attempts": 4},
+            "drain_result": {
+                "follow_through_status": "timed_out",
+                "follow_through_progress_state": "progressing",
+                "follow_through_attempts": 4,
+            },
         },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
-    assert "external_backlog_drain_follow_through_stalled" not in payload["overall"]["attention"]
+    assert (
+        "external_backlog_drain_follow_through_stalled"
+        not in payload["overall"]["attention"]
+    )
     assert "external_backlog_retry_bot_followups" not in payload["overall"]["attention"]
-    assert payload["storage"]["backlog_drain_follow_through_progress_state"] == "progressing"
+    assert (
+        payload["storage"]["backlog_drain_follow_through_progress_state"]
+        == "progressing"
+    )
     assert payload["storage"]["backlog_drain_follow_through_progress_observed"] is True
 
 
-def test_runtime_gate_dashboard_ignores_idle_writer_busy_without_material_backlog(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_ignores_idle_writer_busy_without_material_backlog(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
 
-    _write_json(health_root / "session_ready_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []})
-    _write_json(health_root / "health_gates_latest.json", {"timestamp_utc": now.isoformat(), "data_quality_score": 98.0, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.0}})
-    _write_json(health_root / "jsonl_sql_ingestion_health_trading_latest.json", {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}})
-    _write_json(health_root / "sql_link_service_progress_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running", "current_step": "shard_linking"})
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
+    )
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 98.0,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.0},
+        },
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
+    )
+    _write_json(
+        health_root / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "current_step": "shard_linking",
+        },
+    )
     _write_json(
         health_root / "external_backlog_drain_latest.json",
         {
@@ -747,7 +1384,10 @@ def test_runtime_gate_dashboard_ignores_idle_writer_busy_without_material_backlo
             "material_drain_recommended": False,
             "writer_busy": True,
             "aged_candidate_files": 0,
-            "follow_through": {"status": "handoff_requested", "progress_state": "requested_live_writer"},
+            "follow_through": {
+                "status": "handoff_requested",
+                "progress_state": "requested_live_writer",
+            },
             "off_hours_window": {"active": True},
             "drain_overrides": {"deferred_files_budget": 4, "cold_files_budget": 1},
         },
@@ -762,7 +1402,13 @@ def test_runtime_gate_dashboard_ignores_idle_writer_busy_without_material_backlo
             "backlog_needed": True,
         },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
@@ -771,7 +1417,109 @@ def test_runtime_gate_dashboard_ignores_idle_writer_busy_without_material_backlo
     assert payload["storage"]["backlog_drain_recommended"] is False
 
 
-def test_daily_auto_verify_artifact_freshness_accepts_artifacts_written_during_run(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_suppresses_tiny_managed_external_backlog_tail(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    _write_ready_bot_organization(health_root, now)
+
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
+    )
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.0,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.0},
+        },
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
+    )
+    _write_json(
+        health_root / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+        },
+    )
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.12,
+            "backpressure": {
+                "core_pending_lines": 1621,
+                "total_pending_lines": 3105,
+                "estimated_core_drain_minutes": None,
+                "estimated_total_drain_minutes": None,
+            },
+            "storage": {"retention_debt_gb": 0.0},
+        },
+    )
+    _write_json(
+        health_root / "external_backlog_drain_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "drain_active",
+            "recommended_now": True,
+            "material_drain_recommended": True,
+            "writer_busy": True,
+            "aged_candidate_files": 0,
+            "follow_through": {
+                "status": "handoff_requested",
+                "progress_state": "requested_live_writer",
+            },
+            "off_hours_window": {"active": True},
+        },
+    )
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
+
+    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
+
+    assert "external_backlog_drain_recommended" not in payload["overall"]["attention"]
+    assert "external_backlog_drain_writer_busy" not in payload["overall"]["attention"]
+    assert payload["storage"]["backlog_drain_tiny_tail_nonblocking"] is True
+    assert payload["storage"]["backlog_drain_recommended_raw"] is True
+    assert payload["storage"]["backlog_drain_writer_busy_raw"] is True
+    assert payload["storage"]["backlog_drain_recommended"] is False
+    assert payload["storage"]["backlog_drain_writer_busy"] is False
+    assert payload["storage"]["core_pending_lines"] == 1621
+    assert payload["storage"]["total_pending_lines"] == 3105
+
+
+def test_daily_auto_verify_artifact_freshness_accepts_artifacts_written_during_run(
+    tmp_path: Path,
+) -> None:
     artifact = tmp_path / "governance" / "health" / "session_ready_latest.json"
     now = datetime.now(timezone.utc)
     _write_json(artifact, {"timestamp_utc": (now - timedelta(minutes=90)).isoformat()})
@@ -786,7 +1534,9 @@ def test_daily_auto_verify_artifact_freshness_accepts_artifacts_written_during_r
     assert status["rows"][0]["refreshed_in_run"] is True
 
 
-def test_daily_auto_verify_infers_clear_sql_ingestion_freshness_from_service_heartbeat(tmp_path: Path) -> None:
+def test_daily_auto_verify_infers_clear_sql_ingestion_freshness_from_service_heartbeat(
+    tmp_path: Path,
+) -> None:
     original_root = daily_auto_verify.PROJECT_ROOT
     try:
         daily_auto_verify.PROJECT_ROOT = tmp_path
@@ -797,7 +1547,12 @@ def test_daily_auto_verify_infers_clear_sql_ingestion_freshness_from_service_hea
             artifact,
             {
                 "timestamp_utc": (now - timedelta(minutes=45)).isoformat(),
-                "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0, "files_with_pending": 0},
+                "sqlite": {
+                    "pending_lines": 0,
+                    "oldest_uningested_age_seconds": 0.0,
+                    "invalid": 0,
+                    "files_with_pending": 0,
+                },
             },
         )
         _write_json(
@@ -811,7 +1566,9 @@ def test_daily_auto_verify_infers_clear_sql_ingestion_freshness_from_service_hea
             },
         )
 
-        status = daily_auto_verify._artifact_freshness_status([artifact], max_age_minutes=20.0, fresh_if_newer_than=now)
+        status = daily_auto_verify._artifact_freshness_status(
+            [artifact], max_age_minutes=20.0, fresh_if_newer_than=now
+        )
 
         assert status["ok"] is True
         assert status["rows"][0]["freshness_inferred_from_sql_service"] is True
@@ -819,7 +1576,9 @@ def test_daily_auto_verify_infers_clear_sql_ingestion_freshness_from_service_hea
         daily_auto_verify.PROJECT_ROOT = original_root
 
 
-def test_runtime_gate_dashboard_uses_current_registry_and_trading_ingestion(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_uses_current_registry_and_trading_ingestion(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
@@ -827,11 +1586,21 @@ def test_runtime_gate_dashboard_uses_current_registry_and_trading_ingestion(tmp_
 
     _write_json(
         health_root / "session_ready_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default", "fx"], "checks": []},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default", "fx"],
+            "checks": [],
+        },
     )
     _write_json(
         health_root / "daily_auto_verify_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "failed_checks": [], "completed_checks": 5},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "failed_checks": [],
+            "completed_checks": 5,
+        },
     )
     _write_json(
         health_root / "health_gates_latest.json",
@@ -846,7 +1615,11 @@ def test_runtime_gate_dashboard_uses_current_registry_and_trading_ingestion(tmp_
         health_root / "jsonl_sql_ingestion_health_latest.json",
         {
             "timestamp_utc": (now - timedelta(hours=4)).isoformat(),
-            "sqlite": {"pending_lines": 777, "oldest_uningested_age_seconds": 999.0, "invalid": 3},
+            "sqlite": {
+                "pending_lines": 777,
+                "oldest_uningested_age_seconds": 999.0,
+                "invalid": 3,
+            },
         },
     )
     _write_json(
@@ -854,7 +1627,11 @@ def test_runtime_gate_dashboard_uses_current_registry_and_trading_ingestion(tmp_
         {
             "timestamp_utc": now.isoformat(),
             "files_discovered": 12,
-            "sqlite": {"pending_lines": 5, "oldest_uningested_age_seconds": 12.0, "invalid": 0},
+            "sqlite": {
+                "pending_lines": 5,
+                "oldest_uningested_age_seconds": 12.0,
+                "invalid": 0,
+            },
         },
     )
     _write_json(
@@ -887,7 +1664,10 @@ def test_runtime_gate_dashboard_uses_current_registry_and_trading_ingestion(tmp_
             "severity": "high",
             "pressure_index": 1.8,
             "recommended_operating_mode": "maintenance_only",
-            "backpressure": {"estimated_core_drain_minutes": 22.0, "estimated_total_drain_minutes": 95.0},
+            "backpressure": {
+                "estimated_core_drain_minutes": 22.0,
+                "estimated_total_drain_minutes": 95.0,
+            },
             "storage": {"retention_debt_gb": 2.4},
         },
     )
@@ -897,7 +1677,11 @@ def test_runtime_gate_dashboard_uses_current_registry_and_trading_ingestion(tmp_
             "timestamp_utc": now.isoformat(),
             "overall_status": "needs_work",
             "recommended_profile": "air_safe",
-            "memory_snapshot": {"memory_pressure_state": "yellow", "memory_pressure_kind": "swap_only", "swap_used_gb": 18.5},
+            "memory_snapshot": {
+                "memory_pressure_state": "yellow",
+                "memory_pressure_kind": "swap_only",
+                "swap_used_gb": 18.5,
+            },
         },
     )
     _write_json(
@@ -928,10 +1712,17 @@ def test_runtime_gate_dashboard_uses_current_registry_and_trading_ingestion(tmp_
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
-    assert payload["artifacts"]["sql_ingestion"]["path"].endswith("jsonl_sql_ingestion_health_trading_latest.json")
+    assert payload["artifacts"]["sql_ingestion"]["path"].endswith(
+        "jsonl_sql_ingestion_health_trading_latest.json"
+    )
     assert payload["artifacts"]["sql_ingestion"]["summary"]["pending_lines"] == 5
-    assert payload["artifacts"]["sql_link_service"]["path"].endswith("sql_link_service_progress_latest.json")
-    assert payload["artifacts"]["sql_link_service"]["summary"]["current_step"] == "merge_primary"
+    assert payload["artifacts"]["sql_link_service"]["path"].endswith(
+        "sql_link_service_progress_latest.json"
+    )
+    assert (
+        payload["artifacts"]["sql_link_service"]["summary"]["current_step"]
+        == "merge_primary"
+    )
     assert payload["registry"]["active_bots"] == 15
     assert payload["registry"]["total_bots"] == 96
     assert payload["overall"]["status"] == "warn"
@@ -940,146 +1731,7 @@ def test_runtime_gate_dashboard_uses_current_registry_and_trading_ingestion(tmp_
     assert payload["memory"]["recommended_profile"] == "air_safe"
 
 
-def test_runtime_gate_dashboard_uses_service_heartbeat_for_sql_ingestion_freshness(tmp_path: Path) -> None:
-    now = datetime.now(timezone.utc)
-    health_root = tmp_path / "governance" / "health"
-    walk_root = tmp_path / "governance" / "walk_forward"
-
-    _write_json(
-        health_root / "session_ready_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
-    )
-    _write_json(
-        health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 99.9, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
-    )
-    _write_json(
-        health_root / "sql_link_service_progress_latest.json",
-        {"timestamp_utc": (now - timedelta(minutes=5)).isoformat(), "ok": True, "running": True, "status": "running", "current_step": "shard_linking"},
-    )
-    _write_json(
-        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
-        {
-            "timestamp_utc": (now - timedelta(minutes=45)).isoformat(),
-            "files_discovered": 12,
-            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
-        },
-    )
-    _write_json(
-        walk_root / "promotion_readiness_latest.json",
-        {"timestamp_utc": now.isoformat(), "promote_ok": True, "considered_bots": 5, "failed_bots": 0, "fail_share": 0.0},
-    )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
-
-    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
-
-    assert payload["artifacts"]["sql_ingestion"]["stale"] is False
-    assert payload["artifacts"]["sql_ingestion"]["summary"]["freshness_via_service_heartbeat"] is True
-    assert "sql_ingestion_stale" not in payload["overall"]["attention"]
-
-
-def test_runtime_gate_dashboard_suppresses_sql_service_stale_when_ingestion_is_fresh(tmp_path: Path) -> None:
-    now = datetime.now(timezone.utc)
-    health_root = tmp_path / "governance" / "health"
-    walk_root = tmp_path / "governance" / "walk_forward"
-
-    _write_json(
-        health_root / "session_ready_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
-    )
-    _write_json(
-        health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 99.9, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
-    )
-    _write_json(
-        health_root / "sql_link_service_progress_latest.json",
-        {"timestamp_utc": (now - timedelta(minutes=45)).isoformat(), "ok": True, "running": True, "status": "running", "current_step": "shard_linking"},
-    )
-    _write_json(
-        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
-        {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}},
-    )
-    _write_json(
-        walk_root / "promotion_readiness_latest.json",
-        {"timestamp_utc": now.isoformat(), "promote_ok": True, "considered_bots": 5, "failed_bots": 0, "fail_share": 0.0},
-    )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
-
-    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
-
-    assert "sql_link_service_stale" not in payload["overall"]["attention"]
-    assert payload["artifacts"]["sql_link_service"]["summary"]["freshness_inferred_from_sql_ingestion"] is True
-
-
-def test_runtime_gate_dashboard_uses_storage_control_overlay_for_idle_sql_plane_freshness(tmp_path: Path) -> None:
-    now = datetime.now(timezone.utc)
-    health_root = tmp_path / "governance" / "health"
-    walk_root = tmp_path / "governance" / "walk_forward"
-
-    _write_json(
-        health_root / "session_ready_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
-    )
-    _write_json(
-        health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 99.9, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
-    )
-    _write_json(
-        health_root / "sql_link_service_progress_latest.json",
-        {
-            "timestamp_utc": (now - timedelta(minutes=35)).isoformat(),
-            "ok": True,
-            "running": False,
-            "status": "ok",
-            "current_step": "complete",
-            "merged_rows_this_cycle": 7,
-        },
-    )
-    _write_json(
-        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
-        {
-            "timestamp_utc": (now - timedelta(minutes=65)).isoformat(),
-            "files_discovered": 12,
-            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
-        },
-    )
-    _write_json(
-        health_root / "ingestion_storage_control_latest.json",
-        {
-            "timestamp_utc": now.isoformat(),
-            "overall_status": "ready",
-            "severity": "stable",
-            "pressure_index": 0.05,
-            "sql_ingestion_pending_overlay": {
-                "active": True,
-                "fresh_source_count": 2,
-                "fresh_pending_unknown_source_count": 0,
-                "total_pending_lines": 0,
-                "files_with_pending": 0,
-                "invalid_lines": 0,
-                "stale_pending_lines": 0,
-                "ops_write_failures": 0,
-            },
-            "continuous_run_soak_contract": {"ready": True, "soak_ready": True, "grade": "A+"},
-        },
-    )
-    _write_json(
-        walk_root / "promotion_readiness_latest.json",
-        {"timestamp_utc": now.isoformat(), "promote_ok": True, "considered_bots": 5, "failed_bots": 0, "fail_share": 0.0},
-    )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
-
-    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
-
-    assert "sql_link_service_stale" not in payload["overall"]["attention"]
-    assert "sql_ingestion_stale" not in payload["overall"]["attention"]
-    assert payload["artifacts"]["sql_link_service"]["stale"] is False
-    assert payload["artifacts"]["sql_ingestion"]["stale"] is False
-    assert payload["artifacts"]["sql_link_service"]["summary"]["freshness_inferred_from_ingestion_storage_control"] is True
-    assert payload["artifacts"]["sql_ingestion"]["summary"]["freshness_inferred_from_ingestion_storage_control"] is True
-
-
-def test_runtime_gate_dashboard_uses_storage_control_backpressure_for_idle_sql_plane_freshness(
+def test_runtime_gate_dashboard_uses_service_heartbeat_for_sql_ingestion_freshness(
     tmp_path: Path,
 ) -> None:
     now = datetime.now(timezone.utc)
@@ -1088,7 +1740,164 @@ def test_runtime_gate_dashboard_uses_storage_control_backpressure_for_idle_sql_p
 
     _write_json(
         health_root / "session_ready_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
+    )
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.9,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
+    )
+    _write_json(
+        health_root / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=5)).isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "current_step": "shard_linking",
+        },
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=45)).isoformat(),
+            "files_discovered": 12,
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
+    )
+    _write_json(
+        walk_root / "promotion_readiness_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "promote_ok": True,
+            "considered_bots": 5,
+            "failed_bots": 0,
+            "fail_share": 0.0,
+        },
+    )
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
+
+    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
+
+    assert payload["artifacts"]["sql_ingestion"]["stale"] is False
+    assert (
+        payload["artifacts"]["sql_ingestion"]["summary"][
+            "freshness_via_service_heartbeat"
+        ]
+        is True
+    )
+    assert "sql_ingestion_stale" not in payload["overall"]["attention"]
+
+
+def test_runtime_gate_dashboard_suppresses_sql_service_stale_when_ingestion_is_fresh(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    walk_root = tmp_path / "governance" / "walk_forward"
+
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
+    )
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.9,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
+    )
+    _write_json(
+        health_root / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=45)).isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "current_step": "shard_linking",
+        },
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
+    )
+    _write_json(
+        walk_root / "promotion_readiness_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "promote_ok": True,
+            "considered_bots": 5,
+            "failed_bots": 0,
+            "fail_share": 0.0,
+        },
+    )
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
+
+    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
+
+    assert "sql_link_service_stale" not in payload["overall"]["attention"]
+    assert (
+        payload["artifacts"]["sql_link_service"]["summary"][
+            "freshness_inferred_from_sql_ingestion"
+        ]
+        is True
+    )
+
+
+def test_runtime_gate_dashboard_uses_storage_control_overlay_for_idle_sql_plane_freshness(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    walk_root = tmp_path / "governance" / "walk_forward"
+
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
     )
     _write_json(
         health_root / "health_gates_latest.json",
@@ -1115,7 +1924,121 @@ def test_runtime_gate_dashboard_uses_storage_control_backpressure_for_idle_sql_p
         {
             "timestamp_utc": (now - timedelta(minutes=65)).isoformat(),
             "files_discovered": 12,
-            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
+    )
+    _write_json(
+        health_root / "ingestion_storage_control_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.05,
+            "sql_ingestion_pending_overlay": {
+                "active": True,
+                "fresh_source_count": 2,
+                "fresh_pending_unknown_source_count": 0,
+                "total_pending_lines": 0,
+                "files_with_pending": 0,
+                "invalid_lines": 0,
+                "stale_pending_lines": 0,
+                "ops_write_failures": 0,
+            },
+            "continuous_run_soak_contract": {
+                "ready": True,
+                "soak_ready": True,
+                "grade": "A+",
+            },
+        },
+    )
+    _write_json(
+        walk_root / "promotion_readiness_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "promote_ok": True,
+            "considered_bots": 5,
+            "failed_bots": 0,
+            "fail_share": 0.0,
+        },
+    )
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
+
+    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
+
+    assert "sql_link_service_stale" not in payload["overall"]["attention"]
+    assert "sql_ingestion_stale" not in payload["overall"]["attention"]
+    assert payload["artifacts"]["sql_link_service"]["stale"] is False
+    assert payload["artifacts"]["sql_ingestion"]["stale"] is False
+    assert (
+        payload["artifacts"]["sql_link_service"]["summary"][
+            "freshness_inferred_from_ingestion_storage_control"
+        ]
+        is True
+    )
+    assert (
+        payload["artifacts"]["sql_ingestion"]["summary"][
+            "freshness_inferred_from_ingestion_storage_control"
+        ]
+        is True
+    )
+
+
+def test_runtime_gate_dashboard_uses_storage_control_backpressure_for_idle_sql_plane_freshness(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    walk_root = tmp_path / "governance" / "walk_forward"
+
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
+    )
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.9,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
+    )
+    _write_json(
+        health_root / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=35)).isoformat(),
+            "ok": True,
+            "running": False,
+            "status": "ok",
+            "current_step": "complete",
+            "merged_rows_this_cycle": 7,
+        },
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(minutes=65)).isoformat(),
+            "files_discovered": 12,
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
         },
     )
     _write_json(
@@ -1148,15 +2071,30 @@ def test_runtime_gate_dashboard_uses_storage_control_backpressure_for_idle_sql_p
                 "ready": False,
                 "soak_ready": False,
                 "grade": "D",
-                "blockers": ["steady_state_targets_not_clear", "drain_time_above_target"],
+                "blockers": [
+                    "steady_state_targets_not_clear",
+                    "drain_time_above_target",
+                ],
             },
         },
     )
     _write_json(
         walk_root / "promotion_readiness_latest.json",
-        {"timestamp_utc": now.isoformat(), "promote_ok": True, "considered_bots": 5, "failed_bots": 0, "fail_share": 0.0},
+        {
+            "timestamp_utc": now.isoformat(),
+            "promote_ok": True,
+            "considered_bots": 5,
+            "failed_bots": 0,
+            "fail_share": 0.0,
+        },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
@@ -1172,21 +2110,36 @@ def test_runtime_gate_dashboard_uses_storage_control_backpressure_for_idle_sql_p
     ]
 
 
-def test_runtime_gate_dashboard_suppresses_sql_stale_when_live_writer_lock_exists(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_suppresses_sql_stale_when_live_writer_lock_exists(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
     lock_path = tmp_path / "governance" / "locks" / "jsonl_sql_writer.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.write_text(f"pid={os.getpid()} started={now.isoformat()} cmd=sql_link_shard_manager", encoding="utf-8")
+    lock_path.write_text(
+        f"pid={os.getpid()} started={now.isoformat()} cmd=sql_link_shard_manager",
+        encoding="utf-8",
+    )
 
     _write_json(
         health_root / "session_ready_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
     )
     _write_json(
         health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 99.9, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.9,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
     )
     _write_json(
         health_root / "sql_link_service_progress_latest.json",
@@ -1204,32 +2157,68 @@ def test_runtime_gate_dashboard_suppresses_sql_stale_when_live_writer_lock_exist
         {
             "timestamp_utc": (now - timedelta(minutes=45)).isoformat(),
             "files_discovered": 20,
-            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
         },
     )
     _write_json(
         walk_root / "promotion_readiness_latest.json",
-        {"timestamp_utc": now.isoformat(), "promote_ok": True, "considered_bots": 5, "failed_bots": 0, "fail_share": 0.0},
+        {
+            "timestamp_utc": now.isoformat(),
+            "promote_ok": True,
+            "considered_bots": 5,
+            "failed_bots": 0,
+            "fail_share": 0.0,
+        },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
     assert "sql_link_service_stale" not in payload["overall"]["attention"]
     assert "sql_ingestion_stale" not in payload["overall"]["attention"]
-    assert payload["artifacts"]["sql_link_service"]["summary"]["freshness_inferred_from_live_lock"] is True
-    assert payload["artifacts"]["sql_link_service"]["summary"]["lock_owner_pid"] == os.getpid()
-    assert payload["artifacts"]["sql_ingestion"]["summary"]["freshness_via_service_heartbeat"] is True
+    assert (
+        payload["artifacts"]["sql_link_service"]["summary"][
+            "freshness_inferred_from_live_lock"
+        ]
+        is True
+    )
+    assert (
+        payload["artifacts"]["sql_link_service"]["summary"]["lock_owner_pid"]
+        == os.getpid()
+    )
+    assert (
+        payload["artifacts"]["sql_ingestion"]["summary"][
+            "freshness_via_service_heartbeat"
+        ]
+        is True
+    )
 
 
-def test_runtime_gate_dashboard_suppresses_session_ready_stale_when_shadow_loop_is_fresh(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_suppresses_session_ready_stale_when_shadow_loop_is_fresh(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
 
     _write_json(
         health_root / "session_ready_latest.json",
-        {"timestamp_utc": (now - timedelta(minutes=20)).isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
+        {
+            "timestamp_utc": (now - timedelta(minutes=20)).isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
     )
     _write_json(
         health_root / "shadow_loop_default_equities_schwab_1234.json",
@@ -1237,62 +2226,143 @@ def test_runtime_gate_dashboard_suppresses_session_ready_stale_when_shadow_loop_
     )
     _write_json(
         health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 99.9, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.9,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
     )
     _write_json(
         health_root / "sql_link_service_progress_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running", "current_step": "shard_linking"},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "current_step": "shard_linking",
+        },
     )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
-        {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
     )
     _write_json(
         walk_root / "promotion_readiness_latest.json",
-        {"timestamp_utc": now.isoformat(), "promote_ok": True, "considered_bots": 5, "failed_bots": 0, "fail_share": 0.0},
+        {
+            "timestamp_utc": now.isoformat(),
+            "promote_ok": True,
+            "considered_bots": 5,
+            "failed_bots": 0,
+            "fail_share": 0.0,
+        },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
     assert "session_ready_stale" not in payload["overall"]["attention"]
-    assert payload["artifacts"]["session_ready"]["summary"]["freshness_inferred_from_shadow_loop"] is True
+    assert (
+        payload["artifacts"]["session_ready"]["summary"][
+            "freshness_inferred_from_shadow_loop"
+        ]
+        is True
+    )
 
 
-def test_runtime_gate_dashboard_uses_day_based_units_for_optional_artifacts(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_uses_day_based_units_for_optional_artifacts(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
 
     _write_json(
         health_root / "session_ready_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
     )
     _write_json(
         health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 99.9, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.9,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
     )
     _write_json(
         health_root / "sql_link_service_progress_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running", "current_step": "shard_linking"},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "current_step": "shard_linking",
+        },
     )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
-        {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
     )
     _write_json(
         health_root / "official_macro_context_sync_latest.json",
-        {"timestamp_utc": (now - timedelta(hours=10)).isoformat(), "ok": True, "sources": {"fed": {"ok": True}}},
+        {
+            "timestamp_utc": (now - timedelta(hours=10)).isoformat(),
+            "ok": True,
+            "sources": {"fed": {"ok": True}},
+        },
     )
     _write_json(
         health_root / "live_macro_media_status.json",
-        {"timestamp_utc": (now - timedelta(hours=12)).isoformat(), "ok": True, "learning_ready": True, "training_feature_count": 10},
+        {
+            "timestamp_utc": (now - timedelta(hours=12)).isoformat(),
+            "ok": True,
+            "learning_ready": True,
+            "training_feature_count": 10,
+        },
     )
     _write_json(
         walk_root / "promotion_readiness_latest.json",
-        {"timestamp_utc": now.isoformat(), "promote_ok": True, "considered_bots": 5, "failed_bots": 0, "fail_share": 0.0},
+        {
+            "timestamp_utc": now.isoformat(),
+            "promote_ok": True,
+            "considered_bots": 5,
+            "failed_bots": 0,
+            "fail_share": 0.0,
+        },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
@@ -1300,22 +2370,45 @@ def test_runtime_gate_dashboard_uses_day_based_units_for_optional_artifacts(tmp_
     assert payload["artifacts"]["live_macro_media"]["stale"] is False
 
 
-def test_runtime_gate_dashboard_exposes_normalized_runtime_and_apple_fields(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_exposes_normalized_runtime_and_apple_fields(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
 
-    _write_json(health_root / "session_ready_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "checks": []})
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {"timestamp_utc": now.isoformat(), "ok": True, "checks": []},
+    )
     _write_json(
         health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 96.2, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 96.2,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
     )
     _write_json(
         health_root / "sql_link_service_progress_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running", "current_step": "merge_primary"},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+            "current_step": "merge_primary",
+        },
     )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
-        {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
     )
     _write_json(
         health_root / "runtime_access_mode_latest.json",
@@ -1325,7 +2418,10 @@ def test_runtime_gate_dashboard_exposes_normalized_runtime_and_apple_fields(tmp_
             "mode": "portable",
             "ml_backend": "portable_auto",
             "portable_enabled": True,
-            "backend_contract": {"effective_backend": "pytorch", "observation_only": True},
+            "backend_contract": {
+                "effective_backend": "pytorch",
+                "observation_only": True,
+            },
             "detected_backends": {"mlx": True, "pytorch": True},
         },
     )
@@ -1347,7 +2443,11 @@ def test_runtime_gate_dashboard_exposes_normalized_runtime_and_apple_fields(tmp_
             "ok": True,
             "overall_status": "needs_attention",
             "blocking_reasons": ["promotion_not_ready"],
-            "summary": {"confirmed_training_success": True, "target_count": 5, "trained_count": 5},
+            "summary": {
+                "confirmed_training_success": True,
+                "target_count": 5,
+                "trained_count": 5,
+            },
         },
     )
     _write_json(
@@ -1371,7 +2471,10 @@ def test_runtime_gate_dashboard_exposes_normalized_runtime_and_apple_fields(tmp_
                 "overall_status": "upgrade_required",
                 "overall_score": 63.4,
                 "top_priorities": ["Publish a canonical feature-store manifest."],
-                "weakest_domains": [{"slug": "security_and_compliance"}, {"slug": "developer_process"}],
+                "weakest_domains": [
+                    {"slug": "security_and_compliance"},
+                    {"slug": "developer_process"},
+                ],
                 "domain_count": 12,
             },
         },
@@ -1381,7 +2484,12 @@ def test_runtime_gate_dashboard_exposes_normalized_runtime_and_apple_fields(tmp_
         {
             "timestamp_utc": now.isoformat(),
             "ok": True,
-            "summary": {"candidate_files": 10, "staged_files": 8, "staged_bytes": 4096, "delete_errors": 0},
+            "summary": {
+                "candidate_files": 10,
+                "staged_files": 8,
+                "staged_bytes": 4096,
+                "delete_errors": 0,
+            },
         },
     )
     _write_json(
@@ -1389,10 +2497,21 @@ def test_runtime_gate_dashboard_exposes_normalized_runtime_and_apple_fields(tmp_
         {
             "timestamp_utc": now.isoformat(),
             "ok": True,
-            "summary": {"candidate_files": 3, "deleted_files": 2, "deleted_bytes": 1024, "delete_errors": 0},
+            "summary": {
+                "candidate_files": 3,
+                "deleted_files": 2,
+                "deleted_bytes": 1024,
+                "delete_errors": 0,
+            },
         },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
@@ -1403,75 +2522,344 @@ def test_runtime_gate_dashboard_exposes_normalized_runtime_and_apple_fields(tmp_
     assert payload["training"]["quality_score"] == 61.5
     assert payload["platform"]["overall_status"] == "upgrade_required"
     assert payload["platform"]["overall_score"] == 63.4
-    assert payload["artifacts"]["stale_artifact_sweeper_bot"]["summary"]["staged_files"] == 8
-    assert payload["artifacts"]["stale_artifact_reaper_bot"]["summary"]["deleted_files"] == 2
-    assert payload["artifacts"]["platform_control_plane"]["summary"]["weakest_domains"] == [
+    assert (
+        payload["artifacts"]["stale_artifact_sweeper_bot"]["summary"]["staged_files"]
+        == 8
+    )
+    assert (
+        payload["artifacts"]["stale_artifact_reaper_bot"]["summary"]["deleted_files"]
+        == 2
+    )
+    assert payload["artifacts"]["platform_control_plane"]["summary"][
+        "weakest_domains"
+    ] == [
         "security_and_compliance",
         "developer_process",
     ]
 
 
-def test_runtime_gate_dashboard_keeps_advisory_controls_from_degrading_operational_status(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_treats_empty_stale_sweeper_lock_as_nonblocking(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     _write_ready_bot_organization(health_root, now)
 
     _write_json(
         health_root / "session_ready_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
     )
     _write_json(
         health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 99.0, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.0,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.0},
+        },
     )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
-        {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
     )
     _write_json(
         health_root / "sql_link_service_progress_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running"},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+        },
     )
-    _write_json(health_root / "daily_auto_verify_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "failed_checks": []})
-    _write_json(health_root / "memory_efficiency_control_latest.json", {"timestamp_utc": now.isoformat(), "ok": False, "overall_status": "needs_work"})
-    _write_json(health_root / "retrain_artifact_freshness_latest.json", {"timestamp_utc": now.isoformat(), "ok": False, "failed_checks": ["paper_replay"]})
-    _write_json(health_root / "infrastructure_autofix_bot_latest.json", {"timestamp_utc": now.isoformat(), "ok": False, "overall_status": "degraded"})
-    _write_json(health_root / "rolling_restart_controller_latest.json", {"timestamp_utc": now.isoformat(), "ok": False, "overall_status": "blocked"})
+    _write_json(
+        health_root / "stale_artifact_sweeper_bot_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": False,
+            "busy": True,
+            "reason": "lock_busy",
+            "summary": {
+                "candidate_files": 0,
+                "staged_files": 0,
+                "staged_bytes": 0,
+                "delete_errors": 0,
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
+
+    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
+
+    assert "stale_artifact_sweeper_bot_not_ok" not in payload["overall"]["attention"]
+    assert payload["overall"]["attention_tiers"]["degraded"] == []
+    assert payload["artifacts"]["stale_artifact_sweeper_bot"]["summary"][
+        "maintenance_contention_nonblocking"
+    ] is True
+
+
+def test_runtime_gate_dashboard_keeps_stale_sweeper_errors_degraded(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    _write_ready_bot_organization(health_root, now)
+
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
+    )
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.0,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.0},
+        },
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
+    )
+    _write_json(
+        health_root / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+        },
+    )
+    _write_json(
+        health_root / "stale_artifact_sweeper_bot_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": False,
+            "busy": False,
+            "reason": "delete_failed",
+            "summary": {
+                "candidate_files": 1,
+                "staged_files": 0,
+                "staged_bytes": 0,
+                "delete_errors": 1,
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
+
+    payload = runtime_gate_dashboard.build_dashboard(tmp_path)
+
+    assert "stale_artifact_sweeper_bot_not_ok" in payload["overall"]["attention"]
+    assert (
+        "stale_artifact_sweeper_bot_not_ok"
+        in payload["overall"]["attention_tiers"]["degraded"]
+    )
+
+
+def test_runtime_gate_dashboard_keeps_advisory_controls_from_degrading_operational_status(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    _write_ready_bot_organization(health_root, now)
+
+    _write_json(
+        health_root / "session_ready_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
+    )
+    _write_json(
+        health_root / "health_gates_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.0,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
+    )
+    _write_json(
+        health_root / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+        },
+    )
+    _write_json(
+        health_root / "daily_auto_verify_latest.json",
+        {"timestamp_utc": now.isoformat(), "ok": True, "failed_checks": []},
+    )
+    _write_json(
+        health_root / "memory_efficiency_control_latest.json",
+        {"timestamp_utc": now.isoformat(), "ok": False, "overall_status": "needs_work"},
+    )
+    _write_json(
+        health_root / "retrain_artifact_freshness_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": False,
+            "failed_checks": ["paper_replay"],
+        },
+    )
+    _write_json(
+        health_root / "infrastructure_autofix_bot_latest.json",
+        {"timestamp_utc": now.isoformat(), "ok": False, "overall_status": "degraded"},
+    )
+    _write_json(
+        health_root / "rolling_restart_controller_latest.json",
+        {"timestamp_utc": now.isoformat(), "ok": False, "overall_status": "blocked"},
+    )
     _write_json(
         health_root / "artifact_freshness_slo_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": False, "overall_status": "blocked", "sla_summary": {"stale_required": 1}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": False,
+            "overall_status": "blocked",
+            "sla_summary": {"stale_required": 1},
+        },
     )
     _write_json(
         health_root / "runtime_snapshot_cache_control_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": False, "overall_status": "degraded", "cache_health": {"snapshot_ready": True}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": False,
+            "overall_status": "degraded",
+            "cache_health": {"snapshot_ready": True},
+        },
     )
     _write_json(
         health_root / "chaos_drill_coordinator_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": False, "overall_status": "degraded", "overdue_drills": [{"name": "restore"}]},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": False,
+            "overall_status": "degraded",
+            "overdue_drills": [{"name": "restore"}],
+        },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        health_root / "roster_resilience_planner_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "advisory",
+            "operational_ready": True,
+            "bench": {"active_supportable_bots": 12, "bench_depth": 12},
+        },
+    )
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
 
     assert payload["overall"]["status"] == "ok"
     assert payload["overall"]["ok"] is True
-    assert "memory_efficiency_control_needs_work" in payload["overall"]["attention_tiers"]["advisory"]
-    assert "retrain_artifact_freshness_not_ok" in payload["overall"]["attention_tiers"]["advisory"]
-    assert "infrastructure_autofix_bot_needs_work" in payload["overall"]["attention_tiers"]["advisory"]
-    assert "artifact_freshness_slo_blocked" in payload["overall"]["attention_tiers"]["advisory"]
-    assert "runtime_snapshot_cache_control_needs_work" in payload["overall"]["attention_tiers"]["advisory"]
-    assert "chaos_drill_coordinator_needs_work" in payload["overall"]["attention_tiers"]["advisory"]
+    assert (
+        "memory_efficiency_control_needs_work"
+        in payload["overall"]["attention_tiers"]["advisory"]
+    )
+    assert (
+        "retrain_artifact_freshness_not_ok"
+        in payload["overall"]["attention_tiers"]["advisory"]
+    )
+    assert (
+        "infrastructure_autofix_bot_needs_work"
+        in payload["overall"]["attention_tiers"]["advisory"]
+    )
+    assert (
+        "artifact_freshness_slo_blocked"
+        in payload["overall"]["attention_tiers"]["advisory"]
+    )
+    assert (
+        "runtime_snapshot_cache_control_needs_work"
+        in payload["overall"]["attention_tiers"]["advisory"]
+    )
+    assert (
+        "chaos_drill_coordinator_needs_work"
+        in payload["overall"]["attention_tiers"]["advisory"]
+    )
+    assert (
+        "roster_resilience_planner_needs_work"
+        in payload["overall"]["attention_tiers"]["advisory"]
+    )
     assert payload["overall"]["attention_tiers"]["critical"] == []
     assert payload["overall"]["attention_tiers"]["degraded"] == []
-    owners = {row["attention"]: row["owner"] for row in payload["overall"]["remediation_actions"]}
-    assert owners["retrain_artifact_freshness_not_ok"] == "retrain_artifact_freshness_guard"
+    owners = {
+        row["attention"]: row["owner"]
+        for row in payload["overall"]["remediation_actions"]
+    }
+    assert (
+        owners["retrain_artifact_freshness_not_ok"]
+        == "retrain_artifact_freshness_guard"
+    )
     assert owners["rolling_restart_controller_blocked"] == "rolling_restart_controller"
     assert owners["artifact_freshness_slo_blocked"] == "artifact_freshness_slo"
-    assert owners["runtime_snapshot_cache_control_needs_work"] == "runtime_snapshot_cache_control"
+    assert (
+        owners["runtime_snapshot_cache_control_needs_work"]
+        == "runtime_snapshot_cache_control"
+    )
     assert owners["chaos_drill_coordinator_needs_work"] == "chaos_drill_coordinator"
 
 
-def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_is_green(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_is_green(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     walk_root = tmp_path / "governance" / "walk_forward"
@@ -1479,19 +2867,41 @@ def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_
 
     _write_json(
         health_root / "session_ready_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
     )
     _write_json(
         health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 99.0, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.0,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
     )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
-        {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
     )
     _write_json(
         health_root / "sql_link_service_progress_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running"},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+        },
     )
     _write_json(
         health_root / "daily_auto_verify_latest.json",
@@ -1504,7 +2914,12 @@ def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_
     )
     _write_json(
         health_root / "artifact_freshness_slo_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "overall_status": "ready", "sla_summary": {"stale_required": 0}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "overall_status": "ready",
+            "sla_summary": {"stale_required": 0},
+        },
     )
     _write_json(
         health_root / "unattended_soak_readiness_latest.json",
@@ -1530,7 +2945,10 @@ def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_
             "failed_guards": [],
         },
     )
-    _write_json(health_root / "health_fast_latest.json", {"timestamp_utc": now.isoformat(), "overall_status": "ready", "ok": True})
+    _write_json(
+        health_root / "health_fast_latest.json",
+        {"timestamp_utc": now.isoformat(), "overall_status": "ready", "ok": True},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -1558,14 +2976,20 @@ def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_
             "pressure": {"source": "deferred_backlog_tail", "pressure_index": 53.0},
         },
     )
-    _write_json(walk_root / "promotion_readiness_latest.json", {"timestamp_utc": now.isoformat(), "promote_ok": False})
+    _write_json(
+        walk_root / "promotion_readiness_latest.json",
+        {"timestamp_utc": now.isoformat(), "promote_ok": False},
+    )
     _write_json(
         health_root / "bot_quality_autopilot_latest.json",
         {
             "timestamp_utc": now.isoformat(),
             "ok": False,
             "overall_status": "blocked",
-            "quality_blockers": {"quality_probation_bot_ids": ["bot_a"], "coverage_shortfall_bots": 4},
+            "quality_blockers": {
+                "quality_probation_bot_ids": ["bot_a"],
+                "coverage_shortfall_bots": 4,
+            },
         },
     )
     _write_json(
@@ -1575,7 +2999,10 @@ def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_
             "ok": False,
             "overall_status": "degraded",
             "cache_health": {"snapshot_exists": True, "snapshot_ready": True},
-            "upstream_inputs": {"retrain_artifact_freshness_ok": False, "coverage_shortfall_bots": 4},
+            "upstream_inputs": {
+                "retrain_artifact_freshness_ok": False,
+                "coverage_shortfall_bots": 4,
+            },
         },
     )
     _write_json(
@@ -1600,14 +3027,26 @@ def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_
             "timestamp_utc": now.isoformat(),
             "ok": False,
             "overall_status": "blocked",
-            "overdue_drills": [{"drill": "snapshot_restore"}, {"drill": "reboot_blackstart"}],
+            "overdue_drills": [
+                {"drill": "snapshot_restore"},
+                {"drill": "reboot_blackstart"},
+            ],
             "schedule_contract": {"discipline_ready": True},
         },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
-    managed = {row["attention"]: row["managed_control_state"] for row in payload["overall"]["managed_controls"]}
+    managed = {
+        row["attention"]: row["managed_control_state"]
+        for row in payload["overall"]["managed_controls"]
+    }
 
     assert payload["overall"]["status"] == "ok"
     assert payload["overall"]["ok"] is True
@@ -1622,37 +3061,84 @@ def test_runtime_gate_dashboard_manages_soak_deferred_controls_when_paper_guard_
         "roster_resilience_planner_needs_work",
         "chaos_drill_coordinator_blocked",
     }
-    assert managed["daily_auto_verify_not_ok"] == "daily_verify_training_promotion_checks_deferred_while_paper_soak_is_green"
-    assert managed["promotion_not_ready"] == "promotion_deferred_while_paper_soak_is_green"
-    assert managed["bot_quality_autopilot_blocked"] == "bot_quality_retrain_queue_deferred_while_training_budget_is_closed"
-    assert managed["ingestion_storage_governor_critical"] == "deferred_backlog_governor_profile_managed_by_storage_soak_contract"
-    assert managed["runtime_snapshot_cache_control_needs_work"] == "snapshot_cache_upstream_training_freshness_deferred_while_snapshot_is_ready"
-    assert managed["roster_resilience_planner_needs_work"] == "roster_coverage_topoff_deferred_while_paper_soak_is_green"
-    assert managed["chaos_drill_coordinator_blocked"] == "disruptive_recovery_drills_deferred_while_paper_soak_is_green"
+    assert (
+        managed["daily_auto_verify_not_ok"]
+        == "daily_verify_training_promotion_checks_deferred_while_paper_soak_is_green"
+    )
+    assert (
+        managed["promotion_not_ready"] == "promotion_deferred_while_paper_soak_is_green"
+    )
+    assert (
+        managed["bot_quality_autopilot_blocked"]
+        == "bot_quality_retrain_queue_deferred_while_training_budget_is_closed"
+    )
+    assert (
+        managed["ingestion_storage_governor_critical"]
+        == "deferred_backlog_governor_profile_managed_by_storage_soak_contract"
+    )
+    assert (
+        managed["runtime_snapshot_cache_control_needs_work"]
+        == "snapshot_cache_upstream_training_freshness_deferred_while_snapshot_is_ready"
+    )
+    assert (
+        managed["roster_resilience_planner_needs_work"]
+        == "roster_coverage_topoff_deferred_while_paper_soak_is_green"
+    )
+    assert (
+        managed["chaos_drill_coordinator_blocked"]
+        == "disruptive_recovery_drills_deferred_while_paper_soak_is_green"
+    )
 
 
-def test_runtime_gate_dashboard_manages_stateful_sql_soft_quota_when_soak_storage_ready(tmp_path: Path) -> None:
+def test_runtime_gate_dashboard_manages_stateful_sql_soft_quota_when_soak_storage_ready(
+    tmp_path: Path,
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     _write_ready_bot_organization(health_root, now)
 
     _write_json(
         health_root / "session_ready_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "expected_profiles": ["default"], "checks": []},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "expected_profiles": ["default"],
+            "checks": [],
+        },
     )
     _write_json(
         health_root / "health_gates_latest.json",
-        {"timestamp_utc": now.isoformat(), "data_quality_score": 99.0, "hard_gate_triggered": False, "inputs": {"blocked_rate": 0.01}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "data_quality_score": 99.0,
+            "hard_gate_triggered": False,
+            "inputs": {"blocked_rate": 0.01},
+        },
     )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
-        {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
     )
     _write_json(
         health_root / "sql_link_service_progress_latest.json",
-        {"timestamp_utc": now.isoformat(), "ok": True, "running": True, "status": "running"},
+        {
+            "timestamp_utc": now.isoformat(),
+            "ok": True,
+            "running": True,
+            "status": "running",
+        },
     )
-    _write_json(health_root / "daily_auto_verify_latest.json", {"timestamp_utc": now.isoformat(), "ok": True, "failed_checks": []})
+    _write_json(
+        health_root / "daily_auto_verify_latest.json",
+        {"timestamp_utc": now.isoformat(), "ok": True, "failed_checks": []},
+    )
     _write_json(
         health_root / "unattended_soak_readiness_latest.json",
         {
@@ -1677,7 +3163,10 @@ def test_runtime_gate_dashboard_manages_stateful_sql_soft_quota_when_soak_storag
             "failed_guards": [],
         },
     )
-    _write_json(health_root / "health_fast_latest.json", {"timestamp_utc": now.isoformat(), "overall_status": "ready", "ok": True})
+    _write_json(
+        health_root / "health_fast_latest.json",
+        {"timestamp_utc": now.isoformat(), "overall_status": "ready", "ok": True},
+    )
     _write_json(
         health_root / "ingestion_storage_control_latest.json",
         {
@@ -1727,7 +3216,10 @@ def test_runtime_gate_dashboard_manages_stateful_sql_soft_quota_when_soak_storag
                 "status": "ready",
                 "storage_controls": {"quota_ready": True, "quota_status": "degraded"},
             },
-            "storage_growth_forecast": {"status": "stable_or_improving", "days_until_pressure_free": None},
+            "storage_growth_forecast": {
+                "status": "stable_or_improving",
+                "days_until_pressure_free": None,
+            },
             "integration_contract": {"stateful_sql_compaction_only": True},
         },
     )
@@ -1741,10 +3233,19 @@ def test_runtime_gate_dashboard_manages_stateful_sql_soft_quota_when_soak_storag
             },
         },
     )
-    _write_json(tmp_path / "master_bot_registry.json", {"summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0}, "sub_bots": []})
+    _write_json(
+        tmp_path / "master_bot_registry.json",
+        {
+            "summary": {"total_bots": 1, "active_bots": 1, "deleted_from_rotation": 0},
+            "sub_bots": [],
+        },
+    )
 
     payload = runtime_gate_dashboard.build_dashboard(tmp_path)
-    managed = {row["attention"]: row["managed_control_state"] for row in payload["overall"]["managed_controls"]}
+    managed = {
+        row["attention"]: row["managed_control_state"]
+        for row in payload["overall"]["managed_controls"]
+    }
 
     assert payload["overall"]["status"] == "ok"
     assert payload["overall"]["ok"] is True
@@ -1752,19 +3253,36 @@ def test_runtime_gate_dashboard_manages_stateful_sql_soft_quota_when_soak_storag
     assert payload["overall"]["raw_attention"] == []
     assert "storage_quota_guard_needs_work" in payload["overall"]["forensic_attention"]
     assert "storage_quota_guard_needs_work" in payload["overall"]["managed_attention"]
-    assert managed["storage_quota_guard_needs_work"] == "soft_storage_quota_pressure_managed_by_ingestion_soak_contract"
+    assert (
+        managed["storage_quota_guard_needs_work"]
+        == "soft_storage_quota_pressure_managed_by_ingestion_soak_contract"
+    )
 
 
 def test_daily_auto_verify_uses_slow_timeout_for_heavy_checks() -> None:
     slow_timeout = 300
 
-    assert daily_auto_verify._timeout_for_check("daily_runtime_summary", slow_timeout) == slow_timeout
-    assert daily_auto_verify._timeout_for_check("data_source_divergence_bot", slow_timeout) == slow_timeout
-    assert daily_auto_verify._timeout_for_check("replay_preopen_sanity", slow_timeout) == 45
-    assert daily_auto_verify._timeout_for_check("resource_guard", slow_timeout) == daily_auto_verify.DEFAULT_CMD_TIMEOUT_SEC
+    assert (
+        daily_auto_verify._timeout_for_check("daily_runtime_summary", slow_timeout)
+        == slow_timeout
+    )
+    assert (
+        daily_auto_verify._timeout_for_check("data_source_divergence_bot", slow_timeout)
+        == slow_timeout
+    )
+    assert (
+        daily_auto_verify._timeout_for_check("replay_preopen_sanity", slow_timeout)
+        == 45
+    )
+    assert (
+        daily_auto_verify._timeout_for_check("resource_guard", slow_timeout)
+        == daily_auto_verify.DEFAULT_CMD_TIMEOUT_SEC
+    )
 
 
-def test_daily_auto_verify_active_progress_pid_requires_recent_live_pid(tmp_path: Path) -> None:
+def test_daily_auto_verify_active_progress_pid_requires_recent_live_pid(
+    tmp_path: Path,
+) -> None:
     progress_path = tmp_path / "daily_auto_verify_progress_latest.json"
     now = datetime.now(timezone.utc)
     _write_json(
@@ -1776,32 +3294,47 @@ def test_daily_auto_verify_active_progress_pid_requires_recent_live_pid(tmp_path
         },
     )
 
-    active_pid = daily_auto_verify._active_progress_pid(progress_path, max_age_seconds=300)
+    active_pid = daily_auto_verify._active_progress_pid(
+        progress_path, max_age_seconds=300
+    )
 
     assert active_pid == os.getpid()
 
 
-def test_daily_auto_verify_active_progress_pid_ignores_stale_progress(tmp_path: Path) -> None:
+def test_daily_auto_verify_active_progress_pid_ignores_stale_progress(
+    tmp_path: Path,
+) -> None:
     progress_path = tmp_path / "daily_auto_verify_progress_latest.json"
     _write_json(
         progress_path,
         {
-            "timestamp_utc": (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat(),
+            "timestamp_utc": (
+                datetime.now(timezone.utc) - timedelta(hours=3)
+            ).isoformat(),
             "running": True,
             "pid": os.getpid(),
         },
     )
 
-    active_pid = daily_auto_verify._active_progress_pid(progress_path, max_age_seconds=300)
+    active_pid = daily_auto_verify._active_progress_pid(
+        progress_path, max_age_seconds=300
+    )
 
     assert active_pid is None
 
 
-def test_daily_auto_verify_main_skips_when_recent_progress_pid_is_alive(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_daily_auto_verify_main_skips_when_recent_progress_pid_is_alive(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
     original_progress = daily_auto_verify.PROGRESS_PATH
     original_lock = daily_auto_verify.LOCK_PATH
     try:
-        progress_path = tmp_path / "governance" / "health" / "daily_auto_verify_progress_latest.json"
+        progress_path = (
+            tmp_path
+            / "governance"
+            / "health"
+            / "daily_auto_verify_progress_latest.json"
+        )
         lock_path = tmp_path / "governance" / "locks" / "daily_auto_verify.lock"
         _write_json(
             progress_path,
@@ -1813,7 +3346,9 @@ def test_daily_auto_verify_main_skips_when_recent_progress_pid_is_alive(tmp_path
         )
         daily_auto_verify.PROGRESS_PATH = progress_path
         daily_auto_verify.LOCK_PATH = lock_path
-        monkeypatch.setattr(sys, "argv", ["daily_auto_verify.py", "--day", "20260327", "--json"])
+        monkeypatch.setattr(
+            sys, "argv", ["daily_auto_verify.py", "--day", "20260327", "--json"]
+        )
 
         rc = daily_auto_verify.main()
         payload = json.loads(capsys.readouterr().out)
@@ -1828,12 +3363,16 @@ def test_daily_auto_verify_main_skips_when_recent_progress_pid_is_alive(tmp_path
 
 
 def test_daily_auto_verify_recovers_stale_progress_to_latest(tmp_path: Path) -> None:
-    progress_path = tmp_path / "governance" / "health" / "daily_auto_verify_progress_latest.json"
+    progress_path = (
+        tmp_path / "governance" / "health" / "daily_auto_verify_progress_latest.json"
+    )
     latest_path = tmp_path / "governance" / "health" / "daily_auto_verify_latest.json"
     _write_json(
         progress_path,
         {
-            "timestamp_utc": (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat(),
+            "timestamp_utc": (
+                datetime.now(timezone.utc) - timedelta(hours=3)
+            ).isoformat(),
             "running": True,
             "pid": 999999,
             "current_check": "health_gates",
@@ -1846,7 +3385,9 @@ def test_daily_auto_verify_recovers_stale_progress_to_latest(tmp_path: Path) -> 
     _write_json(
         latest_path,
         {
-            "timestamp_utc": (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat(),
+            "timestamp_utc": (
+                datetime.now(timezone.utc) - timedelta(hours=4)
+            ).isoformat(),
             "running": False,
             "ok": True,
             "failed_checks": [],
@@ -1854,7 +3395,9 @@ def test_daily_auto_verify_recovers_stale_progress_to_latest(tmp_path: Path) -> 
         },
     )
 
-    note = daily_auto_verify._recover_stale_progress(progress_path, latest_path, max_age_seconds=300)
+    note = daily_auto_verify._recover_stale_progress(
+        progress_path, latest_path, max_age_seconds=300
+    )
     recovered = json.loads(latest_path.read_text(encoding="utf-8"))
 
     assert "recovered_stale_progress" in note
@@ -1865,7 +3408,9 @@ def test_daily_auto_verify_recovers_stale_progress_to_latest(tmp_path: Path) -> 
     assert recovered["current_check"] == "health_gates"
 
 
-def test_health_gates_weights_data_blocked_more_than_risk_blocked(tmp_path: Path, monkeypatch) -> None:
+def test_health_gates_weights_data_blocked_more_than_risk_blocked(
+    tmp_path: Path, monkeypatch
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     sql_root = tmp_path / "exports" / "sql_reports"
@@ -1892,7 +3437,11 @@ def test_health_gates_weights_data_blocked_more_than_risk_blocked(tmp_path: Path
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
         {
             "timestamp_utc": now.isoformat(),
-            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
             "latency_slo": {"sqlite": {"all": {"p95_seconds": 5.0}}},
         },
     )
@@ -1907,10 +3456,14 @@ def test_health_gates_weights_data_blocked_more_than_risk_blocked(tmp_path: Path
         },
     )
 
-    monkeypatch.setattr(sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)]
+    )
     rc = health_gates.main()
 
-    payload = json.loads((health_root / "health_gates_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health_root / "health_gates_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["hard_gate_triggered"] is False
@@ -1918,7 +3471,9 @@ def test_health_gates_weights_data_blocked_more_than_risk_blocked(tmp_path: Path
     assert abs(float(payload["inputs"]["blocked_rate"]) - 0.215) < 1e-9
 
 
-def test_health_gates_falls_back_to_legacy_combined_blocked_rate(tmp_path: Path, monkeypatch) -> None:
+def test_health_gates_falls_back_to_legacy_combined_blocked_rate(
+    tmp_path: Path, monkeypatch
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     sql_root = tmp_path / "exports" / "sql_reports"
@@ -1932,27 +3487,150 @@ def test_health_gates_falls_back_to_legacy_combined_blocked_rate(tmp_path: Path,
             "watchdog_restarts": "0",
         },
     )
-    _write_json(health_root / "ingestion_backpressure_latest.json", {"timestamp_utc": now.isoformat(), "overload": False})
+    _write_json(
+        health_root / "ingestion_backpressure_latest.json",
+        {"timestamp_utc": now.isoformat(), "overload": False},
+    )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
         {
             "timestamp_utc": now.isoformat(),
-            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
         },
     )
-    _write_json(sql_root / "daily_runtime_summary_latest.json", {"timestamp_utc": now.isoformat(), "watchdog": {"restarts": 0}})
+    _write_json(
+        sql_root / "daily_runtime_summary_latest.json",
+        {"timestamp_utc": now.isoformat(), "watchdog": {"restarts": 0}},
+    )
 
-    monkeypatch.setattr(sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)]
+    )
     health_gates.main()
 
-    payload = json.loads((health_root / "health_gates_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health_root / "health_gates_latest.json").read_text(encoding="utf-8")
+    )
 
     assert payload["inputs"]["data_blocked_rate"] == 0.41
     assert payload["inputs"]["risk_blocked_rate"] == 0.0
     assert payload["inputs"]["blocked_rate"] == 0.41
 
 
-def test_health_gates_fail_on_priority_shard_latency_and_storage(tmp_path: Path, monkeypatch) -> None:
+def test_health_gates_keeps_recovered_historical_stale_windows_advisory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    now = datetime.now(timezone.utc)
+    health_root = tmp_path / "governance" / "health"
+    sql_root = tmp_path / "exports" / "sql_reports"
+    _write_json(
+        health_root / "one_numbers_latest.json",
+        {
+            "generated_utc": (now - timedelta(minutes=10)).isoformat(),
+            "combined_blocked_rate": "0.010000",
+            "decision_stale_windows_4h": "3",
+            "decision_last_age_sec": "15",
+            "governance_last_age_sec": "20",
+            "watchdog_restarts": "0",
+        },
+    )
+    decision_dir = tmp_path / "decision_explanations" / "shadow_default"
+    governance_dir = tmp_path / "governance" / "shadow_default"
+    decision_dir.mkdir(parents=True, exist_ok=True)
+    governance_dir.mkdir(parents=True, exist_ok=True)
+    day = now.strftime("%Y%m%d")
+    (decision_dir / f"decision_explanations_{day}.jsonl").write_text(
+        json.dumps({"timestamp_utc": now.isoformat(), "action": "HOLD"}) + "\n",
+        encoding="utf-8",
+    )
+    (governance_dir / f"master_control_{day}.jsonl").write_text(
+        json.dumps({"timestamp_utc": now.isoformat(), "master_action": "HOLD"}) + "\n",
+        encoding="utf-8",
+    )
+    _write_json(
+        sql_root / "daily_runtime_summary_latest.json",
+        {"timestamp_utc": now.isoformat(), "watchdog": {"restarts": 0}},
+    )
+    _write_json(
+        health_root / "jsonl_sql_ingestion_health_trading_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
+    )
+    _write_json(
+        health_root / "ingestion_backpressure_latest.json",
+        {"timestamp_utc": now.isoformat(), "pending_lines": 0, "overload": False},
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "health_gates.py",
+            "--project-root",
+            str(tmp_path),
+            "--current-decision-max-age-seconds",
+            "120",
+        ],
+    )
+    rc = health_gates.main()
+
+    payload = json.loads(
+        (health_root / "health_gates_latest.json").read_text(encoding="utf-8")
+    )
+    assert rc == 0
+    assert payload["hard_gates"]["stale_windows"] is False
+    assert payload["inputs"]["stale_window_debt_recovered"] is True
+    assert payload["inputs"]["score_stale_windows"] == 0
+    assert payload["data_quality_score"] > 99.0
+    assert payload["inputs"]["decision_freshness_source"] == "raw_jsonl_tail"
+    assert payload["inputs"]["governance_freshness_source"] == "raw_jsonl_tail"
+    assert (
+        "retain_historical_stale_windows_as_advisory_evidence"
+        in payload["recommendations"]
+    )
+
+
+def test_health_gate_raw_stream_ages_cross_utc_midnight(tmp_path: Path) -> None:
+    now = datetime(2026, 8, 25, 0, 1, tzinfo=timezone.utc)
+    prior = now - timedelta(seconds=90)
+    prior_day = prior.strftime("%Y%m%d")
+    decision = (
+        tmp_path
+        / "decision_explanations"
+        / "shadow_default"
+        / f"decision_explanations_{prior_day}.jsonl"
+    )
+    governance = (
+        tmp_path / "governance" / "shadow_default" / f"master_control_{prior_day}.jsonl"
+    )
+    decision.parent.mkdir(parents=True, exist_ok=True)
+    governance.parent.mkdir(parents=True, exist_ok=True)
+    decision.write_text(
+        json.dumps({"timestamp_utc": prior.isoformat()}) + "\n", encoding="utf-8"
+    )
+    governance.write_text(
+        json.dumps({"timestamp_utc": prior.isoformat()}) + "\n", encoding="utf-8"
+    )
+
+    decision_age, governance_age = health_gates._raw_stream_ages(tmp_path, now_utc=now)
+
+    assert decision_age == 90.0
+    assert governance_age == 90.0
+
+
+def test_health_gates_fail_on_priority_shard_latency_and_storage(
+    tmp_path: Path, monkeypatch
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     sql_root = tmp_path / "exports" / "sql_reports"
@@ -1974,7 +3652,11 @@ def test_health_gates_fail_on_priority_shard_latency_and_storage(tmp_path: Path,
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
         {
             "timestamp_utc": now.isoformat(),
-            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
             "latency_slo": {"sqlite": {"all": {"p95_seconds": 4.0}}},
         },
     )
@@ -1992,8 +3674,16 @@ def test_health_gates_fail_on_priority_shard_latency_and_storage(tmp_path: Path,
         health_root / "jsonl_sql_ingestion_health_crypto_explanations_latest.json",
         {
             "timestamp_utc": now.isoformat(),
-            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
-            "latency_slo": {"sqlite": {"all": {"p95_seconds": 334.0, "slo_breach_ratio_gt_300s": 0.14}}},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+            "latency_slo": {
+                "sqlite": {
+                    "all": {"p95_seconds": 334.0, "slo_breach_ratio_gt_300s": 0.14}
+                }
+            },
         },
     )
     _write_json(
@@ -2013,11 +3703,17 @@ def test_health_gates_fail_on_priority_shard_latency_and_storage(tmp_path: Path,
         },
     )
 
-    monkeypatch.setattr(sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)]
+    )
     rc = health_gates.main()
 
-    payload = json.loads((health_root / "health_gates_latest.json").read_text(encoding="utf-8"))
-    stability = json.loads((health_root / "system_stability_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health_root / "health_gates_latest.json").read_text(encoding="utf-8")
+    )
+    stability = json.loads(
+        (health_root / "system_stability_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["hard_gate_triggered"] is False
@@ -2026,14 +3722,19 @@ def test_health_gates_fail_on_priority_shard_latency_and_storage(tmp_path: Path,
     assert payload["priority_shards"][0]["shard"] == "crypto_explanations"
     assert payload["priority_shards"][0]["tier"] == "supporting"
     assert payload["priority_shards"][0]["size_over_max"] is True
-    assert payload["priority_shards"][0]["recommended_action"] == "force_retention_and_throttle"
+    assert (
+        payload["priority_shards"][0]["recommended_action"]
+        == "force_retention_and_throttle"
+    )
     assert payload["recommended_operating_mode"] == "live_full"
     assert payload["storage_pressure"]["retention_debt_gb"] == 18.184
     assert "force_priority_shard_retention" in payload["recommendations"]
     assert stability["safe_operating_envelope"] is True
 
 
-def test_health_gates_prefers_live_shard_size_over_stale_retention_snapshot(tmp_path: Path, monkeypatch) -> None:
+def test_health_gates_prefers_live_shard_size_over_stale_retention_snapshot(
+    tmp_path: Path, monkeypatch
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     sql_root = tmp_path / "exports" / "sql_reports"
@@ -2041,7 +3742,9 @@ def test_health_gates_prefers_live_shard_size_over_stale_retention_snapshot(tmp_
 
     shard_db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(shard_db))
-    conn.execute("CREATE TABLE jsonl_records (id INTEGER PRIMARY KEY, payload_json TEXT)")
+    conn.execute(
+        "CREATE TABLE jsonl_records (id INTEGER PRIMARY KEY, payload_json TEXT)"
+    )
     conn.execute("INSERT INTO jsonl_records (payload_json) VALUES (?)", ("{}",))
     conn.commit()
     page_size = int(conn.execute("PRAGMA page_size").fetchone()[0])
@@ -2052,7 +3755,13 @@ def test_health_gates_prefers_live_shard_size_over_stale_retention_snapshot(tmp_
 
     _write_json(
         health_root / "one_numbers_latest.json",
-        {"timestamp_utc": now.isoformat(), "blocked_rate": 0.0, "window_seconds": 3600, "windows_total": 1, "windows_passed": 1},
+        {
+            "timestamp_utc": now.isoformat(),
+            "blocked_rate": 0.0,
+            "window_seconds": 3600,
+            "windows_total": 1,
+            "windows_passed": 1,
+        },
     )
     _write_json(
         sql_root / "daily_runtime_summary_20260415.json",
@@ -2060,18 +3769,39 @@ def test_health_gates_prefers_live_shard_size_over_stale_retention_snapshot(tmp_
     )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_data_latest.json",
-        {"timestamp_utc": now.isoformat(), "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0}},
+        {
+            "timestamp_utc": now.isoformat(),
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+        },
     )
     _write_json(
         health_root / "ingestion_backpressure_latest.json",
-        {"timestamp_utc": now.isoformat(), "pending_lines": 0, "pending_files": 0, "oldest_pending_age_seconds": 0.0, "overload": False},
+        {
+            "timestamp_utc": now.isoformat(),
+            "pending_lines": 0,
+            "pending_files": 0,
+            "oldest_pending_age_seconds": 0.0,
+            "overload": False,
+        },
     )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_explanations_latest.json",
         {
             "timestamp_utc": now.isoformat(),
-            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
-            "latency_slo": {"sqlite": {"all": {"p95_seconds": 25.0, "slo_breach_ratio_gt_300s": 0.0}}},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
+            "latency_slo": {
+                "sqlite": {
+                    "all": {"p95_seconds": 25.0, "slo_breach_ratio_gt_300s": 0.0}
+                }
+            },
         },
     )
     _write_json(
@@ -2091,11 +3821,17 @@ def test_health_gates_prefers_live_shard_size_over_stale_retention_snapshot(tmp_
         },
     )
 
-    monkeypatch.setattr(sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)]
+    )
     rc = health_gates.main()
 
-    payload = json.loads((health_root / "health_gates_latest.json").read_text(encoding="utf-8"))
-    explanations = next(row for row in payload["priority_shards"] if row["shard"] == "explanations")
+    payload = json.loads(
+        (health_root / "health_gates_latest.json").read_text(encoding="utf-8")
+    )
+    explanations = next(
+        row for row in payload["priority_shards"] if row["shard"] == "explanations"
+    )
 
     assert rc == 0
     assert explanations["db_size_gb"] < 4.0
@@ -2103,7 +3839,9 @@ def test_health_gates_prefers_live_shard_size_over_stale_retention_snapshot(tmp_
     assert payload["storage_pressure"]["retention_debt_gb"] == 0.0
 
 
-def test_health_gates_fail_on_sql_progress_stall_and_wal_pressure(tmp_path: Path, monkeypatch) -> None:
+def test_health_gates_fail_on_sql_progress_stall_and_wal_pressure(
+    tmp_path: Path, monkeypatch
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     sql_root = tmp_path / "exports" / "sql_reports"
@@ -2131,7 +3869,11 @@ def test_health_gates_fail_on_sql_progress_stall_and_wal_pressure(tmp_path: Path
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
         {
             "timestamp_utc": now.isoformat(),
-            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
             "latency_slo": {"sqlite": {"all": {"p95_seconds": 2.0}}},
         },
     )
@@ -2171,8 +3913,12 @@ def test_health_gates_fail_on_sql_progress_stall_and_wal_pressure(tmp_path: Path
     )
     rc = health_gates.main()
 
-    payload = json.loads((health_root / "health_gates_latest.json").read_text(encoding="utf-8"))
-    stability = json.loads((health_root / "system_stability_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health_root / "health_gates_latest.json").read_text(encoding="utf-8")
+    )
+    stability = json.loads(
+        (health_root / "system_stability_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 2
     assert payload["hard_gates"]["sql_progress_stall"] is True
@@ -2183,7 +3929,9 @@ def test_health_gates_fail_on_sql_progress_stall_and_wal_pressure(tmp_path: Path
     assert stability["sql_pressure"]["wal_pressure"] is True
 
 
-def test_health_gates_fail_on_required_collector_contracts(tmp_path: Path, monkeypatch) -> None:
+def test_health_gates_fail_on_required_collector_contracts(
+    tmp_path: Path, monkeypatch
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     sql_root = tmp_path / "exports" / "sql_reports"
@@ -2205,7 +3953,11 @@ def test_health_gates_fail_on_required_collector_contracts(tmp_path: Path, monke
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
         {
             "timestamp_utc": now.isoformat(),
-            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
             "latency_slo": {"sqlite": {"all": {"p95_seconds": 2.0}}},
         },
     )
@@ -2236,19 +3988,31 @@ def test_health_gates_fail_on_required_collector_contracts(tmp_path: Path, monke
         },
     )
 
-    monkeypatch.setattr(sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)]
+    )
     rc = health_gates.main()
 
-    payload = json.loads((health_root / "health_gates_latest.json").read_text(encoding="utf-8"))
-    stability = json.loads((health_root / "system_stability_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health_root / "health_gates_latest.json").read_text(encoding="utf-8")
+    )
+    stability = json.loads(
+        (health_root / "system_stability_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 2
     assert payload["hard_gates"]["collector_contracts"] is True
-    assert payload["inputs"]["collector_required_failures"] == ["official_macro_context"]
-    assert stability["collector_contracts"]["required_failures"] == ["official_macro_context"]
+    assert payload["inputs"]["collector_required_failures"] == [
+        "official_macro_context"
+    ]
+    assert stability["collector_contracts"]["required_failures"] == [
+        "official_macro_context"
+    ]
 
 
-def test_health_gates_does_not_gate_on_non_severe_backpressure_overload(tmp_path: Path, monkeypatch) -> None:
+def test_health_gates_does_not_gate_on_non_severe_backpressure_overload(
+    tmp_path: Path, monkeypatch
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     sql_root = tmp_path / "exports" / "sql_reports"
@@ -2262,12 +4026,19 @@ def test_health_gates_does_not_gate_on_non_severe_backpressure_overload(tmp_path
             "watchdog_restarts": "0",
         },
     )
-    _write_json(sql_root / "daily_runtime_summary_latest.json", {"timestamp_utc": now.isoformat(), "watchdog": {"restarts": 0}})
+    _write_json(
+        sql_root / "daily_runtime_summary_latest.json",
+        {"timestamp_utc": now.isoformat(), "watchdog": {"restarts": 0}},
+    )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
         {
             "timestamp_utc": now.isoformat(),
-            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
             "latency_slo": {"sqlite": {"all": {"p95_seconds": 4.0}}},
         },
     )
@@ -2282,10 +4053,14 @@ def test_health_gates_does_not_gate_on_non_severe_backpressure_overload(tmp_path
         },
     )
 
-    monkeypatch.setattr(sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)]
+    )
     rc = health_gates.main()
 
-    payload = json.loads((health_root / "health_gates_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health_root / "health_gates_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["hard_gates"]["ingestion_backpressure_overload"] is False
@@ -2293,7 +4068,9 @@ def test_health_gates_does_not_gate_on_non_severe_backpressure_overload(tmp_path
     assert payload["inputs"]["backpressure_overload_severe"] is False
 
 
-def test_health_gates_uses_fresh_storage_control_queue_truth_over_stale_backpressure(tmp_path: Path, monkeypatch) -> None:
+def test_health_gates_uses_fresh_storage_control_queue_truth_over_stale_backpressure(
+    tmp_path: Path, monkeypatch
+) -> None:
     now = datetime.now(timezone.utc)
     health_root = tmp_path / "governance" / "health"
     sql_root = tmp_path / "exports" / "sql_reports"
@@ -2307,12 +4084,19 @@ def test_health_gates_uses_fresh_storage_control_queue_truth_over_stale_backpres
             "watchdog_restarts": "0",
         },
     )
-    _write_json(sql_root / "daily_runtime_summary_latest.json", {"timestamp_utc": now.isoformat(), "watchdog": {"restarts": 0}})
+    _write_json(
+        sql_root / "daily_runtime_summary_latest.json",
+        {"timestamp_utc": now.isoformat(), "watchdog": {"restarts": 0}},
+    )
     _write_json(
         health_root / "jsonl_sql_ingestion_health_trading_latest.json",
         {
             "timestamp_utc": now.isoformat(),
-            "sqlite": {"pending_lines": 0, "oldest_uningested_age_seconds": 0.0, "invalid": 0},
+            "sqlite": {
+                "pending_lines": 0,
+                "oldest_uningested_age_seconds": 0.0,
+                "invalid": 0,
+            },
             "latency_slo": {"sqlite": {"all": {"p95_seconds": 4.0}}},
         },
     )
@@ -2362,10 +4146,14 @@ def test_health_gates_uses_fresh_storage_control_queue_truth_over_stale_backpres
         },
     )
 
-    monkeypatch.setattr(sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["health_gates.py", "--project-root", str(tmp_path)]
+    )
     rc = health_gates.main()
 
-    payload = json.loads((health_root / "health_gates_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health_root / "health_gates_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["hard_gates"]["ingestion_backpressure_overload"] is False
@@ -2373,7 +4161,10 @@ def test_health_gates_uses_fresh_storage_control_queue_truth_over_stale_backpres
     assert payload["inputs"]["backpressure_pending_lines"] == 406
     assert payload["inputs"]["backpressure_oldest_pending_age_seconds"] == 0.0
     assert payload["inputs"]["backpressure_storage_control_override"]["active"] is True
-    assert payload["inputs"]["backpressure_storage_control_override"]["reason"] == "fresh_storage_control_queue_clear"
+    assert (
+        payload["inputs"]["backpressure_storage_control_override"]["reason"]
+        == "fresh_storage_control_queue_clear"
+    )
 
 
 def test_health_gates_accepts_guarded_age_clean_sql_overlay_storage_control() -> None:
@@ -2452,3 +4243,42 @@ def test_health_gates_accepts_fresh_sql_shard_state_reconciliation_proof() -> No
     assert override["pending_lines_total"] == 1830
     assert override["shard_reconciliation_active"] is True
     assert override["reason"] == "fresh_sql_shard_state_reconciled_queue_clear"
+
+
+def test_health_gates_accepts_fresh_managed_support_pressure_contract() -> None:
+    now = datetime.now(timezone.utc)
+
+    override = health_gates._storage_control_backpressure_override(
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall_status": "ready",
+            "severity": "stable",
+            "backpressure": {
+                "effective_pressure_clear": True,
+                "managed_support_pressure_clear": True,
+                "effective_raw_live_source": "raw_live_backpressure+managed_support_overlay_pressure",
+                "effective_raw_live": {
+                    "total_pending_lines": 6436,
+                    "core_pending_lines": 509,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+            },
+            "data_integrity": {
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+            "steady_state": {
+                "targets": {
+                    "total_pending_lines": 15000,
+                    "core_pending_lines": 5000,
+                    "oldest_pending_age_seconds": 600,
+                }
+            },
+        }
+    )
+
+    assert override["active"] is True
+    assert override["pending_lines_total"] == 6436
+    assert override["managed_support_clear"] is True
+    assert override["reason"] == "fresh_managed_support_pressure_clear"

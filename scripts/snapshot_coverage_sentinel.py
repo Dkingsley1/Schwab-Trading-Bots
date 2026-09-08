@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "snapshot_coverage_latest.json"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -369,6 +370,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Snapshot coverage sentinel.")
     parser.add_argument("--hours", type=int, default=2)
     parser.add_argument("--min-coverage-ratio", type=float, default=0.75)
+    parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -377,7 +379,7 @@ def main() -> int:
         min_coverage_ratio=float(args.min_coverage_ratio),
     )
 
-    out = PROJECT_ROOT / "governance" / "health" / "snapshot_coverage_latest.json"
+    out = Path(args.out_file).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 

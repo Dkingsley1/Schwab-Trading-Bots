@@ -2,7 +2,6 @@ import json
 import sys
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -18,7 +17,9 @@ def _synthetic_graph() -> dict:
         "stale_node_count": 0,
         "blocked_edge_count": 1,
         "authority_violation_count": 1,
-        "authority_violations": [{"node_id": "unsafe_live", "path": "ALLOW_ORDER_EXECUTION"}],
+        "authority_violations": [
+            {"node_id": "unsafe_live", "path": "ALLOW_ORDER_EXECUTION"}
+        ],
         "nodes": [
             {
                 "node_id": "health_fast",
@@ -33,7 +34,9 @@ def _synthetic_graph() -> dict:
                 "class": "runtime",
                 "status": "degraded",
                 "depends_on": ["health_fast"],
-                "commands": [["./scripts/ops/opsctl.sh", "runtime-throttle", "--apply", "--json"]],
+                "commands": [
+                    ["./scripts/ops/opsctl.sh", "runtime-throttle", "--apply", "--json"]
+                ],
                 "authority_violations": [],
             },
             {
@@ -57,7 +60,13 @@ def _synthetic_graph() -> dict:
                 "class": "governance",
                 "status": "ready",
                 "depends_on": ["paper_ramp", "runtime_throttle"],
-                "commands": [["./scripts/ops/opsctl.sh", "runtime-paper-regression-guard", "--json"]],
+                "commands": [
+                    [
+                        "./scripts/ops/opsctl.sh",
+                        "runtime-paper-regression-guard",
+                        "--json",
+                    ]
+                ],
                 "authority_violations": [],
             },
             {
@@ -65,7 +74,14 @@ def _synthetic_graph() -> dict:
                 "class": "adaptive_governance",
                 "status": "blocked",
                 "depends_on": ["runtime_throttle"],
-                "commands": [["./scripts/ops/opsctl.sh", "adaptive-regression-guard", "--apply", "--json"]],
+                "commands": [
+                    [
+                        "./scripts/ops/opsctl.sh",
+                        "adaptive-regression-guard",
+                        "--apply",
+                        "--json",
+                    ]
+                ],
                 "authority_violations": [],
             },
             {
@@ -73,7 +89,9 @@ def _synthetic_graph() -> dict:
                 "class": "self_model",
                 "status": "degraded",
                 "depends_on": ["adaptive_regression_guard"],
-                "commands": [["./scripts/ops/opsctl.sh", "big-platform-brain", "--json"]],
+                "commands": [
+                    ["./scripts/ops/opsctl.sh", "big-platform-brain", "--json"]
+                ],
                 "authority_violations": [],
             },
             {
@@ -112,15 +130,24 @@ def test_architecture_autopilot_plans_dependency_ordered_phases(tmp_path: Path) 
     assert payload["safe_repair_step_count"] == 3
 
 
-def test_architecture_autopilot_apply_writes_plan_without_executing(tmp_path: Path) -> None:
+def test_architecture_autopilot_apply_writes_plan_without_executing(
+    tmp_path: Path,
+) -> None:
     calls: list[list[str]] = []
 
     def runner(cmd: list[str], _project_root: Path, _timeout_sec: int) -> dict:
         calls.append(cmd)
         return {"cmd": cmd, "rc": 0, "payload": {"overall_status": "ready"}}
 
-    payload = src.build_payload(tmp_path, apply=True, runner=runner, graph_builder=_graph_builder)
-    plan_path = tmp_path / "governance" / "architecture_contracts" / "system_architecture_autopilot_plan_latest.json"
+    payload = src.build_payload(
+        tmp_path, apply=True, runner=runner, graph_builder=_graph_builder
+    )
+    plan_path = (
+        tmp_path
+        / "governance"
+        / "architecture_contracts"
+        / "system_architecture_autopilot_plan_latest.json"
+    )
     written = json.loads(plan_path.read_text(encoding="utf-8"))
 
     assert calls == []
@@ -160,11 +187,172 @@ def test_architecture_autopilot_executes_only_safe_steps(tmp_path: Path) -> None
     assert payload["attempt_count"] == 3
     assert payload["successful_attempt_count"] == 3
     assert payload["failed_attempt_count"] == 0
-    assert payload["final_graph"]["blocked_nodes"] == ["adaptive_regression_guard", "unsafe_live"]
-    assert payload["final_graph"]["degraded_nodes"] == ["runtime_throttle", "system_self_model"]
+    assert payload["final_graph"]["blocked_nodes"] == [
+        "adaptive_regression_guard",
+        "unsafe_live",
+    ]
+    assert payload["final_graph"]["degraded_nodes"] == [
+        "runtime_throttle",
+        "system_self_model",
+    ]
     assert payload["final_graph"]["authority_violation_count"] == 1
-    unsafe_step = next(step for step in payload["repair_plan"] if step["node_id"] == "unsafe_live")
+    unsafe_step = next(
+        step for step in payload["repair_plan"] if step["node_id"] == "unsafe_live"
+    )
     assert unsafe_step["safe_to_execute"] is False
+
+
+def _earned_evidence_graph() -> dict:
+    return {
+        "overall_status": "degraded",
+        "blocked_node_count": 0,
+        "degraded_node_count": 1,
+        "stale_node_count": 0,
+        "blocked_edge_count": 0,
+        "authority_violation_count": 0,
+        "nodes": [
+            {
+                "node_id": "architecture_hardening",
+                "class": "architecture",
+                "status": "degraded",
+                "depends_on": [],
+                "commands": [
+                    [
+                        "./scripts/ops/opsctl.sh",
+                        "system-architecture-hardening",
+                        "--apply",
+                        "--json",
+                    ]
+                ],
+                "authority_violations": [],
+            }
+        ],
+        "blocked_nodes": [],
+        "degraded_nodes": ["architecture_hardening"],
+        "stale_nodes": [],
+    }
+
+
+def _earned_evidence_payload() -> dict:
+    ready_section = {
+        "overall_status": "ready",
+        "ok": True,
+        "blocks_guarded_paper": False,
+        "evidence": {},
+    }
+    sections = {
+        name: dict(ready_section)
+        for name in (
+            "truth_source_consistency",
+            "storage_writer_data_plane",
+            "runtime_capacity_partition",
+            "collector_process_quarantine",
+            "platform_watch_semantics",
+            "provider_source_mesh",
+            "opsctl_command_spine",
+        )
+    }
+    sections["safety_execution_boundary"] = {
+        **ready_section,
+        "evidence": {
+            "guarded_paper_ok": True,
+            "live_execution_status": "blocked_read_only",
+            "truthy_live_enable_flags": [],
+        },
+    }
+    sections["training_evidence_contract"] = {
+        "overall_status": "needs_work",
+        "ok": False,
+        "blocks_guarded_paper": False,
+        "evidence": {
+            "collector_count": 221,
+            "coverage_ratio": 1.0,
+            "zero_observation_count": 0,
+            "training_quality_score": 66.79,
+            "managed_training_evidence_contract": {
+                "guarded_paper_ready": True,
+                "collection_flowing": True,
+            },
+        },
+    }
+    return {
+        "overall_status": "needs_work",
+        "ok": False,
+        "read_only": True,
+        "started_heavy_reports": False,
+        "hard_section_count": 1,
+        "hard_sections": ["training_evidence_contract"],
+        "sections": sections,
+    }
+
+
+def test_architecture_autopilot_accepts_bounded_earned_evidence_outcome(
+    tmp_path: Path,
+) -> None:
+    def runner(cmd: list[str], _project_root: Path, _timeout_sec: int) -> dict:
+        return {
+            "cmd": cmd,
+            "rc": 2,
+            "payload": _earned_evidence_payload(),
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+
+    payload = src.build_payload(
+        tmp_path,
+        apply=True,
+        execute_safe_repairs=True,
+        runner=runner,
+        graph_builder=lambda _root, _apply: _earned_evidence_graph(),
+    )
+
+    assert payload["attempt_count"] == 1
+    assert payload["successful_attempt_count"] == 0
+    assert payload["accepted_non_ready_attempt_count"] == 1
+    assert payload["failed_attempt_count"] == 0
+    assert payload["hard_failed_attempt_count"] == 0
+    assert payload["attempts"][0]["accepted_non_ready"] is True
+    assert payload["attempts"][0]["outcome"] == "expected_earned_evidence_debt"
+
+
+def test_architecture_autopilot_fails_closed_on_mixed_non_ready_sections(
+    tmp_path: Path,
+) -> None:
+    child_payload = _earned_evidence_payload()
+    child_payload["sections"]["provider_source_mesh"] = {
+        "overall_status": "needs_work",
+        "ok": False,
+        "blocks_guarded_paper": True,
+        "evidence": {},
+    }
+    child_payload["hard_section_count"] = 2
+    child_payload["hard_sections"] = [
+        "training_evidence_contract",
+        "provider_source_mesh",
+    ]
+
+    def runner(cmd: list[str], _project_root: Path, _timeout_sec: int) -> dict:
+        return {
+            "cmd": cmd,
+            "rc": 2,
+            "payload": child_payload,
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
+
+    payload = src.build_payload(
+        tmp_path,
+        apply=True,
+        execute_safe_repairs=True,
+        runner=runner,
+        graph_builder=lambda _root, _apply: _earned_evidence_graph(),
+    )
+
+    assert payload["accepted_non_ready_attempt_count"] == 0
+    assert payload["failed_attempt_count"] == 1
+    assert payload["hard_failed_attempt_count"] == 1
+    assert payload["attempts"][0]["accepted_non_ready"] is False
+    assert payload["attempts"][0]["outcome"] == "failed"
 
 
 def test_architecture_autopilot_builds_seven_expansion_layers(tmp_path: Path) -> None:
@@ -188,7 +376,9 @@ def test_architecture_autopilot_builds_seven_expansion_layers(tmp_path: Path) ->
         ),
         encoding="utf-8",
     )
-    adaptive_path = tmp_path / "governance" / "health" / "adaptive_regression_guard_latest.json"
+    adaptive_path = (
+        tmp_path / "governance" / "health" / "adaptive_regression_guard_latest.json"
+    )
     adaptive_path.write_text(
         json.dumps(
             {
@@ -202,7 +392,10 @@ def test_architecture_autopilot_builds_seven_expansion_layers(tmp_path: Path) ->
                         "state": "blocked",
                         "adaptive_severity": "critical",
                         "summary": "open incidents remain",
-                        "memory": {"consecutive_non_ready_count": 4, "consecutive_blocked_count": 4},
+                        "memory": {
+                            "consecutive_non_ready_count": 4,
+                            "consecutive_blocked_count": 4,
+                        },
                     },
                     {
                         "surface": "autonomy_control",
@@ -234,11 +427,19 @@ def test_architecture_autopilot_builds_seven_expansion_layers(tmp_path: Path) ->
     assert payload["paper_governance_split"]["guarded_paper_ready"] is True
     assert payload["paper_governance_split"]["paper_governance_split_active"] is True
     assert payload["paper_governance_split"]["all_sleeves_child_process_count"] == 108
-    assert payload["adaptive_memory_pressure"]["critical_surfaces"][0]["surface"] == "incident_closeout"
-    assert payload["operator_visibility"]["operator_commands"]["safe_refresh"][1] == "system-architecture-autopilot"
+    assert (
+        payload["adaptive_memory_pressure"]["critical_surfaces"][0]["surface"]
+        == "incident_closeout"
+    )
+    assert (
+        payload["operator_visibility"]["operator_commands"]["safe_refresh"][1]
+        == "system-architecture-autopilot"
+    )
 
 
-def test_architecture_autopilot_ranks_runtime_load_shedder_when_paper_cpu_blocks_guarded_paper(tmp_path: Path) -> None:
+def test_architecture_autopilot_ranks_runtime_load_shedder_when_paper_cpu_blocks_guarded_paper(
+    tmp_path: Path,
+) -> None:
     health_path = tmp_path / "governance" / "health" / "health_fast_latest.json"
     health_path.parent.mkdir(parents=True, exist_ok=True)
     health_path.write_text(
@@ -246,17 +447,25 @@ def test_architecture_autopilot_ranks_runtime_load_shedder_when_paper_cpu_blocks
             {
                 "overall_status": "degraded",
                 "operational_readiness": {
-                    "guarded_paper": {"status": "blocked", "blockers": ["runtime_status=degraded"]},
+                    "guarded_paper": {
+                        "status": "blocked",
+                        "blockers": ["runtime_status=degraded"],
+                    },
                     "live_execution": {"status": "blocked_read_only"},
                 },
                 "process_watchdog": {
-                    "all_sleeves_effective_runtime": {"status": "ready", "child_process_count": 108}
+                    "all_sleeves_effective_runtime": {
+                        "status": "ready",
+                        "child_process_count": 108,
+                    }
                 },
             }
         ),
         encoding="utf-8",
     )
-    runtime_path = tmp_path / "governance" / "health" / "runtime_throttle_control_latest.json"
+    runtime_path = (
+        tmp_path / "governance" / "health" / "runtime_throttle_control_latest.json"
+    )
     runtime_path.write_text(
         json.dumps(
             {
@@ -280,19 +489,42 @@ def test_architecture_autopilot_ranks_runtime_load_shedder_when_paper_cpu_blocks
         ),
         encoding="utf-8",
     )
-    adaptive_path = tmp_path / "governance" / "health" / "adaptive_regression_guard_latest.json"
+    adaptive_path = (
+        tmp_path / "governance" / "health" / "adaptive_regression_guard_latest.json"
+    )
     adaptive_path.write_text(
-        json.dumps({"overall_status": "ready", "active_regression_count": 0, "surfaces": []}),
+        json.dumps(
+            {"overall_status": "ready", "active_regression_count": 0, "surfaces": []}
+        ),
         encoding="utf-8",
     )
 
     payload = src.build_payload(tmp_path, apply=True, graph_builder=_graph_builder)
-    benefit_path = tmp_path / "governance" / "architecture_contracts" / "system_architecture_benefit_backlog_latest.json"
+    benefit_path = (
+        tmp_path
+        / "governance"
+        / "architecture_contracts"
+        / "system_architecture_benefit_backlog_latest.json"
+    )
     benefit = json.loads(benefit_path.read_text(encoding="utf-8"))
     top = benefit["active_candidates"][0]
 
-    assert payload["architecture_benefit_summary"]["top_candidate_id"] == "paper_runtime_load_shedder"
+    assert (
+        payload["architecture_benefit_summary"]["top_candidate_id"]
+        == "paper_runtime_load_shedder"
+    )
     assert top["candidate_id"] == "paper_runtime_load_shedder"
-    assert {"guarded_paper_blocked_runtime", "paper_execution_hot", "runtime_degraded"} <= set(top["matched_signals"])
+    assert {
+        "guarded_paper_blocked_runtime",
+        "paper_execution_hot",
+        "runtime_degraded",
+    } <= set(top["matched_signals"])
     assert top["authority_contract"]["does_not_enable_live_execution"] is True
-    assert ["./scripts/ops/opsctl.sh", "runtime-throttle", "--apply", "--max-renice-processes", "30", "--json"] in top["safe_commands"]
+    assert [
+        "./scripts/ops/opsctl.sh",
+        "runtime-throttle",
+        "--apply",
+        "--max-renice-processes",
+        "30",
+        "--json",
+    ] in top["safe_commands"]

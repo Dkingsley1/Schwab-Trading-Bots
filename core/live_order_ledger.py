@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
 
 TERMINAL_STATES = {"filled", "canceled", "rejected", "expired"}
 UNRESOLVED_STATES = {
@@ -22,12 +22,56 @@ UNRESOLVED_STATES = {
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "reserved": {"submitting", "rejected"},
     "submitting": {"acknowledged", "submit_unknown", "rejected"},
-    "submit_unknown": {"acknowledged", "open", "partially_filled", "filled", "cancel_pending", "canceled", "rejected", "expired"},
-    "acknowledged": {"open", "partially_filled", "filled", "cancel_pending", "canceled", "rejected", "expired"},
-    "open": {"partially_filled", "filled", "cancel_pending", "canceled", "rejected", "expired"},
-    "partially_filled": {"partially_filled", "filled", "cancel_pending", "canceled", "expired"},
-    "cancel_pending": {"open", "partially_filled", "filled", "canceled", "expired", "cancel_unknown"},
-    "cancel_unknown": {"open", "partially_filled", "filled", "cancel_pending", "canceled", "expired"},
+    "submit_unknown": {
+        "acknowledged",
+        "open",
+        "partially_filled",
+        "filled",
+        "cancel_pending",
+        "canceled",
+        "rejected",
+        "expired",
+    },
+    "acknowledged": {
+        "open",
+        "partially_filled",
+        "filled",
+        "cancel_pending",
+        "canceled",
+        "rejected",
+        "expired",
+    },
+    "open": {
+        "partially_filled",
+        "filled",
+        "cancel_pending",
+        "canceled",
+        "rejected",
+        "expired",
+    },
+    "partially_filled": {
+        "partially_filled",
+        "filled",
+        "cancel_pending",
+        "canceled",
+        "expired",
+    },
+    "cancel_pending": {
+        "open",
+        "partially_filled",
+        "filled",
+        "canceled",
+        "expired",
+        "cancel_unknown",
+    },
+    "cancel_unknown": {
+        "open",
+        "partially_filled",
+        "filled",
+        "cancel_pending",
+        "canceled",
+        "expired",
+    },
     "filled": set(),
     "canceled": set(),
     "rejected": set(),
@@ -47,7 +91,9 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def normalize_broker_state(raw: Any, *, filled_quantity: float = 0.0, requested_quantity: float = 0.0) -> str:
+def normalize_broker_state(
+    raw: Any, *, filled_quantity: float = 0.0, requested_quantity: float = 0.0
+) -> str:
     status = str(raw or "").strip().upper().replace(" ", "_")
     aliases = {
         "PENDING_ACTIVATION": "acknowledged",
@@ -101,8 +147,7 @@ class LiveOrderLedger:
 
     def _initialize(self) -> None:
         with self._connect() as conn:
-            conn.executescript(
-                """
+            conn.executescript("""
                 CREATE TABLE IF NOT EXISTS order_intents (
                     intent_id TEXT PRIMARY KEY,
                     payload_hash TEXT NOT NULL,
@@ -131,8 +176,7 @@ class LiveOrderLedger:
                     FOREIGN KEY(intent_id) REFERENCES order_intents(intent_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_order_events_intent_id ON order_events(intent_id, event_id);
-                """
-            )
+                """)
 
     @staticmethod
     def _event_hash(event: dict[str, Any]) -> str:
@@ -148,7 +192,9 @@ class LiveOrderLedger:
         details: dict[str, Any] | None = None,
         timestamp_utc: str | None = None,
     ) -> str:
-        row = conn.execute("SELECT event_hash FROM order_events ORDER BY event_id DESC LIMIT 1").fetchone()
+        row = conn.execute(
+            "SELECT event_hash FROM order_events ORDER BY event_id DESC LIMIT 1"
+        ).fetchone()
         previous_hash = str(row["event_hash"]) if row else ""
         event = {
             "intent_id": intent_id,
@@ -194,7 +240,9 @@ class LiveOrderLedger:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            existing = conn.execute("SELECT * FROM order_intents WHERE intent_id = ?", (key,)).fetchone()
+            existing = conn.execute(
+                "SELECT * FROM order_intents WHERE intent_id = ?", (key,)
+            ).fetchone()
             if existing is not None:
                 conflict = str(existing["payload_hash"]) != payload_hash
                 conn.rollback()
@@ -205,7 +253,11 @@ class LiveOrderLedger:
                     "intent_id": key,
                     "state": str(existing["state"]),
                     "broker_order_id": str(existing["broker_order_id"]),
-                    "reason": "intent_payload_conflict" if conflict else "intent_already_reserved",
+                    "reason": (
+                        "intent_payload_conflict"
+                        if conflict
+                        else "intent_already_reserved"
+                    ),
                 }
             conn.execute(
                 """
@@ -214,7 +266,14 @@ class LiveOrderLedger:
                     created_at_utc, updated_at_utc
                 ) VALUES (?, ?, ?, 'reserved', ?, ?, ?)
                 """,
-                (key, payload_hash, payload_json, max(float(requested_quantity or 0.0), 0.0), now, now),
+                (
+                    key,
+                    payload_hash,
+                    payload_json,
+                    max(float(requested_quantity or 0.0), 0.0),
+                    now,
+                    now,
+                ),
             )
             self._append_event(
                 conn,
@@ -255,21 +314,93 @@ class LiveOrderLedger:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT * FROM order_intents WHERE intent_id = ?", (key,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM order_intents WHERE intent_id = ?", (key,)
+            ).fetchone()
             if row is None:
                 conn.rollback()
                 raise KeyError(f"unknown intent_id: {key}")
             current = str(row["state"])
-            if target == current:
-                conn.rollback()
-                return self._row_dict(row)
-            if target not in ALLOWED_TRANSITIONS.get(current, set()):
+            if target != current and target not in ALLOWED_TRANSITIONS.get(
+                current, set()
+            ):
                 conn.rollback()
                 raise ValueError(f"illegal order transition: {current}->{target}")
             now = _utc_now()
-            broker_id = str(broker_order_id or row["broker_order_id"] or "").strip()
-            filled = float(row["filled_quantity"] if filled_quantity is None else max(float(filled_quantity), 0.0))
-            average = float(row["average_fill_price"] if average_fill_price is None else max(float(average_fill_price), 0.0))
+            existing_broker_id = str(row["broker_order_id"] or "").strip()
+            incoming_broker_id = str(broker_order_id or "").strip()
+            if (
+                existing_broker_id
+                and incoming_broker_id
+                and incoming_broker_id != existing_broker_id
+            ):
+                conn.rollback()
+                raise ValueError("broker_order_id_is_immutable")
+            broker_id = incoming_broker_id or existing_broker_id
+            existing_filled = float(row["filled_quantity"] or 0.0)
+            existing_average = float(row["average_fill_price"] or 0.0)
+            filled = (
+                existing_filled if filled_quantity is None else float(filled_quantity)
+            )
+            average = (
+                existing_average
+                if average_fill_price is None
+                else float(average_fill_price)
+            )
+            requested = float(row["requested_quantity"] or 0.0)
+            if not math.isfinite(filled) or filled < 0.0:
+                conn.rollback()
+                raise ValueError("filled_quantity_must_be_finite_and_nonnegative")
+            if not math.isfinite(average) or average < 0.0:
+                conn.rollback()
+                raise ValueError("average_fill_price_must_be_finite_and_nonnegative")
+            if filled + 1e-9 < existing_filled:
+                conn.rollback()
+                raise ValueError("filled_quantity_cannot_decrease")
+            if requested > 0.0 and filled > requested + 1e-9:
+                conn.rollback()
+                raise ValueError("filled_quantity_cannot_exceed_requested_quantity")
+            broker_active_states = {
+                "acknowledged",
+                "open",
+                "partially_filled",
+                "filled",
+                "cancel_pending",
+                "cancel_unknown",
+                "canceled",
+                "expired",
+            }
+            if target in broker_active_states and not broker_id:
+                conn.rollback()
+                raise ValueError(f"broker_order_id_required_for_state:{target}")
+            if target == "partially_filled" and (
+                filled <= 0.0 or (requested > 0.0 and filled >= requested - 1e-9)
+            ):
+                conn.rollback()
+                raise ValueError(
+                    "partial_fill_quantity_must_be_between_zero_and_requested"
+                )
+            if (
+                target == "filled"
+                and requested > 0.0
+                and abs(filled - requested) > 1e-9
+            ):
+                conn.rollback()
+                raise ValueError("filled_state_requires_requested_quantity")
+            error_text = str(last_error or "")
+            material_changed = bool(
+                target != current
+                or broker_id != existing_broker_id
+                or abs(filled - existing_filled) > 1e-12
+                or abs(average - existing_average) > 1e-12
+                or error_text != str(row["last_error"] or "")
+            )
+            if target == current and not material_changed:
+                conn.rollback()
+                return self._row_dict(row)
+            if current in TERMINAL_STATES and material_changed:
+                conn.rollback()
+                raise ValueError(f"terminal_order_state_is_immutable:{current}")
             conn.execute(
                 """
                 UPDATE order_intents
@@ -277,7 +408,7 @@ class LiveOrderLedger:
                     average_fill_price = ?, updated_at_utc = ?, last_error = ?
                 WHERE intent_id = ?
                 """,
-                (target, broker_id, filled, average, now, str(last_error or ""), key),
+                (target, broker_id, filled, average, now, error_text, key),
             )
             self._append_event(
                 conn,
@@ -286,14 +417,19 @@ class LiveOrderLedger:
                 to_state=target,
                 details={
                     **(details or {}),
+                    "event_kind": (
+                        "state_transition" if target != current else "material_update"
+                    ),
                     "broker_order_id": broker_id,
                     "filled_quantity": filled,
                     "average_fill_price": average,
-                    "last_error": str(last_error or ""),
+                    "last_error": error_text,
                 },
                 timestamp_utc=now,
             )
-            updated = conn.execute("SELECT * FROM order_intents WHERE intent_id = ?", (key,)).fetchone()
+            updated = conn.execute(
+                "SELECT * FROM order_intents WHERE intent_id = ?", (key,)
+            ).fetchone()
             conn.commit()
             return self._row_dict(updated)
         finally:
@@ -314,7 +450,11 @@ class LiveOrderLedger:
         confirmed = bool(acknowledged and str(broker_order_id or "").strip())
         return self.transition(
             intent_id=intent_id,
-            to_state="acknowledged" if confirmed else "rejected" if definitively_rejected else "submit_unknown",
+            to_state=(
+                "acknowledged"
+                if confirmed
+                else "rejected" if definitively_rejected else "submit_unknown"
+            ),
             broker_order_id=broker_order_id,
             last_error=error,
             details={
@@ -328,19 +468,35 @@ class LiveOrderLedger:
         *,
         broker_order_id: str,
         broker_status: Any,
-        filled_quantity: float = 0.0,
-        average_fill_price: float = 0.0,
+        filled_quantity: float | None = None,
+        average_fill_price: float | None = None,
     ) -> dict[str, Any]:
         broker_id = str(broker_order_id or "").strip()
         if not broker_id:
             raise ValueError("broker_order_id is required")
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM order_intents WHERE broker_order_id = ?", (broker_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM order_intents WHERE broker_order_id = ?", (broker_id,)
+            ).fetchone()
         if row is None:
             raise KeyError(f"unknown broker_order_id: {broker_id}")
+        existing_filled = float(row["filled_quantity"] or 0.0)
+        existing_average = float(row["average_fill_price"] or 0.0)
+        reported_filled = (
+            existing_filled if filled_quantity is None else float(filled_quantity)
+        )
+        reported_average = (
+            existing_average
+            if average_fill_price is None
+            else float(average_fill_price)
+        )
+        if reported_filled <= 0.0 and existing_filled > 0.0:
+            reported_filled = existing_filled
+        if reported_average <= 0.0 and existing_average > 0.0:
+            reported_average = existing_average
         target = normalize_broker_state(
             broker_status,
-            filled_quantity=max(float(filled_quantity or 0.0), 0.0),
+            filled_quantity=max(reported_filled, 0.0),
             requested_quantity=max(float(row["requested_quantity"] or 0.0), 0.0),
         )
         current = str(row["state"])
@@ -350,8 +506,8 @@ class LiveOrderLedger:
             intent_id=str(row["intent_id"]),
             to_state=target,
             broker_order_id=broker_id,
-            filled_quantity=filled_quantity,
-            average_fill_price=average_fill_price,
+            filled_quantity=reported_filled,
+            average_fill_price=reported_average,
             details={"broker_status": str(broker_status or "")},
         )
 
@@ -359,9 +515,15 @@ class LiveOrderLedger:
         row = self.get_by_broker_order_id(broker_order_id)
         if not row:
             raise KeyError(f"unknown broker_order_id: {broker_order_id}")
-        return self.transition(intent_id=str(row["intent_id"]), to_state="cancel_pending", broker_order_id=broker_order_id)
+        return self.transition(
+            intent_id=str(row["intent_id"]),
+            to_state="cancel_pending",
+            broker_order_id=broker_order_id,
+        )
 
-    def mark_cancel_unknown(self, broker_order_id: str, *, error: str = "") -> dict[str, Any]:
+    def mark_cancel_unknown(
+        self, broker_order_id: str, *, error: str = ""
+    ) -> dict[str, Any]:
         row = self.get_by_broker_order_id(broker_order_id)
         if not row:
             raise KeyError(f"unknown broker_order_id: {broker_order_id}")
@@ -399,7 +561,14 @@ class LiveOrderLedger:
             target = "open" if current == "cancel_unknown" else "rejected"
         else:
             target = requested
-        allowed_resolutions = {"open", "partially_filled", "filled", "canceled", "rejected", "expired"}
+        allowed_resolutions = {
+            "open",
+            "partially_filled",
+            "filled",
+            "canceled",
+            "rejected",
+            "expired",
+        }
         if target not in allowed_resolutions:
             raise ValueError(f"unsupported reconciliation resolution: {requested}")
 
@@ -432,7 +601,10 @@ class LiveOrderLedger:
 
     def get(self, intent_id: str) -> dict[str, Any]:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM order_intents WHERE intent_id = ?", (str(intent_id or "").strip(),)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM order_intents WHERE intent_id = ?",
+                (str(intent_id or "").strip(),),
+            ).fetchone()
         return self._row_dict(row)
 
     def get_by_broker_order_id(self, broker_order_id: str) -> dict[str, Any]:
@@ -443,6 +615,38 @@ class LiveOrderLedger:
             ).fetchone()
         return self._row_dict(row)
 
+    def intents(self) -> list[dict[str, Any]]:
+        """Return the immutable materialized intent rows for read-only controls."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM order_intents ORDER BY created_at_utc, intent_id"
+            ).fetchall()
+        return [self._row_dict(row) for row in rows]
+
+    def events(self, *, intent_id: str = "") -> list[dict[str, Any]]:
+        """Return hash-chain events without exposing a mutable database handle."""
+        key = str(intent_id or "").strip()
+        with self._connect() as conn:
+            if key:
+                rows = conn.execute(
+                    "SELECT * FROM order_events WHERE intent_id = ? ORDER BY event_id",
+                    (key,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM order_events ORDER BY event_id"
+                ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._row_dict(row)
+            try:
+                details = json.loads(str(item.get("details_json") or "{}"))
+            except json.JSONDecodeError:
+                details = {}
+            item["details"] = details if isinstance(details, dict) else {}
+            output.append(item)
+        return output
+
     def unresolved(self) -> list[dict[str, Any]]:
         placeholders = ",".join("?" for _ in UNRESOLVED_STATES)
         with self._connect() as conn:
@@ -452,11 +656,95 @@ class LiveOrderLedger:
             ).fetchall()
         return [self._row_dict(row) for row in rows]
 
+    def recover_interrupted(
+        self,
+        *,
+        stale_after_seconds: float = 5.0,
+        now_utc: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Resolve only states whose dispatch certainty is known from the ledger.
+
+        ``reserved`` means the transactional reservation committed before the
+        process marked the intent as submitting, so an old reservation was never
+        dispatched and may be rejected safely. ``submitting`` means dispatch may
+        have occurred and therefore moves to ``submit_unknown`` for broker
+        reconciliation. No broker-facing operation is retried here.
+        """
+        now = now_utc or datetime.now(timezone.utc)
+        threshold = max(float(stale_after_seconds or 0.0), 0.0)
+        recovered: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        errors: list[str] = []
+
+        for row in self.unresolved():
+            state = str(row.get("state") or "")
+            if state not in {"reserved", "submitting"}:
+                continue
+            try:
+                updated_at = datetime.fromisoformat(
+                    str(row.get("updated_at_utc") or "")
+                )
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=timezone.utc)
+                age_seconds = max(
+                    (now - updated_at.astimezone(timezone.utc)).total_seconds(), 0.0
+                )
+            except (TypeError, ValueError):
+                age_seconds = threshold
+            if age_seconds < threshold:
+                skipped.append(
+                    {
+                        "intent_id": str(row.get("intent_id") or ""),
+                        "state": state,
+                        "age_seconds": round(age_seconds, 3),
+                        "reason": "interruption_grace_active",
+                    }
+                )
+                continue
+            try:
+                if state == "reserved":
+                    updated = self.transition(
+                        intent_id=str(row.get("intent_id") or ""),
+                        to_state="rejected",
+                        last_error="startup_recovery_reserved_never_dispatched",
+                        details={
+                            "startup_recovery": True,
+                            "dispatch_proven_absent": True,
+                            "age_seconds": round(age_seconds, 3),
+                        },
+                    )
+                else:
+                    updated = self.transition(
+                        intent_id=str(row.get("intent_id") or ""),
+                        to_state="submit_unknown",
+                        last_error="startup_recovery_interrupted_submit",
+                        details={
+                            "startup_recovery": True,
+                            "dispatch_outcome_known": False,
+                            "age_seconds": round(age_seconds, 3),
+                        },
+                    )
+                recovered.append(updated)
+            except (KeyError, ValueError, sqlite3.DatabaseError) as exc:
+                errors.append(f"{row.get('intent_id')}:{type(exc).__name__}:{exc}")
+
+        return {
+            "ok": not errors,
+            "recovered_count": len(recovered),
+            "skipped_count": len(skipped),
+            "recovered": recovered,
+            "skipped": skipped,
+            "errors": errors,
+            "policy": "never-dispatched reservations reject safely; interrupted submissions become unknown and require broker truth",
+        }
+
     def verify_event_chain(self) -> dict[str, Any]:
         errors: list[str] = []
         previous = ""
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM order_events ORDER BY event_id").fetchall()
+            rows = conn.execute(
+                "SELECT * FROM order_events ORDER BY event_id"
+            ).fetchall()
         for row in rows:
             try:
                 details = json.loads(str(row["details_json"] or "{}"))
@@ -500,12 +788,23 @@ class LiveOrderLedger:
         transition_mismatch_count = 0
         try:
             with self._connect() as conn:
-                quick_check = [str(row[0]) for row in conn.execute("PRAGMA quick_check").fetchall()]
-                foreign_key_errors = [dict(row) for row in conn.execute("PRAGMA foreign_key_check").fetchall()]
-                journal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                quick_check = [
+                    str(row[0]) for row in conn.execute("PRAGMA quick_check").fetchall()
+                ]
+                foreign_key_errors = [
+                    dict(row)
+                    for row in conn.execute("PRAGMA foreign_key_check").fetchall()
+                ]
+                journal_mode = str(
+                    conn.execute("PRAGMA journal_mode").fetchone()[0]
+                ).lower()
                 synchronous = int(conn.execute("PRAGMA synchronous").fetchone()[0])
-                intents = conn.execute("SELECT * FROM order_intents ORDER BY intent_id").fetchall()
-                events = conn.execute("SELECT * FROM order_events ORDER BY intent_id, event_id").fetchall()
+                intents = conn.execute(
+                    "SELECT * FROM order_intents ORDER BY intent_id"
+                ).fetchall()
+                events = conn.execute(
+                    "SELECT * FROM order_events ORDER BY intent_id, event_id"
+                ).fetchall()
         except (sqlite3.DatabaseError, OSError) as exc:
             errors.append(f"database_integrity_probe_failed:{type(exc).__name__}:{exc}")
             intents = []
@@ -532,7 +831,11 @@ class LiveOrderLedger:
                 errors.append(f"intent_payload_hash_mismatch:{intent_id}")
             requested = float(intent["requested_quantity"] or 0.0)
             filled = float(intent["filled_quantity"] or 0.0)
-            if requested < 0.0 or filled < 0.0 or (requested > 0.0 and filled > requested + 1e-9):
+            if (
+                requested < 0.0
+                or filled < 0.0
+                or (requested > 0.0 and filled > requested + 1e-9)
+            ):
                 errors.append(f"intent_quantity_invariant_failed:{intent_id}")
             intent_events = by_intent.get(intent_id, [])
             if not intent_events:
@@ -543,7 +846,9 @@ class LiveOrderLedger:
             for event in intent_events:
                 if str(event["from_state"] or "") != previous_state:
                     transition_mismatch_count += 1
-                    errors.append(f"intent_event_transition_mismatch:{intent_id}:event={event['event_id']}")
+                    errors.append(
+                        f"intent_event_transition_mismatch:{intent_id}:event={event['event_id']}"
+                    )
                 previous_state = str(event["to_state"] or "")
             if previous_state != str(intent["state"] or ""):
                 state_mismatch_count += 1

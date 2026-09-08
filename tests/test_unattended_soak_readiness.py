@@ -103,6 +103,31 @@ def _ready_artifacts(project_root: Path, external_root: Path) -> None:
             },
         },
     )
+    _write_json(
+        health / "system_role_contract_latest.json",
+        {
+            "timestamp_utc": now,
+            "ok": True,
+            "overall_status": "ready",
+            "grade": "A+",
+            "operating_mode": "enforced_responsibility_contracts",
+            "summary": {
+                "role_count": 15,
+                "component_count": 23,
+                "state_domain_count": 23,
+                "exclusive_action_count": 9,
+                "registry_role_coverage_ratio": 1.0,
+                "authority_conflict_count": 0,
+            },
+            "safety_contract": {
+                "single_writer_state_domains": True,
+                "fail_closed_unknown_actions": True,
+                "explicit_execution_authority": True,
+                "sensitive_action_leases": True,
+            },
+            "blockers": [],
+        },
+    )
 
 
 def test_unattended_soak_readiness_ready_when_storage_power_runtime_and_alerts_clear(tmp_path: Path, monkeypatch) -> None:

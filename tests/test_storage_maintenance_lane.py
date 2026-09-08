@@ -15,6 +15,32 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def test_crypto_attribution_retention_focus_uses_intraday_hot_window(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _write_json(
+        project_root / "governance" / "health" / "health_gates_latest.json",
+        {
+            "priority_shards": [
+                {
+                    "shard": "crypto_shadow_attribution",
+                    "retention_debt_gb": 0.289,
+                    "latency_limit_multiplier": 0.3,
+                    "storage_breached": True,
+                    "latency_breached": False,
+                    "recommended_action": "force_retention",
+                }
+            ]
+        },
+    )
+
+    focus = storage_maintenance_lane._priority_retention_focus(project_root, {})
+
+    assert focus["severe_focus"] is True
+    assert focus["env_overrides"][
+        "SQL_LINK_SERVICE_SHARD_CRYPTO_SHADOW_ATTRIBUTION_HOT_RETENTION_HOT_HOURS"
+    ] == "6"
+
+
 def test_build_storage_maintenance_payload_runs_all_steps(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)
@@ -127,6 +153,8 @@ def test_build_storage_maintenance_payload_runs_all_steps(tmp_path, monkeypatch)
     assert payload["summary"]["governor_route_drift"] is True
     assert payload["summary"]["priority_retention_focus_enabled"] is True
     assert payload["summary"]["priority_retention_focus_shards"] == ["explanations", "crypto_explanations"]
+    assert payload["summary"]["priority_retention_handoff_ready"] is True
+    assert payload["summary"]["priority_retention_hold_released"] is True
     assert payload["summary"]["maintenance_reloader_changed"] is True
     assert payload["summary"]["storage_mode"] == "external"
     assert payload["summary"]["autoprune_deleted_count"] == 4
@@ -152,6 +180,7 @@ def test_build_storage_maintenance_payload_runs_all_steps(tmp_path, monkeypatch)
     assert shard_env["BOT_CHANNEL_QUEUE_DB"] == str(project_root / "data" / "bot_channel_queue.sqlite3")
     assert shard_env["SQL_LINK_SERVICE_SHARDS"] == "health_fast,crypto_explanations,explanations,crypto_shadow_attribution,shadow_attribution"
     assert shard_env["SQL_LINK_SERVICE_SHARD_EXPLANATIONS_MAX_FILES"] == "8"
+    assert shard_env["SQL_LINK_SERVICE_MAINTENANCE_HOLD_TOKEN"]
 
 
 def test_storage_maintenance_treats_missing_sqlite_primary_as_skipped(tmp_path, monkeypatch) -> None:

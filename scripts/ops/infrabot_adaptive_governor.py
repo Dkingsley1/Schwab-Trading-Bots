@@ -639,7 +639,12 @@ def _capability_registry() -> list[dict[str, Any]]:
         _capability(
             capability_id="paper_profitability_control",
             title="Paper Profitability Control",
-            owns=["paper_trade_feedback", "profitability_grade", "profile_quarantine"],
+            owns=[
+                "paper_trade_feedback",
+                "profitability_grade",
+                "profile_quarantine",
+                "accepted_generation_weak_sleeve_containment",
+            ],
             command=_opsctl("paper-profitability-control", "--apply", "--json"),
             risk_level="medium",
             cost_class="medium",
@@ -668,12 +673,46 @@ def _capability_registry() -> list[dict[str, Any]]:
         _capability(
             capability_id="paper_performance_refresh",
             title="Paper Performance Refresh",
-            owns=["paper_performance", "paper_feedback_freshness", "sleeve_profitability_inputs"],
+            owns=[
+                "paper_performance",
+                "paper_feedback_freshness",
+                "sleeve_profitability_inputs",
+                "developmental_generation_flow_ledger",
+            ],
             command=_opsctl("paper-performance", "--json"),
             cost_class="low",
             apply_safe=True,
             safe_under_pressure=True,
             success_artifact="governance/health/paper_performance_latest.json",
+        ),
+        _capability(
+            capability_id="counterfactual_replay",
+            title="Candidate Counterfactual Replay",
+            owns=[
+                "candidate_threshold_replay",
+                "candidate_exit_replay",
+                "accepted_generation_diagnostic_replay",
+            ],
+            command=_opsctl("counterfactual-replay", "--json"),
+            cost_class="medium",
+            apply_safe=True,
+            safe_under_pressure=True,
+            success_artifact="governance/health/counterfactual_replay_latest.json",
+        ),
+        _capability(
+            capability_id="independent_fill_evidence_acquisition",
+            title="Independent Fill Evidence Acquisition",
+            owns=[
+                "candidate_fill_calibration",
+                "market_type_execution_realism",
+                "independent_fill_evidence_gap",
+            ],
+            command=_opsctl("independent-fill-acquisition", "--apply", "--json"),
+            risk_level="medium",
+            cost_class="medium",
+            apply_safe=True,
+            safe_under_pressure=True,
+            success_artifact="governance/health/independent_fill_evidence_acquisition_latest.json",
         ),
         _capability(
             capability_id="master_grandmaster_profitability_trainer",
@@ -935,6 +974,9 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
     bot_quality = _health(project_root, "bot_quality_autopilot_latest.json")
     paper_profitability = _health(project_root, "paper_profitability_control_latest.json")
     paper_runtime_profitability = _health(project_root, "paper_runtime_profitability_controls_latest.json")
+    profitability_assessment = _health(
+        project_root, "profitability_self_assessment_latest.json"
+    )
     paper_truth = _health(project_root, "paper_execution_truth_layer_latest.json")
     paper_runtime = _health(project_root, "runtime_paper_regression_guard_latest.json")
     paper_backlog = _health(project_root, "paper_execution_backlog_relief_latest.json")
@@ -1573,6 +1615,67 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
         paper_runtime_profitability=paper_runtime_profitability,
         live_canary_readiness=live_canary_readiness,
     )
+    developmental_learning = _as_dict(
+        profitability_assessment.get("developmental_soak_learning")
+    )
+    developmental_actions = [
+        row
+        for row in _as_list(developmental_learning.get("bounded_paper_action_plan"))
+        if isinstance(row, dict) and row.get("auto_apply_allowed", False)
+    ]
+    developmental_targets = sorted(
+        {
+            str(row.get("owner") or "")
+            for row in developmental_actions
+            if str(row.get("owner") or "")
+            in {
+                "paper_performance_refresh",
+                "counterfactual_replay",
+                "independent_fill_evidence_acquisition",
+                "paper_profitability_control",
+                "training_data_intake_labeling",
+            }
+        }
+    )
+    if developmental_targets:
+        needs.append(
+            _need(
+                need_id="candidate_generation_profitability_learning",
+                title="Accepted candidate generations have bounded developmental profitability work",
+                category="paper_trading",
+                severity=(
+                    "high"
+                    if _safe_int(
+                        developmental_learning.get(
+                            "observed_negative_delta_generation_count"
+                        ),
+                        0,
+                    )
+                    > 0
+                    else "medium"
+                ),
+                evidence=[
+                    f"developmental_status={_status(developmental_learning.get('status')) or 'unknown'}",
+                    f"accepted_generations={_safe_int(developmental_learning.get('accepted_generation_count'), 0)}",
+                    f"attributable_generations={_safe_int(developmental_learning.get('attributable_generation_count'), 0)}",
+                    f"mature_generations={_safe_int(developmental_learning.get('mature_developmental_generation_count'), 0)}",
+                    f"negative_generations={_safe_int(developmental_learning.get('observed_negative_delta_generation_count'), 0)}",
+                    f"bounded_actions={','.join(str(row.get('action_id') or '') for row in developmental_actions)}",
+                    "historical_generations_grade_current_candidate=false",
+                    "clean_720_hour_live_promotion_gate_unchanged=true",
+                ],
+                target_capabilities=developmental_targets,
+                stop_when=(
+                    "the current candidate satisfies its post-cost and independent-fill collection gates, "
+                    "negative accepted-generation cohorts are labeled and replayed, and weak controls are "
+                    "validated or remain safely contained"
+                ),
+                expected_impact=(
+                    "Uses verified soak changes to prioritize paper-only evidence and containment work without "
+                    "forcing trades, loosening thresholds directly, increasing loss-recovery size, or granting live authority."
+                ),
+            )
+        )
     if paper_truth_dependency_recovery_needed:
         needs.append(
             _need(
@@ -1812,6 +1915,7 @@ def _needs_contract(project_root: Path, *, refresh_needs: bool = False) -> dict[
             "broker_readiness": bool(broker_readiness),
             "global_killswitch": bool(global_halt),
             "paper_400_ramp": bool(paper_ramp),
+            "profitability_self_assessment": bool(profitability_assessment),
             "pressure_relief_control": bool(pressure),
             "runtime_throttle_control": bool(runtime_throttle),
             "memory_pressure_intelligence": bool(memory),

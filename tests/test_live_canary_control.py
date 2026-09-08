@@ -1,5 +1,6 @@
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -15,7 +16,50 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def _write_valid_canary_allowlist(project_root: Path) -> None:
+    candidate_id = "pc-test-candidate"
+    now = datetime.now(timezone.utc)
+    _write_json(
+        project_root / "config" / "production_readiness_control_v1.json",
+        {
+            "live_execution_risk_firewall": {
+                "canary_allowlist_path": "governance/runtime/live_canary_allowlist.json",
+                "canary_plan_path": "config/live_canary_micro_policy_v1.json",
+                "production_candidate_state_path": "governance/runtime/production_candidate_state.json",
+                "symbol_lifecycle_path": "config/symbol_lifecycle_v1.json",
+            }
+        },
+    )
+    _write_json(
+        project_root / "config" / "live_canary_micro_policy_v1.json",
+        {
+            "status": "advisory_only",
+            "hard_limits": {"max_order_notional_usd": 100, "max_order_quantity": 1},
+            "stages": [{"stage": 1, "symbols": ["SCHD"]}],
+            "activation_contract": {"max_allowlist_duration_hours": 4},
+        },
+    )
+    _write_json(project_root / "config" / "symbol_lifecycle_v1.json", {"renamed_symbols": {"SPLG": "SPYM"}})
+    _write_json(
+        project_root / "governance" / "runtime" / "production_candidate_state.json",
+        {"candidate_id": candidate_id, "accepted_at_utc": (now - timedelta(minutes=2)).isoformat()},
+    )
+    _write_json(
+        project_root / "governance" / "runtime" / "live_canary_allowlist.json",
+        {
+            "schema_version": 1,
+            "enabled": True,
+            "candidate_id": candidate_id,
+            "stage": 1,
+            "symbols": ["SCHD"],
+            "issued_at_utc": (now - timedelta(minutes=1)).isoformat(),
+            "expires_at_utc": (now + timedelta(hours=1)).isoformat(),
+        },
+    )
+
+
 def test_live_canary_control_reports_ready_when_supervised_canary_is_fully_clear(tmp_path: Path) -> None:
+    _write_valid_canary_allowlist(tmp_path)
     health = tmp_path / "governance" / "health"
     champion = tmp_path / "governance" / "champion_challenger"
     _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True})
@@ -79,6 +123,7 @@ def test_live_canary_control_blocks_when_faithful_live_money_contract_is_not_rea
 
 
 def test_live_canary_control_surfaces_packet_preclearance_when_only_seeded_committee_packet_exists(tmp_path: Path) -> None:
+    _write_valid_canary_allowlist(tmp_path)
     health = tmp_path / "governance" / "health"
     champion = tmp_path / "governance" / "champion_challenger"
     _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True})
@@ -121,6 +166,7 @@ def test_live_canary_control_surfaces_packet_preclearance_when_only_seeded_commi
 
 
 def test_live_canary_control_treats_managed_coverage_stage_as_recoverable(tmp_path: Path) -> None:
+    _write_valid_canary_allowlist(tmp_path)
     health = tmp_path / "governance" / "health"
     champion = tmp_path / "governance" / "champion_challenger"
     _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True})
@@ -158,6 +204,7 @@ def test_live_canary_control_treats_managed_coverage_stage_as_recoverable(tmp_pa
 
 
 def test_live_canary_control_preapproves_seeded_packet_when_runtime_is_already_clear(tmp_path: Path) -> None:
+    _write_valid_canary_allowlist(tmp_path)
     health = tmp_path / "governance" / "health"
     champion = tmp_path / "governance" / "champion_challenger"
     _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True})
@@ -216,6 +263,7 @@ def test_live_canary_control_blocks_when_core_prerequisites_are_missing(tmp_path
 
 
 def test_live_canary_control_marks_coverage_cycles_ready_as_runnable_release_window(tmp_path: Path) -> None:
+    _write_valid_canary_allowlist(tmp_path)
     health = tmp_path / "governance" / "health"
     champion = tmp_path / "governance" / "champion_challenger"
     _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True})

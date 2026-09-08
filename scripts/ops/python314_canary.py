@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,14 +15,28 @@ DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "python314_canary_latest.
 DEFAULT_LOCK = PROJECT_ROOT / "config" / "requirements.lock.txt"
 DEFAULT_VENV = PROJECT_ROOT / ".venv314"
 DEFAULT_ANCHOR_VENV = PROJECT_ROOT / ".venv312"
+DEFAULT_RUNTIME_OVERRIDE = PROJECT_ROOT / "config" / ".env.python314_runtime_override"
 EXPECTED_PY314_VERSION = "3.14.5"
 DEFAULT_INSTALLER_PATH = Path("/private/tmp/python-3.14.5-macos11.pkg")
-DEFAULT_INSTALLER_SIGSTORE_PATH = Path("/private/tmp/python-3.14.5-macos11.pkg.sigstore")
-DEFAULT_INSTALLER_SHA256 = "b28a8dc33c456dd06c97024697d63ca916cfb494594c06fa3e4ef4d41fa82335"
+DEFAULT_INSTALLER_SIGSTORE_PATH = Path(
+    "/private/tmp/python-3.14.5-macos11.pkg.sigstore"
+)
+DEFAULT_INSTALLER_SHA256 = (
+    "b28a8dc33c456dd06c97024697d63ca916cfb494594c06fa3e4ef4d41fa82335"
+)
 DEFAULT_HOMEBREW_PY314 = Path("/opt/homebrew/opt/python@3.14/bin/python3.14")
 RUNTIME_FLIP_APPROVAL_ENV = "PY314_RUNTIME_FLIP_APPROVED"
 ANCHOR_RETIRE_ENV = "PY314_RETIRE_312_ANCHOR"
 HOMEBREW_SIDE_BY_SIDE_ENV = "PY314_ALLOW_HOMEBREW_WITHOUT_PKG"
+RUNTIME_OVERRIDE_KEYS = {
+    "BOT_TRAINING_RUNTIME_LANE",
+    "BOT_TRAINING_PYTHON_VERSION",
+    "BOT_TRAINING_PYTHON_RUNTIME",
+    "BOT_TRAINING_PYTHON_BIN",
+    RUNTIME_FLIP_APPROVAL_ENV,
+    ANCHOR_RETIRE_ENV,
+    HOMEBREW_SIDE_BY_SIDE_ENV,
+}
 DEFAULT_SKIP = (
     "numba,llvmlite,mlx,mlx-audio,mlx-cluster,mlx-data,mlx-embedding-models,"
     "mlx-embeddings,mlx-graphs,mlx-lm,mlx-metal,mlx-snn,mlx-vision,mlx-vlm,"
@@ -64,9 +79,9 @@ DEFAULT_IMPORT_SMOKES = (
     (
         "indicator_bot_common_import",
         (
-            "import sys; "
-            "sys.path.insert(0, 'core'); "
-            "import indicator_bot_common as mod; "
+            "import pathlib, sys; "
+            "sys.path.insert(0, str(pathlib.Path.cwd())); "
+            "import core.indicator_bot_common as mod; "
             "print(mod.__file__)"
         ),
     ),
@@ -81,21 +96,52 @@ def _run(cmd: list[str], *, timeout_seconds: int | None = None) -> tuple[int, st
     if timeout_seconds is None:
         timeout_seconds = int(os.getenv("PY314_CANARY_COMMAND_TIMEOUT_SECONDS", "900"))
     try:
+        env = os.environ.copy()
+        env.setdefault("PYTHONNOUSERSITE", "1")
+        env.setdefault("PYTHONFAULTHANDLER", "1")
         proc = subprocess.run(
             cmd,
             cwd=str(PROJECT_ROOT),
             capture_output=True,
             text=True,
             check=False,
-            env=os.environ.copy(),
+            env=env,
             timeout=timeout_seconds,
+            start_new_session=True,
         )
     except subprocess.TimeoutExpired as exc:
-        out = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", errors="replace")
-        err = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode("utf-8", errors="replace")
+        out = (
+            exc.stdout
+            if isinstance(exc.stdout, str)
+            else (exc.stdout or b"").decode("utf-8", errors="replace")
+        )
+        err = (
+            exc.stderr
+            if isinstance(exc.stderr, str)
+            else (exc.stderr or b"").decode("utf-8", errors="replace")
+        )
         timeout_note = f"command timed out after {timeout_seconds}s"
         return 124, (out or "").strip(), f"{timeout_note}\n{err or ''}".strip()
     return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+
+
+def _termination_metadata(returncode: int) -> dict:
+    if returncode < 0:
+        signal_number = abs(int(returncode))
+        try:
+            signal_name = signal.Signals(signal_number).name
+        except ValueError:
+            signal_name = f"SIGNAL_{signal_number}"
+        return {
+            "failure_kind": "native_signal",
+            "termination_signal": signal_name,
+            "termination_signal_number": signal_number,
+        }
+    if returncode == 124:
+        return {"failure_kind": "timeout"}
+    if returncode != 0:
+        return {"failure_kind": "process_error"}
+    return {"failure_kind": "none"}
 
 
 def _normalize_package_name(name: str) -> str:
@@ -141,12 +187,20 @@ def _sigstore_contains_digest(sigstore_path: Path, expected_sha256: str) -> bool
     return False
 
 
-def _installer_artifact_step(installer_path: Path, sigstore_path: Path, expected_sha256: str) -> dict:
+def _installer_artifact_step(
+    installer_path: Path, sigstore_path: Path, expected_sha256: str
+) -> dict:
     exists = installer_path.exists()
     size_bytes = installer_path.stat().st_size if exists else 0
     actual_sha256 = _sha256_file(installer_path) if exists else ""
-    sha256_ok = bool(expected_sha256) and actual_sha256.lower() == expected_sha256.lower()
-    sigstore_ok = _sigstore_contains_digest(sigstore_path, expected_sha256) if expected_sha256 else sigstore_path.exists()
+    sha256_ok = (
+        bool(expected_sha256) and actual_sha256.lower() == expected_sha256.lower()
+    )
+    sigstore_ok = (
+        _sigstore_contains_digest(sigstore_path, expected_sha256)
+        if expected_sha256
+        else sigstore_path.exists()
+    )
     ok = exists and size_bytes > 50_000_000 and sha256_ok and sigstore_ok
     return {
         "name": "python3145_download_artifact",
@@ -186,10 +240,13 @@ def _step(
             "ImportError:",
             "No module named",
             "Traceback (most recent call last)",
+            "nanobind: critical error",
+            "Fatal Python error",
+            "Abort trap",
         )
     )
     ok = (rc in accepted) and (not hard_fail)
-    return {
+    result = {
         "name": name,
         "ok": ok,
         "rc": rc,
@@ -198,6 +255,8 @@ def _step(
         "stdout_tail": _tail(out),
         "stderr_tail": _tail(err),
     }
+    result.update(_termination_metadata(rc))
+    return result
 
 
 def _extract_python_patch_version(text: str) -> str:
@@ -205,7 +264,9 @@ def _extract_python_patch_version(text: str) -> str:
     return match.group(1) if match else ""
 
 
-def _python_exact_version_step(name: str, python_bin: Path, expected_version: str) -> dict:
+def _python_exact_version_step(
+    name: str, python_bin: Path, expected_version: str
+) -> dict:
     if not python_bin.exists():
         return {
             "name": name,
@@ -242,7 +303,10 @@ def _macos_pkg_signature_step(installer_path: Path) -> dict:
             "stderr_tail": "installer package missing",
             "advisory_only": True,
         }
-    step = _step("macos_pkg_signature_probe", ["pkgutil", "--check-signature", str(installer_path)])
+    step = _step(
+        "macos_pkg_signature_probe",
+        ["pkgutil", "--check-signature", str(installer_path)],
+    )
     step["advisory_only"] = True
     return step
 
@@ -263,7 +327,13 @@ def _venv_python(venv_dir: Path) -> Path:
 
 
 def _python_minor(python_bin: str) -> str:
-    rc, out, _ = _run([python_bin, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"])
+    rc, out, _ = _run(
+        [
+            python_bin,
+            "-c",
+            "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+        ]
+    )
     if rc == 0 and out.strip():
         return out.strip()
     return ""
@@ -297,9 +367,15 @@ def _load_installed_versions(venv_py: Path) -> tuple[dict[str, str], dict]:
     return _parse_version_lines(out.splitlines()) if rc == 0 else {}, step
 
 
-def _package_alignment(lock_versions: dict[str, str], installed_versions: dict[str, str]) -> dict:
-    missing_packages = sorted(pkg for pkg in lock_versions if pkg not in installed_versions)
-    extra_packages = sorted(pkg for pkg in installed_versions if pkg not in lock_versions)
+def _package_alignment(
+    lock_versions: dict[str, str], installed_versions: dict[str, str]
+) -> dict:
+    missing_packages = sorted(
+        pkg for pkg in lock_versions if pkg not in installed_versions
+    )
+    extra_packages = sorted(
+        pkg for pkg in installed_versions if pkg not in lock_versions
+    )
     version_mismatches = [
         {
             "package": pkg,
@@ -320,7 +396,9 @@ def _package_alignment(lock_versions: dict[str, str], installed_versions: dict[s
     }
 
 
-def _alignment_step(lock_file: Path, lock_versions: dict[str, str], installed_versions: dict[str, str]) -> dict:
+def _alignment_step(
+    lock_file: Path, lock_versions: dict[str, str], installed_versions: dict[str, str]
+) -> dict:
     alignment = _package_alignment(lock_versions, installed_versions)
     return {
         "name": "lock_alignment",
@@ -338,7 +416,9 @@ def _alignment_step(lock_file: Path, lock_versions: dict[str, str], installed_ve
     }
 
 
-def _py314_compatibility_alignment_step(alignment: dict, exempt_packages: tuple[str, ...]) -> dict:
+def _py314_compatibility_alignment_step(
+    alignment: dict, exempt_packages: tuple[str, ...]
+) -> dict:
     exempt = sorted(_normalize_package_name(pkg) for pkg in exempt_packages)
     exempt_set = set(exempt)
     missing_packages = list(alignment.get("missing_packages") or [])
@@ -371,7 +451,9 @@ def _py314_compatibility_alignment_step(alignment: dict, exempt_packages: tuple[
     }
 
 
-def _required_packages_step(name: str, installed_versions: dict[str, str], packages: tuple[str, ...]) -> dict:
+def _required_packages_step(
+    name: str, installed_versions: dict[str, str], packages: tuple[str, ...]
+) -> dict:
     required = sorted(_normalize_package_name(pkg) for pkg in packages)
     missing = [pkg for pkg in required if pkg not in installed_versions]
     return {
@@ -387,7 +469,9 @@ def _required_packages_step(name: str, installed_versions: dict[str, str], packa
     }
 
 
-def _package_list_from_env(env_name: str, default_packages: tuple[str, ...]) -> list[str]:
+def _package_list_from_env(
+    env_name: str, default_packages: tuple[str, ...]
+) -> list[str]:
     raw = os.getenv(env_name)
     if raw is None:
         return list(default_packages)
@@ -401,6 +485,26 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on", "approved"}
 
 
+def _load_runtime_override(path: Path = DEFAULT_RUNTIME_OVERRIDE) -> dict[str, str]:
+    loaded: dict[str, str] = {}
+    if not path.exists():
+        return loaded
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key not in RUNTIME_OVERRIDE_KEYS:
+            continue
+        value = value.strip().strip('"').strip("'")
+        if not value:
+            continue
+        os.environ.setdefault(key, value)
+        loaded[key] = os.environ[key]
+    return loaded
+
+
 def _training_runtime_promoted_to_py314() -> bool:
     explicit_version = os.getenv("BOT_TRAINING_PYTHON_VERSION", "").strip()
     if explicit_version.startswith("3.14"):
@@ -409,10 +513,14 @@ def _training_runtime_promoted_to_py314() -> bool:
     if ".venv314/" in explicit_bin or explicit_bin.endswith(".venv314/bin/python"):
         return True
     lane = (
-        os.getenv("BOT_TRAINING_RUNTIME_LANE")
-        or os.getenv("BOT_TRAINING_PYTHON_RUNTIME")
-        or ""
-    ).strip().lower()
+        (
+            os.getenv("BOT_TRAINING_RUNTIME_LANE")
+            or os.getenv("BOT_TRAINING_PYTHON_RUNTIME")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     return lane in {"shadow314", "py314", "canary314", "python314"}
 
 
@@ -437,7 +545,9 @@ def _transition_readiness(
     warnings: list[str] = []
     compatibility_notes: list[str] = []
 
-    homebrew_py314_ready = bool(_find_step(steps, "homebrew_python314_exact_version").get("ok"))
+    homebrew_py314_ready = bool(
+        _find_step(steps, "homebrew_python314_exact_version").get("ok")
+    )
     anchor_retired = _env_flag(ANCHOR_RETIRE_ENV)
     allow_homebrew_side_by_side = _env_flag(HOMEBREW_SIDE_BY_SIDE_ENV, True)
 
@@ -449,11 +559,23 @@ def _transition_readiness(
     ):
         step = _find_step(steps, name)
         if not step.get("ok"):
-            if name == "python3145_download_artifact" and homebrew_py314_ready and allow_homebrew_side_by_side:
-                warnings.append("python_org_pkg_missing_but_homebrew_python314_exact_version_ready")
+            if (
+                name == "python3145_download_artifact"
+                and homebrew_py314_ready
+                and allow_homebrew_side_by_side
+            ):
+                warnings.append(
+                    "python_org_pkg_missing_but_homebrew_python314_exact_version_ready"
+                )
                 continue
-            if name == "production_anchor_python312" and anchor_retired and runtime_flip_approved:
-                warnings.append("production_anchor_python312_retired_by_approved_py314_migration")
+            if (
+                name == "production_anchor_python312"
+                and anchor_retired
+                and runtime_flip_approved
+            ):
+                warnings.append(
+                    "production_anchor_python312_retired_by_approved_py314_migration"
+                )
                 continue
             blockers.append(name)
 
@@ -482,21 +604,29 @@ def _transition_readiness(
         missing = ",".join(test_packages.get("missing_packages") or [])
         blockers.append(f"test_tooling_packages_missing:{missing}")
 
-    failed_imports = [str(step.get("name")) for step in import_steps if not step.get("ok")]
+    failed_imports = [
+        str(step.get("name")) for step in import_steps if not step.get("ok")
+    ]
     if failed_imports:
         blockers.append("import_smoke_failed:" + ",".join(failed_imports))
 
     if bootstrap_ok and not smoke_ok:
-        failed_smoke = [str(step.get("name")) for step in smoke_steps if not step.get("ok")]
+        failed_smoke = [
+            str(step.get("name")) for step in smoke_steps if not step.get("ok")
+        ]
         blockers.append("smoke_failed:" + ",".join(failed_smoke or ["not_run"]))
     elif not bootstrap_ok:
         blockers.append("bootstrap_not_green")
 
     if signature_step and not signature_step.get("ok"):
-        warnings.append("python_org_pkg_signature_probe_not_green_use_homebrew_side_by_side")
+        warnings.append(
+            "python_org_pkg_signature_probe_not_green_use_homebrew_side_by_side"
+        )
 
     promotion_allowed = (not blockers) and bootstrap_ok and smoke_ok
-    production_runtime_change_allowed = bool(promotion_allowed and runtime_flip_approved)
+    production_runtime_change_allowed = bool(
+        promotion_allowed and runtime_flip_approved
+    )
     current_transition_state = "canary_blocked"
     if promotion_allowed and runtime_flip_approved:
         current_transition_state = "runtime_flip_approved"
@@ -541,7 +671,9 @@ def _transition_readiness(
     }
 
 
-def _filtered_requirements(lock_file: Path, out_file: Path, skip_packages: set[str], relaxed: bool) -> Path:
+def _filtered_requirements(
+    lock_file: Path, out_file: Path, skip_packages: set[str], relaxed: bool
+) -> Path:
     rows: list[str] = []
     skip = {x.strip().lower() for x in skip_packages if x.strip()}
     for line in _normalize_lock_lines(lock_file):
@@ -559,20 +691,68 @@ def _filtered_requirements(lock_file: Path, out_file: Path, skip_packages: set[s
 
 
 def _import_step(name: str, venv_py: Path, code: str) -> dict:
-    return _step(name, [str(venv_py), "-c", code])
+    return _step(name, [str(venv_py), "-I", "-c", code])
+
+
+def _blocked_import_step(name: str, blocked_by: str) -> dict:
+    return {
+        "name": name,
+        "ok": False,
+        "rc": 125,
+        "command": "blocked",
+        "accepted_rc": [0],
+        "stdout_tail": "",
+        "stderr_tail": f"native_probe_circuit_open:{blocked_by}",
+        "failure_kind": "prerequisite_blocked",
+        "blocked_by": blocked_by,
+    }
+
+
+def _run_import_smokes(
+    venv_py: Path, smokes: tuple[tuple[str, str], ...]
+) -> list[dict]:
+    results: list[dict] = []
+    blocked_by = ""
+    for name, code in smokes:
+        if blocked_by:
+            results.append(_blocked_import_step(name, blocked_by))
+            continue
+        result = _import_step(name, venv_py, code)
+        results.append(result)
+        if result.get("failure_kind") in {"native_signal", "timeout"}:
+            blocked_by = name
+    return results
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run Python 3.14 canary bootstrap + smoke checks.")
+    runtime_override = _load_runtime_override()
+    parser = argparse.ArgumentParser(
+        description="Run Python 3.14 canary bootstrap + smoke checks."
+    )
     parser.add_argument("--python-bin", default=os.getenv("PY314_BIN", "python3.14"))
     parser.add_argument("--venv", default=str(DEFAULT_VENV))
     parser.add_argument("--lock-file", default=str(DEFAULT_LOCK))
     parser.add_argument("--out", default=str(DEFAULT_OUT))
-    parser.add_argument("--expected-python-version", default=os.getenv("PY314_EXPECTED_VERSION", EXPECTED_PY314_VERSION))
-    parser.add_argument("--installer-path", default=os.getenv("PY314_INSTALLER_PATH", str(DEFAULT_INSTALLER_PATH)))
-    parser.add_argument("--installer-sha256", default=os.getenv("PY314_INSTALLER_SHA256", DEFAULT_INSTALLER_SHA256))
-    parser.add_argument("--sigstore-path", default=os.getenv("PY314_SIGSTORE_PATH", str(DEFAULT_INSTALLER_SIGSTORE_PATH)))
-    parser.add_argument("--homebrew-python", default=os.getenv("PY314_HOMEBREW_PYTHON", str(DEFAULT_HOMEBREW_PY314)))
+    parser.add_argument(
+        "--expected-python-version",
+        default=os.getenv("PY314_EXPECTED_VERSION", EXPECTED_PY314_VERSION),
+    )
+    parser.add_argument(
+        "--installer-path",
+        default=os.getenv("PY314_INSTALLER_PATH", str(DEFAULT_INSTALLER_PATH)),
+    )
+    parser.add_argument(
+        "--installer-sha256",
+        default=os.getenv("PY314_INSTALLER_SHA256", DEFAULT_INSTALLER_SHA256),
+    )
+    parser.add_argument(
+        "--sigstore-path",
+        default=os.getenv("PY314_SIGSTORE_PATH", str(DEFAULT_INSTALLER_SIGSTORE_PATH)),
+    )
+    parser.add_argument(
+        "--homebrew-python",
+        default=os.getenv("PY314_HOMEBREW_PYTHON", str(DEFAULT_HOMEBREW_PY314)),
+    )
     parser.add_argument("--refresh-deps", action="store_true")
     parser.add_argument("--skip-install", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -589,29 +769,48 @@ def main() -> int:
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
     py_minor = _python_minor(args.python_bin)
-    is_py314_plus = py_minor.startswith("3.14") or py_minor.startswith("3.15") or py_minor.startswith("3.16")
+    is_py314_plus = (
+        py_minor.startswith("3.14")
+        or py_minor.startswith("3.15")
+        or py_minor.startswith("3.16")
+    )
 
     steps: list[dict] = []
     bootstrap_ok = True
     install_needed = (not venv_py.exists()) or args.refresh_deps
 
-    homebrew_version_step = _python_exact_version_step("homebrew_python314_exact_version", homebrew_python, expected_python_version)
+    homebrew_version_step = _python_exact_version_step(
+        "homebrew_python314_exact_version", homebrew_python, expected_python_version
+    )
     steps.append(homebrew_version_step)
     bootstrap_ok = bootstrap_ok and homebrew_version_step["ok"]
 
-    artifact_step = _installer_artifact_step(installer_path, sigstore_path, str(args.installer_sha256).strip())
+    artifact_step = _installer_artifact_step(
+        installer_path, sigstore_path, str(args.installer_sha256).strip()
+    )
     if homebrew_version_step["ok"] and _env_flag(HOMEBREW_SIDE_BY_SIDE_ENV, True):
         artifact_step["advisory_only"] = True
-        artifact_step["policy"] = "homebrew_exact_python3145_satisfies_side_by_side_runtime"
+        artifact_step["policy"] = (
+            "homebrew_exact_python3145_satisfies_side_by_side_runtime"
+        )
     steps.append(artifact_step)
-    bootstrap_ok = bootstrap_ok and (artifact_step["ok"] or bool(artifact_step.get("advisory_only", False)))
+    bootstrap_ok = bootstrap_ok and (
+        artifact_step["ok"] or bool(artifact_step.get("advisory_only", False))
+    )
 
-    anchor_version_step = _python_exact_version_step("production_anchor_python312", _venv_python(DEFAULT_ANCHOR_VENV), "3.12.12")
+    anchor_version_step = _python_exact_version_step(
+        "production_anchor_python312", _venv_python(DEFAULT_ANCHOR_VENV), "3.12.12"
+    )
     if _env_flag(ANCHOR_RETIRE_ENV) and _env_flag(RUNTIME_FLIP_APPROVAL_ENV):
         anchor_version_step["advisory_only"] = True
-        anchor_version_step["policy"] = "python312_anchor_retired_by_approved_py314_migration"
+        anchor_version_step["policy"] = (
+            "python312_anchor_retired_by_approved_py314_migration"
+        )
     steps.append(anchor_version_step)
-    bootstrap_ok = bootstrap_ok and (anchor_version_step["ok"] or bool(anchor_version_step.get("advisory_only", False)))
+    bootstrap_ok = bootstrap_ok and (
+        anchor_version_step["ok"]
+        or bool(anchor_version_step.get("advisory_only", False))
+    )
 
     if not venv_py.exists():
         steps.append(
@@ -623,11 +822,24 @@ def main() -> int:
         )
         bootstrap_ok = bootstrap_ok and steps[-1]["ok"]
 
-    if (not args.skip_install) and bootstrap_ok and (install_needed or (not (venv_dir / ".bootstrapped").exists())):
+    if (
+        (not args.skip_install)
+        and bootstrap_ok
+        and (install_needed or (not (venv_dir / ".bootstrapped").exists()))
+    ):
         steps.append(
             _step(
                 "upgrade_installer",
-                [str(venv_py), "-m", "pip", "install", "-U", "pip", "setuptools", "wheel"],
+                [
+                    str(venv_py),
+                    "-m",
+                    "pip",
+                    "install",
+                    "-U",
+                    "pip",
+                    "setuptools",
+                    "wheel",
+                ],
             )
         )
         bootstrap_ok = bootstrap_ok and steps[-1]["ok"]
@@ -644,8 +856,15 @@ def main() -> int:
                 skip_raw = os.getenv("PY314_CANARY_SKIP_PACKAGES", DEFAULT_SKIP)
                 skip_set = {x.strip() for x in skip_raw.split(",") if x.strip()}
 
-                filtered_file = PROJECT_ROOT / "governance" / "health" / "python314_canary_requirements_filtered.txt"
-                _filtered_requirements(lock_file, filtered_file, skip_set, relaxed=False)
+                filtered_file = (
+                    PROJECT_ROOT
+                    / "governance"
+                    / "health"
+                    / "python314_canary_requirements_filtered.txt"
+                )
+                _filtered_requirements(
+                    lock_file, filtered_file, skip_set, relaxed=False
+                )
                 filtered_step = _step(
                     "install_lockfile_filtered",
                     [str(venv_py), "-m", "pip", "install", "-r", str(filtered_file)],
@@ -656,8 +875,15 @@ def main() -> int:
                 bootstrap_ok = filtered_step["ok"]
 
                 if not bootstrap_ok:
-                    relaxed_file = PROJECT_ROOT / "governance" / "health" / "python314_canary_requirements_relaxed.txt"
-                    _filtered_requirements(lock_file, relaxed_file, skip_set, relaxed=True)
+                    relaxed_file = (
+                        PROJECT_ROOT
+                        / "governance"
+                        / "health"
+                        / "python314_canary_requirements_relaxed.txt"
+                    )
+                    _filtered_requirements(
+                        lock_file, relaxed_file, skip_set, relaxed=True
+                    )
                     relaxed_step = _step(
                         "install_lockfile_relaxed",
                         [str(venv_py), "-m", "pip", "install", "-r", str(relaxed_file)],
@@ -668,7 +894,9 @@ def main() -> int:
                     bootstrap_ok = relaxed_step["ok"]
 
                 if (not bootstrap_ok) and is_py314_plus:
-                    compat_packages = _package_list_from_env("PY314_CANARY_COMPAT_PACKAGES", DEFAULT_COMPAT_CORE_PACKAGES)
+                    compat_packages = _package_list_from_env(
+                        "PY314_CANARY_COMPAT_PACKAGES", DEFAULT_COMPAT_CORE_PACKAGES
+                    )
                     if compat_packages:
                         compat_step = _step(
                             "install_py314_compat_core",
@@ -699,7 +927,9 @@ def main() -> int:
     lock_versions: dict[str, str] = {}
     installed_versions: dict[str, str] = {}
     if venv_py.exists():
-        venv_version_step = _python_exact_version_step("venv_python314_exact_version", venv_py, expected_python_version)
+        venv_version_step = _python_exact_version_step(
+            "venv_python314_exact_version", venv_py, expected_python_version
+        )
         steps.append(venv_version_step)
         bootstrap_ok = bootstrap_ok and venv_version_step["ok"]
 
@@ -713,25 +943,40 @@ def main() -> int:
             bootstrap_ok = bootstrap_ok and inventory_step["ok"]
 
             if inventory_step["ok"]:
-                alignment_step = _alignment_step(lock_file, lock_versions, installed_versions)
+                alignment_step = _alignment_step(
+                    lock_file, lock_versions, installed_versions
+                )
                 steps.append(alignment_step)
                 if is_py314_plus:
-                    compat_step = _py314_compatibility_alignment_step(alignment_step, DEFAULT_PY314_COMPAT_EXEMPT_PACKAGES)
+                    compat_step = _py314_compatibility_alignment_step(
+                        alignment_step, DEFAULT_PY314_COMPAT_EXEMPT_PACKAGES
+                    )
                     steps.append(compat_step)
                     bootstrap_ok = bootstrap_ok and compat_step["ok"]
                 else:
                     bootstrap_ok = bootstrap_ok and alignment_step["ok"]
 
-                steps.append(_required_packages_step("critical_runtime_packages", installed_versions, DEFAULT_RUNTIME_PACKAGES))
+                steps.append(
+                    _required_packages_step(
+                        "critical_runtime_packages",
+                        installed_versions,
+                        DEFAULT_RUNTIME_PACKAGES,
+                    )
+                )
                 bootstrap_ok = bootstrap_ok and steps[-1]["ok"]
 
-                steps.append(_required_packages_step("test_tooling_packages", installed_versions, DEFAULT_TEST_PACKAGES))
+                steps.append(
+                    _required_packages_step(
+                        "test_tooling_packages",
+                        installed_versions,
+                        DEFAULT_TEST_PACKAGES,
+                    )
+                )
                 bootstrap_ok = bootstrap_ok and steps[-1]["ok"]
 
     import_steps: list[dict] = []
     if venv_py.exists():
-        for name, code in DEFAULT_IMPORT_SMOKES:
-            import_steps.append(_import_step(name, venv_py, code))
+        import_steps = _run_import_smokes(venv_py, DEFAULT_IMPORT_SMOKES)
         bootstrap_ok = bootstrap_ok and all(step["ok"] for step in import_steps)
 
     smoke: list[dict] = []
@@ -748,7 +993,12 @@ def main() -> int:
         smoke.append(
             _step(
                 "walk_forward_validate",
-                [str(venv_py), "scripts/walk_forward_validate.py", "--max-log-files", "80"],
+                [
+                    str(venv_py),
+                    "scripts/walk_forward_validate.py",
+                    "--max-log-files",
+                    "80",
+                ],
                 accepted_rc={0, 2},
                 timeout_seconds=smoke_timeout,
             )
@@ -816,13 +1066,20 @@ def main() -> int:
         "runtime_flip_approval_env": RUNTIME_FLIP_APPROVAL_ENV,
         "anchor_retire_env": ANCHOR_RETIRE_ENV,
         "homebrew_side_by_side_env": HOMEBREW_SIDE_BY_SIDE_ENV,
+        "runtime_override": {
+            "path": str(DEFAULT_RUNTIME_OVERRIDE),
+            "loaded_keys": sorted(runtime_override),
+            "loaded": bool(runtime_override),
+        },
         "transition_readiness": transition_readiness,
         "bootstrap_steps": steps,
         "import_steps": import_steps,
         "smoke_steps": smoke,
     }
 
-    out_file.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    out_file.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8"
+    )
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

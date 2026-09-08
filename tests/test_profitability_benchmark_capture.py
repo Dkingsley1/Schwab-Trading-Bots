@@ -34,7 +34,15 @@ def test_benchmark_capture_appends_one_immutable_candidate_day(tmp_path: Path) -
         "source_quality_label": "broker_native",
         "source_quality_score": 0.95,
     }
-    source.write_text(json.dumps(first) + "\n", encoding="utf-8")
+    cash_proxy = {
+        **first,
+        "symbol": "SGOV",
+        "market": {"last_price": 100.02, "prev_close": 100.0},
+    }
+    source.write_text(
+        json.dumps(first) + "\n" + json.dumps(cash_proxy) + "\n",
+        encoding="utf-8",
+    )
     now = datetime(2026, 8, 6, 21, 0, tzinfo=timezone.utc)
 
     payload = capture.build_payload(tmp_path, config_path=config_path, apply=True, now=now)
@@ -45,6 +53,8 @@ def test_benchmark_capture_appends_one_immutable_candidate_day(tmp_path: Path) -
     assert payload["candidate_day_count"] == 1
     row = json.loads(first_series)
     assert row["passive_return_bps"] == 200.0
+    assert row["cash_proxy_symbol"] == "SGOV"
+    assert row["cash_proxy_return_bps"] == 2.0
     assert row["point_in_time_immutable"] is True
     assert row["candidate_full_session"] is True
 
@@ -53,8 +63,18 @@ def test_benchmark_capture_appends_one_immutable_candidate_day(tmp_path: Path) -
         "timestamp_utc": "2026-08-06T20:30:00+00:00",
         "market": {"last_price": 515.0, "prev_close": 500.0},
     }
-    source.write_text(json.dumps(first) + "\n" + json.dumps(later) + "\n", encoding="utf-8")
-    rerun = capture.build_payload(tmp_path, config_path=config_path, apply=True, now=now)
+    source.write_text(
+        json.dumps(first)
+        + "\n"
+        + json.dumps(cash_proxy)
+        + "\n"
+        + json.dumps(later)
+        + "\n",
+        encoding="utf-8",
+    )
+    rerun = capture.build_payload(
+        tmp_path, config_path=config_path, apply=True, now=now
+    )
 
     assert rerun["appended_days"] == []
     assert series_path.read_text(encoding="utf-8") == first_series

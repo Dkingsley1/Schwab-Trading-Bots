@@ -105,6 +105,49 @@ def payload_age_minutes(payload: dict[str, Any], path: Path | None = None, *, no
     return max((current - ts).total_seconds() / 60.0, 0.0)
 
 
+def evidence_freshness(
+    payload: dict[str, Any], *, max_age_minutes: float = 60.0, now: datetime | None = None
+) -> dict[str, Any]:
+    """Use producer time, never file mtime, to qualify reported evidence."""
+    field = next(
+        (
+            key
+            for key in (
+                "timestamp_utc",
+                "updated_at_utc",
+                "updated_at",
+                "created_at",
+                "ended_utc",
+                "generated_utc",
+            )
+            if key in payload
+        ),
+        "",
+    )
+    raw = payload.get(field) if field else None
+    timestamp = parse_iso_utc(raw)
+    age = ((now or utc_now()) - timestamp).total_seconds() / 60.0 if timestamp else None
+    if not payload:
+        status = "missing"
+    elif not field:
+        status = "timestamp_missing"
+    elif timestamp is None:
+        status = "timestamp_invalid"
+    elif age < -1.0:
+        status = "future_timestamp"
+    elif age > max_age_minutes:
+        status = "stale"
+    else:
+        status = "fresh"
+    return {
+        "status": status,
+        "fresh": status == "fresh",
+        "source_timestamp_utc": timestamp.isoformat() if timestamp else None,
+        "age_minutes": round(age, 3) if age is not None else None,
+        "max_age_minutes": max_age_minutes,
+    }
+
+
 def standardize_grade_labels(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: standardize_grade_labels(item) for key, item in value.items()}

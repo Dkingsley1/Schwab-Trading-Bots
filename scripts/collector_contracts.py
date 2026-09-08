@@ -10,12 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts import ops_data_plane
+from scripts import ops_data_plane  # noqa: E402
+from core.research_context_expansion import COLLECTOR_DEFINITIONS  # noqa: E402
 
 HEALTH_ROOT = PROJECT_ROOT / "governance" / "health"
 EXTERNAL_CONTEXT_ROOT = PROJECT_ROOT / "exports" / "external_context"
@@ -30,6 +30,14 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 1440,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": "economic_context",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+        ],
+        "owner_command": ["./scripts/ops/opsctl.sh", "tradingeconomics-sync", "--json"],
     },
     {
         "name": "bls_census",
@@ -38,6 +46,14 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 1440,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": "economic_context",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+        ],
+        "owner_command": ["./scripts/ops/opsctl.sh", "macro-context-sync", "--json"],
     },
     {
         "name": "official_macro_context",
@@ -48,16 +64,38 @@ COLLECTOR_SPECS = [
         "safe_to_degrade": False,
         "min_source_coverage_ratio": 0.80,
         "max_failed_sources": 1,
+        "collector_class": "decision_critical_source_context",
+        "data_plane_key": "official_macro_context",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+            "risk_controls",
+        ],
+        "owner_command": ["./scripts/ops/opsctl.sh", "macro-context-sync", "--json"],
     },
     {
         "name": "global_central_bank_context",
         "health_path": HEALTH_ROOT / "global_central_bank_context_sync_latest.json",
-        "payload_path": EXTERNAL_CONTEXT_ROOT / "global_central_bank_context_latest.json",
+        "payload_path": EXTERNAL_CONTEXT_ROOT
+        / "global_central_bank_context_latest.json",
         "freshness_minutes": 2880,
         "required": False,
         "safe_to_degrade": True,
         "min_source_coverage_ratio": 0.80,
         "max_failed_sources": 1,
+        "collector_class": "source_context",
+        "data_plane_key": "global_central_bank_context",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+        ],
+        "owner_command": [
+            "./scripts/ops/opsctl.sh",
+            "global-central-bank-sync",
+            "--json",
+        ],
     },
     {
         "name": "central_bank_cross_source_context",
@@ -68,6 +106,19 @@ COLLECTOR_SPECS = [
         "safe_to_degrade": True,
         "min_source_coverage_ratio": 0.60,
         "max_failed_sources": 1,
+        "collector_class": "source_context",
+        "data_plane_key": "central_bank_cross_source_context",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+            "risk_controls",
+        ],
+        "owner_command": [
+            "./scripts/ops/opsctl.sh",
+            "central-bank-context-sync",
+            "--json",
+        ],
     },
     {
         "name": "decision_context_mesh",
@@ -80,7 +131,12 @@ COLLECTOR_SPECS = [
         "max_failed_sources": 1,
         "collector_class": "decision_critical_source_context",
         "data_plane_key": "decision_context_mesh",
-        "evidence_domains": ["source_verification", "training_models", "profitability_research", "risk_controls"],
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+            "risk_controls",
+        ],
         "owner_command": ["./scripts/ops/opsctl.sh", "decision-context-sync", "--json"],
     },
     {
@@ -90,6 +146,10 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 720,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": "schwab_education_context",
+        "evidence_domains": ["source_verification", "training_models", "risk_controls"],
+        "owner_command": ["./scripts/ops/opsctl.sh", "schwab-education-sync", "--json"],
     },
     {
         "name": "market_micro_context",
@@ -100,6 +160,15 @@ COLLECTOR_SPECS = [
         "safe_to_degrade": False,
         "min_source_coverage_ratio": 0.75,
         "max_failed_sources": 1,
+        "collector_class": "decision_critical_source_context",
+        "data_plane_key": "market_micro_context",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+            "risk_controls",
+        ],
+        "owner_command": ["./scripts/ops/opsctl.sh", "market-micro-sync", "--json"],
     },
     {
         "name": "sec_edgar_context",
@@ -108,6 +177,14 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 1440,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": "sec_edgar_context",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+        ],
+        "owner_command": ["./scripts/ops/opsctl.sh", "sec-edgar-sync", "--json"],
     },
     {
         "name": "extended_quant_context",
@@ -116,6 +193,33 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 1440,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": "extended_quant_context",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+        ],
+        "owner_command": ["./scripts/ops/opsctl.sh", "extended-quant-sync", "--json"],
+    },
+    {
+        "name": "public_financial_context",
+        "health_path": HEALTH_ROOT / "public_financial_context_sync_latest.json",
+        "payload_path": EXTERNAL_CONTEXT_ROOT / "public_financial_context_latest.json",
+        "freshness_minutes": 2880,
+        "required": False,
+        "safe_to_degrade": True,
+        "min_source_coverage_ratio": 0.40,
+        "max_failed_sources": 3,
+        "collector_class": "source_context",
+        "data_plane_key": "public_financial_context",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+            "risk_controls",
+        ],
+        "owner_command": ["./scripts/ops/opsctl.sh", "public-financial-sync", "--json"],
     },
     {
         "name": "options_flow_context",
@@ -124,6 +228,15 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 240,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "decision_critical_source_context",
+        "data_plane_key": "options_derivatives_context",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+            "risk_controls",
+        ],
+        "owner_command": ["./scripts/ops/opsctl.sh", "options-flow-sync", "--json"],
     },
     {
         "name": "crypto_market_context",
@@ -132,16 +245,38 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 1440,
         "required": True,
         "safe_to_degrade": False,
+        "collector_class": "decision_critical_source_context",
+        "data_plane_key": "crypto_market_context",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+            "risk_controls",
+        ],
+        "owner_command": ["./scripts/ops/opsctl.sh", "crypto-market-sync", "--json"],
     },
     {
         "name": "free_equity_reference_context",
         "health_path": HEALTH_ROOT / "free_equity_reference_context_latest.json",
-        "payload_path": EXTERNAL_CONTEXT_ROOT / "free_equity_reference_context_latest.json",
+        "payload_path": EXTERNAL_CONTEXT_ROOT
+        / "free_equity_reference_context_latest.json",
         "freshness_minutes": 720,
         "required": False,
         "safe_to_degrade": True,
         "min_source_coverage_ratio": 0.50,
         "max_failed_sources": 1,
+        "collector_class": "source_context",
+        "data_plane_key": "free_equity_reference_context",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+        ],
+        "owner_command": [
+            "./scripts/ops/opsctl.sh",
+            "free-equity-reference-sync",
+            "--json",
+        ],
     },
     {
         "name": "market_crypto_correlation",
@@ -150,6 +285,19 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 720,
         "required": False,
         "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": "market_crypto_correlation",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+            "risk_controls",
+        ],
+        "owner_command": [
+            "./scripts/ops/opsctl.sh",
+            "market-correlation-sync",
+            "--json",
+        ],
     },
     {
         "name": "fx_market_context",
@@ -158,6 +306,15 @@ COLLECTOR_SPECS = [
         "freshness_minutes": 360,
         "required": True,
         "safe_to_degrade": False,
+        "collector_class": "decision_critical_source_context",
+        "data_plane_key": "fx_market_context",
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+            "risk_controls",
+        ],
+        "owner_command": ["./scripts/ops/opsctl.sh", "fx-market-sync", "--json"],
     },
 ]
 
@@ -171,7 +328,11 @@ ORGANIC_EVIDENCE_COLLECTOR_SPECS = [
         "safe_to_degrade": True,
         "collector_class": "source_context",
         "data_plane_key": "official_macro_context",
-        "evidence_domains": ["source_verification", "training_models", "profitability_research"],
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+        ],
         "owner_command": ["./scripts/ops/opsctl.sh", "macro-context-sync", "--json"],
     },
     {
@@ -195,7 +356,11 @@ ORGANIC_EVIDENCE_COLLECTOR_SPECS = [
         "safe_to_degrade": True,
         "collector_class": "source_context",
         "data_plane_key": "bls_census",
-        "evidence_domains": ["source_verification", "training_models", "profitability_research"],
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+        ],
         "owner_command": ["./scripts/ops/opsctl.sh", "macro-context-sync", "--json"],
     },
     {
@@ -207,7 +372,12 @@ ORGANIC_EVIDENCE_COLLECTOR_SPECS = [
         "safe_to_degrade": False,
         "collector_class": "decision_critical_source_context",
         "data_plane_key": "official_macro_context",
-        "evidence_domains": ["source_verification", "training_models", "profitability_research", "risk_controls"],
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+            "risk_controls",
+        ],
         "owner_command": ["./scripts/ops/opsctl.sh", "macro-context-sync", "--json"],
     },
     {
@@ -219,7 +389,11 @@ ORGANIC_EVIDENCE_COLLECTOR_SPECS = [
         "safe_to_degrade": True,
         "collector_class": "source_context",
         "data_plane_key": "public_policy_context",
-        "evidence_domains": ["source_verification", "training_models", "profitability_research"],
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+        ],
         "owner_command": ["./scripts/ops/opsctl.sh", "public-policy-sync", "--json"],
     },
     {
@@ -231,8 +405,16 @@ ORGANIC_EVIDENCE_COLLECTOR_SPECS = [
         "safe_to_degrade": True,
         "collector_class": "source_context",
         "data_plane_key": "schwab_symbol_news",
-        "evidence_domains": ["source_verification", "training_models", "profitability_research"],
-        "owner_command": ["./scripts/ops/opsctl.sh", "schwab-symbol-news-sync", "--json"],
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+        ],
+        "owner_command": [
+            "./scripts/ops/opsctl.sh",
+            "schwab-symbol-news-sync",
+            "--json",
+        ],
     },
     {
         "name": "ticker_news_context",
@@ -243,7 +425,11 @@ ORGANIC_EVIDENCE_COLLECTOR_SPECS = [
         "safe_to_degrade": True,
         "collector_class": "source_context",
         "data_plane_key": "ticker_news_context",
-        "evidence_domains": ["source_verification", "training_models", "profitability_research"],
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+        ],
         "owner_command": ["./scripts/ops/opsctl.sh", "ticker-news-sync", "--json"],
     },
     {
@@ -257,7 +443,11 @@ ORGANIC_EVIDENCE_COLLECTOR_SPECS = [
         "data_plane_key": "point_in_time_event_store",
         "evidence_domains": ["training_models", "promotion_release"],
         "organic_minimums": {"event_count": 100},
-        "owner_command": ["./scripts/ops/opsctl.sh", "point-in-time-event-store", "--json"],
+        "owner_command": [
+            "./scripts/ops/opsctl.sh",
+            "point-in-time-event-store",
+            "--json",
+        ],
     },
     {
         "name": "feature_store_lineage",
@@ -270,7 +460,9 @@ ORGANIC_EVIDENCE_COLLECTOR_SPECS = [
         "data_plane_key": "feature_store_lineage",
         "evidence_domains": ["training_models", "promotion_release"],
         "organic_truthy_paths": ["strict_ok"],
-        "organic_ratio_targets": {"point_in_time_contract.snapshot_coverage_ratio": 0.75},
+        "organic_ratio_targets": {
+            "point_in_time_contract.snapshot_coverage_ratio": 0.75
+        },
         "owner_command": ["./scripts/ops/opsctl.sh", "feature-store", "--json"],
     },
     {
@@ -284,11 +476,46 @@ ORGANIC_EVIDENCE_COLLECTOR_SPECS = [
         "data_plane_key": "candidate_fill_replay",
         "evidence_domains": ["profitability_research", "promotion_release"],
         "organic_minimums": {"capture_count": 100},
-        "owner_command": ["./scripts/ops/opsctl.sh", "market-replay-fill-capture", "--apply", "--json"],
+        "owner_command": [
+            "./scripts/ops/opsctl.sh",
+            "market-replay-fill-capture",
+            "--apply",
+            "--json",
+        ],
     },
 ]
 
-COLLECTOR_SPECS += ORGANIC_EVIDENCE_COLLECTOR_SPECS
+RESEARCH_CONTEXT_COLLECTOR_SPECS = [
+    {
+        "name": str(definition["collector_id"]),
+        "health_path": HEALTH_ROOT / f"{definition['collector_id']}_latest.json",
+        "payload_path": EXTERNAL_CONTEXT_ROOT
+        / f"{definition['collector_id']}_latest.json",
+        "freshness_minutes": int(definition["max_age_minutes"]),
+        "required": False,
+        "safe_to_degrade": True,
+        "collector_class": "source_context",
+        "data_plane_key": str(definition["collector_id"]),
+        "evidence_domains": [
+            "source_verification",
+            "training_models",
+            "profitability_research",
+            "risk_controls",
+        ],
+        "owner_command": [
+            "./scripts/ops/opsctl.sh",
+            "research-context-sync",
+            "--collector",
+            str(definition["collector_id"]),
+            "--json",
+        ],
+        # Capability rows, not collector presence, earn coverage in the router.
+        "organic_required": False,
+    }
+    for definition in COLLECTOR_DEFINITIONS
+]
+
+COLLECTOR_SPECS += ORGANIC_EVIDENCE_COLLECTOR_SPECS + RESEARCH_CONTEXT_COLLECTOR_SPECS
 
 _PAYLOAD_META_KEYS = {
     "timestamp_utc",
@@ -353,12 +580,22 @@ def _sha256_file(path: Path) -> str:
 
 
 def _payload_timestamp(path: Path, payload: dict[str, Any]) -> float:
-    for key in ("timestamp_utc", "generated_utc", "updated_at_utc", "updated_at", "created_at"):
+    for key in (
+        "timestamp_utc",
+        "generated_utc",
+        "updated_at_utc",
+        "updated_at",
+        "created_at",
+    ):
         raw = str(payload.get(key) or "").strip()
         if not raw:
             continue
         try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp()
+            return (
+                datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                .astimezone(timezone.utc)
+                .timestamp()
+            )
         except Exception:
             continue
     try:
@@ -367,18 +604,112 @@ def _payload_timestamp(path: Path, payload: dict[str, Any]) -> float:
         return 0.0
 
 
-def _observed_timestamp(*, health_path: Path, health_payload: dict[str, Any], payload_path: Path, payload_body: dict[str, Any]) -> float:
+def _observed_timestamp(
+    *,
+    health_path: Path,
+    health_payload: dict[str, Any],
+    payload_path: Path,
+    payload_body: dict[str, Any],
+) -> float:
     return max(
         _payload_timestamp(health_path, health_payload) if health_payload else 0.0,
         _payload_timestamp(payload_path, payload_body) if payload_body else 0.0,
     )
 
 
+def _artifact_pair_state(
+    project_root: Path,
+    spec: dict[str, Any],
+    *,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    health_path = _resolve_spec_path(project_root, Path(spec["health_path"]))
+    payload_path = _resolve_spec_path(project_root, Path(spec["payload_path"]))
+    health_payload = _load_json(health_path)
+    payload_body = _load_json(payload_path)
+    health_timestamp = (
+        _payload_timestamp(health_path, health_payload) if health_payload else 0.0
+    )
+    payload_timestamp = (
+        _payload_timestamp(payload_path, payload_body) if payload_body else 0.0
+    )
+    observed_now = float(
+        now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp()
+    )
+    freshness_seconds = max(float(spec.get("freshness_minutes", 0) or 0) * 60.0, 0.0)
+
+    def age_seconds(timestamp: float) -> float | None:
+        return max(observed_now - timestamp, 0.0) if timestamp > 0.0 else None
+
+    health_age = age_seconds(health_timestamp)
+    payload_age = age_seconds(payload_timestamp)
+    health_fresh = bool(health_age is not None and health_age <= freshness_seconds)
+    payload_fresh = bool(payload_age is not None and payload_age <= freshness_seconds)
+    timestamps = [
+        value for value in (health_timestamp, payload_timestamp) if value > 0.0
+    ]
+    timestamp_skew_seconds = (
+        abs(health_timestamp - payload_timestamp) if len(timestamps) == 2 else None
+    )
+    worst_age_seconds = max(
+        [value for value in (health_age, payload_age) if value is not None],
+        default=None,
+    )
+    ready = bool(health_payload and payload_body and health_fresh and payload_fresh)
+    blockers: list[str] = []
+    if not health_payload:
+        blockers.append("health_artifact_missing_or_invalid")
+    if not payload_body:
+        blockers.append("payload_artifact_missing_or_invalid")
+    if health_payload and not health_fresh:
+        blockers.append("health_artifact_stale")
+    if payload_body and not payload_fresh:
+        blockers.append("payload_artifact_stale")
+    return {
+        "ready": ready,
+        "status": "ready" if ready else "drifted",
+        "health_path": str(health_path),
+        "payload_path": str(payload_path),
+        "health_present": bool(health_payload),
+        "payload_present": bool(payload_body),
+        "health_timestamp_utc": (
+            datetime.fromtimestamp(health_timestamp, tz=timezone.utc).isoformat()
+            if health_timestamp > 0.0
+            else ""
+        ),
+        "payload_timestamp_utc": (
+            datetime.fromtimestamp(payload_timestamp, tz=timezone.utc).isoformat()
+            if payload_timestamp > 0.0
+            else ""
+        ),
+        "health_age_seconds": round(health_age, 3) if health_age is not None else None,
+        "payload_age_seconds": (
+            round(payload_age, 3) if payload_age is not None else None
+        ),
+        "worst_age_seconds": (
+            round(worst_age_seconds, 3) if worst_age_seconds is not None else None
+        ),
+        "timestamp_skew_seconds": (
+            round(timestamp_skew_seconds, 3)
+            if timestamp_skew_seconds is not None
+            else None
+        ),
+        "freshness_minutes": int(float(spec.get("freshness_minutes", 0) or 0)),
+        "health_fresh": health_fresh,
+        "payload_fresh": payload_fresh,
+        "blockers": blockers,
+        "policy": "both_health_and_consumer_payload_must_be_present_parseable_and_fresh",
+    }
+
+
 def _status_ok(name: str, payload: dict[str, Any]) -> bool:
     if not payload:
         return False
     if name == "bls_census":
-        return all(bool((payload.get(section) or {}).get("ok", False)) for section in ("bls", "census", "fred", "bea"))
+        return all(
+            bool((payload.get(section) or {}).get("ok", False))
+            for section in ("bls", "census", "fred", "bea")
+        )
     if "ok" in payload:
         return bool(payload.get("ok", False))
     return True
@@ -449,7 +780,9 @@ def _payload_shape_metrics(payload: dict[str, Any]) -> dict[str, Any]:
             "payload_score": 0.0,
         }
 
-    semantic_keys = [key for key in payload.keys() if str(key) not in _PAYLOAD_META_KEYS]
+    semantic_keys = [
+        key for key in payload.keys() if str(key) not in _PAYLOAD_META_KEYS
+    ]
     nonempty_child_count = 0
     for value in payload.values():
         if isinstance(value, dict) and value:
@@ -510,7 +843,12 @@ def _organic_readiness(
     health_payload: dict[str, Any],
     payload_body: dict[str, Any],
 ) -> dict[str, Any]:
-    organic_required = bool(spec.get("organic_required", spec.get("collector_class") in {"source_context", "evidence_accrual"}))
+    organic_required = bool(
+        spec.get(
+            "organic_required",
+            spec.get("collector_class") in {"source_context", "evidence_accrual"},
+        )
+    )
     if not organic_required:
         return {
             "required": False,
@@ -546,7 +884,11 @@ def _organic_readiness(
         if not passed:
             blockers.append(f"truthy_requirement_not_met:{path}")
 
-    minimums = spec.get("organic_minimums") if isinstance(spec.get("organic_minimums"), dict) else {}
+    minimums = (
+        spec.get("organic_minimums")
+        if isinstance(spec.get("organic_minimums"), dict)
+        else {}
+    )
     for path, raw_minimum in minimums.items():
         value = _path_value(health_payload, str(path))
         if value is None:
@@ -559,11 +901,17 @@ def _organic_readiness(
             minimum = max(float(raw_minimum or 0.0), 0.0)
         observed[str(path)] = observed_value
         passed = observed_value >= minimum
-        quantitative_progress.append(1.0 if minimum <= 0.0 else _clamp01(observed_value / minimum))
+        quantitative_progress.append(
+            1.0 if minimum <= 0.0 else _clamp01(observed_value / minimum)
+        )
         if not passed:
             blockers.append(f"minimum_not_met:{path}:{observed_value:g}/{minimum:g}")
 
-    ratio_targets = spec.get("organic_ratio_targets") if isinstance(spec.get("organic_ratio_targets"), dict) else {}
+    ratio_targets = (
+        spec.get("organic_ratio_targets")
+        if isinstance(spec.get("organic_ratio_targets"), dict)
+        else {}
+    )
     for path, raw_target in ratio_targets.items():
         value = _path_value(health_payload, str(path))
         if value is None:
@@ -576,9 +924,13 @@ def _organic_readiness(
             target = max(float(raw_target or 0.0), 0.0)
         observed[str(path)] = observed_value
         passed = observed_value >= target
-        quantitative_progress.append(1.0 if target <= 0.0 else _clamp01(observed_value / target))
+        quantitative_progress.append(
+            1.0 if target <= 0.0 else _clamp01(observed_value / target)
+        )
         if not passed:
-            blockers.append(f"ratio_target_not_met:{path}:{observed_value:g}/{target:g}")
+            blockers.append(
+                f"ratio_target_not_met:{path}:{observed_value:g}/{target:g}"
+            )
 
     evidence_accrual = str(spec.get("collector_class") or "") == "evidence_accrual"
     prerequisites_ready = bool(
@@ -590,9 +942,7 @@ def _organic_readiness(
     progress = (
         min(quantitative_progress)
         if quantitative_progress
-        else (1.0 if all(truthy_results) else 0.0)
-        if truthy_results
-        else 1.0
+        else (1.0 if all(truthy_results) else 0.0) if truthy_results else 1.0
     )
     if not prerequisites_ready:
         progress = 0.0
@@ -658,7 +1008,9 @@ def _data_plane_context(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Summarize collector freshness contracts for daily ops.")
+    parser = argparse.ArgumentParser(
+        description="Summarize collector freshness contracts for daily ops."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument(
         "--out-file",
@@ -666,7 +1018,11 @@ def main() -> int:
         help="Optional override for where the health payload is written.",
     )
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--include-data-plane", action="store_true", help="Enrich rows with SQLite data-plane latest-run/error-budget context.")
+    parser.add_argument(
+        "--include-data-plane",
+        action="store_true",
+        help="Enrich rows with SQLite data-plane latest-run/error-budget context.",
+    )
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
@@ -695,19 +1051,20 @@ def main() -> int:
             payload_path = _resolve_spec_path(project_root, Path(spec["payload_path"]))
             health_payload = _load_json(health_path)
             payload_body = _load_json(payload_path)
-            health_ts = _observed_timestamp(
-                health_path=health_path,
-                health_payload=health_payload,
-                payload_path=payload_path,
-                payload_body=payload_body,
+            artifact_pair = _artifact_pair_state(project_root, spec, now_ts=now_ts)
+            raw_worst_age = artifact_pair.get("worst_age_seconds")
+            age_seconds = (
+                float(raw_worst_age) if raw_worst_age is not None else float("inf")
             )
-            age_seconds = max(now_ts - health_ts, 0.0) if health_ts > 0.0 else float("inf")
-            fresh = bool(health_ts > 0.0 and age_seconds <= (float(spec["freshness_minutes"]) * 60.0))
+            fresh = bool(artifact_pair.get("ready", False))
             ok = _status_ok(name, health_payload)
             partial = _partial_data(spec, name, health_payload)
             required = bool(spec["required"])
             safe_to_degrade = bool(spec["safe_to_degrade"])
-            contract_ok = bool(fresh and (ok or safe_to_degrade))
+            payload_shape = _payload_shape_metrics(payload_body)
+            contract_ok = bool(
+                fresh and bool(payload_shape["nonempty"]) and (ok or safe_to_degrade)
+            )
             collector_class = str(spec.get("collector_class") or "core_context")
             data_plane_key = str(spec.get("data_plane_key") or name)
             latest_run, error_budget = _data_plane_context(
@@ -718,17 +1075,28 @@ def main() -> int:
                 connection_attempted=data_plane_connection_attempted,
             )
             payload_present = bool(payload_path.exists())
-            payload_size_bytes = int(payload_path.stat().st_size) if payload_present else 0
+            payload_size_bytes = (
+                int(payload_path.stat().st_size) if payload_present else 0
+            )
             payload_sha256 = _sha256_file(payload_path) if payload_present else ""
             source_status = _source_status_metrics(health_payload)
-            payload_shape = _payload_shape_metrics(payload_body)
             freshness_score = 0.0
             if age_seconds != float("inf") and spec["freshness_minutes"]:
-                freshness_score = _clamp01(1.0 - (float(age_seconds) / (float(spec["freshness_minutes"]) * 60.0 * 2.0)))
+                freshness_score = _clamp01(
+                    1.0
+                    - (
+                        float(age_seconds)
+                        / (float(spec["freshness_minutes"]) * 60.0 * 2.0)
+                    )
+                )
             elif age_seconds != float("inf"):
                 freshness_score = 1.0
             latest_run_score = 1.0
-            if latest_run and int(latest_run.get("rc", 0) or 0) != 0 and not bool(latest_run.get("skipped", False)):
+            if (
+                latest_run
+                and int(latest_run.get("rc", 0) or 0) != 0
+                and not bool(latest_run.get("skipped", False))
+            ):
                 latest_run_score = 0.0
             quality_score = (
                 freshness_score * 0.35
@@ -762,8 +1130,12 @@ def main() -> int:
                     "safe_to_degrade": safe_to_degrade,
                     "collector_class": collector_class,
                     "data_plane_key": data_plane_key,
-                    "evidence_domains": [str(value) for value in spec.get("evidence_domains", []) or []],
-                    "owner_command": [str(value) for value in spec.get("owner_command", []) or []],
+                    "evidence_domains": [
+                        str(value) for value in spec.get("evidence_domains", []) or []
+                    ],
+                    "owner_command": [
+                        str(value) for value in spec.get("owner_command", []) or []
+                    ],
                     "health_path": str(health_path),
                     "payload_path": str(payload_path),
                     "health_present": bool(health_payload),
@@ -771,26 +1143,46 @@ def main() -> int:
                     "payload_size_bytes": payload_size_bytes,
                     "payload_sha256": payload_sha256,
                     "freshness_minutes": int(spec["freshness_minutes"]),
-                    "age_seconds": None if age_seconds == float("inf") else round(float(age_seconds), 3),
+                    "age_seconds": (
+                        None
+                        if age_seconds == float("inf")
+                        else round(float(age_seconds), 3)
+                    ),
                     "fresh": fresh,
                     "ok": ok,
                     "partial_data": partial,
                     "contract_ok": contract_ok,
-                    "log_schema_version": health_payload.get("log_schema_version")
-                    if isinstance(health_payload, dict)
-                    else None,
+                    "log_schema_version": (
+                        health_payload.get("log_schema_version")
+                        if isinstance(health_payload, dict)
+                        else None
+                    ),
                     "quality_score": round(float(quality_score), 6),
                     "source_status": source_status,
                     "payload_nonempty": bool(payload_shape["nonempty"]),
-                    "payload_semantic_key_count": int(payload_shape["semantic_key_count"]),
-                    "payload_nonempty_child_count": int(payload_shape["nonempty_child_count"]),
+                    "payload_semantic_key_count": int(
+                        payload_shape["semantic_key_count"]
+                    ),
+                    "payload_nonempty_child_count": int(
+                        payload_shape["nonempty_child_count"]
+                    ),
                     "payload_count_signal": payload_shape["count_signal"],
+                    "artifact_pair_contract": artifact_pair,
                     "intake_score_components": {
                         "freshness_score": round(float(freshness_score), 6),
                         "ok_score": 1.0 if ok else 0.0,
-                        "source_coverage_score": round(float(source_status.get("coverage_ratio", 1.0) or 1.0), 6),
-                        "payload_score": round(float(payload_shape.get("payload_score", 0.0) or 0.0), 6),
-                        "error_budget_score": round(float(error_budget.get("error_budget_remaining", 1.0) or 1.0), 6),
+                        "source_coverage_score": round(
+                            float(source_status.get("coverage_ratio", 1.0) or 1.0), 6
+                        ),
+                        "payload_score": round(
+                            float(payload_shape.get("payload_score", 0.0) or 0.0), 6
+                        ),
+                        "error_budget_score": round(
+                            float(
+                                error_budget.get("error_budget_remaining", 1.0) or 1.0
+                            ),
+                            6,
+                        ),
                         "latest_run_score": round(float(latest_run_score), 6),
                         "partial_penalty_applied": bool(partial),
                     },
@@ -809,21 +1201,42 @@ def main() -> int:
         if data_plane_connection is not None:
             data_plane_connection.close()
 
-    low_quality_collectors = [row["name"] for row in rows if float(row.get("quality_score", 0.0) or 0.0) < 0.65]
-    organic_rows = [row for row in rows if bool((row.get("organic_readiness") or {}).get("required", False))]
-    organic_ready_rows = [row for row in organic_rows if bool((row.get("organic_readiness") or {}).get("ready", False))]
+    low_quality_collectors = [
+        row["name"]
+        for row in rows
+        if float(row.get("quality_score", 0.0) or 0.0) < 0.65
+    ]
+    organic_rows = [
+        row
+        for row in rows
+        if bool((row.get("organic_readiness") or {}).get("required", False))
+    ]
+    organic_ready_rows = [
+        row
+        for row in organic_rows
+        if bool((row.get("organic_readiness") or {}).get("ready", False))
+    ]
     organic_score = round(
         100.0
-        * sum(float((row.get("organic_readiness") or {}).get("progress", 0.0) or 0.0) for row in organic_rows)
+        * sum(
+            float((row.get("organic_readiness") or {}).get("progress", 0.0) or 0.0)
+            for row in organic_rows
+        )
         / max(len(organic_rows), 1),
         3,
     )
     collector_names = [str(row.get("name") or "") for row in rows]
     configured_expansion_names = {
-        str(spec.get("name") or "") for spec in ORGANIC_EVIDENCE_COLLECTOR_SPECS if str(spec.get("name") or "")
+        str(spec.get("name") or "")
+        for spec in ORGANIC_EVIDENCE_COLLECTOR_SPECS + RESEARCH_CONTEXT_COLLECTOR_SPECS
+        if str(spec.get("name") or "")
     }
-    configured_added_count = sum(1 for name in collector_names if name in configured_expansion_names)
-    duplicate_names = sorted({name for name in collector_names if collector_names.count(name) > 1})
+    configured_added_count = sum(
+        1 for name in collector_names if name in configured_expansion_names
+    )
+    duplicate_names = sorted(
+        {name for name in collector_names if collector_names.count(name) > 1}
+    )
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "collector_count": len(rows),
@@ -832,14 +1245,19 @@ def main() -> int:
         "required_failure_count": len(required_failures),
         "soft_failure_count": len(soft_failures),
         "average_quality_score": round(
-            sum(float(row.get("quality_score", 0.0) or 0.0) for row in rows) / max(len(rows), 1),
+            sum(float(row.get("quality_score", 0.0) or 0.0) for row in rows)
+            / max(len(rows), 1),
             6,
         ),
         "low_quality_collectors": low_quality_collectors,
         "required_failures": required_failures,
         "soft_failures": soft_failures,
         "organic_readiness": {
-            "status": "ready" if len(organic_ready_rows) == len(organic_rows) and organic_rows else "accumulating",
+            "status": (
+                "ready"
+                if len(organic_ready_rows) == len(organic_rows) and organic_rows
+                else "accumulating"
+            ),
             "score": organic_score,
             "ready_collector_count": len(organic_ready_rows),
             "collector_count": len(organic_rows),
@@ -847,8 +1265,12 @@ def main() -> int:
                 {
                     "name": str(row.get("name") or ""),
                     "evidence_domains": list(row.get("evidence_domains") or []),
-                    "blockers": list((row.get("organic_readiness") or {}).get("blockers") or []),
-                    "progress": float((row.get("organic_readiness") or {}).get("progress", 0.0) or 0.0),
+                    "blockers": list(
+                        (row.get("organic_readiness") or {}).get("blockers") or []
+                    ),
+                    "progress": float(
+                        (row.get("organic_readiness") or {}).get("progress", 0.0) or 0.0
+                    ),
                 }
                 for row in organic_rows
                 if not bool((row.get("organic_readiness") or {}).get("ready", False))
@@ -856,14 +1278,19 @@ def main() -> int:
             "policy": "100 requires every organically scored collector to publish fresh source-backed evidence and meet its real sample target",
         },
         "collector_expansion_contract": {
-            "version": "organic_collector_expansion_v1",
-            "requested_added_collectors": len(ORGANIC_EVIDENCE_COLLECTOR_SPECS),
-            "configured_added_collectors": len(ORGANIC_EVIDENCE_COLLECTOR_SPECS),
+            "version": "organic_collector_expansion_v2",
+            "requested_added_collectors": len(configured_expansion_names),
+            "configured_added_collectors": len(configured_expansion_names),
             "baseline_requested_organic_collectors": 9,
+            "research_context_added_collectors": len(RESEARCH_CONTEXT_COLLECTOR_SPECS),
+            "research_context_collector_ids": [
+                str(spec.get("name") or "") for spec in RESEARCH_CONTEXT_COLLECTOR_SPECS
+            ],
             "decision_critical_source_context_collectors": sum(
                 1
                 for spec in ORGANIC_EVIDENCE_COLLECTOR_SPECS
-                if str(spec.get("collector_class") or "") == "decision_critical_source_context"
+                if str(spec.get("collector_class") or "")
+                == "decision_critical_source_context"
             ),
             "duplicate_names": duplicate_names,
             "bounded_refresh": True,
@@ -874,7 +1301,11 @@ def main() -> int:
         },
         "rows": rows,
     }
-    out = Path(args.out_file).expanduser() if str(args.out_file or "").strip() else project_root / "governance" / "health" / "collector_contracts_latest.json"
+    out = (
+        Path(args.out_file).expanduser()
+        if str(args.out_file or "").strip()
+        else project_root / "governance" / "health" / "collector_contracts_latest.json"
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 

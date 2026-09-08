@@ -26,7 +26,9 @@ def test_live_process_matching_ignores_watchdog_wrapper_commands(monkeypatch) ->
     assert pw._proc_running("scripts/run_parallel_shadows.py") == 0
 
 
-def test_live_data_target_excludes_simulated_alt_coverage_by_default(monkeypatch) -> None:
+def test_live_data_target_excludes_simulated_alt_coverage_by_default(
+    monkeypatch,
+) -> None:
     monkeypatch.delenv("OPS_WATCHDOG_ALL_SLEEVES_SIMULATE", raising=False)
 
     target = pw._build_all_sleeves_target(heartbeat_max_age_seconds=300)
@@ -47,18 +49,33 @@ def test_live_data_excludes_preserve_profile_exclusions() -> None:
         "--profile crypto_futures",
         "--simulate",
     ]
-    assert pw._live_data_excludes(True, ["--profile crypto_futures"]) == ["--profile crypto_futures"]
+    assert pw._live_data_excludes(True, ["--profile crypto_futures"]) == [
+        "--profile crypto_futures"
+    ]
 
 
-def test_refresh_runtime_reports_uses_full_one_numbers_command(tmp_path, monkeypatch) -> None:
+def test_refresh_runtime_reports_uses_full_one_numbers_command(
+    tmp_path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     one_numbers = project_root / "exports" / "one_numbers" / "one_numbers_summary.json"
     one_numbers.parent.mkdir(parents=True, exist_ok=True)
-    paper_performance = project_root / "governance" / "health" / "paper_performance_latest.json"
+    paper_performance = (
+        project_root / "governance" / "health" / "paper_performance_latest.json"
+    )
     paper_performance.parent.mkdir(parents=True, exist_ok=True)
-    backpressure = project_root / "governance" / "health" / "ingestion_backpressure_latest.json"
-    divergence = project_root / "governance" / "health" / "data_source_divergence_latest.json"
-    daily_summary = project_root / "exports" / "sql_reports" / f"daily_runtime_summary_{datetime.now(timezone.utc).strftime('%Y%m%d')}.json"
+    backpressure = (
+        project_root / "governance" / "health" / "ingestion_backpressure_latest.json"
+    )
+    divergence = (
+        project_root / "governance" / "health" / "data_source_divergence_latest.json"
+    )
+    daily_summary = (
+        project_root
+        / "exports"
+        / "sql_reports"
+        / f"daily_runtime_summary_{datetime.now(timezone.utc).strftime('%Y%m%d')}.json"
+    )
     daily_summary.parent.mkdir(parents=True, exist_ok=True)
     daily_summary.write_text("{}", encoding="utf-8")
 
@@ -74,23 +91,39 @@ def test_refresh_runtime_reports_uses_full_one_numbers_command(tmp_path, monkeyp
     def _fake_run(cmd: list[str]):
         calls.append(cmd)
         if "build_one_numbers_report.py" in str(cmd[1:]):
-            one_numbers.write_text(json.dumps({"generated_utc": "2026-03-31T21:00:00+00:00"}), encoding="utf-8")
+            one_numbers.write_text(
+                json.dumps({"generated_utc": "2026-03-31T21:00:00+00:00"}),
+                encoding="utf-8",
+            )
             return 0, "", ""
         if "paper_performance_report.py" in str(cmd[1:]):
-            paper_performance.write_text(json.dumps({"timestamp_utc": "2026-03-31T21:00:00+00:00"}), encoding="utf-8")
+            paper_performance.write_text(
+                json.dumps({"timestamp_utc": "2026-03-31T21:00:00+00:00"}),
+                encoding="utf-8",
+            )
             return 0, "", ""
         if "ingestion_backpressure_guard.py" in str(cmd[1:]):
-            backpressure.write_text(json.dumps({"timestamp_utc": "2026-03-31T21:00:00+00:00"}), encoding="utf-8")
+            backpressure.write_text(
+                json.dumps({"timestamp_utc": "2026-03-31T21:00:00+00:00"}),
+                encoding="utf-8",
+            )
             return 0, "", ""
         if "data_source_divergence_bot.py" in str(cmd[1:]):
-            divergence.write_text(json.dumps({"timestamp_utc": "2026-03-31T21:00:00+00:00", "ok": True}), encoding="utf-8")
+            divergence.write_text(
+                json.dumps({"timestamp_utc": "2026-03-31T21:00:00+00:00", "ok": True}),
+                encoding="utf-8",
+            )
             return 0, "", ""
         return 0, "{}", ""
 
     monkeypatch.setattr(pw, "_file_age_seconds", _fake_file_age)
     monkeypatch.setattr(pw, "_run", _fake_run)
     monkeypatch.setattr(pw, "_proc_running", lambda *_args, **_kwargs: 0)
-    monkeypatch.setattr(pw, "_resource_guard_allows_job", lambda job_name, profile="optional": (True, f"{job_name}:{profile}:ok"))
+    monkeypatch.setattr(
+        pw,
+        "_resource_guard_allows_job",
+        lambda job_name, profile="optional": (True, f"{job_name}:{profile}:ok"),
+    )
 
     out = pw._refresh_runtime_reports(max_age_seconds=60)
 
@@ -104,22 +137,44 @@ def test_refresh_runtime_reports_uses_full_one_numbers_command(tmp_path, monkeyp
         and "--no-sql-write" not in cmd
         for cmd in calls
     )
-    assert any("paper_performance_report.py" in " ".join(cmd) and "--json-only" in cmd for cmd in calls)
-    assert any("ingestion_backpressure_guard.py" in " ".join(cmd) and "--json" in cmd for cmd in calls)
-    assert any("data_source_divergence_bot.py" in " ".join(cmd) and "--json" in cmd for cmd in calls)
+    assert any(
+        "paper_performance_report.py" in " ".join(cmd) and "--json-only" in cmd
+        for cmd in calls
+    )
+    assert any(
+        "ingestion_backpressure_guard.py" in " ".join(cmd) and "--json" in cmd
+        for cmd in calls
+    )
+    assert any(
+        "data_source_divergence_bot.py" in " ".join(cmd) and "--json" in cmd
+        for cmd in calls
+    )
 
 
-def test_refresh_runtime_reports_flags_stuck_refresh_process(tmp_path, monkeypatch) -> None:
+def test_refresh_runtime_reports_flags_stuck_refresh_process(
+    tmp_path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     one_numbers = project_root / "exports" / "one_numbers" / "one_numbers_summary.json"
     one_numbers.parent.mkdir(parents=True, exist_ok=True)
-    paper_performance = project_root / "governance" / "health" / "paper_performance_latest.json"
+    paper_performance = (
+        project_root / "governance" / "health" / "paper_performance_latest.json"
+    )
     paper_performance.parent.mkdir(parents=True, exist_ok=True)
-    backpressure = project_root / "governance" / "health" / "ingestion_backpressure_latest.json"
+    backpressure = (
+        project_root / "governance" / "health" / "ingestion_backpressure_latest.json"
+    )
     backpressure.write_text("{}", encoding="utf-8")
-    divergence = project_root / "governance" / "health" / "data_source_divergence_latest.json"
+    divergence = (
+        project_root / "governance" / "health" / "data_source_divergence_latest.json"
+    )
     divergence.write_text("{}", encoding="utf-8")
-    daily_summary = project_root / "exports" / "sql_reports" / f"daily_runtime_summary_{datetime.now(timezone.utc).strftime('%Y%m%d')}.json"
+    daily_summary = (
+        project_root
+        / "exports"
+        / "sql_reports"
+        / f"daily_runtime_summary_{datetime.now(timezone.utc).strftime('%Y%m%d')}.json"
+    )
     daily_summary.parent.mkdir(parents=True, exist_ok=True)
     daily_summary.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(pw, "PROJECT_ROOT", project_root)
@@ -129,10 +184,34 @@ def test_refresh_runtime_reports_flags_stuck_refresh_process(tmp_path, monkeypat
         "_file_age_seconds",
         lambda path: 999999.0 if path == one_numbers else 0.0,
     )
-    monkeypatch.setattr(pw, "_resource_guard_allows_job", lambda job_name, profile="optional": (True, f"{job_name}:{profile}:ok"))
-    monkeypatch.setattr(pw, "_proc_running", lambda pattern, exclude_patterns=None: 1 if "build_one_numbers_report.py" in pattern else 0)
-    monkeypatch.setattr(pw, "_proc_elapsed_seconds", lambda pattern, exclude_patterns=None: 1200.0 if "build_one_numbers_report.py" in pattern else None)
-    monkeypatch.setattr(pw, "_run", lambda cmd: (_ for _ in ()).throw(AssertionError("refresh should not rerun while a stuck process is still present")))
+    monkeypatch.setattr(
+        pw,
+        "_resource_guard_allows_job",
+        lambda job_name, profile="optional": (True, f"{job_name}:{profile}:ok"),
+    )
+    monkeypatch.setattr(
+        pw,
+        "_proc_running",
+        lambda pattern, exclude_patterns=None: (
+            1 if "build_one_numbers_report.py" in pattern else 0
+        ),
+    )
+    monkeypatch.setattr(
+        pw,
+        "_proc_elapsed_seconds",
+        lambda pattern, exclude_patterns=None: (
+            1200.0 if "build_one_numbers_report.py" in pattern else None
+        ),
+    )
+    monkeypatch.setattr(
+        pw,
+        "_run",
+        lambda cmd: (_ for _ in ()).throw(
+            AssertionError(
+                "refresh should not rerun while a stuck process is still present"
+            )
+        ),
+    )
 
     out = pw._refresh_runtime_reports(max_age_seconds=60)
 
@@ -141,7 +220,9 @@ def test_refresh_runtime_reports_flags_stuck_refresh_process(tmp_path, monkeypat
     assert out["one_numbers"]["running_seconds"] == 1200.0
 
 
-def test_refresh_runtime_reports_keeps_health_fast_inside_livefeed_budget(tmp_path, monkeypatch) -> None:
+def test_refresh_runtime_reports_keeps_health_fast_inside_livefeed_budget(
+    tmp_path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     health.mkdir(parents=True)
@@ -160,7 +241,9 @@ def test_refresh_runtime_reports_keeps_health_fast_inside_livefeed_budget(tmp_pa
 
     monkeypatch.setattr(pw, "_run", _fake_run)
 
-    out = pw._refresh_runtime_reports(max_age_seconds=7200, health_fast_max_age_seconds=300)
+    out = pw._refresh_runtime_reports(
+        max_age_seconds=7200, health_fast_max_age_seconds=300
+    )
 
     assert out["health_fast"]["refreshed"] is True
     assert out["health_fast"]["rc"] == 2
@@ -169,11 +252,15 @@ def test_refresh_runtime_reports_keeps_health_fast_inside_livefeed_budget(tmp_pa
     assert any("health_fast.py" in " ".join(cmd) for cmd in calls)
 
 
-def test_lightweight_health_fast_refresh_does_not_depend_on_heavy_reports(tmp_path, monkeypatch) -> None:
+def test_lightweight_health_fast_refresh_does_not_depend_on_heavy_reports(
+    tmp_path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     health_fast = project_root / "governance" / "health" / "health_fast_latest.json"
     monkeypatch.setattr(pw, "PROJECT_ROOT", project_root)
-    monkeypatch.setattr(pw, "_file_age_seconds", lambda path: 301.0 if path == health_fast else 0.0)
+    monkeypatch.setattr(
+        pw, "_file_age_seconds", lambda path: 301.0 if path == health_fast else 0.0
+    )
     calls: list[list[str]] = []
 
     def _fake_run(cmd: list[str]):
@@ -190,17 +277,30 @@ def test_lightweight_health_fast_refresh_does_not_depend_on_heavy_reports(tmp_pa
     assert "health_fast.py" in " ".join(calls[0])
 
 
-def test_refresh_runtime_reports_blocks_daily_summary_when_resource_guard_denies(tmp_path, monkeypatch) -> None:
+def test_refresh_runtime_reports_blocks_daily_summary_when_resource_guard_denies(
+    tmp_path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     one_numbers = project_root / "exports" / "one_numbers" / "one_numbers_summary.json"
     one_numbers.parent.mkdir(parents=True, exist_ok=True)
-    paper_performance = project_root / "governance" / "health" / "paper_performance_latest.json"
+    paper_performance = (
+        project_root / "governance" / "health" / "paper_performance_latest.json"
+    )
     paper_performance.parent.mkdir(parents=True, exist_ok=True)
-    backpressure = project_root / "governance" / "health" / "ingestion_backpressure_latest.json"
-    divergence = project_root / "governance" / "health" / "data_source_divergence_latest.json"
+    backpressure = (
+        project_root / "governance" / "health" / "ingestion_backpressure_latest.json"
+    )
+    divergence = (
+        project_root / "governance" / "health" / "data_source_divergence_latest.json"
+    )
     backpressure.write_text("{}", encoding="utf-8")
     divergence.write_text("{}", encoding="utf-8")
-    daily_summary = project_root / "exports" / "sql_reports" / f"daily_runtime_summary_{datetime.now(timezone.utc).strftime('%Y%m%d')}.json"
+    daily_summary = (
+        project_root
+        / "exports"
+        / "sql_reports"
+        / f"daily_runtime_summary_{datetime.now(timezone.utc).strftime('%Y%m%d')}.json"
+    )
     daily_summary.parent.mkdir(parents=True, exist_ok=True)
     daily_summary.write_text("{}", encoding="utf-8")
 
@@ -213,12 +313,19 @@ def test_refresh_runtime_reports_blocks_daily_summary_when_resource_guard_denies
     monkeypatch.setattr(
         pw,
         "_resource_guard_allows_job",
-        lambda job_name, profile="optional": (False, f"{job_name}:{profile}:creative_session_dual_pro"),
+        lambda job_name, profile="optional": (
+            False,
+            f"{job_name}:{profile}:creative_session_dual_pro",
+        ),
     )
     monkeypatch.setattr(
         pw,
         "_run",
-        lambda cmd: (_ for _ in ()).throw(AssertionError("daily summary refresh should be skipped when resource guard blocks")),
+        lambda cmd: (_ for _ in ()).throw(
+            AssertionError(
+                "daily summary refresh should be skipped when resource guard blocks"
+            )
+        ),
     )
 
     out = pw._refresh_runtime_reports(max_age_seconds=60)
@@ -241,7 +348,9 @@ def test_run_returns_timeout_payload(monkeypatch) -> None:
         def communicate(self, timeout=None):
             self.calls += 1
             if self.calls == 1:
-                exc = subprocess.TimeoutExpired(cmd=["fake-helper", "--json"], timeout=timeout)
+                exc = subprocess.TimeoutExpired(
+                    cmd=["fake-helper", "--json"], timeout=timeout
+                )
                 exc.output = "partial stdout\n"
                 exc.stderr = "partial stderr\n"
                 raise exc
@@ -278,7 +387,9 @@ def test_parse_ps_etime_seconds_handles_macos_formats() -> None:
     assert pw._parse_ps_etime_seconds("2-03:04:05") == 183845.0
 
 
-def test_build_execution_lane_target_uses_paper_health_file(tmp_path, monkeypatch) -> None:
+def test_build_execution_lane_target_uses_paper_health_file(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(pw, "PROJECT_ROOT", tmp_path)
 
     target = pw._build_execution_lane_target("paper", heartbeat_max_age_seconds=240)
@@ -295,7 +406,9 @@ def test_build_execution_lane_target_uses_paper_health_file(tmp_path, monkeypatc
     assert target["live_execution_critical"] is True
 
 
-def test_paper_execution_runtime_pause_state_prefers_override_file(tmp_path, monkeypatch) -> None:
+def test_paper_execution_runtime_pause_state_prefers_override_file(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED", "1")
     monkeypatch.setenv("PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE", "0")
     monkeypatch.setenv("PAPER_400_RAMP_BLOCKED_RUNTIME_PAUSE", "0")
@@ -317,7 +430,10 @@ def test_paper_execution_runtime_pause_state_prefers_override_file(tmp_path, mon
     assert state["consumer_enabled"] is False
     assert state["runtime_paused_for_pressure"] is True
     assert state["paper_400_ramp_blocked_runtime_pause"] is True
-    assert state["reason"] == "paper_queue_consumer_disabled+runtime_pressure_pause+paper_400_ramp_blocked"
+    assert (
+        state["reason"]
+        == "paper_queue_consumer_disabled+runtime_pressure_pause+paper_400_ramp_blocked"
+    )
 
 
 def test_row_intentionally_held_for_runtime_paper_pause() -> None:
@@ -364,7 +480,9 @@ def test_trim_duplicate_processes_keeps_newest(monkeypatch) -> None:
     assert payload["still_running_pids"] == []
 
 
-def test_default_require_paper_executor_disabled_when_all_sleeves_owns_it(monkeypatch) -> None:
+def test_default_require_paper_executor_disabled_when_all_sleeves_owns_it(
+    monkeypatch,
+) -> None:
     monkeypatch.delenv("OPS_WATCHDOG_REQUIRE_PAPER_EXECUTOR", raising=False)
     monkeypatch.setenv("OPS_WATCHDOG_REQUIRE_ALL_SLEEVES", "1")
     monkeypatch.setenv("RUN_ALL_SLEEVES_WITH_PAPER_EXECUTOR", "1")
@@ -381,25 +499,49 @@ def test_all_sleeves_target_has_child_fanout_floor(monkeypatch) -> None:
     assert target["parent_process_required"] is True
     assert target["min_child_processes"] >= 4
     assert target["child_fanout_grace_seconds"] >= 60
-    assert target["heartbeat_startup_grace_seconds"] >= target["child_fanout_grace_seconds"]
-    assert str(target["launcher_health_path"]).endswith("all_sleeves_launcher_latest.json")
+    assert (
+        target["heartbeat_startup_grace_seconds"]
+        >= target["child_fanout_grace_seconds"]
+    )
+    assert str(target["launcher_health_path"]).endswith(
+        "all_sleeves_launcher_latest.json"
+    )
     assert "sleeve_launcher_parent_watchdog" in target["repair_infrabots"]
     assert "sleeve_child_recycler" in target["repair_infrabots"]
-    assert target["repair_policy"] == "restart_read_only_sleeve_collection_and_clean_orphans_without_enabling_live_execution"
+    assert (
+        target["repair_policy"]
+        == "restart_read_only_sleeve_collection_and_clean_orphans_without_enabling_live_execution"
+    )
     assert target["restart_storm_impact"] == "read_only_collection"
     assert target["restart_storm_quarantine_allowed"] is True
     assert target["live_execution_critical"] is False
-    assert any("process_watchdog.py" in " ".join(command) for command in target["repair_commands"])
-    assert "scripts/run_shadow_training_loop.py --broker schwab" in target["alt_patterns"]
-    assert "scripts/run_shadow_training_loop.py --broker schwab" in target["orphan_cleanup_patterns"]
+    assert any(
+        "process_watchdog.py" in " ".join(command)
+        for command in target["repair_commands"]
+    )
+    assert (
+        "scripts/run_shadow_training_loop.py --broker schwab" in target["alt_patterns"]
+    )
+    assert (
+        "scripts/run_shadow_training_loop.py --broker schwab"
+        in target["orphan_cleanup_patterns"]
+    )
+    assert (
+        "scripts/run_execution_lane.py --mode paper"
+        in target["orphan_cleanup_patterns"]
+    )
     assert target["restart_storm_settle_seconds"] == 180
     assert target["restart_storm_min_healthy_seconds"] == 90
 
 
-def test_process_watchdog_cleans_all_sleeves_orphans_before_startup_ready_gate() -> None:
+def test_process_watchdog_cleans_all_sleeves_orphans_before_startup_ready_gate() -> (
+    None
+):
     text = Path(pw.__file__).read_text(encoding="utf-8")
 
-    cleanup_idx = text.index("parent_process_required and running <= 0 and alt_running > 0")
+    cleanup_idx = text.index(
+        "parent_process_required and running <= 0 and alt_running > 0"
+    )
     ready_idx = text.index("ready, reason = _all_sleeves_start_ready")
     assert cleanup_idx < ready_idx
 
@@ -455,12 +597,16 @@ def test_child_fanout_health_scores_parent_missing_children_against_floor() -> N
     assert thin["reason"] == "parent_missing_child_fanout_below_floor"
 
 
-def test_all_sleeves_launcher_artifact_health_certifies_fresh_full_fanout(tmp_path: Path) -> None:
+def test_all_sleeves_launcher_artifact_health_certifies_fresh_full_fanout(
+    tmp_path: Path,
+) -> None:
     launcher = tmp_path / "all_sleeves_launcher_latest.json"
     launcher.write_text(
         json.dumps(
             {
-                "timestamp_utc": datetime.fromtimestamp(100.0, timezone.utc).isoformat(),
+                "timestamp_utc": datetime.fromtimestamp(
+                    100.0, timezone.utc
+                ).isoformat(),
                 "overall_status": "ready",
                 "phase": "running",
                 "expected_job_count": 100,
@@ -487,12 +633,16 @@ def test_all_sleeves_launcher_artifact_health_certifies_fresh_full_fanout(tmp_pa
     assert health["running_job_count"] == 100
 
 
-def test_all_sleeves_launcher_artifact_health_certifies_policy_parked_fanout(tmp_path: Path) -> None:
+def test_all_sleeves_launcher_artifact_health_certifies_policy_parked_fanout(
+    tmp_path: Path,
+) -> None:
     launcher = tmp_path / "all_sleeves_launcher_latest.json"
     launcher.write_text(
         json.dumps(
             {
-                "timestamp_utc": datetime.fromtimestamp(100.0, timezone.utc).isoformat(),
+                "timestamp_utc": datetime.fromtimestamp(
+                    100.0, timezone.utc
+                ).isoformat(),
                 "overall_status": "ready",
                 "phase": "running",
                 "expected_job_count": 101,
@@ -523,12 +673,117 @@ def test_all_sleeves_launcher_artifact_health_certifies_policy_parked_fanout(tmp
     assert health["problem_job_count"] == 0
 
 
-def test_all_sleeves_launcher_artifact_uses_repair_packet_problem_count(tmp_path: Path) -> None:
+def test_all_sleeves_launcher_artifact_distinguishes_guarded_execution(
+    tmp_path: Path,
+) -> None:
     launcher = tmp_path / "all_sleeves_launcher_latest.json"
     launcher.write_text(
         json.dumps(
             {
-                "timestamp_utc": datetime.fromtimestamp(100.0, timezone.utc).isoformat(),
+                "timestamp_utc": datetime.fromtimestamp(
+                    100.0, timezone.utc
+                ).isoformat(),
+                "overall_status": "guarded_ready",
+                "phase": "running",
+                "expected_job_count": 6,
+                "running_job_count": 5,
+                "missing_job_count": 0,
+                "exited_job_count": 1,
+                "policy_parked_job_count": 1,
+                "repair_packet": {"problem_job_count": 0},
+                "launcher_readiness_contract": {
+                    "collection_fanout_ready": True,
+                    "paper_execution_ready": False,
+                    "execution_attention": ["paper_executor_safety_parked"],
+                    "exact_needs": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    health = pw._all_sleeves_launcher_artifact_health(
+        {
+            "launcher_health_path": str(launcher),
+            "heartbeat_max_age_seconds": 360,
+            "child_fanout_grace_seconds": 180,
+        },
+        now_epoch=120.0,
+    )
+
+    assert health["ok"] is True
+    assert (
+        health["reason"]
+        == "fresh_launcher_artifact_certifies_guarded_collection_fanout"
+    )
+    assert health["collection_fanout_ready"] is True
+    assert health["paper_execution_ready"] is False
+    assert health["execution_guarded"] is True
+    assert health["execution_attention"] == ["paper_executor_safety_parked"]
+
+
+def test_all_sleeves_launcher_artifact_accepts_execution_only_exact_needs(
+    tmp_path: Path,
+) -> None:
+    launcher = tmp_path / "all_sleeves_launcher_latest.json"
+    launcher.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.fromtimestamp(
+                    100.0, timezone.utc
+                ).isoformat(),
+                "overall_status": "guarded_ready",
+                "phase": "running",
+                "expected_job_count": 9,
+                "running_job_count": 9,
+                "missing_job_count": 0,
+                "exited_job_count": 0,
+                "repair_packet": {"problem_job_count": 0},
+                "launcher_readiness_contract": {
+                    "collection_fanout_ready": True,
+                    "paper_execution_ready": False,
+                    "readiness_status": "resident_execution_safety_hold",
+                    "exact_needs": [
+                        {
+                            "target": "paper_executor",
+                            "job_class": "execution_lane",
+                            "blocker": "breaker_evidence_source_stale",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    health = pw._all_sleeves_launcher_artifact_health(
+        {
+            "launcher_health_path": str(launcher),
+            "heartbeat_max_age_seconds": 360,
+            "child_fanout_grace_seconds": 180,
+        },
+        now_epoch=120.0,
+    )
+
+    assert health["ok"] is True
+    assert (
+        health["reason"]
+        == "fresh_launcher_artifact_certifies_guarded_collection_fanout"
+    )
+    assert health["execution_only_exact_needs"] is True
+    assert health["needs_block_collection_fanout"] is False
+
+
+def test_all_sleeves_launcher_artifact_uses_repair_packet_problem_count(
+    tmp_path: Path,
+) -> None:
+    launcher = tmp_path / "all_sleeves_launcher_latest.json"
+    launcher.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.fromtimestamp(
+                    100.0, timezone.utc
+                ).isoformat(),
                 "overall_status": "blocked",
                 "phase": "running",
                 "expected_job_count": 101,
@@ -536,7 +791,9 @@ def test_all_sleeves_launcher_artifact_uses_repair_packet_problem_count(tmp_path
                 "missing_job_count": 0,
                 "exited_job_count": 101,
                 "repair_packet": {"problem_job_count": 26},
-                "launcher_readiness_contract": {"exact_needs": [{"target": "baseline_parallel"}]},
+                "launcher_readiness_contract": {
+                    "exact_needs": [{"target": "baseline_parallel"}]
+                },
             }
         ),
         encoding="utf-8",
@@ -565,7 +822,9 @@ def test_default_require_paper_executor_honors_explicit_override(monkeypatch) ->
     assert pw._default_require_paper_executor() is True
 
 
-def test_all_sleeves_start_ready_allows_core_restart_when_fanout_guard_has_no_targetable_workers(tmp_path, monkeypatch) -> None:
+def test_all_sleeves_start_ready_allows_core_restart_when_fanout_guard_has_no_targetable_workers(
+    tmp_path, monkeypatch
+) -> None:
     health = tmp_path / "governance" / "health"
     health.mkdir(parents=True, exist_ok=True)
     (health / "process_fanout_guard_latest.json").write_text(
@@ -592,7 +851,9 @@ def test_all_sleeves_start_ready_allows_core_restart_when_fanout_guard_has_no_ta
     assert reason == "process_fanout_guard_core_sleeve_pressure_mode"
 
 
-def test_all_sleeves_start_ready_blocks_when_fanout_guard_has_targetable_workers(tmp_path, monkeypatch) -> None:
+def test_all_sleeves_start_ready_blocks_when_fanout_guard_has_targetable_workers(
+    tmp_path, monkeypatch
+) -> None:
     health = tmp_path / "governance" / "health"
     health.mkdir(parents=True, exist_ok=True)
     (health / "process_fanout_guard_latest.json").write_text(
@@ -616,7 +877,9 @@ def test_all_sleeves_start_ready_blocks_when_fanout_guard_has_targetable_workers
     assert reason == "process_fanout_guard_active"
 
 
-def test_all_sleeves_start_ready_allows_readonly_restart_when_training_paused(monkeypatch) -> None:
+def test_all_sleeves_start_ready_allows_readonly_restart_when_training_paused(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("TRAINING_RUNTIME_PAUSED_BY_OPERATOR_MODE", "1")
     monkeypatch.setenv("SHADOW_SYMBOLS_CORE", "SPY")
     monkeypatch.setenv("SHADOW_SYMBOLS_VOLATILE", "QQQ")
@@ -645,7 +908,9 @@ def test_resolved_restart_storms_drop_healthy_settled_services() -> None:
             {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 300.0},
             {"event": "restart", "name": "execution_lane_paper", "ts_epoch": 400.0},
         ],
-        status_rows=[{"name": "execution_lane_paper", "running": 1, "heartbeat_ok": True}],
+        status_rows=[
+            {"name": "execution_lane_paper", "running": 1, "heartbeat_ok": True}
+        ],
         restart_window_seconds=3600,
         restart_storm_threshold=4,
         settle_seconds=120,
@@ -752,7 +1017,9 @@ def test_resolved_restart_storms_requires_parent_when_marked_parent_required() -
     assert recent[0]["resolved"] is False
 
 
-def test_resolved_restart_storms_accepts_certified_all_sleeves_fanout_without_parent() -> None:
+def test_resolved_restart_storms_accepts_certified_all_sleeves_fanout_without_parent() -> (
+    None
+):
     active, recent = pw._resolved_restart_storms(
         events=[
             {"event": "restart", "name": "all_sleeves", "ts_epoch": 100.0},
@@ -819,6 +1086,58 @@ def test_resolved_restart_storms_marks_read_only_collection_as_quarantinable() -
     assert active[0]["live_execution_critical"] is False
 
 
+def test_fresh_incomplete_collection_degrades_status_without_parent_restart() -> None:
+    row = {
+        "name": "all_sleeves",
+        "heartbeat_ok": True,
+        "process_live": True,
+        "launcher_artifact_health": {
+            "present": True,
+            "fresh": True,
+            "phase": "running",
+            "collection_fanout_ready": False,
+            "path": "/repo/launcher.json",
+        },
+    }
+    payload = pw._watchdog_intelligence_contract(
+        status_rows=[row],
+        restarts=[],
+        restart_storms=[],
+        recent_restart_storms=[],
+        alerts=[],
+        safety_pause={},
+        creative_pause={},
+        network_payload={},
+    )
+    assert payload["overall_status"] == "degraded"
+    assert payload["healthy_target_count"] == 0
+    assert payload["exact_needs"][0]["blocker"] == "collection_fanout_incomplete"
+    assert payload["exact_needs"][0]["restart_parent"] is False
+    assert pw._row_effective_heartbeat_ok(row)
+    assert row["heartbeat_ok"] is True
+
+
+def test_collection_diagnostic_ignores_stale_missing_and_guarded_execution() -> None:
+    row = {"name": "all_sleeves", "heartbeat_ok": True, "process_live": True}
+    assert pw._watchdog_need_for_row(row) is None
+    row["launcher_artifact_health"] = {
+        "present": True,
+        "fresh": False,
+        "phase": "running",
+        "collection_fanout_ready": False,
+    }
+    assert pw._watchdog_need_for_row(row) is None
+    row["launcher_artifact_health"].update(
+        fresh=True,
+        collection_fanout_ready=True,
+        paper_execution_ready=False,
+    )
+    assert pw._watchdog_need_for_row(row) is None
+    row["launcher_artifact_health"]["collection_fanout_ready"] = False
+    row["paused_by_runtime_gate"] = True
+    assert pw._watchdog_need_for_row(row) is None
+
+
 def test_watchdog_intelligence_downgrades_isolated_restart_storm_budget() -> None:
     status_rows = [
         {
@@ -876,7 +1195,9 @@ def test_restart_budget_alert_metadata_downgrades_isolated_collectors() -> None:
     assert event == "watchdog_restart_budget_exhausted_isolated"
 
 
-def test_restart_budget_repair_probe_allows_coinbase_after_cooldown(monkeypatch) -> None:
+def test_restart_budget_repair_probe_allows_coinbase_after_cooldown(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("OPS_WATCHDOG_READONLY_BUDGET_REPAIR_PROBE", "1")
     events = [
         {"event": "restart", "name": "coinbase_loop", "ts_epoch": 100.0},
@@ -901,11 +1222,16 @@ def test_restart_budget_repair_probe_allows_coinbase_after_cooldown(monkeypatch)
     )
 
     assert probe["allowed"] is True
-    assert probe["reason"] == "read_only_collector_repair_probe_after_restart_budget_exhausted"
+    assert (
+        probe["reason"]
+        == "read_only_collector_repair_probe_after_restart_budget_exhausted"
+    )
     assert probe["last_restart_age_seconds"] == 1000.0
 
 
-def test_restart_budget_repair_probe_denies_execution_lane_and_cooldown(monkeypatch) -> None:
+def test_restart_budget_repair_probe_denies_execution_lane_and_cooldown(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("OPS_WATCHDOG_READONLY_BUDGET_REPAIR_PROBE", "1")
     events = [{"event": "restart", "name": "coinbase_loop", "ts_epoch": 1000.0}]
 
@@ -970,7 +1296,9 @@ def test_resolved_restart_storms_respect_target_specific_settle_window() -> None
     assert recent[0]["resolved"] is True
 
 
-def test_resolved_restart_storms_resolve_when_target_is_paused_by_safety_flags() -> None:
+def test_resolved_restart_storms_resolve_when_target_is_paused_by_safety_flags() -> (
+    None
+):
     active, recent = pw._resolved_restart_storms(
         events=[
             {"event": "restart", "name": "all_sleeves", "ts_epoch": 100.0},

@@ -66,6 +66,164 @@ def _run_main(module, argv: list[str]) -> tuple[int, dict]:
 
 
 class SqlHotRetentionTests(unittest.TestCase):
+
+    def test_noop_archive_retention_never_requests_writable_connection(self):
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            archive = Path(td) / "retained ?# archive.sqlite3"
+            _init_db(archive)
+            _insert_rows(
+                archive, [(1, datetime.now(timezone.utc).isoformat(), "source", 1)]
+            )
+            before = archive.read_bytes()
+            with mock.patch.object(
+                module,
+                "_connect",
+                side_effect=AssertionError("no writable archive admission"),
+            ):
+                result = module._prune_archive_storage(
+                    archive_db=archive,
+                    archive_root=None,
+                    archive_retention_days=30,
+                    archive_prune_vacuum=True,
+                    cold_export_root=None,
+                    cold_export_format="parquet",
+                    cold_export_batch_size=1000,
+                    cold_export_compression="zstd",
+                )
+                self.assertEqual(module._count_archive_rows(archive), 1)
+            self.assertEqual(result["pruned_rows"], 0)
+            self.assertFalse(result["errors"])
+            self.assertEqual(archive.read_bytes(), before)
+
+    def test_readonly_archive_probe_sees_committed_wal_without_write_authority(self):
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            archive = Path(td) / "retained.sqlite3"
+            _init_db(archive)
+            writer = sqlite3.connect(archive)
+            try:
+                writer.execute("PRAGMA journal_mode=WAL")
+                writer.execute(
+                    "INSERT INTO jsonl_records VALUES (1, '2026-09-08', 'source', 1)"
+                )
+                writer.commit()
+                self.assertEqual(module._count_archive_rows(archive), 1)
+                reader = module._connect_readonly(archive)
+                try:
+                    with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+                        reader.execute("DELETE FROM jsonl_records")
+                finally:
+                    reader.close()
+            finally:
+                writer.close()
+
+    def test_conflicting_archive_id_does_not_delete_source(self):
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            db, archive = Path(td) / "hot.sqlite3", Path(td) / "archive.sqlite3"
+            for path in (db, archive):
+                _init_db(path)
+            _insert_rows(db, [(1, "2000-01-01T00:00:00+00:00", "source", 1)])
+            _insert_rows(archive, [(1, "2000-01-01T00:00:00+00:00", "different", 1)])
+            with self.assertRaisesRegex(
+                RuntimeError, "archive_copy_verification_failed"
+            ):
+                _run_main(
+                    module,
+                    [
+                        "retention",
+                        "--db",
+                        str(db),
+                        "--archive-db",
+                        str(archive),
+                        "--json",
+                    ],
+                )
+            self.assertEqual(_count_rows(db), 1)
+            with sqlite3.connect(archive) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT source_rel FROM jsonl_records").fetchone()[0],
+                    "different",
+                )
+
+    def test_identical_archive_retry_is_verified_before_source_release(self):
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            db, archive = Path(td) / "hot.sqlite3", Path(td) / "archive.sqlite3"
+            for path in (db, archive):
+                _init_db(path)
+                _insert_rows(path, [(1, "2000-01-01T00:00:00+00:00", "source", 1)])
+            rc, payload = _run_main(
+                module,
+                [
+                    "retention",
+                    "--db",
+                    str(db),
+                    "--archive-db",
+                    str(archive),
+                    "--archive-retention-days",
+                    "0",
+                    "--json",
+                ],
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(payload["moved_rows"], 1)
+            self.assertEqual(_count_rows(db), 0)
+            self.assertEqual(_count_rows(archive), 1)
+
+    def test_requested_vacuum_reclaims_pages_without_newly_expired_rows(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = root / "hot.sqlite3"
+            _init_db(db)
+            with sqlite3.connect(db) as conn:
+                conn.execute("CREATE TABLE old_payload (payload BLOB)")
+                conn.execute("INSERT INTO old_payload VALUES (zeroblob(1048576))")
+                conn.commit()
+                conn.execute("DROP TABLE old_payload")
+            before = db.stat().st_size
+            rc, payload = _run_main(module, ["retention", "--db", str(db), "--archive-db", str(root / "archive.sqlite3"), "--vacuum", "--json"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(payload["moved_rows"], 0)
+            self.assertLess(db.stat().st_size, before)
+
+    def test_corrupt_archive_is_preserved_while_healthy_archive_is_pruned(self) -> None:
+        module = _load_module()
+        for broken_name in ("latest.sqlite3", "jsonl_link_archive_2000_01_01.sqlite3"):
+            with self.subTest(broken_name=broken_name), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                broken = root / broken_name
+                broken.write_bytes(b"corrupt archive retained for recovery")
+                healthy = root / "jsonl_link_archive_2000_01_02.sqlite3"
+                _init_db(healthy)
+                _insert_rows(healthy, [(1, "2000-01-02T00:00:00+00:00", "test.jsonl", 1)])
+                result = module._prune_archive_storage(
+                    archive_db=root / "latest.sqlite3", archive_root=root,
+                    archive_retention_days=10, archive_prune_vacuum=False,
+                    cold_export_root=None, cold_export_format="parquet",
+                    cold_export_batch_size=1000, cold_export_compression="zstd",
+                )
+                self.assertIn(str(broken), result["errors"])
+                self.assertEqual(broken.read_bytes(), b"corrupt archive retained for recovery")
+                self.assertIn(str(healthy), result["deleted_archive_files"])
+                self.assertEqual(result["pruned_rows"], 1)
+
+    def test_archive_failure_emits_partial_progress_and_nonzero_status(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = root / "hot.sqlite3"
+            _init_db(db)
+            archive = root / "latest.sqlite3"
+            archive.write_bytes(b"broken archive")
+            rc, payload = _run_main(module, ["retention", "--db", str(db), "--archive-db", str(archive), "--archive-retention-days", "10", "--json"])
+            self.assertEqual(rc, 2)
+            self.assertFalse(payload["ok"])
+            self.assertIn(str(archive), payload["archive_pruning"]["errors"])
+            self.assertEqual(payload["moved_rows"], 0)
+
     def test_swap_pressure_pause_skips_hot_retention_without_touching_rows(self) -> None:
         module = _load_module()
         with tempfile.TemporaryDirectory() as td:

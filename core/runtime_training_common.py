@@ -7,6 +7,7 @@ import json
 import math
 import os
 import sys
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +29,7 @@ from sql_dataset_io import (
     resolve_sqlite_path,
     split_paths_by_sqlite_coverage,
 )
+from storage_router import inspect_storage_path
 
 from market_context_features import (
     BOND_REFERENCE_FEATURE_KEYS,
@@ -51,7 +53,13 @@ from global_central_bank_context import (
 )
 from decision_context_mesh import (
     DECISION_CONTEXT_MESH_FEATURE_KEYS,
+    PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS,
     decision_context_mesh_ready,
+)
+from research_context_expansion import (
+    COLLECTOR_IDS as RESEARCH_CONTEXT_COLLECTOR_IDS,
+    RUNTIME_RESEARCH_CONTEXT_FEATURE_KEYS,
+    research_context_ready,
 )
 
 try:
@@ -234,7 +242,9 @@ _RUNTIME_EXTENDED_QUANT_KEYS = {
 _RUNTIME_CENTRAL_BANK_LIQUIDITY_KEYS = set(CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS)
 _RUNTIME_GLOBAL_CENTRAL_BANK_KEYS = set(GLOBAL_CENTRAL_BANK_FEATURE_KEYS)
 _RUNTIME_CENTRAL_BANK_CROSS_SOURCE_KEYS = set(CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS)
-_RUNTIME_DECISION_CONTEXT_MESH_KEYS = set(DECISION_CONTEXT_MESH_FEATURE_KEYS)
+_RUNTIME_DECISION_CONTEXT_MESH_KEYS = set(DECISION_CONTEXT_MESH_FEATURE_KEYS) | set(
+    PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS
+)
 
 _RUNTIME_TASTYTRADE_KEYS = {
     "tasty_iv_rank_norm",
@@ -369,7 +379,7 @@ _RUNTIME_SCHWAB_EDUCATION_KEYS = {
     "schwab_education_symbol_stream_share_norm",
 }
 
-_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS | _RUNTIME_MARKET_MICRO_KEYS | _RUNTIME_SEC_EDGAR_KEYS | _RUNTIME_EXTENDED_QUANT_KEYS | _RUNTIME_CENTRAL_BANK_LIQUIDITY_KEYS | _RUNTIME_GLOBAL_CENTRAL_BANK_KEYS | _RUNTIME_CENTRAL_BANK_CROSS_SOURCE_KEYS | _RUNTIME_DECISION_CONTEXT_MESH_KEYS | _RUNTIME_TASTYTRADE_KEYS | _RUNTIME_CRYPTO_MARKET_KEYS | _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS | _RUNTIME_FX_MARKET_KEYS | _RUNTIME_DIVIDEND_DRIP_KEYS | _RUNTIME_SCHWAB_EDUCATION_KEYS | _RUNTIME_QUANT_MODEL_KEYS
+_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS | _RUNTIME_MARKET_MICRO_KEYS | _RUNTIME_SEC_EDGAR_KEYS | _RUNTIME_EXTENDED_QUANT_KEYS | _RUNTIME_CENTRAL_BANK_LIQUIDITY_KEYS | _RUNTIME_GLOBAL_CENTRAL_BANK_KEYS | _RUNTIME_CENTRAL_BANK_CROSS_SOURCE_KEYS | _RUNTIME_DECISION_CONTEXT_MESH_KEYS | _RUNTIME_TASTYTRADE_KEYS | _RUNTIME_CRYPTO_MARKET_KEYS | _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS | _RUNTIME_FX_MARKET_KEYS | _RUNTIME_DIVIDEND_DRIP_KEYS | _RUNTIME_SCHWAB_EDUCATION_KEYS | _RUNTIME_QUANT_MODEL_KEYS | set(RUNTIME_RESEARCH_CONTEXT_FEATURE_KEYS)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -577,16 +587,55 @@ def _runtime_row_price(row: Mapping[str, Any], features: Mapping[str, Any] | Non
     return 0.0
 
 
-def _iter_runtime_price_sidecar_rows(paths: Sequence[Path], *, max_rows: int = 0) -> Iterable[Dict[str, Any]]:
+def _iter_runtime_price_sidecar_rows(
+    paths: Sequence[Path],
+    *,
+    max_rows: int = 0,
+    deadline_monotonic: float | None = None,
+    max_bytes: int = 32 * 1024 * 1024,
+    stats: Dict[str, Any] | None = None,
+) -> Iterable[Dict[str, Any]]:
+    # Bound decompressed bytes, including malformed/blank rows, not just JSON yields.
+    stats = stats if stats is not None else {}
+    deadline = (
+        min(deadline_monotonic, time.monotonic() + 10)
+        if deadline_monotonic is not None
+        else time.monotonic() + 10
+    )
+    byte_budget = max(int(max_bytes), 1)
+    scanned_bytes = 0
     yielded = 0
     for raw_path in paths:
         path = Path(raw_path)
         try:
-            handle_cm = gzip.open(path, "rt", encoding="utf-8") if path.suffix == ".gz" else path.open("r", encoding="utf-8")
+            if time.monotonic() >= deadline:
+                stats["timed_out"] = True
+                return
+            handle_cm = (
+                gzip.open(path, "rb") if path.suffix == ".gz" else path.open("rb")
+            )
             with handle_cm as handle:
-                for line in handle:
-                    if max_rows > 0 and yielded >= max_rows:
+                while True:
+                    if time.monotonic() >= deadline:
+                        stats["timed_out"] = True
                         return
+                    if max_rows > 0 and yielded >= max_rows:
+                        stats["row_limit_hit"] = True
+                        return
+                    remaining = byte_budget - scanned_bytes
+                    if remaining <= 0:
+                        stats["byte_limit_hit"] = True
+                        return
+                    line = handle.readline(min(remaining, 1024 * 1024))
+                    if not line:
+                        break
+                    scanned_bytes += len(line)
+                    stats["scanned_bytes"] = scanned_bytes
+                    if not line.endswith(b"\n"):
+                        # Do not parse a budget-truncated record as a complete observation.
+                        if len(line) >= min(remaining, 1024 * 1024):
+                            stats["record_limit_hit"] = True
+                            return
                     line = line.strip()
                     if not line:
                         continue
@@ -596,8 +645,10 @@ def _iter_runtime_price_sidecar_rows(paths: Sequence[Path], *, max_rows: int = 0
                         continue
                     if isinstance(row, dict):
                         yielded += 1
+                        stats["row_count"] = yielded
                         yield row
         except Exception:
+            stats["file_error_count"] = int(stats.get("file_error_count", 0)) + 1
             continue
 
 
@@ -824,11 +875,16 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     fx_market_context = load_latest_external_context(project_root, "fx_market_context")
     dividend_drip_state = load_latest_external_context(project_root, "dividend_drip_state")
     quant_model_control = load_latest_external_context(project_root, "quant_model_control")
+    research_contexts = [
+        load_latest_external_context(project_root, collector_id)
+        for collector_id in RESEARCH_CONTEXT_COLLECTOR_IDS
+    ]
 
     te_derived = tradingeconomics.get("derived") if isinstance(tradingeconomics.get("derived"), Mapping) else {}
     official_derived = official_macro.get("derived") if isinstance(official_macro.get("derived"), Mapping) else {}
     central_bank_cross_derived = central_bank_cross_source.get("derived") if isinstance(central_bank_cross_source.get("derived"), Mapping) else {}
     decision_context_mesh_derived = decision_context_mesh.get("derived") if isinstance(decision_context_mesh.get("derived"), Mapping) else {}
+    decision_context_mesh_routing = decision_context_mesh.get("routing") if isinstance(decision_context_mesh.get("routing"), Mapping) else {}
     schwab_derived = schwab_education.get("derived") if isinstance(schwab_education.get("derived"), Mapping) else {}
     sec_derived = sec_edgar.get("derived") if isinstance(sec_edgar.get("derived"), Mapping) else {}
     extended_derived = extended_quant.get("derived") if isinstance(extended_quant.get("derived"), Mapping) else {}
@@ -969,6 +1025,12 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     external_global_features.update(_feature_subset(fx_market_global, _RUNTIME_FX_MARKET_KEYS))
     external_global_features.update(_feature_subset(dividend_drip_global, _RUNTIME_DIVIDEND_DRIP_KEYS))
     external_global_features.update(_feature_subset(quant_model_global, _RUNTIME_QUANT_MODEL_KEYS))
+    for collector_id, research_context in zip(RESEARCH_CONTEXT_COLLECTOR_IDS, research_contexts):
+        if not research_context_ready(research_context, collector_id):
+            continue
+        research_derived = research_context.get("derived") if isinstance(research_context.get("derived"), Mapping) else {}
+        research_global = research_derived.get("global_features") if isinstance(research_derived.get("global_features"), Mapping) else {}
+        external_global_features.update(_feature_subset(research_global, RUNTIME_RESEARCH_CONTEXT_FEATURE_KEYS))
     external_symbol_features = _symbol_feature_subset(sec_symbol, _RUNTIME_SEC_EDGAR_KEYS)
     if central_bank_cross_source_context_ready(central_bank_cross_source):
         for symbol, subset in _symbol_feature_subset(
@@ -1014,6 +1076,14 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     for symbol, subset in _symbol_feature_subset(quant_model_symbol, _RUNTIME_QUANT_MODEL_KEYS).items():
         current = external_symbol_features.setdefault(symbol, {})
         current.update(subset)
+    for collector_id, research_context in zip(RESEARCH_CONTEXT_COLLECTOR_IDS, research_contexts):
+        if not research_context_ready(research_context, collector_id):
+            continue
+        research_derived = research_context.get("derived") if isinstance(research_context.get("derived"), Mapping) else {}
+        research_symbol = research_derived.get("symbol_features") if isinstance(research_derived.get("symbol_features"), Mapping) else {}
+        for symbol, subset in _symbol_feature_subset(research_symbol, RUNTIME_RESEARCH_CONTEXT_FEATURE_KEYS).items():
+            current = external_symbol_features.setdefault(symbol, {})
+            current.update(subset)
 
     return {
         "calendar_features": calendar_features,
@@ -1025,6 +1095,11 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
         "market_micro_features": market_micro_features,
         "external_global_features": external_global_features,
         "external_symbol_features": external_symbol_features,
+        "external_feature_routes": (
+            dict(decision_context_mesh_routing.get("classified_public_financial_routes"))
+            if isinstance(decision_context_mesh_routing.get("classified_public_financial_routes"), Mapping)
+            else {}
+        ),
     }
 
 
@@ -1049,13 +1124,28 @@ def _enrich_runtime_observation(
     market_micro_features = gap_fill_context.get("market_micro_features") if isinstance(gap_fill_context.get("market_micro_features"), Mapping) else {}
     external_global_features = gap_fill_context.get("external_global_features") if isinstance(gap_fill_context.get("external_global_features"), Mapping) else {}
     external_symbol_features = gap_fill_context.get("external_symbol_features") if isinstance(gap_fill_context.get("external_symbol_features"), Mapping) else {}
+    external_feature_routes = gap_fill_context.get("external_feature_routes") if isinstance(gap_fill_context.get("external_feature_routes"), Mapping) else {}
+    decision_family_id = str(
+        obs.get("institutional_decision_flow_policy_family_id")
+        or obs.get("decision_policy_family_id")
+        or obs.get("policy_family_id")
+        or ""
+    )
+
+    def feature_allowed(key: str) -> bool:
+        if key not in PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS:
+            return True
+        route = external_feature_routes.get(key) if isinstance(external_feature_routes.get(key), Mapping) else {}
+        allowed_families = {str(value) for value in route.get("decision_family_ids", []) if str(value)}
+        return bool(decision_family_id and decision_family_id in allowed_families)
 
     for key, value in calendar_features.items():
         _set_missing_feature(features, str(key), value)
     symbol = str(obs.get("symbol") or "").strip().upper()
     symbol_feature_map = external_symbol_features.get(symbol) if isinstance(external_symbol_features.get(symbol), Mapping) else {}
     for key, value in symbol_feature_map.items():
-        _set_missing_feature(features, str(key), value)
+        if feature_allowed(str(key)):
+            _set_missing_feature(features, str(key), value)
     for key, value in news_features.items():
         _set_missing_feature(features, str(key), value)
     for key, value in live_macro_calendar.items():
@@ -1067,7 +1157,8 @@ def _enrich_runtime_observation(
     for key, value in market_micro_features.items():
         _set_missing_feature(features, str(key), value)
     for key, value in external_global_features.items():
-        _set_missing_feature(features, str(key), value)
+        if feature_allowed(str(key)):
+            _set_missing_feature(features, str(key), value)
 
     bond_features = summarize_bond_reference_context(
         symbol=symbol,
@@ -1254,6 +1345,8 @@ def _load_runtime_snapshot_rows(
 ) -> RuntimeSequenceMap:
     root = Path(project_root).expanduser().resolve()
     summary_path = Path(snapshot_file or (root / _DEFAULT_RUNTIME_SNAPSHOT_HEALTH)).expanduser()
+    if inspect_storage_path(summary_path)["status"] != "present":
+        return {}
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
     except Exception:
@@ -1263,16 +1356,21 @@ def _load_runtime_snapshot_rows(
     if int(summary.get("lookback_days", 0) or 0) < max(int(lookback_days), 1):
         return {}
     rows_path = Path(str(summary.get("rows_path") or "")).expanduser()
-    if not rows_path.exists():
+    if inspect_storage_path(rows_path)["status"] != "present":
         return {}
 
     since_utc = datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))
     mode_allow = {str(x).strip().lower() for x in (mode_allowlist or []) if str(x).strip()}
     symbol_allow = {str(x).strip().upper() for x in (symbol_allowlist or []) if str(x).strip()}
     grouped: RuntimeSequenceMap = defaultdict(list)
+    expected_hash = str(summary.get("rows_sha256") or "")
+    if summary.get("schema_version") == 2 and not expected_hash:
+        return {}
+    digest = hashlib.sha256()
     try:
-        with rows_path.open("r", encoding="utf-8") as handle:
+        with rows_path.open("rb") as handle:
             for line in handle:
+                digest.update(line)
                 line = line.strip()
                 if not line:
                     continue
@@ -1295,6 +1393,8 @@ def _load_runtime_snapshot_rows(
                     continue
                 grouped[(mode, symbol)].append(dict(row))
     except Exception:
+        return {}
+    if expected_hash and digest.hexdigest() != expected_hash:
         return {}
     return grouped
 
@@ -2179,12 +2279,7 @@ def load_runtime_observation_sequences(
     mode_allow = {str(x).strip().lower() for x in (mode_allowlist or []) if str(x).strip()}
     symbol_allow = {str(x).strip().upper() for x in (symbol_allowlist or []) if str(x).strip()}
     gap_fill_context = _load_runtime_gap_fill_context(root)
-    sidecar_paths = _recent_decision_paths(root, lookback_days=max(int(lookback_days), 1))
-    sidecar_max_rows = max(int(os.getenv("RUNTIME_TRAIN_PRICE_SIDECAR_MAX_ROWS", "200000") or 200000), 1000)
-    price_sidecar = _build_runtime_price_sidecar_from_rows(
-        _iter_runtime_price_sidecar_rows(sidecar_paths, max_rows=sidecar_max_rows),
-        max_rows=sidecar_max_rows,
-    )
+    price_sidecar: Dict[str, Any] | None = None
     effective_prefer_sqlite = _env_flag("RUNTIME_TRAIN_PREFER_SQLITE", False) if prefer_sqlite is None else bool(prefer_sqlite)
 
     if allow_snapshot and _env_flag("RUNTIME_TRAIN_USE_SNAPSHOT", False):
@@ -2292,6 +2387,24 @@ def load_runtime_observation_sequences(
         if price <= 0.0:
             price = _runtime_row_price(row, features)
         if price <= 0.0:
+            if price_sidecar is None:
+                price_sidecar = {}
+                if _env_flag("RUNTIME_TRAIN_PRICE_SIDECAR_ENABLED", True):
+                    sidecar_paths = _recent_decision_paths(
+                        root, lookback_days=max(int(lookback_days), 1)
+                    )
+                    sidecar_max_rows = max(
+                        _safe_int(
+                            os.getenv("RUNTIME_TRAIN_PRICE_SIDECAR_MAX_ROWS"), 200000
+                        ),
+                        1,
+                    )
+                    price_sidecar = _build_runtime_price_sidecar_from_rows(
+                        _iter_runtime_price_sidecar_rows(
+                            sidecar_paths, max_rows=sidecar_max_rows
+                        ),
+                        max_rows=sidecar_max_rows,
+                    )
             sidecar_entry = _lookup_runtime_sidecar_context(
                 price_sidecar,
                 symbol=symbol,

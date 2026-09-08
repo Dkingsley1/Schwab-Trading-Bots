@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import gzip
 import hashlib
 import json
 import os
@@ -20,6 +19,38 @@ if __package__ in {None, ""}:
     from scripts.ops.long_runtime_common import iso_now, write_payload
 else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, write_payload
+
+from core.storage_router import inspect_storage_path
+from scripts.ops.long_runtime_common import run_bounded_process_group
+from scripts.ops.raw_training_compaction_intelligence import _compress_and_clear
+
+
+def _allowed(path: Path) -> bool:
+    return inspect_storage_path(path).get("status") in {"present", "missing"}
+
+
+def _telemetry_files(
+    root: Path, pattern: str, *, recursive: bool = False
+) -> list[Path]:
+    if not _allowed(root) or root.is_symlink() or not root.is_dir():
+        return []
+    paths = root.rglob(pattern) if recursive else root.glob(pattern)
+    return [
+        path
+        for path in paths
+        if _allowed(path) and not path.is_symlink() and path.is_file()
+    ]
+
+
+def _require_rotated_idle(path: Path) -> None:
+    executable = shutil.which("lsof")
+    if not executable:
+        raise RuntimeError("rotated_file_idle_probe_unavailable")
+    result = run_bounded_process_group(
+        [executable, "-t", "--", str(path)], cwd=path.parent, timeout_seconds=10
+    )
+    if result["rc"] != 1 or result["stdout"].strip() or result["stderr"].strip():
+        raise RuntimeError("rotated_file_still_open_or_idle_probe_failed")
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "governance_telemetry_compactor_latest.json"
@@ -66,7 +97,15 @@ def _resolve_channels(project_root: Path, channels: list[str]) -> list[str]:
     if not normalized or any(part.lower() in {"all", "*"} for part in normalized):
         root = project_root / "governance" / "channels"
         try:
-            discovered = sorted(path.name for path in root.iterdir() if path.is_dir())
+            discovered = (
+                sorted(
+                    path.name
+                    for path in root.iterdir()
+                    if _allowed(path) and not path.is_symlink() and path.is_dir()
+                )
+                if _allowed(root) and not root.is_symlink()
+                else []
+            )
         except Exception:
             discovered = []
         return discovered or list(FALLBACK_CHANNELS)
@@ -93,47 +132,51 @@ def _iter_channel_files(project_root: Path, channels: list[str]) -> list[Path]:
     base = project_root / "governance" / "channels"
     for channel in channels:
         root = base / channel
-        if not root.exists():
-            continue
-        files.extend(path for path in root.rglob("*.jsonl") if path.is_file())
-        files.extend(path for path in root.rglob("*.jsonl.compact_pending_*") if path.is_file())
+        files.extend(_telemetry_files(root, "*.jsonl", recursive=True))
+        files.extend(
+            _telemetry_files(root, "*.jsonl.compact_pending_*", recursive=True)
+        )
     return sorted(files, key=lambda path: (-_safe_int(path.stat().st_size if path.exists() else 0), str(path)))
 
 
 def _iter_master_control_files(project_root: Path) -> list[Path]:
     root = project_root / "governance"
-    if not root.exists():
+    if not _allowed(root) or root.is_symlink() or not root.exists():
         return []
     files: list[Path] = []
     for sleeve_dir in root.glob("shadow_*"):
-        if not sleeve_dir.is_dir():
+        if (
+            not _allowed(sleeve_dir)
+            or sleeve_dir.is_symlink()
+            or not sleeve_dir.is_dir()
+        ):
             continue
-        files.extend(path for path in sleeve_dir.glob("master_control_*.jsonl") if path.is_file())
-        files.extend(path for path in sleeve_dir.glob("master_control_*.jsonl.compact_pending_*") if path.is_file())
+        files.extend(_telemetry_files(sleeve_dir, "master_control_*.jsonl"))
+        files.extend(
+            _telemetry_files(sleeve_dir, "master_control_*.jsonl.compact_pending_*")
+        )
     return files
 
 
 def _iter_execution_lane_files(project_root: Path) -> list[Path]:
     root = project_root / "governance" / "execution_lanes"
-    if not root.exists():
+    if not _allowed(root) or root.is_symlink() or not root.exists():
         return []
     return [
         path
         for pattern in ("*.jsonl", "*.jsonl.compact_pending_*")
-        for path in root.glob(pattern)
-        if path.is_file()
+        for path in _telemetry_files(root, pattern)
     ]
 
 
 def _iter_event_files(project_root: Path) -> list[Path]:
     root = project_root / "governance" / "events"
-    if not root.exists():
+    if not _allowed(root) or root.is_symlink() or not root.exists():
         return []
     return [
         path
         for pattern in ("*.jsonl", "*.jsonl.compact_pending_*")
-        for path in root.glob(pattern)
-        if path.is_file()
+        for path in _telemetry_files(root, pattern)
     ]
 
 
@@ -239,8 +282,28 @@ def _archive_one(
     stamp: str,
 ) -> dict[str, Any]:
     source_path = project_root / source_rel
+    if not _allowed(source_path) or not _allowed(archive_root):
+        return {
+            "relative_path": source_rel,
+            "status": "error",
+            "error": "protected_or_unavailable_route",
+        }
+    if source_path.is_symlink() or not source_path.resolve().is_relative_to(
+        project_root.resolve() / "governance"
+    ):
+        return {
+            "relative_path": source_rel,
+            "status": "error",
+            "error": "source_outside_governance_or_symlink",
+        }
     if not source_path.exists():
         return {"relative_path": source_rel, "status": "missing", "error": "source_missing"}
+    if not source_path.is_file():
+        return {
+            "relative_path": source_rel,
+            "status": "error",
+            "error": "source_not_regular_file",
+        }
 
     try:
         raw_bytes = int(source_path.stat().st_size)
@@ -264,25 +327,42 @@ def _archive_one(
         archive_path = archive_path.with_name(f"{archive_path.name}.segment_{safe_suffix}.gz")
     else:
         archive_path = archive_path.with_name(f"{archive_path.name}.gz")
+    if (
+        any(not _allowed(path) for path in (canonical_path, pending_path, archive_path))
+        or canonical_path.is_symlink()
+    ):
+        return {
+            "relative_path": source_rel,
+            "status": "error",
+            "error": "unsafe_rotation_or_archive_route",
+        }
     if archive_path.exists():
         source_key = hashlib.sha1(source_rel.encode("utf-8")).hexdigest()[:12]
         archive_path = archive_path.with_name(f"{archive_path.stem}.segment_{source_key}{archive_path.suffix}")
     archive_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_archive = archive_path.with_name(f"{archive_path.name}.tmp")
-
     try:
         if orphaned_compaction:
             canonical_path.parent.mkdir(parents=True, exist_ok=True)
             canonical_path.touch(exist_ok=True)
         else:
+            if pending_path.exists() or pending_path.is_symlink():
+                raise RuntimeError("pending_rotation_collision")
             source_path.rename(pending_path)
             source_path.parent.mkdir(parents=True, exist_ok=True)
             source_path.touch(exist_ok=True)
-        with pending_path.open("rb") as src, gzip.open(tmp_archive, "wb", compresslevel=max(min(int(compression_level), 9), 1)) as dst:
-            shutil.copyfileobj(src, dst, length=1024 * 1024)
-        tmp_archive.replace(archive_path)
+        # Writers reopen the canonical path; never release a segment still held open.
+        _require_rotated_idle(pending_path)
+        proof = _compress_and_clear(
+            pending_path,
+            archive_path,
+            compress_level=max(min(int(compression_level), 9), 1),
+            keep_raw=False,
+        )
+        if proof.get("status") != "ok" or not proof.get("raw_removed"):
+            raise RuntimeError(
+                str(proof.get("reason") or "archive_restore_verification_failed")
+            )
         archive_bytes = int(archive_path.stat().st_size)
-        pending_path.unlink(missing_ok=True)
         return {
             "relative_path": source_rel,
             "status": "archived",
@@ -294,6 +374,7 @@ def _archive_one(
             "estimated_hot_reduction_bytes": max(raw_bytes - archive_bytes, 0),
             "estimated_hot_reduction_gb": _gb(max(raw_bytes - archive_bytes, 0)),
             "orphaned_compaction_recovered": orphaned_compaction,
+            "verification": proof,
         }
     except Exception as exc:
         try:
@@ -309,11 +390,6 @@ def _archive_one(
             "archive_path": _relative(project_root, archive_path),
             "error": str(exc),
         }
-    finally:
-        try:
-            tmp_archive.unlink(missing_ok=True)
-        except Exception:
-            pass
 
 
 def build_payload(
@@ -329,6 +405,10 @@ def build_payload(
     archive_root: Path | None = None,
     compression_level: int = 1,
 ) -> dict[str, Any]:
+    if not _allowed(Path(project_root)) or (
+        archive_root is not None and not _allowed(Path(archive_root))
+    ):
+        raise ValueError("protected_or_unavailable_route")
     project_root = Path(project_root).resolve()
     requested_channels = [part for part in (channels or list(DEFAULT_CHANNELS)) if part]
     channel_list = _resolve_channels(project_root, requested_channels)

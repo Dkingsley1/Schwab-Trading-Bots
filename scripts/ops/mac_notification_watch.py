@@ -24,6 +24,8 @@ STORAGE_GUARD_PATH = HEALTH_DIR / "storage_mount_guard_latest.json"
 CREATIVE_COTENANT_PATH = HEALTH_DIR / "creative_cotenant_guard_latest.json"
 SWAP_PRESSURE_GOVERNOR_PATH = HEALTH_DIR / "swap_pressure_governor_latest.json"
 RUNTIME_THROTTLE_PATH = HEALTH_DIR / "runtime_throttle_control_latest.json"
+AUTH_LEASE_PATH = HEALTH_DIR / "auth_lease_manager_latest.json"
+SCHWAB_AUTH_SUPERVISOR_PATH = HEALTH_DIR / "schwab_auth_supervisor_latest.json"
 GLOBAL_HALT_PATH = HEALTH_DIR / "GLOBAL_TRADING_HALT.flag"
 HALT_RECOVERY_PATH = HEALTH_DIR / "shadow_watchdog_halt_recovery_latest.json"
 INCIDENT_AUTO_HALT_PATH = ALERTS_DIR / "incident_auto_halt_latest.json"
@@ -40,6 +42,8 @@ IMESSAGE_MIN_SEVERITY_ENV = "MAC_NOTIFICATION_WATCH_IMESSAGE_MIN_SEVERITY"
 IMESSAGE_EVENT_ALLOWLIST_ENV = "MAC_NOTIFICATION_WATCH_IMESSAGE_EVENT_ALLOWLIST"
 EVENT_ALLOWLIST_ENV = "MAC_NOTIFICATION_WATCH_ALLOW_REASONS"
 MIN_REPEAT_SECONDS_ENV = "MAC_NOTIFICATION_WATCH_MIN_REPEAT_SECONDS"
+AUTH_MIN_REPEAT_SECONDS_ENV = "MAC_NOTIFICATION_WATCH_AUTH_MIN_REPEAT_SECONDS"
+STORAGE_CONFIRMATIONS_ENV = "MAC_NOTIFICATION_WATCH_STORAGE_CONFIRMATIONS"
 SUPPRESS_TRAINING_DONE_ENV = "MAC_NOTIFICATION_WATCH_SUPPRESS_TRAINING_DONE"
 POWER_EVENTS_ENABLED_ENV = "MAC_NOTIFICATION_WATCH_POWER_EVENTS_ENABLED"
 PMSET_POWER_LOG_CACHE_SECONDS_ENV = "MAC_NOTIFICATION_WATCH_PMSET_CACHE_SECONDS"
@@ -48,6 +52,8 @@ DEFAULT_MAX_ALERT_AGE_SECONDS = 900.0
 DEFAULT_IMESSAGE_MIN_SEVERITY = "warn"
 DEFAULT_IMESSAGE_EVENT_ALLOWLIST = ""
 DEFAULT_MIN_REPEAT_SECONDS = 300.0
+DEFAULT_AUTH_MIN_REPEAT_SECONDS = 1800.0
+DEFAULT_STORAGE_CONFIRMATIONS = 3
 TERMINAL_NOTIFIER_CANDIDATES = [
     "/opt/homebrew/bin/terminal-notifier",
     "/usr/local/bin/terminal-notifier",
@@ -105,7 +111,9 @@ def _normalize_severity(value: str, default: str = "warn") -> str:
 
 def _severity_at_least(current: str, minimum: str) -> bool:
     current_rank = SEVERITY_RANK[_normalize_severity(current, "info")]
-    minimum_rank = SEVERITY_RANK[_normalize_severity(minimum, DEFAULT_IMESSAGE_MIN_SEVERITY)]
+    minimum_rank = SEVERITY_RANK[
+        _normalize_severity(minimum, DEFAULT_IMESSAGE_MIN_SEVERITY)
+    ]
     return current_rank >= minimum_rank
 
 
@@ -127,6 +135,8 @@ def _event_family(key: str) -> str:
         return "swap_pressure"
     if normalized_key.startswith("system_talk:"):
         return "system_talk"
+    if normalized_key.startswith("auth_lease:"):
+        return "auth_lease"
     return normalized_key
 
 
@@ -146,13 +156,15 @@ def _normalize_event_allow_token(value: str) -> str:
         "health_gate_critical": "critical_alert",
         "guardrail_critical": "critical_alert",
         "storage_critical": "storage_mount_missing",
-        "auth_expired": "critical_alert",
+        "auth_expired": "auth_lease",
     }
     return aliases.get(token, token)
 
 
 def _parse_event_allowlist(value: str) -> set[str]:
-    tokens = {_normalize_event_allow_token(part) for part in str(value or "").split(",")}
+    tokens = {
+        _normalize_event_allow_token(part) for part in str(value or "").split(",")
+    }
     tokens.discard("")
     if not tokens:
         return set()
@@ -180,13 +192,18 @@ def _notification_event_allowed(key: str, allowlist: set[str]) -> bool:
 def _is_training_done_payload(payload: Dict[str, Any]) -> bool:
     event = str(payload.get("event", "")).strip().lower()
     message = str(payload.get("message", "")).strip().lower()
-    status = str(payload.get("final_status", "") or payload.get("status", "")).strip().lower()
+    status = (
+        str(payload.get("final_status", "") or payload.get("status", ""))
+        .strip()
+        .lower()
+    )
     text = " ".join(part for part in (event, message, status) if part)
     return bool(
         "retrain_finished" in text
         or "training done" in text
         or "training finished" in text
-        or "completed_successfully" in text and "training" in text
+        or "completed_successfully" in text
+        and "training" in text
     )
 
 
@@ -203,24 +220,43 @@ def _event_severity(key: str, message: str) -> str:
             if parsed:
                 return parsed
         lowered = str(message or "").lower()
-        if lowered.startswith("margin guard") or lowered.startswith("futures margin guard") or lowered.startswith("warning"):
+        if (
+            lowered.startswith("margin guard")
+            or lowered.startswith("futures margin guard")
+            or lowered.startswith("warning")
+        ):
             return "warn"
         return "critical"
-    if normalized_key.startswith("tripwire:") or normalized_key.startswith("restart_storm:"):
+    if normalized_key.startswith("tripwire:") or normalized_key.startswith(
+        "restart_storm:"
+    ):
         return "critical"
     if normalized_key in {"global_halt_cleared", "incident_auto_halt_cleared"}:
         return "info"
     if normalized_key.startswith("creative_mode:"):
         return "info"
     if normalized_key.startswith("swap_pressure:"):
-        if "reboot_recommended" in normalized_key or "restart_advisory" in normalized_key:
+        if (
+            "reboot_recommended" in normalized_key
+            or "restart_advisory" in normalized_key
+        ):
             return "warn"
         if "survival" in normalized_key:
             return "critical"
         return "info"
     if normalized_key.startswith("system_talk:"):
         return "critical" if ":blocked:" in normalized_key else "warn"
-    if normalized_key in {"tripwire", "all_sleeves_down", "global_halt", "incident_auto_halt", "preflight_critical", "storage_mount_missing"}:
+    if normalized_key.startswith("auth_lease:"):
+        parts = normalized_key.split(":", 2)
+        return _normalize_severity(parts[1] if len(parts) >= 2 else "", "critical")
+    if normalized_key in {
+        "tripwire",
+        "all_sleeves_down",
+        "global_halt",
+        "incident_auto_halt",
+        "preflight_critical",
+        "storage_mount_missing",
+    }:
         return "critical"
     return "warn"
 
@@ -264,6 +300,10 @@ def _notification_heading(key: str, message: str) -> Tuple[str, str]:
         if severity == "critical":
             return ("Trading Bot Critical", "System Intelligence")
         return ("Trading Bot Update", "System Intelligence")
+    if key.startswith("auth_lease:"):
+        if severity == "critical":
+            return ("Trading Bot Critical", "Schwab Authorization")
+        return ("Trading Bot Warning", "Schwab Authorization")
     if key == "preflight_critical":
         return ("Trading Bot Critical", "Preflight")
     if key == "storage_mount_missing":
@@ -314,6 +354,13 @@ def _notification_action_hint(key: str, message: str) -> str:
         return "Action: bot stack downshifted automatically; keep live collection running calm."
     if normalized_key.startswith("system_talk:"):
         return "Action: run the suggested safe command or ask Codex to inspect."
+    if normalized_key.startswith("auth_lease:"):
+        if ":critical:" in normalized_key:
+            return (
+                "Action: run ./scripts/ops/opsctl.sh token-refresh-interactive --force "
+                "--requested-browser chrome --json"
+            )
+        return "Action: renew Schwab authorization before the lease reaches its critical floor."
     return ""
 
 
@@ -322,13 +369,24 @@ def _notification_inspect_target(key: str, message: str) -> Path | None:
     if normalized_key.startswith("power_"):
         return None
     if normalized_key.startswith("critical_alert:"):
-        return INCIDENT_REVIEW_PATH if INCIDENT_REVIEW_PATH.exists() else INCIDENT_TIMELINE_PATH
+        return (
+            INCIDENT_REVIEW_PATH
+            if INCIDENT_REVIEW_PATH.exists()
+            else INCIDENT_TIMELINE_PATH
+        )
     if normalized_key == "tripwire" or normalized_key.startswith("tripwire:"):
         return INCIDENT_TIMELINE_PATH
-    if normalized_key.startswith("restart_storm:") or normalized_key == "all_sleeves_down":
+    if (
+        normalized_key.startswith("restart_storm:")
+        or normalized_key == "all_sleeves_down"
+    ):
         return PROCESS_WATCHDOG_PATH
     if normalized_key == "global_halt":
-        return GLOBAL_KILLSWITCH_JSON_PATH if GLOBAL_KILLSWITCH_JSON_PATH.exists() else GLOBAL_HALT_PATH
+        return (
+            GLOBAL_KILLSWITCH_JSON_PATH
+            if GLOBAL_KILLSWITCH_JSON_PATH.exists()
+            else GLOBAL_HALT_PATH
+        )
     if normalized_key == "global_halt_cleared":
         return HALT_RECOVERY_PATH
     if normalized_key == "incident_auto_halt":
@@ -345,6 +403,12 @@ def _notification_inspect_target(key: str, message: str) -> Path | None:
         return SWAP_PRESSURE_GOVERNOR_PATH
     if normalized_key.startswith("system_talk:"):
         return CODEX_HANDOFF_PATH
+    if normalized_key.startswith("auth_lease:"):
+        return (
+            SCHWAB_AUTH_SUPERVISOR_PATH
+            if SCHWAB_AUTH_SUPERVISOR_PATH.exists()
+            else AUTH_LEASE_PATH
+        )
     return INCIDENT_TIMELINE_PATH if INCIDENT_TIMELINE_PATH.exists() else None
 
 
@@ -362,14 +426,31 @@ def _notification_group_key(key: str, message: str) -> str:
     if normalized_key.startswith("power_"):
         return normalized_key
     if normalized_key.startswith("critical_alert:"):
-        first_line = str(message or "").splitlines()[0].strip().lower() if str(message or "").splitlines() else normalized_key
+        first_line = (
+            str(message or "").splitlines()[0].strip().lower()
+            if str(message or "").splitlines()
+            else normalized_key
+        )
         compact = re.sub(r"[^a-z0-9]+", "_", first_line).strip("_")
         return f"critical_alert:{compact or 'default'}"
     return normalized_key
 
 
+def _event_repeat_seconds(key: str, default_seconds: float) -> float:
+    if str(key or "").strip().lower().startswith("auth_lease:"):
+        return max(
+            _env_float(AUTH_MIN_REPEAT_SECONDS_ENV, DEFAULT_AUTH_MIN_REPEAT_SECONDS),
+            float(default_seconds),
+        )
+    return float(default_seconds)
+
+
 def _notification_body(key: str, message: str) -> str:
-    lines = [str(line).strip() for line in str(message or "").splitlines() if str(line).strip()]
+    lines = [
+        str(line).strip()
+        for line in str(message or "").splitlines()
+        if str(line).strip()
+    ]
     if not lines:
         lines = ["Trading bot alert"]
     inspect_target = _notification_inspect_target(key, message)
@@ -422,7 +503,14 @@ def _terminal_notifier_path() -> str:
     return ""
 
 
-def _notify_mac(title: str, body: str, subtitle: str = "Trading Bot Alert", *, group_key: str = "", open_target: str = "") -> Dict[str, Any]:
+def _notify_mac(
+    title: str,
+    body: str,
+    subtitle: str = "Trading Bot Alert",
+    *,
+    group_key: str = "",
+    open_target: str = "",
+) -> Dict[str, Any]:
     notifier = _terminal_notifier_path()
     if notifier:
         cmd = [notifier, "-title", title, "-subtitle", subtitle, "-message", body]
@@ -443,7 +531,9 @@ def _notify_mac(title: str, body: str, subtitle: str = "Trading Bot Alert", *, g
         _escape_applescript_string(title),
         _escape_applescript_string(subtitle),
     )
-    proc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=False)
+    proc = subprocess.run(
+        ["osascript", "-e", script], capture_output=True, text=True, check=False
+    )
     return {
         "channel": "mac",
         "transport": "osascript",
@@ -451,6 +541,8 @@ def _notify_mac(title: str, body: str, subtitle: str = "Trading Bot Alert", *, g
         "stdout": (proc.stdout or "").strip(),
         "stderr": (proc.stderr or "").strip(),
     }
+
+
 def _compose_imessage_text(title: str, body: str) -> str:
     return f"{title}\n{body}"
 
@@ -490,6 +582,8 @@ end run
         "stdout": (proc.stdout or "").strip(),
         "stderr": (proc.stderr or "").strip(),
     }
+
+
 def _notify(
     title: str,
     body: str,
@@ -502,22 +596,32 @@ def _notify(
     imessage_min_severity: str = DEFAULT_IMESSAGE_MIN_SEVERITY,
     severity: str = "warn",
 ) -> Dict[str, Any]:
-    mac_result = _notify_mac(title, body, subtitle=subtitle, group_key=group_key, open_target=open_target)
+    mac_result = _notify_mac(
+        title, body, subtitle=subtitle, group_key=group_key, open_target=open_target
+    )
     out: Dict[str, Any] = {
         "mac": mac_result,
         "imessage_attempted": False,
         "imessage": None,
     }
-    if imessage_enabled and imessage_recipient.strip() and _severity_at_least(severity, imessage_min_severity):
+    if (
+        imessage_enabled
+        and imessage_recipient.strip()
+        and _severity_at_least(severity, imessage_min_severity)
+    ):
         out["imessage_attempted"] = True
         out["imessage"] = _notify_imessage(title, body, imessage_recipient.strip())
     return out
+
+
 def _parse_timestamp(payload: Dict[str, Any]) -> datetime | None:
     raw = str(payload.get("timestamp_utc", "")).strip()
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(
+            timezone.utc
+        )
     except Exception:
         return None
 
@@ -537,7 +641,9 @@ def _parse_datetime_value(value: Any) -> datetime | None:
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(
+            timezone.utc
+        )
     except Exception:
         return None
 
@@ -572,7 +678,9 @@ def _critical_alert_cooldown_expired(payload: Dict[str, Any]) -> bool:
 
 def _parse_pmset_timestamp(raw: str) -> datetime | None:
     try:
-        return datetime.strptime(str(raw).strip(), "%Y-%m-%d %H:%M:%S %z").astimezone(timezone.utc)
+        return datetime.strptime(str(raw).strip(), "%Y-%m-%d %H:%M:%S %z").astimezone(
+            timezone.utc
+        )
     except Exception:
         return None
 
@@ -611,7 +719,13 @@ def _store_pmset_cache(now: float, lines: List[str], tail: int) -> List[str]:
     _PMSET_POWER_LOG_CACHE = (now, kept)
     try:
         DEFAULT_PMSET_CACHE_PATH.write_text(
-            json.dumps({"timestamp_utc": datetime.now(timezone.utc).isoformat(), "lines": kept}, ensure_ascii=True),
+            json.dumps(
+                {
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    "lines": kept,
+                },
+                ensure_ascii=True,
+            ),
             encoding="utf-8",
         )
     except Exception:
@@ -624,7 +738,10 @@ def _recent_pmset_lines(limit: int = PMSET_POWER_LOG_TAIL_LINES) -> List[str]:
     if not _env_flag(POWER_EVENTS_ENABLED_ENV, True):
         return []
     tail = max(int(limit), 1)
-    cache_seconds = max(_env_float(PMSET_POWER_LOG_CACHE_SECONDS_ENV, PMSET_POWER_LOG_CACHE_SECONDS), 0.0)
+    cache_seconds = max(
+        _env_float(PMSET_POWER_LOG_CACHE_SECONDS_ENV, PMSET_POWER_LOG_CACHE_SECONDS),
+        0.0,
+    )
     now = time.monotonic()
     if _PMSET_POWER_LOG_CACHE is not None:
         cached_at, cached_lines = _PMSET_POWER_LOG_CACHE
@@ -633,10 +750,20 @@ def _recent_pmset_lines(limit: int = PMSET_POWER_LOG_TAIL_LINES) -> List[str]:
     fallback_lines: List[str] = []
     try:
         disk_cache = json.loads(DEFAULT_PMSET_CACHE_PATH.read_text(encoding="utf-8"))
-        cached_ts = datetime.fromisoformat(str(disk_cache.get("timestamp_utc") or "").replace("Z", "+00:00")).astimezone(timezone.utc)
-        cached_lines = [str(line).strip() for line in disk_cache.get("lines") or [] if str(line).strip()]
+        cached_ts = datetime.fromisoformat(
+            str(disk_cache.get("timestamp_utc") or "").replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
+        cached_lines = [
+            str(line).strip()
+            for line in disk_cache.get("lines") or []
+            if str(line).strip()
+        ]
         fallback_lines = cached_lines
-        if cache_seconds > 0.0 and (datetime.now(timezone.utc) - cached_ts).total_seconds() <= cache_seconds:
+        if (
+            cache_seconds > 0.0
+            and (datetime.now(timezone.utc) - cached_ts).total_seconds()
+            <= cache_seconds
+        ):
             _PMSET_POWER_LOG_CACHE = (now, cached_lines)
             return cached_lines[-tail:]
     except Exception:
@@ -683,7 +810,11 @@ def _power_event_candidates(max_age_seconds: float) -> List[Tuple[str, str]]:
         kind = match.group("kind").strip().lower()
         message = match.group("message").strip()
         local_stamp = ts.astimezone().strftime("%Y-%m-%d %I:%M:%S %p %Z")
-        if kind == "sleep" and "Clamshell Sleep" in message and "Entering Sleep state" in message:
+        if (
+            kind == "sleep"
+            and "Clamshell Sleep" in message
+            and "Entering Sleep state" in message
+        ):
             latest_close = (
                 f"power_clamshell_sleep:{ts.isoformat()}",
                 "MacBook lid closed\n"
@@ -694,8 +825,7 @@ def _power_event_candidates(max_age_seconds: float) -> List[Tuple[str, str]]:
         elif "lidopen" in message:
             latest_open = (
                 f"power_lid_open:{ts.isoformat()}",
-                "MacBook lid opened\n"
-                f"Wake: {local_stamp}",
+                "MacBook lid opened\n" f"Wake: {local_stamp}",
                 ts,
             )
     out: List[Tuple[str, str]] = []
@@ -709,8 +839,19 @@ def _power_event_candidates(max_age_seconds: float) -> List[Tuple[str, str]]:
 def _tripwire_event(payload: Dict[str, Any]) -> Tuple[str, str] | None:
     if not bool(payload.get("active", False)):
         return None
-    incidents = payload.get("active_incidents", []) if isinstance(payload.get("active_incidents"), list) else []
-    targets = ",".join(str(x.get("target", "")) for x in incidents if str(x.get("target", "")).strip()) or "unknown"
+    incidents = (
+        payload.get("active_incidents", [])
+        if isinstance(payload.get("active_incidents"), list)
+        else []
+    )
+    targets = (
+        ",".join(
+            str(x.get("target", ""))
+            for x in incidents
+            if str(x.get("target", "")).strip()
+        )
+        or "unknown"
+    )
     return (f"tripwire:{targets}", f"Tripwire triggered for {targets}")
 
 
@@ -720,7 +861,9 @@ def _global_halt_event() -> Tuple[str, str] | None:
     return ("global_halt", "GLOBAL_TRADING_HALT is set")
 
 
-def _global_halt_clear_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
+def _global_halt_clear_event(
+    payload: Dict[str, Any], max_age_seconds: float
+) -> Tuple[str, str] | None:
     if not payload or not _is_recent(payload, max_age_seconds):
         return None
     action = str(payload.get("action", "")).strip().lower()
@@ -728,10 +871,15 @@ def _global_halt_clear_event(payload: Dict[str, Any], max_age_seconds: float) ->
         return None
     reason = str(payload.get("halt_reason", "")).strip() or "unknown"
     decision = str(payload.get("decision_reason", "")).strip() or "eligible"
-    return ("global_halt_cleared", f"GLOBAL_TRADING_HALT cleared automatically\nReason: {reason} ({decision})")
+    return (
+        "global_halt_cleared",
+        f"GLOBAL_TRADING_HALT cleared automatically\nReason: {reason} ({decision})",
+    )
 
 
-def _restart_storm_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
+def _restart_storm_event(
+    payload: Dict[str, Any], max_age_seconds: float
+) -> Tuple[str, str] | None:
     storms = payload.get("restart_storms", [])
     if not isinstance(storms, list) or not storms:
         return None
@@ -805,21 +953,35 @@ def _launcher_recently_alive(max_age_seconds: float) -> bool:
     return False
 
 
-def _all_sleeves_restart_in_progress(payload: Dict[str, Any], max_age_seconds: float) -> bool:
+def _all_sleeves_restart_in_progress(
+    payload: Dict[str, Any], max_age_seconds: float
+) -> bool:
     if payload and _is_recent(payload, min(max_age_seconds, 300.0)):
-        for row in payload.get("status", []) if isinstance(payload.get("status"), list) else []:
+        for row in (
+            payload.get("status", []) if isinstance(payload.get("status"), list) else []
+        ):
             if str(row.get("name", "")).strip() != "all_sleeves":
                 continue
             if int(row.get("restarted_pid", 0) or 0) > 0:
                 return True
             reason = str(row.get("restart_reason", "")).strip()
-            if reason in {"process_missing", "parent_launcher_missing", "child_fanout_below_floor"}:
+            if reason in {
+                "process_missing",
+                "parent_launcher_missing",
+                "child_fanout_below_floor",
+            }:
                 return True
-        for row in payload.get("restarts", []) if isinstance(payload.get("restarts"), list) else []:
+        for row in (
+            payload.get("restarts", [])
+            if isinstance(payload.get("restarts"), list)
+            else []
+        ):
             if str(row.get("name", "")).strip() != "all_sleeves":
                 continue
             ts_epoch = float(row.get("ts_epoch", 0.0) or 0.0)
-            if ts_epoch > 0.0 and 0.0 <= time.time() - ts_epoch <= min(max_age_seconds, 300.0):
+            if ts_epoch > 0.0 and 0.0 <= time.time() - ts_epoch <= min(
+                max_age_seconds, 300.0
+            ):
                 return True
     return False
 
@@ -827,7 +989,10 @@ def _all_sleeves_restart_in_progress(payload: Dict[str, Any], max_age_seconds: f
 def _all_sleeves_intentional_hold(row: Dict[str, Any], payload: Dict[str, Any]) -> bool:
     restart_skipped = str(row.get("restart_skipped", "")).strip()
     reason = str(row.get("reason", "")).strip()
-    if bool(row.get("paused_by_creative_cotenant_guard", False)) or restart_skipped == "creative_cotenant_pause_active":
+    if (
+        bool(row.get("paused_by_creative_cotenant_guard", False))
+        or restart_skipped == "creative_cotenant_pause_active"
+    ):
         return True
     if bool(row.get("paused_by_safety_flags", False)):
         return True
@@ -838,7 +1003,11 @@ def _all_sleeves_intentional_hold(row: Dict[str, Any], payload: Dict[str, Any]) 
     }:
         return True
 
-    creative_pause = payload.get("creative_cotenant_pause") if isinstance(payload.get("creative_cotenant_pause"), dict) else {}
+    creative_pause = (
+        payload.get("creative_cotenant_pause")
+        if isinstance(payload.get("creative_cotenant_pause"), dict)
+        else {}
+    )
     if bool(creative_pause.get("active", False)) and reason in {
         str(creative_pause.get("reason") or "").strip(),
         str(creative_pause.get("creative_session_kind") or "").strip(),
@@ -846,64 +1015,192 @@ def _all_sleeves_intentional_hold(row: Dict[str, Any], payload: Dict[str, Any]) 
     }:
         return True
 
-    intelligence = payload.get("watchdog_intelligence") if isinstance(payload.get("watchdog_intelligence"), dict) else {}
-    policy = intelligence.get("notification_policy") if isinstance(intelligence.get("notification_policy"), dict) else {}
+    intelligence = (
+        payload.get("watchdog_intelligence")
+        if isinstance(payload.get("watchdog_intelligence"), dict)
+        else {}
+    )
+    policy = (
+        intelligence.get("notification_policy")
+        if isinstance(intelligence.get("notification_policy"), dict)
+        else {}
+    )
     if bool(policy.get("suppress_intentional_holds", False)):
-        for need in intelligence.get("exact_needs", []) if isinstance(intelligence.get("exact_needs"), list) else []:
+        for need in (
+            intelligence.get("exact_needs", [])
+            if isinstance(intelligence.get("exact_needs"), list)
+            else []
+        ):
             if not isinstance(need, dict):
                 continue
-            if str(need.get("target") or "").strip() == "all_sleeves" and str(need.get("status") or "").strip() == "intentional_hold":
+            if (
+                str(need.get("target") or "").strip() == "all_sleeves"
+                and str(need.get("status") or "").strip() == "intentional_hold"
+            ):
                 return True
     return False
 
 
-def _all_sleeves_down_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
-    for row in payload.get("status", []) if isinstance(payload.get("status"), list) else []:
-        if str(row.get("name", "")) == "all_sleeves" and int(row.get("running", 0) or 0) == 0:
-            if (not bool(row.get("heartbeat_ok", False))) and int(row.get("alt_running", 0) or 0) == 0:
+def _all_sleeves_down_event(
+    payload: Dict[str, Any], max_age_seconds: float
+) -> Tuple[str, str] | None:
+    for row in (
+        payload.get("status", []) if isinstance(payload.get("status"), list) else []
+    ):
+        if (
+            str(row.get("name", "")) == "all_sleeves"
+            and int(row.get("running", 0) or 0) == 0
+        ):
+            if (not bool(row.get("heartbeat_ok", False))) and int(
+                row.get("alt_running", 0) or 0
+            ) == 0:
                 restart_skipped = str(row.get("restart_skipped", "")).strip()
                 reason = str(row.get("reason", "")).strip()
                 if _all_sleeves_intentional_hold(row, payload):
                     return None
-                if restart_skipped == "startup_not_ready" and reason == "process_fanout_guard_active":
+                if (
+                    restart_skipped == "startup_not_ready"
+                    and reason == "process_fanout_guard_active"
+                ):
                     return None
-                if _launcher_recently_alive(max_age_seconds) or _all_sleeves_restart_in_progress(payload, max_age_seconds):
+                if _launcher_recently_alive(
+                    max_age_seconds
+                ) or _all_sleeves_restart_in_progress(payload, max_age_seconds):
                     return None
                 lane_summary = _data_ingress_lane_summary()
                 lane_count = int(lane_summary.get("lane_count", 0) or 0)
                 post_window_count = int(lane_summary.get("post_window_count", 0) or 0)
                 running_count = int(lane_summary.get("running_count", 0) or 0)
-                non_post_window_count = int(lane_summary.get("non_post_window_paused_count", 0) or 0)
+                non_post_window_count = int(
+                    lane_summary.get("non_post_window_paused_count", 0) or 0
+                )
                 if lane_count and post_window_count and non_post_window_count == 0:
                     return None
-                if lane_count and post_window_count >= max(lane_count - running_count - 1, 1):
+                if lane_count and post_window_count >= max(
+                    lane_count - running_count - 1, 1
+                ):
                     return None
                 details = [f"launcher down; active lanes={running_count}/{lane_count}"]
                 examples = lane_summary.get("non_post_window_examples", [])
                 if examples:
                     details.append("paused: " + ",".join(str(x) for x in examples))
-                return ("all_sleeves_down", "All sleeves launcher is down\n" + "\n".join(details))
+                return (
+                    "all_sleeves_down",
+                    "All sleeves launcher is down\n" + "\n".join(details),
+                )
     return None
 
 
-def _storage_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
+def _storage_event(
+    payload: Dict[str, Any], max_age_seconds: float
+) -> Tuple[str, str] | None:
     if not payload or not _is_recent(payload, max_age_seconds):
         return None
     if not bool(payload.get("external_available", False)):
         root = str(payload.get("mount_root", "/Volumes/BOT_LOGS"))
         reason = str(payload.get("external_unavailable_reason", "")).strip().lower()
+        intentional_local_hot_policy = bool(
+            reason == "cold_archive_only_local_hot_storage_policy"
+            or (
+                payload.get("external_required_for_hot_path") is False
+                and bool(payload.get("probe_skipped_external_io", False))
+            )
+        )
+        if intentional_local_hot_policy:
+            return None
+        if reason in {"mount_missing", "volume_unmounted"} and _mount_root_present(
+            root
+        ):
+            return None
         if reason == "low_space":
-            return ("storage_mount_missing", f"Storage route unavailable: {root} (external low space)")
+            return (
+                "storage_mount_missing",
+                f"Storage route unavailable: {root} (external low space)",
+            )
+        if reason == "root_missing":
+            return (
+                "storage_mount_missing",
+                f"Storage route unavailable: {root} (archive root missing)",
+            )
+        if reason == "not_writable":
+            return (
+                "storage_mount_missing",
+                f"Storage route unavailable: {root} (external route not writable)",
+            )
         return ("storage_mount_missing", f"Storage route unavailable: {root}")
     return None
 
 
-def _creative_mode_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
-    notification = payload.get("notification") if isinstance(payload.get("notification"), dict) else {}
+def _mount_root_present(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    root = Path(raw).expanduser()
+    try:
+        return bool(root.is_dir() and os.path.ismount(root))
+    except OSError:
+        return False
+
+
+def _storage_event_confirmed(
+    pending: Dict[str, Dict[str, Any]],
+    *,
+    group_key: str,
+    body: str,
+    now: datetime,
+    required_observations: int,
+    max_gap_seconds: float,
+) -> bool:
+    required = max(int(required_observations), 1)
+    if required == 1:
+        pending.pop(group_key, None)
+        return True
+
+    previous = pending.get(group_key)
+    if not isinstance(previous, dict):
+        previous = {}
+    previous_seen = _parse_datetime_value(previous.get("last_seen_at"))
+    gap_seconds = (
+        (now - previous_seen).total_seconds() if previous_seen is not None else None
+    )
+    same_observation = str(previous.get("body") or "") == str(body or "")
+    consecutive = bool(
+        same_observation
+        and gap_seconds is not None
+        and 0.0 <= gap_seconds <= max(float(max_gap_seconds), 1.0)
+    )
+    count = int(previous.get("count", 0) or 0) + 1 if consecutive else 1
+    first_seen_at = (
+        str(previous.get("first_seen_at") or now.isoformat())
+        if consecutive
+        else now.isoformat()
+    )
+    pending[group_key] = {
+        "body": str(body or ""),
+        "count": min(count, required),
+        "required_observations": required,
+        "first_seen_at": first_seen_at,
+        "last_seen_at": now.isoformat(),
+    }
+    return count >= required
+
+
+def _creative_mode_event(
+    payload: Dict[str, Any], max_age_seconds: float
+) -> Tuple[str, str] | None:
+    notification = (
+        payload.get("notification")
+        if isinstance(payload.get("notification"), dict)
+        else {}
+    )
     if not notification or not _is_recent(notification, max_age_seconds):
         return None
     event = str(notification.get("event") or "").strip().lower()
-    if event not in {"creative_mode_active", "creative_mode_cooldown", "creative_mode_cleared"}:
+    if event not in {
+        "creative_mode_active",
+        "creative_mode_cooldown",
+        "creative_mode_cleared",
+    }:
         return None
     message = str(notification.get("message") or event).strip()
     state = str(notification.get("current_state") or "").strip().lower()
@@ -911,8 +1208,14 @@ def _creative_mode_event(payload: Dict[str, Any], max_age_seconds: float) -> Tup
     return (f"creative_mode:{event}:{key_state}", message)
 
 
-def _swap_pressure_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
-    notification = payload.get("notification") if isinstance(payload.get("notification"), dict) else {}
+def _swap_pressure_event(
+    payload: Dict[str, Any], max_age_seconds: float
+) -> Tuple[str, str] | None:
+    notification = (
+        payload.get("notification")
+        if isinstance(payload.get("notification"), dict)
+        else {}
+    )
     if not notification or not _is_recent(notification, max_age_seconds):
         return None
     event = str(notification.get("event") or "").strip().lower()
@@ -929,6 +1232,99 @@ def _swap_pressure_event(payload: Dict[str, Any], max_age_seconds: float) -> Tup
     return (f"swap_pressure:{event}:{key_tier}", message)
 
 
+def _auth_lease_event(
+    lease_payload: Dict[str, Any],
+    supervisor_payload: Dict[str, Any],
+    max_age_seconds: float,
+) -> Tuple[str, str] | None:
+    lease_recent = bool(lease_payload and _is_recent(lease_payload, max_age_seconds))
+    supervisor_recent = bool(
+        supervisor_payload and _is_recent(supervisor_payload, max_age_seconds)
+    )
+    if not lease_recent and not supervisor_recent:
+        return None
+
+    current_lease = lease_payload if lease_recent else {}
+    current_supervisor = supervisor_payload if supervisor_recent else {}
+    lease_state = str(current_lease.get("lease_state") or "").strip().lower()
+    lease_status = str(current_lease.get("overall_status") or "").strip().lower()
+    supervisor_status = (
+        str(current_supervisor.get("overall_status") or "").strip().lower()
+    )
+    token = (
+        current_supervisor.get("token")
+        if isinstance(current_supervisor.get("token"), dict)
+        else {}
+    )
+    token_ready = token.get("ready")
+    broker_state = (
+        current_lease.get("broker_state")
+        if isinstance(current_lease.get("broker_state"), dict)
+        else {}
+    )
+    auth_reason = str(broker_state.get("auth_reason") or "").strip().lower()
+    findings_rows = (
+        current_supervisor.get("findings")
+        if isinstance(current_supervisor.get("findings"), list)
+        else []
+    )
+    findings = {
+        str(item or "").strip().lower()
+        for item in findings_rows
+        if str(item or "").strip()
+    }
+    followup_rows = (
+        current_supervisor.get("operator_followups")
+        if isinstance(current_supervisor.get("operator_followups"), list)
+        else []
+    )
+    operator_followups = {
+        str(item or "").strip().lower()
+        for item in followup_rows
+        if str(item or "").strip()
+    }
+
+    critical = bool(
+        lease_state == "critical"
+        or lease_status == "blocked"
+        or supervisor_status == "blocked"
+        or token_ready is False
+    )
+    warning = bool(
+        lease_state == "warning"
+        or lease_status == "degraded"
+        or supervisor_status == "degraded"
+    )
+    if not critical and not warning:
+        return None
+
+    interactive_required = bool(
+        critical
+        and (
+            "invalid_grant" in auth_reason
+            or "refresh token is invalid" in auth_reason
+            or any("token_not_ready" in item for item in findings)
+            or any("token-refresh-interactive" in item for item in operator_followups)
+        )
+    )
+    if critical:
+        state = "interactive_refresh_required" if interactive_required else "blocked"
+        reason = (
+            "Schwab sign-in is required; the saved refresh token is no longer usable."
+            if interactive_required
+            else "Schwab authorization is blocked."
+        )
+        return (
+            f"auth_lease:critical:{state}",
+            f"{reason}\nPaper execution and broker reconciliation are paused.",
+        )
+
+    return (
+        "auth_lease:warn:lease_warning",
+        "Schwab authorization is nearing its critical lease floor.\nPaper collection remains active.",
+    )
+
+
 def _critical_alert_events(max_age_seconds: float) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     suppress_training_done = _env_flag(SUPPRESS_TRAINING_DONE_ENV, False)
@@ -940,7 +1336,9 @@ def _critical_alert_events(max_age_seconds: float) -> List[Tuple[str, str]]:
             continue
         if _critical_alert_cooldown_expired(payload):
             continue
-        severity = str(payload.get("severity", "critical")).strip().lower() or "critical"
+        severity = (
+            str(payload.get("severity", "critical")).strip().lower() or "critical"
+        )
         event = str(payload.get("event", "critical_alert")).strip() or "critical_alert"
         message = str(payload.get("message", "")).strip() or event
         profile = str(payload.get("profile", "default")).strip() or "default"
@@ -958,18 +1356,37 @@ def _compact_command(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _codex_handoff_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
+def _codex_handoff_event(
+    payload: Dict[str, Any], max_age_seconds: float
+) -> Tuple[str, str] | None:
     if not payload or not _is_recent(payload, max_age_seconds):
         return None
-    status = str(payload.get("overall_status") or payload.get("status") or "").strip().lower()
+    status = (
+        str(payload.get("overall_status") or payload.get("status") or "")
+        .strip()
+        .lower()
+    )
     if status in {"", "ok", "ready"}:
         return None
-    packet = payload.get("attention_packet") if isinstance(payload.get("attention_packet"), dict) else {}
+    packet = (
+        payload.get("attention_packet")
+        if isinstance(payload.get("attention_packet"), dict)
+        else {}
+    )
     top_risk = str(packet.get("top_risk") or "system").strip().lower() or "system"
-    super_action = str(packet.get("super_action") or packet.get("recommended_action") or "inspect").strip().lower() or "inspect"
+    super_action = (
+        str(packet.get("super_action") or packet.get("recommended_action") or "inspect")
+        .strip()
+        .lower()
+        or "inspect"
+    )
     super_mode = str(packet.get("super_mode") or "observe").strip().lower() or "observe"
     safe_next = _compact_command(packet.get("safe_next_command"))
-    why_rows = [str(item).strip() for item in packet.get("why", []) if str(item).strip()] if isinstance(packet.get("why"), list) else []
+    why_rows = (
+        [str(item).strip() for item in packet.get("why", []) if str(item).strip()]
+        if isinstance(packet.get("why"), list)
+        else []
+    )
     key_status = re.sub(r"[^a-z0-9]+", "_", status).strip("_") or "status"
     key_risk = re.sub(r"[^a-z0-9]+", "_", top_risk).strip("_") or "system"
     key_mode = re.sub(r"[^a-z0-9]+", "_", super_mode).strip("_") or "observe"
@@ -983,19 +1400,37 @@ def _codex_handoff_event(payload: Dict[str, Any], max_age_seconds: float) -> Tup
         message_lines.append(f"Next: {safe_next}")
     if why_rows:
         message_lines.append("Why: " + "; ".join(why_rows[:2]))
-    return (f"system_talk:{key_status}:{key_risk}:{key_mode}:{key_action}", "\n".join(message_lines))
+    return (
+        f"system_talk:{key_status}:{key_risk}:{key_mode}:{key_action}",
+        "\n".join(message_lines),
+    )
 
 
-def _incident_auto_halt_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
+def _incident_auto_halt_event(
+    payload: Dict[str, Any], max_age_seconds: float
+) -> Tuple[str, str] | None:
     if not payload or not _is_recent(payload, max_age_seconds):
         return None
     event_name = str(payload.get("event", "")).strip().lower()
-    if event_name in {"halt_cleared", "halt_cleared_execution_not_expected", "halt_force_cleared"}:
+    if event_name in {
+        "halt_cleared",
+        "halt_cleared_execution_not_expected",
+        "halt_force_cleared",
+    }:
         clear_streak = int(payload.get("clear_streak", 0) or 0)
-        return ("incident_auto_halt_cleared", f"Incident auto-halt cleared itself\nClear streak: {clear_streak}")
-    failed_checks = payload.get("failed_checks", []) if isinstance(payload.get("failed_checks"), list) else []
+        return (
+            "incident_auto_halt_cleared",
+            f"Incident auto-halt cleared itself\nClear streak: {clear_streak}",
+        )
+    failed_checks = (
+        payload.get("failed_checks", [])
+        if isinstance(payload.get("failed_checks"), list)
+        else []
+    )
     detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
-    if bool(detail.get("enforcement_suppressed")) and not bool(payload.get("halt", False)):
+    if bool(detail.get("enforcement_suppressed")) and not bool(
+        payload.get("halt", False)
+    ):
         return None
     halt = bool(payload.get("halt", False))
     ok = bool(payload.get("ok", True))
@@ -1003,13 +1438,22 @@ def _incident_auto_halt_event(payload: Dict[str, Any], max_age_seconds: float) -
         return None
     checks = ",".join(str(x) for x in failed_checks if str(x).strip()) or "unknown"
     state = "HALTED" if halt else "FAILED"
-    return ("incident_auto_halt", f"Incident auto-halt {state.lower()}\nChecks: {checks}")
+    return (
+        "incident_auto_halt",
+        f"Incident auto-halt {state.lower()}\nChecks: {checks}",
+    )
 
 
-def _preflight_critical_event(payload: Dict[str, Any], max_age_seconds: float) -> Tuple[str, str] | None:
+def _preflight_critical_event(
+    payload: Dict[str, Any], max_age_seconds: float
+) -> Tuple[str, str] | None:
     if not payload or not _is_recent(payload, max_age_seconds):
         return None
-    failed_checks = payload.get("failed_checks", []) if isinstance(payload.get("failed_checks"), list) else []
+    failed_checks = (
+        payload.get("failed_checks", [])
+        if isinstance(payload.get("failed_checks"), list)
+        else []
+    )
     if not failed_checks:
         return None
     names: List[str] = []
@@ -1022,7 +1466,10 @@ def _preflight_critical_event(payload: Dict[str, Any], max_age_seconds: float) -
             names.append(name)
     broker = str(payload.get("broker", "unknown")).strip() or "unknown"
     summary = ", ".join(names) or "unknown"
-    return ("preflight_critical", f"Preflight critical [{_title_token(broker)}]\nChecks: {summary}")
+    return (
+        "preflight_critical",
+        f"Preflight critical [{_title_token(broker)}]\nChecks: {summary}",
+    )
 
 
 def _load_state(path: Path) -> Dict[str, Any]:
@@ -1045,6 +1492,11 @@ def _event_candidates(max_age_seconds: float) -> List[Tuple[str, str]]:
         _storage_event(_read_json(STORAGE_GUARD_PATH), max_age_seconds),
         _creative_mode_event(_read_json(CREATIVE_COTENANT_PATH), max_age_seconds),
         _swap_pressure_event(_read_json(SWAP_PRESSURE_GOVERNOR_PATH), max_age_seconds),
+        _auth_lease_event(
+            _read_json(AUTH_LEASE_PATH),
+            _read_json(SCHWAB_AUTH_SUPERVISOR_PATH),
+            max_age_seconds,
+        ),
         _codex_handoff_event(_read_json(CODEX_HANDOFF_PATH), max_age_seconds),
         _incident_auto_halt_event(_read_json(INCIDENT_AUTO_HALT_PATH), max_age_seconds),
         _preflight_critical_event(_read_json(PREFLIGHT_CRITICAL_PATH), max_age_seconds),
@@ -1067,12 +1519,30 @@ def _run_watch_loop(
     state = _load_state(state_path)
     sent: Dict[str, str] = dict((state.get("sent") or {}))
     last_sent_at: Dict[str, str] = dict((state.get("last_sent_at") or {}))
+    pending_confirmations: Dict[str, Dict[str, Any]] = dict(
+        (state.get("pending_confirmations") or {})
+    )
     last_delivery = state.get("last_delivery")
-    max_age_seconds = _env_float(MAX_ALERT_AGE_SECONDS_ENV, DEFAULT_MAX_ALERT_AGE_SECONDS)
+    max_age_seconds = _env_float(
+        MAX_ALERT_AGE_SECONDS_ENV, DEFAULT_MAX_ALERT_AGE_SECONDS
+    )
     min_repeat_seconds = _env_float(MIN_REPEAT_SECONDS_ENV, DEFAULT_MIN_REPEAT_SECONDS)
-    parsed_event_allowlist = _parse_event_allowlist(os.environ.get(EVENT_ALLOWLIST_ENV, ""))
-    normalized_imessage_min_severity = _normalize_severity(imessage_min_severity, DEFAULT_IMESSAGE_MIN_SEVERITY)
-    parsed_imessage_event_allowlist = _parse_imessage_event_allowlist(imessage_event_allowlist)
+    storage_confirmations = max(
+        int(
+            _env_float(STORAGE_CONFIRMATIONS_ENV, float(DEFAULT_STORAGE_CONFIRMATIONS))
+        ),
+        1,
+    )
+    confirmation_max_gap_seconds = max(float(poll_seconds) * 3.0, 30.0)
+    parsed_event_allowlist = _parse_event_allowlist(
+        os.environ.get(EVENT_ALLOWLIST_ENV, "")
+    )
+    normalized_imessage_min_severity = _normalize_severity(
+        imessage_min_severity, DEFAULT_IMESSAGE_MIN_SEVERITY
+    )
+    parsed_imessage_event_allowlist = _parse_imessage_event_allowlist(
+        imessage_event_allowlist
+    )
     while True:
         active_keys = set()
         for key, message in _event_candidates(max_age_seconds):
@@ -1081,35 +1551,59 @@ def _run_watch_loop(
             group_key = _notification_group_key(key, message)
             active_keys.add(group_key)
             body = _notification_body(key, message)
+            if key == "storage_mount_missing":
+                if not _storage_event_confirmed(
+                    pending_confirmations,
+                    group_key=group_key,
+                    body=body,
+                    now=datetime.now(timezone.utc),
+                    required_observations=storage_confirmations,
+                    max_gap_seconds=confirmation_max_gap_seconds,
+                ):
+                    continue
+            else:
+                pending_confirmations.pop(group_key, None)
             should_send = sent.get(group_key) != body
             if not should_send:
+                event_repeat_seconds = _event_repeat_seconds(key, min_repeat_seconds)
                 ts_raw = str(last_sent_at.get(group_key, "")).strip()
                 if ts_raw:
                     try:
                         age = (
                             datetime.now(timezone.utc)
-                            - datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+                            - datetime.fromisoformat(
+                                ts_raw.replace("Z", "+00:00")
+                            ).astimezone(timezone.utc)
                         ).total_seconds()
                     except Exception:
-                        age = min_repeat_seconds + 1.0
-                    should_send = age >= min_repeat_seconds
+                        age = event_repeat_seconds + 1.0
+                    should_send = age >= event_repeat_seconds
             if should_send:
                 title, subtitle = _notification_heading(key, message)
                 severity = _event_severity(key, message)
-                open_target = _path_to_file_url(_notification_inspect_target(key, message))
+                open_target = _path_to_file_url(
+                    _notification_inspect_target(key, message)
+                )
                 delivery = _notify(
                     title,
                     body,
                     subtitle=subtitle,
                     group_key=group_key,
                     open_target=open_target,
-                    imessage_enabled=bool(imessage_enabled and _imessage_event_allowed(key, parsed_imessage_event_allowlist)),
+                    imessage_enabled=bool(
+                        imessage_enabled
+                        and _imessage_event_allowed(
+                            key, parsed_imessage_event_allowlist
+                        )
+                    ),
                     imessage_recipient=imessage_recipient,
                     imessage_min_severity=normalized_imessage_min_severity,
                     severity=severity,
                 )
                 last_delivery = delivery
-                print(json.dumps({
+                print(
+                    json.dumps(
+                        {
                     "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                     "event_key": key,
                     "group_key": group_key,
@@ -1117,25 +1611,38 @@ def _run_watch_loop(
                     "severity": severity,
                     "open_target": open_target,
                     "delivery": delivery,
-                }, ensure_ascii=True), flush=True)
+                        },
+                        ensure_ascii=True,
+                    ),
+                    flush=True,
+                )
                 sent[group_key] = body
                 last_sent_at[group_key] = datetime.now(timezone.utc).isoformat()
         for key in list(sent.keys()):
             if key not in active_keys:
                 sent.pop(key, None)
                 last_sent_at.pop(key, None)
+        for key in list(pending_confirmations.keys()):
+            if key not in active_keys:
+                pending_confirmations.pop(key, None)
         _write_json(
             state_path,
             {
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "sent": sent,
                 "last_sent_at": last_sent_at,
+                "pending_confirmations": pending_confirmations,
                 "imessage_enabled": bool(imessage_enabled),
                 "imessage_recipient_configured": bool(imessage_recipient.strip()),
                 "imessage_min_severity": normalized_imessage_min_severity,
-                "imessage_event_allowlist": (["*"] if "*" in parsed_imessage_event_allowlist else sorted(parsed_imessage_event_allowlist)),
+                "imessage_event_allowlist": (
+                    ["*"]
+                    if "*" in parsed_imessage_event_allowlist
+                    else sorted(parsed_imessage_event_allowlist)
+                ),
                 "max_alert_age_seconds": max_age_seconds,
                 "min_repeat_seconds": min_repeat_seconds,
+                "storage_confirmation_observations": storage_confirmations,
                 "last_delivery": last_delivery,
             },
         )
@@ -1143,23 +1650,37 @@ def _run_watch_loop(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Send macOS notifications for bot crashes/halts.")
+    parser = argparse.ArgumentParser(
+        description="Send macOS notifications for bot crashes/halts."
+    )
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_PATH))
     parser.add_argument("--pid-file", default=str(DEFAULT_PID_PATH))
     parser.add_argument("--poll-seconds", type=float, default=8.0)
-    parser.add_argument("--imessage-recipient", default=os.environ.get(IMESSAGE_RECIPIENT_ENV, "").strip())
+    parser.add_argument(
+        "--imessage-recipient",
+        default=os.environ.get(IMESSAGE_RECIPIENT_ENV, "").strip(),
+    )
     parser.add_argument(
         "--imessage-min-severity",
-        default=os.environ.get(IMESSAGE_MIN_SEVERITY_ENV, DEFAULT_IMESSAGE_MIN_SEVERITY).strip() or DEFAULT_IMESSAGE_MIN_SEVERITY,
+        default=os.environ.get(
+            IMESSAGE_MIN_SEVERITY_ENV, DEFAULT_IMESSAGE_MIN_SEVERITY
+        ).strip()
+        or DEFAULT_IMESSAGE_MIN_SEVERITY,
         choices=["info", "warn", "critical"],
     )
     parser.add_argument(
         "--imessage-event-allowlist",
-        default=os.environ.get(IMESSAGE_EVENT_ALLOWLIST_ENV, DEFAULT_IMESSAGE_EVENT_ALLOWLIST).strip(),
+        default=os.environ.get(
+            IMESSAGE_EVENT_ALLOWLIST_ENV, DEFAULT_IMESSAGE_EVENT_ALLOWLIST
+        ).strip(),
         help="Comma-separated event families/keys allowed to send iMessage alerts.",
     )
-    parser.add_argument("--enable-imessage", dest="imessage_enabled", action="store_true")
-    parser.add_argument("--disable-imessage", dest="imessage_enabled", action="store_false")
+    parser.add_argument(
+        "--enable-imessage", dest="imessage_enabled", action="store_true"
+    )
+    parser.add_argument(
+        "--disable-imessage", dest="imessage_enabled", action="store_false"
+    )
     parser.add_argument("--test", action="store_true")
     parser.set_defaults(imessage_enabled=_env_flag(IMESSAGE_ENABLED_ENV, False))
     args = parser.parse_args()
@@ -1189,7 +1710,9 @@ def main() -> int:
         )
     finally:
         try:
-            if pid_path.exists() and pid_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            if pid_path.exists() and pid_path.read_text(
+                encoding="utf-8"
+            ).strip() == str(os.getpid()):
                 pid_path.unlink()
         except Exception:
             pass

@@ -76,14 +76,36 @@ def compact_expected_fill(expected_fill: Mapping[str, Any] | None) -> dict[str, 
     keys = (
         "expected_fill_price",
         "expected_slippage_bps",
+        "touch_price",
+        "quoted_spread_bps",
+        "beyond_touch_cost_bps",
+        "total_cost_bps",
+        "financing_bps",
+        "dividend_cashflow_bps",
         "partial_fill_ratio",
         "impact_bps",
         "spread_jump_penalty_bps",
         "symbol_curve_multiplier",
         "fill_quality_bucket",
         "paper_execution_status",
+        "quote_source_mode",
+        "quote_crossed_or_locked",
     )
-    return _normalized({key: payload.get(key, "" if key.endswith("bucket") or key.endswith("status") else 0.0) for key in keys})
+    return _normalized(
+        {
+            key: payload.get(
+                key,
+                (
+                    ""
+                    if key.endswith("bucket")
+                    or key.endswith("status")
+                    or key.endswith("mode")
+                    else False if key == "quote_crossed_or_locked" else 0.0
+                ),
+            )
+            for key in keys
+        }
+    )
 
 
 def compact_risk_decision(risk_decision: Mapping[str, Any] | None) -> dict[str, Any]:

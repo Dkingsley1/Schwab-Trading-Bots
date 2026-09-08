@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from scripts import run_all_sleeves as src
@@ -16,6 +17,56 @@ class DummyProc:
 
 def _spec(name: str) -> src.JobSpec:
     return src.JobSpec(name=name, cmd=["python", "-c", "pass"], env={}, breaker_group="test")
+
+
+def test_resource_admission_deferral_is_scoped_and_rate_limited():
+    baseline = src.JobSpec(
+        name="baseline_parallel",
+        cmd=["python", "/repo/run_parallel_shadows.py"],
+        env={},
+        breaker_group="collection",
+    )
+    aggressive = src.JobSpec(
+        name="aggressive_modes",
+        cmd=["python", "/repo/run_parallel_aggressive_modes.py"],
+        env={},
+        breaker_group="collection",
+    )
+    assert src._resource_admission_exit(baseline, 4)
+    assert src._resource_admission_exit(aggressive, 4)
+    assert not src._resource_admission_exit(baseline, 1)
+    assert not src._resource_admission_exit(_spec("baseline_parallel"), 4)
+    assert not src._resource_admission_exit(_spec("paper_executor"), 4)
+    deferred = {}
+    assert not src._resource_admission_retry_due(baseline.name, deferred, now=100)
+    assert not src._resource_admission_retry_due(
+        baseline.name, deferred, now=159, retry_seconds=1
+    )
+    assert src._resource_admission_retry_due(baseline.name, deferred, now=160)
+
+
+def test_resource_deferral_remains_visible_and_does_not_claim_collection_ready():
+    spec = src.JobSpec(
+        name="baseline_parallel",
+        cmd=["python", "/repo/run_parallel_shadows.py"],
+        env={},
+        breaker_group="collection",
+    )
+    restarts = {spec.name: []}
+    payload = src._launcher_health_payload(
+        specs={spec.name: spec},
+        procs={spec.name: DummyProc(101, 4)},
+        proc_started_at={spec.name: 1},
+        restart_history=restarts,
+        quarantined_jobs={},
+        launcher_started_at=1,
+        phase="running",
+    )
+    assert payload["jobs"][0]["resource_admission_deferred"]
+    assert payload["jobs"][0]["restart_count_last_hour"] == 0
+    assert not payload["jobs"][0]["quarantined"]
+    assert payload["overall_status"] == "blocked"
+    assert not payload["launcher_readiness_contract"]["collection_fanout_ready"]
 
 
 def test_launcher_health_ready_when_non_running_jobs_cleanly_exited() -> None:
@@ -96,15 +147,58 @@ def test_launcher_health_counts_unspawned_policy_parked_executor_as_stable() -> 
     paper_job = next(row for row in payload["jobs"] if row["name"] == "paper_executor")
     contract = payload["launcher_readiness_contract"]
 
-    assert payload["overall_status"] == "ready"
+    assert payload["overall_status"] == "guarded_ready"
     assert payload["expected_job_count"] == 2
     assert payload["running_job_count"] == 1
     assert payload["missing_job_count"] == 0
     assert payload["policy_parked_job_count"] == 1
     assert paper_job["state"] == "policy_parked"
     assert paper_job["policy_parked"] is True
-    assert contract["readiness_status"] == "stable_with_parked_lanes"
+    assert contract["readiness_status"] == "guarded_execution_blocked"
     assert contract["class_counts"]["execution_lane"]["stable_non_running"] == 1
+    assert contract["collection_fanout_ready"] is True
+    assert contract["paper_execution_ready"] is False
+
+
+def test_launcher_health_distinguishes_resident_executor_from_quality_clearance(
+    tmp_path, monkeypatch
+) -> None:
+    breaker_path = tmp_path / "execution_runtime_breaker_latest.json"
+    breaker_path.write_text(
+        json.dumps(
+            {
+                "active": True,
+                "status": "breach_observed",
+                "reasons": ["data_quality_low:65.00"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(src, "EXECUTION_BREAKER_STATE_PATH", breaker_path)
+    spec = src.JobSpec(
+        name="paper_executor",
+        cmd=["python", "executor.py"],
+        env={"EXECUTION_RUNTIME_BREAKER_REQUIRED": "1"},
+        breaker_group="execution",
+    )
+
+    payload = src._launcher_health_payload(
+        specs={"paper_executor": spec},
+        procs={"paper_executor": DummyProc(101, None)},  # type: ignore[arg-type]
+        proc_started_at={"paper_executor": 1.0},
+        restart_history={},
+        quarantined_jobs={},
+        launcher_started_at=1.0,
+        phase="running",
+    )
+    contract = payload["launcher_readiness_contract"]
+
+    assert payload["overall_status"] == "guarded_ready"
+    assert contract["readiness_status"] == "resident_execution_safety_hold"
+    assert contract["paper_execution_resident"] is True
+    assert contract["paper_execution_ready"] is False
+    assert contract["execution_runtime_hold"] is True
+    assert contract["exact_needs"][0]["blocker"] == "data_quality_low:65.00"
 
 
 def test_launcher_health_ready_when_all_lanes_are_stably_non_running() -> None:
@@ -128,14 +222,33 @@ def test_launcher_health_ready_when_all_lanes_are_stably_non_running() -> None:
 
     contract = payload["launcher_readiness_contract"]
 
-    assert payload["overall_status"] == "ready"
+    assert payload["overall_status"] == "guarded_ready"
     assert payload["running_job_count"] == 0
     assert payload["policy_parked_job_count"] == 1
     assert payload["clean_exited_job_count"] == 2
     assert payload["repair_packet"]["status"] == "clear"
-    assert contract["readiness_status"] == "stable_with_parked_lanes"
+    assert contract["readiness_status"] == "guarded_execution_blocked"
     assert contract["class_counts"]["core_collection"]["stable_non_running"] == 2
     assert contract["class_counts"]["execution_lane"]["stable_non_running"] == 1
+
+
+def test_launcher_health_prunes_expired_restart_pressure() -> None:
+    now = src.time.time()
+    restart_history = {"baseline_parallel": [now - 7_200, now - 120]}
+
+    payload = src._launcher_health_payload(
+        specs={"baseline_parallel": _spec("baseline_parallel")},
+        procs={"baseline_parallel": DummyProc(101, None)},  # type: ignore[arg-type]
+        proc_started_at={"baseline_parallel": now - 300},
+        restart_history=restart_history,
+        quarantined_jobs={},
+        launcher_started_at=now - 300,
+        phase="running",
+    )
+
+    assert payload["jobs"][0]["restart_count_last_hour"] == 1
+    assert restart_history["baseline_parallel"] == [now - 120]
+    assert payload["launcher_readiness_contract"]["restart_pressure_job_count"] == 0
 
 
 def test_quarantine_release_waits_for_cooldown_and_restart_budget() -> None:

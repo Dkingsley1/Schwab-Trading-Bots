@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.runtime_maintenance import maintenance_hold_snapshot
+from core.runtime_maintenance import maintenance_hold_snapshot, maintenance_hold_token_authorized
 
 DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "sqlite_maintenance_latest.json"
@@ -248,9 +248,6 @@ def _vacuum_temp_dir_candidates(db_path: Path, project_root: Path, explicit: str
     if env_sqlite_tmp:
         candidates.append((Path(env_sqlite_tmp).expanduser(), "sqlite_tmpdir_env"))
     candidates.append((db_path.parent / ".sqlite_tmp", "db_volume_tmpdir"))
-    video_root = Path("/Volumes/VIDEO")
-    if video_root.exists():
-        candidates.append((video_root / "schwab_trading_bot_cold" / "sqlite_tmp", "video_volume_tmpdir"))
     env_tmpdir = str(os.getenv("TMPDIR", "") or "").strip()
     if env_tmpdir:
         candidates.append((Path(env_tmpdir).expanduser(), "tmpdir_env"))
@@ -265,6 +262,16 @@ def _vacuum_temp_dir_candidates(db_path: Path, project_root: Path, explicit: str
         seen.add(key)
         unique.append((path, source))
     return unique
+
+
+def _protected_storage_path(path: Path) -> bool:
+    protected = Path("/Volumes/VIDEO")
+    # Reject the literal boundary before resolving symlinks or probing the volume.
+    absolute = Path(os.path.abspath(path.expanduser()))
+    if absolute == protected or protected in absolute.parents:
+        return True
+    resolved = absolute.resolve()
+    return resolved == protected or protected in resolved.parents
 
 
 def _select_vacuum_temp_dir(
@@ -289,6 +296,10 @@ def _select_vacuum_temp_dir(
             "usable": False,
             "reason": "",
         }
+        if _protected_storage_path(candidate):
+            row["reason"] = "protected_volume"
+            evaluations.append(row)
+            continue
         try:
             candidate.mkdir(parents=True, exist_ok=True)
             row["exists"] = candidate.exists()
@@ -421,7 +432,7 @@ def main() -> int:
     deadline_monotonic = started_monotonic + max_runtime_seconds if max_runtime_seconds > 0.0 else None
 
     maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
-    if bool(maintenance_hold.get("active", False)):
+    if bool(maintenance_hold.get("active", False)) and not maintenance_hold_token_authorized(maintenance_hold):
         return _emit(
             {
                 "timestamp_utc": timestamp_utc,

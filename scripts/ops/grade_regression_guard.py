@@ -11,12 +11,26 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from scripts.ops.long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        load_json,
+        ordered_unique,
+        write_payload,
+    )
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        load_json,
+        ordered_unique,
+        write_payload,
+    )
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "grade_regression_guard_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "grade_regression_guard_latest.json"
+)
 
 
 def _as_dict(raw: Any) -> dict[str, Any]:
@@ -46,7 +60,15 @@ def _bool(raw: Any) -> bool:
         return raw
     if isinstance(raw, (int, float)):
         return raw != 0
-    return str(raw or "").strip().lower() in {"1", "true", "yes", "on", "ready", "ok", "armed"}
+    return str(raw or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "ready",
+        "ok",
+        "armed",
+    }
 
 
 def _lower(raw: Any) -> str:
@@ -68,7 +90,11 @@ def _row(
     normalized_state = str(state or "").strip().lower()
     normalized_severity = str(severity or "").strip().lower()
     if not normalized_severity:
-        normalized_severity = "critical" if normalized_state == "blocked" else "warning" if normalized_state == "degraded" else "info"
+        normalized_severity = (
+            "critical"
+            if normalized_state == "blocked"
+            else "warning" if normalized_state == "degraded" else "info"
+        )
     return {
         "surface": surface,
         "state": state,
@@ -138,10 +164,16 @@ def _notification_contract(surface: str, state: str, summary: str) -> dict[str, 
     }
 
 
-def _paper_soak_training_quality_advisory(section_guard: dict[str, Any], *, training_score: float) -> bool:
+def _paper_soak_training_quality_advisory(
+    section_guard: dict[str, Any], *, training_score: float
+) -> bool:
     advisory_sections = {
         str(item)
-        for item in (section_guard.get("advisory_below_floor_sections") if isinstance(section_guard.get("advisory_below_floor_sections"), list) else [])
+        for item in (
+            section_guard.get("advisory_below_floor_sections")
+            if isinstance(section_guard.get("advisory_below_floor_sections"), list)
+            else []
+        )
         if str(item or "").strip()
     }
     return bool(
@@ -153,21 +185,29 @@ def _paper_soak_training_quality_advisory(section_guard: dict[str, Any], *, trai
     )
 
 
-def _guarded_paper_operational(section_guard: dict[str, Any], health_fast: dict[str, Any]) -> bool:
-    if bool(section_guard.get("guarded_paper_ready", False)) and bool(section_guard.get("live_execution_locked", False)):
+def _guarded_paper_operational(
+    section_guard: dict[str, Any], health_fast: dict[str, Any]
+) -> bool:
+    if bool(section_guard.get("guarded_paper_ready", False)) and bool(
+        section_guard.get("live_execution_locked", False)
+    ):
         return True
 
     operational = _as_dict(health_fast.get("operational_readiness"))
     guarded_paper = _as_dict(operational.get("guarded_paper"))
     live_execution = _as_dict(operational.get("live_execution"))
-    guarded_ready = _bool(guarded_paper.get("ok")) and _lower(guarded_paper.get("status")) in {
+    guarded_ready = _bool(guarded_paper.get("ok")) and _lower(
+        guarded_paper.get("status")
+    ) in {
         "ready",
         "armed",
         "guarded_ready",
     }
     live_locked = (
-        _lower(live_execution.get("status")) in {"blocked_read_only", "read_only", "operator_gated"}
-        or "live_execution_requires_explicit_operator_control" in {str(item) for item in _as_list(live_execution.get("blockers"))}
+        _lower(live_execution.get("status"))
+        in {"blocked_read_only", "read_only", "operator_gated"}
+        or "live_execution_requires_explicit_operator_control"
+        in {str(item) for item in _as_list(live_execution.get("blockers"))}
         or bool(health_fast.get("read_only", False))
     )
     return bool(health_fast and guarded_ready and live_locked)
@@ -190,12 +230,16 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     training_lineage = load_json(health_root / "training_lineage_manifest_latest.json")
     storage_control = load_json(health_root / "ingestion_storage_control_latest.json")
     security_audit = load_json(health_root / "security_audit_latest.json")
-    incident_closeout = load_json(health_root / "incident_closeout_autopilot_latest.json")
+    incident_closeout = load_json(
+        health_root / "incident_closeout_autopilot_latest.json"
+    )
     live_canary = load_json(health_root / "live_canary_control_latest.json")
     autonomy = load_json(health_root / "autonomy_control_plane_latest.json")
     section_guard = load_json(health_root / "section_grade_guard_latest.json")
     health_fast = load_json(health_root / "health_fast_latest.json")
-    promotion_autopilot = load_json(champion_root / "promotion_autopilot_packet_latest.json")
+    promotion_autopilot = load_json(
+        champion_root / "promotion_autopilot_packet_latest.json"
+    )
 
     rows: list[dict[str, Any]] = []
 
@@ -203,17 +247,28 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     training_status = str(training_quality.get("overall_status") or "").strip().lower()
     guarded_paper_operational = _guarded_paper_operational(section_guard, health_fast)
     health_fast_strict_clear = _health_fast_strict_clear(health_fast)
-    paper_soak_training_advisory = _paper_soak_training_quality_advisory(
-        section_guard,
-        training_score=training_score,
-    ) or guarded_paper_operational
-    if training_score >= 85.0 and training_status in {"ready", "needs_attention", "degraded"}:
+    paper_soak_training_advisory = (
+        _paper_soak_training_quality_advisory(
+            section_guard,
+            training_score=training_score,
+        )
+        or guarded_paper_operational
+    )
+    if training_score >= 85.0 and training_status in {
+        "ready",
+        "needs_attention",
+        "degraded",
+    }:
         rows.append(
             _row(
                 surface="training_quality",
                 state="ready",
                 summary=f"training_quality_score={training_score:.2f}",
-                recommended_command=["./scripts/ops/opsctl.sh", "training-quality", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "training-quality",
+                    "--json",
+                ],
                 metrics={"training_quality_score": round(training_score, 2)},
             )
         )
@@ -222,7 +277,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             _paper_soak_ready_row(
                 surface="training_quality",
                 summary=f"training_quality_score={training_score:.2f} is advisory during guarded paper soak while live execution remains locked",
-                recommended_command=["./scripts/ops/opsctl.sh", "training-quality", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "training-quality",
+                    "--json",
+                ],
                 metrics={
                     "training_quality_score": round(training_score, 2),
                     "paper_soak_advisory": True,
@@ -237,7 +296,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="training_quality",
                 state="degraded",
                 summary=f"training_quality_score={training_score:.2f} is recovering but still below the regression target",
-                recommended_command=["./scripts/ops/opsctl.sh", "training-quality", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "training-quality",
+                    "--json",
+                ],
                 metrics={"training_quality_score": round(training_score, 2)},
             )
         )
@@ -247,13 +310,23 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="training_quality",
                 state="blocked",
                 summary=f"training_quality_score={training_score:.2f} regressed below the safe floor",
-                recommended_command=["./scripts/ops/opsctl.sh", "training-quality", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "training-quality",
+                    "--json",
+                ],
                 metrics={"training_quality_score": round(training_score, 2)},
             )
         )
 
     lineage_score = _safe_float(training_lineage.get("lineage_score"), 0.0)
-    lineage_recovery_ready = bool(((training_lineage.get("repairable_lineage_contract") or {}).get("lineage_recovery_ready", False)))
+    lineage_recovery_ready = bool(
+        (
+            (training_lineage.get("repairable_lineage_contract") or {}).get(
+                "lineage_recovery_ready", False
+            )
+        )
+    )
     paper_soak_lineage_ready = bool(
         guarded_paper_operational
         and lineage_score >= 90.0
@@ -263,13 +336,25 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         and _bool(training_lineage.get("replay_hash_registry_ok", False))
         and _bool(training_lineage.get("hash_bundle_complete", False))
     )
+    paper_soak_lineage_advisory = bool(
+        guarded_paper_operational
+        and lineage_score >= 80.0
+        and _bool(training_lineage.get("exact_replay_ready", False))
+        and _bool(training_lineage.get("replay_hash_registry_ok", False))
+        and _bool(training_lineage.get("hash_bundle_complete", False))
+        and _bool(training_lineage.get("promotion_packet_seed_ready", False))
+    )
     if bool(training_lineage.get("promotion_bundle_ready", False)):
         rows.append(
             _row(
                 surface="training_lineage",
                 state="ready",
                 summary=f"lineage_score={lineage_score:.2f} and the promotion bundle is sealed",
-                recommended_command=["./scripts/ops/opsctl.sh", "grade-lift-hardening", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "grade-lift-hardening",
+                    "--json",
+                ],
                 metrics={"lineage_score": round(lineage_score, 2)},
             )
         )
@@ -282,7 +367,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                     f"lineage_score={lineage_score:.2f} has paper-soak replay/hash lineage sealed; "
                     "signed promotion packet remains a live-promotion gate"
                 ),
-                recommended_command=["./scripts/ops/opsctl.sh", "grade-lift-hardening", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "grade-lift-hardening",
+                    "--json",
+                ],
                 metrics={
                     "lineage_score": round(lineage_score, 2),
                     "paper_soak_lineage_ready": True,
@@ -291,13 +380,59 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 },
             )
         )
-    elif lineage_score >= 70.0 and (lineage_recovery_ready or bool(training_lineage.get("promotion_packet_seed_ready", False))):
+    elif paper_soak_lineage_advisory:
+        missing_contracts = [
+            str(item)
+            for item in _as_list(training_lineage.get("missing_contracts"))
+            if str(item or "").strip()
+        ]
+        rows.append(
+            _paper_soak_ready_row(
+                surface="training_lineage",
+                summary=(
+                    f"lineage_score={lineage_score:.2f} has exact replay and hash lineage for guarded paper; "
+                    "feature-store, snapshot, training, and signing proof remain live-promotion gates"
+                ),
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "grade-lift-hardening",
+                    "--json",
+                ],
+                metrics={
+                    "lineage_score": round(lineage_score, 2),
+                    "paper_soak_lineage_advisory": True,
+                    "exact_replay_ready": True,
+                    "replay_hash_registry_ok": True,
+                    "hash_bundle_complete": True,
+                    "feature_store_lineage_ok": _bool(
+                        training_lineage.get("feature_store_lineage_ok", False)
+                    ),
+                    "snapshot_coverage_ok": _bool(
+                        training_lineage.get("snapshot_coverage_ok", False)
+                    ),
+                    "training_confirmed": _bool(
+                        training_lineage.get("training_confirmed", False)
+                    ),
+                    "promotion_bundle_ready": False,
+                    "live_promotion_gate_deferred": True,
+                    "missing_contracts": missing_contracts,
+                },
+            )
+        )
+    elif lineage_score >= 70.0 and (
+        lineage_recovery_ready
+        or bool(training_lineage.get("promotion_packet_seed_ready", False))
+    ):
         rows.append(
             _row(
                 surface="training_lineage",
                 state="degraded",
                 summary=f"lineage_score={lineage_score:.2f} with seeded recovery evidence still needs final replay and signing proof",
-                recommended_command=["./scripts/ops/opsctl.sh", "grade-lift-hardening", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "grade-lift-hardening",
+                    "--json",
+                ],
                 metrics={
                     "lineage_score": round(lineage_score, 2),
                     "lineage_recovery_ready": lineage_recovery_ready,
@@ -310,7 +445,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="training_lineage",
                 state="blocked",
                 summary=f"lineage_score={lineage_score:.2f} is too thin to trust against regression",
-                recommended_command=["./scripts/ops/opsctl.sh", "grade-lift-hardening", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "grade-lift-hardening",
+                    "--json",
+                ],
                 metrics={"lineage_score": round(lineage_score, 2)},
             )
         )
@@ -335,13 +474,21 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="storage_control",
                 state="ready",
                 summary=f"pressure_index={pressure_index:.3f}",
-                recommended_command=["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "ingestion-storage-control",
+                    "--json",
+                ],
                 metrics={"pressure_index": round(pressure_index, 3)},
             )
         )
-    elif storage_status in {"degraded", "needs_attention"} and recovery_state in {"recovering_under_guard", "stabilized_recovery"} and (
-        pressure_index <= 4.0
-        or (storage_recovery_active and storage_recovery_signal)
+    elif (
+        storage_status in {"degraded", "needs_attention"}
+        and recovery_state in {"recovering_under_guard", "stabilized_recovery"}
+        and (
+            pressure_index <= 4.0
+            or (storage_recovery_active and storage_recovery_signal)
+        )
     ):
         rows.append(
             _row(
@@ -352,7 +499,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                     if pressure_index <= 4.0
                     else f"pressure_index={pressure_index:.3f} is still high, but bounded recovery is active and drain signals are live"
                 ),
-                recommended_command=["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "storage-backpressure-autopilot",
+                    "--apply",
+                    "--json",
+                ],
                 metrics={
                     "pressure_index": round(pressure_index, 3),
                     "bounded_recovery_active": storage_recovery_active,
@@ -366,23 +518,43 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="storage_control",
                 state="blocked",
                 summary=f"pressure_index={pressure_index:.3f} or recovery_state={recovery_state or 'unknown'} regressed below the storage guardrail",
-                recommended_command=["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "storage-backpressure-autopilot",
+                    "--apply",
+                    "--json",
+                ],
                 metrics={"pressure_index": round(pressure_index, 3)},
             )
         )
 
     security_status = str(security_audit.get("overall_status") or "").strip().lower()
-    security_summary = security_audit.get("summary") if isinstance(security_audit.get("summary"), dict) else {}
-    passed_checks = _safe_int(security_summary.get("passed_checks", security_audit.get("passed_checks", 0)), 0)
-    failed_checks = _safe_int(security_summary.get("failed_checks", security_audit.get("failed_checks", 0)), 0)
+    security_summary = (
+        security_audit.get("summary")
+        if isinstance(security_audit.get("summary"), dict)
+        else {}
+    )
+    passed_checks = _safe_int(
+        security_summary.get("passed_checks", security_audit.get("passed_checks", 0)), 0
+    )
+    failed_checks = _safe_int(
+        security_summary.get("failed_checks", security_audit.get("failed_checks", 0)), 0
+    )
     if security_status == "ready":
         rows.append(
             _row(
                 surface="security_audit",
                 state="ready",
                 summary=f"passed_checks={passed_checks} failed_checks={failed_checks}",
-                recommended_command=["./scripts/ops/opsctl.sh", "security-audit", "--json"],
-                metrics={"passed_checks": passed_checks, "failed_checks": failed_checks},
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "security-audit",
+                    "--json",
+                ],
+                metrics={
+                    "passed_checks": passed_checks,
+                    "failed_checks": failed_checks,
+                },
             )
         )
     elif passed_checks >= 10 and failed_checks <= 6:
@@ -391,8 +563,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="security_audit",
                 state="degraded",
                 summary=f"passed_checks={passed_checks} failed_checks={failed_checks} still needs cleanup but has not hard-regressed",
-                recommended_command=["./scripts/ops/opsctl.sh", "security-evidence-autofix", "--json"],
-                metrics={"passed_checks": passed_checks, "failed_checks": failed_checks},
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "security-evidence-autofix",
+                    "--json",
+                ],
+                metrics={
+                    "passed_checks": passed_checks,
+                    "failed_checks": failed_checks,
+                },
             )
         )
     else:
@@ -401,8 +580,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="security_audit",
                 state="blocked",
                 summary=f"passed_checks={passed_checks} failed_checks={failed_checks} regressed below the evidence floor",
-                recommended_command=["./scripts/ops/opsctl.sh", "security-evidence-autofix", "--json"],
-                metrics={"passed_checks": passed_checks, "failed_checks": failed_checks},
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "security-evidence-autofix",
+                    "--json",
+                ],
+                metrics={
+                    "passed_checks": passed_checks,
+                    "failed_checks": failed_checks,
+                },
             )
         )
 
@@ -419,7 +605,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                     if incident_status == "ready"
                     else f"open_incident_count=0 clears stale incident status={incident_status or 'unknown'}"
                 ),
-                recommended_command=["./scripts/ops/opsctl.sh", "incident-closeout", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "incident-closeout",
+                    "--json",
+                ],
                 metrics={
                     "open_incident_count": open_incidents,
                     "stale_status_overridden": incident_status != "ready",
@@ -432,8 +622,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="incident_closeout",
                 state="degraded",
                 summary=f"open_incident_count={open_incidents} with bounded recovery still active",
-                recommended_command=["./scripts/ops/opsctl.sh", "incident-closeout", "--json"],
-                metrics={"open_incident_count": open_incidents, "bounded_data_plane_recovery": bounded_recovery},
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "incident-closeout",
+                    "--json",
+                ],
+                metrics={
+                    "open_incident_count": open_incidents,
+                    "bounded_data_plane_recovery": bounded_recovery,
+                },
             )
         )
     elif guarded_paper_operational and health_fast_strict_clear and open_incidents > 0:
@@ -442,7 +639,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="incident_closeout",
                 state="degraded",
                 summary=f"open_incident_count={open_incidents} is historical closeout debt while guarded paper health is strict-clear",
-                recommended_command=["./scripts/ops/opsctl.sh", "incident-closeout", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "incident-closeout",
+                    "--json",
+                ],
                 metrics={
                     "open_incident_count": open_incidents,
                     "guarded_paper_soak_advisory": True,
@@ -456,7 +657,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="incident_closeout",
                 state="blocked",
                 summary=f"open_incident_count={open_incidents} remains a regression blocker",
-                recommended_command=["./scripts/ops/opsctl.sh", "incident-closeout", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "incident-closeout",
+                    "--json",
+                ],
                 metrics={"open_incident_count": open_incidents},
             )
         )
@@ -468,8 +673,14 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="live_canary",
                 state="ready",
                 summary="supervised canary is ready",
-                recommended_command=["./scripts/ops/opsctl.sh", "live-canary-control", "--json"],
-                metrics={"recommended_mode": str(live_canary.get("recommended_mode") or "")},
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "live-canary-control",
+                    "--json",
+                ],
+                metrics={
+                    "recommended_mode": str(live_canary.get("recommended_mode") or "")
+                },
             )
         )
     elif (
@@ -484,9 +695,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                     summary=(
                         f"recommended_mode={str(live_canary.get('recommended_mode') or '') or 'unknown'} is validate-only while guarded paper is ready and live execution remains locked"
                     ),
-                    recommended_command=["./scripts/ops/opsctl.sh", "live-canary-control", "--json"],
+                    recommended_command=[
+                        "./scripts/ops/opsctl.sh",
+                        "live-canary-control",
+                        "--json",
+                    ],
                     metrics={
-                        "recommended_mode": str(live_canary.get("recommended_mode") or ""),
+                        "recommended_mode": str(
+                            live_canary.get("recommended_mode") or ""
+                        ),
                         "guarded_paper_soak_advisory": True,
                         "live_execution_locked": True,
                         "live_money_gate_deferred": True,
@@ -499,9 +716,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                     surface="live_canary",
                     state="degraded",
                     summary=f"recommended_mode={str(live_canary.get('recommended_mode') or '') or 'unknown'} is still staged, not supervised",
-                    recommended_command=["./scripts/ops/opsctl.sh", "live-canary-control", "--json"],
+                    recommended_command=[
+                        "./scripts/ops/opsctl.sh",
+                        "live-canary-control",
+                        "--json",
+                    ],
                     metrics={
-                        "recommended_mode": str(live_canary.get("recommended_mode") or ""),
+                        "recommended_mode": str(
+                            live_canary.get("recommended_mode") or ""
+                        ),
                         "guarded_paper_soak_advisory": False,
                         "live_execution_locked": False,
                     },
@@ -513,8 +736,14 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="live_canary",
                 state="blocked",
                 summary="live canary fell below staged preclearance",
-                recommended_command=["./scripts/ops/opsctl.sh", "live-canary-control", "--json"],
-                metrics={"recommended_mode": str(live_canary.get("recommended_mode") or "")},
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "live-canary-control",
+                    "--json",
+                ],
+                metrics={
+                    "recommended_mode": str(live_canary.get("recommended_mode") or "")
+                },
             )
         )
 
@@ -526,7 +755,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="autonomy_control",
                 state="ready",
                 summary=f"autonomy_score={autonomy_score:.2f}",
-                recommended_command=["./scripts/ops/opsctl.sh", "autonomy-control", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "autonomy-control",
+                    "--json",
+                ],
                 metrics={"autonomy_score": round(autonomy_score, 2)},
             )
         )
@@ -535,7 +768,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             _paper_soak_ready_row(
                 surface="autonomy_control",
                 summary=f"autonomy_score={autonomy_score:.2f} is advisory while guarded paper soak controls are green",
-                recommended_command=["./scripts/ops/opsctl.sh", "autonomy-control", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "autonomy-control",
+                    "--json",
+                ],
                 metrics={
                     "autonomy_score": round(autonomy_score, 2),
                     "paper_soak_autonomy_advisory": True,
@@ -549,7 +786,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="autonomy_control",
                 state="degraded",
                 summary=f"autonomy_score={autonomy_score:.2f} is stable enough to protect gains but not yet self-clearing",
-                recommended_command=["./scripts/ops/opsctl.sh", "autonomy-control", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "autonomy-control",
+                    "--json",
+                ],
                 metrics={"autonomy_score": round(autonomy_score, 2)},
             )
         )
@@ -559,29 +800,47 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="autonomy_control",
                 state="blocked",
                 summary=f"autonomy_score={autonomy_score:.2f} regressed below the prevention floor",
-                recommended_command=["./scripts/ops/opsctl.sh", "autonomy-control", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "autonomy-control",
+                    "--json",
+                ],
                 metrics={"autonomy_score": round(autonomy_score, 2)},
             )
         )
 
-    promotion_status = str(promotion_autopilot.get("overall_status") or "").strip().lower()
-    packet_score = _safe_float(promotion_autopilot.get("packet_completeness_score"), 0.0)
+    promotion_status = (
+        str(promotion_autopilot.get("overall_status") or "").strip().lower()
+    )
+    packet_score = _safe_float(
+        promotion_autopilot.get("packet_completeness_score"), 0.0
+    )
     if bool(promotion_autopilot.get("promotion_ready", False)):
         rows.append(
             _row(
                 surface="promotion_autopilot",
                 state="ready",
                 summary=f"packet_completeness_score={packet_score:.2f}",
-                recommended_command=["./scripts/ops/opsctl.sh", "promotion-autopilot", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "promotion-autopilot",
+                    "--json",
+                ],
                 metrics={"packet_completeness_score": round(packet_score, 2)},
             )
         )
-    elif guarded_paper_operational and (promotion_status in {"degraded", "needs_attention"} or packet_score >= 25.0):
+    elif guarded_paper_operational and (
+        promotion_status in {"degraded", "needs_attention"} or packet_score >= 25.0
+    ):
         rows.append(
             _paper_soak_ready_row(
                 surface="promotion_autopilot",
                 summary=f"packet_completeness_score={packet_score:.2f} is live-promotion debt while guarded paper soak remains clean",
-                recommended_command=["./scripts/ops/opsctl.sh", "promotion-autopilot", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "promotion-autopilot",
+                    "--json",
+                ],
                 metrics={
                     "packet_completeness_score": round(packet_score, 2),
                     "paper_soak_promotion_gate_advisory": True,
@@ -595,7 +854,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="promotion_autopilot",
                 state="degraded",
                 summary=f"packet_completeness_score={packet_score:.2f} with repairable gates still open",
-                recommended_command=["./scripts/ops/opsctl.sh", "promotion-autopilot", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "promotion-autopilot",
+                    "--json",
+                ],
                 metrics={"packet_completeness_score": round(packet_score, 2)},
             )
         )
@@ -605,30 +868,90 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 surface="promotion_autopilot",
                 state="blocked",
                 summary=f"packet_completeness_score={packet_score:.2f} fell below the promotion recovery floor",
-                recommended_command=["./scripts/ops/opsctl.sh", "promotion-autopilot", "--json"],
+                recommended_command=[
+                    "./scripts/ops/opsctl.sh",
+                    "promotion-autopilot",
+                    "--json",
+                ],
                 metrics={"packet_completeness_score": round(packet_score, 2)},
             )
         )
 
     retry_policies = {
-        "training_quality": _retry_budget(surface="training_quality", max_attempts=2, cooldown_minutes=30, timeout_sec=180, notify_tenant=True),
-        "training_lineage": _retry_budget(surface="training_lineage", max_attempts=2, cooldown_minutes=45, timeout_sec=180, notify_tenant=True),
-        "storage_control": _retry_budget(surface="storage_control", max_attempts=1, cooldown_minutes=60, timeout_sec=900, quiet_hours_preferred=True),
-        "security_audit": _retry_budget(surface="security_audit", max_attempts=1, cooldown_minutes=120, timeout_sec=300, notify_tenant=True),
-        "incident_closeout": _retry_budget(surface="incident_closeout", max_attempts=2, cooldown_minutes=20, timeout_sec=180, notify_tenant=True),
-        "live_canary": _retry_budget(surface="live_canary", max_attempts=2, cooldown_minutes=20, timeout_sec=180, notify_tenant=True),
-        "autonomy_control": _retry_budget(surface="autonomy_control", max_attempts=2, cooldown_minutes=30, timeout_sec=180),
-        "promotion_autopilot": _retry_budget(surface="promotion_autopilot", max_attempts=2, cooldown_minutes=30, timeout_sec=180, notify_tenant=True),
+        "training_quality": _retry_budget(
+            surface="training_quality",
+            max_attempts=2,
+            cooldown_minutes=30,
+            timeout_sec=180,
+            notify_tenant=True,
+        ),
+        "training_lineage": _retry_budget(
+            surface="training_lineage",
+            max_attempts=2,
+            cooldown_minutes=45,
+            timeout_sec=180,
+            notify_tenant=True,
+        ),
+        "storage_control": _retry_budget(
+            surface="storage_control",
+            max_attempts=1,
+            cooldown_minutes=60,
+            timeout_sec=900,
+            quiet_hours_preferred=True,
+        ),
+        "security_audit": _retry_budget(
+            surface="security_audit",
+            max_attempts=1,
+            cooldown_minutes=120,
+            timeout_sec=300,
+            notify_tenant=True,
+        ),
+        "incident_closeout": _retry_budget(
+            surface="incident_closeout",
+            max_attempts=2,
+            cooldown_minutes=20,
+            timeout_sec=180,
+            notify_tenant=True,
+        ),
+        "live_canary": _retry_budget(
+            surface="live_canary",
+            max_attempts=2,
+            cooldown_minutes=20,
+            timeout_sec=180,
+            notify_tenant=True,
+        ),
+        "autonomy_control": _retry_budget(
+            surface="autonomy_control",
+            max_attempts=2,
+            cooldown_minutes=30,
+            timeout_sec=180,
+        ),
+        "promotion_autopilot": _retry_budget(
+            surface="promotion_autopilot",
+            max_attempts=2,
+            cooldown_minutes=30,
+            timeout_sec=180,
+            notify_tenant=True,
+        ),
     }
     for row in rows:
         surface = str(row.get("surface") or "")
         state = str(row.get("state") or "")
         row["retry_budget"] = retry_policies.get(
             surface,
-            _retry_budget(surface=surface or "unknown", max_attempts=1, cooldown_minutes=30, timeout_sec=180),
+            _retry_budget(
+                surface=surface or "unknown",
+                max_attempts=1,
+                cooldown_minutes=30,
+                timeout_sec=180,
+            ),
         )
-        row["quiet_hours_preferred"] = bool((row.get("retry_budget") or {}).get("quiet_hours_preferred", False))
-        row["notification_contract"] = _notification_contract(surface, state, str(row.get("summary") or ""))
+        row["quiet_hours_preferred"] = bool(
+            (row.get("retry_budget") or {}).get("quiet_hours_preferred", False)
+        )
+        row["notification_contract"] = _notification_contract(
+            surface, state, str(row.get("summary") or "")
+        )
 
     blocked_count = sum(1 for row in rows if row["state"] == "blocked")
     degraded_count = sum(1 for row in rows if row["state"] == "degraded")
@@ -645,9 +968,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             if str(row.get("state") or "") in {"blocked", "degraded"}
         ]
         + [
-            "keep the regression autopilot active so training, promotion, storage, and incident surfaces are republished before score drift compounds"
-            if rows
-            else "",
+            (
+                "keep the regression autopilot active so training, promotion, storage, and incident surfaces are republished before score drift compounds"
+                if rows
+                else ""
+            ),
         ]
     )
 
@@ -670,7 +995,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 str(row.get("surface") or "")
                 for row in rows
                 if str(row.get("state") or "") == "blocked"
-                and bool(((row.get("notification_contract") or {}).get("tenant_visible", False)))
+                and bool(
+                    (
+                        (row.get("notification_contract") or {}).get(
+                            "tenant_visible", False
+                        )
+                    )
+                )
             ],
         },
         "upgrade_track": {
@@ -693,7 +1024,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Watch the highest-value grade surfaces and flag regression before it turns into a larger system downgrade.")
+    parser = argparse.ArgumentParser(
+        description="Watch the highest-value grade surfaces and flag regression before it turns into a larger system downgrade."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")

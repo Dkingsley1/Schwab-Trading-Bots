@@ -61,6 +61,30 @@ def test_smooth_mode_gate_exempts_backlog_plumbing_slots(tmp_path: Path) -> None
     assert snapshot["exempt"] is True
 
 
+def test_dead_owner_maintenance_lock_is_reaped_without_waiting_for_stale_timeout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    lock_path = tmp_path / "maintenance_bundle.lock"
+    lock_path.mkdir()
+    _write_json(lock_path / "owner.json", {"pid": 424242})
+    monkeypatch.setattr(src, "_pid_is_running", lambda pid: False)
+
+    assert src._reap_abandoned_lock(lock_path, stale_seconds=1800.0) is True
+    assert not lock_path.exists()
+
+
+def test_new_lock_without_owner_gets_initialization_grace(tmp_path: Path) -> None:
+    lock_path = tmp_path / "maintenance_bundle.lock"
+    lock_path.mkdir()
+
+    assert src._reap_abandoned_lock(
+        lock_path,
+        stale_seconds=1800.0,
+        owner_grace_seconds=60.0,
+    ) is False
+    assert lock_path.exists()
+
+
 def test_sql_writer_slot_bypasses_host_pressure_and_cooldown(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(src, "RUNTIME_ROOT", tmp_path / "runtime" / "maintenance_slots")
     monkeypatch.setattr(src, "LOCK_ROOT", tmp_path / "runtime" / "maintenance_slots" / "locks")

@@ -205,6 +205,17 @@ def _atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     _atomic_write_text(path, serialized)
 
 
+def _append_jsonl_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=True, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def _load_cached_rows(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     try:
@@ -380,8 +391,24 @@ def _filesystem_rows(
     evidence_cache_changed = bool(
         evidence_window_changed or cached_rows_pruned or new_rows or next_files != prior_files
     )
-    if evidence_cache_changed:
+    cache_write_mode = "unchanged"
+    if evidence_window_changed or cached_rows_pruned:
         _atomic_write_jsonl(evidence_path, rows)
+        cache_write_mode = "atomic_window_compaction"
+    elif new_rows:
+        _append_jsonl_rows(
+            evidence_path,
+            sorted(
+                new_rows,
+                key=lambda row: (
+                    str(row.get("timestamp_utc") or ""),
+                    str(row.get("profile") or ""),
+                    str(row.get("bot_id") or ""),
+                    str(row.get("symbol") or ""),
+                ),
+            ),
+        )
+        cache_write_mode = "append_only_increment"
     if binding_changed or evidence_cache_changed:
         write_payload(
             state_path,
@@ -422,6 +449,8 @@ def _filesystem_rows(
         "files_advanced_by_profile": files_advanced_by_profile,
         "state_path": str(state_path),
         "evidence_path": str(evidence_path),
+        "cache_write_mode": cache_write_mode,
+        "append_only_steady_state": True,
     }
 
 

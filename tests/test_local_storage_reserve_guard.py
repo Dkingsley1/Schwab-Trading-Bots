@@ -5,13 +5,17 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.local_storage_reserve import GIB, local_storage_reserve_contract
 from scripts.ops import local_storage_reserve_guard as guard
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
 def _usage(*, free_gb: float, total_gb: float = 100.0) -> SimpleNamespace:
@@ -30,13 +34,20 @@ def test_live_reserve_contract_blocks_before_enospc(tmp_path: Path) -> None:
     assert payload["hard_block"] is True
     assert payload["pressure_active"] is True
     assert payload["control_env"]["TRAINING_RUNTIME_PAUSED_FOR_BACKLOG"] == "1"
-    assert payload["control_env"]["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.05"
+    assert (
+        payload["control_env"]["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.05"
+    )
     assert payload["control_env"]["BOT_STORAGE_EMERGENCY_DISK_GUARD"] == "1"
     assert payload["control_env"]["SQL_LINK_SERVICE_PAUSED_FOR_LOCAL_STORAGE"] == "1"
-    assert payload["control_env"]["PAPER_EXECUTION_RUNTIME_PAUSED_FOR_LOCAL_STORAGE"] == "1"
+    assert (
+        payload["control_env"]["PAPER_EXECUTION_RUNTIME_PAUSED_FOR_LOCAL_STORAGE"]
+        == "1"
+    )
 
 
-def test_live_reserve_contract_healthy_state_drops_pressure_only_keys(tmp_path: Path) -> None:
+def test_live_reserve_contract_healthy_state_drops_pressure_only_keys(
+    tmp_path: Path,
+) -> None:
     payload = local_storage_reserve_contract(
         tmp_path,
         disk_usage_fn=lambda _path: _usage(free_gb=80.0),
@@ -55,7 +66,9 @@ def test_launchd_log_guard_caps_same_inode_and_preserves_tail(tmp_path: Path) ->
     log_path.write_bytes(payload)
     inode_before = os.stat(log_path).st_ino
 
-    report = guard.cap_launchd_logs(tmp_path, max_bytes=1024, tail_bytes=256, apply=True)
+    report = guard.cap_launchd_logs(
+        tmp_path, max_bytes=1024, tail_bytes=256, apply=True
+    )
 
     assert report["capped_count"] == 1
     assert report["verification_failed_count"] == 0
@@ -68,13 +81,17 @@ def test_launchd_log_guard_caps_same_inode_and_preserves_tail(tmp_path: Path) ->
     assert log_path.read_bytes().endswith(b"important-tail")
 
 
-def test_launchd_log_guard_recurses_into_service_log_directories(tmp_path: Path) -> None:
+def test_launchd_log_guard_recurses_into_service_log_directories(
+    tmp_path: Path,
+) -> None:
     nested = tmp_path / "launchd_watchdog"
     nested.mkdir()
     log_path = nested / "shadow_watchdog.out.log"
     log_path.write_bytes((b"old-output\n" * 1024) + b"newest-watchdog-state\n")
 
-    report = guard.cap_launchd_logs(tmp_path, max_bytes=1024, tail_bytes=256, apply=True)
+    report = guard.cap_launchd_logs(
+        tmp_path, max_bytes=1024, tail_bytes=256, apply=True
+    )
 
     assert report["file_count"] == 1
     assert report["capped_count"] == 1
@@ -103,7 +120,9 @@ def test_launchd_log_guard_aggregates_multiple_roots(tmp_path: Path) -> None:
     assert report["error_count"] == 0
 
 
-def test_healthy_override_replaces_stale_pause_without_reintroducing_it(tmp_path: Path) -> None:
+def test_healthy_override_replaces_stale_pause_without_reintroducing_it(
+    tmp_path: Path,
+) -> None:
     override = tmp_path / ".env.local_storage_reserve_override"
     override.write_text("TRAINING_RUNTIME_PAUSED_FOR_BACKLOG=1\n", encoding="utf-8")
     contract = local_storage_reserve_contract(
@@ -162,7 +181,9 @@ def test_active_telemetry_route_rejects_quarantine_targets(tmp_path: Path) -> No
     assert all(row["quarantine_backed"] is True for row in payload["rows"])
 
 
-def test_proactive_recovery_preserves_paper_above_pressure_floor(tmp_path: Path) -> None:
+def test_proactive_recovery_preserves_paper_above_pressure_floor(
+    tmp_path: Path,
+) -> None:
     reserve = local_storage_reserve_contract(
         tmp_path,
         target_free_gb=125.0,
@@ -183,7 +204,9 @@ def test_proactive_recovery_preserves_paper_above_pressure_floor(tmp_path: Path)
     assert request["command"][-3:-1] == ["--storage-target-free-gb", "135.0"]
 
 
-def test_pressure_recovery_reports_paper_pause_and_specific_reason(tmp_path: Path) -> None:
+def test_pressure_recovery_reports_paper_pause_and_specific_reason(
+    tmp_path: Path,
+) -> None:
     reserve = local_storage_reserve_contract(
         tmp_path,
         target_free_gb=125.0,
@@ -202,7 +225,197 @@ def test_pressure_recovery_reports_paper_pause_and_specific_reason(tmp_path: Pat
     assert request["collection_may_continue"] is False
 
 
-def test_history_is_event_driven_and_bounded(tmp_path: Path) -> None:
+def test_fallback_route_pressure_contract_defines_ordered_pipeline(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(guard, "_disk_free_gb", lambda _path: 500.0)
+    health = project_root / "governance" / "health"
+    external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
+    external_root.mkdir(parents=True)
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(external_root))
+    shard_root = project_root / "local_fallback_storage" / "data" / "sql_link_shards"
+    shard_root.mkdir(parents=True)
+    (shard_root / "jsonl_link_trading.sqlite3").write_bytes(b"x" * 4096)
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        {
+            "overall_status": "ready",
+            "mode": "local_fallback",
+            "certified_mode": "local_fallback",
+            "active_root": str(project_root / "local_fallback_storage"),
+            "sqlite_skip_report": {
+                "summary": {
+                    "active_local_count": 3,
+                    "active_external_count": 0,
+                    "warm_standby_count": 0,
+                    "local_bytes_total": 4096,
+                },
+                "route_verification": {
+                    "verification_state": "active_local_ready",
+                    "mismatches": [],
+                },
+            },
+        },
+    )
+
+    payload = guard.fallback_route_pressure_contract(
+        project_root,
+        {"pressure_active": True},
+    )
+    pipeline = payload["ordered_recovery_pipeline"]
+    rehome = next(row for row in pipeline if row["stage"] == "rehome")
+    prune = next(row for row in pipeline if row["stage"] == "prune")
+
+    assert payload["status"] == "route_rehome_ready"
+    assert payload["route_rehome_required"] is True
+    assert payload["route_rehome_ready"] is True
+    assert payload["pipeline_summary"]["stage_count"] == 9
+    assert payload["pipeline_summary"]["operator_route_mutation_stage_count"] == 1
+    assert payload["local_fallback_sql_link_shards"]["size_bytes"] == 4096
+    assert rehome["authority"] == "operator_route_mutation"
+    assert rehome["auto_execute_allowed"] is False
+    assert "active_writer_not_quiesced" in rehome["blocked_by"]
+    assert prune["authority"] == "automatic_verified_standby_delete"
+    assert prune["next_on_success"] == "verify"
+
+
+def test_local_reserve_guard_routes_pressure_to_external_rehome_plan(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(guard, "_disk_free_gb", lambda _path: 500.0)
+    health = project_root / "governance" / "health"
+    external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
+    external_root.mkdir(parents=True)
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(external_root))
+    monkeypatch.setattr(guard, "TELEMETRY_ROUTE_PATHS", ())
+    monkeypatch.setattr(
+        guard,
+        "_reconcile_storage_governor",
+        lambda _project_root, *, timeout_seconds: {
+            "attempted": True,
+            "ok": True,
+            "returncode": 0,
+            "stderr_tail": "",
+        },
+    )
+
+    def fake_reserve(_project_root: Path, **_kwargs) -> dict:
+        return {
+            "timestamp_utc": "2026-09-07T12:00:00+00:00",
+            "status": "degraded",
+            "ready": False,
+            "ok": True,
+            "grade": "C",
+            "disk": {"known": True},
+            "free_gb": 54.0,
+            "target_free_gb": 125.0,
+            "pressure_free_gb": 64.0,
+            "hard_free_gb": 32.0,
+            "emergency_free_gb": 16.0,
+            "reserve_deficit_gb": 71.0,
+            "pressure_active": True,
+            "hard_block": False,
+            "emergency_active": False,
+            "control_env": {"BOT_LOCAL_STORAGE_RESERVE_STATE": "degraded"},
+        }
+
+    monkeypatch.setattr(guard, "local_storage_reserve_contract", fake_reserve)
+    _write_json(
+        health / "storage_failback_sync_latest.json",
+        {
+            "overall_status": "ready",
+            "mode": "local_fallback",
+            "certified_mode": "local_fallback",
+            "active_root": str(project_root / "local_fallback_storage"),
+            "sqlite_skip_report": {
+                "summary": {"active_local_count": 3, "local_bytes_total": 4096},
+                "route_verification": {
+                    "verification_state": "active_local_ready",
+                    "mismatches": [],
+                },
+            },
+        },
+    )
+
+    payload = guard.build_payload(
+        project_root,
+        apply=True,
+        override_path=tmp_path / ".env.local_storage_reserve_override",
+        log_root=tmp_path / "logs",
+        additional_log_roots=[],
+        max_log_bytes=1024,
+        tail_bytes=128,
+    )
+
+    assert payload["overall_status"] == "degraded"
+    assert (
+        "active_local_fallback_route_under_local_storage_pressure"
+        in payload["warnings"]
+    )
+    assert payload["next_action"] == (
+        "switch active storage back to BOT_LOGS, then prune verified local standby"
+    )
+    assert payload["fallback_route_pressure_contract"]["route_rehome_required"] is True
+    assert (
+        payload["recovery_request"]["delegated_controller"]
+        == "storage_switch_orchestrator"
+    )
+    assert payload["recovery_request"]["command"][-1] == "storage-switch-external"
+
+
+def test_rehome_requires_capacity_for_full_tree_and_reserve(tmp_path, monkeypatch):
+    external = tmp_path / "external"
+    external.mkdir()
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(external))
+    monkeypatch.setattr(guard, "_disk_free_gb", lambda _path: 200.0)
+    _write_json(
+        tmp_path / "governance/health/storage_failback_sync_latest.json",
+        {
+            "mode": "local_fallback",
+            "sqlite_skip_report": {"summary": {"local_bytes_total": GIB}},
+        },
+    )
+    census = {"size_gb": 300.0, "size_kind": "complete", "errors": 0}
+    monkeypatch.setattr(guard, "_bounded_tree_size", lambda _path: dict(census))
+    report = guard.fallback_route_pressure_contract(tmp_path, {"pressure_active": True})
+    assert report["status"] == "route_rehome_blocked"
+    assert report["destination_capacity"]["required_free_gb"] == 425.0
+    assert report["destination_capacity"]["shortfall_gb"] == 225.0
+    assert report["route_rehome_ready"] is False
+    census.update(size_gb=1.0, size_kind="lower_bound")
+    report = guard.fallback_route_pressure_contract(tmp_path, {"pressure_active": True})
+    assert report["destination_capacity"]["known"] is False
+    assert report["destination_capacity"]["required_free_gb"] is None
+    assert report["route_rehome_ready"] is False
+
+
+def test_protected_destination_alias_is_not_probed(tmp_path, monkeypatch):
+    alias = tmp_path / "external"
+    alias.symlink_to("/Volumes/VIDEO")
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(alias))
+    monkeypatch.setattr(
+        guard.os,
+        "access",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("protected access")),
+    )
+    report = guard.fallback_route_pressure_contract(tmp_path, {"pressure_active": True})
+    assert report["external_available"] is False
+    assert guard._bounded_tree_size(alias)["size_kind"] == "unknown"
+
+
+def test_tree_census_is_bounded_and_does_not_follow_links(tmp_path):
+    (tmp_path / "media").symlink_to("/Volumes/VIDEO")
+    (tmp_path / "record").write_bytes(b"evidence")
+    census = guard._bounded_tree_size(tmp_path)
+    assert census["size_bytes"] == 8
+    assert census["files_counted"] == 1
+    assert census["size_kind"] == "complete"
+    assert guard._bounded_tree_size(tmp_path, max_files=1)["truncated"] is True
+
+
+def test_history_is_event_driven_and_append_only(tmp_path: Path) -> None:
     payload = {
         "timestamp_utc": "2026-08-10T00:00:00+00:00",
         "overall_status": "ready",
@@ -218,7 +431,11 @@ def test_history_is_event_driven_and_bounded(tmp_path: Path) -> None:
             "emergency_free_gb": 16.0,
         },
         "cleanup_verification": {"verified": True, "file_bytes_reclaimed": 0},
-        "recovery_request": {"active": False, "severity": "none", "paper_pause_required": False},
+        "recovery_request": {
+            "active": False,
+            "severity": "none",
+            "paper_pause_required": False,
+        },
         "launchd_log_guard": {"bytes_reclaimed": 0, "capped_count": 0},
         "override_changed": False,
     }
@@ -236,23 +453,28 @@ def test_history_is_event_driven_and_bounded(tmp_path: Path) -> None:
     assert guard._history_event_required(payload, threshold_change) is True
 
     history = tmp_path / "guard_history.jsonl"
+    inode = 0
     for index in range(4):
         payload["timestamp_utc"] = f"2026-08-10T00:00:0{index}+00:00"
         result = guard._append_history(history, payload, max_lines=2)
         assert result["ok"] is True
+        assert result["retention_policy"] == "append_only_cold_archive_managed"
+        if inode == 0:
+            inode = os.stat(history).st_ino
+        assert os.stat(history).st_ino == inode
 
-    assert len(history.read_text(encoding="utf-8").splitlines()) == 2
+    assert len(history.read_text(encoding="utf-8").splitlines()) == 4
 
 
 def test_installer_publishes_unattended_reserve_ladder() -> None:
-    installer = (PROJECT_ROOT / "scripts" / "install_local_storage_reserve_guard_launchd.sh").read_text(
-        encoding="utf-8"
-    )
+    installer = (
+        PROJECT_ROOT / "scripts" / "install_local_storage_reserve_guard_launchd.sh"
+    ).read_text(encoding="utf-8")
 
-    assert 'BOT_LOCAL_STORAGE_TARGET_FREE_GB:-125' in installer
-    assert 'BOT_LOCAL_STORAGE_PRESSURE_FREE_GB:-64' in installer
-    assert 'BOT_LOCAL_STORAGE_HARD_FREE_GB:-32' in installer
-    assert 'BOT_LOCAL_STORAGE_EMERGENCY_FREE_GB:-16' in installer
+    assert "BOT_LOCAL_STORAGE_TARGET_FREE_GB:-125" in installer
+    assert "BOT_LOCAL_STORAGE_PRESSURE_FREE_GB:-64" in installer
+    assert "BOT_LOCAL_STORAGE_HARD_FREE_GB:-32" in installer
+    assert "BOT_LOCAL_STORAGE_EMERGENCY_FREE_GB:-16" in installer
 
 
 def test_guard_defaults_do_not_fall_back_to_legacy_core_thresholds() -> None:

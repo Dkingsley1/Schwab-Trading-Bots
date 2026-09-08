@@ -36,7 +36,88 @@ else:
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "schwab_account_snapshot_refresh_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "health"
+    / "schwab_account_snapshot_refresh_latest.json"
+)
+DEFAULT_ATTEMPT_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "health"
+    / "schwab_account_snapshot_refresh_attempt_latest.json"
+)
+DEFAULT_LAST_GOOD_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "health"
+    / "schwab_account_snapshot_refresh_last_good.json"
+)
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _publish_refresh_summary(
+    summary: dict[str, Any],
+    *,
+    project_root: Path,
+    out_path: Path = DEFAULT_OUT_PATH,
+    attempt_path: Path = DEFAULT_ATTEMPT_PATH,
+    last_good_path: Path = DEFAULT_LAST_GOOD_PATH,
+) -> dict[str, Any]:
+    """Publish attempts without allowing a failed refresh to replace good truth."""
+    attempt = dict(summary)
+    attempt["attempt_artifact"] = str(attempt_path)
+    attempt["canonical_artifact"] = str(out_path)
+    attempt["last_good_artifact"] = str(last_good_path)
+
+    if bool(summary.get("ok", False)):
+        attempt["previous_good_preserved"] = False
+        attempt["published_as_canonical"] = True
+        safe_write_json_atomic(
+            str(out_path),
+            attempt,
+            project_root=str(project_root),
+            source="schwab_account_snapshot_refresh.canonical",
+        )
+        safe_write_json_atomic(
+            str(last_good_path),
+            attempt,
+            project_root=str(project_root),
+            source="schwab_account_snapshot_refresh.last_good",
+        )
+    else:
+        last_good = _read_json_object(last_good_path)
+        if not bool(last_good.get("ok", False)):
+            canonical = _read_json_object(out_path)
+            if bool(canonical.get("ok", False)):
+                last_good = canonical
+                safe_write_json_atomic(
+                    str(last_good_path),
+                    canonical,
+                    project_root=str(project_root),
+                    source="schwab_account_snapshot_refresh.last_good_recovery",
+                )
+        attempt["previous_good_preserved"] = bool(last_good.get("ok", False))
+        attempt["published_as_canonical"] = False
+        attempt["last_good_timestamp_utc"] = str(
+            last_good.get("timestamp_utc") or ""
+        )
+
+    safe_write_json_atomic(
+        str(attempt_path),
+        attempt,
+        project_root=str(project_root),
+        source="schwab_account_snapshot_refresh.attempt",
+    )
+    return attempt
 
 
 def _quiet_auth(trader: Any, *, quiet: bool) -> None:
@@ -56,11 +137,19 @@ def _positions_len(fetched: dict[str, Any]) -> int:
         for row in accounts:
             if not isinstance(row, dict):
                 continue
-            sec = row.get("securitiesAccount") if isinstance(row.get("securitiesAccount"), dict) else row
+            sec = (
+                row.get("securitiesAccount")
+                if isinstance(row.get("securitiesAccount"), dict)
+                else row
+            )
             positions = sec.get("positions") if isinstance(sec, dict) else []
             total += len(positions) if isinstance(positions, list) else 0
         return total
-    sec = payload.get("securitiesAccount") if isinstance(payload.get("securitiesAccount"), dict) else payload
+    sec = (
+        payload.get("securitiesAccount")
+        if isinstance(payload.get("securitiesAccount"), dict)
+        else payload
+    )
     positions = sec.get("positions") if isinstance(sec, dict) else []
     return len(positions) if isinstance(positions, list) else 0
 
@@ -89,7 +178,9 @@ def refresh(*, quiet_auth: bool, rebuild_derived: bool) -> dict[str, Any]:
     old_env = {
         "ALLOW_ORDER_EXECUTION": os.environ.get("ALLOW_ORDER_EXECUTION"),
         "MARKET_DATA_ONLY": os.environ.get("MARKET_DATA_ONLY"),
-        "LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED": os.environ.get("LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED"),
+        "LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED": os.environ.get(
+            "LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED"
+        ),
     }
     fetched: dict[str, Any] = {}
     write_ok = False
@@ -107,7 +198,9 @@ def refresh(*, quiet_auth: bool, rebuild_derived: bool) -> dict[str, Any]:
         fetched = trader._live_fetch_accounts_payload()
         fetched = dict(fetched or {})
         fetched["_forced_account_snapshot_refresh"] = True
-        fetched["_forced_account_snapshot_refreshed_at_utc"] = datetime.now(timezone.utc).isoformat()
+        fetched["_forced_account_snapshot_refreshed_at_utc"] = datetime.now(
+            timezone.utc
+        ).isoformat()
         write_ok = False
         broker_truth_state: dict[str, Any] = {}
         if bool(fetched.get("ok", False)):
@@ -147,22 +240,60 @@ def refresh(*, quiet_auth: bool, rebuild_derived: bool) -> dict[str, Any]:
     derived: dict[str, Any] = {}
     if rebuild_derived and bool(fetched.get("ok", False)):
         derived["covered_call_roll_watch"] = _run_artifact(
-            [str(PY), str(PROJECT_ROOT / "scripts" / "ops" / "covered_call_roll_watch.py"), "--json"]
+            [
+                str(PY),
+                str(PROJECT_ROOT / "scripts" / "ops" / "covered_call_roll_watch.py"),
+                "--json",
+            ]
         )
         derived["account_position_study"] = _run_artifact(
-            [str(PY), str(PROJECT_ROOT / "scripts" / "ops" / "account_position_study.py"), "--json"],
+            [
+                str(PY),
+                str(PROJECT_ROOT / "scripts" / "ops" / "account_position_study.py"),
+                "--json",
+            ],
+            timeout=120,
+        )
+        derived["account_policy_context"] = _run_artifact(
+            [
+                str(PY),
+                str(PROJECT_ROOT / "scripts" / "ops" / "account_policy_context.py"),
+                "--json",
+            ],
+            timeout=120,
+        )
+        derived["schwab_broker_boundary_control"] = _run_artifact(
+            [
+                str(PROJECT_ROOT / "scripts" / "ops" / "opsctl.sh"),
+                "schwab-broker-boundary",
+                "--apply",
+                "--notify",
+                "--json",
+            ],
             timeout=120,
         )
         derived["schwab_tax_ledger_refresh"] = _run_artifact(
-            [str(PY), str(PROJECT_ROOT / "scripts" / "ops" / "schwab_tax_ledger_refresh.py"), "--json"],
+            [
+                str(PY),
+                str(PROJECT_ROOT / "scripts" / "ops" / "schwab_tax_ledger_refresh.py"),
+                "--json",
+            ],
             timeout=180,
         )
         derived["trading_tax_estimate"] = _run_artifact(
-            [str(PY), str(PROJECT_ROOT / "scripts" / "ops" / "trading_tax_estimator.py"), "--json"],
+            [
+                str(PY),
+                str(PROJECT_ROOT / "scripts" / "ops" / "trading_tax_estimator.py"),
+                "--json",
+            ],
             timeout=120,
         )
         derived["position_opportunity_watch"] = _run_artifact(
-            [str(PY), str(PROJECT_ROOT / "scripts" / "ops" / "position_opportunity_watch.py"), "--json"],
+            [
+                str(PY),
+                str(PROJECT_ROOT / "scripts" / "ops" / "position_opportunity_watch.py"),
+                "--json",
+            ],
             timeout=120,
         )
         derived["sleeve_allocator"] = _run_artifact(
@@ -170,7 +301,11 @@ def refresh(*, quiet_auth: bool, rebuild_derived: bool) -> dict[str, Any]:
             timeout=120,
         )
         derived["portfolio_risk_ledger"] = _run_artifact(
-            [str(PY), str(PROJECT_ROOT / "scripts" / "portfolio_risk_ledger.py"), "--json"],
+            [
+                str(PY),
+                str(PROJECT_ROOT / "scripts" / "portfolio_risk_ledger.py"),
+                "--json",
+            ],
             timeout=120,
         )
         derived["position_round_trip_watch"] = _run_artifact(
@@ -183,64 +318,138 @@ def refresh(*, quiet_auth: bool, rebuild_derived: bool) -> dict[str, Any]:
             timeout=240,
         )
         derived["portfolio_allocator_service"] = _run_artifact(
-            [str(PY), str(PROJECT_ROOT / "scripts" / "portfolio_allocator_service.py"), "--json"],
+            [
+                str(PY),
+                str(PROJECT_ROOT / "scripts" / "portfolio_allocator_service.py"),
+                "--json",
+            ],
             timeout=120,
         )
         derived["account_buildout_plan"] = _run_artifact(
-            [str(PY), str(PROJECT_ROOT / "scripts" / "ops" / "account_buildout_planner.py"), "--json"],
+            [
+                str(PY),
+                str(PROJECT_ROOT / "scripts" / "ops" / "account_buildout_planner.py"),
+                "--json",
+            ],
             timeout=120,
         )
 
     payload = fetched.get("payload") if isinstance(fetched.get("payload"), dict) else {}
-    broker_truth_ok = bool(broker_truth_state.get("ok", False)) if broker_truth_state else bool(fetched.get("ok", False))
-    broker_truth_v2 = broker_truth_state.get("broker_truth_reconcile_v2") if isinstance(broker_truth_state.get("broker_truth_reconcile_v2"), dict) else {}
-    summary_ok = bool(fetched.get("ok", False)) and broker_truth_ok
+    broker_truth_ok = (
+        bool(broker_truth_state.get("ok", False))
+        if broker_truth_state
+        else bool(fetched.get("ok", False))
+    )
+    broker_truth_v2 = (
+        broker_truth_state.get("broker_truth_reconcile_v2")
+        if isinstance(broker_truth_state.get("broker_truth_reconcile_v2"), dict)
+        else {}
+    )
+    account_snapshot_partial = bool(payload.get("partial", False))
+    summary_ok = (
+        bool(fetched.get("ok", False))
+        and broker_truth_ok
+        and not account_snapshot_partial
+    )
+    provider_failure = bool(fetched.get("provider_failure", False))
+    provider_failure_class = str(fetched.get("provider_failure_class") or "")
     summary = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "ok": summary_ok,
-        "operation": fetched.get("operation", "get_accounts_snapshot"),
-        "account_snapshot_mode": str(payload.get("account_snapshot_mode") or fetched.get("account_snapshot_mode") or ""),
-        "account_count": int(payload.get("account_count", fetched.get("account_count", 0)) or 0),
-        "discovered_account_count": int(
-            payload.get("discovered_account_count", fetched.get("discovered_account_count", 0)) or 0
+        "overall_status": (
+            "ready"
+            if summary_ok
+            else "external_blocked" if provider_failure else "blocked"
         ),
-        "failed_account_count": int(payload.get("failed_account_count", fetched.get("failed_account_count", 0)) or 0),
-        "account_snapshot_partial": bool(payload.get("partial", False)),
+        "operation": fetched.get("operation", "get_accounts_snapshot"),
+        "account_snapshot_mode": str(
+            payload.get("account_snapshot_mode")
+            or fetched.get("account_snapshot_mode")
+            or ""
+        ),
+        "account_count": int(
+            payload.get("account_count", fetched.get("account_count", 0)) or 0
+        ),
+        "discovered_account_count": int(
+            payload.get(
+                "discovered_account_count", fetched.get("discovered_account_count", 0)
+            )
+            or 0
+        ),
+        "failed_account_count": int(
+            payload.get("failed_account_count", fetched.get("failed_account_count", 0))
+            or 0
+        ),
+        "account_snapshot_partial": account_snapshot_partial,
         "position_rows": _positions_len(fetched),
         "shared_snapshot_write_ok": bool(write_ok),
         "broker_truth_status": str(broker_truth_state.get("status") or ""),
-        "broker_truth_position_count": int(broker_truth_state.get("position_count", 0) or 0),
-        "broker_truth_mismatch_count": int(broker_truth_state.get("mismatch_count", 0) or 0),
+        "broker_truth_position_count": int(
+            broker_truth_state.get("position_count", 0) or 0
+        ),
+        "broker_truth_mismatch_count": int(
+            broker_truth_state.get("mismatch_count", 0) or 0
+        ),
         "broker_truth_ok": broker_truth_ok,
         "broker_truth_error": str(broker_truth_state.get("error") or ""),
-        "account_snapshot_proof": broker_truth_state.get("account_snapshot_proof") if isinstance(broker_truth_state.get("account_snapshot_proof"), dict) else {},
+        "account_snapshot_proof": (
+            broker_truth_state.get("account_snapshot_proof")
+            if isinstance(broker_truth_state.get("account_snapshot_proof"), dict)
+            else {}
+        ),
         "broker_truth_reconcile_v2": broker_truth_v2,
         "broker_truth_v2_score": float(broker_truth_v2.get("truth_score", 0.0) or 0.0),
         "broker_truth_v2_grade": str(broker_truth_v2.get("truth_grade") or ""),
         "derived": derived,
         "error": str(fetched.get("error") or ""),
+        "status_code": int(fetched.get("status_code", 0) or 0),
+        "provider_failure": provider_failure,
+        "provider_failure_class": provider_failure_class,
+        "failure_owner": (
+            "external_provider_schwab" if provider_failure else "local_or_operator"
+        ),
+        "operator_action_required": bool(
+            not provider_failure
+            and provider_failure_class
+            in {"broker_auth_rejected", "no_connected_accounts"}
+        ),
+        "retryable": bool(fetched.get("retryable", False)),
+        "transport_telemetry": (
+            fetched.get("transport_telemetry")
+            if isinstance(fetched.get("transport_telemetry"), dict)
+            else payload.get("transport_telemetry")
+            if isinstance(payload.get("transport_telemetry"), dict)
+            else {}
+        ),
         "notes": [
             "Order execution is forced off for this refresh.",
             "Raw account numbers are not emitted in this summary.",
         ],
     }
-    safe_write_json_atomic(
-        str(DEFAULT_OUT_PATH),
+    return _publish_refresh_summary(
         summary,
-        project_root=str(PROJECT_ROOT),
-        source="schwab_account_snapshot_refresh",
+        project_root=PROJECT_ROOT,
     )
-    return summary
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Force-refresh Schwab connected-account positions and derived studies.")
+    parser = argparse.ArgumentParser(
+        description="Force-refresh Schwab connected-account positions and derived studies."
+    )
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--loud-auth", action="store_true", help="Do not suppress Schwab auth chatter.")
-    parser.add_argument("--skip-derived", action="store_true", help="Only refresh the broker account snapshot.")
+    parser.add_argument(
+        "--loud-auth", action="store_true", help="Do not suppress Schwab auth chatter."
+    )
+    parser.add_argument(
+        "--skip-derived",
+        action="store_true",
+        help="Only refresh the broker account snapshot.",
+    )
     args = parser.parse_args(argv)
 
-    payload = refresh(quiet_auth=not args.loud_auth, rebuild_derived=not args.skip_derived)
+    payload = refresh(
+        quiet_auth=not args.loud_auth, rebuild_derived=not args.skip_derived
+    )
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

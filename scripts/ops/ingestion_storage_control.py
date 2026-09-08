@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.local_storage_reserve import local_storage_reserve_contract
+from scripts.ops.ingestion_data_contract import build_data_plane_definition
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "ingestion_storage_control_latest.json"
 LOCAL_TZ = ZoneInfo("America/New_York")
@@ -35,7 +36,7 @@ DEFAULT_RAW_COMPACTION_COUNT_PRESSURE_MIN_COUNT = 2048
 SMALL_HOT_QUEUE_TOTAL_MULTIPLIER = 1.25
 SMALL_HOT_QUEUE_SIDE_LANE_ALLOWANCE = 10
 UNKNOWN_DRAIN_TOTAL_MULTIPLIER = 2.0
-DEFAULT_MANAGED_SUPPORT_OVERLAY_MIN_PENDING_LINES = 150000
+DEFAULT_MANAGED_SUPPORT_OVERLAY_MIN_PENDING_LINES = 15000
 DEFAULT_MANAGED_SUPPORT_OVERLAY_NON_SUPPORT_RATIO = 0.05
 DEFAULT_MANAGED_SUPPORT_OVERLAY_PRESSURE_SUPPORT_CAP = 5000
 DEFAULT_MANAGED_HOT_TAIL_MAX_LINES = 250
@@ -657,10 +658,18 @@ def _raw_live_expansion_headroom_contract(
         ),
         reserve_core,
     )
+    inflight_capacity_lines = max(reserve_total - reserve_core, 0)
     inflight_reserve_lines = min(
-        max(_safe_int(os.getenv("RAW_LIVE_INFLIGHT_RESERVE_LINES"), min(2000, reserve_core // 2)), 0),
-        max(reserve_core - 1, 0),
+        max(
+            _safe_int(
+                os.getenv("RAW_LIVE_INFLIGHT_RESERVE_LINES"),
+                inflight_capacity_lines,
+            ),
+            0,
+        ),
+        inflight_capacity_lines,
     )
+    shadow_loop_pause_lines = reserve_core + inflight_reserve_lines
     reserve_age = max(
         _safe_float(
             os.getenv("RAW_LIVE_EXPANSION_AGE_RESERVE_SECONDS")
@@ -779,6 +788,8 @@ def _raw_live_expansion_headroom_contract(
             "core_reserve_lines": int(reserve_core),
             "total_reserve_lines": int(reserve_total),
             "inflight_reserve_lines": int(inflight_reserve_lines),
+            "admission_pause_lines": int(reserve_core),
+            "shadow_loop_pause_capacity_lines": int(shadow_loop_pause_lines),
             "sub_bot_signal_sample_modulus": int(sub_bot_signal_sample_modulus),
             "oldest_age_reserve_seconds": round(float(reserve_age), 3),
             "absolute_core_target_lines": int(target_core),
@@ -816,7 +827,7 @@ def _raw_live_expansion_headroom_contract(
             "RAW_LIVE_CORE_RESERVE_TARGET": str(reserve_core),
             "RAW_LIVE_TOTAL_RESERVE_TARGET": str(reserve_total),
             "RAW_LIVE_AGE_RESERVE_SECONDS": str(round(float(reserve_age), 3)),
-            "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES": str(reserve_core),
+            "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES": str(shadow_loop_pause_lines),
             "SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES": str(inflight_reserve_lines),
             "SHADOW_LOOP_BOOTSTRAP_BACKLOG_STAGGER_ENABLED": "1",
             "SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS": sub_bot_signal_sample_modulus,
@@ -1879,6 +1890,13 @@ def _ingestion_storage_efficiency_contract(
     current_day_protected_count = _safe_int(raw_summary.get("current_day_protected_count"), 0)
     quota_hard_breaches = _safe_int(quota_summary.get("hard_breaches"), 0)
     quota_soft_breaches = _safe_int(quota_summary.get("soft_breaches"), 0)
+    retention_debt_target_gb = max(
+        _safe_float(
+            _steady_state_targets().get("retention_debt_gb"),
+            DEFAULT_TARGET_RETENTION_DEBT_GB,
+        ),
+        0.0,
+    )
     quota_breach_families = [
         str(row.get("family") or "")
         for row in quota_lanes
@@ -1948,7 +1966,7 @@ def _ingestion_storage_efficiency_contract(
         and int(core_pending_lines) <= 7500
         and int(total_pending_lines) <= 20000
         and quota_hard_breaches <= 0
-        and float(retention_debt_gb) <= 0.0
+        and float(retention_debt_gb) <= retention_debt_target_gb
         and not emergency_disk_guard
         and not low_free_guard
         and not route_drift
@@ -2033,7 +2051,10 @@ def _ingestion_storage_efficiency_contract(
         or int(unresolved_split_brain_conflicts) > 0
     )
     quota_soft_pressure = bool(quota_soft_breaches > 0)
-    quota_relief_required = quota_hard_breaches > 0 or float(retention_debt_gb) > 0.0
+    quota_relief_required = bool(
+        quota_hard_breaches > 0
+        or float(retention_debt_gb) > retention_debt_target_gb
+    )
     manifest_first_required = bool(
         high_pressure
         or raw_compaction_required
@@ -2349,11 +2370,12 @@ def _ingestion_storage_efficiency_contract(
             "active": bool(quota_relief_required),
             "exact_blocker": (
                 f"quota_hard={quota_hard_breaches}, quota_soft={quota_soft_breaches}, "
-                f"retention_debt_gb={float(retention_debt_gb):.3f}"
+                f"retention_debt_gb={float(retention_debt_gb):.3f}, "
+                f"retention_debt_target_gb={retention_debt_target_gb:.3f}"
             ),
             "expected_impact": "keeps storage families below quota before expansion writes more data",
             "risk_level": "low",
-            "when_to_stop": "storage_quota_guard is ready and retention_debt_gb is at target",
+            "when_to_stop": "storage_quota_guard has no hard breach and retention_debt_gb is at or below target",
         },
     ]
     commands = {
@@ -2520,6 +2542,9 @@ def _ingestion_storage_efficiency_contract(
             "quota_hard_breaches": quota_hard_breaches,
             "quota_soft_breaches": quota_soft_breaches,
             "quota_soft_pressure_advisory": bool(quota_soft_pressure),
+            "retention_debt_gb": round(float(retention_debt_gb), 3),
+            "retention_debt_target_gb": round(retention_debt_target_gb, 3),
+            "retention_debt_over_target": bool(float(retention_debt_gb) > retention_debt_target_gb),
             "quota_breach_families": quota_breach_families,
             "sparse_large_line_active": bool(sparse_large_active),
             "sparse_large_line_pending_bytes": int(sparse_pending_bytes),
@@ -3704,6 +3729,7 @@ def _sql_pending_pressure_lane(row: dict[str, Any], *, source_rel: str, shard_na
     )
     support_markers = (
         "governance/watchdog/",
+        "governance/evidence/",
         "governance/health/",
         "jsonl_ingest_batch_journal",
         "support_watchdog",
@@ -3828,6 +3854,11 @@ def _reconcile_raw_backpressure_with_shard_state(
         "top_support_telemetry_pending_files": "support",
     }
     reductions = {"core": 0, "deferred": 0, "support": 0}
+    total_reductions_by_source: dict[str, int] = {}
+    original_total_pending_lines = _safe_int(
+        raw_live_backpressure.get("total_pending_lines"),
+        0,
+    )
     reconciled_rows: list[dict[str, Any]] = []
     checked_rows = 0
     original_rows_by_key: dict[str, list[dict[str, Any]]] = {}
@@ -3847,6 +3878,10 @@ def _reconcile_raw_backpressure_with_shard_state(
                 reduction = max(old_pending - new_pending, 0)
                 if reduction > 0:
                     reductions[lane] += reduction
+                    total_reductions_by_source[source_rel] = max(
+                        total_reductions_by_source.get(source_rel, 0),
+                        int(reduction),
+                    )
                     row = {
                         **row,
                         "pending_lines": int(new_pending),
@@ -3870,7 +3905,7 @@ def _reconcile_raw_backpressure_with_shard_state(
             if _safe_int(row.get("pending_lines"), 0) > 0:
                 updated_rows.append(row)
         raw_live_backpressure[list_key] = updated_rows
-    total_reduction = int(sum(reductions.values()))
+    total_reduction = int(sum(total_reductions_by_source.values()))
     if total_reduction <= 0:
         for list_key, rows in original_rows_by_key.items():
             raw_live_backpressure[list_key] = rows
@@ -3888,12 +3923,9 @@ def _reconcile_raw_backpressure_with_shard_state(
     for lane, reduction in reductions.items():
         key = f"{lane}_pending_lines"
         raw_live_backpressure[key] = max(_safe_int(raw_live_backpressure.get(key), 0) - int(reduction), 0)
-    raw_live_backpressure["total_pending_lines"] = (
-        _safe_int(raw_live_backpressure.get("core_pending_lines"), 0)
-        + _safe_int(raw_live_backpressure.get("deferred_pending_lines"), 0)
-        + _safe_int(raw_live_backpressure.get("cold_pending_lines"), 0)
-        + _safe_int(raw_live_backpressure.get("support_pending_lines"), 0)
-        + _safe_int(raw_live_backpressure.get("stale_stage_pending_lines"), 0)
+    raw_live_backpressure["total_pending_lines"] = max(
+        int(original_total_pending_lines) - int(total_reduction),
+        0,
     )
     material_age_min_lines = max(
         _safe_int(raw_live_backpressure.get("oldest_age_min_pending_lines"), 100),
@@ -3917,11 +3949,128 @@ def _reconcile_raw_backpressure_with_shard_state(
         "checked_top_rows": int(checked_rows),
         "reconciled_source_count": len(reconciled_rows),
         "pending_line_reduction": total_reduction,
+        "lane_counter_reduction": int(sum(reductions.values())),
+        "total_reduction_source_count": len(total_reductions_by_source),
         "reductions_by_lane": reductions,
         "top_reconciled_sources": reconciled_rows[:12],
         "policy": "fresh sql shard state can retire stale raw pending estimates after focused drains",
     }
     raw_live_backpressure["sql_shard_state_reconciliation"] = payload
+    return payload
+
+
+def _reconcile_raw_backpressure_with_overlay_lanes(
+    raw_live_backpressure: dict[str, Any],
+    sql_pending_overlay: dict[str, Any],
+) -> dict[str, Any]:
+    """Remove source-attributed overlap when raw and SQL views assign different lanes."""
+    list_lanes = {
+        "top_pending_files": "core",
+        "top_deferred_pending_files": "deferred",
+        "top_cold_pending_files": "cold",
+        "top_support_telemetry_pending_files": "support",
+        "top_stale_stage_pending_files": "stale_stage",
+    }
+    reductions = {lane: 0 for lane in ("core", "deferred", "cold", "support", "stale_stage")}
+    reclassified_to_lane = {
+        lane: 0 for lane in ("core", "deferred", "cold", "support", "stale_stage")
+    }
+    overlay_rows = (
+        sql_pending_overlay.get("top_pending_files")
+        if isinstance(sql_pending_overlay.get("top_pending_files"), list)
+        else []
+    )
+    overlay_by_source: dict[str, dict[str, Any]] = {}
+    for row in overlay_rows:
+        if not isinstance(row, dict):
+            continue
+        source_rel = str(row.get("source_rel") or "").strip()
+        target_lane = str(row.get("pressure_lane") or "").strip().lower()
+        if not source_rel or target_lane not in reductions:
+            continue
+        current = overlay_by_source.get(source_rel)
+        if current is None or _safe_int(row.get("pending_lines"), 0) > _safe_int(current.get("pending_lines"), 0):
+            overlay_by_source[source_rel] = row
+
+    reconciled_rows: list[dict[str, Any]] = []
+    if bool(sql_pending_overlay.get("active", False)) and overlay_by_source:
+        for list_key, source_lane in list_lanes.items():
+            rows = raw_live_backpressure.get(list_key) if isinstance(raw_live_backpressure.get(list_key), list) else []
+            updated_rows: list[dict[str, Any]] = []
+            for raw_row in rows:
+                if not isinstance(raw_row, dict):
+                    continue
+                row = dict(raw_row)
+                source_rel = str(row.get("source_rel") or "").strip()
+                overlay_row = overlay_by_source.get(source_rel)
+                target_lane = str((overlay_row or {}).get("pressure_lane") or "").strip().lower()
+                raw_pending = max(_safe_int(row.get("pending_lines"), 0), 0)
+                overlay_pending = max(_safe_int((overlay_row or {}).get("pending_lines"), 0), 0)
+                if target_lane and target_lane != source_lane and raw_pending > 0 and overlay_pending > 0:
+                    overlap = min(raw_pending, overlay_pending)
+                    reductions[source_lane] += overlap
+                    reclassified_to_lane[target_lane] += overlap
+                    remaining = max(raw_pending - overlap, 0)
+                    reconciled_rows.append(
+                        {
+                            "source_rel": source_rel,
+                            "raw_lane": source_lane,
+                            "overlay_lane": target_lane,
+                            "overlap_pending_lines": int(overlap),
+                            "raw_pending_lines": int(raw_pending),
+                            "overlay_pending_lines": int(overlay_pending),
+                        }
+                    )
+                    if remaining <= 0:
+                        continue
+                    row.update(
+                        {
+                            "pending_lines": int(remaining),
+                            "raw_pending_lines_before_lane_reconcile": int(raw_pending),
+                            "sql_overlay_lane_reconciled": True,
+                            "sql_overlay_pressure_lane": target_lane,
+                        }
+                    )
+                updated_rows.append(row)
+            raw_live_backpressure[list_key] = updated_rows
+
+    for lane, reduction in reductions.items():
+        if reduction <= 0:
+            continue
+        key = f"{lane}_pending_lines"
+        raw_live_backpressure[key] = max(
+            _safe_int(raw_live_backpressure.get(key), 0) - int(reduction),
+            0,
+        )
+
+    if reductions["core"] > 0:
+        material_age_min_lines = max(
+            _safe_int(raw_live_backpressure.get("oldest_age_min_pending_lines"), 100),
+            1,
+        )
+        remaining_core_ages = [
+            _safe_float(row.get("oldest_pending_age_seconds"), 0.0)
+            for row in raw_live_backpressure.get("top_pending_files", [])
+            if isinstance(row, dict)
+            and _safe_int(row.get("pending_lines"), 0) >= material_age_min_lines
+        ]
+        raw_live_backpressure["oldest_pending_age_seconds"] = round(
+            max(remaining_core_ages, default=0.0),
+            3,
+        )
+
+    payload = {
+        "active": bool(reconciled_rows),
+        "source_count": len({row["source_rel"] for row in reconciled_rows}),
+        "pending_lines_reclassified": int(sum(reductions.values())),
+        "reductions_by_raw_lane": reductions,
+        "reclassified_to_overlay_lane": reclassified_to_lane,
+        "total_pending_lines_preserved": _safe_int(raw_live_backpressure.get("total_pending_lines"), 0),
+        "top_reconciled_sources": reconciled_rows[:16],
+        "policy": "fresh source-attributed SQL lane identity removes cross-lane overlap without hiding total backlog",
+    }
+    raw_live_backpressure["sql_overlay_lane_reconciliation"] = payload
+    sql_pending_overlay["raw_lane_reconciliation"] = payload
     return payload
 
 
@@ -4273,16 +4422,29 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             _safe_int(backpressure.get("oldest_age_min_pending_lines"), 100),
             1,
         ),
+        "lane_accounting": backpressure.get("lane_accounting")
+        if isinstance(backpressure.get("lane_accounting"), dict)
+        else {},
         "line_estimation": line_estimation,
         "top_pending_files": backpressure.get("top_pending_files") if isinstance(backpressure.get("top_pending_files"), list) else [],
         "top_deferred_pending_files": backpressure.get("top_deferred_pending_files") if isinstance(backpressure.get("top_deferred_pending_files"), list) else [],
+        "top_cold_pending_files": backpressure.get("top_cold_pending_files")
+        if isinstance(backpressure.get("top_cold_pending_files"), list)
+        else [],
         "top_support_telemetry_pending_files": backpressure.get("top_support_telemetry_pending_files")
         if isinstance(backpressure.get("top_support_telemetry_pending_files"), list)
+        else [],
+        "top_stale_stage_pending_files": backpressure.get("top_stale_stage_pending_files")
+        if isinstance(backpressure.get("top_stale_stage_pending_files"), list)
         else [],
         "artifact_age_seconds": round(float(backpressure_age_seconds), 3) if backpressure_age_seconds is not None else None,
         "artifact_stale_for_overlay_reconciliation": bool(raw_backpressure_artifact_stale),
     }
     state_reconciliation = _reconcile_raw_backpressure_with_shard_state(project_root, raw_live_backpressure)
+    lane_reconciliation = _reconcile_raw_backpressure_with_overlay_lanes(
+        raw_live_backpressure,
+        sql_pending_overlay,
+    )
     core_pending_lines = _safe_int(raw_live_backpressure.get("core_pending_lines"), core_pending_lines)
     deferred_pending_lines = _safe_int(raw_live_backpressure.get("deferred_pending_lines"), deferred_pending_lines)
     cold_pending_lines = _safe_int(raw_live_backpressure.get("cold_pending_lines"), cold_pending_lines)
@@ -4293,6 +4455,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
     sql_overlay_would_adjust = bool(
         sql_pending_overlay.get("active", False)
         and (
+            bool(lane_reconciliation.get("active", False))
+            or
             _safe_int(sql_pending_overlay.get("total_pending_lines"), 0) > total_pending_lines
             or _safe_int(sql_pending_overlay.get("core_pending_lines"), 0) > core_pending_lines
             or _safe_int(sql_pending_overlay.get("deferred_pending_lines"), 0) > deferred_pending_lines
@@ -4726,6 +4890,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
     )
     if aged_candidate_files_suppressed_by_clear_overlay:
         aged_candidate_files = 0
+    aged_candidate_files_suppressed_by_effective_pressure = False
     stale_stage_purge_policy = (
         stale_reaper_summary.get("purge_policy")
         if isinstance(stale_reaper_summary.get("purge_policy"), dict)
@@ -4779,6 +4944,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             os.getenv("BOT_MANAGED_SUPPORT_OVERLAY_MIN_PENDING_LINES"),
             DEFAULT_MANAGED_SUPPORT_OVERLAY_MIN_PENDING_LINES,
         ),
+        pending_threshold,
         1,
     )
     managed_support_non_support_ratio = min(
@@ -4798,24 +4964,75 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         ),
         0,
     )
+    raw_support_pending = _safe_int(raw_live_backpressure.get("support_pending_lines"), 0)
+    overlay_support_pending = _safe_int(sql_pending_overlay.get("support_pending_lines"), 0)
+    candidate_support_pending = max(int(support_pending_lines), int(overlay_support_pending))
     managed_support_non_support_allowance = max(
         pending_threshold,
-        int(overlay_support_pending_for_dominance * managed_support_non_support_ratio),
+        int(
+            max(overlay_support_pending_for_dominance, raw_support_pending)
+            * managed_support_non_support_ratio
+        ),
     )
     support_overlay_dominant = bool(
         overlay_positive_rows
         and overlay_support_pending_for_dominance >= managed_support_min_pending
-        and overlay_non_support_pending_for_dominance <= managed_support_non_support_allowance
+        and overlay_non_support_pending_for_dominance
+        <= managed_support_non_support_allowance
     )
-    raw_support_pending = _safe_int(raw_live_backpressure.get("support_pending_lines"), 0)
-    overlay_support_pending = _safe_int(sql_pending_overlay.get("support_pending_lines"), 0)
-    candidate_support_pending = max(int(support_pending_lines), int(overlay_support_pending))
+    lane_accounting = (
+        raw_live_backpressure.get("lane_accounting")
+        if isinstance(raw_live_backpressure.get("lane_accounting"), dict)
+        else {}
+    )
+    overlay_lane_reconciliation = (
+        raw_live_backpressure.get("sql_overlay_lane_reconciliation")
+        if isinstance(
+            raw_live_backpressure.get("sql_overlay_lane_reconciliation"), dict
+        )
+        else {}
+    )
+    reclassified_to_overlay_lane = (
+        overlay_lane_reconciliation.get("reclassified_to_overlay_lane")
+        if isinstance(
+            overlay_lane_reconciliation.get("reclassified_to_overlay_lane"), dict
+        )
+        else {}
+    )
+    raw_support_overlap_remaining = max(
+        int(raw_support_pending)
+        - _safe_int(reclassified_to_overlay_lane.get("support"), 0),
+        0,
+    )
+    raw_non_support_deferred_pending = max(
+        int(deferred_pending_lines) - int(raw_support_overlap_remaining),
+        0,
+    )
+    raw_support_classification_explicit = bool(
+        lane_accounting.get("deferred_includes_support_telemetry", False)
+        or raw_live_backpressure.get("top_support_telemetry_pending_files")
+    )
+    raw_support_dominant = bool(
+        not raw_backpressure_artifact_stale
+        and raw_support_classification_explicit
+        and raw_support_pending >= managed_support_min_pending
+        and raw_non_support_deferred_pending
+        <= managed_support_non_support_allowance
+    )
+    managed_support_classification_source = (
+        "fresh_sql_overlay"
+        if support_overlay_dominant
+        else "fresh_raw_support_contract"
+        if raw_support_dominant
+        else "none"
+    )
     managed_support_overlay_backlog = bool(
-        bool(sql_pending_overlay.get("active", False))
-        and support_overlay_dominant
-        and candidate_support_pending > max(raw_support_pending, managed_support_min_pending)
+        (bool(sql_pending_overlay.get("active", False)) or raw_support_dominant)
+        and (support_overlay_dominant or raw_support_dominant)
+        and candidate_support_pending >= managed_support_min_pending
         and core_pending_lines <= pending_threshold
-        and deferred_pending_lines <= max(pending_threshold * 8, 100000)
+        and raw_non_support_deferred_pending
+        <= max(pending_threshold * 8, 100000)
         and cold_pending_lines <= max(_safe_int(_steady_state_targets().get("cold_pending_lines"), 5000), 5000)
         and stale_stage_pending_lines <= 0
         and _safe_int(sql_pending_overlay.get("invalid_lines"), 0) <= 0
@@ -4831,19 +5048,32 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
     )
     support_overlay_lane_isolated_for_pressure = False
     if managed_support_overlay_backlog:
+        if raw_support_dominant:
+            pressure_deferred_pending_lines = int(
+                raw_non_support_deferred_pending
+            )
         if candidate_support_pending > int(support_pending_lines):
             support_pending_lines = int(candidate_support_pending)
             total_pending_lines = max(
                 int(total_pending_lines),
                 int(core_pending_lines)
-                + int(deferred_pending_lines)
+                + int(pressure_deferred_pending_lines)
                 + int(cold_pending_lines)
                 + int(support_pending_lines)
                 + int(stale_stage_pending_lines),
             )
             oldest_age_seconds = max(oldest_age_seconds, _safe_float(sql_pending_overlay.get("oldest_pending_age_seconds"), 0.0))
         if bool(drainer_fleet_support_reconciliation.get("active", False)):
-            bounded_support = max(raw_support_pending, _safe_int(drainer_fleet_support_reconciliation.get("support_pending_lines"), 0))
+            bounded_support = min(
+                int(candidate_support_pending),
+                max(
+                    _safe_int(
+                        drainer_fleet_support_reconciliation.get("support_pending_lines"),
+                        0,
+                    ),
+                    0,
+                ),
+            )
             bounded_oldest_age = min(
                 float(oldest_age_seconds),
                 _safe_float(drainer_fleet_support_reconciliation.get("oldest_pending_age_seconds"), float(age_threshold)),
@@ -4851,10 +5081,13 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             )
             support_overlay_lane_isolated_for_pressure = True
         else:
-            bounded_support = max(raw_support_pending, min(int(candidate_support_pending), managed_support_pressure_cap))
+            bounded_support = min(
+                int(candidate_support_pending),
+                int(managed_support_pressure_cap),
+            )
             bounded_total = (
                 int(core_pending_lines)
-                + int(deferred_pending_lines)
+                + int(pressure_deferred_pending_lines)
                 + int(cold_pending_lines)
                 + int(bounded_support)
                 + int(stale_stage_pending_lines)
@@ -4862,7 +5095,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             support_overlay_lane_isolated_for_pressure = bool(
                 int(core_pending_lines) <= int(core_target_lines)
                 and int(bounded_total) <= int(pending_threshold)
-                and int(deferred_pending_lines) <= int(pending_threshold)
+                and int(pressure_deferred_pending_lines) <= int(pending_threshold)
                 and int(cold_pending_lines) <= max(_safe_int(_steady_state_targets().get("cold_pending_lines"), 5000), 5000)
                 and int(stale_stage_pending_lines) <= 0
                 and _safe_int(sql_pending_overlay.get("invalid_lines"), 0) <= 0
@@ -4878,7 +5111,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         pressure_support_pending_lines = bounded_support
         pressure_total_pending_lines = (
             int(core_pending_lines)
-            + int(deferred_pending_lines)
+            + int(pressure_deferred_pending_lines)
             + int(cold_pending_lines)
             + int(bounded_support)
             + int(stale_stage_pending_lines)
@@ -4886,7 +5119,17 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         pressure_oldest_age_seconds = bounded_oldest_age
         sql_pending_overlay["managed_support_overlay_backlog"] = True
         sql_pending_overlay["managed_support_overlay_policy"] = "support_lane_visible_but_bounded_for_core_storage_pressure"
-        sql_pending_overlay["support_overlay_dominant"] = True
+        sql_pending_overlay["support_overlay_dominant"] = bool(
+            support_overlay_dominant
+        )
+        sql_pending_overlay["support_backlog_dominant"] = True
+        sql_pending_overlay["raw_support_dominant"] = bool(raw_support_dominant)
+        sql_pending_overlay["managed_support_classification_source"] = (
+            managed_support_classification_source
+        )
+        sql_pending_overlay["raw_non_support_deferred_pending_lines"] = int(
+            raw_non_support_deferred_pending
+        )
         sql_pending_overlay["overlay_total_pending_for_dominance"] = int(overlay_total_pending_for_dominance)
         sql_pending_overlay["overlay_support_pending_from_top_rows"] = int(overlay_support_pending_from_top_rows)
         sql_pending_overlay["overlay_non_support_pending_from_top_rows"] = int(overlay_non_support_pending_from_top_rows)
@@ -5114,12 +5357,55 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         and route_verified
         and int(unresolved_split_brain_conflicts) <= 0
     )
-    effective_hard_gate = bool(hard_gate and not (overlay_pressure_clear and recoverable_hard_gate_only))
-    effective_severe_backpressure = bool(severe_backpressure and not overlay_pressure_clear)
+    managed_support_pressure_clear = bool(
+        managed_support_overlay_backlog
+        and support_overlay_lane_isolated_for_pressure
+        and pressure_index < 0.75
+        and int(pressure_core_pending_lines) <= int(pending_threshold)
+        and int(pressure_total_pending_lines) <= int(pending_threshold)
+        and float(pressure_oldest_age_seconds) <= float(age_threshold)
+        and float(retention_debt_gb)
+        <= float(
+            _steady_state_targets().get(
+                "retention_debt_gb", DEFAULT_TARGET_RETENTION_DEBT_GB
+            )
+        )
+        and _safe_int(sql_ingestion.get("sqlite", {}).get("invalid"), 0) <= 0
+        and _safe_int(sql_pending_overlay.get("invalid_lines"), 0) <= 0
+        and _safe_int(sql_pending_overlay.get("ops_write_failures"), 0) <= 0
+        and not route_drift
+        and route_verified
+        and int(unresolved_split_brain_conflicts) <= 0
+    )
+    effective_pressure_clear = bool(
+        overlay_pressure_clear or managed_support_pressure_clear
+    )
+    aged_candidate_files_suppressed_by_effective_pressure = bool(
+        aged_candidate_files > 0
+        and effective_pressure_clear
+        and str(stale_pending_locator.get("status") or "") == "clear"
+        and not (
+            stale_pending_locator.get("oldest_sources")
+            if isinstance(stale_pending_locator.get("oldest_sources"), list)
+            else []
+        )
+        and float(pressure_oldest_age_seconds) < float(age_threshold)
+        and int(pressure_core_pending_lines) <= int(core_target_lines)
+        and int(pressure_total_pending_lines) <= int(pending_threshold)
+    )
+    if aged_candidate_files_suppressed_by_effective_pressure:
+        aged_candidate_files = 0
+    effective_hard_gate = bool(
+        hard_gate
+        and not (effective_pressure_clear and recoverable_hard_gate_only)
+    )
+    effective_severe_backpressure = bool(
+        severe_backpressure and not effective_pressure_clear
+    )
     effective_backpressure_overload = bool(
         backpressure.get("overload", False)
         and not stale_backpressure_overload_suppressed
-        and not overlay_pressure_clear
+        and not effective_pressure_clear
     )
 
     if effective_hard_gate or effective_severe_backpressure or pressure_index >= 3.0:
@@ -5266,7 +5552,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         total_pending_lines=pressure_total_pending_lines,
         core_pending_lines=pressure_core_pending_lines,
         retention_debt_gb=retention_debt_gb,
-        overlay_pressure_clear=overlay_pressure_clear,
+        overlay_pressure_clear=effective_pressure_clear,
     )
     if bool(storage_efficiency_contract.get("active", False)):
         active_blockers = storage_efficiency_contract.get("active_blockers")
@@ -5491,6 +5777,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
         "severity": severity,
         "recovery_state": recovery_state,
         "recommended_operating_mode": recommended_mode,
+        "data_plane_definition": build_data_plane_definition(project_root),
         "pressure_index": pressure_index,
         "backpressure_quality_score": float(steady_state.get("quality_score", 0.0) or 0.0),
         "recovery_quality_score": float(recovery_scorecard.get("score", 0.0) or 0.0),
@@ -5531,6 +5818,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             "managed_support_overlay_backlog": bool(managed_support_overlay_backlog),
             "overlay_adjusted": sql_overlay_adjusted,
             "overlay_pressure_clear": overlay_pressure_clear,
+            "managed_support_pressure_clear": managed_support_pressure_clear,
+            "effective_pressure_clear": effective_pressure_clear,
             "managed_tiny_hot_tail": managed_tiny_hot_tail,
             "raw_live": raw_live_backpressure,
             "effective_raw_live": effective_raw_live_backpressure,
@@ -5556,6 +5845,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, now_utc: datetime | None
             "raw_aged_backlog_candidate_files": raw_aged_candidate_files,
             "aged_backlog_candidate_files_suppressed_by_clear_overlay": bool(
                 aged_candidate_files_suppressed_by_clear_overlay
+            ),
+            "aged_backlog_candidate_files_suppressed_by_effective_pressure": bool(
+                aged_candidate_files_suppressed_by_effective_pressure
             ),
             "backlog_quarantine_status": backlog_quarantine_status,
             "backlog_quarantine_candidate_files": backlog_quarantine_candidate_files,
@@ -5705,7 +5997,21 @@ def main() -> int:
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--definitions-only",
+        action="store_true",
+        help="Print bounded route observations and ingestion definitions without writing a health artifact.",
+    )
     args = parser.parse_args()
+
+    if args.definitions_only:
+        payload = build_data_plane_definition(Path(args.project_root).absolute())
+        print(json.dumps(payload, ensure_ascii=True, indent=None if args.json else 2))
+        return (
+            0
+            if payload["definition_status"] == "defined" and not payload["route_observation_findings"]
+            else 2
+        )
 
     payload = build_payload(Path(args.project_root).resolve())
     out_path = Path(args.out_file).expanduser()

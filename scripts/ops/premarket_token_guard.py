@@ -1,4 +1,5 @@
 import argparse
+import fcntl
 import json
 import os
 import socket
@@ -177,15 +178,12 @@ def _auth_attempt(token_path: Path, callback_timeout_seconds: float, validate_ac
             },
         }
 
-    api_key = os.getenv('SCHWAB_API_KEY', '').strip()
-    app_secret = os.getenv('SCHWAB_SECRET', '').strip()
-    callback_url = (
-        os.getenv('SCHWAB_CALLBACK_URL', '').strip()
-        or os.getenv('SCHWAB_REDIRECT', '').strip()
-        or 'https://127.0.0.1:8182'
-    )
+    credentials = schwab_credentials_from_env()
+    api_key = credentials.api_key
+    app_secret = credentials.app_secret
+    callback_url = credentials.callback_url
 
-    if not credentials_ready(schwab_credentials_from_env()):
+    if not credentials_ready(credentials):
         return {
             'attempted': False,
             'ok': False,
@@ -258,9 +256,54 @@ def _write_token_atomic(token_path: Path, payload: Dict[str, Any]) -> None:
 
 
 def _direct_refresh_token_grant(token_path: Path, *, min_extension_seconds: float = 300.0) -> Dict[str, Any]:
-    api_key = os.getenv('SCHWAB_API_KEY', '').strip()
-    app_secret = os.getenv('SCHWAB_SECRET', '').strip()
-    if not credentials_ready(schwab_credentials_from_env()):
+    lock_path = token_path.with_suffix(token_path.suffix + '.refresh.lock')
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        lock_handle = lock_path.open('a+', encoding='utf-8')
+    except OSError as exc:
+        return {
+            'attempted': False,
+            'ok': False,
+            'reason': f'refresh_grant_lock_error:{type(exc).__name__}',
+            'details': {'method': 'refresh_token_grant'},
+        }
+
+    lock_wait_seconds = max(float(os.getenv('PREMARKET_TOKEN_REFRESH_LOCK_WAIT_SECONDS', '15') or 15.0), 0.0)
+    deadline = time.monotonic() + lock_wait_seconds
+    acquired = False
+    try:
+        while True:
+            try:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    return {
+                        'attempted': False,
+                        'ok': False,
+                        'reason': 'refresh_grant_lock_busy',
+                        'details': {'method': 'refresh_token_grant'},
+                    }
+                time.sleep(0.05)
+        return _direct_refresh_token_grant_locked(
+            token_path,
+            min_extension_seconds=min_extension_seconds,
+        )
+    finally:
+        if acquired:
+            try:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        lock_handle.close()
+
+
+def _direct_refresh_token_grant_locked(token_path: Path, *, min_extension_seconds: float = 300.0) -> Dict[str, Any]:
+    credentials = schwab_credentials_from_env()
+    api_key = credentials.api_key
+    app_secret = credentials.app_secret
+    if not credentials_ready(credentials):
         return {'attempted': False, 'ok': False, 'reason': 'missing_credentials', 'details': {'method': 'refresh_token_grant'}}
 
     try:

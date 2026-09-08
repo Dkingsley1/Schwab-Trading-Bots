@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 SCHEMA_VERSION = 3
 ARTIFACT_SPECS = {
     "health_fast": ("health_fast_latest.json", 10 * 60),
@@ -21,7 +20,12 @@ ARTIFACT_SPECS = {
     "throttle": ("runtime_throttle_control_latest.json", 10 * 60),
     "paper_ramp": ("paper_400_ramp_latest.json", 10 * 60),
     "unattended_soak": ("unattended_soak_readiness_latest.json", 45 * 60),
+    "continuous_soak": ("continuous_soak_integrity_control_latest.json", 45 * 60),
     "production_excellence": ("production_excellence_control_latest.json", 15 * 60),
+    "strategy_specialization": (
+        "governance/research/sleeve_strategy_specialization_latest.json",
+        90 * 60,
+    ),
 }
 REQUIRED_SOURCES = {
     "health_fast",
@@ -32,6 +36,13 @@ REQUIRED_SOURCES = {
     "throttle",
     "paper_ramp",
     "unattended_soak",
+}
+EVIDENCE_ONLY_SOURCES = {
+    "institutional_capabilities",
+    "authoritative_systems",
+    "paper_live_equivalence",
+    "research_data_platform",
+    "institutional_research_extensions",
 }
 
 
@@ -56,10 +67,18 @@ def _parse_timestamp(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _artifact(root: Path, filename: str, max_age_seconds: float, now: datetime) -> dict[str, Any]:
+def _artifact(
+    root: Path, filename: str, max_age_seconds: float, now: datetime
+) -> dict[str, Any]:
     relative = Path(filename)
-    path = relative if relative.is_absolute() else (
-        root / relative if len(relative.parts) > 1 else root / "governance" / "health" / relative
+    path = (
+        relative
+        if relative.is_absolute()
+        else (
+            root / relative
+            if len(relative.parts) > 1
+            else root / "governance" / "health" / relative
+        )
     )
     payload = _load_json(path)
     present = bool(payload)
@@ -109,26 +128,44 @@ def _first(values: Any, default: str = "none") -> str:
 
 
 def _status_text(payload: dict[str, Any], default: str = "unknown") -> str:
-    return str(payload.get("overall_status") or payload.get("status") or default).strip().lower()
+    return (
+        str(payload.get("overall_status") or payload.get("status") or default)
+        .strip()
+        .lower()
+    )
 
 
 def _source_public(artifact: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in artifact.items() if key != "payload"}
 
 
-def _auth_row(sources: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _auth_row(
+    sources: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     broker_source = sources["broker_readiness"]
     lease_source = sources["auth_lease"]
     supervisor_source = sources["schwab_auth"]
     broker = broker_source["payload"]
     lease = lease_source["payload"]
     supervisor = supervisor_source["payload"]
-    broker_state = lease.get("broker_state") if isinstance(lease.get("broker_state"), dict) else {}
-    budget = lease.get("lease_budget") if isinstance(lease.get("lease_budget"), dict) else {}
+    broker_state = (
+        lease.get("broker_state") if isinstance(lease.get("broker_state"), dict) else {}
+    )
+    budget = (
+        lease.get("lease_budget") if isinstance(lease.get("lease_budget"), dict) else {}
+    )
     token = supervisor.get("token") if isinstance(supervisor.get("token"), dict) else {}
-    preflight = broker.get("preflight_checks") if isinstance(broker.get("preflight_checks"), dict) else {}
+    preflight = (
+        broker.get("preflight_checks")
+        if isinstance(broker.get("preflight_checks"), dict)
+        else {}
+    )
 
-    broker_ok = bool(broker.get("ready_for_open") and broker.get("network_ok") and broker.get("auth_ok"))
+    broker_ok = bool(
+        broker.get("ready_for_open")
+        and broker.get("network_ok")
+        and broker.get("auth_ok")
+    )
     lease_ok = bool(
         _status_text(lease) == "ready"
         and str(lease.get("lease_state") or "").lower() == "healthy"
@@ -152,21 +189,22 @@ def _auth_row(sources: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], dict[
         "schwab_auth": supervisor_ok,
     }
     fresh_states = {
-        name: state
-        for name, state in state_by_source.items()
-        if sources[name]["fresh"]
+        name: state for name, state in state_by_source.items() if sources[name]["fresh"]
     }
     fresh_failures = [name for name, state in fresh_states.items() if not state]
     stale_sources = [name for name in state_by_source if not sources[name]["fresh"]]
     missing_sources = [name for name in state_by_source if not sources[name]["present"]]
     active_warnings: list[str] = []
     superseded_warnings: list[str] = []
-    for warning in broker.get("warnings") if isinstance(broker.get("warnings"), list) else []:
+    for warning in (
+        broker.get("warnings") if isinstance(broker.get("warnings"), list) else []
+    ):
         text = str(warning or "").strip()
         expiring = text.startswith("token_expiring_soon:")
         refresh_resolved = bool(
             expiring
-            and expires_in_seconds >= _as_float(token.get("min_expires_seconds"), 1500.0)
+            and expires_in_seconds
+            >= _as_float(token.get("min_expires_seconds"), 1500.0)
             and not preflight.get("refresh_needed_after", False)
             and not token.get("refresh_needed", False)
         )
@@ -204,7 +242,9 @@ def _auth_row(sources: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], dict[
     action = "none"
     if status == "blocked":
         action = "schwab-auth-supervisor"
-    elif token.get("refresh_needed") or expires_in_seconds < _as_float(token.get("min_expires_seconds"), 1500.0):
+    elif token.get("refresh_needed") or expires_in_seconds < _as_float(
+        token.get("min_expires_seconds"), 1500.0
+    ):
         action = "token-refresh"
 
     auth = {
@@ -212,9 +252,13 @@ def _auth_row(sources: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], dict[
         "reason": reason,
         "lease": str(lease.get("lease_state") or "unknown"),
         "broker_ready": broker_ok,
-        "network_ok": bool(broker.get("network_ok") and broker_state.get("network_ok", True)),
+        "network_ok": bool(
+            broker.get("network_ok") and broker_state.get("network_ok", True)
+        ),
         "auth_ok": bool(broker.get("auth_ok") and broker_state.get("auth_ok", True)),
-        "probe_ok": bool(broker_state.get("auth_probe_ok", budget.get("probe_backed", False))),
+        "probe_ok": bool(
+            broker_state.get("auth_probe_ok", budget.get("probe_backed", False))
+        ),
         "token_ready": supervisor_ok,
         "expires_in_seconds": round(expires_in_seconds, 3),
         "freshness": "fresh" if not stale_sources else "partial",
@@ -222,7 +266,10 @@ def _auth_row(sources: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], dict[
         "active_warning_count": len(active_warnings),
         "superseded_warning_count": len(superseded_warnings),
         "max_source_age_seconds": max(
-            (_as_float(sources[name].get("age_seconds"), 0.0) for name in state_by_source),
+            (
+                _as_float(sources[name].get("age_seconds"), 0.0)
+                for name in state_by_source
+            ),
             default=0.0,
         ),
         "impact": "paper_blocked" if status == "blocked" else "none",
@@ -242,25 +289,50 @@ def _auth_row(sources: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], dict[
     return auth, schwab_auth
 
 
-def _system_and_collection_rows(sources: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _system_and_collection_rows(
+    sources: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     source = sources["health_fast"]
     health = source["payload"]
-    operational = health.get("operational_readiness") if isinstance(health.get("operational_readiness"), dict) else {}
-    paper = operational.get("guarded_paper") if isinstance(operational.get("guarded_paper"), dict) else {}
-    live = operational.get("live_execution") if isinstance(operational.get("live_execution"), dict) else {}
-    collection_payload = health.get("collection") if isinstance(health.get("collection"), dict) else {}
-    process_watchdog = health.get("process_watchdog") if isinstance(health.get("process_watchdog"), dict) else {}
+    operational = (
+        health.get("operational_readiness")
+        if isinstance(health.get("operational_readiness"), dict)
+        else {}
+    )
+    paper = (
+        operational.get("guarded_paper")
+        if isinstance(operational.get("guarded_paper"), dict)
+        else {}
+    )
+    live = (
+        operational.get("live_execution")
+        if isinstance(operational.get("live_execution"), dict)
+        else {}
+    )
+    collection_payload = (
+        health.get("collection") if isinstance(health.get("collection"), dict) else {}
+    )
+    process_watchdog = (
+        health.get("process_watchdog")
+        if isinstance(health.get("process_watchdog"), dict)
+        else {}
+    )
     sleeves = (
         process_watchdog.get("all_sleeves_effective_runtime")
         if isinstance(process_watchdog.get("all_sleeves_effective_runtime"), dict)
         else {}
     )
-    paper_status = str(paper.get("status") or ("ready" if paper.get("ok") else "blocked")).lower()
+    paper_status = str(
+        paper.get("status") or ("ready" if paper.get("ok") else "blocked")
+    ).lower()
     blockers = paper.get("blockers") if isinstance(paper.get("blockers"), list) else []
     status = _status_text(health)
     if not source["fresh"]:
         status = "degraded"
-    cause = _first(blockers, "repair_backlog_active" if health.get("repair_backlog_active") else "none")
+    cause = _first(
+        blockers,
+        "repair_backlog_active" if health.get("repair_backlog_active") else "none",
+    )
     system = {
         "status": status,
         "strict_all_clear": bool(health.get("strict_all_clear")),
@@ -269,13 +341,33 @@ def _system_and_collection_rows(sources: dict[str, dict[str, Any]]) -> tuple[dic
         "repair_active": bool(health.get("repair_backlog_active")),
         "cause": cause,
         "artifact_age_seconds": source.get("age_seconds"),
-        "action": "none" if cause == "none" and status == "ready" else "storage-backpressure-autopilot" if cause.startswith("storage_") else "health-fast",
+        "action": (
+            "none"
+            if cause == "none" and status == "ready"
+            else (
+                "storage-backpressure-autopilot"
+                if cause.startswith("storage_")
+                else "health-fast"
+            )
+        ),
     }
     collector_count = _as_int(collection_payload.get("collector_count"))
-    observing = _as_int(collection_payload.get("effective_bots_with_observations", collection_payload.get("bots_with_observations")))
+    observing = _as_int(
+        collection_payload.get(
+            "effective_bots_with_observations",
+            collection_payload.get("bots_with_observations"),
+        )
+    )
     zero = _as_int(collection_payload.get("unmanaged_zero_observation_count"))
     launcher_ok = bool(sleeves.get("ok", sleeves.get("status") == "ready"))
-    collection_status = "ready" if launcher_ok and collector_count > 0 and observing >= collector_count and zero == 0 else "degraded"
+    collection_status = (
+        "ready"
+        if launcher_ok
+        and collector_count > 0
+        and observing >= collector_count
+        and zero == 0
+        else "degraded"
+    )
     if not source["fresh"]:
         collection_status = "degraded"
     if not source["fresh"]:
@@ -306,7 +398,9 @@ def _system_and_collection_rows(sources: dict[str, dict[str, Any]]) -> tuple[dic
     return system, collection
 
 
-def _paper_ramp_row(sources: dict[str, dict[str, Any]], system: dict[str, Any]) -> dict[str, Any]:
+def _paper_ramp_row(
+    sources: dict[str, dict[str, Any]], system: dict[str, Any]
+) -> dict[str, Any]:
     source = sources["paper_ramp"]
     ramp = source["payload"]
     stage = str(ramp.get("stage") or "unknown").strip().lower()
@@ -327,9 +421,15 @@ def _paper_ramp_row(sources: dict[str, dict[str, Any]], system: dict[str, Any]) 
         cause = "none"
     else:
         status = "blocked"
-        cause = _first(blockers, "paper_ramp_not_armed" if not armed else "paper_ramp_not_ready")
+        cause = _first(
+            blockers, "paper_ramp_not_armed" if not armed else "paper_ramp_not_ready"
+        )
 
-    sources_disagree = bool(source["fresh"] and sources["health_fast"]["fresh"] and health_ready != ramp_ready)
+    sources_disagree = bool(
+        source["fresh"]
+        and sources["health_fast"]["fresh"]
+        and health_ready != ramp_ready
+    )
     if sources_disagree or status == "blocked" or health_paper_status == "blocked":
         effective_paper_status = "blocked"
     elif status != "ready" or health_paper_status != "ready":
@@ -346,29 +446,64 @@ def _paper_ramp_row(sources: dict[str, dict[str, Any]], system: dict[str, Any]) 
         "blockers": [str(value) for value in blockers if str(value or "").strip()],
         "sources_disagree": sources_disagree,
         "cause": "paper_sources_disagree" if sources_disagree else cause,
-        "impact": "none" if effective_paper_status == "ready" else "paper_blocked" if effective_paper_status == "blocked" else "paper_unverified",
+        "impact": (
+            "none"
+            if effective_paper_status == "ready"
+            else (
+                "paper_blocked"
+                if effective_paper_status == "blocked"
+                else "paper_unverified"
+            )
+        ),
         "artifact_age_seconds": source.get("age_seconds"),
         "action": "none" if effective_paper_status == "ready" else "paper-400-ramp",
     }
 
 
 def _fx_provider_row(project_root: Path, now: datetime) -> dict[str, Any]:
-    session_source = _artifact(project_root, "fx_shadow_session_latest.json", 10 * 60, now)
-    ingress_source = _artifact(project_root, "data_ingress_latest_fx_equities_schwab.json", 10 * 60, now)
-    guard_source = _artifact(project_root, "fx_twelve_data_guard_latest.json", 24 * 60 * 60, now)
-    if not session_source["present"] and not ingress_source["present"] and not guard_source["present"]:
+    session_source = _artifact(
+        project_root, "fx_shadow_session_latest.json", 10 * 60, now
+    )
+    ingress_source = _artifact(
+        project_root, "data_ingress_latest_fx_equities_schwab.json", 10 * 60, now
+    )
+    guard_source = _artifact(
+        project_root, "fx_twelve_data_guard_latest.json", 24 * 60 * 60, now
+    )
+    if (
+        not session_source["present"]
+        and not ingress_source["present"]
+        and not guard_source["present"]
+    ):
         return {}
 
     session_payload = session_source["payload"]
     ingress = ingress_source["payload"]
     guard = guard_source["payload"]
-    session = session_payload.get("session") if isinstance(session_payload.get("session"), dict) else {}
-    provider = session.get("provider") if isinstance(session.get("provider"), dict) else {}
-    cooldown = provider.get("cooldown") if isinstance(provider.get("cooldown"), dict) else guard
+    session = (
+        session_payload.get("session")
+        if isinstance(session_payload.get("session"), dict)
+        else {}
+    )
+    provider = (
+        session.get("provider") if isinstance(session.get("provider"), dict) else {}
+    )
+    cooldown = (
+        provider.get("cooldown")
+        if isinstance(provider.get("cooldown"), dict)
+        else guard
+    )
     cooldown_until = _as_float(cooldown.get("cooldown_until_ts"), 0.0)
-    cooldown_active = bool(cooldown.get("active", cooldown_until > now.timestamp()) and cooldown_until > now.timestamp())
+    cooldown_active = bool(
+        cooldown.get("active", cooldown_until > now.timestamp())
+        and cooldown_until > now.timestamp()
+    )
     cooldown_kind = str(cooldown.get("kind") or "none").strip().lower()
-    mode = str(session_payload.get("mode") or ingress.get("loop_state") or "unknown").strip().lower()
+    mode = (
+        str(session_payload.get("mode") or ingress.get("loop_state") or "unknown")
+        .strip()
+        .lower()
+    )
     error_rate = _as_float(ingress.get("iter_error_rate"), 0.0)
     request_count = _as_int(ingress.get("iter_total_requests"), 0)
     fallback_active = mode in {
@@ -427,8 +562,12 @@ def _fx_provider_row(project_root: Path, now: datetime) -> dict[str, Any]:
         "fallback_active": fallback_active,
         "managed_fallback": managed_fallback,
         "cooldown_kind": cooldown_kind,
-        "cooldown_remaining_seconds": max(cooldown_until - now.timestamp(), 0.0) if cooldown_active else 0.0,
-        "credential_action_required": bool(cooldown.get("credential_action_required", cooldown_kind == "auth")),
+        "cooldown_remaining_seconds": (
+            max(cooldown_until - now.timestamp(), 0.0) if cooldown_active else 0.0
+        ),
+        "credential_action_required": bool(
+            cooldown.get("credential_action_required", cooldown_kind == "auth")
+        ),
         "iter_error_rate": round(error_rate, 4),
         "iter_request_count": request_count,
         "cause": cause,
@@ -438,45 +577,101 @@ def _fx_provider_row(project_root: Path, now: datetime) -> dict[str, Any]:
     }
 
 
-def _storage_row(sources: dict[str, dict[str, Any]], system: dict[str, Any]) -> dict[str, Any]:
+def _storage_row(
+    sources: dict[str, dict[str, Any]], system: dict[str, Any]
+) -> dict[str, Any]:
     source = sources["storage"]
     storage = source["payload"]
-    backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
-    effective = backpressure.get("raw_live") if isinstance(backpressure.get("raw_live"), dict) else {}
-    if not effective:
+    backpressure = (
+        storage.get("backpressure")
+        if isinstance(storage.get("backpressure"), dict)
+        else {}
+    )
+    raw_live = (
+        backpressure.get("raw_live")
+        if isinstance(backpressure.get("raw_live"), dict)
+        else {}
+    )
+    effective_candidate = (
+        backpressure.get("effective_raw_live")
+        if isinstance(backpressure.get("effective_raw_live"), dict)
+        else {}
+    )
+    if not effective_candidate:
         candidate = storage.get("effective_raw_live")
-        effective = candidate if isinstance(candidate, dict) else {}
+        effective_candidate = candidate if isinstance(candidate, dict) else {}
+    effective_pressure_contract = bool(
+        backpressure.get("effective_pressure_clear", False)
+        and effective_candidate
+    )
+    effective = (
+        effective_candidate
+        if effective_pressure_contract
+        else raw_live or effective_candidate
+    )
     total = _as_int(backpressure.get("total_pending_lines"))
     core = _as_int(backpressure.get("core_pending_lines"))
     effective_total = _as_int(effective.get("total_pending_lines"), total)
     effective_core = _as_int(effective.get("core_pending_lines"), core)
     threshold = _as_int(storage.get("pending_lines_threshold"), 15000)
     pressure = _as_float(storage.get("pressure_index"))
-    strict_status = "blocked" if pressure >= 1.0 or total > threshold else ("watch" if pressure >= 0.5 else "ready")
-    storage_detail = storage.get("storage") if isinstance(storage.get("storage"), dict) else {}
-    backlog_truth = storage.get("backlog_truth") if isinstance(storage.get("backlog_truth"), dict) else {}
-    raw_truth = backlog_truth.get("raw_live") if isinstance(backlog_truth.get("raw_live"), dict) else {}
-    overlay_truth = backlog_truth.get("sql_overlay") if isinstance(backlog_truth.get("sql_overlay"), dict) else {}
-    stale_locator = storage.get("stale_pending_locator") if isinstance(storage.get("stale_pending_locator"), dict) else {}
+    strict_total = effective_total if effective_pressure_contract else total
+    strict_status = (
+        "blocked"
+        if pressure >= 1.0 or strict_total > threshold
+        else ("watch" if pressure >= 0.5 else "ready")
+    )
+    storage_detail = (
+        storage.get("storage") if isinstance(storage.get("storage"), dict) else {}
+    )
+    backlog_truth = (
+        storage.get("backlog_truth")
+        if isinstance(storage.get("backlog_truth"), dict)
+        else {}
+    )
+    raw_truth = (
+        backlog_truth.get("raw_live")
+        if isinstance(backlog_truth.get("raw_live"), dict)
+        else {}
+    )
+    overlay_truth = (
+        backlog_truth.get("sql_overlay")
+        if isinstance(backlog_truth.get("sql_overlay"), dict)
+        else {}
+    )
+    stale_locator = (
+        storage.get("stale_pending_locator")
+        if isinstance(storage.get("stale_pending_locator"), dict)
+        else {}
+    )
     if not stale_locator:
         candidate = backlog_truth.get("stale_pending_locator")
         stale_locator = candidate if isinstance(candidate, dict) else {}
-    oldest_sources = stale_locator.get("oldest_sources") if isinstance(stale_locator.get("oldest_sources"), list) else []
-    oldest_source = oldest_sources[0] if oldest_sources and isinstance(oldest_sources[0], dict) else {}
+    oldest_sources = (
+        stale_locator.get("oldest_sources")
+        if isinstance(stale_locator.get("oldest_sources"), list)
+        else []
+    )
+    oldest_source = (
+        oldest_sources[0]
+        if oldest_sources and isinstance(oldest_sources[0], dict)
+        else {}
+    )
     leader_path = str(oldest_source.get("source_rel") or "none")
     leader_parts = Path(leader_path).parts
     leader = "/".join(leader_parts[-2:]) if len(leader_parts) >= 2 else leader_path
-    stale_source_count = _as_int(stale_locator.get("stale_source_count"), len(oldest_sources))
+    stale_source_count = _as_int(
+        stale_locator.get("stale_source_count"), len(oldest_sources)
+    )
     drain = str(storage_detail.get("backlog_drain_status") or "idle")
     paper_status = str(system.get("paper_status") or "unknown")
     control_status = _status_text(storage)
     severity = str(storage.get("severity") or "unknown").lower()
     managed_bounded_backlog = bool(
-        strict_status == "watch"
-        and paper_status == "ready"
+        (strict_status == "watch" or effective_pressure_contract)
+        and (paper_status == "ready" or effective_pressure_contract)
         and control_status in {"ready", "advisory"}
         and severity in {"stable", "normal", "clear", "ready"}
-        and total <= threshold
         and effective_total <= threshold
         and stale_source_count == 0
     )
@@ -484,7 +679,9 @@ def _storage_row(sources: dict[str, dict[str, Any]], system: dict[str, Any]) -> 
         status = "blocked"
     elif managed_bounded_backlog:
         status = "watch"
-    elif drain in {"drain_active", "running", "active"} and (strict_status != "ready" or paper_status != "ready"):
+    elif drain in {"drain_active", "running", "active"} and (
+        strict_status != "ready" or paper_status != "ready"
+    ):
         status = "recovering"
     elif strict_status == "watch":
         status = "watch"
@@ -495,6 +692,8 @@ def _storage_row(sources: dict[str, dict[str, Any]], system: dict[str, Any]) -> 
     cause = "none"
     if stale_source_count > 0 and pressure >= 1.0:
         cause = "stale_sql_overlay"
+    elif total > threshold and effective_pressure_contract:
+        cause = "managed_support_backlog"
     elif total > threshold:
         cause = "pending_above_threshold"
     elif pressure >= 1.0:
@@ -507,8 +706,11 @@ def _storage_row(sources: dict[str, dict[str, Any]], system: dict[str, Any]) -> 
         "severity": severity,
         "strict_status": strict_status,
         "managed_bounded_backlog": managed_bounded_backlog,
+        "effective_pressure_contract": effective_pressure_contract,
         "paper_status": paper_status,
-        "truth_mode": str(backlog_truth.get("authoritative_mode") or "direct_backpressure"),
+        "truth_mode": str(
+            backlog_truth.get("authoritative_mode") or "direct_backpressure"
+        ),
         "raw_grade": str(raw_truth.get("grade") or "unknown"),
         "overlay_grade": str(overlay_truth.get("grade") or "unknown"),
         "pressure_index": round(pressure, 3),
@@ -516,30 +718,68 @@ def _storage_row(sources: dict[str, dict[str, Any]], system: dict[str, Any]) -> 
         "total_pending_lines": total,
         "effective_core_pending_lines": effective_core,
         "effective_total_pending_lines": effective_total,
-        "oldest_pending_age_seconds": _as_float(backpressure.get("oldest_pending_age_seconds")),
+        "oldest_pending_age_seconds": _as_float(
+            backpressure.get("oldest_pending_age_seconds")
+        ),
         "stale_source_count": stale_source_count,
         "oldest_source": leader,
         "oldest_source_shard": str(oldest_source.get("shard") or "none"),
         "oldest_source_pending_lines": _as_int(oldest_source.get("pending_lines")),
         "drain_status": drain,
-        "recovery_state": str(storage.get("recovery_state") or ("draining" if drain == "drain_active" else "idle")),
-        "estimated_drain_minutes": _as_float(storage.get("estimated_total_drain_minutes"), _as_float(backpressure.get("estimated_total_drain_minutes"))),
+        "recovery_state": str(
+            storage.get("recovery_state")
+            or ("draining" if drain == "drain_active" else "idle")
+        ),
+        "estimated_drain_minutes": _as_float(
+            storage.get("estimated_total_drain_minutes"),
+            _as_float(backpressure.get("estimated_total_drain_minutes")),
+        ),
         "cause": cause,
-        "impact": "paper_blocked" if paper_status != "ready" else "strict_live_gate_only" if strict_status == "blocked" else "none",
+        "impact": (
+            "paper_blocked"
+            if paper_status != "ready"
+            else "strict_live_gate_only" if strict_status == "blocked" else "none"
+        ),
         "artifact_age_seconds": source.get("age_seconds"),
         "action": "storage-backpressure-autopilot" if cause != "none" else "none",
     }
 
 
-def _throttle_row(sources: dict[str, dict[str, Any]], storage: dict[str, Any]) -> dict[str, Any]:
+def _throttle_row(
+    sources: dict[str, dict[str, Any]], storage: dict[str, Any]
+) -> dict[str, Any]:
     source = sources["throttle"]
     throttle = source["payload"]
-    soft_cap = throttle.get("soft_cap_advisory_reclassification") if isinstance(throttle.get("soft_cap_advisory_reclassification"), dict) else {}
-    measurements = soft_cap.get("measurements") if isinstance(soft_cap.get("measurements"), dict) else {}
-    governor = throttle.get("runtime_saturation_governor_v2") if isinstance(throttle.get("runtime_saturation_governor_v2"), dict) else {}
-    paper_policy = governor.get("paper_live_data_policy") if isinstance(governor.get("paper_live_data_policy"), dict) else {}
-    runtime_paper_policy = throttle.get("paper_execution_policy") if isinstance(throttle.get("paper_execution_policy"), dict) else {}
-    host_attribution = throttle.get("host_pressure_attribution") if isinstance(throttle.get("host_pressure_attribution"), dict) else {}
+    soft_cap = (
+        throttle.get("soft_cap_advisory_reclassification")
+        if isinstance(throttle.get("soft_cap_advisory_reclassification"), dict)
+        else {}
+    )
+    measurements = (
+        soft_cap.get("measurements")
+        if isinstance(soft_cap.get("measurements"), dict)
+        else {}
+    )
+    governor = (
+        throttle.get("runtime_saturation_governor_v2")
+        if isinstance(throttle.get("runtime_saturation_governor_v2"), dict)
+        else {}
+    )
+    paper_policy = (
+        governor.get("paper_live_data_policy")
+        if isinstance(governor.get("paper_live_data_policy"), dict)
+        else {}
+    )
+    runtime_paper_policy = (
+        throttle.get("paper_execution_policy")
+        if isinstance(throttle.get("paper_execution_policy"), dict)
+        else {}
+    )
+    host_attribution = (
+        throttle.get("host_pressure_attribution")
+        if isinstance(throttle.get("host_pressure_attribution"), dict)
+        else {}
+    )
     status = _status_text(throttle)
     if not source["fresh"]:
         status = "degraded"
@@ -553,10 +793,15 @@ def _throttle_row(sources: dict[str, dict[str, Any]], storage: dict[str, Any]) -
     paper_allowed = bool(
         runtime_paper_policy.get(
             "paper_execution_allowed",
-            paper_policy.get("paper_execution_allowed", measurements.get("paper_execution_allowed", not paper_paused)),
+            paper_policy.get(
+                "paper_execution_allowed",
+                measurements.get("paper_execution_allowed", not paper_paused),
+            ),
         )
     )
-    policy_reason = str(soft_cap.get("reason") or runtime_paper_policy.get("reason") or "none")
+    policy_reason = str(
+        soft_cap.get("reason") or runtime_paper_policy.get("reason") or "none"
+    )
     compute_hot = compute not in {"normal", "clear", "green"}
     memory_clear = memory in {"normal", "clear", "green"}
     storage_paper_safe = bool(
@@ -598,10 +843,15 @@ def _throttle_row(sources: dict[str, dict[str, Any]], storage: dict[str, Any]) -
     recovery = (
         "storage_drain_active"
         if storage.get("drain_status") == "drain_active"
-        and cause in {"bounded_storage_watch", "storage_backlog", "strict_storage_backlog"}
+        and cause
+        in {"bounded_storage_watch", "storage_backlog", "strict_storage_backlog"}
         else "none"
     )
-    collector_policy = governor.get("collector_policy") if isinstance(governor.get("collector_policy"), dict) else {}
+    collector_policy = (
+        governor.get("collector_policy")
+        if isinstance(governor.get("collector_policy"), dict)
+        else {}
+    )
     managed_advisory = bool(
         status in {"ready", "advisory"}
         and cause in {"none", "managed_compute_pressure"}
@@ -609,7 +859,11 @@ def _throttle_row(sources: dict[str, dict[str, Any]], storage: dict[str, Any]) -
     )
     managed_control = bool(
         managed_advisory
-        or (storage.get("managed_bounded_backlog") and status in {"ready", "advisory"} and not paper_paused)
+        or (
+            storage.get("managed_bounded_backlog")
+            and status in {"ready", "advisory"}
+            and not paper_paused
+        )
     )
     pressure_owner = str(host_attribution.get("dominant_bucket") or "unknown")
     if host_attribution.get("external_pressure_dominant"):
@@ -619,13 +873,21 @@ def _throttle_row(sources: dict[str, dict[str, Any]], storage: dict[str, Any]) -
         "profile": str(throttle.get("throttle_profile") or "unknown"),
         "compute": compute,
         "memory": memory,
-        "host_saturation_score": round(_as_float(throttle.get("host_saturation_score")), 2),
+        "host_saturation_score": round(
+            _as_float(throttle.get("host_saturation_score")), 2
+        ),
         "cause": cause,
         "paper_state": "paused" if paper_paused else "allowed",
         "paper_allowed": paper_allowed,
-        "impact": "paper_paused" if paper_paused else "none" if managed_control else "paper_runtime_guard",
+        "impact": (
+            "paper_paused"
+            if paper_paused
+            else "none" if managed_control else "paper_runtime_guard"
+        ),
         "pressure_owner": pressure_owner,
-        "research_low_priority": bool(host_attribution.get("research_hot_low_priority")),
+        "research_low_priority": bool(
+            host_attribution.get("research_hot_low_priority")
+        ),
         "paper_low_priority": bool(host_attribution.get("paper_hot_low_priority")),
         "writer_hot": bool(host_attribution.get("storage_writer_hot")),
         "collection_mode": str(collector_policy.get("mode") or "unknown"),
@@ -635,24 +897,40 @@ def _throttle_row(sources: dict[str, dict[str, Any]], storage: dict[str, Any]) -
         "policy_reason": (
             "bounded_backlog_under_paper_threshold"
             if storage.get("managed_bounded_backlog") and status == "ready"
-            else policy_reason
-            if status == "advisory" or managed_compute_pressure
-            else "none"
+            else (
+                policy_reason
+                if status == "advisory" or managed_compute_pressure
+                else "none"
+            )
         ),
         "artifact_age_seconds": source.get("age_seconds"),
         "action": (
             "none"
             if managed_control
-            else "storage-backpressure-autopilot"
-            if cause in {"bounded_storage_watch", "storage_backlog", "strict_storage_backlog"}
-            else "runtime-throttle"
+            else (
+                "storage-backpressure-autopilot"
+                if cause
+                in {
+                    "bounded_storage_watch",
+                    "storage_backlog",
+                    "strict_storage_backlog",
+                }
+                else "runtime-throttle"
+            )
         ),
     }
 
 
-def _soak_row(sources: dict[str, dict[str, Any]], system: dict[str, Any], storage: dict[str, Any]) -> dict[str, Any]:
+def _soak_row(
+    sources: dict[str, dict[str, Any]], system: dict[str, Any], storage: dict[str, Any]
+) -> dict[str, Any]:
     source = sources["unattended_soak"]
     soak = source["payload"]
+    continuous_source = sources.get("continuous_soak", {})
+    continuous_payload = continuous_source.get("payload")
+    continuous = continuous_payload if isinstance(continuous_payload, dict) else {}
+    historical_payload = continuous.get("historical_soak_evidence")
+    historical = historical_payload if isinstance(historical_payload, dict) else {}
     declared_safe = bool(soak.get("safe_to_leave_unattended"))
     warnings = soak.get("warnings") if isinstance(soak.get("warnings"), list) else []
     paper_ready = system.get("paper_status") == "ready"
@@ -689,20 +967,344 @@ def _soak_row(sources: dict[str, dict[str, Any]], system: dict[str, Any], storag
         "paper_status": str(system.get("paper_status") or "unknown"),
         "strict_storage_ready": strict_storage_ready,
         "managed_storage_watch": managed_storage_watch,
-        "storage_watch": str(storage.get("cause") or "none") if managed_storage_watch else "none",
+        "storage_watch": (
+            str(storage.get("cause") or "none") if managed_storage_watch else "none"
+        ),
         "live_locked": live_locked,
         "warning_count": len(warnings),
         "warning": _first(warnings),
         "cause": cause,
         "artifact_age_seconds": source.get("age_seconds"),
+        "continuous_soak_fresh": bool(continuous_source.get("fresh", False)),
+        "main_soak_elapsed_hours": _as_float(
+            continuous.get("main_soak_elapsed_hours"),
+            _as_float(historical.get("historical_segmented_wall_clock_hours")),
+        ),
+        "main_soak_elapsed_days": _as_float(
+            continuous.get("main_soak_elapsed_days"),
+            _as_float(historical.get("historical_segmented_wall_clock_days")),
+        ),
+        "main_soak_progress_percent": _as_float(
+            continuous.get("main_soak_progress_percent")
+        ),
+        "main_soak_includes_pre_reset_time": bool(
+            continuous.get("main_soak_includes_pre_reset_time", False)
+        ),
+        "main_soak_count_is_promotion_credit": bool(
+            continuous.get("main_soak_count_is_promotion_credit", False)
+        ),
+        "clean_window_elapsed_hours": _as_float(
+            continuous.get("clean_window_elapsed_hours")
+        ),
+        "observed_window_elapsed_hours": _as_float(
+            continuous.get("observed_window_elapsed_hours")
+        ),
+        "validation_mode": (
+            "scope_aware_elapsed_and_xnys_sessions"
+            if "scope_aware_validation_complete" in continuous
+            else "legacy_uniform_720_hour_fallback"
+        ),
+        "scope_validation_ready": bool(
+            continuous.get("scope_aware_validation_complete", False)
+        ),
+        "scope_validation_grade": str(
+            continuous.get("scope_validation_grade") or "unknown"
+        ),
+        "scope_validation_score": _as_float(continuous.get("scope_validation_score")),
+        "scope_validation_bottleneck": str(
+            (continuous.get("scope_validation") or {}).get("bottleneck_scope")
+            if isinstance(continuous.get("scope_validation"), dict)
+            else ""
+        ),
+        "scope_validation_blocking_scopes": (
+            (continuous.get("scope_validation") or {}).get("blocking_scopes", [])
+            if isinstance(continuous.get("scope_validation"), dict)
+            else []
+        ),
+        "historical_segmented_hours": _as_float(
+            historical.get("historical_segmented_wall_clock_hours")
+        ),
+        "historical_segmented_days": _as_float(
+            historical.get("historical_segmented_wall_clock_days")
+        ),
+        "historical_segment_count": _as_int(historical.get("segment_count")),
+        "historical_counts_toward_clean_720": bool(
+            historical.get("counts_toward_current_clean_720_hours", False)
+        ),
         "action": (
-            "storage-backpressure-autopilot"
-            if managed_storage_watch
-            else "none"
-            if cause == "none"
-            else "storage-backpressure-autopilot"
-            if cause.startswith(("pending_", "storage_", "bounded_", "pressure_"))
-            else "unattended-soak-readiness"
+            "unattended-soak-readiness"
+            if not source["fresh"]
+            else (
+                "storage-backpressure-autopilot"
+                if managed_storage_watch
+                else (
+                    "none"
+                    if cause == "none"
+                    else (
+                        "storage-backpressure-autopilot"
+                        if cause.startswith(
+                            ("pending_", "storage_", "bounded_", "pressure_")
+                        )
+                        else "unattended-soak-readiness"
+                    )
+                )
+            )
+        ),
+    }
+
+
+def _paper_debt_recovery_row(source: dict[str, Any]) -> dict[str, Any]:
+    payload = source.get("payload") if isinstance(source.get("payload"), dict) else {}
+    contract = (
+        payload.get("paper_debt_recovery_contract")
+        if isinstance(payload.get("paper_debt_recovery_contract"), dict)
+        else {}
+    )
+    attribution = (
+        contract.get("candidate_attribution")
+        if isinstance(contract.get("candidate_attribution"), dict)
+        else {}
+    )
+    velocity = (
+        contract.get("recovery_velocity")
+        if isinstance(contract.get("recovery_velocity"), dict)
+        else {}
+    )
+    risk = (
+        contract.get("risk_budget")
+        if isinstance(contract.get("risk_budget"), dict)
+        else {}
+    )
+    if not source.get("present") or not contract:
+        status = "missing"
+    elif not source.get("fresh"):
+        status = "stale"
+    elif contract.get("live_promotion_ready", False):
+        status = "ready"
+    elif str(contract.get("state") or "") in {
+        "evidence_unavailable",
+        "paused_drawdown",
+        "debt_worsening",
+    }:
+        status = "blocked"
+    else:
+        status = "recovering"
+    return {
+        "status": status,
+        "state": str(contract.get("state") or "unknown"),
+        "baseline_debt_amount": _as_float(contract.get("baseline_debt_amount")),
+        "remaining_debt_amount": _as_float(contract.get("remaining_debt_amount")),
+        "recovery_progress_norm": _as_float(contract.get("recovery_progress_norm")),
+        "candidate_id": str(attribution.get("candidate_id") or "none"),
+        "candidate_samples": _as_int(attribution.get("sample_count")),
+        "candidate_days": _as_int(attribution.get("observed_days")),
+        "candidate_attributed_pnl": _as_float(
+            attribution.get("total_candidate_attributed_pnl")
+        ),
+        "actual_daily_recovery": _as_float(
+            velocity.get("actual_daily_net_improvement")
+        ),
+        "entry_size_cap_norm": _as_float(
+            (contract.get("runtime_enforcement") or {}).get(
+                "recovery_entry_size_multiplier_norm"
+            )
+            if isinstance(contract.get("runtime_enforcement"), dict)
+            else 0.0
+        ),
+        "new_entries_paused": bool(risk.get("new_entries_paused", True)),
+        "live_proof": bool(contract.get("live_promotion_ready", False)),
+        "live_execution": False,
+        "artifact_age_seconds": source.get("age_seconds"),
+        "action": (
+            "none"
+            if status in {"ready", "recovering"}
+            else "paper-profitability-control"
+        ),
+    }
+
+
+def _profitability_assessment_row(source: dict[str, Any]) -> dict[str, Any]:
+    payload = source.get("payload") if isinstance(source.get("payload"), dict) else {}
+    binding = (
+        payload.get("candidate_binding")
+        if isinstance(payload.get("candidate_binding"), dict)
+        else {}
+    )
+    grades = payload.get("grades") if isinstance(payload.get("grades"), dict) else {}
+    measurement = (
+        payload.get("measurement")
+        if isinstance(payload.get("measurement"), dict)
+        else {}
+    )
+    developmental = (
+        payload.get("developmental_soak_learning")
+        if isinstance(payload.get("developmental_soak_learning"), dict)
+        else {}
+    )
+    next_action = (
+        payload.get("next_safe_action")
+        if isinstance(payload.get("next_safe_action"), dict)
+        else {}
+    )
+    if not source.get("present"):
+        status = "missing"
+    elif not source.get("fresh"):
+        status = "stale"
+    elif not binding.get("identity_consistent", False):
+        status = "blocked"
+    elif grades.get("economic_evidence_ready", False):
+        status = "ready"
+    else:
+        status = "collecting"
+    return {
+        "status": status,
+        "assessment_status": str(
+            payload.get("assessment_status")
+            or ("blocked" if not binding.get("identity_consistent", False) else "ready")
+        ),
+        "candidate_id": str(
+            binding.get("candidate_id") or measurement.get("candidate_id") or "none"
+        ),
+        "candidate_consistent": bool(binding.get("identity_consistent", False)),
+        "implementation_grade": str(grades.get("implementation_grade") or "unknown"),
+        "implementation_score": _as_float(grades.get("implementation_score")),
+        "economic_grade": str(grades.get("economic_evidence_grade") or "unknown"),
+        "economic_score": _as_float(grades.get("economic_evidence_score")),
+        "economic_ready": bool(grades.get("economic_evidence_ready", False)),
+        "economic_source_grade": str(
+            grades.get("economic_context_source_grade") or "unknown"
+        ),
+        "economic_source_score": _as_float(grades.get("economic_context_source_score")),
+        "economic_source_ready": bool(
+            grades.get("economic_context_source_ready", False)
+        ),
+        "economic_source_families": _as_int(
+            grades.get("economic_context_ready_families")
+        ),
+        "economic_source_family_count": _as_int(
+            grades.get("economic_context_family_count")
+        ),
+        "economic_source_runtime_routes": _as_int(
+            grades.get("economic_context_ready_runtime_routes")
+        ),
+        "economic_source_runtime_route_count": _as_int(
+            grades.get("economic_context_runtime_route_count")
+        ),
+        "economic_source_count": _as_int(
+            grades.get("economic_context_selected_source_count")
+        ),
+        "candidate_samples": _as_int(
+            measurement.get("candidate_post_cost_sample_count")
+        ),
+        "candidate_minimum_samples": _as_int(
+            measurement.get("candidate_post_cost_minimum_samples"), 30
+        ),
+        "candidate_pnl": _as_float(measurement.get("candidate_post_cost_pnl")),
+        "historical_book_pnl": _as_float(
+            measurement.get("historical_active_book_net_pnl")
+        ),
+        "historical_grades_candidate": bool(
+            measurement.get("historical_active_book_candidate_grade_eligible", False)
+        ),
+        "ready_lanes": _as_int(grades.get("evidence_ready_lanes")),
+        "lane_count": _as_int(grades.get("evidence_lane_count"), 8),
+        "developmental_status": str(developmental.get("status") or "missing"),
+        "accepted_generations": _as_int(developmental.get("accepted_generation_count")),
+        "attributed_generations": _as_int(
+            developmental.get("attributable_generation_count")
+        ),
+        "mature_generations": _as_int(
+            developmental.get("mature_developmental_generation_count")
+        ),
+        "negative_generations": _as_int(
+            developmental.get("observed_negative_delta_generation_count")
+        ),
+        "bounded_paper_actions": len(
+            developmental.get("bounded_paper_action_plan")
+            if isinstance(developmental.get("bounded_paper_action_plan"), list)
+            else []
+        ),
+        "historical_generation_live_credit": False,
+        "clean_720_hour_gate_unchanged": True,
+        "next_need": str(next_action.get("blocker") or "none"),
+        "live_execution": False,
+        "artifact_age_seconds": source.get("age_seconds"),
+        "action": "none" if status == "ready" else "profitability-self-assessment",
+    }
+
+
+def _sleeve_strategy_scaling_row(source: dict[str, Any]) -> dict[str, Any]:
+    payload = source.get("payload") if isinstance(source.get("payload"), dict) else {}
+    contract = (
+        payload.get("sleeve_strategy_profitability_scaling_contract")
+        if isinstance(
+            payload.get("sleeve_strategy_profitability_scaling_contract"), dict
+        )
+        else {}
+    )
+    binding = (
+        contract.get("candidate_binding")
+        if isinstance(contract.get("candidate_binding"), dict)
+        else {}
+    )
+    tier_counts = (
+        contract.get("tier_counts")
+        if isinstance(contract.get("tier_counts"), dict)
+        else {}
+    )
+    validated_count = sum(
+        _as_int(tier_counts.get(tier))
+        for tier in ("validated_baseline", "scale_tier_1", "scale_tier_2")
+    )
+    if not source.get("present") or not contract:
+        status = "missing"
+    elif not source.get("fresh"):
+        status = "stale"
+    elif not contract.get("source_ready", False) or not binding.get(
+        "candidate_binding_valid", False
+    ):
+        status = "blocked"
+    elif not contract.get("keep_sells_and_reduce_only_paths_open", False):
+        status = "blocked"
+    elif contract.get("scale_up_ready", False):
+        status = "ready"
+    elif validated_count > 0:
+        status = "guarded"
+    else:
+        status = "collecting"
+    return {
+        "status": status,
+        "mode": str(contract.get("mode") or "missing"),
+        "candidate_id": str(binding.get("candidate_id") or "none"),
+        "candidate_binding_valid": bool(binding.get("candidate_binding_valid", False)),
+        "source_ready": bool(contract.get("source_ready", False)),
+        "profile_control_count": _as_int(contract.get("profile_control_count")),
+        "strategy_control_count": _as_int(contract.get("strategy_control_count")),
+        "blocked_control_count": _as_int(contract.get("blocked_control_count")),
+        "probationary_control_count": _as_int(
+            contract.get("probationary_control_count")
+        ),
+        "validated_control_count": validated_count,
+        "above_baseline_ready_count": _as_int(
+            contract.get("above_baseline_ready_count")
+        ),
+        "global_entry_size_cap_norm": _as_float(
+            contract.get("global_entry_size_cap_norm")
+        ),
+        "maximum_entry_size_multiplier_norm": _as_float(
+            contract.get("maximum_above_baseline_entry_size_multiplier_norm")
+        ),
+        "entry_only": bool(contract.get("entry_only", False)),
+        "exit_paths_open": bool(
+            contract.get("keep_sells_and_reduce_only_paths_open", False)
+        ),
+        "live_execution": False,
+        "tier_counts": tier_counts,
+        "artifact_age_seconds": source.get("age_seconds"),
+        "action": (
+            "none"
+            if status in {"ready", "guarded", "collecting"}
+            else "paper-profitability-control"
         ),
     }
 
@@ -718,8 +1320,14 @@ def _production_excellence_row(sources: dict[str, dict[str, Any]]) -> dict[str, 
         status = "ready"
     else:
         status = "evidence_pending"
-    blocked = payload.get("blocked_pillars") if isinstance(payload.get("blocked_pillars"), list) else []
-    candidate = payload.get("candidate") if isinstance(payload.get("candidate"), dict) else {}
+    blocked = (
+        payload.get("blocked_pillars")
+        if isinstance(payload.get("blocked_pillars"), list)
+        else []
+    )
+    candidate = (
+        payload.get("candidate") if isinstance(payload.get("candidate"), dict) else {}
+    )
     return {
         "status": status,
         "grade": str(payload.get("overall_grade") or "unknown"),
@@ -729,7 +1337,9 @@ def _production_excellence_row(sources: dict[str, dict[str, Any]]) -> dict[str, 
         "candidate_id": str(candidate.get("candidate_id") or "none"),
         "candidate_drift": bool(candidate.get("candidate_drift", False)),
         "blocked_pillars": blocked,
-        "live_consideration": bool(payload.get("live_money_consideration_ready", False)),
+        "live_consideration": bool(
+            payload.get("live_money_consideration_ready", False)
+        ),
         "live_locked": bool(payload.get("live_orders_must_remain_disabled", True)),
         "paper_impact": "none",
         "artifact_age_seconds": source.get("age_seconds"),
@@ -737,10 +1347,414 @@ def _production_excellence_row(sources: dict[str, dict[str, Any]]) -> dict[str, 
     }
 
 
-def _capability_materialization_row(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _strategy_specialization_row(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    source = sources["strategy_specialization"]
+    payload = source["payload"]
+    coverage = (
+        payload.get("contract_coverage")
+        if isinstance(payload.get("contract_coverage"), dict)
+        else {}
+    )
+    binding = (
+        payload.get("candidate_binding")
+        if isinstance(payload.get("candidate_binding"), dict)
+        else {}
+    )
+    lifecycles = (
+        payload.get("lifecycle_counts")
+        if isinstance(payload.get("lifecycle_counts"), dict)
+        else {}
+    )
+    library = (
+        payload.get("strategy_library")
+        if isinstance(payload.get("strategy_library"), dict)
+        else {}
+    )
+    families = (
+        payload.get("strategy_families")
+        if isinstance(payload.get("strategy_families"), dict)
+        else {}
+    )
+    quality = (
+        payload.get("quality_summary")
+        if isinstance(payload.get("quality_summary"), dict)
+        else {}
+    )
+    regime = (
+        payload.get("current_regime")
+        if isinstance(payload.get("current_regime"), dict)
+        else {}
+    )
+    if not source["present"]:
+        status = "missing"
+    elif not source["fresh"]:
+        status = "stale"
+    elif payload.get("ok", False):
+        status = "ready"
+    else:
+        status = "blocked"
+    return {
+        "status": status,
+        "grade": str(coverage.get("grade") or "unknown"),
+        "sleeves": _as_int(coverage.get("sleeve_count")),
+        "strategies": _as_int(coverage.get("strategy_count")),
+        "complete": _as_int(coverage.get("complete_contract_count")),
+        "authority_violations": _as_int(coverage.get("authority_violation_count")),
+        "candidate_id": str(binding.get("candidate_id") or "none"),
+        "candidate_bound": bool(binding.get("bound", False)),
+        "parked": _as_int(lifecycles.get("parked_candidate")),
+        "probation": _as_int(lifecycles.get("probation")),
+        "validated": _as_int(lifecycles.get("validated_candidate")),
+        "control_only": _as_int(lifecycles.get("control_only")),
+        "library_strategies": _as_int(library.get("strategy_count")),
+        "library_target": _as_int(library.get("target_total_strategies"), 12000),
+        "hot_strategies": _as_int(library.get("hot_strategy_count")),
+        "cold_strategies": _as_int(library.get("cold_strategy_count")),
+        "canonical_families": _as_int(families.get("canonical_record_count")),
+        "native_hot_families": _as_int(families.get("native_hot_family_count")),
+        "cold_parent_families": _as_int(families.get("cold_parent_family_count")),
+        "family_lineage_covered": _as_int(
+            families.get("lineage_covered_strategy_count")
+        ),
+        "family_identity_changes": _as_int(
+            families.get("runtime_identity_change_count")
+        ),
+        "validated_good": _as_int(quality.get("validated_good_count")),
+        "promising": _as_int(quality.get("promising_unconfirmed_count")),
+        "weak": _as_int(quality.get("weak_count")),
+        "retirement_candidates": _as_int(quality.get("retirement_candidate_count")),
+        "current_regime": str(regime.get("current_regime") or "unknown"),
+        "regime_activation_ready": bool(regime.get("activation_ready", False)),
+        "paper_impact": "none",
+        "live_authority": False,
+        "artifact_age_seconds": source.get("age_seconds"),
+        "action": "none" if status == "ready" else "sleeve-strategy-specialization",
+    }
+
+
+def _strategy_market_fit_row(source: dict[str, Any]) -> dict[str, Any]:
+    payload = source["payload"]
+    catalog = (
+        payload.get("catalog_contract")
+        if isinstance(payload.get("catalog_contract"), dict)
+        else {}
+    )
+    cohort = (
+        payload.get("challenger_cohort")
+        if isinstance(payload.get("challenger_cohort"), dict)
+        else {}
+    )
+    regime = (
+        payload.get("current_regime")
+        if isinstance(payload.get("current_regime"), dict)
+        else {}
+    )
+    binding = (
+        payload.get("candidate_binding")
+        if isinstance(payload.get("candidate_binding"), dict)
+        else {}
+    )
+    cache = payload.get("cache") if isinstance(payload.get("cache"), dict) else {}
+    drift = payload.get("drift") if isinstance(payload.get("drift"), dict) else {}
+    strategies = (
+        cohort.get("strategies") if isinstance(cohort.get("strategies"), list) else []
+    )
+    states: dict[str, int] = {}
+    for strategy in strategies:
+        row = strategy if isinstance(strategy, dict) else {}
+        state = str(row.get("cohort_state") or "unknown")
+        states[state] = states.get(state, 0) + 1
+    authority = (
+        payload.get("authority_contract")
+        if isinstance(payload.get("authority_contract"), dict)
+        else {}
+    )
+    authority_violations = sum(bool(value) for value in authority.values())
+    if not source["present"]:
+        status = "missing"
+    elif not source["fresh"]:
+        status = "stale"
+    else:
+        status = str(payload.get("overall_status") or "unknown")
+    if status in {"ready", "guarded"}:
+        action = "none"
+    elif status == "blocked":
+        action = "strategy-market-fit --force"
+    else:
+        action = "runtime-artifact-refresh"
+    return {
+        "status": status,
+        "evaluation_mode": str(payload.get("evaluation_mode") or "unknown"),
+        "checked": _as_int(catalog.get("evaluated_strategy_count")),
+        "expected": _as_int(catalog.get("expected_strategy_count"), 12000),
+        "unique": _as_int(catalog.get("unique_strategy_count")),
+        "all_checked": bool(catalog.get("all_strategies_checked", False)),
+        "batches": _as_int(catalog.get("batch_count")),
+        "cohort_slots": _as_int(cohort.get("slot_count")),
+        "cohort_maximum": _as_int(cohort.get("maximum_slots"), 5),
+        "cohort_status": str(cohort.get("status") or "unknown"),
+        "cohort_states": states,
+        "candidate_id": str(binding.get("candidate_id") or "none"),
+        "candidate_bound": bool(binding.get("bound", False)),
+        "current_regime": str(regime.get("current_regime") or "unknown"),
+        "regime_source_status": str(regime.get("source_status") or "unknown"),
+        "regime_trusted": bool(regime.get("trusted_for_shadow_admission", False)),
+        "proven_working": _as_int(payload.get("proven_working_strategy_count")),
+        "drift_detected": bool(drift.get("detected", False)),
+        "cache_hit": bool(cache.get("hit", False)),
+        "authority_violations": authority_violations,
+        "paper_orders": bool(cohort.get("paper_order_authority", False)),
+        "live_orders": bool(cohort.get("live_order_authority", False)),
+        "paper_impact": "none",
+        "artifact_age_seconds": source.get("age_seconds"),
+        "action": action,
+    }
+
+
+def _institutional_capability_row(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    source = sources["institutional_capabilities"]
+    payload = source["payload"]
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    provider = (
+        payload.get("provider_policy")
+        if isinstance(payload.get("provider_policy"), dict)
+        else {}
+    )
+    candidate = (
+        payload.get("candidate_binding")
+        if isinstance(payload.get("candidate_binding"), dict)
+        else {}
+    )
+    entitlements = (
+        payload.get("conditional_external_entitlements")
+        if isinstance(payload.get("conditional_external_entitlements"), list)
+        else []
+    )
+    if not source["present"]:
+        status = "missing"
+    elif not source["fresh"]:
+        status = "stale"
+    else:
+        status = str(payload.get("overall_status") or "unknown")
+    return {
+        "status": status,
+        "implementation_ready": _as_int(summary.get("implementation_ready_count")),
+        "paper_ready": _as_int(summary.get("paper_soak_ready_count")),
+        "candidate_evidence_ready": _as_int(
+            summary.get("candidate_evidence_ready_count")
+        ),
+        "live_ready": _as_int(summary.get("live_promotion_ready_count")),
+        "pillar_count": _as_int(summary.get("pillar_count"), 6),
+        "verified_source_bundles": _as_int(summary.get("verified_source_bundle_count")),
+        "provider_target": provider.get("target_range") or [15, 30],
+        "ten_thousand_sources_required": bool(
+            provider.get("ten_thousand_sources_required", False)
+        ),
+        "conditional_entitlements": len(entitlements),
+        "candidate_id": str(candidate.get("candidate_id") or "none"),
+        "candidate_bound": bool(candidate.get("bound", False)),
+        "paper_soak_ready": bool(payload.get("paper_soak_ready", False)),
+        "live_promotion_ready": bool(payload.get("live_promotion_ready", False)),
+        "local_refresh_actions": _as_int(summary.get("local_refresh_action_count")),
+        "external_actions": len(payload.get("external_or_human_actions") or []),
+        "paper_impact": (
+            "none" if payload.get("paper_soak_ready", False) else "paper_attention"
+        ),
+        "live_execution": False,
+        "artifact_age_seconds": source.get("age_seconds"),
+        "action": (
+            "none"
+            if status in {"ready", "ready_with_evidence_debt"}
+            else "institutional-capability-control"
+        ),
+    }
+
+
+def _authoritative_systems_row(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    source = sources["authoritative_systems"]
+    payload = source["payload"]
+    external = (
+        payload.get("external_evidence")
+        if isinstance(payload.get("external_evidence"), dict)
+        else {}
+    )
+    if not source["present"]:
+        status = "missing"
+    elif not source["fresh"]:
+        status = "stale"
+    elif payload.get("ok", False):
+        status = "ready"
+    else:
+        status = "blocked"
+    return {
+        "status": status,
+        "grade": str(payload.get("grade") or "unknown"),
+        "grade_scope": str(
+            payload.get("grade_scope") or "local structural implementation only"
+        ),
+        "references": _as_int(payload.get("reference_count")),
+        "reference_target": _as_int(payload.get("reference_target"), 29),
+        "ready_controls": _as_int(payload.get("ready_control_count")),
+        "control_count": _as_int(payload.get("control_count"), 17),
+        "external_evidence_ready": _as_int(external.get("ready_count")),
+        "external_evidence_count": _as_int(external.get("item_count"), 9),
+        "external_evidence_scope": str(
+            external.get("grade_scope")
+            or "external or candidate-bound observations not supplied by structural probes"
+        ),
+        "live_authority": bool(payload.get("live_execution_authority", False)),
+        "soak_reset": bool(
+            (payload.get("soak_acceptance") or {}).get("reset_soak_clock", False)
+            if isinstance(payload.get("soak_acceptance"), dict)
+            else False
+        ),
+        "paper_impact": "none",
+        "artifact_age_seconds": source.get("age_seconds"),
+        "action": "none" if status == "ready" else "authoritative-systems",
+    }
+
+
+def _research_data_platform_row(
+    sources: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    source = sources["research_data_platform"]
+    payload = source["payload"]
+    catalog = payload.get("catalog") if isinstance(payload.get("catalog"), dict) else {}
+    source_value = (
+        payload.get("source_value")
+        if isinstance(payload.get("source_value"), dict)
+        else {}
+    )
+    candidate = (
+        payload.get("candidate_binding")
+        if isinstance(payload.get("candidate_binding"), dict)
+        else {}
+    )
+    if not source["present"]:
+        status = "missing"
+    elif not source["fresh"]:
+        status = "stale"
+    else:
+        status = str(payload.get("overall_status") or "unknown")
+    paper_ready = bool(payload.get("paper_soak_ready", False))
+    return {
+        "status": status,
+        "implementation_grade": str(payload.get("implementation_grade") or "unknown"),
+        "implementation_ready": _as_int(payload.get("implementation_ready_count")),
+        "implementation_count": _as_int(
+            payload.get("implementation_control_count"), 10
+        ),
+        "evidence_ready": _as_int(payload.get("evidence_ready_count")),
+        "evidence_count": _as_int(payload.get("evidence_control_count"), 10),
+        "products_ready": _as_int(catalog.get("ready_product_count")),
+        "product_count": _as_int(catalog.get("data_product_count"), 10),
+        "decision_families": _as_int(catalog.get("decision_family_count"), 15),
+        "source_value_qualified": _as_int(source_value.get("qualified_count")),
+        "source_value_count": _as_int(source_value.get("source_count")),
+        "candidate_id": str(candidate.get("candidate_id") or "none"),
+        "candidate_bound": bool(candidate.get("bound", False)),
+        "paper_soak_ready": paper_ready,
+        "paper_impact": str(payload.get("paper_impact") or "none"),
+        "live_promotion_ready": bool(payload.get("live_promotion_ready", False)),
+        "live_authority": bool(payload.get("live_execution_authority", False)),
+        "artifact_age_seconds": source.get("age_seconds"),
+        "action": (
+            "none"
+            if paper_ready and status in {"ready", "ready_with_evidence_debt"}
+            else "research-data-platform"
+        ),
+    }
+
+
+def _institutional_research_extensions_row(
+    sources: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    source = sources["institutional_research_extensions"]
+    payload = source["payload"]
+    candidate = (
+        payload.get("candidate_binding")
+        if isinstance(payload.get("candidate_binding"), dict)
+        else {}
+    )
+    influences = (
+        payload.get("firm_influences")
+        if isinstance(payload.get("firm_influences"), dict)
+        else {}
+    )
+    if not source["present"]:
+        status = "missing"
+    elif not source["fresh"]:
+        status = "stale"
+    else:
+        status = str(payload.get("overall_status") or "unknown")
+    paper_ready = bool(payload.get("paper_soak_ready", False))
+    return {
+        "status": status,
+        "implementation_grade": str(payload.get("implementation_grade") or "unknown"),
+        "implementation_ready": _as_int(payload.get("implementation_ready_count")),
+        "implementation_count": _as_int(payload.get("implementation_control_count"), 8),
+        "evidence_ready": _as_int(payload.get("evidence_ready_count")),
+        "evidence_count": _as_int(payload.get("evidence_control_count"), 8),
+        "firm_references": _as_int(influences.get("reference_count")),
+        "firm_organizations": _as_int(influences.get("organization_count")),
+        "candidate_id": str(candidate.get("candidate_id") or "none"),
+        "candidate_bound": bool(candidate.get("bound", False)),
+        "paper_soak_ready": paper_ready,
+        "paper_impact": str(payload.get("paper_impact") or "none"),
+        "soak_reset": bool(payload.get("reset_soak_clock", False)),
+        "live_promotion_ready": bool(payload.get("live_promotion_ready", False)),
+        "live_authority": bool(payload.get("live_execution_authority", False)),
+        "artifact_age_seconds": source.get("age_seconds"),
+        "action": (
+            "none"
+            if paper_ready and status in {"ready", "ready_with_evidence_debt"}
+            else "institutional-research-extensions"
+        ),
+    }
+
+
+def _paper_live_equivalence_row(sources: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    source = sources["paper_live_equivalence"]
+    payload = source["payload"]
+    if not source["present"]:
+        status = "missing"
+    elif not source["fresh"]:
+        status = "stale"
+    else:
+        status = str(payload.get("status") or "unknown")
+    return {
+        "status": status,
+        "structural_ready": bool(payload.get("structural_ready", False)),
+        "empirical_ready": bool(payload.get("empirical_ready", False)),
+        "paper_count": _as_int(payload.get("paper_count")),
+        "live_count": _as_int(payload.get("live_count")),
+        "paired_count": _as_int(payload.get("paired_count")),
+        "mismatch_count": _as_int(payload.get("mismatch_count")),
+        "missing_live_count": _as_int(payload.get("missing_live_count")),
+        "unpaired_paper_count": _as_int(payload.get("unpaired_paper_count")),
+        "missing_paper_count": _as_int(payload.get("missing_paper_count")),
+        "paper_impact": "none",
+        "live_evidence": (
+            "ready" if payload.get("empirical_ready", False) else "pending"
+        ),
+        "live_authority": False,
+        "artifact_age_seconds": source.get("age_seconds"),
+        "action": (
+            "none"
+            if payload.get("empirical_ready", False)
+            else "collect_live_shadow_pairs"
+        ),
+    }
+
+
+def _capability_materialization_row(
+    sources: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     source = sources["capability_materialization"]
     payload = source["payload"]
-    capabilities = [row for row in payload.get("capabilities", []) if isinstance(row, dict)]
+    capabilities = [
+        row for row in payload.get("capabilities", []) if isinstance(row, dict)
+    ]
     ready_rows = [
         row
         for row in capabilities
@@ -755,17 +1769,35 @@ def _capability_materialization_row(sources: dict[str, dict[str, Any]]) -> dict[
         "derivatives_contract_master",
         "stress_scenarios",
     }
-    authority = payload.get("authority_contract") if isinstance(payload.get("authority_contract"), dict) else {}
-    calendar = payload.get("calendar_materialization") if isinstance(payload.get("calendar_materialization"), dict) else {}
-    derivatives = payload.get("derivative_contract_materialization") if isinstance(payload.get("derivative_contract_materialization"), dict) else {}
-    stress = payload.get("stress_scenario_materialization") if isinstance(payload.get("stress_scenario_materialization"), dict) else {}
+    authority = (
+        payload.get("authority_contract")
+        if isinstance(payload.get("authority_contract"), dict)
+        else {}
+    )
+    calendar = (
+        payload.get("calendar_materialization")
+        if isinstance(payload.get("calendar_materialization"), dict)
+        else {}
+    )
+    derivatives = (
+        payload.get("derivative_contract_materialization")
+        if isinstance(payload.get("derivative_contract_materialization"), dict)
+        else {}
+    )
+    stress = (
+        payload.get("stress_scenario_materialization")
+        if isinstance(payload.get("stress_scenario_materialization"), dict)
+        else {}
+    )
     if not source["present"]:
         status = "missing"
         cause = "capability_materialization_missing"
     elif not source["fresh"]:
         status = "stale"
         cause = "capability_materialization_stale"
-    elif payload.get("live_promotion_ready") is not True or not required_ids.issubset(ready_ids):
+    elif payload.get("live_promotion_ready") is not True or not required_ids.issubset(
+        ready_ids
+    ):
         status = "blocked"
         cause = "capability_materialization_proof_incomplete"
     elif any(bool(value) for value in authority.values()):
@@ -794,8 +1826,49 @@ def _collector_capability_row(sources: dict[str, dict[str, Any]]) -> dict[str, A
     source = sources["collector_capabilities"]
     payload = source["payload"]
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-    coverage = payload.get("coverage_debt") if isinstance(payload.get("coverage_debt"), dict) else {}
-    blockers = list(payload.get("structural_blockers") or []) + list(payload.get("paper_soak_blockers") or [])
+    coverage = (
+        payload.get("coverage_debt")
+        if isinstance(payload.get("coverage_debt"), dict)
+        else {}
+    )
+    routing = (
+        payload.get("ingestion_routing_contract")
+        if isinstance(payload.get("ingestion_routing_contract"), dict)
+        else {}
+    )
+    transport = (
+        routing.get("transport_contract")
+        if isinstance(routing.get("transport_contract"), dict)
+        else {}
+    )
+    economic_context = (
+        payload.get("economic_context_contract")
+        if isinstance(payload.get("economic_context_contract"), dict)
+        else {}
+    )
+    economic_context_policy = (
+        economic_context.get("policy")
+        if isinstance(economic_context.get("policy"), dict)
+        else {}
+    )
+    economic_family_count = _as_int(economic_context.get("family_count"))
+    economic_ready_family_count = _as_int(economic_context.get("ready_family_count"))
+    economic_runtime_route_count = _as_int(economic_context.get("runtime_route_count"))
+    economic_runtime_ready_route_count = _as_int(
+        economic_context.get("runtime_ready_route_count")
+    )
+    economic_context_ready = bool(
+        economic_family_count > 0
+        and economic_ready_family_count == economic_family_count
+        and economic_runtime_route_count > 0
+        and economic_runtime_ready_route_count == economic_runtime_route_count
+        and _as_int(economic_context.get("selected_source_count")) >= 2
+        and economic_context.get("economic_profitability_grade_authority") is False
+        and economic_context.get("live_execution_authority") is False
+    )
+    blockers = list(payload.get("structural_blockers") or []) + list(
+        payload.get("paper_soak_blockers") or []
+    )
     if not source["present"]:
         status = "missing"
         cause = "collector_capability_control_missing"
@@ -818,18 +1891,69 @@ def _collector_capability_row(sources: dict[str, dict[str, Any]]) -> dict[str, A
         "bots": _as_int(summary.get("bot_binding_count")),
         "assignments": _as_int(summary.get("assignment_count")),
         "profiles": _as_int(summary.get("subscription_profile_count")),
+        "ingestion_route_profiles": _as_int(
+            summary.get("ingestion_route_profile_count")
+        ),
+        "routing_policy": str(routing.get("policy_id") or "unknown"),
+        "decision_stage": str(routing.get("decision_stage") or "unknown"),
+        "decision_families": _as_int(routing.get("decision_family_count")),
+        "runtime_routes": _as_int(routing.get("runtime_route_count")),
+        "runtime_paper_ready_routes": _as_int(
+            routing.get("runtime_paper_ready_route_count")
+        ),
+        "runtime_live_ready_routes": _as_int(
+            routing.get("runtime_live_ready_route_count")
+        ),
+        "paper_ready_profile_routes": _as_int(
+            routing.get("paper_ready_profile_route_count")
+        ),
+        "live_ready_profile_routes": _as_int(
+            routing.get("live_ready_profile_route_count")
+        ),
+        "average_route_quality": _as_float(
+            routing.get("average_profile_route_quality")
+        ),
+        "economic_context_contract": str(
+            economic_context_policy.get("contract_id") or "unknown"
+        ),
+        "economic_ready_families": economic_ready_family_count,
+        "economic_family_count": economic_family_count,
+        "economic_runtime_ready_routes": economic_runtime_ready_route_count,
+        "economic_runtime_routes": economic_runtime_route_count,
+        "economic_source_count": _as_int(economic_context.get("selected_source_count")),
+        "economic_context_ready": economic_context_ready,
+        "economic_context_advisory_only": bool(
+            economic_context.get("economic_profitability_grade_authority") is False
+            and economic_context.get("live_execution_authority") is False
+        ),
+        "economic_context_receipt": str(
+            economic_context.get("contract_receipt_sha256") or ""
+        )[:12],
+        "independent_redundancy_ratio": _as_float(
+            summary.get("required_capability_independent_redundancy_ratio")
+        ),
+        "transport_contract_complete": bool(
+            transport and all(bool(value) for value in transport.values())
+        ),
+        "route_receipt": str(routing.get("routing_artifact_receipt_sha256") or "")[:12],
         "collector_mapping_complete": bool(
             (payload.get("current_collector_mapping") or {}).get("complete", False)
         ),
         "coverage_gaps": _as_int(coverage.get("gap_count")),
-        "candidate_blocking_gaps": _as_int(coverage.get("candidate_blocking_gap_count")),
+        "candidate_blocking_gaps": _as_int(
+            coverage.get("candidate_blocking_gap_count")
+        ),
         "optional_gaps": _as_int(coverage.get("optional_gap_count")),
         "coverage_debt_scope": "candidate_required_blocking_optional_advisory",
-        "required_usable_ratio": _as_float(summary.get("required_capability_usable_ratio")),
+        "required_usable_ratio": _as_float(
+            summary.get("required_capability_usable_ratio")
+        ),
         "required_redundancy_ratio": _as_float(
             summary.get("required_capability_redundancy_ratio")
         ),
-        "full_catalog_coverage_ready": bool(summary.get("full_catalog_coverage_ready", False)),
+        "full_catalog_coverage_ready": bool(
+            summary.get("full_catalog_coverage_ready", False)
+        ),
         "paper_soak_ready": bool(payload.get("paper_soak_ready", False)),
         "live_promotion_ready": bool(payload.get("live_promotion_ready", False)),
         "cause": cause,
@@ -893,10 +2017,37 @@ def _operator_summary(
     contradictions: list[str],
 ) -> dict[str, Any]:
     headline_status = _rollup_status([visibility_status, operational_status])
-    priority = ["auth", "paper_ramp", "fx_provider", "storage", "throttle", "collection", "system", "soak"]
-    severity = {"blocked": 4, "failed": 4, "critical": 4, "error": 4, "degraded": 3, "needs_work": 3, "stale": 3, "advisory": 2, "recovering": 2, "watch": 2, "warning": 2, "warn": 2}
+    priority = [
+        "auth",
+        "paper_ramp",
+        "fx_provider",
+        "storage",
+        "throttle",
+        "collection",
+        "system",
+        "soak",
+    ]
+    severity = {
+        "blocked": 4,
+        "failed": 4,
+        "critical": 4,
+        "error": 4,
+        "degraded": 3,
+        "needs_work": 3,
+        "stale": 3,
+        "advisory": 2,
+        "recovering": 2,
+        "watch": 2,
+        "warning": 2,
+        "warn": 2,
+    }
     active = [name for name, state in effective_states.items() if state != "ready"]
-    active.sort(key=lambda name: (-severity.get(effective_states.get(name, ""), 1), priority.index(name) if name in priority else len(priority)))
+    active.sort(
+        key=lambda name: (
+            -severity.get(effective_states.get(name, ""), 1),
+            priority.index(name) if name in priority else len(priority),
+        )
+    )
     owner = active[0] if active else "none"
     owner_row = operational_rows.get(owner, {})
     cause = str(owner_row.get("cause") or owner_row.get("reason") or "none")
@@ -915,7 +2066,11 @@ def _operator_summary(
         for name, source in sources.items()
         if source.get("age_seconds") is not None
     ]
-    oldest_source, oldest_age = max(aged_sources, key=lambda item: item[1]) if aged_sources else ("unknown", -1.0)
+    oldest_source, oldest_age = (
+        max(aged_sources, key=lambda item: item[1])
+        if aged_sources
+        else ("unknown", -1.0)
+    )
     soak = operational_rows.get("soak", {})
     system = operational_rows.get("system", {})
     safe_to_leave = bool(
@@ -923,7 +2078,8 @@ def _operator_summary(
         and guarded_paper_status == "ready"
         and soak.get("effective_safe")
         and soak.get("live_locked")
-        and system.get("live_status") in {"blocked", "blocked_read_only", "locked", "disabled"}
+        and system.get("live_status")
+        in {"blocked", "blocked_read_only", "locked", "disabled"}
     )
     return {
         "headline_status": headline_status,
@@ -932,13 +2088,23 @@ def _operator_summary(
         "root_cause": cause,
         "next_action": action,
         "domain_impact": str(owner_row.get("impact") or "none"),
-        "paper_impact": "none" if guarded_paper_status == "ready" else "paper_blocked" if guarded_paper_status == "blocked" else "paper_unverified",
+        "paper_impact": (
+            "none"
+            if guarded_paper_status == "ready"
+            else (
+                "paper_blocked"
+                if guarded_paper_status == "blocked"
+                else "paper_unverified"
+            )
+        ),
         "oldest_source": oldest_source,
         "oldest_source_age_seconds": None if oldest_age < 0.0 else round(oldest_age, 3),
     }
 
 
-def build_status_snapshot(project_root: Path, source: str = "main", now: datetime | None = None) -> dict[str, Any]:
+def build_status_snapshot(
+    project_root: Path, source: str = "main", now: datetime | None = None
+) -> dict[str, Any]:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     artifacts = {
         name: _artifact(project_root, filename, max_age, now)
@@ -949,6 +2115,21 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
     ).is_file()
     materialization_configured = (
         project_root / "config" / "capability_materialization_v1.json"
+    ).is_file()
+    institutional_capabilities_configured = (
+        project_root / "config" / "institutional_capability_control_v1.json"
+    ).is_file()
+    authoritative_systems_configured = (
+        project_root / "config" / "authoritative_systems_v1.json"
+    ).is_file()
+    research_data_platform_configured = (
+        project_root / "config" / "research_data_platform_v1.json"
+    ).is_file()
+    institutional_research_extensions_configured = (
+        project_root / "config" / "institutional_research_extensions_v1.json"
+    ).is_file()
+    strategy_market_fit_configured = (
+        project_root / "config" / "strategy_market_fit_infrabot_v1.json"
     ).is_file()
     if materialization_configured:
         artifacts["capability_materialization"] = _artifact(
@@ -964,6 +2145,57 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
             30 * 60,
             now,
         )
+    if institutional_capabilities_configured:
+        artifacts["institutional_capabilities"] = _artifact(
+            project_root,
+            "institutional_capability_control_latest.json",
+            90 * 60,
+            now,
+        )
+    if authoritative_systems_configured:
+        artifacts["authoritative_systems"] = _artifact(
+            project_root,
+            "authoritative_systems_control_latest.json",
+            24 * 60 * 60,
+            now,
+        )
+        artifacts["paper_live_equivalence"] = _artifact(
+            project_root,
+            "paper_live_equivalence_latest.json",
+            24 * 60 * 60,
+            now,
+        )
+    if research_data_platform_configured:
+        artifacts["research_data_platform"] = _artifact(
+            project_root,
+            "research_data_platform_control_latest.json",
+            4 * 60 * 60,
+            now,
+        )
+    if institutional_research_extensions_configured:
+        artifacts["institutional_research_extensions"] = _artifact(
+            project_root,
+            "institutional_research_extensions_control_latest.json",
+            4 * 60 * 60,
+            now,
+        )
+    if strategy_market_fit_configured:
+        artifacts["strategy_market_fit"] = _artifact(
+            project_root,
+            "strategy_market_fit_infrabot_latest.json",
+            60 * 60,
+            now,
+        )
+    profitability_assessment_configured = (
+        project_root / "config" / "profitability_self_assessment_v1.json"
+    ).is_file()
+    if profitability_assessment_configured:
+        artifacts["profitability_assessment"] = _artifact(
+            project_root,
+            "profitability_self_assessment_latest.json",
+            4 * 60 * 60,
+            now,
+        )
     auth, schwab_auth = _auth_row(artifacts)
     system, collection = _system_and_collection_rows(artifacts)
     paper_ramp = _paper_ramp_row(artifacts, system)
@@ -976,8 +2208,12 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
         system["action"] = paper_ramp.get("action")
     storage = _storage_row(artifacts, system)
     throttle = _throttle_row(artifacts, storage)
-    runtime_paper_blocked = bool(not throttle.get("paper_allowed") or throttle.get("paper_state") == "paused")
-    paper_runtime_policy_disagrees = bool(runtime_paper_blocked and system.get("paper_status") == "ready")
+    runtime_paper_blocked = bool(
+        not throttle.get("paper_allowed") or throttle.get("paper_state") == "paused"
+    )
+    paper_runtime_policy_disagrees = bool(
+        runtime_paper_blocked and system.get("paper_status") == "ready"
+    )
     if runtime_paper_blocked:
         system["paper_status"] = "blocked"
         if system.get("status") == "ready":
@@ -986,7 +2222,51 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
             system["action"] = throttle.get("action") or "runtime-throttle"
         storage["paper_status"] = "blocked"
     soak = _soak_row(artifacts, system, storage)
+    profitability_runtime_source = _artifact(
+        project_root,
+        "paper_runtime_profitability_controls_latest.json",
+        15 * 60,
+        now,
+    )
+    paper_debt_recovery = _paper_debt_recovery_row(profitability_runtime_source)
+    profitability_assessment = (
+        _profitability_assessment_row(artifacts["profitability_assessment"])
+        if profitability_assessment_configured
+        else {}
+    )
+    sleeve_strategy_scaling = _sleeve_strategy_scaling_row(profitability_runtime_source)
     production_excellence = _production_excellence_row(artifacts)
+    strategy_specialization = _strategy_specialization_row(artifacts)
+    strategy_market_fit = (
+        _strategy_market_fit_row(artifacts["strategy_market_fit"])
+        if strategy_market_fit_configured
+        else {}
+    )
+    institutional_capabilities = (
+        _institutional_capability_row(artifacts)
+        if institutional_capabilities_configured
+        else {}
+    )
+    authoritative_systems = (
+        _authoritative_systems_row(artifacts)
+        if authoritative_systems_configured
+        else {}
+    )
+    research_data_platform = (
+        _research_data_platform_row(artifacts)
+        if research_data_platform_configured
+        else {}
+    )
+    institutional_research_extensions = (
+        _institutional_research_extensions_row(artifacts)
+        if institutional_research_extensions_configured
+        else {}
+    )
+    paper_live_equivalence = (
+        _paper_live_equivalence_row(artifacts)
+        if authoritative_systems_configured
+        else {}
+    )
     collector_capabilities = (
         _collector_capability_row(artifacts) if capability_configured else {}
     )
@@ -996,12 +2276,30 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
     fx_provider = _fx_provider_row(project_root, now)
     source_states = {name: artifact["state"] for name, artifact in artifacts.items()}
     required_sources = set(REQUIRED_SOURCES)
+    evidence_sources: set[str] = set()
     if capability_configured:
         required_sources.add("collector_capabilities")
     if materialization_configured:
         required_sources.add("capability_materialization")
-    missing = sorted(name for name in required_sources if source_states[name] == "missing")
+    if institutional_capabilities_configured:
+        evidence_sources.add("institutional_capabilities")
+    if authoritative_systems_configured:
+        evidence_sources.update({"authoritative_systems", "paper_live_equivalence"})
+    if research_data_platform_configured:
+        evidence_sources.add("research_data_platform")
+    if institutional_research_extensions_configured:
+        evidence_sources.add("institutional_research_extensions")
+    evidence_sources.intersection_update(EVIDENCE_ONLY_SOURCES)
+    missing = sorted(
+        name for name in required_sources if source_states[name] == "missing"
+    )
     stale = sorted(name for name in required_sources if source_states[name] == "stale")
+    evidence_missing = sorted(
+        name for name in evidence_sources if source_states.get(name) == "missing"
+    )
+    evidence_stale = sorted(
+        name for name in evidence_sources if source_states.get(name) == "stale"
+    )
     contradictions = []
     if auth["consistency"] == "conflict":
         contradictions.append("auth_sources_disagree")
@@ -1011,7 +2309,12 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
         contradictions.append("paper_runtime_policy_disagrees")
     if soak["declared_safe"] and not soak["effective_safe"]:
         contradictions.append("soak_snapshot_superseded_by_current_health")
-    contract_status = "blocked" if missing else ("degraded" if stale or contradictions else "ready")
+    contract_status = (
+        "blocked" if missing else ("degraded" if stale or contradictions else "ready")
+    )
+    evidence_visibility_status = (
+        "degraded" if evidence_missing or evidence_stale else "ready"
+    )
     operational_rows = {
         "system": system,
         "collection": collection,
@@ -1025,7 +2328,11 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
             if capability_materialization
             else {}
         ),
-        **({"collector_capabilities": collector_capabilities} if collector_capabilities else {}),
+        **(
+            {"collector_capabilities": collector_capabilities}
+            if collector_capabilities
+            else {}
+        ),
     }
     if fx_provider:
         operational_rows["fx_provider"] = fx_provider
@@ -1043,7 +2350,11 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
         guarded_paper_status=str(system.get("paper_status") or "unknown"),
         operational_rows=operational_rows,
         effective_states=effective_operational_states,
-        sources=artifacts,
+        sources={
+            name: artifacts[name]
+            for name in sorted(required_sources)
+            if name in artifacts
+        },
         missing=missing,
         stale=stale,
         contradictions=contradictions,
@@ -1067,11 +2378,26 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
         },
         "managed_operational_watches": managed_operational_watches,
         "source_count": len(artifacts),
-        "fresh_source_count": sum(1 for artifact in artifacts.values() if artifact["fresh"]),
+        "fresh_source_count": sum(
+            1 for artifact in artifacts.values() if artifact["fresh"]
+        ),
+        "operational_source_count": len(required_sources),
+        "fresh_operational_source_count": sum(
+            1
+            for name in required_sources
+            if name in artifacts and artifacts[name]["fresh"]
+        ),
         "missing_sources": missing,
         "stale_sources": stale,
+        "evidence_visibility_status": evidence_visibility_status,
+        "evidence_source_count": len(evidence_sources),
+        "evidence_missing_sources": evidence_missing,
+        "evidence_stale_sources": evidence_stale,
+        "managed_evidence_freshness_debt": bool(evidence_missing or evidence_stale),
         "contradictions": contradictions,
-        "sources": {name: _source_public(artifact) for name, artifact in artifacts.items()},
+        "sources": {
+            name: _source_public(artifact) for name, artifact in artifacts.items()
+        },
         "rows": {
             "system": system,
             "collection": collection,
@@ -1081,13 +2407,55 @@ def build_status_snapshot(project_root: Path, source: str = "main", now: datetim
             "storage": storage,
             "throttle": throttle,
             "soak": soak,
+            "paper_debt_recovery": paper_debt_recovery,
+            **(
+                {"profitability_assessment": profitability_assessment}
+                if profitability_assessment
+                else {}
+            ),
+            "sleeve_strategy_scaling": sleeve_strategy_scaling,
             "production_excellence": production_excellence,
+            "strategy_specialization": strategy_specialization,
+            **(
+                {"strategy_market_fit": strategy_market_fit}
+                if strategy_market_fit
+                else {}
+            ),
+            **(
+                {"institutional_capabilities": institutional_capabilities}
+                if institutional_capabilities
+                else {}
+            ),
+            **(
+                {"authoritative_systems": authoritative_systems}
+                if authoritative_systems
+                else {}
+            ),
+            **(
+                {"research_data_platform": research_data_platform}
+                if research_data_platform
+                else {}
+            ),
+            **(
+                {"institutional_research_extensions": institutional_research_extensions}
+                if institutional_research_extensions
+                else {}
+            ),
+            **(
+                {"paper_live_equivalence": paper_live_equivalence}
+                if paper_live_equivalence
+                else {}
+            ),
             **(
                 {"capability_materialization": capability_materialization}
                 if capability_materialization
                 else {}
             ),
-            **({"collector_capabilities": collector_capabilities} if collector_capabilities else {}),
+            **(
+                {"collector_capabilities": collector_capabilities}
+                if collector_capabilities
+                else {}
+            ),
             **({"fx_provider": fx_provider} if fx_provider else {}),
         },
         "contract": {
@@ -1129,7 +2497,19 @@ def _level(status: Any) -> str:
     normalized = str(status or "").strip().lower()
     if normalized in {"blocked", "failed", "failure", "critical", "error"}:
         return "alert"
-    if normalized in {"advisory", "degraded", "needs_work", "recovering", "watch", "warn", "warning", "stale"}:
+    if normalized in {
+        "advisory",
+        "degraded",
+        "evidence_pending",
+        "paper_attention",
+        "ready_with_evidence_debt",
+        "needs_work",
+        "recovering",
+        "watch",
+        "warn",
+        "warning",
+        "stale",
+    }:
         return "watch"
     return "ok"
 
@@ -1141,24 +2521,110 @@ def _live_display_status(status: Any) -> str:
     return normalized or "unknown"
 
 
+def _evidence_display_status(status: Any) -> str:
+    """Keep expired evidence visible without presenting it as runtime staleness."""
+    normalized = str(status or "").strip().lower()
+    return "refresh_due" if normalized == "stale" else (normalized or "unknown")
+
+
+def _evidence_artifact_fresh(status: Any) -> bool:
+    return str(status or "").strip().lower() not in {"missing", "stale"}
+
+
 def status_exit_code(snapshot: dict[str, Any]) -> int:
-    return 2 if str(snapshot.get("headline_status") or "").strip().lower() == "blocked" else 0
+    return (
+        2
+        if str(snapshot.get("headline_status") or "").strip().lower() == "blocked"
+        else 0
+    )
 
 
 def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
     rows = snapshot.get("rows") if isinstance(snapshot.get("rows"), dict) else {}
     system = rows.get("system") if isinstance(rows.get("system"), dict) else {}
-    collection = rows.get("collection") if isinstance(rows.get("collection"), dict) else {}
+    collection = (
+        rows.get("collection") if isinstance(rows.get("collection"), dict) else {}
+    )
     auth = rows.get("auth") if isinstance(rows.get("auth"), dict) else {}
-    schwab = rows.get("schwab_auth") if isinstance(rows.get("schwab_auth"), dict) else {}
+    schwab = (
+        rows.get("schwab_auth") if isinstance(rows.get("schwab_auth"), dict) else {}
+    )
     storage = rows.get("storage") if isinstance(rows.get("storage"), dict) else {}
     throttle = rows.get("throttle") if isinstance(rows.get("throttle"), dict) else {}
     soak = rows.get("soak") if isinstance(rows.get("soak"), dict) else {}
-    production_excellence = rows.get("production_excellence") if isinstance(rows.get("production_excellence"), dict) else {}
-    capability_materialization = rows.get("capability_materialization") if isinstance(rows.get("capability_materialization"), dict) else {}
-    collector_capabilities = rows.get("collector_capabilities") if isinstance(rows.get("collector_capabilities"), dict) else {}
-    fx_provider = rows.get("fx_provider") if isinstance(rows.get("fx_provider"), dict) else {}
-    operator = snapshot.get("operator_summary") if isinstance(snapshot.get("operator_summary"), dict) else {}
+    paper_debt_recovery = (
+        rows.get("paper_debt_recovery")
+        if isinstance(rows.get("paper_debt_recovery"), dict)
+        else {}
+    )
+    profitability_assessment = (
+        rows.get("profitability_assessment")
+        if isinstance(rows.get("profitability_assessment"), dict)
+        else {}
+    )
+    sleeve_strategy_scaling = (
+        rows.get("sleeve_strategy_scaling")
+        if isinstance(rows.get("sleeve_strategy_scaling"), dict)
+        else {}
+    )
+    production_excellence = (
+        rows.get("production_excellence")
+        if isinstance(rows.get("production_excellence"), dict)
+        else {}
+    )
+    strategy_specialization = (
+        rows.get("strategy_specialization")
+        if isinstance(rows.get("strategy_specialization"), dict)
+        else {}
+    )
+    strategy_market_fit = (
+        rows.get("strategy_market_fit")
+        if isinstance(rows.get("strategy_market_fit"), dict)
+        else {}
+    )
+    institutional_capabilities = (
+        rows.get("institutional_capabilities")
+        if isinstance(rows.get("institutional_capabilities"), dict)
+        else {}
+    )
+    authoritative_systems = (
+        rows.get("authoritative_systems")
+        if isinstance(rows.get("authoritative_systems"), dict)
+        else {}
+    )
+    research_data_platform = (
+        rows.get("research_data_platform")
+        if isinstance(rows.get("research_data_platform"), dict)
+        else {}
+    )
+    institutional_research_extensions = (
+        rows.get("institutional_research_extensions")
+        if isinstance(rows.get("institutional_research_extensions"), dict)
+        else {}
+    )
+    paper_live_equivalence = (
+        rows.get("paper_live_equivalence")
+        if isinstance(rows.get("paper_live_equivalence"), dict)
+        else {}
+    )
+    capability_materialization = (
+        rows.get("capability_materialization")
+        if isinstance(rows.get("capability_materialization"), dict)
+        else {}
+    )
+    collector_capabilities = (
+        rows.get("collector_capabilities")
+        if isinstance(rows.get("collector_capabilities"), dict)
+        else {}
+    )
+    fx_provider = (
+        rows.get("fx_provider") if isinstance(rows.get("fx_provider"), dict) else {}
+    )
+    operator = (
+        snapshot.get("operator_summary")
+        if isinstance(snapshot.get("operator_summary"), dict)
+        else {}
+    )
     lines = [
         _line(
             "status-contract",
@@ -1171,9 +2637,27 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
                 ("paper", snapshot.get("guarded_paper_status")),
                 ("walkaway", snapshot.get("safe_to_leave_unattended")),
                 ("active_issues", len(snapshot.get("active_operational_rows") or {})),
-                ("managed_watches", ",".join(snapshot.get("managed_operational_watches") or []) or "none"),
-                ("fresh", f"{snapshot.get('fresh_source_count', 0)}/{snapshot.get('source_count', 0)}"),
-                ("oldest", f"{_token(operator.get('oldest_source'))}:{_age(operator.get('oldest_source_age_seconds'))}"),
+                (
+                    "managed_watches",
+                    ",".join(snapshot.get("managed_operational_watches") or [])
+                    or "none",
+                ),
+                (
+                    "core_fresh",
+                    f"{snapshot.get('fresh_operational_source_count', 0)}/{snapshot.get('operational_source_count', 0)}",
+                ),
+                (
+                    "evidence_refresh_due",
+                    len(snapshot.get("evidence_stale_sources") or []),
+                ),
+                (
+                    "evidence_missing",
+                    len(snapshot.get("evidence_missing_sources") or []),
+                ),
+                (
+                    "oldest",
+                    f"{_token(operator.get('oldest_source'))}:{_age(operator.get('oldest_source_age_seconds'))}",
+                ),
                 ("stale", len(snapshot.get("stale_sources") or [])),
                 ("missing", len(snapshot.get("missing_sources") or [])),
                 ("contradictions", len(snapshot.get("contradictions") or [])),
@@ -1205,7 +2689,10 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
             [
                 ("level", _level(collection.get("status"))),
                 ("status", collection.get("status")),
-                ("observing", f"{collection.get('observing', 0)}/{collection.get('collectors', 0)}"),
+                (
+                    "observing",
+                    f"{collection.get('observing', 0)}/{collection.get('collectors', 0)}",
+                ),
                 ("observations", collection.get("observations")),
                 ("sleeve_children", collection.get("sleeve_children")),
                 ("fanout", collection.get("fanout_ok")),
@@ -1257,6 +2744,7 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
                 ("control", storage.get("control_status")),
                 ("strict", storage.get("strict_status")),
                 ("managed", storage.get("managed_bounded_backlog")),
+                ("pressure_contract", storage.get("effective_pressure_contract")),
                 ("paper", storage.get("paper_status")),
                 ("severity", storage.get("severity")),
                 ("truth", storage.get("truth_mode")),
@@ -1313,6 +2801,29 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
                 ("managed", soak.get("managed_storage_watch")),
                 ("watch", soak.get("storage_watch")),
                 ("live_locked", soak.get("live_locked")),
+                ("main_h", soak.get("main_soak_elapsed_hours")),
+                ("main_days", soak.get("main_soak_elapsed_days")),
+                ("main_pct", soak.get("main_soak_progress_percent")),
+                ("main_includes_resets", soak.get("main_soak_includes_pre_reset_time")),
+                (
+                    "main_is_promotion_credit",
+                    soak.get("main_soak_count_is_promotion_credit"),
+                ),
+                ("clean_h", soak.get("clean_window_elapsed_hours")),
+                ("observed_h", soak.get("observed_window_elapsed_hours")),
+                ("validation", soak.get("validation_mode")),
+                ("validation_ready", soak.get("scope_validation_ready")),
+                ("validation_grade", soak.get("scope_validation_grade")),
+                ("validation_score", soak.get("scope_validation_score")),
+                ("bottleneck", soak.get("scope_validation_bottleneck")),
+                ("blocking_scopes", soak.get("scope_validation_blocking_scopes")),
+                ("historical_h", soak.get("historical_segmented_hours")),
+                ("historical_days", soak.get("historical_segmented_days")),
+                ("segments", soak.get("historical_segment_count")),
+                (
+                    "history_counts_clean",
+                    soak.get("historical_counts_toward_clean_720"),
+                ),
                 ("warnings", soak.get("warning_count")),
                 ("warning", soak.get("warning")),
                 ("cause", soak.get("cause")),
@@ -1321,16 +2832,83 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
             ],
         ),
         _line(
+            "paper-debt",
+            [
+                ("level", _level(paper_debt_recovery.get("status"))),
+                ("status", paper_debt_recovery.get("status")),
+                ("state", paper_debt_recovery.get("state")),
+                ("baseline", paper_debt_recovery.get("baseline_debt_amount")),
+                ("remaining", paper_debt_recovery.get("remaining_debt_amount")),
+                ("progress", paper_debt_recovery.get("recovery_progress_norm")),
+                ("candidate", paper_debt_recovery.get("candidate_id")),
+                ("samples", paper_debt_recovery.get("candidate_samples")),
+                ("days", paper_debt_recovery.get("candidate_days")),
+                ("attributed_pnl", paper_debt_recovery.get("candidate_attributed_pnl")),
+                ("velocity", paper_debt_recovery.get("actual_daily_recovery")),
+                ("entry_size_cap", paper_debt_recovery.get("entry_size_cap_norm")),
+                ("paused", paper_debt_recovery.get("new_entries_paused")),
+                ("live_proof", paper_debt_recovery.get("live_proof")),
+                ("live_execution", paper_debt_recovery.get("live_execution")),
+                ("age", _age(paper_debt_recovery.get("artifact_age_seconds"))),
+                ("action", paper_debt_recovery.get("action")),
+            ],
+        ),
+        _line(
+            "profit-scaling",
+            [
+                ("level", _level(sleeve_strategy_scaling.get("status"))),
+                ("status", sleeve_strategy_scaling.get("status")),
+                ("candidate", sleeve_strategy_scaling.get("candidate_id")),
+                ("binding", sleeve_strategy_scaling.get("candidate_binding_valid")),
+                ("source", sleeve_strategy_scaling.get("source_ready")),
+                ("profiles", sleeve_strategy_scaling.get("profile_control_count")),
+                ("strategies", sleeve_strategy_scaling.get("strategy_control_count")),
+                ("blocked", sleeve_strategy_scaling.get("blocked_control_count")),
+                (
+                    "probation",
+                    sleeve_strategy_scaling.get("probationary_control_count"),
+                ),
+                ("validated", sleeve_strategy_scaling.get("validated_control_count")),
+                (
+                    "scale_ready",
+                    sleeve_strategy_scaling.get("above_baseline_ready_count"),
+                ),
+                (
+                    "entry_cap",
+                    sleeve_strategy_scaling.get("global_entry_size_cap_norm"),
+                ),
+                (
+                    "max_scale",
+                    sleeve_strategy_scaling.get("maximum_entry_size_multiplier_norm"),
+                ),
+                ("entry_only", sleeve_strategy_scaling.get("entry_only")),
+                ("exits_open", sleeve_strategy_scaling.get("exit_paths_open")),
+                ("live_execution", sleeve_strategy_scaling.get("live_execution")),
+                ("age", _age(sleeve_strategy_scaling.get("artifact_age_seconds"))),
+                ("action", sleeve_strategy_scaling.get("action")),
+            ],
+        ),
+        _line(
             "production-excellence",
             [
-                ("level", "ok" if production_excellence.get("status") == "ready" else "watch"),
+                (
+                    "level",
+                    "ok" if production_excellence.get("status") == "ready" else "watch",
+                ),
                 ("status", production_excellence.get("status")),
                 ("grade", production_excellence.get("grade")),
                 ("score", production_excellence.get("score")),
-                ("pillars", f"{production_excellence.get('ready_pillars', 0)}/{production_excellence.get('pillar_count', 10)}"),
+                (
+                    "pillars",
+                    f"{production_excellence.get('ready_pillars', 0)}/{production_excellence.get('pillar_count', 10)}",
+                ),
                 ("candidate", production_excellence.get("candidate_id")),
                 ("drift", production_excellence.get("candidate_drift")),
-                ("blocked", ",".join(production_excellence.get("blocked_pillars") or []) or "none"),
+                (
+                    "blocked",
+                    ",".join(production_excellence.get("blocked_pillars") or [])
+                    or "none",
+                ),
                 ("live_consideration", production_excellence.get("live_consideration")),
                 ("live_locked", production_excellence.get("live_locked")),
                 ("paper_impact", production_excellence.get("paper_impact")),
@@ -1338,7 +2916,226 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
                 ("action", production_excellence.get("action")),
             ],
         ),
+        _line(
+            "strategy-specialization",
+            [
+                (
+                    "level",
+                    (
+                        "ok"
+                        if strategy_specialization.get("status") == "ready"
+                        else "watch"
+                    ),
+                ),
+                ("status", strategy_specialization.get("status")),
+                ("grade", strategy_specialization.get("grade")),
+                (
+                    "contracts",
+                    f"{strategy_specialization.get('complete', 0)}/{strategy_specialization.get('strategies', 0)}",
+                ),
+                (
+                    "library",
+                    f"{strategy_specialization.get('library_strategies', 0)}/{strategy_specialization.get('library_target', 12000)}",
+                ),
+                (
+                    "families",
+                    f"{strategy_specialization.get('canonical_families', 0)}/1989",
+                ),
+                (
+                    "lineage",
+                    f"{strategy_specialization.get('family_lineage_covered', 0)}/12000",
+                ),
+                (
+                    "identity_changes",
+                    strategy_specialization.get("family_identity_changes"),
+                ),
+                ("sleeves", strategy_specialization.get("sleeves")),
+                ("candidate", strategy_specialization.get("candidate_id")),
+                ("bound", strategy_specialization.get("candidate_bound")),
+                ("parked", strategy_specialization.get("parked")),
+                ("probation", strategy_specialization.get("probation")),
+                ("validated", strategy_specialization.get("validated")),
+                ("good", strategy_specialization.get("validated_good")),
+                ("promising", strategy_specialization.get("promising")),
+                ("weak", strategy_specialization.get("weak")),
+                ("retire", strategy_specialization.get("retirement_candidates")),
+                ("control_only", strategy_specialization.get("control_only")),
+                ("regime", strategy_specialization.get("current_regime")),
+                (
+                    "regime_ready",
+                    strategy_specialization.get("regime_activation_ready"),
+                ),
+                (
+                    "authority_violations",
+                    strategy_specialization.get("authority_violations"),
+                ),
+                ("paper_impact", strategy_specialization.get("paper_impact")),
+                ("live_authority", strategy_specialization.get("live_authority")),
+                ("age", _age(strategy_specialization.get("artifact_age_seconds"))),
+                ("action", strategy_specialization.get("action")),
+            ],
+        ),
     ]
+    if profitability_assessment:
+        lines.insert(
+            -1,
+            _line(
+                "profitability-truth",
+                [
+                    (
+                        "level",
+                        (
+                            "ok"
+                            if profitability_assessment.get("status") == "ready"
+                            else "watch"
+                        ),
+                    ),
+                    ("status", profitability_assessment.get("status")),
+                    ("assessor", profitability_assessment.get("assessment_status")),
+                    ("candidate", profitability_assessment.get("candidate_id")),
+                    ("binding", profitability_assessment.get("candidate_consistent")),
+                    (
+                        "implementation",
+                        profitability_assessment.get("implementation_grade"),
+                    ),
+                    (
+                        "implementation_score",
+                        profitability_assessment.get("implementation_score"),
+                    ),
+                    ("economic", profitability_assessment.get("economic_grade")),
+                    ("economic_score", profitability_assessment.get("economic_score")),
+                    (
+                        "econ_sources_grade",
+                        profitability_assessment.get("economic_source_grade"),
+                    ),
+                    (
+                        "econ_sources_score",
+                        profitability_assessment.get("economic_source_score"),
+                    ),
+                    (
+                        "econ_source_families",
+                        f"{profitability_assessment.get('economic_source_families', 0)}/"
+                        f"{profitability_assessment.get('economic_source_family_count', 0)}",
+                    ),
+                    (
+                        "econ_source_routes",
+                        f"{profitability_assessment.get('economic_source_runtime_routes', 0)}/"
+                        f"{profitability_assessment.get('economic_source_runtime_route_count', 0)}",
+                    ),
+                    (
+                        "econ_source_count",
+                        profitability_assessment.get("economic_source_count"),
+                    ),
+                    (
+                        "samples",
+                        f"{profitability_assessment.get('candidate_samples', 0)}/{profitability_assessment.get('candidate_minimum_samples', 30)}",
+                    ),
+                    ("candidate_pnl", profitability_assessment.get("candidate_pnl")),
+                    (
+                        "historical_book_pnl",
+                        profitability_assessment.get("historical_book_pnl"),
+                    ),
+                    (
+                        "historical_grades_candidate",
+                        profitability_assessment.get("historical_grades_candidate"),
+                    ),
+                    (
+                        "evidence_lanes",
+                        f"{profitability_assessment.get('ready_lanes', 0)}/{profitability_assessment.get('lane_count', 8)}",
+                    ),
+                    (
+                        "dev_learning",
+                        profitability_assessment.get("developmental_status"),
+                    ),
+                    (
+                        "dev_generations",
+                        f"{profitability_assessment.get('attributed_generations', 0)}/"
+                        f"{profitability_assessment.get('accepted_generations', 0)}",
+                    ),
+                    ("dev_mature", profitability_assessment.get("mature_generations")),
+                    (
+                        "dev_negative",
+                        profitability_assessment.get("negative_generations"),
+                    ),
+                    (
+                        "paper_actions",
+                        profitability_assessment.get("bounded_paper_actions"),
+                    ),
+                    (
+                        "historical_live_credit",
+                        profitability_assessment.get(
+                            "historical_generation_live_credit"
+                        ),
+                    ),
+                    (
+                        "clean_720h_unchanged",
+                        profitability_assessment.get("clean_720_hour_gate_unchanged"),
+                    ),
+                    ("next_need", profitability_assessment.get("next_need")),
+                    ("live_execution", profitability_assessment.get("live_execution")),
+                    ("age", _age(profitability_assessment.get("artifact_age_seconds"))),
+                    ("action", profitability_assessment.get("action")),
+                ],
+            ),
+        )
+    if strategy_market_fit:
+        cohort_states = strategy_market_fit.get("cohort_states")
+        cohort_states = cohort_states if isinstance(cohort_states, dict) else {}
+        state_token = (
+            ",".join(
+                f"{state}:{count}" for state, count in sorted(cohort_states.items())
+            )
+            or "none"
+        )
+        lines.insert(
+            -1,
+            _line(
+                "strategy-market-fit",
+                [
+                    (
+                        "level",
+                        (
+                            "ok"
+                            if strategy_market_fit.get("status") == "ready"
+                            else "watch"
+                        ),
+                    ),
+                    ("status", strategy_market_fit.get("status")),
+                    ("mode", strategy_market_fit.get("evaluation_mode")),
+                    (
+                        "checked",
+                        f"{strategy_market_fit.get('checked', 0)}/"
+                        f"{strategy_market_fit.get('expected', 12000)}",
+                    ),
+                    ("unique", strategy_market_fit.get("unique")),
+                    ("all_checked", strategy_market_fit.get("all_checked")),
+                    ("batches", strategy_market_fit.get("batches")),
+                    (
+                        "cohort",
+                        f"{strategy_market_fit.get('cohort_slots', 0)}/"
+                        f"{strategy_market_fit.get('cohort_maximum', 5)}",
+                    ),
+                    ("cohort_status", strategy_market_fit.get("cohort_status")),
+                    ("cohort_states", state_token),
+                    ("candidate", strategy_market_fit.get("candidate_id")),
+                    ("bound", strategy_market_fit.get("candidate_bound")),
+                    ("regime", strategy_market_fit.get("current_regime")),
+                    ("regime_source", strategy_market_fit.get("regime_source_status")),
+                    ("regime_trusted", strategy_market_fit.get("regime_trusted")),
+                    ("proven", strategy_market_fit.get("proven_working")),
+                    ("drift", strategy_market_fit.get("drift_detected")),
+                    ("cache", strategy_market_fit.get("cache_hit")),
+                    (
+                        "authority_violations",
+                        strategy_market_fit.get("authority_violations"),
+                    ),
+                    ("paper_orders", strategy_market_fit.get("paper_orders")),
+                    ("live_orders", strategy_market_fit.get("live_orders")),
+                    ("age", _age(strategy_market_fit.get("artifact_age_seconds"))),
+                    ("action", strategy_market_fit.get("action")),
+                ],
+            ),
+        )
     if capability_materialization:
         lines.insert(
             2,
@@ -1352,13 +3149,301 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
                         f"{capability_materialization.get('direct_proofs', 0)}/{capability_materialization.get('required_proofs', 4)}",
                     ),
                     ("contracts", capability_materialization.get("contracts")),
-                    ("stress_scenarios", capability_materialization.get("stress_scenarios")),
-                    ("calendar_library", capability_materialization.get("calendar_library")),
-                    ("live_promotion", capability_materialization.get("live_promotion_ready")),
+                    (
+                        "stress_scenarios",
+                        capability_materialization.get("stress_scenarios"),
+                    ),
+                    (
+                        "calendar_library",
+                        capability_materialization.get("calendar_library"),
+                    ),
+                    (
+                        "live_promotion",
+                        capability_materialization.get("live_promotion_ready"),
+                    ),
                     ("cause", capability_materialization.get("cause")),
                     ("impact", capability_materialization.get("impact")),
-                    ("age", _age(capability_materialization.get("artifact_age_seconds"))),
+                    (
+                        "age",
+                        _age(capability_materialization.get("artifact_age_seconds")),
+                    ),
                     ("action", capability_materialization.get("action")),
+                ],
+            ),
+        )
+    if institutional_capabilities:
+        target = institutional_capabilities.get("provider_target")
+        target_token = "15-30"
+        if isinstance(target, list) and len(target) >= 2:
+            target_token = f"{target[0]}-{target[1]}"
+        lines.insert(
+            -1,
+            _line(
+                "institutional-capabilities",
+                [
+                    ("level", _level(institutional_capabilities.get("status"))),
+                    ("status", institutional_capabilities.get("status")),
+                    (
+                        "implementation",
+                        f"{institutional_capabilities.get('implementation_ready', 0)}/{institutional_capabilities.get('pillar_count', 6)}",
+                    ),
+                    (
+                        "paper",
+                        f"{institutional_capabilities.get('paper_ready', 0)}/{institutional_capabilities.get('pillar_count', 6)}",
+                    ),
+                    (
+                        "evidence",
+                        f"{institutional_capabilities.get('candidate_evidence_ready', 0)}/{institutional_capabilities.get('pillar_count', 6)}",
+                    ),
+                    (
+                        "live",
+                        f"{institutional_capabilities.get('live_ready', 0)}/{institutional_capabilities.get('pillar_count', 6)}",
+                    ),
+                    (
+                        "verified_bundles",
+                        institutional_capabilities.get("verified_source_bundles"),
+                    ),
+                    ("provider_target", target_token),
+                    (
+                        "need_10000",
+                        institutional_capabilities.get("ten_thousand_sources_required"),
+                    ),
+                    (
+                        "conditional_entitlements",
+                        institutional_capabilities.get("conditional_entitlements"),
+                    ),
+                    ("candidate", institutional_capabilities.get("candidate_id")),
+                    ("bound", institutional_capabilities.get("candidate_bound")),
+                    (
+                        "local_refreshes",
+                        institutional_capabilities.get("local_refresh_actions"),
+                    ),
+                    ("external", institutional_capabilities.get("external_actions")),
+                    ("paper_impact", institutional_capabilities.get("paper_impact")),
+                    (
+                        "live_execution",
+                        institutional_capabilities.get("live_execution"),
+                    ),
+                    (
+                        "age",
+                        _age(institutional_capabilities.get("artifact_age_seconds")),
+                    ),
+                    ("action", institutional_capabilities.get("action")),
+                ],
+            ),
+        )
+    if authoritative_systems:
+        lines.insert(
+            -1,
+            _line(
+                "authoritative-systems",
+                [
+                    (
+                        "level",
+                        (
+                            "ok"
+                            if authoritative_systems.get("status") == "ready"
+                            else "watch"
+                        ),
+                    ),
+                    (
+                        "status",
+                        _evidence_display_status(authoritative_systems.get("status")),
+                    ),
+                    (
+                        "artifact_fresh",
+                        _evidence_artifact_fresh(authoritative_systems.get("status")),
+                    ),
+                    ("evidence_only", True),
+                    ("grade", authoritative_systems.get("grade")),
+                    ("grade_scope", authoritative_systems.get("grade_scope")),
+                    (
+                        "references",
+                        f"{authoritative_systems.get('references', 0)}/{authoritative_systems.get('reference_target', 39)}",
+                    ),
+                    (
+                        "controls",
+                        f"{authoritative_systems.get('ready_controls', 0)}/{authoritative_systems.get('control_count', 18)}",
+                    ),
+                    (
+                        "external_evidence",
+                        f"{authoritative_systems.get('external_evidence_ready', 0)}/{authoritative_systems.get('external_evidence_count', 10)}",
+                    ),
+                    ("soak_reset", authoritative_systems.get("soak_reset")),
+                    ("paper_impact", authoritative_systems.get("paper_impact")),
+                    ("live_authority", authoritative_systems.get("live_authority")),
+                    ("age", _age(authoritative_systems.get("artifact_age_seconds"))),
+                    ("action", authoritative_systems.get("action")),
+                ],
+            ),
+        )
+    if research_data_platform:
+        lines.insert(
+            -1,
+            _line(
+                "research-data-platform",
+                [
+                    (
+                        "level",
+                        (
+                            "ok"
+                            if research_data_platform.get("paper_soak_ready")
+                            else "watch"
+                        ),
+                    ),
+                    (
+                        "status",
+                        _evidence_display_status(research_data_platform.get("status")),
+                    ),
+                    (
+                        "artifact_fresh",
+                        _evidence_artifact_fresh(research_data_platform.get("status")),
+                    ),
+                    ("evidence_only", True),
+                    (
+                        "implementation_grade",
+                        research_data_platform.get("implementation_grade"),
+                    ),
+                    (
+                        "implementation",
+                        f"{research_data_platform.get('implementation_ready', 0)}/{research_data_platform.get('implementation_count', 10)}",
+                    ),
+                    (
+                        "evidence",
+                        f"{research_data_platform.get('evidence_ready', 0)}/{research_data_platform.get('evidence_count', 10)}",
+                    ),
+                    (
+                        "products",
+                        f"{research_data_platform.get('products_ready', 0)}/{research_data_platform.get('product_count', 10)}",
+                    ),
+                    ("families", research_data_platform.get("decision_families")),
+                    (
+                        "source_value",
+                        f"{research_data_platform.get('source_value_qualified', 0)}/{research_data_platform.get('source_value_count', 0)}",
+                    ),
+                    ("candidate", research_data_platform.get("candidate_id")),
+                    ("bound", research_data_platform.get("candidate_bound")),
+                    ("paper_impact", research_data_platform.get("paper_impact")),
+                    ("live_ready", research_data_platform.get("live_promotion_ready")),
+                    ("live_authority", research_data_platform.get("live_authority")),
+                    ("age", _age(research_data_platform.get("artifact_age_seconds"))),
+                    ("action", research_data_platform.get("action")),
+                ],
+            ),
+        )
+    if institutional_research_extensions:
+        lines.insert(
+            -1,
+            _line(
+                "institutional-research-extensions",
+                [
+                    (
+                        "level",
+                        (
+                            "ok"
+                            if institutional_research_extensions.get("paper_soak_ready")
+                            else "watch"
+                        ),
+                    ),
+                    (
+                        "status",
+                        _evidence_display_status(
+                            institutional_research_extensions.get("status")
+                        ),
+                    ),
+                    (
+                        "artifact_fresh",
+                        _evidence_artifact_fresh(
+                            institutional_research_extensions.get("status")
+                        ),
+                    ),
+                    ("evidence_only", True),
+                    (
+                        "implementation_grade",
+                        institutional_research_extensions.get("implementation_grade"),
+                    ),
+                    (
+                        "implementation",
+                        f"{institutional_research_extensions.get('implementation_ready', 0)}/{institutional_research_extensions.get('implementation_count', 8)}",
+                    ),
+                    (
+                        "evidence",
+                        f"{institutional_research_extensions.get('evidence_ready', 0)}/{institutional_research_extensions.get('evidence_count', 8)}",
+                    ),
+                    (
+                        "firm_refs",
+                        f"{institutional_research_extensions.get('firm_references', 0)}/{institutional_research_extensions.get('firm_organizations', 0)}orgs",
+                    ),
+                    (
+                        "candidate",
+                        institutional_research_extensions.get("candidate_id"),
+                    ),
+                    ("bound", institutional_research_extensions.get("candidate_bound")),
+                    (
+                        "paper_impact",
+                        institutional_research_extensions.get("paper_impact"),
+                    ),
+                    ("soak_reset", institutional_research_extensions.get("soak_reset")),
+                    (
+                        "live_ready",
+                        institutional_research_extensions.get("live_promotion_ready"),
+                    ),
+                    (
+                        "live_authority",
+                        institutional_research_extensions.get("live_authority"),
+                    ),
+                    (
+                        "age",
+                        _age(
+                            institutional_research_extensions.get(
+                                "artifact_age_seconds"
+                            )
+                        ),
+                    ),
+                    ("action", institutional_research_extensions.get("action")),
+                ],
+            ),
+        )
+    if paper_live_equivalence:
+        lines.insert(
+            -1,
+            _line(
+                "paper-live-equivalence",
+                [
+                    (
+                        "level",
+                        (
+                            "ok"
+                            if paper_live_equivalence.get("empirical_ready")
+                            else "watch"
+                        ),
+                    ),
+                    (
+                        "status",
+                        _evidence_display_status(paper_live_equivalence.get("status")),
+                    ),
+                    (
+                        "artifact_fresh",
+                        _evidence_artifact_fresh(paper_live_equivalence.get("status")),
+                    ),
+                    ("evidence_only", True),
+                    ("structural", paper_live_equivalence.get("structural_ready")),
+                    ("empirical", paper_live_equivalence.get("empirical_ready")),
+                    ("paper", paper_live_equivalence.get("paper_count")),
+                    ("live_shadow", paper_live_equivalence.get("live_count")),
+                    ("pairs", paper_live_equivalence.get("paired_count")),
+                    ("mismatches", paper_live_equivalence.get("mismatch_count")),
+                    ("missing_live", paper_live_equivalence.get("missing_live_count")),
+                    (
+                        "paper_not_promoted",
+                        paper_live_equivalence.get("unpaired_paper_count"),
+                    ),
+                    ("orphan_live", paper_live_equivalence.get("missing_paper_count")),
+                    ("paper_impact", paper_live_equivalence.get("paper_impact")),
+                    ("live_evidence", paper_live_equivalence.get("live_evidence")),
+                    ("live_authority", paper_live_equivalence.get("live_authority")),
+                    ("age", _age(paper_live_equivalence.get("artifact_age_seconds"))),
+                    ("action", paper_live_equivalence.get("action")),
                 ],
             ),
         )
@@ -1377,16 +3462,94 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
                         f"{collector_capabilities.get('bots', 0)}/{collector_capabilities.get('assignments', 0)}",
                     ),
                     ("profiles", collector_capabilities.get("profiles")),
-                    ("mapped", collector_capabilities.get("collector_mapping_complete")),
+                    (
+                        "route_profiles",
+                        collector_capabilities.get("ingestion_route_profiles"),
+                    ),
+                    ("routing_policy", collector_capabilities.get("routing_policy")),
+                    ("decision_stage", collector_capabilities.get("decision_stage")),
+                    ("families", collector_capabilities.get("decision_families")),
+                    (
+                        "paper_routes",
+                        f"{collector_capabilities.get('runtime_paper_ready_routes', 0)}/"
+                        f"{collector_capabilities.get('runtime_routes', 0)}",
+                    ),
+                    (
+                        "live_routes",
+                        f"{collector_capabilities.get('runtime_live_ready_routes', 0)}/"
+                        f"{collector_capabilities.get('runtime_routes', 0)}",
+                    ),
+                    (
+                        "route_quality",
+                        collector_capabilities.get("average_route_quality"),
+                    ),
+                    (
+                        "econ_contract",
+                        collector_capabilities.get("economic_context_contract"),
+                    ),
+                    (
+                        "econ_families",
+                        f"{collector_capabilities.get('economic_ready_families', 0)}/"
+                        f"{collector_capabilities.get('economic_family_count', 0)}",
+                    ),
+                    (
+                        "econ_routes",
+                        f"{collector_capabilities.get('economic_runtime_ready_routes', 0)}/"
+                        f"{collector_capabilities.get('economic_runtime_routes', 0)}",
+                    ),
+                    (
+                        "econ_sources",
+                        collector_capabilities.get("economic_source_count"),
+                    ),
+                    (
+                        "econ_ready",
+                        collector_capabilities.get("economic_context_ready"),
+                    ),
+                    (
+                        "econ_advisory",
+                        collector_capabilities.get("economic_context_advisory_only"),
+                    ),
+                    (
+                        "econ_receipt",
+                        collector_capabilities.get("economic_context_receipt"),
+                    ),
+                    (
+                        "independent_redundancy",
+                        collector_capabilities.get("independent_redundancy_ratio"),
+                    ),
+                    (
+                        "transport_contract",
+                        collector_capabilities.get("transport_contract_complete"),
+                    ),
+                    ("route_receipt", collector_capabilities.get("route_receipt")),
+                    (
+                        "mapped",
+                        collector_capabilities.get("collector_mapping_complete"),
+                    ),
                     ("coverage_gaps", collector_capabilities.get("coverage_gaps")),
-                    ("candidate_blocking", collector_capabilities.get("candidate_blocking_gaps")),
+                    (
+                        "candidate_blocking",
+                        collector_capabilities.get("candidate_blocking_gaps"),
+                    ),
                     ("optional_gaps", collector_capabilities.get("optional_gaps")),
                     ("debt_scope", collector_capabilities.get("coverage_debt_scope")),
-                    ("required_usable", collector_capabilities.get("required_usable_ratio")),
-                    ("required_redundancy", collector_capabilities.get("required_redundancy_ratio")),
-                    ("full_catalog", collector_capabilities.get("full_catalog_coverage_ready")),
+                    (
+                        "required_usable",
+                        collector_capabilities.get("required_usable_ratio"),
+                    ),
+                    (
+                        "required_redundancy",
+                        collector_capabilities.get("required_redundancy_ratio"),
+                    ),
+                    (
+                        "full_catalog",
+                        collector_capabilities.get("full_catalog_coverage_ready"),
+                    ),
                     ("paper", collector_capabilities.get("paper_soak_ready")),
-                    ("live_promotion", collector_capabilities.get("live_promotion_ready")),
+                    (
+                        "live_promotion",
+                        collector_capabilities.get("live_promotion_ready"),
+                    ),
                     ("cause", collector_capabilities.get("cause")),
                     ("impact", collector_capabilities.get("impact")),
                     ("age", _age(collector_capabilities.get("artifact_age_seconds"))),
@@ -1413,7 +3576,14 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
                     ("errors", fx_provider.get("iter_error_rate")),
                     ("cause", fx_provider.get("cause")),
                     ("impact", fx_provider.get("impact")),
-                    ("paper_impact", "none" if fx_provider.get("managed_fallback") else fx_provider.get("impact")),
+                    (
+                        "paper_impact",
+                        (
+                            "none"
+                            if fx_provider.get("managed_fallback")
+                            else fx_provider.get("impact")
+                        ),
+                    ),
                     ("age", _age(fx_provider.get("artifact_age_seconds"))),
                     ("action", fx_provider.get("action")),
                 ],
@@ -1424,7 +3594,9 @@ def format_status_lines(snapshot: dict[str, Any]) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project-root", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument(
+        "--project-root", type=Path, default=Path(__file__).resolve().parents[2]
+    )
     parser.add_argument("--source", default="main")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()

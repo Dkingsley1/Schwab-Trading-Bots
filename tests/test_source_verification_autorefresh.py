@@ -3,7 +3,6 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -31,7 +30,10 @@ def _seed_runtime(project_root: Path, *, ready: bool = True) -> None:
             },
         },
     )
-    _write_json(project_root / "governance" / "health" / "health_fast_latest.json", {"strict_all_clear": ready})
+    _write_json(
+        project_root / "governance" / "health" / "health_fast_latest.json",
+        {"strict_all_clear": ready},
+    )
 
 
 def _source_payload() -> dict:
@@ -39,9 +41,17 @@ def _source_payload() -> dict:
     return {
         "ok": False,
         "overall_status": "degraded",
-        "unverified_sources": ["macro_crossstack", "ticker_news_context", "sec_edgar_context"],
+        "unverified_sources": [
+            "macro_crossstack",
+            "ticker_news_context",
+            "sec_edgar_context",
+        ],
         "stale_artifacts": ["ticker_news_context", "sec_edgar_context"],
-        "degraded_artifacts": ["macro_crossstack", "ticker_news_context", "sec_edgar_context"],
+        "degraded_artifacts": [
+            "macro_crossstack",
+            "ticker_news_context",
+            "sec_edgar_context",
+        ],
         "recommended_refresh_commands": [
             [opsctl, "macro-crosscheck", "--json"],
             [opsctl, "ticker-news-sync", "--max-runtime-seconds", "240", "--json"],
@@ -51,15 +61,26 @@ def _source_payload() -> dict:
     }
 
 
-def test_source_verification_autorefresh_selects_bounded_batch_when_runtime_ready(tmp_path: Path, monkeypatch) -> None:
+def test_source_verification_autorefresh_selects_bounded_batch_when_runtime_ready(
+    tmp_path: Path, monkeypatch
+) -> None:
     _seed_runtime(tmp_path, ready=True)
-    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: _source_payload())
+    monkeypatch.setattr(
+        src.report_src,
+        "build_source_verification_payload",
+        lambda _root: _source_payload(),
+    )
 
-    payload = src.build_payload(tmp_path, apply=False, max_commands=8, timeout_seconds=180, max_heavy_commands=1)
+    payload = src.build_payload(
+        tmp_path, apply=False, max_commands=8, timeout_seconds=180, max_heavy_commands=1
+    )
 
     assert payload["overall_status"] == "needs_refresh"
     assert payload["runtime_refresh_contract"]["heavy_refresh_allowed"] is True
-    assert [cmd[1] for cmd in payload["selected_commands"]] == ["macro-crosscheck", "ticker-news-sync"]
+    assert [cmd[1] for cmd in payload["selected_commands"]] == [
+        "macro-crosscheck",
+        "ticker-news-sync",
+    ]
     selected = payload["selected_commands"][1]
     assert selected[1] == "ticker-news-sync"
     assert selected[selected.index("--max-symbols") + 1] == "300"
@@ -70,7 +91,9 @@ def test_source_verification_autorefresh_selects_bounded_batch_when_runtime_read
     assert payload["skipped_commands"][0]["reason"] == "bounded_batch_cap"
 
 
-def test_source_verification_autorefresh_prioritizes_decision_critical_sources(tmp_path: Path, monkeypatch) -> None:
+def test_source_verification_autorefresh_prioritizes_decision_critical_sources(
+    tmp_path: Path, monkeypatch
+) -> None:
     _seed_runtime(tmp_path, ready=True)
     opsctl = "/repo/scripts/ops/opsctl.sh"
     source_payload = {
@@ -80,8 +103,18 @@ def test_source_verification_autorefresh_prioritizes_decision_critical_sources(t
         "stale_artifacts": ["ticker_news_context", "market_micro_context"],
         "degraded_artifacts": ["ticker_news_context", "market_micro_context"],
         "sources": [
-            {"source_id": "ticker_news_context", "criticality": "decision_context", "fresh": False, "ok": False},
-            {"source_id": "market_micro_context", "criticality": "decision_critical", "fresh": False, "ok": False},
+            {
+                "source_id": "ticker_news_context",
+                "criticality": "decision_context",
+                "fresh": False,
+                "ok": False,
+            },
+            {
+                "source_id": "market_micro_context",
+                "criticality": "decision_critical",
+                "fresh": False,
+                "ok": False,
+            },
         ],
         "recommended_refresh_commands": [
             [opsctl, "ticker-news-sync", "--json"],
@@ -89,9 +122,15 @@ def test_source_verification_autorefresh_prioritizes_decision_critical_sources(t
             [opsctl, "source-verification", "--json"],
         ],
     }
-    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: source_payload)
+    monkeypatch.setattr(
+        src.report_src,
+        "build_source_verification_payload",
+        lambda _root: source_payload,
+    )
 
-    payload = src.build_payload(tmp_path, apply=False, max_commands=1, timeout_seconds=180, max_heavy_commands=1)
+    payload = src.build_payload(
+        tmp_path, apply=False, max_commands=1, timeout_seconds=180, max_heavy_commands=1
+    )
 
     assert [cmd[1] for cmd in payload["selected_commands"]] == ["market-micro-sync"]
     assert payload["selection_contract"]["priority_order"] == [
@@ -102,7 +141,83 @@ def test_source_verification_autorefresh_prioritizes_decision_critical_sources(t
     ]
 
 
-def test_source_verification_autorefresh_defers_heavy_sources_under_runtime_pressure(tmp_path: Path, monkeypatch) -> None:
+def test_source_verification_autorefresh_waits_for_aggregate_dependencies(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _seed_runtime(tmp_path, ready=True)
+    opsctl = "/repo/scripts/ops/opsctl.sh"
+    source_payload = {
+        "ok": False,
+        "overall_status": "degraded",
+        "unverified_sources": ["decision_context_mesh"],
+        "stale_artifacts": [],
+        "degraded_artifacts": ["decision_context_mesh"],
+        "sources": [
+            {
+                "source_id": "decision_context_mesh",
+                "criticality": "decision_context",
+                "fresh": True,
+                "ok": False,
+                "evidence": {
+                    "failed_source_ids": [
+                        "extended_quant_context",
+                        "sec_edgar_context",
+                    ]
+                },
+            },
+            {
+                "source_id": "extended_quant_context",
+                "criticality": "decision_context",
+                "fresh": False,
+                "ok": False,
+            },
+            {
+                "source_id": "sec_edgar_context",
+                "criticality": "decision_context",
+                "fresh": False,
+                "ok": False,
+            },
+        ],
+        "recommended_refresh_commands": [
+            [opsctl, "extended-quant-sync", "--json"],
+            [opsctl, "sec-edgar-sync", "--json"],
+            [opsctl, "decision-context-sync", "--json"],
+            [opsctl, "source-verification", "--json"],
+        ],
+    }
+    monkeypatch.setattr(
+        src.report_src,
+        "build_source_verification_payload",
+        lambda _root: source_payload,
+    )
+
+    payload = src.build_payload(
+        tmp_path,
+        apply=False,
+        max_commands=2,
+        max_heavy_commands=2,
+    )
+
+    assert [command[1] for command in payload["selected_commands"]] == [
+        "extended-quant-sync",
+        "sec-edgar-sync",
+    ]
+    aggregate_skip = next(
+        row
+        for row in payload["skipped_commands"]
+        if row.get("source_id") == "decision_context_mesh"
+    )
+    assert aggregate_skip["reason"] == "dependent_source_drift_waiting"
+    assert aggregate_skip["stale_dependencies"] == [
+        "extended_quant_context",
+        "sec_edgar_context",
+    ]
+
+
+def test_source_verification_autorefresh_defers_heavy_sources_under_runtime_pressure(
+    tmp_path: Path, monkeypatch
+) -> None:
     _seed_runtime(tmp_path, ready=False)
     heavy_only = _source_payload()
     heavy_only["recommended_refresh_commands"] = [
@@ -110,9 +225,13 @@ def test_source_verification_autorefresh_defers_heavy_sources_under_runtime_pres
         heavy_only["recommended_refresh_commands"][2],
         heavy_only["recommended_refresh_commands"][3],
     ]
-    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: heavy_only)
+    monkeypatch.setattr(
+        src.report_src, "build_source_verification_payload", lambda _root: heavy_only
+    )
 
-    payload = src.build_payload(tmp_path, apply=False, max_commands=8, timeout_seconds=180, max_heavy_commands=1)
+    payload = src.build_payload(
+        tmp_path, apply=False, max_commands=8, timeout_seconds=180, max_heavy_commands=1
+    )
 
     assert payload["overall_status"] == "deferred_by_runtime_governor"
     assert payload["selected_commands"] == []
@@ -122,7 +241,9 @@ def test_source_verification_autorefresh_defers_heavy_sources_under_runtime_pres
     }
 
 
-def test_source_verification_autorefresh_allows_one_guarded_heavy_refresh_when_strict_clear(tmp_path: Path, monkeypatch) -> None:
+def test_source_verification_autorefresh_allows_one_guarded_heavy_refresh_when_strict_clear(
+    tmp_path: Path, monkeypatch
+) -> None:
     _write_json(
         tmp_path / "governance" / "health" / "runtime_throttle_control_latest.json",
         {
@@ -142,20 +263,30 @@ def test_source_verification_autorefresh_allows_one_guarded_heavy_refresh_when_s
             },
         },
     )
-    _write_json(tmp_path / "governance" / "health" / "health_fast_latest.json", {"strict_all_clear": True})
+    _write_json(
+        tmp_path / "governance" / "health" / "health_fast_latest.json",
+        {"strict_all_clear": True},
+    )
     heavy_only = _source_payload()
     heavy_only["recommended_refresh_commands"] = [
         heavy_only["recommended_refresh_commands"][1],
         heavy_only["recommended_refresh_commands"][2],
         heavy_only["recommended_refresh_commands"][3],
     ]
-    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: heavy_only)
+    monkeypatch.setattr(
+        src.report_src, "build_source_verification_payload", lambda _root: heavy_only
+    )
 
-    payload = src.build_payload(tmp_path, apply=False, max_commands=8, timeout_seconds=180, max_heavy_commands=1)
+    payload = src.build_payload(
+        tmp_path, apply=False, max_commands=8, timeout_seconds=180, max_heavy_commands=1
+    )
 
     assert payload["overall_status"] == "needs_refresh"
     assert payload["runtime_refresh_contract"]["heavy_refresh_allowed"] is True
-    assert payload["runtime_refresh_contract"]["heavy_refresh_mode"] == "guarded_single_heavy"
+    assert (
+        payload["runtime_refresh_contract"]["heavy_refresh_mode"]
+        == "guarded_single_heavy"
+    )
     assert [cmd[1] for cmd in payload["selected_commands"]] == ["ticker-news-sync"]
     selected = payload["selected_commands"][0]
     assert selected[selected.index("--max-symbols") + 1] == "300"
@@ -166,7 +297,9 @@ def test_source_verification_autorefresh_allows_one_guarded_heavy_refresh_when_s
     assert payload["skipped_commands"][0]["reason"] == "bounded_batch_cap"
 
 
-def test_source_verification_autorefresh_routes_known_missing_schwab_endpoint_to_light_fallback(tmp_path: Path, monkeypatch) -> None:
+def test_source_verification_autorefresh_routes_known_missing_schwab_endpoint_to_light_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
     _seed_runtime(tmp_path, ready=False)
     opsctl = "/repo/scripts/ops/opsctl.sh"
     source_payload = {
@@ -187,13 +320,25 @@ def test_source_verification_autorefresh_routes_known_missing_schwab_endpoint_to
             }
         ],
         "recommended_refresh_commands": [
-            [opsctl, "schwab-symbol-news-sync", "--max-runtime-seconds", "180", "--json"],
+            [
+                opsctl,
+                "schwab-symbol-news-sync",
+                "--max-runtime-seconds",
+                "180",
+                "--json",
+            ],
             [opsctl, "source-verification", "--json"],
         ],
     }
-    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: source_payload)
+    monkeypatch.setattr(
+        src.report_src,
+        "build_source_verification_payload",
+        lambda _root: source_payload,
+    )
 
-    payload = src.build_payload(tmp_path, apply=False, max_commands=1, timeout_seconds=180, max_heavy_commands=0)
+    payload = src.build_payload(
+        tmp_path, apply=False, max_commands=1, timeout_seconds=180, max_heavy_commands=0
+    )
 
     command = payload["selected_commands"][0]
     assert "--public-fallback-only" in command
@@ -202,15 +347,25 @@ def test_source_verification_autorefresh_routes_known_missing_schwab_endpoint_to
     assert payload["selected_command_policies"][0]["heavy"] is False
 
 
-def test_source_verification_autorefresh_refreshes_macro_dependencies_before_crosscheck(tmp_path: Path, monkeypatch) -> None:
+def test_source_verification_autorefresh_refreshes_macro_dependencies_before_crosscheck(
+    tmp_path: Path, monkeypatch
+) -> None:
     _seed_runtime(tmp_path, ready=True)
     opsctl = "/repo/scripts/ops/opsctl.sh"
     source_payload = {
         "ok": False,
         "overall_status": "degraded",
-        "unverified_sources": ["macro_crossstack", "public_macro_feeds", "market_micro_context"],
+        "unverified_sources": [
+            "macro_crossstack",
+            "public_macro_feeds",
+            "market_micro_context",
+        ],
         "stale_artifacts": ["public_macro_feeds", "market_micro_context"],
-        "degraded_artifacts": ["macro_crossstack", "public_macro_feeds", "market_micro_context"],
+        "degraded_artifacts": [
+            "macro_crossstack",
+            "public_macro_feeds",
+            "market_micro_context",
+        ],
         "recommended_refresh_commands": [
             [opsctl, "macro-crosscheck", "--json"],
             [opsctl, "macro-context-sync", "--json"],
@@ -218,20 +373,33 @@ def test_source_verification_autorefresh_refreshes_macro_dependencies_before_cro
             [opsctl, "source-verification", "--json"],
         ],
     }
-    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: source_payload)
+    monkeypatch.setattr(
+        src.report_src,
+        "build_source_verification_payload",
+        lambda _root: source_payload,
+    )
 
-    payload = src.build_payload(tmp_path, apply=False, max_commands=1, timeout_seconds=180, max_heavy_commands=1)
+    payload = src.build_payload(
+        tmp_path, apply=False, max_commands=1, timeout_seconds=180, max_heavy_commands=1
+    )
 
     assert [cmd[1] for cmd in payload["selected_commands"]] == ["macro-context-sync"]
     skipped_by_reason = {row["reason"]: row for row in payload["skipped_commands"]}
-    assert skipped_by_reason["dependent_stale_sources_waiting"]["command"][1] == "macro-crosscheck"
-    assert skipped_by_reason["dependent_stale_sources_waiting"]["stale_dependencies"] == [
+    assert (
+        skipped_by_reason["dependent_stale_sources_waiting"]["command"][1]
+        == "macro-crosscheck"
+    )
+    assert skipped_by_reason["dependent_stale_sources_waiting"][
+        "stale_dependencies"
+    ] == [
         "market_micro_context",
         "public_macro_feeds",
     ]
 
 
-def test_source_verification_autorefresh_does_not_pin_on_fresh_confidence_debt(tmp_path: Path, monkeypatch) -> None:
+def test_source_verification_autorefresh_does_not_pin_on_fresh_confidence_debt(
+    tmp_path: Path, monkeypatch
+) -> None:
     _seed_runtime(tmp_path, ready=True)
     opsctl = "/repo/scripts/ops/opsctl.sh"
     source_payload = {
@@ -250,16 +418,27 @@ def test_source_verification_autorefresh_does_not_pin_on_fresh_confidence_debt(t
             [opsctl, "source-verification", "--json"],
         ],
     }
-    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: source_payload)
+    monkeypatch.setattr(
+        src.report_src,
+        "build_source_verification_payload",
+        lambda _root: source_payload,
+    )
 
-    payload = src.build_payload(tmp_path, apply=False, max_commands=1, timeout_seconds=180, max_heavy_commands=1)
+    payload = src.build_payload(
+        tmp_path, apply=False, max_commands=1, timeout_seconds=180, max_heavy_commands=1
+    )
 
     assert [cmd[1] for cmd in payload["selected_commands"]] == ["macro-context-sync"]
     skipped_by_reason = {row["reason"]: row for row in payload["skipped_commands"]}
-    assert skipped_by_reason["fresh_ok_source_confidence_debt_waiting"]["source_id"] == "fx_market_context"
+    assert (
+        skipped_by_reason["fresh_ok_source_confidence_debt_waiting"]["source_id"]
+        == "fx_market_context"
+    )
 
 
-def test_source_verification_autorefresh_reconciles_downstream_reports_after_apply(tmp_path: Path, monkeypatch) -> None:
+def test_source_verification_autorefresh_reconciles_downstream_reports_after_apply(
+    tmp_path: Path, monkeypatch
+) -> None:
     _seed_runtime(tmp_path, ready=True)
     opsctl = "/repo/scripts/ops/opsctl.sh"
     before = {
@@ -295,23 +474,43 @@ def test_source_verification_autorefresh_reconciles_downstream_reports_after_app
             "timed_out": False,
         }
 
-    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: next(payloads))
-    monkeypatch.setattr(src, "_write_latest_source_report", lambda _root, _payload: None)
+    monkeypatch.setattr(
+        src.report_src,
+        "build_source_verification_payload",
+        lambda _root: next(payloads),
+    )
+    monkeypatch.setattr(
+        src, "_write_latest_source_report", lambda _root, _payload: None
+    )
     monkeypatch.setattr(src, "_run_command", _fake_run)
 
-    payload = src.build_payload(tmp_path, apply=True, max_commands=1, timeout_seconds=180, max_heavy_commands=1)
+    payload = src.build_payload(
+        tmp_path, apply=True, max_commands=1, timeout_seconds=180, max_heavy_commands=1
+    )
 
     assert payload["overall_status"] == "applied"
-    assert [cmd[1] for cmd in calls] == ["sec-edgar-sync", "collector-contracts", "health-gates"]
-    assert [cmd[1] for cmd in payload["downstream_recheck_commands"]] == ["collector-contracts", "health-gates"]
-    assert [row["command"][1] for row in payload["downstream_recheck_results"]] == ["collector-contracts", "health-gates"]
+    assert [cmd[1] for cmd in calls] == [
+        "sec-edgar-sync",
+        "collector-contracts",
+        "health-gates",
+    ]
+    assert [cmd[1] for cmd in payload["downstream_recheck_commands"]] == [
+        "collector-contracts",
+        "health-gates",
+    ]
+    assert [row["command"][1] for row in payload["downstream_recheck_results"]] == [
+        "collector-contracts",
+        "health-gates",
+    ]
 
 
 def test_source_verification_autorefresh_tails_are_bounded() -> None:
     assert len(src._tail_text("x" * 5000, char_limit=123)) == 123
 
 
-def test_source_verification_autorefresh_persists_failure_backoff(tmp_path: Path, monkeypatch) -> None:
+def test_source_verification_autorefresh_persists_failure_backoff(
+    tmp_path: Path, monkeypatch
+) -> None:
     _seed_runtime(tmp_path, ready=True)
     opsctl = "/repo/scripts/ops/opsctl.sh"
     source_payload = {
@@ -336,13 +535,23 @@ def test_source_verification_autorefresh_persists_failure_backoff(tmp_path: Path
             "timed_out": False,
         }
 
-    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: source_payload)
-    monkeypatch.setattr(src, "_write_latest_source_report", lambda _root, _payload: None)
+    monkeypatch.setattr(
+        src.report_src,
+        "build_source_verification_payload",
+        lambda _root: source_payload,
+    )
+    monkeypatch.setattr(
+        src, "_write_latest_source_report", lambda _root, _payload: None
+    )
     monkeypatch.setattr(src, "_run_command", _failed)
     state_path = tmp_path / "governance" / "runtime" / "retry.json"
 
-    first = src.build_payload(tmp_path, apply=True, max_commands=1, state_path=state_path)
-    second = src.build_payload(tmp_path, apply=False, max_commands=1, state_path=state_path)
+    first = src.build_payload(
+        tmp_path, apply=True, max_commands=1, state_path=state_path
+    )
+    second = src.build_payload(
+        tmp_path, apply=False, max_commands=1, state_path=state_path
+    )
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert first["results"][0]["source_id"] == "sec_edgar_context"
@@ -404,8 +613,14 @@ def test_source_refresh_backs_off_when_process_succeeds_but_evidence_remains_unv
     }
     after = dict(before)
     payloads = iter([before, after])
-    monkeypatch.setattr(src.report_src, "build_source_verification_payload", lambda _root: next(payloads))
-    monkeypatch.setattr(src, "_write_latest_source_report", lambda _root, _payload: None)
+    monkeypatch.setattr(
+        src.report_src,
+        "build_source_verification_payload",
+        lambda _root: next(payloads),
+    )
+    monkeypatch.setattr(
+        src, "_write_latest_source_report", lambda _root, _payload: None
+    )
     monkeypatch.setattr(
         src,
         "_run_command",
@@ -420,7 +635,9 @@ def test_source_refresh_backs_off_when_process_succeeds_but_evidence_remains_unv
     )
     state_path = tmp_path / "governance" / "runtime" / "retry.json"
 
-    payload = src.build_payload(tmp_path, apply=True, max_commands=1, state_path=state_path)
+    payload = src.build_payload(
+        tmp_path, apply=True, max_commands=1, state_path=state_path
+    )
 
     result = payload["results"][0]
     state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -430,5 +647,11 @@ def test_source_refresh_backs_off_when_process_succeeds_but_evidence_remains_unv
     assert result["ok"] is False
     assert result["semantic_failure"]
     assert state["sources"]["public_policy_context"]["consecutive_failures"] == 1
-    assert state["sources"]["public_policy_context"]["last_failure_kind"] == "semantic_evidence_incomplete"
-    assert state["sources"]["public_policy_context"]["retry_delay_seconds"] >= src.SEMANTIC_RETRY_MIN_SECONDS
+    assert (
+        state["sources"]["public_policy_context"]["last_failure_kind"]
+        == "semantic_evidence_incomplete"
+    )
+    assert (
+        state["sources"]["public_policy_context"]["retry_delay_seconds"]
+        >= src.SEMANTIC_RETRY_MIN_SECONDS
+    )

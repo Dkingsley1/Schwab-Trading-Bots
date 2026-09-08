@@ -11,22 +11,59 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+    from scripts.ops.long_runtime_common import (
+        iso_now,
+        load_json,
+        ordered_unique,
+        payload_age_minutes,
+        write_payload,
+    )
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
-    from .long_runtime_common import iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+    from .long_runtime_common import (
+        iso_now,
+        load_json,
+        ordered_unique,
+        payload_age_minutes,
+        write_payload,
+    )
 
+from core.operating_contracts import build_operating_contract
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_paper_regression_guard_latest.json"
-DEFAULT_RUNTIME_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_throttle_control_latest.json"
-DEFAULT_PAPER_PATH = PROJECT_ROOT / "governance" / "health" / "paper_400_ramp_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "health"
+    / "runtime_paper_regression_guard_latest.json"
+)
+DEFAULT_RUNTIME_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "runtime_throttle_control_latest.json"
+)
+DEFAULT_PAPER_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "paper_400_ramp_latest.json"
+)
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.runtime_resource_guard_override"
-DEFAULT_PROCESS_PATH = PROJECT_ROOT / "governance" / "health" / "process_watchdog_latest.json"
-DEFAULT_RUNTIME_PROFITABILITY_PATH = PROJECT_ROOT / "governance" / "health" / "paper_runtime_profitability_controls_latest.json"
-DEFAULT_AUTH_LEASE_PATH = PROJECT_ROOT / "governance" / "health" / "auth_lease_manager_latest.json"
-DEFAULT_SCHWAB_AUTH_PATH = PROJECT_ROOT / "governance" / "health" / "schwab_auth_supervisor_latest.json"
-DEFAULT_BROKER_PATH = PROJECT_ROOT / "governance" / "health" / "broker_readiness_latest.json"
-DEFAULT_SESSION_PATH = PROJECT_ROOT / "governance" / "health" / "session_ready_latest.json"
+DEFAULT_PROCESS_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "process_watchdog_latest.json"
+)
+DEFAULT_RUNTIME_PROFITABILITY_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "health"
+    / "paper_runtime_profitability_controls_latest.json"
+)
+DEFAULT_AUTH_LEASE_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "auth_lease_manager_latest.json"
+)
+DEFAULT_SCHWAB_AUTH_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "schwab_auth_supervisor_latest.json"
+)
+DEFAULT_BROKER_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "broker_readiness_latest.json"
+)
+DEFAULT_SESSION_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "session_ready_latest.json"
+)
 
 CAPACITY_BLOCKER = "runtime_capacity_not_ready_for_400_paper"
 READY_LIKE_STATUSES = {"ready", "ok", "advisory"}
@@ -72,7 +109,9 @@ SUPPORT_OVERRIDE_ALIASES = {
         "RUNTIME_RESEARCH_TRAINING_NICE",
         "RUNTIME_THROTTLE_RESEARCH_NICE",
     ],
-    "SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS": ["SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS"],
+    "SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS": [
+        "SHADOW_LOOP_RUNTIME_PAUSE_SLEEP_SECONDS"
+    ],
 }
 PAPER_PAUSE_OVERRIDE_KEYS = {
     "PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE": "1",
@@ -154,7 +193,11 @@ def _guard_row(
         "name": name,
         "ok": bool(ok),
         "severity": severity,
-        "status": "ready" if ok else ("blocked" if severity in HARD_SEVERITIES else "degraded"),
+        "status": (
+            "ready"
+            if ok
+            else ("blocked" if severity in HARD_SEVERITIES else "degraded")
+        ),
         "expected": expected,
         "actual": actual,
         "evidence": ordered_unique(evidence or []),
@@ -171,7 +214,9 @@ def _paper_is_blocked(paper: dict[str, Any]) -> bool:
     )
 
 
-def _artifact_snapshot(name: str, path: Path, payload: dict[str, Any], max_age_minutes: float) -> dict[str, Any]:
+def _artifact_snapshot(
+    name: str, path: Path, payload: dict[str, Any], max_age_minutes: float
+) -> dict[str, Any]:
     age = payload_age_minutes(payload, path)
     present = bool(payload)
     stale = bool(not present or age is None or float(age) > float(max_age_minutes))
@@ -187,9 +232,15 @@ def _artifact_snapshot(name: str, path: Path, payload: dict[str, Any], max_age_m
 
 def _paper_lane_eligible(runtime: dict[str, Any], paper: dict[str, Any]) -> bool:
     paper_policy = _as_dict(runtime.get("paper_execution_policy"))
-    live_policy = _as_dict(_as_dict(runtime.get("runtime_saturation_governor_v2")).get("paper_live_data_policy"))
+    live_policy = _as_dict(
+        _as_dict(runtime.get("runtime_saturation_governor_v2")).get(
+            "paper_live_data_policy"
+        )
+    )
     blockers = _as_list(paper.get("blockers")) if paper else []
-    paper_armed_clean = bool(paper and _bool(paper.get("armed")) and _bool(paper.get("ok")) and not blockers)
+    paper_armed_clean = bool(
+        paper and _bool(paper.get("armed")) and _bool(paper.get("ok")) and not blockers
+    )
     runtime_armed_clean = bool(
         _bool(paper_policy.get("armed"))
         and _bool(paper_policy.get("ok"))
@@ -213,7 +264,11 @@ def _paper_and_gate_blockers(paper: dict[str, Any]) -> list[str]:
 
 def _paper_execution_open(runtime: dict[str, Any], env_values: dict[str, str]) -> bool:
     paper_policy = _as_dict(runtime.get("paper_execution_policy"))
-    live_policy = _as_dict(_as_dict(runtime.get("runtime_saturation_governor_v2")).get("paper_live_data_policy"))
+    live_policy = _as_dict(
+        _as_dict(runtime.get("runtime_saturation_governor_v2")).get(
+            "paper_live_data_policy"
+        )
+    )
     return bool(
         _bool(paper_policy.get("paper_execution_allowed", False))
         and not _bool(paper_policy.get("pause_paper_execution", False))
@@ -228,7 +283,11 @@ def _expansion_only_blockers(blockers: list[str]) -> list[str]:
 
 
 def _fail_closed_blockers(blockers: list[str]) -> list[str]:
-    return [item for item in blockers if item in HARD_PAPER_BLOCKERS and item not in PAPER_EXPANSION_ONLY_BLOCKERS]
+    return [
+        item
+        for item in blockers
+        if item in HARD_PAPER_BLOCKERS and item not in PAPER_EXPANSION_ONLY_BLOCKERS
+    ]
 
 
 def _capacity_limited_paper_gate_safe(paper_gate: dict[str, Any]) -> bool:
@@ -254,16 +313,23 @@ def _source_ready(payload: dict[str, Any], *, ready_keys: tuple[str, ...] = ()) 
         return True
     if any(_bool(payload.get(key, False)) for key in ready_keys):
         return True
-    return _lower(payload.get("overall_status") or payload.get("status")) in READY_LIKE_STATUSES
+    return (
+        _lower(payload.get("overall_status") or payload.get("status"))
+        in READY_LIKE_STATUSES
+    )
 
 
 def _auth_stack_ready(auth_lease: dict[str, Any], schwab_auth: dict[str, Any]) -> bool:
     lease_budget = _as_dict(auth_lease.get("lease_budget"))
-    lease_expires = _safe_float(auth_lease.get("expires_in_seconds"), _safe_float(lease_budget.get("expires_in_seconds"), 0.0))
+    lease_expires = _safe_float(
+        auth_lease.get("expires_in_seconds"),
+        _safe_float(lease_budget.get("expires_in_seconds"), 0.0),
+    )
     lease_ready = bool(
         _source_ready(auth_lease)
         and _lower(auth_lease.get("lease_state")) in {"", "healthy", "ready", "ok"}
-        and lease_expires >= _safe_float(lease_budget.get("critical_lease_seconds"), 600.0)
+        and lease_expires
+        >= _safe_float(lease_budget.get("critical_lease_seconds"), 600.0)
     )
     schwab_ready = bool(
         _source_ready(schwab_auth, ready_keys=("token_ready",))
@@ -274,13 +340,20 @@ def _auth_stack_ready(auth_lease: dict[str, Any], schwab_auth: dict[str, Any]) -
 
 def _broker_ready(broker: dict[str, Any]) -> bool:
     return bool(
-        _source_ready(broker, ready_keys=("ready_for_open", "broker_ready", "market_data_ready"))
+        _source_ready(
+            broker, ready_keys=("ready_for_open", "broker_ready", "market_data_ready")
+        )
         and broker.get("auth_ok", True) is not False
         and broker.get("network_ok", True) is not False
     )
 
 
-def _paper_soak_auth_ready(auth_lease: dict[str, Any], schwab_auth: dict[str, Any], broker: dict[str, Any], env_values: dict[str, str]) -> bool:
+def _paper_soak_auth_ready(
+    auth_lease: dict[str, Any],
+    schwab_auth: dict[str, Any],
+    broker: dict[str, Any],
+    env_values: dict[str, str],
+) -> bool:
     live_authority = _live_execution_authority_enabled(env_values)
     if _bool(live_authority.get("enabled", False)):
         return False
@@ -300,10 +373,17 @@ def _paper_soak_auth_ready(auth_lease: dict[str, Any], schwab_auth: dict[str, An
     ready_floor = max(
         _safe_float(schwab_auth.get("min_ready_expires_seconds"), 0.0),
         _safe_float(token.get("min_ready_expires_seconds"), 0.0),
-        _safe_float(_as_dict(schwab_auth.get("regression_contract")).get("schwab_token_ready_floor_seconds"), 0.0),
+        _safe_float(
+            _as_dict(schwab_auth.get("regression_contract")).get(
+                "schwab_token_ready_floor_seconds"
+            ),
+            0.0,
+        ),
         900.0,
     )
-    critical_floor = max(_safe_float(lease_budget.get("critical_lease_seconds"), 0.0), 600.0)
+    critical_floor = max(
+        _safe_float(lease_budget.get("critical_lease_seconds"), 0.0), 600.0
+    )
     token_ready = bool(
         _bool(schwab_auth.get("token_ready", False))
         or _bool(token.get("ready", False))
@@ -320,7 +400,10 @@ def _paper_soak_auth_ready(auth_lease: dict[str, Any], schwab_auth: dict[str, An
         broker.get("network_ok", True) is not False
         and broker_state.get("network_ok", True) is not False
     )
-    broker_operable = bool(_bool(broker.get("ready_for_open", False)) or _bool(broker_state.get("broker_operable", False)))
+    broker_operable = bool(
+        _bool(broker.get("ready_for_open", False))
+        or _bool(broker_state.get("broker_operable", False))
+    )
     configured_for_refresh = bool(
         broker_state.get("configured_for_refresh", True) is not False
         and (
@@ -341,7 +424,9 @@ def _paper_soak_auth_ready(auth_lease: dict[str, Any], schwab_auth: dict[str, An
 
 def _session_ready(session: dict[str, Any]) -> bool:
     checks = [row for row in _as_list(session.get("checks")) if isinstance(row, dict)]
-    failed_checks = [str(row.get("name") or "") for row in checks if row.get("ok") is False]
+    failed_checks = [
+        str(row.get("name") or "") for row in checks if row.get("ok") is False
+    ]
     return bool(_source_ready(session, ready_keys=("ready",)) and not failed_checks)
 
 
@@ -349,7 +434,11 @@ def _paper_trade_lock_active(project_root: Path, env_values: dict[str, str]) -> 
     if _bool(env_values.get("PAPER_TRADE_LOCK", False)):
         return True
     raw_path = str(env_values.get("PAPER_TRADE_LOCK_PATH") or "").strip()
-    lock_path = Path(raw_path) if raw_path else project_root / "governance" / "health" / "PAPER_TRADE_LOCK.flag"
+    lock_path = (
+        Path(raw_path)
+        if raw_path
+        else project_root / "governance" / "health" / "PAPER_TRADE_LOCK.flag"
+    )
     if not lock_path.is_absolute():
         lock_path = project_root / lock_path
     return lock_path.exists()
@@ -361,7 +450,9 @@ def _live_execution_authority_enabled(env_values: dict[str, str]) -> dict[str, A
         for key in LIVE_AUTHORITY_KEYS
         if key in env_values and _bool(env_values.get(key, False))
     }
-    order_env_present = "ALLOW_ORDER_EXECUTION" in env_values or "MARKET_DATA_ONLY" in env_values
+    order_env_present = (
+        "ALLOW_ORDER_EXECUTION" in env_values or "MARKET_DATA_ONLY" in env_values
+    )
     order_authority = bool(
         order_env_present
         and _bool(env_values.get("ALLOW_ORDER_EXECUTION", False))
@@ -376,9 +467,15 @@ def _live_execution_authority_enabled(env_values: dict[str, str]) -> dict[str, A
     }
 
 
-def _launcher_fanout_certification(project_root: Path, launcher_health: dict[str, Any]) -> dict[str, Any]:
+def _launcher_fanout_certification(
+    project_root: Path, launcher_health: dict[str, Any]
+) -> dict[str, Any]:
     raw_path = str(launcher_health.get("path") or "").strip()
-    path = Path(raw_path) if raw_path else project_root / "governance" / "health" / "all_sleeves_launcher_latest.json"
+    path = (
+        Path(raw_path)
+        if raw_path
+        else project_root / "governance" / "health" / "all_sleeves_launcher_latest.json"
+    )
     if not path.is_absolute():
         path = project_root / path
     payload = load_json(path)
@@ -396,13 +493,10 @@ def _launcher_fanout_certification(project_root: Path, launcher_health: dict[str
     readiness_status = _lower(readiness.get("readiness_status"))
     status = _lower(payload.get("overall_status") or payload.get("status"))
     complete_fanout = bool(
-        running > 0
-        and (expected <= 0 or running >= expected)
-        and problem <= 0
+        running > 0 and (expected <= 0 or running >= expected) and problem <= 0
     )
     startup_complete = bool(
-        readiness_status in {"starting", "startup_grace"}
-        and complete_fanout
+        readiness_status in {"starting", "startup_grace"} and complete_fanout
     )
     ok = bool(
         not stale
@@ -424,9 +518,18 @@ def _launcher_fanout_certification(project_root: Path, launcher_health: dict[str
     }
 
 
-def _all_sleeves_runtime_state(process: dict[str, Any], project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+def _all_sleeves_runtime_state(
+    process: dict[str, Any], project_root: Path = PROJECT_ROOT
+) -> dict[str, Any]:
     rows = _as_list(process.get("status"))
-    row = next((item for item in rows if isinstance(item, dict) and str(item.get("name") or "") == "all_sleeves"), {})
+    row = next(
+        (
+            item
+            for item in rows
+            if isinstance(item, dict) and str(item.get("name") or "") == "all_sleeves"
+        ),
+        {},
+    )
     launcher = _as_dict(row.get("launcher_artifact_health"))
     child_fanout = _as_dict(row.get("child_fanout"))
     child_fanout_ok = row.get("child_fanout_ok")
@@ -438,16 +541,26 @@ def _all_sleeves_runtime_state(process: dict[str, Any], project_root: Path = PRO
     heartbeat_ok = row.get("heartbeat_ok")
     process_live = row.get("process_live")
     running = _safe_float(row.get("running"), 0.0)
-    child_count = _safe_float(child_fanout.get("child_process_count"), _safe_float(row.get("child_count"), 0.0))
+    child_count = _safe_float(
+        child_fanout.get("child_process_count"),
+        _safe_float(row.get("child_count"), 0.0),
+    )
     launcher_phase = str(launcher.get("phase") or row.get("launcher_phase") or "")
-    launcher_running = _safe_float(launcher.get("running_job_count"), _safe_float(row.get("launcher_running"), 0.0))
-    launcher_expected = _safe_float(launcher.get("expected_job_count"), _safe_float(row.get("launcher_expected"), 0.0))
+    launcher_running = _safe_float(
+        launcher.get("running_job_count"), _safe_float(row.get("launcher_running"), 0.0)
+    )
+    launcher_expected = _safe_float(
+        launcher.get("expected_job_count"),
+        _safe_float(row.get("launcher_expected"), 0.0),
+    )
     parent_elapsed = max(
         _safe_float(row.get("process_elapsed_seconds"), 0.0),
         _safe_float(child_fanout.get("parent_elapsed_seconds"), 0.0),
         _safe_float(launcher.get("launcher_uptime_seconds"), 0.0),
     )
-    startup_grace_seconds = max(_safe_float(child_fanout.get("child_fanout_grace_seconds"), 180.0), 1.0)
+    startup_grace_seconds = max(
+        _safe_float(child_fanout.get("child_fanout_grace_seconds"), 180.0), 1.0
+    )
     readiness = _as_dict(launcher.get("launcher_readiness_contract"))
     problem_job_count = max(
         _safe_float(launcher.get("problem_job_count"), 0.0),
@@ -462,8 +575,13 @@ def _all_sleeves_runtime_state(process: dict[str, Any], project_root: Path = PRO
         and parent_elapsed > 0.0
         and parent_elapsed <= startup_grace_seconds
         and problem_job_count <= 0
-        and (launcher_expected <= 0 or launcher_running < launcher_expected or child_count <= 0)
-        and _lower(launcher_phase or readiness.get("readiness_status")) in {"starting", "running", "startup_grace", ""}
+        and (
+            launcher_expected <= 0
+            or launcher_running < launcher_expected
+            or child_count <= 0
+        )
+        and _lower(launcher_phase or readiness.get("readiness_status"))
+        in {"starting", "running", "startup_grace", ""}
     )
     ok = bool(
         row
@@ -481,9 +599,18 @@ def _all_sleeves_runtime_state(process: dict[str, Any], project_root: Path = PRO
         process_live = True if process_live is None else process_live
         launcher_live = True
         child_fanout_ok = True
-        child_count = max(child_count, _safe_float(launcher_certification.get("running_job_count"), 0.0))
-        launcher_running = max(launcher_running, _safe_float(launcher_certification.get("running_job_count"), 0.0))
-        launcher_expected = max(launcher_expected, _safe_float(launcher_certification.get("expected_job_count"), 0.0))
+        child_count = max(
+            child_count,
+            _safe_float(launcher_certification.get("running_job_count"), 0.0),
+        )
+        launcher_running = max(
+            launcher_running,
+            _safe_float(launcher_certification.get("running_job_count"), 0.0),
+        )
+        launcher_expected = max(
+            launcher_expected,
+            _safe_float(launcher_certification.get("expected_job_count"), 0.0),
+        )
         problem_job_count = 0
     return {
         "present": bool(row),
@@ -501,7 +628,9 @@ def _all_sleeves_runtime_state(process: dict[str, Any], project_root: Path = PRO
         "startup_grace_seconds": round(float(startup_grace_seconds), 3),
         "parent_elapsed_seconds": round(float(parent_elapsed), 3),
         "problem_job_count": int(problem_job_count),
-        "launcher_artifact_certified_fanout": bool(launcher_certification.get("ok", False)),
+        "launcher_artifact_certified_fanout": bool(
+            launcher_certification.get("ok", False)
+        ),
         "launcher_artifact_certification": launcher_certification,
     }
 
@@ -514,7 +643,9 @@ def _runtime_ready_contract_guard(runtime: dict[str, Any]) -> dict[str, Any]:
             severity="medium",
             expected="runtime_throttle_control_latest.json is available",
             actual="missing",
-            evidence=["cannot evaluate runtime ready/advisory contract without runtime artifact"],
+            evidence=[
+                "cannot evaluate runtime ready/advisory contract without runtime artifact"
+            ],
         )
 
     status = _lower(runtime.get("overall_status"))
@@ -524,7 +655,11 @@ def _runtime_ready_contract_guard(runtime: dict[str, Any]) -> dict[str, Any]:
     soft_cap = _as_dict(runtime.get("soft_cap_advisory_reclassification"))
     soft_active = _bool(soft_cap.get("active", False))
     to_status = _lower(soft_cap.get("to_status"))
-    under_pressure = profile in PRESSURE_PROFILES or compute not in {"", "normal"} or memory not in {"", "normal"}
+    under_pressure = (
+        profile in PRESSURE_PROFILES
+        or compute not in {"", "normal"}
+        or memory not in {"", "normal"}
+    )
     already_reclassified_low_pressure_advisory = bool(
         status == "advisory"
         and _bool(runtime.get("ok", False))
@@ -534,7 +669,9 @@ def _runtime_ready_contract_guard(runtime: dict[str, Any]) -> dict[str, Any]:
     )
 
     if status in READY_LIKE_STATUSES and under_pressure:
-        ok = (soft_active and (not to_status or to_status == status)) or already_reclassified_low_pressure_advisory
+        ok = (
+            soft_active and (not to_status or to_status == status)
+        ) or already_reclassified_low_pressure_advisory
     else:
         ok = True
 
@@ -554,10 +691,16 @@ def _runtime_ready_contract_guard(runtime: dict[str, Any]) -> dict[str, Any]:
         },
         evidence=[
             f"reason={soft_cap.get('reason', '')}",
-            "runtime_artifact_already_advisory_ok_with_normal_pressure"
-            if already_reclassified_low_pressure_advisory
-            else "",
-            "normal runtime pressure does not require soft-cap reclassification" if not under_pressure else "",
+            (
+                "runtime_artifact_already_advisory_ok_with_normal_pressure"
+                if already_reclassified_low_pressure_advisory
+                else ""
+            ),
+            (
+                "normal runtime pressure does not require soft-cap reclassification"
+                if not under_pressure
+                else ""
+            ),
         ],
     )
 
@@ -576,8 +719,10 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
     soft_cap = _as_dict(runtime.get("soft_cap_advisory_reclassification"))
     reason = str(soft_cap.get("reason") or "")
     to_status = _lower(soft_cap.get("to_status"))
-    guarded_ready = status == "ready" and _bool(soft_cap.get("active", False)) and (
-        to_status == "ready" or "guarded_runtime_ready" in reason
+    guarded_ready = (
+        status == "ready"
+        and _bool(soft_cap.get("active", False))
+        and (to_status == "ready" or "guarded_runtime_ready" in reason)
     )
     if not guarded_ready:
         return _guard_row(
@@ -592,15 +737,18 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
     thresholds = _as_dict(soft_cap.get("thresholds"))
     storage_writer_ready = bool(
         _bool(measurements.get("storage_writer_cooling_guarded_ready", False))
-        or reason == "single_bounded_storage_writer_after_green_backpressure_is_guarded_runtime_ready"
+        or reason
+        == "single_bounded_storage_writer_after_green_backpressure_is_guarded_runtime_ready"
     )
     storage_writer_burst_ready = bool(
         _bool(measurements.get("storage_writer_burst_complete_guarded_ready", False))
-        or reason == "bounded_storage_writer_burst_after_clear_backpressure_is_guarded_runtime_ready"
+        or reason
+        == "bounded_storage_writer_burst_after_clear_backpressure_is_guarded_runtime_ready"
     )
     support_throttle_ready = bool(
         _bool(measurements.get("support_throttle_pending_guarded_ready", False))
-        or reason == "support_throttle_pending_after_green_backpressure_is_guarded_runtime_ready"
+        or reason
+        == "support_throttle_pending_after_green_backpressure_is_guarded_runtime_ready"
     )
     bounded_writer_support_ready = bool(
         _bool(measurements.get("bounded_writer_with_support_guarded_ready", False))
@@ -613,7 +761,8 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
     )
     bounded_writer_paper_ready = bool(
         _bool(measurements.get("bounded_writer_with_paper_shadow_guarded_ready", False))
-        or reason == "bounded_writer_and_low_priority_paper_shadow_is_guarded_runtime_ready"
+        or reason
+        == "bounded_writer_and_low_priority_paper_shadow_is_guarded_runtime_ready"
     )
     full_force_paper_ready = bool(
         _bool(measurements.get("full_force_paper_ramp_guarded_ready", False))
@@ -629,15 +778,18 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
     )
     bounded_writer_support_protected_ready = bool(
         _bool(measurements.get("bounded_writer_support_protected_guarded_ready", False))
-        or reason == "bounded_writer_support_and_read_only_protected_lane_is_guarded_runtime_ready"
+        or reason
+        == "bounded_writer_support_and_read_only_protected_lane_is_guarded_runtime_ready"
     )
     protected_lane_ready = bool(
         _bool(measurements.get("bounded_protected_lane_guarded_ready", False))
-        or reason == "bounded_read_only_protected_lane_after_green_backpressure_is_guarded_runtime_ready"
+        or reason
+        == "bounded_read_only_protected_lane_after_green_backpressure_is_guarded_runtime_ready"
     )
     niced_support_ready = bool(
         _bool(measurements.get("support_low_priority_guarded_ready", False))
-        or reason == "niced_support_pressure_after_green_backpressure_is_guarded_runtime_ready"
+        or reason
+        == "niced_support_pressure_after_green_backpressure_is_guarded_runtime_ready"
     )
     hot_flags = [
         "support_jobs_hot",
@@ -652,12 +804,21 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
     if support_throttle_ready:
         allowed_hot_flags.update({"support_jobs_hot", "bot_owned_pressure_dominant"})
     if bounded_writer_support_ready or bounded_writer_support_protected_ready:
-        allowed_hot_flags.update({"support_jobs_hot", "storage_writer_hot", "bot_owned_pressure_dominant"})
+        allowed_hot_flags.update(
+            {"support_jobs_hot", "storage_writer_hot", "bot_owned_pressure_dominant"}
+        )
     if bounded_writer_paper_ready:
-        allowed_hot_flags.update({"paper_execution_hot", "storage_writer_hot", "bot_owned_pressure_dominant"})
+        allowed_hot_flags.update(
+            {"paper_execution_hot", "storage_writer_hot", "bot_owned_pressure_dominant"}
+        )
     if full_force_paper_ready:
-        allowed_hot_flags.update({"paper_execution_hot", "storage_writer_hot", "bot_owned_pressure_dominant"})
-        if _safe_float(measurements.get("throttle_candidate_support_cpu_percent"), 0.0) <= 80.0:
+        allowed_hot_flags.update(
+            {"paper_execution_hot", "storage_writer_hot", "bot_owned_pressure_dominant"}
+        )
+        if (
+            _safe_float(measurements.get("throttle_candidate_support_cpu_percent"), 0.0)
+            <= 80.0
+        ):
             allowed_hot_flags.add("support_jobs_hot")
         bounded_research_limit = _safe_float(
             thresholds.get("max_guarded_ready_bounded_research_cpu_percent"),
@@ -665,25 +826,41 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
         )
         if (
             _bool(measurements.get("research_hot_low_priority", False))
-            and _safe_float(measurements.get("research_training_cpu_percent"), 0.0) <= bounded_research_limit
+            and _safe_float(measurements.get("research_training_cpu_percent"), 0.0)
+            <= bounded_research_limit
         ):
             allowed_hot_flags.add("research_training_hot")
     if protected_lane_ready:
         allowed_hot_flags.add("bot_owned_pressure_dominant")
-    if niced_support_ready and _bool(measurements.get("support_hot_low_priority", True)):
+    if niced_support_ready and _bool(
+        measurements.get("support_hot_low_priority", True)
+    ):
         allowed_hot_flags.update({"support_jobs_hot", "bot_owned_pressure_dominant"})
     hot_lanes = [
         name
         for name in hot_flags
         if _bool(measurements.get(name, False)) and name not in allowed_hot_flags
     ]
-    bot_limit = _safe_float(thresholds.get("max_guarded_ready_bot_owned_cpu_percent"), 20.0)
-    protected_limit = _safe_float(thresholds.get("max_guarded_ready_protected_cpu_percent"), 20.0)
-    operator_limit = _safe_float(thresholds.get("max_guarded_ready_operator_cpu_percent"), 30.0)
-    host_limit = _safe_float(thresholds.get("max_guarded_ready_host_saturation_score"), 62.0)
+    bot_limit = _safe_float(
+        thresholds.get("max_guarded_ready_bot_owned_cpu_percent"), 20.0
+    )
+    protected_limit = _safe_float(
+        thresholds.get("max_guarded_ready_protected_cpu_percent"), 20.0
+    )
+    operator_limit = _safe_float(
+        thresholds.get("max_guarded_ready_operator_cpu_percent"), 30.0
+    )
+    host_limit = _safe_float(
+        thresholds.get("max_guarded_ready_host_saturation_score"), 62.0
+    )
     if storage_writer_ready:
         bot_limit = max(bot_limit, 150.0)
-        host_limit = max(host_limit, _safe_float(thresholds.get("max_guarded_storage_writer_host_saturation_score"), 75.0))
+        host_limit = max(
+            host_limit,
+            _safe_float(
+                thresholds.get("max_guarded_storage_writer_host_saturation_score"), 75.0
+            ),
+        )
     if storage_writer_burst_ready:
         bot_limit = max(bot_limit, 180.0)
         operator_limit = max(operator_limit, 35.0)
@@ -691,11 +868,18 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
     if support_throttle_ready:
         bot_limit = max(bot_limit, 160.0)
         operator_limit = max(operator_limit, 35.0)
-        host_limit = max(host_limit, _safe_float(thresholds.get("max_guarded_niced_support_host_saturation_score"), 68.0))
+        host_limit = max(
+            host_limit,
+            _safe_float(
+                thresholds.get("max_guarded_niced_support_host_saturation_score"), 68.0
+            ),
+        )
     if bounded_writer_support_ready:
         bot_limit = max(
             bot_limit,
-            _safe_float(thresholds.get("max_guarded_ready_bounded_bot_owned_cpu_percent"), 220.0),
+            _safe_float(
+                thresholds.get("max_guarded_ready_bounded_bot_owned_cpu_percent"), 220.0
+            ),
         )
         operator_limit = max(operator_limit, 35.0)
         host_limit = max(host_limit, 72.0)
@@ -706,29 +890,47 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
     if full_force_paper_ready:
         bot_limit = max(
             bot_limit,
-            _safe_float(thresholds.get("max_guarded_ready_full_force_bot_owned_cpu_percent"), 340.0),
+            _safe_float(
+                thresholds.get("max_guarded_ready_full_force_bot_owned_cpu_percent"),
+                340.0,
+            ),
         )
         operator_limit = max(
             operator_limit,
-            _safe_float(thresholds.get("max_guarded_ready_full_force_operator_cpu_percent"), 45.0),
+            _safe_float(
+                thresholds.get("max_guarded_ready_full_force_operator_cpu_percent"),
+                45.0,
+            ),
         )
         host_limit = max(
             host_limit,
-            _safe_float(thresholds.get("max_guarded_ready_full_force_host_saturation_score"), 75.0),
+            _safe_float(
+                thresholds.get("max_guarded_ready_full_force_host_saturation_score"),
+                75.0,
+            ),
         )
     if protected_lane_ready:
         bot_limit = max(
             bot_limit,
-            _safe_float(thresholds.get("max_guarded_ready_bot_owned_with_protected_lane_cpu_percent"), 95.0),
+            _safe_float(
+                thresholds.get(
+                    "max_guarded_ready_bot_owned_with_protected_lane_cpu_percent"
+                ),
+                95.0,
+            ),
         )
         protected_limit = max(
             protected_limit,
-            _safe_float(thresholds.get("max_guarded_ready_protected_lane_cpu_percent"), 75.0),
+            _safe_float(
+                thresholds.get("max_guarded_ready_protected_lane_cpu_percent"), 75.0
+            ),
         )
     if bounded_bot_owned_ready:
         bot_limit = max(
             bot_limit,
-            _safe_float(thresholds.get("max_guarded_ready_bounded_bot_owned_cpu_percent"), 220.0),
+            _safe_float(
+                thresholds.get("max_guarded_ready_bounded_bot_owned_cpu_percent"), 220.0
+            ),
         )
         operator_limit = max(operator_limit, 35.0)
         host_limit = min(host_limit, 50.0)
@@ -736,28 +938,47 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
         bot_limit = max(bot_limit, 280.0)
         protected_limit = max(
             protected_limit,
-            _safe_float(thresholds.get("max_guarded_ready_protected_lane_cpu_percent"), 75.0),
+            _safe_float(
+                thresholds.get("max_guarded_ready_protected_lane_cpu_percent"), 75.0
+            ),
         )
         operator_limit = max(operator_limit, 35.0)
     if niced_support_ready:
         bot_limit = max(
             bot_limit,
-            _safe_float(thresholds.get("max_guarded_niced_support_ready_cpu_percent"), 160.0),
+            _safe_float(
+                thresholds.get("max_guarded_niced_support_ready_cpu_percent"), 160.0
+            ),
         )
         operator_limit = max(
             operator_limit,
-            _safe_float(thresholds.get("max_guarded_operator_observability_high_compute_cpu_percent"), 100.0),
+            _safe_float(
+                thresholds.get(
+                    "max_guarded_operator_observability_high_compute_cpu_percent"
+                ),
+                100.0,
+            ),
         )
         host_limit = max(
             host_limit,
-            _safe_float(thresholds.get("max_guarded_niced_support_ready_host_saturation_score"), 75.0),
+            _safe_float(
+                thresholds.get("max_guarded_niced_support_ready_host_saturation_score"),
+                75.0,
+            ),
         )
     bot_owned_raw = _safe_float(measurements.get("bot_owned_cpu_percent"), 0.0)
-    bot_owned = _safe_float(measurements.get("bot_owned_non_operator_cpu_percent"), bot_owned_raw)
-    protected = _safe_float(measurements.get("protected_live_or_macro_cpu_percent"), 0.0)
+    bot_owned = _safe_float(
+        measurements.get("bot_owned_non_operator_cpu_percent"), bot_owned_raw
+    )
+    protected = _safe_float(
+        measurements.get("protected_live_or_macro_cpu_percent"), 0.0
+    )
     operator = _safe_float(measurements.get("operator_observability_cpu_percent"), 0.0)
     host_saturation = _safe_float(measurements.get("host_saturation_score"), 0.0)
-    memory = _lower(measurements.get("memory_pressure_level") or runtime.get("memory_pressure_level"))
+    memory = _lower(
+        measurements.get("memory_pressure_level")
+        or runtime.get("memory_pressure_level")
+    )
     storage_ready = _bool(measurements.get("storage_ready_for_runtime_advisory", True))
     ok = (
         bool(measurements)
@@ -776,7 +997,9 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
         severity="high",
         expected="guarded-ready runtime has normal memory, low bot-owned/protected/operator pressure, and no hot bot-owned lanes",
         actual={
-            "runtime_ready_guarded": _bool(measurements.get("runtime_ready_guarded", False)),
+            "runtime_ready_guarded": _bool(
+                measurements.get("runtime_ready_guarded", False)
+            ),
             "memory_pressure_level": memory,
             "hot_lanes": hot_lanes,
             "storage_writer_cooling_guarded_ready": storage_writer_ready,
@@ -787,8 +1010,12 @@ def _runtime_guarded_ready_lane_guard(runtime: dict[str, Any]) -> dict[str, Any]
             "bounded_bot_owned_runtime_guarded_ready": bounded_bot_owned_ready,
             "bounded_writer_support_protected_guarded_ready": bounded_writer_support_protected_ready,
             "bounded_protected_lane_guarded_ready": protected_lane_ready,
-            "research_hot_low_priority": _bool(measurements.get("research_hot_low_priority", False)),
-            "research_training_cpu_percent": _safe_float(measurements.get("research_training_cpu_percent"), 0.0),
+            "research_hot_low_priority": _bool(
+                measurements.get("research_hot_low_priority", False)
+            ),
+            "research_training_cpu_percent": _safe_float(
+                measurements.get("research_training_cpu_percent"), 0.0
+            ),
             "bounded_research_limit": _safe_float(
                 thresholds.get("max_guarded_ready_bounded_research_cpu_percent"),
                 80.0,
@@ -816,11 +1043,15 @@ def _paper_runtime_capacity_blocker_guard(paper: dict[str, Any]) -> dict[str, An
             severity="medium",
             expected="paper_400_ramp_latest.json is available",
             actual="missing",
-            evidence=["cannot evaluate paper ramp runtime blocker contract without paper ramp artifact"],
+            evidence=[
+                "cannot evaluate paper ramp runtime blocker contract without paper ramp artifact"
+            ],
         )
     blockers = [str(item) for item in _as_list(paper.get("blockers"))]
     runtime_gate = _as_dict(_as_dict(paper.get("gates")).get("runtime"))
-    runtime_gate_blockers = [str(item) for item in _as_list(runtime_gate.get("blockers"))]
+    runtime_gate_blockers = [
+        str(item) for item in _as_list(runtime_gate.get("blockers"))
+    ]
     runtime_pressure_ready = _bool(runtime_gate.get("runtime_pressure_ready"))
     runtime_capacity_ready = _bool(runtime_gate.get("runtime_capacity_ready"))
     capacity_blocker_present = CAPACITY_BLOCKER in set(blockers + runtime_gate_blockers)
@@ -869,7 +1100,9 @@ def _paper_arm_blocker_guard(paper: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _paper_execution_pause_guard(runtime: dict[str, Any], paper: dict[str, Any], env_values: dict[str, str]) -> dict[str, Any]:
+def _paper_execution_pause_guard(
+    runtime: dict[str, Any], paper: dict[str, Any], env_values: dict[str, str]
+) -> dict[str, Any]:
     paper_blocked = _paper_is_blocked(paper)
     if not paper_blocked:
         return _guard_row(
@@ -877,7 +1110,10 @@ def _paper_execution_pause_guard(runtime: dict[str, Any], paper: dict[str, Any],
             True,
             severity="high",
             expected="paper execution pause is only required while paper ramp is blocked",
-            actual={"paper_blocked": False, "stage": paper.get("stage") if paper else ""},
+            actual={
+                "paper_blocked": False,
+                "stage": paper.get("stage") if paper else "",
+            },
         )
     if not runtime:
         return _guard_row(
@@ -889,7 +1125,11 @@ def _paper_execution_pause_guard(runtime: dict[str, Any], paper: dict[str, Any],
         )
 
     paper_policy = _as_dict(runtime.get("paper_execution_policy"))
-    live_policy = _as_dict(_as_dict(runtime.get("runtime_saturation_governor_v2")).get("paper_live_data_policy"))
+    live_policy = _as_dict(
+        _as_dict(runtime.get("runtime_saturation_governor_v2")).get(
+            "paper_live_data_policy"
+        )
+    )
     all_blockers = _paper_and_gate_blockers(paper)
     expansion_blockers = _expansion_only_blockers(all_blockers)
     fail_closed_blockers = _fail_closed_blockers(all_blockers)
@@ -902,8 +1142,12 @@ def _paper_execution_pause_guard(runtime: dict[str, Any], paper: dict[str, Any],
             expected="400-paper expansion blockers may pause widening while existing paper execution remains open",
             actual={
                 "paper_blocked": paper_blocked,
-                "paper_policy_pause_paper_execution": _bool(paper_policy.get("pause_paper_execution")),
-                "live_policy_consumer_paused": _bool(live_policy.get("paper_execution_consumer_paused")),
+                "paper_policy_pause_paper_execution": _bool(
+                    paper_policy.get("pause_paper_execution")
+                ),
+                "live_policy_consumer_paused": _bool(
+                    live_policy.get("paper_execution_consumer_paused")
+                ),
                 "expansion_only_blockers": expansion_blockers,
                 "fail_closed_blockers": fail_closed_blockers,
                 "existing_paper_execution_open": True,
@@ -914,7 +1158,9 @@ def _paper_execution_pause_guard(runtime: dict[str, Any], paper: dict[str, Any],
                 "existing_paper_soak_must_fail_open_when_only_expansion_is_paused",
             ],
         )
-    policy_paused = _bool(paper_policy.get("pause_paper_execution")) and _bool(live_policy.get("paper_execution_consumer_paused"))
+    policy_paused = _bool(paper_policy.get("pause_paper_execution")) and _bool(
+        live_policy.get("paper_execution_consumer_paused")
+    )
     env_mismatches = {
         key: env_values.get(key, "<missing>")
         for key, expected in PAPER_PAUSE_OVERRIDE_KEYS.items()
@@ -928,8 +1174,12 @@ def _paper_execution_pause_guard(runtime: dict[str, Any], paper: dict[str, Any],
         expected="blocked paper ramp sets pause_paper_execution=true, consumer_paused=true, and queue/inline override gates off",
         actual={
             "paper_blocked": paper_blocked,
-            "paper_policy_pause_paper_execution": _bool(paper_policy.get("pause_paper_execution")),
-            "live_policy_consumer_paused": _bool(live_policy.get("paper_execution_consumer_paused")),
+            "paper_policy_pause_paper_execution": _bool(
+                paper_policy.get("pause_paper_execution")
+            ),
+            "live_policy_consumer_paused": _bool(
+                live_policy.get("paper_execution_consumer_paused")
+            ),
             "env_mismatches": env_mismatches,
         },
         evidence=[
@@ -939,7 +1189,9 @@ def _paper_execution_pause_guard(runtime: dict[str, Any], paper: dict[str, Any],
     )
 
 
-def _support_override_guard(runtime: dict[str, Any], env_values: dict[str, str], override_path: Path) -> dict[str, Any]:
+def _support_override_guard(
+    runtime: dict[str, Any], env_values: dict[str, str], override_path: Path
+) -> dict[str, Any]:
     if not runtime:
         return _guard_row(
             "runtime_override_support_spawn_contract",
@@ -950,7 +1202,9 @@ def _support_override_guard(runtime: dict[str, Any], env_values: dict[str, str],
         )
     profile = _lower(runtime.get("throttle_profile"))
     governor = _as_dict(runtime.get("runtime_saturation_governor_v2"))
-    needs_overrides = profile in PRESSURE_PROFILES or _bool(governor.get("active", False))
+    needs_overrides = profile in PRESSURE_PROFILES or _bool(
+        governor.get("active", False)
+    )
     if not needs_overrides:
         return _guard_row(
             "runtime_override_support_spawn_contract",
@@ -966,7 +1220,14 @@ def _support_override_guard(runtime: dict[str, Any], env_values: dict[str, str],
         present = [alias for alias in aliases if alias in env_values]
         matched = ""
         if key in {"YTDLP_SUPPORT_NICE", "MACRO_YTDLP_SUPPORT_NICE"}:
-            matched = next((alias for alias in present if _safe_float(env_values.get(alias), -1.0) >= 10.0), "")
+            matched = next(
+                (
+                    alias
+                    for alias in present
+                    if _safe_float(env_values.get(alias), -1.0) >= 10.0
+                ),
+                "",
+            )
         if not matched:
             matched = present[0] if present else ""
         if matched:
@@ -975,7 +1236,12 @@ def _support_override_guard(runtime: dict[str, Any], env_values: dict[str, str],
     nice_values = {
         key: _safe_float(env_values.get(alias), -1.0)
         for key, alias in resolved_keys.items()
-        if key in {"YTDLP_SUPPORT_NICE", "MACRO_YTDLP_SUPPORT_NICE", "TRAINING_RUNTIME_PAUSED_FOR_HOST_HEADROOM"}
+        if key
+        in {
+            "YTDLP_SUPPORT_NICE",
+            "MACRO_YTDLP_SUPPORT_NICE",
+            "TRAINING_RUNTIME_PAUSED_FOR_HOST_HEADROOM",
+        }
         and "NICE" in alias
     }
     weak_nice = [key for key, value in nice_values.items() if value < 10.0]
@@ -992,11 +1258,15 @@ def _support_override_guard(runtime: dict[str, Any], env_values: dict[str, str],
             "resolved_keys": resolved_keys,
             "weak_nice_keys": weak_nice,
         },
-        evidence=["support yt-dlp and training loops must inherit runtime backoff without blocking core writers"],
+        evidence=[
+            "support yt-dlp and training loops must inherit runtime backoff without blocking core writers"
+        ],
     )
 
 
-def _hot_artifact_freshness_guard(artifact_snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+def _hot_artifact_freshness_guard(
+    artifact_snapshots: list[dict[str, Any]],
+) -> dict[str, Any]:
     stale = [row for row in artifact_snapshots if bool(row.get("stale", False))]
     return _guard_row(
         "soak_hot_artifact_freshness_contract",
@@ -1028,11 +1298,18 @@ def _paper_eligible_lane_open_guard(
             True,
             severity="critical",
             expected="paper lane open check only applies after the ramp or runtime policy says paper execution is eligible",
-            actual={"paper_lane_eligible": False, "paper_stage": paper.get("stage") if paper else "missing"},
+            actual={
+                "paper_lane_eligible": False,
+                "paper_stage": paper.get("stage") if paper else "missing",
+            },
         )
 
     paper_policy = _as_dict(runtime.get("paper_execution_policy"))
-    live_policy = _as_dict(_as_dict(runtime.get("runtime_saturation_governor_v2")).get("paper_live_data_policy"))
+    live_policy = _as_dict(
+        _as_dict(runtime.get("runtime_saturation_governor_v2")).get(
+            "paper_live_data_policy"
+        )
+    )
     all_sleeves = _all_sleeves_runtime_state(process, project_root)
     stale = [row for row in artifact_snapshots if bool(row.get("stale", False))]
     lane_blockers: list[str] = []
@@ -1080,13 +1357,27 @@ def _paper_env_pause_keys(env_values: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _profitability_control_posture(runtime_profitability: dict[str, Any]) -> dict[str, Any]:
-    raw_grade = str(runtime_profitability.get("raw_profitability_grade") or "").strip().upper()
-    controlled_grade = str(runtime_profitability.get("controlled_profitability_grade") or "").strip().upper()
-    raw_recovery = _as_dict(runtime_profitability.get("raw_profitability_a_recovery_contract"))
+def _profitability_control_posture(
+    runtime_profitability: dict[str, Any],
+) -> dict[str, Any]:
+    raw_grade = (
+        str(runtime_profitability.get("raw_profitability_grade") or "").strip().upper()
+    )
+    controlled_grade = (
+        str(runtime_profitability.get("controlled_profitability_grade") or "")
+        .strip()
+        .upper()
+    )
+    raw_recovery = _as_dict(
+        runtime_profitability.get("raw_profitability_a_recovery_contract")
+    )
     recovery_enforcement = _as_dict(raw_recovery.get("runtime_enforcement"))
-    raw_gap = _safe_float(_as_dict(raw_recovery.get("gap_to_raw_a")).get("net_pnl_gap"), 0.0)
-    improvement = _as_dict(runtime_profitability.get("raw_profitability_improvement_contract"))
+    raw_gap = _safe_float(
+        _as_dict(raw_recovery.get("gap_to_raw_a")).get("net_pnl_gap"), 0.0
+    )
+    improvement = _as_dict(
+        runtime_profitability.get("raw_profitability_improvement_contract")
+    )
     improvement_enforcement = _as_dict(improvement.get("runtime_enforcement"))
     improvement_required = bool(
         runtime_profitability
@@ -1105,26 +1396,44 @@ def _profitability_control_posture(runtime_profitability: dict[str, Any]) -> dic
             improvement_enforcement.get("keep_sells_and_reduce_only_paths_open", False)
         ),
         "raise_clean_profile_buy_gate_while_raw_below_a": _bool(
-            improvement_enforcement.get("raise_clean_profile_buy_gate_while_raw_below_a", False)
+            improvement_enforcement.get(
+                "raise_clean_profile_buy_gate_while_raw_below_a", False
+            )
         ),
         "require_position_telemetry_on_paper_fills": _bool(
-            improvement_enforcement.get("require_position_telemetry_on_paper_fills", False)
+            improvement_enforcement.get(
+                "require_position_telemetry_on_paper_fills", False
+            )
         ),
-        "feed_loss_causes_to_training": _bool(improvement_enforcement.get("feed_loss_causes_to_training", False)),
+        "feed_loss_causes_to_training": _bool(
+            improvement_enforcement.get("feed_loss_causes_to_training", False)
+        ),
         "require_three_profitable_refreshes_before_reentry": _bool(
-            improvement_enforcement.get("require_three_profitable_refreshes_before_reentry", False)
+            improvement_enforcement.get(
+                "require_three_profitable_refreshes_before_reentry", False
+            )
         ),
-        "track_raw_gap_burn_down": _bool(improvement_enforcement.get("track_raw_gap_burn_down", False)),
-        "do_not_force_trades": _bool(improvement_enforcement.get("do_not_force_trades", False)),
+        "track_raw_gap_burn_down": _bool(
+            improvement_enforcement.get("track_raw_gap_burn_down", False)
+        ),
+        "do_not_force_trades": _bool(
+            improvement_enforcement.get("do_not_force_trades", False)
+        ),
     }
-    enforcement_ready = bool(required_enforcement and all(required_enforcement.values()))
+    enforcement_ready = bool(
+        required_enforcement and all(required_enforcement.values())
+    )
 
     clean_gate = _as_dict(improvement.get("clean_sleeve_strict_buy_gate_contract"))
     telemetry = _as_dict(improvement.get("position_telemetry_contract"))
     feedback = _as_dict(improvement.get("loss_cause_training_feedback_contract"))
-    strategy_quarantine = _as_dict(improvement.get("losing_strategy_pair_quarantine_contract"))
+    strategy_quarantine = _as_dict(
+        improvement.get("losing_strategy_pair_quarantine_contract")
+    )
     weak_contract = _as_dict(improvement.get("weak_sleeve_zero_entry_contract"))
-    weak_rows = [row for row in _as_list(weak_contract.get("profiles")) if isinstance(row, dict)]
+    weak_rows = [
+        row for row in _as_list(weak_contract.get("profiles")) if isinstance(row, dict)
+    ]
     zero_entry_rows = [
         row
         for row in weak_rows
@@ -1159,7 +1468,9 @@ def _profitability_control_posture(runtime_profitability: dict[str, Any]) -> dic
         and _bool(feedback.get("feed_profitable_refresh_positive_labels", False))
     )
     strategy_pairs = [
-        row for row in _as_list(strategy_quarantine.get("pairs")) if isinstance(row, dict)
+        row
+        for row in _as_list(strategy_quarantine.get("pairs"))
+        if isinstance(row, dict)
     ]
     strategy_quarantine_ready = bool(
         not _bool(strategy_quarantine.get("active", False))
@@ -1179,7 +1490,9 @@ def _profitability_control_posture(runtime_profitability: dict[str, Any]) -> dic
         "paper_position_telemetry": telemetry_ready,
         "loss_cause_training_feedback": feedback_ready,
         "losing_strategy_pair_quarantine": strategy_quarantine_ready,
-        "raw_grade_remains_evidence_based": _bool(improvement.get("raw_grade_remains_evidence_based", False)),
+        "raw_grade_remains_evidence_based": _bool(
+            improvement.get("raw_grade_remains_evidence_based", False)
+        ),
     }
     modern_contract_ready = bool(improvement and all(modern_contract_checks.values()))
     declared_contract_ready = bool(
@@ -1194,8 +1507,12 @@ def _profitability_control_posture(runtime_profitability: dict[str, Any]) -> dic
         controlled_grade in {"A", "A+"}
         or (
             _bool(raw_recovery.get("active", False))
-            and _bool(recovery_enforcement.get("block_new_entries_on_weak_profiles", False))
-            and _bool(recovery_enforcement.get("keep_sells_and_reduce_only_paths_open", False))
+            and _bool(
+                recovery_enforcement.get("block_new_entries_on_weak_profiles", False)
+            )
+            and _bool(
+                recovery_enforcement.get("keep_sells_and_reduce_only_paths_open", False)
+            )
         )
     )
     control_posture_ready = bool(
@@ -1244,32 +1561,61 @@ def _production_grade_authority_guard(
 ) -> dict[str, Any]:
     eligible = _paper_lane_eligible(runtime, paper)
     paper_policy = _as_dict(runtime.get("paper_execution_policy"))
-    live_policy = _as_dict(_as_dict(runtime.get("runtime_saturation_governor_v2")).get("paper_live_data_policy"))
+    live_policy = _as_dict(
+        _as_dict(runtime.get("runtime_saturation_governor_v2")).get(
+            "paper_live_data_policy"
+        )
+    )
     all_sleeves = _all_sleeves_runtime_state(process, project_root)
     all_paper_blockers = _paper_and_gate_blockers(paper)
-    hard_blockers = ordered_unique([item for item in all_paper_blockers if item in HARD_PAPER_BLOCKERS])
+    hard_blockers = ordered_unique(
+        [item for item in all_paper_blockers if item in HARD_PAPER_BLOCKERS]
+    )
     expansion_blockers = _expansion_only_blockers(all_paper_blockers)
     fail_closed_blockers = _fail_closed_blockers(all_paper_blockers)
     env_pause_keys = _paper_env_pause_keys(env_values)
-    stale_artifacts = [row for row in artifact_snapshots if bool(row.get("stale", False))]
+    stale_artifacts = [
+        row for row in artifact_snapshots if bool(row.get("stale", False))
+    ]
     paper_lock_active = _paper_trade_lock_active(project_root, env_values)
     live_authority = _live_execution_authority_enabled(env_values)
     strict_auth_ready = _auth_stack_ready(auth_lease, schwab_auth)
     strict_broker_ready = _broker_ready(broker)
-    paper_auth_ready = bool(strict_auth_ready or _paper_soak_auth_ready(auth_lease, schwab_auth, broker, env_values))
-    paper_broker_ready = bool(strict_broker_ready or (_bool(broker.get("ready_for_open", False)) and broker.get("network_ok", True) is not False))
+    paper_auth_ready = bool(
+        strict_auth_ready
+        or _paper_soak_auth_ready(auth_lease, schwab_auth, broker, env_values)
+    )
+    paper_broker_ready = bool(
+        strict_broker_ready
+        or (
+            _bool(broker.get("ready_for_open", False))
+            and broker.get("network_ok", True) is not False
+        )
+    )
     session_ready = _session_ready(session)
     profitability_posture = _profitability_control_posture(runtime_profitability)
     raw_grade = str(profitability_posture.get("raw_profitability_grade") or "")
-    controlled_grade = str(profitability_posture.get("controlled_profitability_grade") or "")
-    raw_recovery = _as_dict(runtime_profitability.get("raw_profitability_a_recovery_contract"))
-    raw_improvement = _as_dict(runtime_profitability.get("raw_profitability_improvement_contract"))
-    raw_gap = _safe_float(profitability_posture.get("raw_profitability_gap_to_a_net_pnl"), 0.0)
-    raw_improvement_required = _bool(profitability_posture.get("raw_profitability_improvement_required", False))
+    controlled_grade = str(
+        profitability_posture.get("controlled_profitability_grade") or ""
+    )
+    raw_recovery = _as_dict(
+        runtime_profitability.get("raw_profitability_a_recovery_contract")
+    )
+    raw_improvement = _as_dict(
+        runtime_profitability.get("raw_profitability_improvement_contract")
+    )
+    raw_gap = _safe_float(
+        profitability_posture.get("raw_profitability_gap_to_a_net_pnl"), 0.0
+    )
+    raw_improvement_required = _bool(
+        profitability_posture.get("raw_profitability_improvement_required", False)
+    )
     raw_improvement_ready = _bool(
         profitability_posture.get("raw_profitability_improvement_control_ready", False)
     )
-    raw_grade_cosmetic = _bool(profitability_posture.get("raw_profitability_grade_cosmetic", False))
+    raw_grade_cosmetic = _bool(
+        profitability_posture.get("raw_profitability_grade_cosmetic", False)
+    )
     controlled_profitability_enforced = _bool(
         profitability_posture.get("profitability_control_posture_ready", False)
     )
@@ -1350,7 +1696,9 @@ def _production_grade_authority_guard(
             "stale_artifacts": stale_artifacts,
             "raw_profitability_grade": raw_grade,
             "controlled_profitability_grade": controlled_grade,
-            "raw_profitability_a_recovery_active": _bool(raw_recovery.get("active", False)),
+            "raw_profitability_a_recovery_active": _bool(
+                raw_recovery.get("active", False)
+            ),
             "raw_profitability_gap_to_a_net_pnl": raw_gap,
             "raw_profitability_improvement_required": raw_improvement_required,
             "raw_profitability_improvement_ready": raw_improvement_ready,
@@ -1358,9 +1706,15 @@ def _production_grade_authority_guard(
                 "active": _bool(raw_improvement.get("active", False)),
                 "control_ready": _bool(raw_improvement.get("control_ready", False)),
                 "position_telemetry_evidence_gap_active": _bool(
-                    _as_dict(raw_improvement.get("position_telemetry_contract")).get("evidence_gap_active", False)
+                    _as_dict(raw_improvement.get("position_telemetry_contract")).get(
+                        "evidence_gap_active", False
+                    )
                 ),
-                "burn_down_active": _bool(_as_dict(raw_improvement.get("burn_down_contract")).get("active", False)),
+                "burn_down_active": _bool(
+                    _as_dict(raw_improvement.get("burn_down_contract")).get(
+                        "active", False
+                    )
+                ),
             },
             "controlled_profitability_enforced": controlled_profitability_enforced,
             "raw_promotion_evidence_ready": _bool(
@@ -1368,7 +1722,9 @@ def _production_grade_authority_guard(
             ),
             "promotion_only_blockers": (
                 []
-                if _bool(profitability_posture.get("raw_promotion_evidence_ready", False))
+                if _bool(
+                    profitability_posture.get("raw_promotion_evidence_ready", False)
+                )
                 else ["raw_profitability_evidence_not_ready_for_live_promotion"]
             ),
             "profitability_control_posture": profitability_posture,
@@ -1400,33 +1756,60 @@ def _soak_30_day_continuity_guard(
             True,
             severity="critical",
             expected="continuity contract applies once paper is armed or runtime policy marks paper eligible",
-            actual={"paper_lane_eligible": False, "paper_stage": paper.get("stage") if paper else "missing"},
+            actual={
+                "paper_lane_eligible": False,
+                "paper_stage": paper.get("stage") if paper else "missing",
+            },
         )
 
     paper_policy = _as_dict(runtime.get("paper_execution_policy"))
-    live_policy = _as_dict(_as_dict(runtime.get("runtime_saturation_governor_v2")).get("paper_live_data_policy"))
+    live_policy = _as_dict(
+        _as_dict(runtime.get("runtime_saturation_governor_v2")).get(
+            "paper_live_data_policy"
+        )
+    )
     paper_gate = _as_dict(_as_dict(paper.get("gates")).get("runtime")) if paper else {}
     all_paper_blockers = _paper_and_gate_blockers(paper)
     expansion_blockers = _expansion_only_blockers(all_paper_blockers)
     fail_closed_blockers = _fail_closed_blockers(all_paper_blockers)
     runtime_capacity = _as_dict(runtime.get("paper_capacity_contract"))
     all_sleeves = _all_sleeves_runtime_state(process, project_root)
-    stale_artifacts = [row for row in artifact_snapshots if bool(row.get("stale", False))]
+    stale_artifacts = [
+        row for row in artifact_snapshots if bool(row.get("stale", False))
+    ]
     profitability_posture = _profitability_control_posture(runtime_profitability)
-    profitability_grade = str(profitability_posture.get("controlled_profitability_grade") or "")
-    raw_recovery = _as_dict(runtime_profitability.get("raw_profitability_a_recovery_contract"))
-    raw_improvement_required = _bool(profitability_posture.get("raw_profitability_improvement_required", False))
+    profitability_grade = str(
+        profitability_posture.get("controlled_profitability_grade") or ""
+    )
+    raw_recovery = _as_dict(
+        runtime_profitability.get("raw_profitability_a_recovery_contract")
+    )
+    raw_improvement_required = _bool(
+        profitability_posture.get("raw_profitability_improvement_required", False)
+    )
     raw_improvement_ready = _bool(
         profitability_posture.get("raw_profitability_improvement_control_ready", False)
     )
     env_pause_keys = _paper_env_pause_keys(env_values)
     strict_auth_ready = _auth_stack_ready(auth_lease, schwab_auth)
     strict_broker_ready = _broker_ready(broker)
-    paper_auth_ready = bool(strict_auth_ready or _paper_soak_auth_ready(auth_lease, schwab_auth, broker, env_values))
-    paper_broker_ready = bool(strict_broker_ready or (_bool(broker.get("ready_for_open", False)) and broker.get("network_ok", True) is not False))
+    paper_auth_ready = bool(
+        strict_auth_ready
+        or _paper_soak_auth_ready(auth_lease, schwab_auth, broker, env_values)
+    )
+    paper_broker_ready = bool(
+        strict_broker_ready
+        or (
+            _bool(broker.get("ready_for_open", False))
+            and broker.get("network_ok", True) is not False
+        )
+    )
     session_ready = _session_ready(session)
     capacity_limited_gate_safe = _capacity_limited_paper_gate_safe(paper_gate)
-    runtime_status_ready = bool(_lower(runtime.get("overall_status")) in READY_LIKE_STATUSES or capacity_limited_gate_safe)
+    runtime_status_ready = bool(
+        _lower(runtime.get("overall_status")) in READY_LIKE_STATUSES
+        or capacity_limited_gate_safe
+    )
     strict_paper_ramp_open = bool(
         paper
         and _bool(paper.get("ok", False))
@@ -1440,7 +1823,9 @@ def _soak_30_day_continuity_guard(
         and not fail_closed_blockers
         and existing_paper_execution_open
     )
-    paper_ramp_open = bool(strict_paper_ramp_open or expansion_pause_existing_paper_open)
+    paper_ramp_open = bool(
+        strict_paper_ramp_open or expansion_pause_existing_paper_open
+    )
     runtime_gate_ready = bool(
         not paper_gate
         or (
@@ -1522,7 +1907,9 @@ def _soak_30_day_continuity_guard(
             "session_ready": session_ready,
             "stale_artifacts": stale_artifacts,
             "controlled_profitability_grade": profitability_grade,
-            "raw_profitability_a_recovery_active": _bool(raw_recovery.get("active", False)),
+            "raw_profitability_a_recovery_active": _bool(
+                raw_recovery.get("active", False)
+            ),
             "raw_profitability_improvement_required": raw_improvement_required,
             "raw_profitability_improvement_ready": raw_improvement_ready,
             "raw_promotion_evidence_ready": _bool(
@@ -1530,7 +1917,9 @@ def _soak_30_day_continuity_guard(
             ),
             "promotion_only_blockers": (
                 []
-                if _bool(profitability_posture.get("raw_promotion_evidence_ready", False))
+                if _bool(
+                    profitability_posture.get("raw_promotion_evidence_ready", False)
+                )
                 else ["raw_profitability_evidence_not_ready_for_live_promotion"]
             ),
             "profitability_control_posture": profitability_posture,
@@ -1554,18 +1943,48 @@ def build_payload(
     broker_path: Path | None = None,
     session_path: Path | None = None,
 ) -> dict[str, Any]:
-    runtime_path = Path(runtime_path or project_root / "governance" / "health" / "runtime_throttle_control_latest.json")
-    paper_path = Path(paper_path or project_root / "governance" / "health" / "paper_400_ramp_latest.json")
-    override_path = Path(override_path or project_root / "config" / ".env.runtime_resource_guard_override")
-    process_path = Path(process_path or project_root / "governance" / "health" / "process_watchdog_latest.json")
+    runtime_path = Path(
+        runtime_path
+        or project_root
+        / "governance"
+        / "health"
+        / "runtime_throttle_control_latest.json"
+    )
+    paper_path = Path(
+        paper_path
+        or project_root / "governance" / "health" / "paper_400_ramp_latest.json"
+    )
+    override_path = Path(
+        override_path
+        or project_root / "config" / ".env.runtime_resource_guard_override"
+    )
+    process_path = Path(
+        process_path
+        or project_root / "governance" / "health" / "process_watchdog_latest.json"
+    )
     runtime_profitability_path = Path(
         runtime_profitability_path
-        or project_root / "governance" / "health" / "paper_runtime_profitability_controls_latest.json"
+        or project_root
+        / "governance"
+        / "health"
+        / "paper_runtime_profitability_controls_latest.json"
     )
-    auth_lease_path = Path(auth_lease_path or project_root / "governance" / "health" / "auth_lease_manager_latest.json")
-    schwab_auth_path = Path(schwab_auth_path or project_root / "governance" / "health" / "schwab_auth_supervisor_latest.json")
-    broker_path = Path(broker_path or project_root / "governance" / "health" / "broker_readiness_latest.json")
-    session_path = Path(session_path or project_root / "governance" / "health" / "session_ready_latest.json")
+    auth_lease_path = Path(
+        auth_lease_path
+        or project_root / "governance" / "health" / "auth_lease_manager_latest.json"
+    )
+    schwab_auth_path = Path(
+        schwab_auth_path
+        or project_root / "governance" / "health" / "schwab_auth_supervisor_latest.json"
+    )
+    broker_path = Path(
+        broker_path
+        or project_root / "governance" / "health" / "broker_readiness_latest.json"
+    )
+    session_path = Path(
+        session_path
+        or project_root / "governance" / "health" / "session_ready_latest.json"
+    )
     runtime = load_json(runtime_path)
     paper = load_json(paper_path)
     process = load_json(process_path)
@@ -1576,9 +1995,24 @@ def build_payload(
     session = load_json(session_path)
     env_values = _parse_env_file(override_path)
     artifact_snapshots = [
-        _artifact_snapshot("runtime_throttle_control", runtime_path, runtime, HOT_ARTIFACT_MAX_AGE_MINUTES["runtime_throttle_control"]),
-        _artifact_snapshot("paper_400_ramp", paper_path, paper, HOT_ARTIFACT_MAX_AGE_MINUTES["paper_400_ramp"]),
-        _artifact_snapshot("process_watchdog", process_path, process, HOT_ARTIFACT_MAX_AGE_MINUTES["process_watchdog"]),
+        _artifact_snapshot(
+            "runtime_throttle_control",
+            runtime_path,
+            runtime,
+            HOT_ARTIFACT_MAX_AGE_MINUTES["runtime_throttle_control"],
+        ),
+        _artifact_snapshot(
+            "paper_400_ramp",
+            paper_path,
+            paper,
+            HOT_ARTIFACT_MAX_AGE_MINUTES["paper_400_ramp"],
+        ),
+        _artifact_snapshot(
+            "process_watchdog",
+            process_path,
+            process,
+            HOT_ARTIFACT_MAX_AGE_MINUTES["process_watchdog"],
+        ),
         _artifact_snapshot(
             "paper_runtime_profitability_controls",
             runtime_profitability_path,
@@ -1595,7 +2029,9 @@ def build_payload(
         _paper_execution_pause_guard(runtime, paper, env_values),
         _support_override_guard(runtime, env_values, override_path),
         _hot_artifact_freshness_guard(artifact_snapshots),
-        _paper_eligible_lane_open_guard(project_root, runtime, paper, process, artifact_snapshots),
+        _paper_eligible_lane_open_guard(
+            project_root, runtime, paper, process, artifact_snapshots
+        ),
         _production_grade_authority_guard(
             project_root,
             runtime,
@@ -1625,7 +2061,9 @@ def build_payload(
     ]
     failed = [row for row in guards if not bool(row.get("ok", False))]
     hard_failed = [row for row in failed if str(row.get("severity")) in HARD_SEVERITIES]
-    degraded_failed = [row for row in failed if str(row.get("severity")) not in HARD_SEVERITIES]
+    degraded_failed = [
+        row for row in failed if str(row.get("severity")) not in HARD_SEVERITIES
+    ]
     overall_status = "ready"
     if hard_failed:
         overall_status = "blocked"
@@ -1635,25 +2073,88 @@ def build_payload(
     failed_names = [str(row.get("name")) for row in failed]
     recommended_actions = ordered_unique(
         [
-            "rerun runtime-throttle --apply --json so runtime ready/advisory status matches attribution evidence"
-            if any(name.startswith("runtime_") for name in failed_names)
-            else "",
-            "rerun paper-400-ramp --json and keep paper widening off until runtime_capacity_not_ready_for_400_paper is absent when runtime capacity is ready"
-            if "paper_runtime_capacity_blocker_contract" in failed_names
-            else "",
-            "keep paper execution consumers disabled until the paper ramp is armed with no blockers"
-            if "blocked_paper_execution_pause_contract" in failed_names or "paper_armed_blocker_contract" in failed_names
-            else "",
-            "let runtime-throttle refresh support niceness overrides before launching support collectors"
-            if "runtime_override_support_spawn_contract" in failed_names
-            else "",
-            "run soak-self-heal or reapply runtime-throttle and paper-400-ramp controls when the 30-day continuity contract breaks"
-            if "soak_30_day_continuity_contract" in failed_names
-            else "",
-            "treat production authority failures as hard control-path regressions: keep live locked, refresh auth/broker/runtime/ramp, and do not let stale artifacts pause eligible paper"
-            if "production_grade_paper_live_authority_contract" in failed_names
-            else "",
+            (
+                "rerun runtime-throttle --apply --json so runtime ready/advisory status matches attribution evidence"
+                if any(name.startswith("runtime_") for name in failed_names)
+                else ""
+            ),
+            (
+                "rerun paper-400-ramp --json and keep paper widening off until runtime_capacity_not_ready_for_400_paper is absent when runtime capacity is ready"
+                if "paper_runtime_capacity_blocker_contract" in failed_names
+                else ""
+            ),
+            (
+                "keep paper execution consumers disabled until the paper ramp is armed with no blockers"
+                if "blocked_paper_execution_pause_contract" in failed_names
+                or "paper_armed_blocker_contract" in failed_names
+                else ""
+            ),
+            (
+                "let runtime-throttle refresh support niceness overrides before launching support collectors"
+                if "runtime_override_support_spawn_contract" in failed_names
+                else ""
+            ),
+            (
+                "run soak-self-heal or reapply runtime-throttle and paper-400-ramp controls when the 30-day continuity contract breaks"
+                if "soak_30_day_continuity_contract" in failed_names
+                else ""
+            ),
+            (
+                "treat production authority failures as hard control-path regressions: keep live locked, refresh auth/broker/runtime/ramp, and do not let stale artifacts pause eligible paper"
+                if "production_grade_paper_live_authority_contract" in failed_names
+                else ""
+            ),
         ]
+    )
+    operating_contract = build_operating_contract(
+        contract_id="runtime_paper_regression_operating_contract_v1",
+        owner="runtime_paper_regression_guard",
+        domain="paper_execution",
+        status=overall_status,
+        why=failed_names[0] if failed_names else "ready",
+        safe_authority=[
+            "verify_runtime_paper_contract",
+            "verify_paper_ramp_authority",
+            "verify_hot_artifact_freshness",
+            "keep_paper_only_soft_degradation_isolated",
+        ],
+        blocked_authority=[
+            "paper_order_submission_when_hard_safety_blocker_active",
+            "paper_widening_without_ramp_clearance",
+            "live_order_submission",
+            "runtime_capacity_override_without_evidence",
+        ],
+        evidence_missing=failed_names,
+        release_conditions=[
+            "failed_guard_count_zero",
+            "paper_ramp_armed_and_not_blocked",
+            "runtime_capacity_ready_or_advisory",
+            "auth_broker_session_ready_for_continuity",
+            "hard_safety_blockers_fail_paper_closed",
+        ],
+        next_commands=[
+            ["./scripts/ops/opsctl.sh", "runtime-paper-regression-guard", "--json"],
+            ["./scripts/ops/opsctl.sh", "paper-profitability-control", "--json"],
+            ["./scripts/ops/opsctl.sh", "paper-truth", "--json"],
+        ],
+        definition_gaps=[
+            "hard_guard_failure" if hard_failed else "",
+            "degraded_guard_failure" if degraded_failed else "",
+        ],
+        measurement={
+            "failed_guard_count": len(failed),
+            "hard_failed_guard_count": len(hard_failed),
+            "degraded_guard_count": len(degraded_failed),
+            "paper_armed": _bool(paper.get("armed", False)) if paper else False,
+            "paper_blocked": _paper_is_blocked(paper),
+            "runtime_status": runtime.get("overall_status") if runtime else "missing",
+        },
+        hardening={
+            "paper_only_lanes_fail_open_under_soft_degradation": True,
+            "hard_safety_blockers_fail_paper_closed": True,
+            "live_execution_authority": False,
+            "paper_widening_authority": False,
+        },
     )
 
     return {
@@ -1709,12 +2210,16 @@ def build_payload(
             "live_execution_authority": False,
             "paper_widening_authority": False,
         },
+        "operating_contract": operating_contract,
+        "runtime_paper_operating_contract": operating_contract,
         "recommended_actions": recommended_actions,
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Guard runtime throttle and paper ramp contracts against regression.")
+    parser = argparse.ArgumentParser(
+        description="Guard runtime throttle and paper ramp contracts against regression."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--runtime-file", default="")
@@ -1732,15 +2237,31 @@ def main() -> int:
     project_root = Path(args.project_root).resolve()
     payload = build_payload(
         project_root,
-        runtime_path=Path(args.runtime_file).expanduser() if args.runtime_file else None,
+        runtime_path=(
+            Path(args.runtime_file).expanduser() if args.runtime_file else None
+        ),
         paper_path=Path(args.paper_file).expanduser() if args.paper_file else None,
-        override_path=Path(args.override_file).expanduser() if args.override_file else None,
-        process_path=Path(args.process_file).expanduser() if args.process_file else None,
-        runtime_profitability_path=Path(args.runtime_profitability_file).expanduser() if args.runtime_profitability_file else None,
-        auth_lease_path=Path(args.auth_lease_file).expanduser() if args.auth_lease_file else None,
-        schwab_auth_path=Path(args.schwab_auth_file).expanduser() if args.schwab_auth_file else None,
+        override_path=(
+            Path(args.override_file).expanduser() if args.override_file else None
+        ),
+        process_path=(
+            Path(args.process_file).expanduser() if args.process_file else None
+        ),
+        runtime_profitability_path=(
+            Path(args.runtime_profitability_file).expanduser()
+            if args.runtime_profitability_file
+            else None
+        ),
+        auth_lease_path=(
+            Path(args.auth_lease_file).expanduser() if args.auth_lease_file else None
+        ),
+        schwab_auth_path=(
+            Path(args.schwab_auth_file).expanduser() if args.schwab_auth_file else None
+        ),
         broker_path=Path(args.broker_file).expanduser() if args.broker_file else None,
-        session_path=Path(args.session_file).expanduser() if args.session_file else None,
+        session_path=(
+            Path(args.session_file).expanduser() if args.session_file else None
+        ),
     )
     write_payload(Path(args.out_file).expanduser(), payload)
     if args.json:

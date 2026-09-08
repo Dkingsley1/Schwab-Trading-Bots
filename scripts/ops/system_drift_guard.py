@@ -12,18 +12,52 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+    from scripts.ops.long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        load_json,
+        ordered_unique,
+        payload_age_minutes,
+        write_payload,
+    )
     from scripts.ops.system_drift_registry import surface_specs
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        load_json,
+        ordered_unique,
+        payload_age_minutes,
+        write_payload,
+    )
     from .system_drift_registry import surface_specs
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "system_drift_guard_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "system_drift_guard_latest.json"
+)
 BLOCKED_STATUSES = {"blocked", "critical", "missing"}
 DEGRADED_STATUSES = {"degraded", "warn", "warning", "needs_work", "inactive", "thin"}
-READY_STATUSES = {"ready", "ok", "stable", "watch", "advisory", "guarded", "applied", "applied_with_followups", "cleared"}
-RECOVERY_STATES = {"active", "already_running", "busy", "drain_active", "recovering", "recovering_under_guard", "stabilized_recovery"}
+READY_STATUSES = {
+    "ready",
+    "ok",
+    "stable",
+    "watch",
+    "advisory",
+    "guarded",
+    "applied",
+    "applied_with_followups",
+    "cleared",
+}
+RECOVERY_STATES = {
+    "active",
+    "already_running",
+    "busy",
+    "drain_active",
+    "recovering",
+    "recovering_under_guard",
+    "stabilized_recovery",
+}
 PROTECTED_ARCHITECTURE_BLOCKED_NODES = {
     "adaptive_regression_guard",
     "all_sleeves_launcher",
@@ -40,13 +74,23 @@ SOFT_ARCHITECTURE_SCOREBOARD_BLOCKERS = {
 ADVISORY_RECOVERY_DEFERRED_REASONS = {
     "guarded_paper_architecture_self_reference_debt",
     "guarded_paper_architecture_autopilot_self_reference_debt",
+    "guarded_paper_architecture_earned_evidence_debt",
+    "guarded_paper_architecture_recursive_earned_evidence_debt",
+    "guarded_paper_architecture_autopilot_earned_evidence_debt",
+    "guarded_paper_architecture_autopilot_recursive_earned_evidence_debt",
     "guarded_paper_architecture_scoreboard_advisory_debt",
     "guarded_paper_incident_closeout_advisory_debt",
     "guarded_paper_infrastructure_autofix_advisory_debt",
     "guarded_paper_infrastructure_recovery_debt",
     "guarded_paper_infrastructure_self_reference_debt",
+    "guarded_paper_infrastructure_dashboard_evidence_debt",
     "guarded_paper_optional_report_stale",
     "guarded_paper_calibration_evidence_accrual_debt",
+}
+PAPER_SOAK_EVIDENCE_ONLY_DASHBOARD_ATTENTION = {
+    "retrain_artifact_freshness_not_ok",
+    "training_quality_control_blocked",
+    "teacher_quality_guard_blocked",
 }
 
 
@@ -103,13 +147,15 @@ def _as_dict(raw: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def _guarded_paper_strict_clear_for_spec(spec: dict[str, Any]) -> bool:
+def _guarded_paper_ready_live_locked_for_spec(spec: dict[str, Any]) -> bool:
     artifact_path = Path(spec.get("artifact_path") or "")
     health_fast = load_json(artifact_path.parent / "health_fast_latest.json")
     operational = _as_dict(health_fast.get("operational_readiness"))
     guarded_paper = _as_dict(operational.get("guarded_paper"))
     live_execution = _as_dict(operational.get("live_execution"))
-    guarded_ready = bool(guarded_paper.get("ok", False)) and str(guarded_paper.get("status") or "").strip().lower() in {
+    guarded_ready = bool(guarded_paper.get("ok", False)) and str(
+        guarded_paper.get("status") or ""
+    ).strip().lower() in {
         "ready",
         "armed",
         "guarded_ready",
@@ -120,25 +166,128 @@ def _guarded_paper_strict_clear_for_spec(spec: dict[str, Any]) -> bool:
         "read_only",
         "disabled",
     }
+    return bool(guarded_ready and live_locked)
+
+
+def _guarded_paper_strict_clear_for_spec(spec: dict[str, Any]) -> bool:
+    artifact_path = Path(spec.get("artifact_path") or "")
+    health_fast = load_json(artifact_path.parent / "health_fast_latest.json")
     operational_health_ready = bool(
         health_fast.get("strict_all_clear", False)
         or (
             bool(health_fast.get("ok", False))
-            and str(health_fast.get("overall_status") or "").strip().lower() in {"ready", "guarded_ready"}
+            and str(health_fast.get("overall_status") or "").strip().lower()
+            in {"ready", "guarded_ready"}
         )
     )
-    return bool(operational_health_ready and guarded_ready and live_locked)
+    return bool(
+        operational_health_ready and _guarded_paper_ready_live_locked_for_spec(spec)
+    )
 
 
-def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], status: str) -> str:
+def _architecture_earned_evidence_debt_for_spec(spec: dict[str, Any]) -> bool:
+    health_root = Path(spec.get("artifact_path") or "").parent
+    hardening = load_json(health_root / "system_architecture_hardening_latest.json")
+    source = load_json(health_root / "source_verification_latest.json")
+    sections = _as_dict(hardening.get("sections"))
+    non_ready_sections = {
+        name
+        for name, row in sections.items()
+        if isinstance(row, dict)
+        and str(row.get("overall_status") or "").strip().lower()
+        in {"blocked", "critical", "degraded", "needs_work"}
+    }
+    training = _as_dict(sections.get("training_evidence_contract"))
+    training_evidence = _as_dict(training.get("evidence"))
+    pair_contract = _as_dict(source.get("artifact_pair_contract"))
+    dependency_contract = _as_dict(source.get("source_dependency_contract"))
+    return bool(
+        _guarded_paper_ready_live_locked_for_spec(spec)
+        and hardening
+        and non_ready_sections == {"training_evidence_contract"}
+        and not training.get("blocks_guarded_paper", True)
+        and _safe_int(training_evidence.get("collector_count"), 0) > 0
+        and _safe_float(training_evidence.get("coverage_ratio"), 0.0) >= 0.95
+        and _safe_int(training_evidence.get("zero_observation_count"), 1) == 0
+        and _safe_float(training_evidence.get("training_quality_score"), 0.0) >= 50.0
+        and str(source.get("overall_status") or "").strip().lower() == "ready"
+        and not _safe_list(source.get("unverified_sources"))
+        and not _safe_list(source.get("stale_artifacts"))
+        and str(pair_contract.get("status") or "").strip().lower() == "ready"
+        and _safe_int(pair_contract.get("drifted_source_count"), 0) == 0
+        and str(dependency_contract.get("status") or "").strip().lower() == "ready"
+    )
+
+
+def _architecture_graph_marks_nodes_optional_for_spec(
+    spec: dict[str, Any], node_ids: set[str]
+) -> bool:
+    if not node_ids:
+        return False
+    health_root = Path(spec.get("artifact_path") or "").parent
+    graph = load_json(health_root / "system_architecture_contract_graph_latest.json")
+    nodes = {
+        str(row.get("node_id") or "").strip(): row
+        for row in _safe_list(graph.get("nodes"))
+        if isinstance(row, dict) and str(row.get("node_id") or "").strip()
+    }
+    return all(
+        node_id in nodes and nodes[node_id].get("required") is False
+        for node_id in node_ids
+    )
+
+
+def _dashboard_evidence_only_advisory_for_spec(spec: dict[str, Any]) -> bool:
+    artifact_path = Path(spec.get("artifact_path") or "")
+    dashboard = load_json(artifact_path.parent / "runtime_gate_dashboard_latest.json")
+    overall = _as_dict(dashboard.get("overall"))
+    attention = {
+        str(item or "").strip()
+        for item in _safe_list(overall.get("attention"))
+        if str(item or "").strip()
+    }
+    tiers = _as_dict(overall.get("attention_tiers"))
+    critical_attention = [
+        str(item or "").strip()
+        for item in _safe_list(tiers.get("critical"))
+        if str(item or "").strip()
+    ]
+    context = _as_dict(overall.get("soak_management_context"))
+    return bool(
+        attention
+        and attention <= PAPER_SOAK_EVIDENCE_ONLY_DASHBOARD_ATTENTION
+        and not critical_attention
+        and context.get("enabled", False)
+        and context.get("soak_ready", False)
+        and context.get("paper_guard_clean", False)
+        and context.get("paper_armed", False)
+        and context.get("guarded_health_ready", False)
+    )
+
+
+def _recovery_deferred_reason(
+    spec: dict[str, Any], payload: dict[str, Any], status: str
+) -> str:
     if status not in {"blocked", "degraded"} or not payload:
         return ""
 
     guarded_paper_strict_clear = _guarded_paper_strict_clear_for_spec(spec)
     surface_name = str(spec.get("name") or "").strip()
-    if guarded_paper_strict_clear and status in {"blocked", "degraded"} and surface_name == "system_architecture_contract_graph":
-        blocked_nodes = {str(item or "").strip() for item in _safe_list(payload.get("blocked_nodes")) if str(item or "").strip()}
-        degraded_nodes = {str(item or "").strip() for item in _safe_list(payload.get("degraded_nodes")) if str(item or "").strip()}
+    if (
+        guarded_paper_strict_clear
+        and status in {"blocked", "degraded"}
+        and surface_name == "system_architecture_contract_graph"
+    ):
+        blocked_nodes = {
+            str(item or "").strip()
+            for item in _safe_list(payload.get("blocked_nodes"))
+            if str(item or "").strip()
+        }
+        degraded_nodes = {
+            str(item or "").strip()
+            for item in _safe_list(payload.get("degraded_nodes"))
+            if str(item or "").strip()
+        }
         if (
             blocked_nodes
             and blocked_nodes
@@ -168,7 +317,53 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
         ):
             return "guarded_paper_architecture_self_reference_debt"
 
-    if guarded_paper_strict_clear and status in {"blocked", "degraded"} and surface_name == "system_architecture_autopilot":
+    if (
+        status == "degraded"
+        and surface_name == "system_architecture_contract_graph"
+        and _architecture_earned_evidence_debt_for_spec(spec)
+    ):
+        blocked_nodes = {
+            str(item or "").strip()
+            for item in _safe_list(payload.get("blocked_nodes"))
+            if str(item or "").strip()
+        }
+        degraded_nodes = {
+            str(item or "").strip()
+            for item in _safe_list(payload.get("degraded_nodes"))
+            if str(item or "").strip()
+        }
+        listed_counts_match = bool(
+            _safe_int(payload.get("blocked_node_count"), -1) == len(blocked_nodes)
+            and _safe_int(payload.get("degraded_node_count"), -1)
+            == len(degraded_nodes)
+        )
+        if (
+            not blocked_nodes
+            and "architecture_hardening" in degraded_nodes
+            and degraded_nodes
+            <= {
+                "system_drift_guard",
+                "architecture_hardening",
+                "system_self_model",
+            }
+            and listed_counts_match
+            and _architecture_graph_marks_nodes_optional_for_spec(
+                spec, degraded_nodes
+            )
+            and _safe_int(payload.get("blocked_edge_count"), 0) == 0
+            and _safe_int(payload.get("authority_violation_count"), 0) == 0
+        ):
+            return (
+                "guarded_paper_architecture_earned_evidence_debt"
+                if degraded_nodes == {"architecture_hardening"}
+                else "guarded_paper_architecture_recursive_earned_evidence_debt"
+            )
+
+    if (
+        guarded_paper_strict_clear
+        and status in {"blocked", "degraded"}
+        and surface_name == "system_architecture_autopilot"
+    ):
         final_graph = _as_dict(payload.get("final_graph"))
         final_blocked_nodes = {
             str(item or "").strip()
@@ -192,14 +387,19 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
             for row in _safe_list(payload.get("repair_plan"))
             if isinstance(row, dict) and str(row.get("node_id") or "").strip()
         }
-        final_non_ready_count = _safe_int(final_graph.get("blocked_node_count"), 0) + _safe_int(
-            final_graph.get("degraded_node_count"), 0
+        final_non_ready_count = _safe_int(
+            final_graph.get("blocked_node_count"), 0
+        ) + _safe_int(final_graph.get("degraded_node_count"), 0)
+        final_nodes_are_explainable = (
+            bool(final_non_ready_nodes) or final_non_ready_count == 0
         )
-        final_nodes_are_explainable = bool(final_non_ready_nodes) or final_non_ready_count == 0
         final_debt_is_self_reference_only = bool(
-            final_nodes_are_explainable and final_non_ready_nodes <= final_self_reference_nodes
+            final_nodes_are_explainable
+            and final_non_ready_nodes <= final_self_reference_nodes
         )
-        attempts = [row for row in _safe_list(payload.get("attempts")) if isinstance(row, dict)]
+        attempts = [
+            row for row in _safe_list(payload.get("attempts")) if isinstance(row, dict)
+        ]
         executed_repairs_converged = bool(
             _safe_bool(payload.get("execute_safe_repairs"))
             and attempts
@@ -209,7 +409,14 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
         repair_plan_is_self_reference_only = bool(
             not repair_nodes
             or repair_nodes
-            <= (final_self_reference_nodes | {"adaptive_regression_guard", "section_grade_guard", "grade_regression_guard"})
+            <= (
+                final_self_reference_nodes
+                | {
+                    "adaptive_regression_guard",
+                    "section_grade_guard",
+                    "grade_regression_guard",
+                }
+            )
         )
         if (
             (
@@ -223,47 +430,158 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
         ):
             return "guarded_paper_architecture_autopilot_self_reference_debt"
 
-    if guarded_paper_strict_clear and status == "degraded" and surface_name == "infrastructure_autofix":
+    if (
+        status in {"blocked", "degraded"}
+        and surface_name == "system_architecture_autopilot"
+        and _architecture_earned_evidence_debt_for_spec(spec)
+    ):
+        final_graph = _as_dict(payload.get("final_graph"))
+        final_blocked_nodes = {
+            str(item or "").strip()
+            for item in _safe_list(final_graph.get("blocked_nodes"))
+            if str(item or "").strip()
+        }
+        final_degraded_nodes = {
+            str(item or "").strip()
+            for item in _safe_list(final_graph.get("degraded_nodes"))
+            if str(item or "").strip()
+        }
+        repair_nodes = {
+            str(row.get("node_id") or "").strip()
+            for row in _safe_list(payload.get("repair_plan"))
+            if isinstance(row, dict) and str(row.get("node_id") or "").strip()
+        }
+        final_non_ready_nodes = final_blocked_nodes | final_degraded_nodes
+        listed_counts_match = bool(
+            _safe_int(final_graph.get("blocked_node_count"), -1)
+            == len(final_blocked_nodes)
+            and _safe_int(final_graph.get("degraded_node_count"), -1)
+            == len(final_degraded_nodes)
+        )
+        if (
+            not final_blocked_nodes
+            and final_degraded_nodes == {"architecture_hardening"}
+            and repair_nodes <= {"architecture_hardening"}
+            and final_non_ready_nodes <= repair_nodes
+            and listed_counts_match
+            and _architecture_graph_marks_nodes_optional_for_spec(
+                spec, final_non_ready_nodes
+            )
+            and _safe_int(final_graph.get("blocked_edge_count"), 0) == 0
+            and _safe_int(final_graph.get("authority_violation_count"), 0) == 0
+        ):
+            return "guarded_paper_architecture_autopilot_earned_evidence_debt"
+        if (
+            final_blocked_nodes <= {"system_drift_guard"}
+            and "architecture_hardening" in final_degraded_nodes
+            and final_degraded_nodes
+            <= {
+                "system_drift_guard",
+                "architecture_hardening",
+                "system_self_model",
+            }
+            and final_non_ready_nodes <= repair_nodes
+            and repair_nodes
+            <= {
+                "system_drift_guard",
+                "architecture_hardening",
+                "system_self_model",
+            }
+            and listed_counts_match
+            and _architecture_graph_marks_nodes_optional_for_spec(
+                spec, final_non_ready_nodes
+            )
+            and _safe_int(final_graph.get("blocked_edge_count"), 0) == 0
+            and _safe_int(final_graph.get("authority_violation_count"), 0) == 0
+        ):
+            return (
+                "guarded_paper_architecture_autopilot_recursive_earned_evidence_debt"
+            )
+
+    if (
+        guarded_paper_strict_clear
+        and status == "degraded"
+        and surface_name == "infrastructure_autofix"
+    ):
         operator_followups = _safe_list(payload.get("operator_followups"))
-        if _safe_int(payload.get("failed_attempt_count"), 0) == 0 and _safe_int(payload.get("hard_failed_attempt_count"), 0) == 0 and not operator_followups:
+        if (
+            _safe_int(payload.get("failed_attempt_count"), 0) == 0
+            and _safe_int(payload.get("hard_failed_attempt_count"), 0) == 0
+            and not operator_followups
+        ):
             return "guarded_paper_infrastructure_autofix_advisory_debt"
 
-    if guarded_paper_strict_clear and status == "degraded" and surface_name == "master_infrastructure_supervisor":
+    if (
+        guarded_paper_strict_clear
+        and status == "degraded"
+        and surface_name == "master_infrastructure_supervisor"
+    ):
         checks = _safe_list(payload.get("checks"))
         blocked_checks = {
             str(row.get("name") or "").strip()
             for row in checks
-            if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"blocked", "critical"}
+            if isinstance(row, dict)
+            and str(row.get("status") or "").strip().lower() in {"blocked", "critical"}
         }
         degraded_checks = {
             str(row.get("name") or "").strip()
             for row in checks
-            if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"degraded", "warning", "warn"}
+            if isinstance(row, dict)
+            and str(row.get("status") or "").strip().lower()
+            in {"degraded", "warning", "warn"}
         }
         platform_posture = _as_dict(payload.get("platform_posture"))
+        operator_cockpit_evidence_only = bool(
+            "operator_cockpit_readiness" not in degraded_checks
+            or _dashboard_evidence_only_advisory_for_spec(spec)
+        )
+        allowed_degraded_checks = {
+            "governance_artifact_freshness",
+            "self_auditing_infra_bots",
+            "child_repair_bot_outcomes",
+        }
+        if operator_cockpit_evidence_only:
+            allowed_degraded_checks.add("operator_cockpit_readiness")
         if (
             not blocked_checks
             and degraded_checks
-            and degraded_checks <= {"governance_artifact_freshness", "self_auditing_infra_bots", "child_repair_bot_outcomes"}
-            and str(platform_posture.get("operating_posture") or "").strip().lower() in {"coherent", "guarded_collection", "guarded_paper_ready", ""}
-            and _safe_int(_as_dict(payload.get("metrics")).get("blocked_check_count"), 0) == 0
+            and degraded_checks <= allowed_degraded_checks
+            and str(platform_posture.get("operating_posture") or "").strip().lower()
+            in {"coherent", "guarded_collection", "guarded_paper_ready", ""}
+            and _safe_int(
+                _as_dict(payload.get("metrics")).get("blocked_check_count"), 0
+            )
+            == 0
         ):
+            if "operator_cockpit_readiness" in degraded_checks:
+                return "guarded_paper_infrastructure_dashboard_evidence_debt"
             return "guarded_paper_infrastructure_self_reference_debt"
 
     if guarded_paper_strict_clear and surface_name == "architecture_upgrade_scoreboard":
         blocked_slugs = {
             str(row.get("slug") or "").strip()
             for row in _safe_list(payload.get("rows"))
-            if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"blocked", "critical"}
+            if isinstance(row, dict)
+            and str(row.get("status") or "").strip().lower() in {"blocked", "critical"}
         }
         degraded_slugs = {
             str(row.get("slug") or "").strip()
             for row in _safe_list(payload.get("rows"))
-            if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"degraded", "warning", "warn"}
+            if isinstance(row, dict)
+            and str(row.get("status") or "").strip().lower()
+            in {"degraded", "warning", "warn"}
         }
-        if blocked_slugs and blocked_slugs <= {"self_healing_ops_plane", "immutable_incident_review"}:
+        if blocked_slugs and blocked_slugs <= {
+            "self_healing_ops_plane",
+            "immutable_incident_review",
+        }:
             return "guarded_paper_architecture_recovery_debt"
-        if not blocked_slugs and degraded_slugs and degraded_slugs <= {"self_healing_ops_plane", "immutable_incident_review"}:
+        if (
+            not blocked_slugs
+            and degraded_slugs
+            and degraded_slugs
+            <= {"self_healing_ops_plane", "immutable_incident_review"}
+        ):
             return "guarded_paper_architecture_scoreboard_advisory_debt"
 
     if guarded_paper_strict_clear and surface_name == "incident_closeout":
@@ -272,7 +590,11 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
             for row in _safe_list(payload.get("blocking_surfaces"))
             if isinstance(row, dict) and str(row.get("surface") or "").strip()
         ]
-        warning_only = all(str(row.get("severity") or "").strip().lower() in {"", "info", "warning", "warn"} for row in blocking_surfaces)
+        warning_only = all(
+            str(row.get("severity") or "").strip().lower()
+            in {"", "info", "warning", "warn"}
+            for row in blocking_surfaces
+        )
         if (
             status == "degraded"
             and _safe_int(payload.get("open_incident_count"), 0) <= 3
@@ -285,7 +607,11 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
         ):
             return "guarded_paper_incident_closeout_advisory_debt"
 
-    if guarded_paper_strict_clear and status == "blocked" and surface_name == "paper_execution_truth_layer":
+    if (
+        guarded_paper_strict_clear
+        and status == "blocked"
+        and surface_name == "paper_execution_truth_layer"
+    ):
         failed_checks = {
             str(item or "").strip()
             for item in _safe_list(payload.get("failed_checks"))
@@ -314,7 +640,9 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
             for name in operational_gate_names
         )
         freshness_gate = _as_dict(gates.get("artifact_freshness_guard"))
-        operational_inputs_fresh = bool(freshness_gate.get("operational_inputs_fresh", False))
+        operational_inputs_fresh = bool(
+            freshness_gate.get("operational_inputs_fresh", False)
+        )
         calibration = _as_dict(gates.get("live_quote_fill_calibration"))
         calibration_is_evidence_debt = bool(
             failed_checks
@@ -323,14 +651,22 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
             and _safe_int(calibration.get("independent_samples"), 0)
             < _safe_int(calibration.get("minimum_independent_samples"), 1)
         )
-        if operational_gates_ready and operational_inputs_fresh and calibration_is_evidence_debt:
+        if (
+            operational_gates_ready
+            and operational_inputs_fresh
+            and calibration_is_evidence_debt
+        ):
             return "guarded_paper_calibration_evidence_accrual_debt"
 
-    if guarded_paper_strict_clear and surface_name == "master_infrastructure_supervisor":
+    if (
+        guarded_paper_strict_clear
+        and surface_name == "master_infrastructure_supervisor"
+    ):
         blocked_checks = {
             str(row.get("name") or "").strip()
             for row in _safe_list(payload.get("checks"))
-            if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"blocked", "critical"}
+            if isinstance(row, dict)
+            and str(row.get("status") or "").strip().lower() in {"blocked", "critical"}
         }
         if blocked_checks and blocked_checks <= {
             "external_drive_route_health",
@@ -344,7 +680,9 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
         return f"recovery_state={recovery_state}"
 
     storage = payload.get("storage") if isinstance(payload.get("storage"), dict) else {}
-    backlog_drain_status = str(storage.get("backlog_drain_status") or "").strip().lower()
+    backlog_drain_status = (
+        str(storage.get("backlog_drain_status") or "").strip().lower()
+    )
     if backlog_drain_status in RECOVERY_STATES:
         return f"backlog_drain_status={backlog_drain_status}"
 
@@ -361,7 +699,11 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
         return "safe_repairs_planned_not_executed"
 
     if _safe_int(payload.get("authority_violation_count"), 0) == 0:
-        blocked_nodes = {str(item or "").strip() for item in _safe_list(payload.get("blocked_nodes")) if str(item or "").strip()}
+        blocked_nodes = {
+            str(item or "").strip()
+            for item in _safe_list(payload.get("blocked_nodes"))
+            if str(item or "").strip()
+        }
         if blocked_nodes and blocked_nodes <= PROTECTED_ARCHITECTURE_BLOCKED_NODES:
             return "protected_architecture_dependencies_blocked"
 
@@ -369,7 +711,8 @@ def _recovery_deferred_reason(spec: dict[str, Any], payload: dict[str, Any], sta
     non_ready_slugs = {
         str(row.get("slug") or "").strip()
         for row in rows
-        if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"blocked", "missing"}
+        if isinstance(row, dict)
+        and str(row.get("status") or "").strip().lower() in {"blocked", "missing"}
     }
     if non_ready_slugs and non_ready_slugs <= SOFT_ARCHITECTURE_SCOREBOARD_BLOCKERS:
         return "soft_architecture_scoreboard_blockers"
@@ -383,9 +726,26 @@ def _artifact_candidates(path: Path) -> list[Path]:
         rel_path = path.relative_to(PROJECT_ROOT)
     except Exception:
         rel_path = None
-    if rel_path is not None and rel_path.parts and rel_path.parts[0] in {"data", "decisions", "decision_explanations", "exports", "governance", "logs", "models"}:
+    if (
+        rel_path is not None
+        and rel_path.parts
+        and rel_path.parts[0]
+        in {
+            "data",
+            "decisions",
+            "decision_explanations",
+            "exports",
+            "governance",
+            "logs",
+            "models",
+        }
+    ):
         candidates.append(PROJECT_ROOT / "local_fallback_storage" / rel_path)
-        external_root = Path(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "/Volumes/BOT_LOGS/schwab_trading_bot")).expanduser()
+        external_root = Path(
+            os.getenv(
+                "BOT_LOGS_EXTERNAL_PROJECT_ROOT", "/Volumes/BOT_LOGS/schwab_trading_bot"
+            )
+        ).expanduser()
         candidates.append(external_root / rel_path)
     out: list[Path] = []
     seen: set[str] = set()
@@ -424,10 +784,14 @@ def _command_validity_row(spec: dict[str, Any]) -> dict[str, Any]:
         status = "missing"
         detail = "artifact_missing"
     else:
-        metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+        metrics = (
+            payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+        )
         blocked_entries = _safe_int(metrics.get("blocked_entry_count"), 0)
         smoke_failures = _safe_int(metrics.get("smoke_failure_count"), 0)
-        runtime_smoke_failures = _safe_int(metrics.get("runtime_smoke_failure_count"), 0)
+        runtime_smoke_failures = _safe_int(
+            metrics.get("runtime_smoke_failure_count"), 0
+        )
         operator_gated = _safe_int(metrics.get("operator_gated_entry_count"), 0)
         if blocked_entries > 0 or smoke_failures > 0 or runtime_smoke_failures > 0:
             status = "blocked"
@@ -439,7 +803,12 @@ def _command_validity_row(spec: dict[str, Any]) -> dict[str, Any]:
         )
     stale = False
     max_age_minutes = spec.get("max_age_minutes")
-    if payload and isinstance(max_age_minutes, (int, float)) and isinstance(age_minutes, (int, float)) and age_minutes > float(max_age_minutes):
+    if (
+        payload
+        and isinstance(max_age_minutes, (int, float))
+        and isinstance(age_minutes, (int, float))
+        and age_minutes > float(max_age_minutes)
+    ):
         if status == "ready":
             status = "degraded"
         stale = True
@@ -470,7 +839,11 @@ def _commands_hygiene_row(spec: dict[str, Any]) -> dict[str, Any]:
     else:
         commands_changed = bool(payload.get("commands_changed", False))
         runbook_changed = bool(payload.get("runbook_changed", False))
-        apply_results = payload.get("apply_results") if isinstance(payload.get("apply_results"), dict) else {}
+        apply_results = (
+            payload.get("apply_results")
+            if isinstance(payload.get("apply_results"), dict)
+            else {}
+        )
         commands_written = bool(apply_results.get("commands_md_written", False))
         runbook_written = bool(apply_results.get("runbook_written", False))
         if commands_changed and not commands_written:
@@ -485,7 +858,12 @@ def _commands_hygiene_row(spec: dict[str, Any]) -> dict[str, Any]:
         )
     stale = False
     max_age_minutes = spec.get("max_age_minutes")
-    if payload and isinstance(max_age_minutes, (int, float)) and isinstance(age_minutes, (int, float)) and age_minutes > float(max_age_minutes):
+    if (
+        payload
+        and isinstance(max_age_minutes, (int, float))
+        and isinstance(age_minutes, (int, float))
+        and age_minutes > float(max_age_minutes)
+    ):
         if status == "ready":
             status = "degraded"
         stale = True
@@ -512,11 +890,29 @@ def _watchdog_row(spec: dict[str, Any]) -> dict[str, Any]:
         status = "missing"
         detail = "artifact_missing"
     else:
-        restart_storms = payload.get("restart_storms") if isinstance(payload.get("restart_storms"), list) else []
-        recent = payload.get("recent_restart_storms") if isinstance(payload.get("recent_restart_storms"), list) else []
-        unresolved_recent = [row for row in recent if isinstance(row, dict) and not bool(row.get("resolved", False))]
-        alerts = payload.get("alerts") if isinstance(payload.get("alerts"), list) else []
-        safety_pause = payload.get("safety_pause") if isinstance(payload.get("safety_pause"), dict) else {}
+        restart_storms = (
+            payload.get("restart_storms")
+            if isinstance(payload.get("restart_storms"), list)
+            else []
+        )
+        recent = (
+            payload.get("recent_restart_storms")
+            if isinstance(payload.get("recent_restart_storms"), list)
+            else []
+        )
+        unresolved_recent = [
+            row
+            for row in recent
+            if isinstance(row, dict) and not bool(row.get("resolved", False))
+        ]
+        alerts = (
+            payload.get("alerts") if isinstance(payload.get("alerts"), list) else []
+        )
+        safety_pause = (
+            payload.get("safety_pause")
+            if isinstance(payload.get("safety_pause"), dict)
+            else {}
+        )
         if restart_storms or unresolved_recent:
             status = "blocked"
         elif alerts:
@@ -529,7 +925,12 @@ def _watchdog_row(spec: dict[str, Any]) -> dict[str, Any]:
         )
     stale = False
     max_age_minutes = spec.get("max_age_minutes")
-    if payload and isinstance(max_age_minutes, (int, float)) and isinstance(age_minutes, (int, float)) and age_minutes > float(max_age_minutes):
+    if (
+        payload
+        and isinstance(max_age_minutes, (int, float))
+        and isinstance(age_minutes, (int, float))
+        and age_minutes > float(max_age_minutes)
+    ):
         if status == "ready":
             status = "degraded"
         stale = True
@@ -561,20 +962,33 @@ def _generic_row(spec: dict[str, Any]) -> dict[str, Any]:
     else:
         status_key = str(spec.get("status_key") or "").strip()
         ok_key = str(spec.get("ok_key") or "").strip()
-        raw_status = str(payload.get(status_key) or "").strip().lower() if status_key else ""
+        raw_status = (
+            str(payload.get(status_key) or "").strip().lower() if status_key else ""
+        )
         if not raw_status and ok_key:
             raw_status = _status_from_bool(payload.get(ok_key))
-        status = _normalize_status(raw_status or "ready", payload.get(ok_key) if ok_key else None)
+        status = _normalize_status(
+            raw_status or "ready", payload.get(ok_key) if ok_key else None
+        )
         recovery_deferred_reason = _recovery_deferred_reason(spec, payload, status)
         if recovery_deferred_reason:
-            status = "ready" if recovery_deferred_reason in ADVISORY_RECOVERY_DEFERRED_REASONS else "degraded"
+            status = (
+                "ready"
+                if recovery_deferred_reason in ADVISORY_RECOVERY_DEFERRED_REASONS
+                else "degraded"
+            )
         detail = status
         if recovery_deferred_reason:
             detail = f"{detail} recovery_deferred={recovery_deferred_reason}"
     stale = False
     managed_stale = False
     max_age_minutes = spec.get("max_age_minutes")
-    if payload and isinstance(max_age_minutes, (int, float)) and isinstance(age_minutes, (int, float)) and age_minutes > float(max_age_minutes):
+    if (
+        payload
+        and isinstance(max_age_minutes, (int, float))
+        and isinstance(age_minutes, (int, float))
+        and age_minutes > float(max_age_minutes)
+    ):
         if (
             status == "ready"
             and bool(spec.get("guarded_paper_stale_advisory", False))
@@ -623,7 +1037,9 @@ def _surface_row(spec: dict[str, Any]) -> dict[str, Any]:
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     rows = [_surface_row(spec) for spec in surface_specs(project_root)]
     blocked = [row for row in rows if str(row.get("status") or "") in BLOCKED_STATUSES]
-    degraded = [row for row in rows if str(row.get("status") or "") in DEGRADED_STATUSES]
+    degraded = [
+        row for row in rows if str(row.get("status") or "") in DEGRADED_STATUSES
+    ]
     stale = [row for row in rows if bool(row.get("stale", False))]
     missing = [row for row in rows if str(row.get("status") or "") == "missing"]
     overall_status = "ready"
@@ -635,7 +1051,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     family_metrics: dict[str, dict[str, int]] = {}
     for row in rows:
         family = str(row.get("family") or "other")
-        metrics = family_metrics.setdefault(family, {"surface_count": 0, "blocked_count": 0, "degraded_count": 0})
+        metrics = family_metrics.setdefault(
+            family, {"surface_count": 0, "blocked_count": 0, "degraded_count": 0}
+        )
         metrics["surface_count"] += 1
         if str(row.get("status") or "") in BLOCKED_STATUSES:
             metrics["blocked_count"] += 1
@@ -644,9 +1062,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     recommended_actions = ordered_unique(
         [
-            "run `./scripts/ops/opsctl.sh system-drift-autopilot --apply --json` to repair safe drift surfaces in one pass"
-            if blocked or degraded
-            else "",
+            (
+                "run `./scripts/ops/opsctl.sh system-drift-autopilot --apply --json` to repair safe drift surfaces in one pass"
+                if blocked or degraded
+                else ""
+            ),
         ]
         + [
             f"repair {row['name']} with `{ ' '.join(row.get('repair_commands', [])[0]) }`"
@@ -669,14 +1089,18 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "degraded_surface_count": len(degraded),
             "stale_surface_count": len(stale),
             "missing_surface_count": len(missing),
-            "repairable_surface_count": sum(1 for row in rows if row.get("repair_commands")),
+            "repairable_surface_count": sum(
+                1 for row in rows if row.get("repair_commands")
+            ),
         },
         "recommended_actions": recommended_actions,
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Aggregate system-wide drift surfaces into a registry-backed guard artifact.")
+    parser = argparse.ArgumentParser(
+        description="Aggregate system-wide drift surfaces into a registry-backed guard artifact."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file")
     parser.add_argument("--json", action="store_true")
@@ -684,7 +1108,11 @@ def main() -> int:
 
     project_root = Path(args.project_root).resolve()
     payload = build_payload(project_root)
-    out_file = Path(args.out_file).expanduser() if args.out_file else project_root / "governance" / "health" / "system_drift_guard_latest.json"
+    out_file = (
+        Path(args.out_file).expanduser()
+        if args.out_file
+        else project_root / "governance" / "health" / "system_drift_guard_latest.json"
+    )
     write_payload(out_file, payload)
 
     if args.json:

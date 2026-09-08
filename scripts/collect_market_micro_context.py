@@ -242,6 +242,14 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     return out
 
 
+def _optional_float(value: Any) -> Optional[float]:
+    try:
+        out = float(value)
+    except Exception:
+        return None
+    return out if math.isfinite(out) else None
+
+
 def _clamp01(value: float) -> float:
     return max(0.0, min(float(value), 1.0))
 
@@ -969,13 +977,49 @@ def _aggregate_local_micro_context(
     return out
 
 
-def _fetch_treasury_auction_context(*, timeout_seconds: float) -> Dict[str, Any]:
-    now_utc = datetime.now(timezone.utc)
+def _parse_treasury_auction_rows(payload: Any, *, as_of: datetime) -> tuple[List[Dict[str, Any]], int]:
+    raw_rows = payload.get("data") if isinstance(payload, Mapping) else []
+    rows: List[Dict[str, Any]] = []
+    future_rejected = 0
+    for row in raw_rows if isinstance(raw_rows, list) else []:
+        if not isinstance(row, Mapping):
+            continue
+        auction_date = _parse_ts(row.get("auction_date"))
+        if auction_date is None:
+            continue
+        if auction_date > as_of:
+            future_rejected += 1
+            continue
+        total_accepted = _optional_float(row.get("total_accepted"))
+        dealer_accepted = _optional_float(row.get("primary_dealer_accepted"))
+        indirect_accepted = _optional_float(row.get("indirect_bidder_accepted"))
+        rows.append(
+            {
+                "security_type": str(row.get("security_type") or ""),
+                "security_term": str(row.get("security_term") or ""),
+                "auction_date": auction_date.date().isoformat(),
+                "offering_amount_usd": _optional_float(row.get("offering_amt")),
+                "total_accepted_usd": total_accepted,
+                "bid_to_cover_ratio": _optional_float(row.get("bid_to_cover_ratio")),
+                "dealer_accepted_share": dealer_accepted / total_accepted if total_accepted and dealer_accepted is not None else None,
+                "indirect_accepted_share": indirect_accepted / total_accepted if total_accepted and indirect_accepted is not None else None,
+                "high_yield_pct": _optional_float(row.get("high_yield")),
+            }
+        )
+    rows.sort(key=lambda row: str(row["auction_date"]), reverse=True)
+    return rows, future_rejected
+
+
+def _fetch_treasury_auction_context(*, timeout_seconds: float, now_utc: Optional[datetime] = None) -> Dict[str, Any]:
+    now_utc = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
     query = urlencode(
         {
             "sort": "-auction_date",
-            "page[size]": 25,
-            "filter": f"auction_date:gte:{(now_utc - timedelta(days=45)).date().isoformat()}",
+            "page[size]": 64,
+            "filter": (
+                f"auction_date:gte:{(now_utc - timedelta(days=45)).date().isoformat()},"
+                f"auction_date:lte:{now_utc.date().isoformat()}"
+            ),
         }
     )
     url = f"{TREASURY_AUCTIONS_URL}?{query}"
@@ -993,12 +1037,12 @@ def _fetch_treasury_auction_context(*, timeout_seconds: float) -> Dict[str, Any]
             "provenance": dict(fetch_result.get("provenance") or {}),
         }
     payload = fetch_result.get("json")
-    rows = payload.get("data") if isinstance(payload, dict) else []
-    if not isinstance(rows, list):
+    rows, future_rejected = _parse_treasury_auction_rows(payload, as_of=now_utc)
+    if not rows:
         return {
             "ok": False,
             "rows": [],
-            "error": "unexpected_response_shape",
+            "error": "no_point_in_time_auction_results",
             "url": url,
             "source_confidence_norm": float(fetch_result.get("source_confidence_norm") or _source_contract("treasury_auctions")["source_confidence_norm"]),
             "schema_confidence_norm": float(fetch_result.get("schema_confidence_norm") or _source_contract("treasury_auctions")["schema_confidence_norm"]),
@@ -1008,35 +1052,38 @@ def _fetch_treasury_auction_context(*, timeout_seconds: float) -> Dict[str, Any]
 
     auction_tail_bps = 0.0
     auction_window = 0.0
-    latest_rows: List[Dict[str, Any]] = []
-    for row in rows[:12]:
-        if not isinstance(row, dict):
-            continue
+    latest_rows = rows[:24]
+    for row in latest_rows:
         auction_date = _parse_ts(row.get("auction_date"))
         if auction_date is not None:
             days_since = max((now_utc - auction_date).total_seconds() / 86400.0, 0.0)
             auction_window = max(auction_window, 1.0 - _clamp01(days_since / 7.0))
-        tail = max(
-            abs(_safe_float(row.get("tail"), 0.0)),
-            abs(_safe_float(row.get("auction_tail"), 0.0)),
-            abs(_safe_float(row.get("tail_bps"), 0.0)),
-        )
-        auction_tail_bps = max(auction_tail_bps, tail)
-        latest_rows.append(
-            {
-                "security_type": row.get("security_type"),
-                "security_term": row.get("security_term"),
-                "auction_date": row.get("auction_date"),
-                "tail_bps": tail,
-                "high_yield": _safe_float(row.get("high_yield"), 0.0),
-                "bid_to_cover": _safe_float(row.get("bid_to_cover_ratio"), 0.0),
-            }
-        )
+    recent_cutoff = (now_utc - timedelta(days=14)).date().isoformat()
+    recent_rows = [row for row in rows if str(row.get("auction_date") or "") >= recent_cutoff]
+    bid_to_cover = [value for row in recent_rows if (value := _optional_float(row.get("bid_to_cover_ratio"))) is not None]
+    dealer_shares = [value for row in recent_rows if (value := _optional_float(row.get("dealer_accepted_share"))) is not None]
+    indirect_shares = [value for row in recent_rows if (value := _optional_float(row.get("indirect_accepted_share"))) is not None]
+    offering_total = sum(
+        value for row in recent_rows
+        if (value := _optional_float(row.get("offering_amount_usd"))) is not None
+    )
+    mean_bid_to_cover = sum(bid_to_cover) / len(bid_to_cover) if bid_to_cover else None
+    mean_dealer_share = sum(dealer_shares) / len(dealer_shares) if dealer_shares else None
+    mean_indirect_share = sum(indirect_shares) / len(indirect_shares) if indirect_shares else None
     return {
         "ok": True,
         "rows": latest_rows,
         "auction_tail_bps": float(auction_tail_bps),
         "auction_window_norm": float(_clamp01(auction_window)),
+        "auction_demand_norm": _clamp01((mean_bid_to_cover - 1.5) / 2.0) if mean_bid_to_cover is not None else None,
+        "auction_dealer_absorption_norm": _clamp01(mean_dealer_share) if mean_dealer_share is not None else None,
+        "auction_indirect_demand_norm": _clamp01(mean_indirect_share) if mean_indirect_share is not None else None,
+        "auction_supply_pressure_norm": _clamp01(offering_total / 1_500_000_000_000.0),
+        "mean_bid_to_cover_ratio_14d": mean_bid_to_cover,
+        "offering_amount_14d_usd": offering_total,
+        "observation_time": f"{latest_rows[0]['auction_date']}T00:00:00+00:00",
+        "future_rows_rejected": True,
+        "future_rows_rejected_count": future_rejected,
         "url": url,
         "source_confidence_norm": float(fetch_result.get("source_confidence_norm") or _source_contract("treasury_auctions")["source_confidence_norm"]),
         "schema_confidence_norm": float(fetch_result.get("schema_confidence_norm") or _source_contract("treasury_auctions")["schema_confidence_norm"]),
@@ -1155,7 +1202,7 @@ def _aggregate_global_features(*, local_micro: Mapping[str, Mapping[str, float]]
         _clamp01(float(treasury.get("auction_window_norm", 0.0) or 0.0)),
         _clamp01(float(treasury.get("auction_tail_bps", 0.0) or 0.0) / 6.0),
     )
-    return {
+    out = {
         "market_micro_premarket_pressure_norm": _clamp01(premarket),
         "market_micro_opening_auction_norm": _clamp01(opening),
         "market_micro_opening_auction_imbalance_norm": _signed_centered_norm(opening_imbalance, 1.0),
@@ -1196,6 +1243,14 @@ def _aggregate_global_features(*, local_micro: Mapping[str, Mapping[str, float]]
         "etf_fund_family_flow_norm": _signed_centered_norm(etf_family_flow, 1.0),
         "etf_fund_family_creation_pressure_norm": _clamp01(etf_family_creation),
     }
+    treasury_features = {
+        "treasury_auction_demand_norm": _optional_float(treasury.get("auction_demand_norm")),
+        "treasury_auction_dealer_absorption_norm": _optional_float(treasury.get("auction_dealer_absorption_norm")),
+        "treasury_auction_indirect_demand_norm": _optional_float(treasury.get("auction_indirect_demand_norm")),
+        "treasury_auction_supply_pressure_norm": _optional_float(treasury.get("auction_supply_pressure_norm")),
+    }
+    out.update({key: _clamp01(value) for key, value in treasury_features.items() if value is not None})
+    return out
 
 
 def _apply_trade_halt_overlay(

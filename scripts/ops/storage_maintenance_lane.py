@@ -18,6 +18,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.runtime_maintenance import (
+    MAINTENANCE_HOLD_TOKEN_ENV,
+    engage_maintenance_hold,
+    maintenance_hold_snapshot,
+    release_maintenance_hold,
+)
 from core.runtime_python import resolve_runtime_python
 from core.storage_mounts import resolve_external_storage
 
@@ -342,6 +348,7 @@ def _priority_retention_focus(project_root: Path, base_env: dict[str, str]) -> d
             env_overrides.update(
                 {
                     "SQL_LINK_SERVICE_SHARD_CRYPTO_SHADOW_ATTRIBUTION_MAX_FILES": "4",
+                    "SQL_LINK_SERVICE_SHARD_CRYPTO_SHADOW_ATTRIBUTION_HOT_RETENTION_HOT_HOURS": "6",
                     "SQL_LINK_SERVICE_SHARD_CRYPTO_SHADOW_ATTRIBUTION_HOT_RETENTION_BATCH_SIZE": "260000",
                     "SQL_LINK_SERVICE_SHARD_CRYPTO_SHADOW_ATTRIBUTION_HOT_RETENTION_MAX_ROWS": "1800000",
                     "SQL_LINK_SERVICE_SHARD_CRYPTO_SHADOW_ATTRIBUTION_HOT_RETENTION_MIN_INTERVAL_SECONDS": "60",
@@ -394,6 +401,109 @@ def _lock_owner_pid(lock_path: Path) -> int | None:
             except Exception:
                 return None
     return None
+
+
+def _sql_writer_lock_held(lock_path: Path) -> bool:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return False
+
+
+def _coordinate_priority_retention_handoff(
+    project_root: Path,
+    *,
+    enabled: bool,
+    poll_seconds: float,
+    wait_timeout_seconds: float,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "enabled": bool(enabled),
+        "ready": not bool(enabled),
+        "owned_hold": False,
+        "token": "",
+        "waited_seconds": 0.0,
+        "timed_out": False,
+        "reason": "not_required" if not enabled else "pending",
+        "hold_before": maintenance_hold_snapshot(project_root),
+    }
+    if not enabled:
+        return payload
+
+    hold_before = payload["hold_before"]
+    if bool(hold_before.get("active", False)):
+        payload["reason"] = "existing_runtime_maintenance_hold"
+        return payload
+
+    engaged = engage_maintenance_hold(
+        project_root,
+        reason="priority_sql_retention_handoff",
+        owner="storage_maintenance_lane",
+        ttl_seconds=max(int(wait_timeout_seconds) + 1800, 3600),
+    )
+    token = str(engaged.get("token") or "")
+    payload.update({"hold_engaged": engaged, "owned_hold": bool(token), "token": token})
+    if not token:
+        payload["reason"] = "maintenance_hold_token_missing"
+        return payload
+
+    started = time_mod.monotonic()
+    lock_path = project_root / "governance" / "locks" / "jsonl_sql_writer.lock"
+    while _sql_writer_lock_held(lock_path):
+        waited = max(time_mod.monotonic() - started, 0.0)
+        if waited >= max(float(wait_timeout_seconds), 0.0):
+            payload.update(
+                {
+                    "waited_seconds": round(waited, 3),
+                    "timed_out": True,
+                    "reason": "writer_handoff_timeout",
+                }
+            )
+            return payload
+        time_mod.sleep(max(float(poll_seconds), 0.1))
+
+    payload.update(
+        {
+            "ready": True,
+            "waited_seconds": round(max(time_mod.monotonic() - started, 0.0), 3),
+            "reason": "writer_idle_under_maintenance_hold",
+        }
+    )
+    return payload
+
+
+def _release_priority_retention_handoff(project_root: Path, handoff: dict[str, Any]) -> dict[str, Any]:
+    token = str(handoff.get("token") or "")
+    if not bool(handoff.get("owned_hold", False)) or not token:
+        return {"released": False, "reason": "hold_not_owned"}
+    released = release_maintenance_hold(project_root, expected_token=token)
+    return {
+        "released": bool(released.get("released", False)),
+        "reason": str(released.get("release_error") or "released"),
+        "active_after": bool(released.get("active", False)),
+    }
+
+
+def _public_priority_retention_handoff(handoff: dict[str, Any]) -> dict[str, Any]:
+    public = dict(handoff)
+    public["token_present"] = bool(public.pop("token", ""))
+    for key in ("hold_before", "hold_engaged"):
+        hold = public.get(key)
+        if not isinstance(hold, dict):
+            continue
+        sanitized = dict(hold)
+        sanitized.pop("token", None)
+        nested = sanitized.get("payload")
+        if isinstance(nested, dict):
+            nested = dict(nested)
+            nested.pop("token", None)
+            sanitized["payload"] = nested
+        public[key] = sanitized
+    return public
 
 
 def _retry_writer_maintenance(
@@ -506,6 +616,12 @@ def build_storage_maintenance_payload(
     stale_reaper: dict[str, Any] | None = None
     retention: dict[str, Any] | None = None
     content_store_gc: dict[str, Any] | None = None
+    priority_retention_handoff: dict[str, Any] = {
+        "enabled": False,
+        "ready": True,
+        "owned_hold": False,
+        "reason": "not_required",
+    }
     resource_guard_payload = resource_guard.get("payload") if isinstance(resource_guard.get("payload"), dict) else {}
     resource_support_frozen = _support_maintenance_frozen(resource_guard_payload)
     resource_ok = bool(resource_guard_payload.get("ok", resource_guard_payload.get("resource_guard_ok", False)))
@@ -513,23 +629,54 @@ def build_storage_maintenance_payload(
         heavy_steps_skipped = True
     else:
         env_overrides["RETENTION_STALE_PCORE_GUARD_PASSED"] = "1" if resource_ok and not resource_support_frozen else "0"
-        shard_manager = _run_json_command(
-            [str(PY), str(project_root / "scripts" / "ops" / "sql_link_shard_manager.py"), "--once", "--json"],
-            cwd=project_root,
-            payload_path=project_root / "governance" / "health" / "sql_link_service_latest.json",
-            env_overrides=env_overrides,
+        handoff_poll_seconds = max(float(os.getenv("SQL_LINK_SERVICE_MAINTENANCE_LOCK_POLL_SECONDS", "5") or 5.0), 0.1)
+        handoff_wait_seconds = max(float(os.getenv("SQL_LINK_SERVICE_MAINTENANCE_LOCK_WAIT_SECONDS", "900") or 900.0), 0.0)
+        priority_retention_handoff = _coordinate_priority_retention_handoff(
+            project_root,
+            enabled=bool(maintenance_focus.get("severe_focus", False)),
+            poll_seconds=handoff_poll_seconds,
+            wait_timeout_seconds=handoff_wait_seconds,
         )
-        writer_busy = _step_status(shard_manager, nonfatal_reasons={"writer_lock_busy"}) == "busy"
-        if writer_busy and bool(maintenance_focus.get("severe_focus", False)):
-            shard_follow_through = _retry_writer_maintenance(
-                project_root=project_root,
-                health_root=project_root / "governance" / "health",
-                env_overrides=env_overrides,
-                poll_seconds=max(float(os.getenv("SQL_LINK_SERVICE_MAINTENANCE_LOCK_POLL_SECONDS", "5") or 5.0), 0.1),
-                wait_timeout_seconds=max(float(os.getenv("SQL_LINK_SERVICE_MAINTENANCE_LOCK_WAIT_SECONDS", "900") or 900.0), 0.0),
+        manager_env = dict(env_overrides)
+        if bool(priority_retention_handoff.get("ready", False)) and str(priority_retention_handoff.get("token") or ""):
+            manager_env[MAINTENANCE_HOLD_TOKEN_ENV] = str(priority_retention_handoff["token"])
+        try:
+            if bool(priority_retention_handoff.get("enabled", False)) and not bool(priority_retention_handoff.get("ready", False)):
+                shard_manager = {
+                    "cmd": [str(PY), str(project_root / "scripts" / "ops" / "sql_link_shard_manager.py"), "--once", "--json"],
+                    "rc": 75,
+                    "duration_ms": round(float(priority_retention_handoff.get("waited_seconds", 0.0) or 0.0) * 1000.0, 3),
+                    "payload": {
+                        "ok": False,
+                        "overall_status": "blocked",
+                        "reason": str(priority_retention_handoff.get("reason") or "writer_handoff_not_ready"),
+                    },
+                    "stdout_tail": "",
+                    "stderr_tail": "",
+                }
+            else:
+                shard_manager = _run_json_command(
+                    [str(PY), str(project_root / "scripts" / "ops" / "sql_link_shard_manager.py"), "--once", "--json"],
+                    cwd=project_root,
+                    payload_path=project_root / "governance" / "health" / "sql_link_service_latest.json",
+                    env_overrides=manager_env,
+                )
+            writer_busy = _step_status(shard_manager, nonfatal_reasons={"writer_lock_busy"}) == "busy"
+            if writer_busy and bool(maintenance_focus.get("severe_focus", False)):
+                shard_follow_through = _retry_writer_maintenance(
+                    project_root=project_root,
+                    health_root=project_root / "governance" / "health",
+                    env_overrides=manager_env,
+                    poll_seconds=handoff_poll_seconds,
+                    wait_timeout_seconds=handoff_wait_seconds,
+                )
+                if isinstance(shard_follow_through.get("last_result"), dict) and shard_follow_through.get("last_result"):
+                    shard_manager = shard_follow_through["last_result"]
+        finally:
+            priority_retention_handoff["hold_release"] = _release_priority_retention_handoff(
+                project_root,
+                priority_retention_handoff,
             )
-            if isinstance(shard_follow_through.get("last_result"), dict) and shard_follow_through.get("last_result"):
-                shard_manager = shard_follow_through["last_result"]
         sqlite_cmd = [str(PY), str(project_root / "scripts" / "sqlite_performance_maintenance.py")]
         if vacuum:
             sqlite_cmd.append("--vacuum")
@@ -722,6 +869,7 @@ def build_storage_maintenance_payload(
             "data_retention": str(project_root / "governance" / "health" / "data_retention_latest.json"),
         },
         "maintenance_focus": maintenance_focus,
+        "priority_retention_handoff": _public_priority_retention_handoff(priority_retention_handoff),
         "shard_follow_through": shard_follow_through,
         "resource_guard": resource_guard.get("payload") if isinstance(resource_guard.get("payload"), dict) else {},
         "disk_before": disk_before,
@@ -732,6 +880,14 @@ def build_storage_maintenance_payload(
             "priority_retention_focus_enabled": bool(maintenance_focus.get("enabled", False)),
             "priority_retention_focus_shards": list(maintenance_focus.get("focus_shards") or []),
             "priority_retention_targeted_debt_gb": _safe_float(maintenance_focus.get("targeted_retention_debt_gb"), 0.0),
+            "priority_retention_handoff_ready": bool(priority_retention_handoff.get("ready", False)),
+            "priority_retention_handoff_waited_seconds": round(
+                float(priority_retention_handoff.get("waited_seconds", 0.0) or 0.0),
+                3,
+            ),
+            "priority_retention_hold_released": bool(
+                ((priority_retention_handoff.get("hold_release") or {}).get("released", False))
+            ),
             "maintenance_reloader_changed": bool((strategy_reloader.get("payload") or {}).get("changed", False)),
             "maintenance_reloader_deferred": bool((strategy_reloader.get("payload") or {}).get("deferred", False)),
             "storage_mode": str(failback_payload.get("mode") or ""),

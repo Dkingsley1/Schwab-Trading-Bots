@@ -1001,6 +1001,13 @@ def build_payload(
     )
     maintenance_ready = bool(not skip_maintenance and maintenance_focus.get("enabled", False))
     actionable = bool(live_drainer_ready or drain_ready or maintenance_ready)
+    maintenance_owns_writer_handoff = bool(
+        maintenance_ready
+        and maintenance_force
+        and skip_drain
+        and not live_drainer_ready
+        and not drain_ready
+    )
     writer_before = writer_state_snapshot(project_root)
     stale_writer_remediation = {
         "attempted": False,
@@ -1037,7 +1044,12 @@ def build_payload(
         "final_state": writer_after_remediation,
     }
     writer_after = writer_after_remediation
-    if apply and bool(writer_after_remediation.get("active", False)) and not drain_ready:
+    if (
+        apply
+        and bool(writer_after_remediation.get("active", False))
+        and not drain_ready
+        and not maintenance_owns_writer_handoff
+    ):
         wait_result = _wait_for_writer_idle(
             project_root,
             poll_seconds=float(poll_seconds),
@@ -1196,7 +1208,10 @@ def build_payload(
             drain_payload = drain.get("payload") if isinstance(drain.get("payload"), dict) else {}
             drain_applied = int(drain.get("rc", 1)) == 0
 
-        maintenance_can_run = not bool(writer_after.get("active", False))
+        maintenance_can_run = bool(
+            not writer_after.get("active", False)
+            or maintenance_owns_writer_handoff
+        )
         if live_drainer_ready:
             maintenance_can_run = maintenance_can_run and drain_applied
             if not maintenance_can_run and maintenance_ready:
@@ -1390,6 +1405,7 @@ def build_payload(
         "drain_ready": drain_ready,
         "live_drainer_ready": live_drainer_ready,
         "maintenance_ready": maintenance_ready,
+        "maintenance_owns_writer_handoff": maintenance_owns_writer_handoff,
         "writer_state_before": writer_before,
         "writer_state_after_remediation": writer_after_remediation,
         "stale_writer_remediation": stale_writer_remediation,
@@ -1466,6 +1482,7 @@ def build_payload(
             "active_drainer": _drainer_active_name(drainer_preview),
             "drain_follow_through_status": drain_follow_through_status,
             "maintenance_applied": bool(maintenance_applied),
+            "maintenance_owns_writer_handoff": maintenance_owns_writer_handoff,
             "catch_up_followup_needed": bool(catch_up_followup_needed),
             "catch_up_waves_run": len(catch_up_wave_records),
             "priority_retention_focus_shards": list(maintenance_focus.get("focus_shards") or []),

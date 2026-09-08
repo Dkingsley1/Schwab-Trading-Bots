@@ -11,12 +11,15 @@ from scripts.ops import runtime_artifact_refresh
 from scripts.ops import runtime_gate_dashboard
 from scripts.ops import source_mutation_guard
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _policy() -> dict:
-    return json.loads((PROJECT_ROOT / "config" / "bot_organization_v1.json").read_text(encoding="utf-8"))
+    return json.loads(
+        (PROJECT_ROOT / "config" / "bot_organization_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
 
 def _row(bot_id: str, **overrides: object) -> dict:
@@ -50,10 +53,28 @@ def test_policy_is_shadow_only_and_fail_closed() -> None:
     policy = _policy()
 
     assert bot_organization.validate_policy(policy) == []
+    assert policy["bot_setup_contract"]["contract_id"] == "bot_setup_contract_v1"
 
     unsafe = copy.deepcopy(policy)
     unsafe["safety_contract"]["live_execution_authority"] = True
-    assert "organization_safety_live_execution_authority_must_be_false" in bot_organization.validate_policy(unsafe)
+    assert (
+        "organization_safety_live_execution_authority_must_be_false"
+        in bot_organization.validate_policy(unsafe)
+    )
+
+    unsafe_setup = copy.deepcopy(policy)
+    unsafe_setup["bot_setup_contract"]["authority"]["can_submit_live_order"] = True
+    assert (
+        "organization_bot_setup_authority_can_submit_live_order_must_be_false"
+        in bot_organization.validate_policy(unsafe_setup)
+    )
+
+    unsafe_tripwire = copy.deepcopy(policy)
+    unsafe_tripwire["tripwire_contract"]["authority"]["can_submit_live_order"] = True
+    assert (
+        "organization_tripwire_authority_can_submit_live_order_must_be_false"
+        in bot_organization.validate_policy(unsafe_tripwire)
+    )
 
 
 def test_registry_receives_one_provenance_backed_assignment_per_bot() -> None:
@@ -81,7 +102,28 @@ def test_registry_receives_one_provenance_backed_assignment_per_bot() -> None:
     assert result["regime_quality_grade"] == "A+"
     assert result["grade"] == "A+"
     assert all(row["regime_profile_id"] for row in result["assignments"])
-    assert all(row["authority"]["organization_layer_execution_authority"] is False for row in result["assignments"])
+    assert all(
+        row["authority"]["organization_layer_execution_authority"] is False
+        for row in result["assignments"]
+    )
+    assert result["bot_setup_summary"]["hardening"]["overall_status"] == "ready"
+    assert result["bot_setup_summary"]["setup_coverage_ratio"] == 1.0
+    assert result["bot_setup_summary"]["tier_counts"]["sub"] == 2
+    assert result["tripwire_summary"]["hardening"]["overall_status"] == "ready"
+    assert result["tripwire_summary"]["tripwire_count"] >= 10
+    assert result["blocking_tripwire_count"] == 0
+    assert result["tripwire_contract"]["authority"]["metadata_only"] is True
+    contract = result["operating_contract"]
+    assert contract["complete"] is True
+    assert contract["domain"] == "bot_organization"
+    assert "automatic_registry_mutation" in contract["blocked_authority"]
+    assert contract["hardening"]["metadata_authority_only"] is True
+    assert all(row["setup_tier"] == "sub" for row in result["assignments"])
+    assert all(row["setup_role_group"] == "signal" for row in result["assignments"])
+    assert all(
+        row["setup_lifecycle_state"] == "paper_live_data"
+        for row in result["assignments"]
+    )
     assert result["regime_metadata_access_ratio"] == 1.0
     assert result["regime_metadata_access_grade"] == "A+"
     assert all(
@@ -98,6 +140,26 @@ def test_duplicate_bot_identity_blocks_catalog() -> None:
     assert result["ok"] is False
     assert result["duplicate_bot_ids"] == ["duplicate"]
     assert "duplicate_registry_bot_ids" in result["blockers"]
+    assert "tripwire:duplicate_bot_identity" in result["blockers"]
+    assert result["blocking_tripwire_count"] >= 1
+    assert any(
+        row["tripwire_id"] == "duplicate_bot_identity"
+        for row in result["blocking_tripwires"]
+    )
+
+
+def test_setup_contract_blocks_unknown_lifecycle_state() -> None:
+    registry = {"sub_bots": [_row("bad_lifecycle", lifecycle_state="needs_decision")]}
+
+    result = bot_organization.organize_registry(registry, _policy())
+
+    assert result["ok"] is False
+    assert "bot_setup_contract_hardening_failed" in result["blockers"]
+    assert (
+        "assignment_lifecycle_states_are_known"
+        in result["setup_hardening_failed_checks"]
+    )
+    assert result["bot_setup_summary"]["hardening"]["overall_status"] == "blocked"
 
 
 def test_module_spec_parser_never_imports_or_executes_module(tmp_path: Path) -> None:
@@ -125,7 +187,10 @@ def test_control_build_is_path_isolated_and_does_not_write(tmp_path: Path) -> No
     catalog.parent.mkdir(parents=True)
     config.write_text(json.dumps(_policy()), encoding="utf-8")
     registry.write_text(json.dumps({"sub_bots": [_row("alpha")]}), encoding="utf-8")
-    catalog.write_text(json.dumps({"bots": [{"bot_id": "alpha", "category": "general_signal"}]}), encoding="utf-8")
+    catalog.write_text(
+        json.dumps({"bots": [{"bot_id": "alpha", "category": "general_signal"}]}),
+        encoding="utf-8",
+    )
 
     health, hierarchy = bot_organization_control.build_payload(
         tmp_path,
@@ -137,6 +202,9 @@ def test_control_build_is_path_isolated_and_does_not_write(tmp_path: Path) -> No
 
     assert health["ok"] is True
     assert health["hierarchy_catalog"]["path"] == str(hierarchy_out)
+    assert health["hierarchy_contract"]["bot_setup_profile_recorded"] is True
+    assert health["hierarchy_contract"]["bot_setup_hardening_ready"] is True
+    assert hierarchy["bot_setup_summary"]["hardening"]["overall_status"] == "ready"
     assert hierarchy["assignment_count"] == 1
     assert not hierarchy_out.exists()
 
@@ -148,7 +216,19 @@ def test_repository_registry_is_fully_organized() -> None:
     assert health["structural_grade"] == "A+"
     assert health["organization_coverage_ratio"] == 1.0
     assert health["unique_assignment_ratio"] == 1.0
-    assert health["high_confidence_ratio"] >= _policy()["hierarchy"]["minimum_high_confidence_ratio"]
+    assert health["setup_coverage_ratio"] == 1.0
+    assert health["setup_hardening_status"] == "ready"
+    assert health["bot_setup_summary"]["hardening"]["overall_status"] == "ready"
+    assert health["tripwire_summary"]["hardening"]["overall_status"] == "ready"
+    assert health["blocking_tripwire_count"] == 0
+    assert health["hierarchy_contract"]["tripwire_contract_recorded"] is True
+    assert health["hierarchy_contract"]["tripwire_hardening_ready"] is True
+    assert health["bot_setup_summary"]["active_tier_counts"]["master"] >= 1
+    assert health["bot_setup_summary"]["active_tier_counts"]["grand_master"] >= 1
+    assert (
+        health["high_confidence_ratio"]
+        >= _policy()["hierarchy"]["minimum_high_confidence_ratio"]
+    )
     assert health["regime_model_contract"]["axis_ids"] == [
         "market_direction",
         "volatility_state",
@@ -177,6 +257,9 @@ def test_repository_registry_is_fully_organized() -> None:
         "regime_metadata_access_v1"
     )
     assert hierarchy["authority_contract"]["metadata_only"] is True
+    assert hierarchy["bot_setup_contract"]["authority"]["metadata_only"] is True
+    assert hierarchy["tripwire_contract"]["authority"]["metadata_only"] is True
+    assert hierarchy["tripwire_summary"]["hardening"]["overall_status"] == "ready"
     target = next(
         row
         for row in hierarchy["assignments"]
@@ -191,13 +274,19 @@ def test_repository_registry_is_fully_organized() -> None:
 
 
 def test_repository_wiring_keeps_organization_evidence_required_and_protected() -> None:
-    refresh_steps = {row["name"]: row for row in runtime_artifact_refresh._step_specs(PROJECT_ROOT)}
+    refresh_steps = {
+        row["name"]: row for row in runtime_artifact_refresh._step_specs(PROJECT_ROOT)
+    }
     freshness = artifact_freshness_slo._artifact_contract(PROJECT_ROOT)
     dashboard = runtime_gate_dashboard._artifact_config(PROJECT_ROOT)
     ownership = json.loads(
-        (PROJECT_ROOT / "config" / "control_surface_ownership_v1.json").read_text(encoding="utf-8")
+        (PROJECT_ROOT / "config" / "control_surface_ownership_v1.json").read_text(
+            encoding="utf-8"
+        )
     )
-    owned_resources = {str(row.get("resource_path") or "") for row in ownership.get("controls", [])}
+    owned_resources = {
+        str(row.get("resource_path") or "") for row in ownership.get("controls", [])
+    }
 
     assert refresh_steps["bot_organization_control"]["payload_path"] == (
         PROJECT_ROOT / "governance" / "health" / "bot_organization_latest.json"
@@ -205,15 +294,24 @@ def test_repository_wiring_keeps_organization_evidence_required_and_protected() 
     assert freshness["bot_organization_control"]["required"] is True
     assert dashboard["bot_organization_control"]["required"] is True
     assert "core/bot_organization.py" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
-    assert "core/hierarchical_ensemble.py" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
+    assert (
+        "core/hierarchical_ensemble.py" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
+    )
     assert "core/regime_taxonomy.py" in source_mutation_guard.DEFAULT_PROTECTED_PATHS
     assert "governance/health/bot_organization_latest.json" in owned_resources
     assert "governance/bot_organization/bot_hierarchy_latest.json" in owned_resources
 
-    ci_text = (PROJECT_ROOT / ".github" / "workflows" / "ci_guardrails.yml").read_text(encoding="utf-8")
-    opsctl_text = (PROJECT_ROOT / "scripts" / "ops" / "opsctl.sh").read_text(encoding="utf-8")
+    ci_text = (PROJECT_ROOT / ".github" / "workflows" / "ci_guardrails.yml").read_text(
+        encoding="utf-8"
+    )
+    opsctl_text = (PROJECT_ROOT / "scripts" / "ops" / "opsctl.sh").read_text(
+        encoding="utf-8"
+    )
     assert "bot_organization_control.py" in ci_text
-    assert "bot-organization|bot-hierarchy|sleeve-subsections|hierarchical-bots" in opsctl_text
+    assert (
+        "bot-organization|bot-hierarchy|sleeve-subsections|hierarchical-bots"
+        in opsctl_text
+    )
 
 
 def test_dashboard_summary_preserves_multi_axis_regime_quality() -> None:
@@ -240,11 +338,30 @@ def test_dashboard_summary_preserves_multi_axis_regime_quality() -> None:
         "regime_metadata_access_ratio": 1.0,
         "regime_metadata_context_required_count": 2,
         "regime_metadata_access_error_count": 0,
+        "bot_setup_summary": {
+            "contract_id": "bot_setup_contract_v1",
+            "setup_coverage_ratio": 1.0,
+            "tier_counts": {"sub": 8, "master": 1, "grand_master": 1},
+            "role_group_counts": {"signal": 7, "risk": 2, "coordination": 1},
+            "lifecycle_state_counts": {"paper_live_data": 10},
+            "missing_setup_metadata_count": 0,
+            "hardening": {"overall_status": "ready"},
+        },
+        "tripwire_summary": {
+            "overall_status": "active_advisory",
+            "active_tripwire_count": 2,
+            "blocking_tripwire_count": 0,
+            "severity_counts": {"advisory": 2},
+            "category_counts": {"classification_quality": 2},
+            "hardening": {"overall_status": "ready"},
+        },
         "review_queue_count": 3,
         "hard_limit_shadow_cells": [],
     }
 
-    summary = runtime_gate_dashboard._artifact_summary("bot_organization_control", payload)
+    summary = runtime_gate_dashboard._artifact_summary(
+        "bot_organization_control", payload
+    )
 
     assert summary["regime_quality_grade"] == "C"
     assert summary["regime_axis_coverage_ratio"] == 0.75
@@ -260,3 +377,19 @@ def test_dashboard_summary_preserves_multi_axis_regime_quality() -> None:
     assert summary["regime_metadata_access_ready_count"] == 10
     assert summary["regime_metadata_access_ratio"] == 1.0
     assert summary["regime_metadata_access_error_count"] == 0
+    assert summary["bot_setup_contract_id"] == "bot_setup_contract_v1"
+    assert summary["setup_hardening_status"] == "ready"
+    assert summary["setup_coverage_ratio"] == 1.0
+    assert summary["setup_tier_counts"] == {"sub": 8, "master": 1, "grand_master": 1}
+    assert summary["setup_role_group_counts"] == {
+        "signal": 7,
+        "risk": 2,
+        "coordination": 1,
+    }
+    assert summary["setup_lifecycle_state_counts"] == {"paper_live_data": 10}
+    assert summary["missing_setup_metadata_count"] == 0
+    assert summary["tripwire_status"] == "active_advisory"
+    assert summary["tripwire_hardening_status"] == "ready"
+    assert summary["active_tripwire_count"] == 2
+    assert summary["blocking_tripwire_count"] == 0
+    assert summary["tripwire_severity_counts"] == {"advisory": 2}

@@ -25,9 +25,21 @@ final class StorageEjectGuard {
     let targetVolumeUUIDHint: String
     let targetDiskIdentifierHint: String
     let disappearanceGraceSeconds: TimeInterval
+    let disappearanceDuplicateCollapseSeconds: TimeInterval
+    let flapWindowSeconds: TimeInterval
+    let flapThreshold: Int
+    let flapCooldownSeconds: TimeInterval
+    let mountAttemptBaseBackoffSeconds: TimeInterval
+    let mountAttemptMaxBackoffSeconds: TimeInterval
+    let mountStabilizationMinIntervalSeconds: TimeInterval
+    let spotlightDisableTimeoutSeconds: TimeInterval
+    let denyUnsafeEject: Bool
+    let disableSpotlightOnMount: Bool
+    let maxEventLedgerBytes: UInt64
     let logPath: URL
     let overridePath: URL
     let statePath: URL
+    let eventLedgerPath: URL
     let serial = DispatchQueue(label: "com.dankingsley.storage_eject_guard")
     var mountRoot: String
     var targetVolumeBSDName: String?
@@ -35,6 +47,14 @@ final class StorageEjectGuard {
     var lastEjectHandledAt = Date.distantPast
     var lastRestoreHandledAt = Date.distantPast
     var lastMountAttemptAt = Date.distantPast
+    var lastMountStabilizedAt = Date.distantPast
+    var lastDisappearRecordedAt = Date.distantPast
+    var recentDisappearances: [Date] = []
+    var externalFailbackCooldownUntil: Date?
+    var mountFailureCount = 0
+    var lastMountFailureReason = ""
+    var lastSpotlightDisableRC: Int32?
+    var lastMetadataNeverIndexWriteOK: Bool?
     var mountPollTimer: DispatchSourceTimer?
     var pendingDisappearWorkItem: DispatchWorkItem?
 
@@ -48,6 +68,17 @@ final class StorageEjectGuard {
         self.targetVolumeUUIDHint = ProcessInfo.processInfo.environment["BOT_LOGS_EXTERNAL_VOLUME_UUID"] ?? ""
         self.targetDiskIdentifierHint = ProcessInfo.processInfo.environment["BOT_LOGS_EXTERNAL_DISK_IDENTIFIER"] ?? ""
         self.disappearanceGraceSeconds = StorageEjectGuard.envTimeInterval("BOT_LOGS_DISAPPEAR_GRACE_SECONDS", defaultValue: 15.0)
+        self.disappearanceDuplicateCollapseSeconds = StorageEjectGuard.envTimeInterval("BOT_LOGS_DISAPPEAR_DUPLICATE_COLLAPSE_SECONDS", defaultValue: 3.0)
+        self.flapWindowSeconds = StorageEjectGuard.envTimeInterval("BOT_LOGS_FLAP_WINDOW_SECONDS", defaultValue: 600.0)
+        self.flapThreshold = StorageEjectGuard.envInt("BOT_LOGS_FLAP_THRESHOLD", defaultValue: 2)
+        self.flapCooldownSeconds = StorageEjectGuard.envTimeInterval("BOT_LOGS_FLAP_COOLDOWN_SECONDS", defaultValue: 900.0)
+        self.mountAttemptBaseBackoffSeconds = StorageEjectGuard.envTimeInterval("BOT_LOGS_MOUNT_ATTEMPT_BASE_BACKOFF_SECONDS", defaultValue: 15.0)
+        self.mountAttemptMaxBackoffSeconds = StorageEjectGuard.envTimeInterval("BOT_LOGS_MOUNT_ATTEMPT_MAX_BACKOFF_SECONDS", defaultValue: 300.0)
+        self.mountStabilizationMinIntervalSeconds = StorageEjectGuard.envTimeInterval("BOT_LOGS_MOUNT_STABILIZATION_MIN_INTERVAL_SECONDS", defaultValue: 300.0)
+        self.spotlightDisableTimeoutSeconds = StorageEjectGuard.envTimeInterval("BOT_LOGS_SPOTLIGHT_DISABLE_TIMEOUT_SECONDS", defaultValue: 8.0)
+        self.denyUnsafeEject = StorageEjectGuard.envBool("BOT_LOGS_DENY_UNSAFE_EJECT", defaultValue: true)
+        self.disableSpotlightOnMount = StorageEjectGuard.envBool("BOT_LOGS_DISABLE_SPOTLIGHT_ON_MOUNT", defaultValue: true)
+        self.maxEventLedgerBytes = UInt64(max(StorageEjectGuard.envInt("BOT_LOGS_EJECT_EVENT_LEDGER_MAX_BYTES", defaultValue: 5_000_000), 1))
         self.mountRoot = mountRoot
         let home = FileManager.default.homeDirectoryForCurrentUser
         let logDir = home.appendingPathComponent("Library/Logs/schwab_trading_bot", isDirectory: true)
@@ -55,6 +86,7 @@ final class StorageEjectGuard {
         self.logPath = logDir.appendingPathComponent("storage_eject_guard.log")
         self.overridePath = projectRoot.appendingPathComponent("config/.env.storage_override")
         self.statePath = projectRoot.appendingPathComponent("governance/health/storage_eject_guard_latest.json")
+        self.eventLedgerPath = projectRoot.appendingPathComponent("governance/health/storage_eject_guard_events.jsonl")
     }
 
     func run() {
@@ -72,6 +104,7 @@ final class StorageEjectGuard {
         DASessionSetDispatchQueue(session, DispatchQueue.main)
         startMountPollTimer()
         serial.async {
+            self.stabilizeMountedVolume(reason: "startup")
             self.writeTransitionState(
                 status: "ready",
                 event: "monitoring",
@@ -117,6 +150,18 @@ final class StorageEjectGuard {
                 targetWholeBSDName = targetVolumeBSDName
             }
             log("disk appeared mountRoot=\(mountRoot) volumeBSD=\(targetVolumeBSDName ?? "none") wholeBSD=\(targetWholeBSDName ?? "none") mode=\(currentStorageMode())")
+            stabilizeMountedVolume(reason: "disk_appeared")
+
+            if failbackCooldownActive() {
+                writeTransitionState(
+                    status: "ready",
+                    event: "external_available_flap_cooldown",
+                    detail: "external storage is mounted, but recent disappearances are cooling down; active hot routing remains unchanged",
+                    externalAvailable: true,
+                    stackRestartRequired: false
+                )
+                return
+            }
 
             guard shouldRestoreExternalOnAppear() else {
                 writeTransitionState(
@@ -154,14 +199,17 @@ final class StorageEjectGuard {
         serial.async {
             let mode = self.currentStorageMode()
             self.log("disk disappeared mountRoot=\(self.mountRoot) volumeBSD=\(self.targetVolumeBSDName ?? "none") wholeBSD=\(self.targetWholeBSDName ?? "none") disk=\(disappearedBSD) mode=\(mode)")
+            let flapActive = self.recordDisappearance(disk: disappearedBSD, mode: mode)
             self.targetVolumeBSDName = nil
             self.targetWholeBSDName = nil
 
             guard self.shouldRestartLocalOnDisappear(mode: mode) else {
                 self.writeTransitionState(
                     status: "ready",
-                    event: "external_disconnected_standby",
-                    detail: "external storage disconnected while local hot storage was already active; stack restart suppressed",
+                    event: flapActive ? "external_disconnected_standby_flap_cooldown" : "external_disconnected_standby",
+                    detail: flapActive
+                        ? "external storage disconnected while local hot storage was active; flap cooldown is armed and stack restart is suppressed"
+                        : "external storage disconnected while local hot storage was already active; stack restart suppressed",
                     externalAvailable: false,
                     stackRestartRequired: false
                 )
@@ -229,6 +277,12 @@ final class StorageEjectGuard {
                     stackRestartRequired: switchRC != 0,
                     transitionRC: switchRC
                 )
+                if denyUnsafeEject {
+                    log("denying \(action) for disk=\(diskName) because fallback_or_handle_release_failed rc=\(switchRC) released=\(released)")
+                    return unsafeEjectDissenter(
+                        message: "BOT_LOGS eject denied: local failover or handle release did not complete"
+                    )
+                }
             }
             return nil
         }
@@ -236,6 +290,11 @@ final class StorageEjectGuard {
 
     func prepareLocalFallbackForEject() -> Int32 {
         return restartLocalCollectionAfterEject(reason: "approved-eject")
+    }
+
+    func unsafeEjectDissenter(message: String) -> Unmanaged<DADissenter>? {
+        let dissenter = DADissenterCreate(kCFAllocatorDefault, DAReturn(kDAReturnBusy), message as CFString)
+        return Unmanaged.passRetained(dissenter)
     }
 
     @discardableResult
@@ -573,6 +632,156 @@ final class StorageEjectGuard {
         }
     }
 
+    @discardableResult
+    func recordDisappearance(disk: String, mode: String) -> Bool {
+        let now = Date()
+        if now.timeIntervalSince(lastDisappearRecordedAt) < disappearanceDuplicateCollapseSeconds {
+            log("collapsed duplicate disappearance disk=\(disk) mode=\(mode)")
+            pruneRecentDisappearances(now: now)
+            return failbackCooldownActive(now: now)
+        }
+        lastDisappearRecordedAt = now
+        recentDisappearances.append(now)
+        pruneRecentDisappearances(now: now)
+        if recentDisappearances.count >= max(flapThreshold, 1) {
+            externalFailbackCooldownUntil = now.addingTimeInterval(flapCooldownSeconds)
+            log("external flap cooldown armed count=\(recentDisappearances.count) window_seconds=\(flapWindowSeconds) cooldown_seconds=\(flapCooldownSeconds) disk=\(disk) mode=\(mode)")
+        }
+        return failbackCooldownActive(now: now)
+    }
+
+    func pruneRecentDisappearances(now: Date = Date()) {
+        recentDisappearances = recentDisappearances.filter { now.timeIntervalSince($0) <= flapWindowSeconds }
+        if let cooldownUntil = externalFailbackCooldownUntil, cooldownUntil <= now {
+            externalFailbackCooldownUntil = nil
+        }
+    }
+
+    func failbackCooldownActive(now: Date = Date()) -> Bool {
+        pruneRecentDisappearances(now: now)
+        if let cooldownUntil = externalFailbackCooldownUntil, cooldownUntil > now {
+            return true
+        }
+        return recentDisappearances.count >= max(flapThreshold, 1)
+    }
+
+    func currentMountBackoffSeconds() -> TimeInterval {
+        let failureExponent = min(max(mountFailureCount, 0), 6)
+        let multiplier = pow(2.0, Double(failureExponent))
+        return min(mountAttemptMaxBackoffSeconds, max(mountAttemptBaseBackoffSeconds * multiplier, 1.0))
+    }
+
+    func stabilizeMountedVolume(reason: String) {
+        guard externalMountAvailableNow() else { return }
+        let now = Date()
+        let forceReason = reason.contains("auto_mount_success")
+        if !forceReason && now.timeIntervalSince(lastMountStabilizedAt) < mountStabilizationMinIntervalSeconds {
+            return
+        }
+        lastMountStabilizedAt = now
+        let volumeURL = URL(fileURLWithPath: mountRoot, isDirectory: true)
+        var markerOK = false
+        let marker = volumeURL.appendingPathComponent(".metadata_never_index")
+        do {
+            if !FileManager.default.fileExists(atPath: marker.path) {
+                try Data().write(to: marker, options: .atomic)
+            }
+            markerOK = true
+        } catch {
+            markerOK = false
+            log("metadata_never_index write failed reason=\(reason) path=\(marker.path) error=\(error)")
+        }
+        lastMetadataNeverIndexWriteOK = markerOK
+
+        if disableSpotlightOnMount {
+            let rc = run(
+                launchPath: "/usr/bin/mdutil",
+                arguments: ["-i", "off", mountRoot],
+                timeout: spotlightDisableTimeoutSeconds
+            )
+            lastSpotlightDisableRC = rc
+            log("mount-stabilization reason=\(reason) mountRoot=\(mountRoot) metadata_never_index=\(markerOK) mdutil_disable_rc=\(rc)")
+        } else {
+            lastSpotlightDisableRC = nil
+            log("mount-stabilization reason=\(reason) mountRoot=\(mountRoot) metadata_never_index=\(markerOK) mdutil_disable=disabled_by_env")
+        }
+    }
+
+    func flapControlPayload(now: Date = Date()) -> [String: Any] {
+        pruneRecentDisappearances(now: now)
+        let cooldownUntil = externalFailbackCooldownUntil
+        let cooldownSecondsRemaining = cooldownUntil.map { max($0.timeIntervalSince(now), 0.0) } ?? 0.0
+        return [
+            "active": failbackCooldownActive(now: now),
+            "recent_disappear_count": recentDisappearances.count,
+            "window_seconds": flapWindowSeconds,
+            "threshold": max(flapThreshold, 1),
+            "cooldown_seconds": flapCooldownSeconds,
+            "cooldown_until_utc": cooldownUntil.map { StorageEjectGuard.iso8601String(from: $0) } ?? "",
+            "cooldown_seconds_remaining": round(cooldownSecondsRemaining),
+            "duplicate_collapse_seconds": disappearanceDuplicateCollapseSeconds,
+            "policy": "collapse whole-disk plus volume disappear bursts, keep local fallback during flap cooldown, and require stable remount before external failback",
+        ]
+    }
+
+    func mountControlPayload() -> [String: Any] {
+        return [
+            "failure_count": mountFailureCount,
+            "current_backoff_seconds": currentMountBackoffSeconds(),
+            "last_failure_reason": lastMountFailureReason,
+            "last_mount_attempt_utc": lastMountAttemptAt == Date.distantPast ? "" : StorageEjectGuard.iso8601String(from: lastMountAttemptAt),
+            "base_backoff_seconds": mountAttemptBaseBackoffSeconds,
+            "max_backoff_seconds": mountAttemptMaxBackoffSeconds,
+            "policy": "remount attempts use bounded exponential backoff and do not run while local override suppresses external hot routing",
+        ]
+    }
+
+    func volumeIdentityPayload() -> [String: Any] {
+        return [
+            "configured_mount_root": configuredMountRoot,
+            "active_mount_root": mountRoot,
+            "candidate_mount_roots": candidateMountRoots,
+            "target_volume_name": targetVolumeName,
+            "target_volume_uuid_hint": targetVolumeUUIDHint,
+            "target_disk_identifier_hint": targetDiskIdentifierHint,
+            "target_volume_bsd": targetVolumeBSDName ?? "",
+            "target_whole_bsd": targetWholeBSDName ?? "",
+        ]
+    }
+
+    func mountStabilizationPayload() -> [String: Any] {
+        return [
+            "spotlight_disable_enabled": disableSpotlightOnMount,
+            "last_mdutil_disable_rc": lastSpotlightDisableRC.map { Int($0) } ?? NSNull(),
+            "metadata_never_index_ready": lastMetadataNeverIndexWriteOK ?? NSNull(),
+            "last_stabilized_utc": lastMountStabilizedAt == Date.distantPast ? "" : StorageEjectGuard.iso8601String(from: lastMountStabilizedAt),
+            "min_interval_seconds": mountStabilizationMinIntervalSeconds,
+            "spotlight_disable_timeout_seconds": spotlightDisableTimeoutSeconds,
+            "policy": "mark BOT_LOGS as metadata-never-index and disable Spotlight indexing on mount to reduce avoidable external-disk churn",
+        ]
+    }
+
+    func transitionRecommendedActions(event: String) -> [String] {
+        var actions: [String] = []
+        if failbackCooldownActive() {
+            actions.append("keep external failback suppressed until BOT_LOGS remains mounted beyond the flap cooldown")
+            actions.append("check USB cable, hub, port, enclosure power, and macOS disk sleep settings if disappearances continue")
+        }
+        if event == "eject_preflight_failed" {
+            actions.append("keep the eject denied until local failover and external handle release both complete")
+        }
+        if event == "auto_mount_failed" {
+            actions.append("let bounded remount backoff continue; avoid launching duplicate diskutil mount attempts")
+        }
+        if lastSpotlightDisableRC == -2 {
+            actions.append("Spotlight disable timed out; keep metadata-never-index marker and avoid blocking storage recovery on mdutil")
+        }
+        if currentStorageMode().hasPrefix("local_fallback") && externalMountAvailableNow() {
+            actions.append("after the volume stays stable, run storage-switch-external before pruning local standby")
+        }
+        return actions
+    }
+
     func writeTransitionState(
         status: String,
         event: String,
@@ -581,7 +790,7 @@ final class StorageEjectGuard {
         stackRestartRequired: Bool = false,
         transitionRC: Int32 = 0
     ) {
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "timestamp_utc": StorageEjectGuard.iso8601Now(),
             "schema_version": 1,
             "ok": status == "ready",
@@ -598,13 +807,50 @@ final class StorageEjectGuard {
             "live_execution_authority": "none",
             "policy": "standby disconnects never restart the stack; active-route loss fails over once to local and external failback requires identity plus write certification",
         ]
+        payload["volume_identity"] = volumeIdentityPayload()
+        payload["flap_control"] = flapControlPayload()
+        payload["mount_control"] = mountControlPayload()
+        payload["mount_stabilization"] = mountStabilizationPayload()
+        payload["recommended_actions"] = transitionRecommendedActions(event: event)
         do {
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
             try FileManager.default.createDirectory(at: statePath.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: statePath, options: .atomic)
+            appendTransitionEvent(payload)
         } catch {
             log("failed to write transition state: \(error)")
         }
+    }
+
+    func appendTransitionEvent(_ payload: [String: Any]) {
+        do {
+            try FileManager.default.createDirectory(at: eventLedgerPath.deletingLastPathComponent(), withIntermediateDirectories: true)
+            rotateEventLedgerIfNeeded()
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+            if FileManager.default.fileExists(atPath: eventLedgerPath.path), let handle = try? FileHandle(forWritingTo: eventLedgerPath) {
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+                try handle.write(contentsOf: Data("\n".utf8))
+                try handle.close()
+            } else {
+                var line = data
+                line.append(Data("\n".utf8))
+                try line.write(to: eventLedgerPath, options: .atomic)
+            }
+        } catch {
+            log("failed to append transition event: \(error)")
+        }
+    }
+
+    func rotateEventLedgerIfNeeded() {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: eventLedgerPath.path),
+              let size = attrs[.size] as? NSNumber,
+              size.uint64Value > maxEventLedgerBytes else {
+            return
+        }
+        let rotated = eventLedgerPath.deletingPathExtension().appendingPathExtension("previous.jsonl")
+        try? FileManager.default.removeItem(at: rotated)
+        try? FileManager.default.moveItem(at: eventLedgerPath, to: rotated)
     }
 
     func externalMountAvailableNow() -> Bool {
@@ -644,10 +890,15 @@ final class StorageEjectGuard {
 
     func maybeMountTargetVolume(reason: String) {
         guard externalPreferredByConfig() else { return }
-        guard !FileManager.default.fileExists(atPath: configuredMountRoot) else { return }
+        if externalMountAvailableNow() {
+            stabilizeMountedVolume(reason: "\(reason)_already_available")
+            return
+        }
 
         let now = Date()
-        if now.timeIntervalSince(lastMountAttemptAt) < 8.0 {
+        let backoff = currentMountBackoffSeconds()
+        if now.timeIntervalSince(lastMountAttemptAt) < backoff {
+            log("auto-mount backoff active reason=\(reason) failure_count=\(mountFailureCount) wait_seconds=\(backoff)")
             return
         }
         lastMountAttemptAt = now
@@ -674,6 +925,22 @@ final class StorageEjectGuard {
             timeout: 90
         )
         log("diskutil mount reason=\(reason) identifier=\(target.deviceIdentifier) volumeName=\(target.volumeName) rc=\(mountRC)")
+        if mountRC == 0 {
+            mountFailureCount = 0
+            lastMountFailureReason = ""
+            stabilizeMountedVolume(reason: "auto_mount_success_\(reason)")
+        } else {
+            mountFailureCount += 1
+            lastMountFailureReason = "diskutil_mount_rc_\(mountRC)"
+            writeTransitionState(
+                status: "degraded",
+                event: "auto_mount_failed",
+                detail: "diskutil mount failed; bounded remount backoff is active",
+                externalAvailable: false,
+                stackRestartRequired: false,
+                transitionRC: mountRC
+            )
+        }
     }
 
     func discoverTargetVolume() -> TargetVolume? {
@@ -911,8 +1178,32 @@ final class StorageEjectGuard {
         return parsed
     }
 
+    static func envInt(_ name: String, defaultValue: Int) -> Int {
+        let raw = ProcessInfo.processInfo.environment[name] ?? ""
+        guard let parsed = Int(raw), parsed >= 0 else {
+            return defaultValue
+        }
+        return parsed
+    }
+
+    static func envBool(_ name: String, defaultValue: Bool) -> Bool {
+        let raw = ProcessInfo.processInfo.environment[name] ?? ""
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if ["1", "true", "yes", "on"].contains(normalized) {
+            return true
+        }
+        if ["0", "false", "no", "off"].contains(normalized) {
+            return false
+        }
+        return defaultValue
+    }
+
+    static func iso8601String(from date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
     static func iso8601Now() -> String {
-        ISO8601DateFormatter().string(from: Date())
+        iso8601String(from: Date())
     }
 }
 
