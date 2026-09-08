@@ -19,6 +19,56 @@ def _spec(name: str) -> src.JobSpec:
     return src.JobSpec(name=name, cmd=["python", "-c", "pass"], env={}, breaker_group="test")
 
 
+def test_resource_admission_deferral_is_scoped_and_rate_limited():
+    baseline = src.JobSpec(
+        name="baseline_parallel",
+        cmd=["python", "/repo/run_parallel_shadows.py"],
+        env={},
+        breaker_group="collection",
+    )
+    aggressive = src.JobSpec(
+        name="aggressive_modes",
+        cmd=["python", "/repo/run_parallel_aggressive_modes.py"],
+        env={},
+        breaker_group="collection",
+    )
+    assert src._resource_admission_exit(baseline, 4)
+    assert src._resource_admission_exit(aggressive, 4)
+    assert not src._resource_admission_exit(baseline, 1)
+    assert not src._resource_admission_exit(_spec("baseline_parallel"), 4)
+    assert not src._resource_admission_exit(_spec("paper_executor"), 4)
+    deferred = {}
+    assert not src._resource_admission_retry_due(baseline.name, deferred, now=100)
+    assert not src._resource_admission_retry_due(
+        baseline.name, deferred, now=159, retry_seconds=1
+    )
+    assert src._resource_admission_retry_due(baseline.name, deferred, now=160)
+
+
+def test_resource_deferral_remains_visible_and_does_not_claim_collection_ready():
+    spec = src.JobSpec(
+        name="baseline_parallel",
+        cmd=["python", "/repo/run_parallel_shadows.py"],
+        env={},
+        breaker_group="collection",
+    )
+    restarts = {spec.name: []}
+    payload = src._launcher_health_payload(
+        specs={spec.name: spec},
+        procs={spec.name: DummyProc(101, 4)},
+        proc_started_at={spec.name: 1},
+        restart_history=restarts,
+        quarantined_jobs={},
+        launcher_started_at=1,
+        phase="running",
+    )
+    assert payload["jobs"][0]["resource_admission_deferred"]
+    assert payload["jobs"][0]["restart_count_last_hour"] == 0
+    assert not payload["jobs"][0]["quarantined"]
+    assert payload["overall_status"] == "blocked"
+    assert not payload["launcher_readiness_contract"]["collection_fanout_ready"]
+
+
 def test_launcher_health_ready_when_non_running_jobs_cleanly_exited() -> None:
     specs = {name: _spec(name) for name in ("core", "specialized", "dividend")}
     procs = {

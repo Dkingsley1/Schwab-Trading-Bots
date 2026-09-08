@@ -1,5 +1,6 @@
 import json
 import sys
+import pytest
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,6 +10,20 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import scripts.ops.soak_self_healing_control as src
+
+
+def test_storage_recovery_cli_rejects_reserved_alias_before_resolve(tmp_path, monkeypatch):
+    alias = tmp_path / "reserved"
+    alias.symlink_to("/Volumes/VIDEO")
+    real_resolve = Path.resolve
+
+    def checked_resolve(path, *args, **kwargs):
+        assert not str(path).startswith((str(alias), "/Volumes/VIDEO"))
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", checked_resolve)
+    with pytest.raises(SystemExit, match="2"):
+        src.main(["--project-root", str(alias), "--storage-recovery-only", "--apply"])
 
 
 def _write_daily(project_root: Path, *, ok: bool, failed_checks: list[str]) -> None:
@@ -426,6 +441,26 @@ def test_critical_local_disk_headroom_runs_bounded_application_memory_recovery(t
     assert memory_calls == 2
 
 
+def test_storage_recovery_starts_at_writer_pause_threshold(monkeypatch):
+    monkeypatch.setenv("BOT_LOCAL_STORAGE_PRESSURE_FREE_GB", "64")
+    result = src._local_disk_headroom_recovery_contract(
+        {
+            "local_disk_headroom_contract": {
+                "local_disk_free_gb": 40,
+                "warning_free_gb": 32,
+                "critical_free_gb": 8,
+            }
+        }
+    )
+    assert result["active"] and result["storage_pressure_active"]
+    assert not result["critical"]
+    assert result["warning_free_gb"] == 64
+    clear = src._local_disk_headroom_recovery_contract(
+        {"memory_snapshot": {"local_disk_free_gb": 70}}
+    )
+    assert not clear["active"]
+
+
 def test_cold_archive_configuration_rejects_protected_volume_and_uses_safe_fallback(tmp_path: Path) -> None:
     external = tmp_path / "BOT_LOGS" / "schwab_trading_bot"
     external.mkdir(parents=True)
@@ -451,6 +486,133 @@ def test_cold_archive_configuration_fails_closed_without_safe_fallback() -> None
     assert payload["configured"] is False
     assert payload["reason"] == "non_protected_second_cold_root_not_configured"
     assert "BOT_SECOND_COLD_ROOT" not in env
+
+
+def test_cold_archive_rejects_protected_alias_before_metadata(tmp_path, monkeypatch):
+    alias = tmp_path / "forbidden_alias"
+    alias.symlink_to("/Volumes/VIDEO")
+    original_exists = Path.exists
+
+    def checked_exists(path):
+        assert not str(path).startswith((str(alias), "/Volumes/VIDEO"))
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", checked_exists)
+    monkeypatch.setattr(src, "PROJECT_ROOT", tmp_path)
+    payload = src._configure_cold_archive_env(
+        {"BOT_LOGS_EXTERNAL_PROJECT_ROOT": str(alias / "bot")}, apply=True
+    )
+    assert payload["route_state"] == "deferred_until_external_returns"
+
+
+def _storage_recovery_fixture(tmp_path, monkeypatch, free_gb=40):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        src.shutil, "disk_usage", lambda path: SimpleNamespace(free=free_gb * 1024**3)
+    )
+    monkeypatch.setattr(
+        src, "maintenance_hold_snapshot", lambda root: {"active": False}
+    )
+    monkeypatch.setattr(src.os, "getloadavg", lambda: (0, 0, 0))
+    monkeypatch.setattr(
+        src,
+        "_configure_cold_archive_env",
+        lambda env, apply: {
+            "configured": True,
+            "redundancy_ready": True,
+            "path": str(tmp_path / "cold"),
+        },
+    )
+    calls = []
+
+    def runner(cmd, **kwargs):
+        calls.append(cmd)
+        return _result(
+            cmd,
+            {
+                "ok": True,
+                "overall_status": "ready",
+                "memory_snapshot": {
+                    "memory_pressure_state": "green",
+                    "memory_free_pct": 50,
+                    "swap_used_gb": 2,
+                },
+            },
+        )
+
+    monkeypatch.setattr(src, "_run_command", runner)
+    return calls
+
+
+def test_storage_recovery_only_is_bounded_and_does_not_claim_complete(
+    tmp_path, monkeypatch
+):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    payload = src.build_storage_recovery_payload(tmp_path, apply=True)
+    assert payload["admitted"]
+    assert not payload["ok"]
+    assert not payload["live_execution_authority"]
+    assert not payload["heavy_maintenance_allowed"]
+    assert len(calls) == 4
+    assert "memory_efficiency_control.py" in calls[0][1]
+    assert [cmd[1] for cmd in calls[1:]] == [
+        "governance-telemetry-compactor",
+        "cold-archive-compactor",
+        "deep-cold-storage-layer",
+    ]
+    assert calls[2][calls[2].index("--max-raw-gb") + 1] == "8"
+    assert calls[3][calls[3].index("--destination-reserve-gb") + 1] == "125"
+    assert "--no-include-local-quarantine" in calls[3]
+
+
+def test_storage_recovery_only_noop_and_read_only_do_not_run_repairs(
+    tmp_path, monkeypatch
+):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch, free_gb=80)
+    assert src.build_storage_recovery_payload(tmp_path, apply=True)["ok"]
+    assert not calls
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch, free_gb=40)
+    assert not src.build_storage_recovery_payload(tmp_path, apply=False)["ok"]
+    assert not calls
+
+
+def test_storage_recovery_only_respects_hold_load_and_unknown_memory(
+    tmp_path, monkeypatch
+):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(src, "maintenance_hold_snapshot", lambda root: {"active": True})
+    assert (
+        src.build_storage_recovery_payload(tmp_path, apply=True)["reason"]
+        == "existing_maintenance_hold"
+    )
+    assert not calls
+    monkeypatch.setattr(
+        src, "maintenance_hold_snapshot", lambda root: {"active": False}
+    )
+    monkeypatch.setattr(src.os, "getloadavg", lambda: (1000, 1000, 1000))
+    assert (
+        src.build_storage_recovery_payload(tmp_path, apply=True)["reason"]
+        == "host_load_above_recovery_budget"
+    )
+    assert not calls
+    monkeypatch.setattr(src.os, "getloadavg", lambda: (0, 0, 0))
+    monkeypatch.setattr(
+        src, "_run_command", lambda cmd, **kw: _result(cmd, {"ok": False})
+    )
+    payload = src.build_storage_recovery_payload(tmp_path, apply=True)
+    assert payload["reason"] == "memory_admission_not_ready"
+    assert len(payload["steps"]) == 1
+
+
+def test_storage_recovery_launcher_precedes_heavy_gate():
+    launcher = (
+        PROJECT_ROOT / "scripts/ops/run_soak_self_healing_launchd.sh"
+    ).read_text()
+    assert launcher.index("--storage-recovery-only") < launcher.index(
+        "run_guarded_maintenance.sh"
+    )
+    assert "MAINTENANCE_SLOT_DEFER_OUTSIDE_QUIET_WINDOW=0" not in launcher
 
 
 def test_cold_archive_configuration_defers_locally_when_external_root_is_offline(

@@ -1669,8 +1669,46 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             "Storage",
             _command_entry(
                 project_root,
+                "Inspect pressure-triggered storage recovery",
+                ["./scripts/ops/opsctl.sh soak-self-heal --storage-recovery-only --json"],
+                notes=[
+                    "The existing launchd owner runs bounded pressure relief before its heavy-maintenance gate. Apply keeps the shared self-healing lock, live host admission, cold writer handoff, and destination reserve; it cannot run cache rebuilds, training, candidate acceptance, or trading."
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview bounded cold SQLite compression",
+                [
+                    "./scripts/ops/opsctl.sh cold-archive-compactor --filesystem-select-inactive --filesystem-compressor afsctool --max-files 4 --max-raw-gb 8 --json"
+                ],
+                notes=[
+                    "Requires the optional afsctool executable for apply. Only inactive 100 MiB to 2 GiB SQLite archives qualify; apply also requires --coordinate-writer-handoff. Full hashes, SQLite quick_check, durable receipts, and physical savings precede atomic replacement."
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview material SQLite space reclamation",
+                ["./scripts/ops/opsctl.sh sqlite-reclaim-control --json"],
+                notes=[
+                    "Use --db PATH and --scratch-dir PATH for a specific shard. Apply retains the same source/scratch capacity, memory, maintenance ownership, and single-writer guards."
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect closed compressed history offload",
+                [
+                    "./scripts/ops/opsctl.sh deep-cold-storage-layer --adaptive --include-compressed-history --json"
+                ],
+                notes=[
+                    "Only dated gzip history older than 24 hours joins the existing cold-storage inventory. Verified offload retains original paths as atomic archive links and never authorizes record deletion or retention expiry."
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Inspect storage routes and ingestion definitions",
-                ["./scripts/ops/opsctl.sh ingestion-storage-control --definitions-only --json"],
+                [
+                    "./scripts/ops/opsctl.sh ingestion-storage-control --definitions-only --json"
+                ],
                 notes=[
                     "Prints bounded canonical-path observations, owning lane/lifecycle policies, and separate fetch, qualification, SQL checkpoint, merge, and archive boundaries.",
                     "This mode does not write a health artifact, inspect database contents, or apply route/throttle changes; --out-file is ignored. Exit 2 reports definition or route inspection issues, not a full runtime-health verdict.",

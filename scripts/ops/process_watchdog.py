@@ -1063,6 +1063,7 @@ def _all_sleeves_launcher_artifact_health(
     )
     ok = bool(
         fresh
+        and collection_fanout_ready
         and (complete or stable_non_running)
         and phase == "running"
         and overall_status in {"ready", "guarded_ready"}
@@ -1079,6 +1080,8 @@ def _all_sleeves_launcher_artifact_health(
         reason = "launcher_artifact_stale"
     elif not (complete or stable_non_running):
         reason = "launcher_artifact_jobs_not_all_running"
+    elif not collection_fanout_ready:
+        reason = "launcher_artifact_collection_not_ready"
     elif phase != "running":
         reason = "launcher_artifact_phase_not_running"
     elif overall_status not in {"ready", "guarded_ready"}:
@@ -1086,6 +1089,7 @@ def _all_sleeves_launcher_artifact_health(
 
     return {
         "present": True,
+        "fresh": fresh,
         "ok": ok,
         "path": str(path),
         "reason": reason,
@@ -1911,6 +1915,19 @@ def _row_effective_heartbeat_ok(row: Dict[str, Any]) -> bool:
     )
 
 
+def _row_collection_degraded(row: Dict[str, Any]) -> bool:
+    artifact = row.get("launcher_artifact_health")
+    return bool(
+        row.get("name") == "all_sleeves"
+        and isinstance(artifact, dict)
+        and artifact.get("present")
+        and artifact.get("fresh")
+        and artifact.get("phase") == "running"
+        and artifact.get("collection_fanout_ready") is False
+        and not _row_intentionally_held(row)
+    )
+
+
 def _watchdog_need_for_row(row: Dict[str, Any]) -> Dict[str, Any] | None:
     name = str(row.get("name") or "unknown")
     heartbeat_ok = _row_effective_heartbeat_ok(row)
@@ -1919,6 +1936,24 @@ def _watchdog_need_for_row(row: Dict[str, Any]) -> Dict[str, Any] | None:
     if name == "sql_link_writer" and bool(row.get("writer_idle_ok", False)):
         return None
     if heartbeat_ok and process_live:
+        if _row_collection_degraded(row):
+            # Child recovery belongs to the launcher, not a healthy-parent restart.
+            return {
+                "target": name,
+                "severity": "warn",
+                "status": "needs_repair",
+                "blocker": "collection_fanout_incomplete",
+                "exact_file": str(row["launcher_artifact_health"].get("path") or ""),
+                "exact_command": [
+                    "./scripts/ops/opsctl.sh",
+                    "watchdog-intelligence",
+                    "--json",
+                ],
+                "expected_impact": "inspect child admission or crash failures while the launcher owns bounded recovery",
+                "risk_level": "low",
+                "restart_parent": False,
+                "when_to_stop": "stop when a fresh launcher artifact reports collection_fanout_ready=true",
+            }
         return None
 
     restart_skipped = str(row.get("restart_skipped") or "")
@@ -2087,7 +2122,9 @@ def _watchdog_intelligence_contract(
         "score": score,
         "target_count": len(status_rows),
         "healthy_target_count": sum(
-            1 for row in status_rows if _row_effective_heartbeat_ok(row)
+            1
+            for row in status_rows
+            if _row_effective_heartbeat_ok(row) and not _row_collection_degraded(row)
         ),
         "active_issue_count": len(active_needs),
         "intentional_hold_count": len(intentional_holds),

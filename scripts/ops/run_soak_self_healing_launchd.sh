@@ -39,10 +39,12 @@ if ! "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/unattended_soak_readiness.py" \
   print -u2 "soak_self_healing lightweight_readiness_refresh=failed continuing_to_guarded_repair=1"
 fi
 
-if [[ -f "$PROJECT_ROOT/governance/runtime/soak_self_healing_request.json" ]] && \
-  command -v jq >/dev/null 2>&1 && \
-  jq -e '.active == true and .heavy_repair_required == true and (.severity == "critical" or .severity == "proactive")' "$PROJECT_ROOT/governance/runtime/soak_self_healing_request.json" >/dev/null 2>&1; then
-  export MAINTENANCE_SLOT_DEFER_OUTSIDE_QUIET_WINDOW=0
+# Storage pressure needs a bounded opportunity before the ordinary quiet-hours
+# gate. This mode retains the self-healing lock and fresh host/hold admission;
+# it cannot run cache rebuilds, training, broad repairs, or release operations.
+if ! nice -n 15 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/soak_self_healing_control.py" \
+  --storage-recovery-only --apply --json; then
+  print -u2 "soak_self_healing bounded_storage_recovery=attention continuing_to_guarded_repair=1"
 fi
 
 "$PROJECT_ROOT/scripts/ops/run_guarded_maintenance.sh" soak_self_healing \

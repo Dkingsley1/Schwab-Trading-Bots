@@ -1142,11 +1142,14 @@ def _sleep_until_next_cycle(
     active_request: dict[str, object],
     request_path: Path = REQUEST_PATH,
     poll_seconds: float = 2.0,
+    project_root: Path = PROJECT_ROOT,
 ) -> str:
     remaining = max(float(interval_seconds), 10.0)
     poll = max(min(float(poll_seconds), 5.0), 0.25)
     initial_signature = _active_request_signature(active_request)
     while remaining > 0.0:
+        if _cycle_boundary_maintenance_hold(project_root):
+            return "maintenance_hold"
         step = min(poll, remaining)
         time.sleep(step)
         remaining -= step
@@ -2999,7 +3002,7 @@ def _sqlite_integrity_status(path: Path, *, deep: bool) -> tuple[bool, str]:
         return True, "missing"
     conn: sqlite3.Connection | None = None
     try:
-        conn = sqlite3.connect(str(path))
+        conn = sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True)
         if deep:
             row = conn.execute("PRAGMA quick_check").fetchone()
             status = str((row or ("unknown",))[0] or "unknown").strip() or "unknown"

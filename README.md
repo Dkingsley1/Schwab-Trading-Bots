@@ -161,6 +161,8 @@ The grade regression autopilot is targeted and idempotent: a healthy cycle is a 
 
 Local storage uses a `125 GiB` warning target and a `135 GiB` recovery target by default, preventing repeated clear/retrigger cycles at the boundary. Cold-archive automation must use an explicitly configured non-protected route; an operator-reserved volume is rejected rather than silently selected.
 
+Storage-pressure recovery starts at the same boundary that pauses SQL writers. Its bounded sequence verifies rotated telemetry, compresses inactive cold SQLite copies when the optional `afsctool` backend is installed, and offloads closed compressed history with durable restore proof and atomic original-path links. These actions preserve data and reserve limits; a successful recovery wave is not proof of full platform readiness. See [Storage And Ingestion](docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md).
+
 ### Paper Profitability Hardening
 
 The paper path applies sixteen coordinated controls before profitability evidence is considered promotion-worthy:

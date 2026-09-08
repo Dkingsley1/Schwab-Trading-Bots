@@ -1086,6 +1086,58 @@ def test_resolved_restart_storms_marks_read_only_collection_as_quarantinable() -
     assert active[0]["live_execution_critical"] is False
 
 
+def test_fresh_incomplete_collection_degrades_status_without_parent_restart() -> None:
+    row = {
+        "name": "all_sleeves",
+        "heartbeat_ok": True,
+        "process_live": True,
+        "launcher_artifact_health": {
+            "present": True,
+            "fresh": True,
+            "phase": "running",
+            "collection_fanout_ready": False,
+            "path": "/repo/launcher.json",
+        },
+    }
+    payload = pw._watchdog_intelligence_contract(
+        status_rows=[row],
+        restarts=[],
+        restart_storms=[],
+        recent_restart_storms=[],
+        alerts=[],
+        safety_pause={},
+        creative_pause={},
+        network_payload={},
+    )
+    assert payload["overall_status"] == "degraded"
+    assert payload["healthy_target_count"] == 0
+    assert payload["exact_needs"][0]["blocker"] == "collection_fanout_incomplete"
+    assert payload["exact_needs"][0]["restart_parent"] is False
+    assert pw._row_effective_heartbeat_ok(row)
+    assert row["heartbeat_ok"] is True
+
+
+def test_collection_diagnostic_ignores_stale_missing_and_guarded_execution() -> None:
+    row = {"name": "all_sleeves", "heartbeat_ok": True, "process_live": True}
+    assert pw._watchdog_need_for_row(row) is None
+    row["launcher_artifact_health"] = {
+        "present": True,
+        "fresh": False,
+        "phase": "running",
+        "collection_fanout_ready": False,
+    }
+    assert pw._watchdog_need_for_row(row) is None
+    row["launcher_artifact_health"].update(
+        fresh=True,
+        collection_fanout_ready=True,
+        paper_execution_ready=False,
+    )
+    assert pw._watchdog_need_for_row(row) is None
+    row["launcher_artifact_health"]["collection_fanout_ready"] = False
+    row["paused_by_runtime_gate"] = True
+    assert pw._watchdog_need_for_row(row) is None
+
+
 def test_watchdog_intelligence_downgrades_isolated_restart_storm_budget() -> None:
     status_rows = [
         {

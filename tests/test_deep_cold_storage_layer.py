@@ -1,4 +1,6 @@
 import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -74,6 +76,103 @@ def test_deep_cold_move_restarts_when_partial_prefix_does_not_match(tmp_path: Pa
     assert result["source_replaced_with_symlink"] is True
     assert result["resumed_bytes"] == 0
     assert target.read_bytes() == payload
+
+
+def test_existing_divergent_archive_is_never_overwritten(tmp_path):
+    source, target = tmp_path / "source.gz", tmp_path / "cold.gz"
+    source.write_bytes(b"source")
+    target.write_bytes(b"other!")
+    result = src._copy_verify_then_symlink(source, target)
+    assert result["reason"] == "existing_target_content_mismatch"
+    assert not source.is_symlink()
+    assert target.read_bytes() == b"other!"
+
+
+def test_existing_match_rechecks_source_identity_before_release(tmp_path, monkeypatch):
+    source, target = tmp_path / "source.gz", tmp_path / "cold.gz"
+    source.write_bytes(b"source")
+    target.write_bytes(b"source")
+    original = src._sha256
+
+    def hash_then_mutate(path):
+        digest = original(path)
+        if path == target:
+            source.write_bytes(b"new data")
+        return digest
+
+    monkeypatch.setattr(src, "_sha256", hash_then_mutate)
+    result = src._copy_verify_then_symlink(source, target)
+    assert not result["source_replaced_with_symlink"]
+    assert source.read_bytes() == b"new data" and not source.is_symlink()
+
+
+def test_failed_atomic_link_replacement_preserves_source(tmp_path, monkeypatch):
+    source, target = tmp_path / "source.gz", tmp_path / "cold.gz"
+    source.write_bytes(b"source")
+
+    def fail(*args):
+        raise OSError("replace denied")
+
+    monkeypatch.setattr(src.os, "replace", fail)
+    result = src._copy_verify_then_symlink(source, target)
+    assert not result["source_replaced_with_symlink"]
+    assert source.read_bytes() == target.read_bytes() == b"source"
+    proof = target.with_name(target.name + ".restore_proofs.jsonl")
+    assert (
+        json.loads(proof.read_text())["phase"]
+        == "verified_before_atomic_source_replacement"
+    )
+
+
+def test_protected_alias_rejected_before_source_metadata(tmp_path, monkeypatch):
+    alias = tmp_path / "alias"
+    alias.symlink_to("/Volumes/VIDEO")
+    original = Path.stat
+
+    def guarded(path, *args, **kwargs):
+        assert not str(path).startswith("/Volumes/VIDEO")
+        assert not (path == alias and kwargs.get("follow_symlinks", True))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", guarded)
+    assert src._iter_candidate_files(alias, min_size_bytes=1) == []
+    result = src._copy_verify_then_symlink(alias / "source.gz", tmp_path / "target.gz")
+    assert result["reason"] == "protected_or_unavailable_route"
+
+
+def test_compressed_history_is_explicit_old_and_never_raw(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    root = project / "decisions" / "sleeve"
+    root.mkdir(parents=True)
+    old = root / "trade_decisions_20200101.jsonl.gz"
+    recent = root / "trade_decisions_20200102.jsonl.gz"
+    raw = root / "trade_decisions_20200101.jsonl"
+    for path in (old, recent, raw):
+        path.write_bytes(b"retained" * 100)
+    os.utime(old, (time.time() - 172800,) * 2)
+    os.utime(raw, (time.time() - 172800,) * 2)
+    monkeypatch.setattr(
+        src,
+        "resolve_external_storage",
+        lambda: SimpleNamespace(external_root=tmp_path / "external"),
+    )
+    baseline = src.build_payload(project, min_size_mb=0.000001)
+    assert not baseline["top_rows"]
+    payload = src.build_payload(
+        project, min_size_mb=0.000001, include_compressed_history=True
+    )
+    assert [row["path"] for row in payload["top_rows"]] == [str(old)]
+    assert payload["top_rows"][0]["economic_value"] == "critical"
+
+
+def test_explicit_stale_root_may_be_a_safe_local_route_alias(tmp_path):
+    root = tmp_path / "fallback"
+    root.mkdir()
+    source = root / "archive.gz"
+    source.write_bytes(b"archive")
+    alias = tmp_path / "stale_stage"
+    alias.symlink_to(root)
+    assert src._iter_candidate_files(alias, min_size_bytes=1) == [alias / source.name]
 
 
 def test_video_cold_archive_subtree_remains_protected_when_legacy_override_is_enabled(monkeypatch) -> None:

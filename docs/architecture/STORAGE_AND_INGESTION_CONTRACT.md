@@ -1,5 +1,26 @@
 # Storage And Ingestion Contract
 
+## Pressure Recovery And Preserved History
+
+The self-healing launchd owner runs `soak-self-heal --storage-recovery-only`
+before the heavy-maintenance quiet-hours gate. It measures current local free
+space against the existing 64 GiB pressure threshold, shares the self-healing
+lock and retry state, and checks fresh memory, load, and maintenance ownership.
+Only bounded telemetry compression, verified cold compression, and verified
+historical offload are permitted. Cache rebuilds, training, route migration,
+candidate acceptance, and execution authority are excluded. The resulting
+`soak_storage_recovery_latest.json` certifies pressure relief only, not the
+125 GiB unattended reserve or complete recovery of every storage surface.
+
+`data_collection_storage_guard` separates fallback files already retained under
+canonical cold/quarantine roots from active-route duplicate candidates. The
+archived inventory remains visible with reconciliation unverified and deletion
+disallowed. A canonical sibling merely existing cannot authorize duplicate
+removal: full restored bytes and SHA-256, stable file identities, idle handles,
+synced canonical data, and a durable restore receipt are required. Partial,
+temporary, failed-SQLite, and failover-backup filenames do not establish expiry
+or recoverability and are preserved for their owning recovery/retention process.
+
 This document connects the existing owners. It is not a new storage policy,
 scheduler, collector, or permission to delete data. Definitions, observed state,
 verified durability, and trading readiness are separate claims.
@@ -134,6 +155,43 @@ scratch-capacity, or quiet-window gates. Effective reserve thresholds come from
 `local-storage-reserve-guard --json` instead of assuming library defaults apply.
 
 ## Failure And Recovery
+
+The self-healing owner uses `BOT_LOCAL_STORAGE_PRESSURE_FREE_GB` (64 GiB in the
+operating guard) to start storage recovery, not just the lower macOS swap-critical
+threshold. SQL and paper pause boundaries, the 125/135 GiB unattended targets, and
+memory/capacity admission remain unchanged. Recovery is serialized and subject to
+the existing per-step cooldowns and retry circuit.
+
+- Telemetry rotation preserves the canonical writer path. An open rotated segment
+  is retained. Full gzip restore SHA-256, stable source identity, durable archive
+  publication, and scratch admission precede raw-segment release.
+- `cold-archive-compactor --filesystem-select-inactive --filesystem-compressor
+  afsctool` selects a bounded wave, not a complete archive census. The automatic
+  wave selects at most four old 100 MiB to 2 GiB SQLite files and 8 GiB total,
+  with a 600-second work deadline. Apply requires an owned maintenance hold and
+  the actual SQL writer lock. The optional compressor acts only on temporary
+  copies. Original replacement requires full matching hashes, SQLite quick_check,
+  no active file handles or pending journal data, and measured allocated-block
+  savings. Native compression preserves SQLite bytes and paths; future writes
+  may decompress a file, so hot databases are excluded. Failed compression is
+  reported and leaves the original intact.
+  The SQL manager checks maintenance requests during its inter-cycle wait, so
+  an idle writer yields at its next poll rather than holding the lock through
+  a long sleep. Active write batches still finish before handoff.
+- Archive counts, export reads, integrity checks, and no-op retention probes use
+  SQLite URI `mode=ro`. They do not set journal mode or open the database writable.
+  Read-only probes still include committed WAL data; they do not assume immutable
+  databases. Retention opens a retained archive for mutation only after finding
+  actual expired rows. Verified compression savings are measured at publication,
+  not permanent capacity credit: later legitimate writes may expand the file.
+- `deep-cold-storage-layer --include-compressed-history` adds only dated gzip
+  decisions/explanations older than 24 hours. The verified external copy must be
+  durable before an atomic symlink replaces the local file. Critical record
+  retention remains unchanged; this option is location movement, not expiry or
+  deletion permission. Divergent existing archives are not overwritten.
+- `sqlite-reclaim-control --db PATH --scratch-dir PATH` exposes the existing
+  per-database reclamation owner. Source rewrite, shared-volume scratch, external
+  reserve, memory, and writer gates are identical to scheduled reclamation.
 
 | Condition | Required Response / Owner |
 | --- | --- |

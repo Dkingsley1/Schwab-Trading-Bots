@@ -1656,6 +1656,7 @@ def build_payload(
             deep_cmd.extend(
                 [
                     "--move-to-second-cold",
+                    "--include-compressed-history",
                     "--adaptive",
                     "--second-cold-root",
                     second_cold_root,

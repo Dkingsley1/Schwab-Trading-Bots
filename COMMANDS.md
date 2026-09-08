@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `8078079e55d7fed5582c05b4c28596c45aafc4d608f05760bd7d4a3694761a26`.
+Command contract hash: `abee13121bcab6e18e3f2b0c96a06057d1195fb05881d6e50ed1ae14193bb8dd`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `230` generated command entries from the current command contract.
+Search coverage: `234` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Keep the Mac awake (Most Used)"></option>
@@ -241,7 +241,11 @@ Search coverage: `230` generated command entries from the current command contra
   <option value="Track readiness evidence accrual (Status And Health)"></option>
   <option value="Verify the durable live-order ledger (Status And Health)"></option>
   <option value="Archive and compact legacy ops database drift evidence (Storage)"></option>
+  <option value="Inspect closed compressed history offload (Storage)"></option>
+  <option value="Inspect pressure-triggered storage recovery (Storage)"></option>
   <option value="Inspect storage routes and ingestion definitions (Storage)"></option>
+  <option value="Preview bounded cold SQLite compression (Storage)"></option>
+  <option value="Preview material SQLite space reclamation (Storage)"></option>
   <option value="Repair external SSD disconnect and reconnect protection (Storage)"></option>
   <option value="Repair local stateful storage regressions (Storage)"></option>
   <option value="Review external SSD disconnect and reconnect protection (Storage)"></option>
@@ -259,7 +263,7 @@ Search coverage: `230` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (230 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (234 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -478,7 +482,11 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:fd98f9e05f04ad9fa5756467259f08f5660d6e646feebd104a41061470d61f5e section:`Status And Health` section_key:`status-and-health` title:Track readiness evidence accrual title_key:`track-readiness-evidence-accrual` opsctl:`readiness-evidence-accrual` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:fd56b63365456606b1ac88f79b682e6d632c16386f7d6b35209bb22c71d6b94e section:`Status And Health` section_key:`status-and-health` title:Verify the durable live-order ledger title_key:`verify-the-durable-live-order-ledger` opsctl:`live-order-ledger` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:55f380c0b0501fd8a3a2a7fb587b0c19d56370a1cde5e13cd9fcb4e8a0faab94 section:`Storage` section_key:`storage` title:Archive and compact legacy ops database drift evidence title_key:`archive-and-compact-legacy-ops-database-drift-evidence` opsctl:`ops-data-plane-compaction` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:bc37436995c650788e274e16005376e4e736857c6d940e5cc68fe9327a2eea60 section:`Storage` section_key:`storage` title:Inspect closed compressed history offload title_key:`inspect-closed-compressed-history-offload` opsctl:`deep-cold-storage-layer` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:b0b92fd16754a876d6cb93ff94ffb128433f1896183078e8f17b3d399ce02d72 section:`Storage` section_key:`storage` title:Inspect pressure-triggered storage recovery title_key:`inspect-pressure-triggered-storage-recovery` opsctl:`soak-self-heal` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:b60ad5f9dbdcc4fbc4d875961f518e4df5508f9a649cfdd8d252ba711aa4dff6 section:`Storage` section_key:`storage` title:Inspect storage routes and ingestion definitions title_key:`inspect-storage-routes-and-ingestion-definitions` opsctl:`ingestion-storage-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:2e95aec849a8997add58b0ddae5d5418257f5fba7bc1058eb0f9476a031aa558 section:`Storage` section_key:`storage` title:Preview bounded cold SQLite compression title_key:`preview-bounded-cold-sqlite-compression` opsctl:`cold-archive-compactor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:434fcff15b313462377cc5dbfdbd786b135a492f66bcb22d53a98d266935d6b6 section:`Storage` section_key:`storage` title:Preview material SQLite space reclamation title_key:`preview-material-sqlite-space-reclamation` opsctl:`sqlite-reclaim-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:61cddf2d4d223c807bee6f12073ff67618a4baed263cc079219aa7112746691a section:`Storage` section_key:`storage` title:Repair external SSD disconnect and reconnect protection title_key:`repair-external-ssd-disconnect-and-reconnect-protection` opsctl:`storage-reconnect-infrabot` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:7162b1728aa0badca09eeab49bafe5d36d327687a0c9f6a6c059cd95e147c9c3 section:`Storage` section_key:`storage` title:Repair local stateful storage regressions title_key:`repair-local-stateful-storage-regressions` opsctl:`stateful-storage-regression-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:bba5d29fe51d33f0fa94b5fec7520164361e1aa9ab5990d00b553bd4cbbe29c6 section:`Storage` section_key:`storage` title:Review external SSD disconnect and reconnect protection title_key:`review-external-ssd-disconnect-and-reconnect-protection` opsctl:`storage-reconnect-regression-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -2352,6 +2360,22 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 Requires an explicit stopped stack. It writes a verified, readable gzip JSONL rollup to the configured cold archive, preserves source JSONL as detail authority, compacts the hot SQLite database, and runs an integrity check before restart.
 
+### Inspect closed compressed history offload
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh deep-cold-storage-layer --adaptive --include-compressed-history --json
+```
+
+Only dated gzip history older than 24 hours joins the existing cold-storage inventory. Verified offload retains original paths as atomic archive links and never authorizes record deletion or retention expiry.
+
+### Inspect pressure-triggered storage recovery
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh soak-self-heal --storage-recovery-only --json
+```
+
+The existing launchd owner runs bounded pressure relief before its heavy-maintenance gate. Apply keeps the shared self-healing lock, live host admission, cold writer handoff, and destination reserve; it cannot run cache rebuilds, training, candidate acceptance, or trading.
+
 ### Inspect storage routes and ingestion definitions
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -2361,6 +2385,22 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 Prints bounded canonical-path observations, owning lane/lifecycle policies, and separate fetch, qualification, SQL checkpoint, merge, and archive boundaries.
 This mode does not write a health artifact, inspect database contents, or apply route/throttle changes; --out-file is ignored. Exit 2 reports definition or route inspection issues, not a full runtime-health verdict.
 The ordinary ingestion-storage-control --json report includes the same data_plane_definition section. See docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md.
+
+### Preview bounded cold SQLite compression
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh cold-archive-compactor --filesystem-select-inactive --filesystem-compressor afsctool --max-files 4 --max-raw-gb 8 --json
+```
+
+Requires the optional afsctool executable for apply. Only inactive 100 MiB to 2 GiB SQLite archives qualify; apply also requires --coordinate-writer-handoff. Full hashes, SQLite quick_check, durable receipts, and physical savings precede atomic replacement.
+
+### Preview material SQLite space reclamation
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh sqlite-reclaim-control --json
+```
+
+Use --db PATH and --scratch-dir PATH for a specific shard. Apply retains the same source/scratch capacity, memory, maintenance ownership, and single-writer guards.
 
 ### Repair external SSD disconnect and reconnect protection
 ```bash

@@ -67,6 +67,57 @@ def _run_main(module, argv: list[str]) -> tuple[int, dict]:
 
 class SqlHotRetentionTests(unittest.TestCase):
 
+    def test_noop_archive_retention_never_requests_writable_connection(self):
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            archive = Path(td) / "retained ?# archive.sqlite3"
+            _init_db(archive)
+            _insert_rows(
+                archive, [(1, datetime.now(timezone.utc).isoformat(), "source", 1)]
+            )
+            before = archive.read_bytes()
+            with mock.patch.object(
+                module,
+                "_connect",
+                side_effect=AssertionError("no writable archive admission"),
+            ):
+                result = module._prune_archive_storage(
+                    archive_db=archive,
+                    archive_root=None,
+                    archive_retention_days=30,
+                    archive_prune_vacuum=True,
+                    cold_export_root=None,
+                    cold_export_format="parquet",
+                    cold_export_batch_size=1000,
+                    cold_export_compression="zstd",
+                )
+                self.assertEqual(module._count_archive_rows(archive), 1)
+            self.assertEqual(result["pruned_rows"], 0)
+            self.assertFalse(result["errors"])
+            self.assertEqual(archive.read_bytes(), before)
+
+    def test_readonly_archive_probe_sees_committed_wal_without_write_authority(self):
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            archive = Path(td) / "retained.sqlite3"
+            _init_db(archive)
+            writer = sqlite3.connect(archive)
+            try:
+                writer.execute("PRAGMA journal_mode=WAL")
+                writer.execute(
+                    "INSERT INTO jsonl_records VALUES (1, '2026-09-08', 'source', 1)"
+                )
+                writer.commit()
+                self.assertEqual(module._count_archive_rows(archive), 1)
+                reader = module._connect_readonly(archive)
+                try:
+                    with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+                        reader.execute("DELETE FROM jsonl_records")
+                finally:
+                    reader.close()
+            finally:
+                writer.close()
+
     def test_conflicting_archive_id_does_not_delete_source(self):
         module = _load_module()
         with tempfile.TemporaryDirectory() as td:

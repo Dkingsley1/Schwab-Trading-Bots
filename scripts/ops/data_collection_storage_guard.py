@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import gzip
 import json
 import os
+import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,6 +32,8 @@ DEFAULT_OUT_PATH = (
     PROJECT_ROOT / "governance" / "health" / "data_collection_storage_guard_latest.json"
 )
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
+from core.storage_router import inspect_storage_path
+
 DEFAULT_EXTERNAL_ROOT = Path("/Volumes/BOT_LOGS/schwab_trading_bot")
 PROTECTED_VOLUME_PREFIXES = ("/Volumes/VIDEO",)
 SAFE_STALE_SUFFIXES = (
@@ -90,11 +95,7 @@ def _gb(raw: int | float) -> float:
 
 
 def _is_protected_volume(path: Path) -> bool:
-    text = str(path.expanduser())
-    return any(
-        text == prefix or text.startswith(prefix + "/")
-        for prefix in PROTECTED_VOLUME_PREFIXES
-    )
+    return inspect_storage_path(path).get("status") not in {"present", "missing"}
 
 
 def _is_within_root(path: Path, root: Path) -> bool:
@@ -327,13 +328,16 @@ def _refresh_summary(payload: dict[str, Any]) -> None:
 
 
 def _duplicate_fallback_files(root: Path, *, limit: int = 50000) -> list[Path]:
-    if not root.exists() or _is_protected_volume(root):
+    if _is_protected_volume(root) or not root.exists():
         return []
     out: list[Path] = []
     for path in root.rglob("*.local_fallback*"):
+        if path.name.endswith(".duplicate_restore_proof.json"):
+            continue
         if (
-            path.is_file()
+            not _is_protected_volume(path)
             and not path.is_symlink()
+            and path.is_file()
             and _is_within_root(path, root)
             and not _is_protected_volume(path)
         ):
@@ -341,6 +345,92 @@ def _duplicate_fallback_files(root: Path, *, limit: int = 50000) -> list[Path]:
             if len(out) >= limit:
                 break
     return out
+
+
+def _archived_fallback(path: Path, root: Path) -> bool:
+    if _is_protected_volume(path) or not _is_within_root(path, root):
+        return False
+    rel = path.resolve().relative_to(root.resolve())
+    return bool(
+        rel.parts
+        and (
+            rel.parts[0] in {"cold_archive", "quarantine"}
+            or rel.parts[:2] in {("data", "stale_stage"), ("data", "deep_cold")}
+        )
+    )
+
+
+def _remove_verified_duplicate(path: Path, canonical: Path) -> dict[str, Any]:
+    for candidate in (path, canonical):
+        if (
+            _is_protected_volume(candidate)
+            or candidate.is_symlink()
+            or not candidate.is_file()
+        ):
+            raise ValueError("duplicate_route_unverifiable")
+    deadline = time.monotonic() + 60
+    before = (path.stat(), canonical.stat())
+
+    def identity(st):
+        return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+    def digest(candidate, compressed=False):
+        total = 0
+        value = hashlib.sha256()
+        with (
+            gzip.open(candidate, "rb") if compressed else candidate.open("rb")
+        ) as handle:
+            while chunk := handle.read(1024 * 1024):
+                total += len(chunk)
+                if total > before[0].st_size or time.monotonic() > deadline:
+                    raise ValueError("duplicate_restore_budget_exceeded")
+                value.update(chunk)
+        return total, value.hexdigest()
+
+    source_digest = digest(path)
+    canonical_digest = digest(canonical, canonical.name.endswith(".gz"))
+    if source_digest != canonical_digest:
+        raise ValueError("duplicate_content_mismatch")
+    probe = subprocess.run(
+        ["/usr/sbin/lsof", "-t", "--", str(path), str(canonical)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if probe.returncode != 1 or probe.stdout.strip() or probe.stderr.strip():
+        raise ValueError("duplicate_open_or_idle_probe_unknown")
+    with canonical.open("rb") as handle:
+        os.fsync(handle.fileno())
+    proof = {
+        "timestamp_utc": iso_now(),
+        "source": str(path),
+        "canonical": str(canonical),
+        "sha256": source_digest[1],
+        "restored_bytes": source_digest[0],
+        "full_content_match": True,
+        "source_removed": False,
+    }
+    proof_path = path.with_name(path.name + ".duplicate_restore_proof.json")
+    if _is_protected_volume(proof_path) or proof_path.is_symlink():
+        raise ValueError("duplicate_proof_route_unverifiable")
+    write_payload(proof_path, proof)
+    if load_json(proof_path) != proof:
+        raise ValueError("duplicate_proof_publication_failed")
+    with proof_path.open("rb") as handle:
+        os.fsync(handle.fileno())
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+        if (identity(path.stat()), identity(canonical.stat())) != tuple(
+            identity(st) for st in before
+        ):
+            raise ValueError("duplicate_changed_before_release")
+        path.unlink()
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return {**proof, "source_removed": True, "proof_path": str(proof_path)}
 
 
 def _space_candidate_record(
@@ -415,9 +505,13 @@ def _canonical_sibling_for_local_fallback(path: Path) -> Path | None:
     if not canonical_name:
         return None
     canonical = path.with_name(canonical_name)
+    if _is_protected_volume(canonical):
+        return None
     if canonical.exists():
         return canonical
     compressed = path.with_name(f"{canonical_name}.gz")
+    if _is_protected_volume(compressed):
+        return None
     if compressed.exists():
         return compressed
     return canonical
@@ -431,9 +525,9 @@ def _safe_space_recovery_candidates(
     candidate_limit: int,
     scan_file_limit: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    if not root.exists() or _is_protected_volume(root):
+    if _is_protected_volume(root) or not root.exists():
         return [], {
-            "scan_root_exists": bool(root.exists()),
+            "scan_root_exists": bool(not _is_protected_volume(root) and root.exists()),
             "protected_volume_blocked": bool(_is_protected_volume(root)),
             "scanned_files": 0,
             "scan_limit_reached": False,
@@ -453,6 +547,7 @@ def _safe_space_recovery_candidates(
         canonical = _canonical_sibling_for_local_fallback(path)
         if (
             canonical is None
+            or _is_protected_volume(canonical)
             or not canonical.exists()
             or canonical.is_symlink()
             or _is_protected_volume(canonical)
@@ -523,37 +618,18 @@ def _safe_space_recovery_candidates(
                 break
             path = current / name
             key = str(path)
-            if key in seen or path.is_symlink():
+            if key in seen or _is_protected_volume(path) or path.is_symlink():
                 continue
             lower_name = name.lower()
             reason = ""
             priority = 0
             stateful_debris_reason = _stateful_failure_debris_reason(name)
-            if stateful_debris_reason:
-                try:
-                    age_hours = max((now_ts - path.stat().st_mtime) / 3600.0, 0.0)
-                except Exception:
-                    continue
-                if age_hours < min_age:
-                    continue
-                reason = stateful_debris_reason
-                priority = (
-                    95
-                    if stateful_debris_reason == "old_stateful_corrupt_sqlite_artifact"
-                    else 85
-                )
-            elif name in SAFE_METADATA_NAMES or name.startswith("._"):
+            # Age or a suffix cannot prove that a backup/partial is disposable.
+            if stateful_debris_reason or lower_name.endswith(SAFE_STALE_SUFFIXES):
+                continue
+            if name in SAFE_METADATA_NAMES:
                 reason = "safe_os_metadata_artifact"
                 priority = 60
-            elif lower_name.endswith(SAFE_STALE_SUFFIXES):
-                try:
-                    age_hours = max((now_ts - path.stat().st_mtime) / 3600.0, 0.0)
-                except Exception:
-                    continue
-                if age_hours < min_age:
-                    continue
-                reason = "stale_partial_or_temp_artifact"
-                priority = 80
             else:
                 continue
             record = _space_candidate_record(
@@ -692,6 +768,12 @@ def build_payload(
     space_recovery_jumbo_duplicate_gb: float = DEFAULT_SPACE_RECOVERY_JUMBO_DUPLICATE_GB,
     space_recovery_jumbo_stateful_debris_gb: float = DEFAULT_SPACE_RECOVERY_JUMBO_STATEFUL_DEBRIS_GB,
 ) -> dict[str, Any]:
+    if _is_protected_volume(external_root) or _is_protected_volume(registry_path):
+        return {
+            "ok": False,
+            "overall_status": "blocked",
+            "reason": "protected_or_unverifiable_route",
+        }
     disk = _disk_usage(external_root)
     available_gb = _gb(int(disk.get("available_bytes") or 0))
     used_ratio = float(disk.get("used_ratio") or 1.0)
@@ -770,6 +852,14 @@ def build_payload(
         if cleanup_duplicates or space_recovery
         else []
     )
+    archived_fallbacks = [
+        path for path in duplicate_files if _archived_fallback(path, external_root)
+    ]
+    archived_fallback_set = set(archived_fallbacks)
+    duplicate_files = [
+        path for path in duplicate_files if path not in archived_fallback_set
+    ]
+    archived_fallback_bytes = sum(path.stat().st_size for path in archived_fallbacks)
     duplicate_bytes = 0
     deleted_duplicates: list[str] = []
     for path in duplicate_files:
@@ -829,12 +919,22 @@ def build_payload(
                 )
                 continue
             try:
-                path.unlink()
+                if str(row.get("reason") or "") == "duplicate_local_fallback_artifact":
+                    row["restore_proof"] = _remove_verified_duplicate(
+                        path, Path(row["canonical_path"])
+                    )
+                elif (
+                    str(row.get("reason") or "") == "safe_os_metadata_artifact"
+                    and path.name == ".DS_Store"
+                ):
+                    path.unlink()
+                else:
+                    raise ValueError("artifact_disposal_not_verified")
                 deleted_space.append(row)
                 if str(row.get("reason") or "") == "duplicate_local_fallback_artifact":
                     deleted_duplicates.append(str(path))
             except Exception as exc:
-                delete_errors.append({"path": str(path), "reason": type(exc).__name__})
+                delete_errors.append({"path": str(path), "reason": str(exc)})
     elif apply and cleanup_duplicates:
         selected_duplicate_candidates = _select_space_recovery_candidates(
             [
@@ -856,10 +956,13 @@ def build_payload(
             ):
                 continue
             try:
-                path.unlink()
+                row["restore_proof"] = _remove_verified_duplicate(
+                    path, Path(row["canonical_path"])
+                )
                 deleted_space.append(row)
                 deleted_duplicates.append(str(path))
-            except Exception:
+            except Exception as exc:
+                delete_errors.append({"path": str(path), "reason": str(exc)})
                 continue
 
     backup_path = ""
@@ -886,10 +989,12 @@ def build_payload(
         if mode == "normal"
         else ("degraded" if mode in {"watch", "throttle"} else "blocked")
     )
+    if delete_errors:
+        status = "needs_work"
     return {
         "timestamp_utc": now,
         "schema_version": 1,
-        "ok": mode != "critical",
+        "ok": mode != "critical" and not delete_errors,
         "overall_status": status,
         "apply_requested": bool(apply),
         "external_root": str(external_root),
@@ -913,6 +1018,15 @@ def build_payload(
             "candidate_count": len(duplicate_files),
             "candidate_bytes": duplicate_bytes,
             "candidate_gb": round(_gb(duplicate_bytes), 3),
+            "scope": "active_route_fallback_artifacts_only",
+            "archived_inventory": {
+                "count": len(archived_fallbacks),
+                "bytes": archived_fallback_bytes,
+                "gb": round(_gb(archived_fallback_bytes), 3),
+                "deletion_allowed": False,
+                "reconciliation_verified": False,
+                "policy": "preserved cold/quarantine evidence is not an active route duplicate; capacity and restore obligations remain",
+            },
             "deleted_count": len(deleted_duplicates),
             "deleted_gb": (
                 round(
@@ -949,6 +1063,7 @@ def build_payload(
             "candidate_limit": max(int(space_recovery_candidate_limit), 1),
             "scan_file_limit": max(int(space_recovery_scan_file_limit), 1),
             "scan": space_scan,
+            "preservation_policy": "backup and partial filenames never authorize deletion; duplicate release requires full restore hash, stable identity, idle handles, and durable proof",
             "candidate_count": len(space_candidates),
             "candidate_bytes": sum(
                 max(int(row.get("size_bytes") or 0), 0) for row in space_candidates
@@ -1138,7 +1253,10 @@ def main() -> int:
             args.space_recovery_jumbo_stateful_debris_gb
         ),
     )
-    write_payload(Path(args.out_file).expanduser(), payload)
+    output = Path(args.out_file).expanduser()
+    if _is_protected_volume(output):
+        parser.error("protected_or_unverifiable_output_route")
+    write_payload(output, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

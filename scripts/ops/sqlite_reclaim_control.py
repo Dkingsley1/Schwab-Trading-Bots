@@ -228,11 +228,24 @@ def main() -> int:
         description="Reclaim material SQLite free pages under writer ownership and storage reserves."
     )
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--db",
+        type=Path,
+        help="Explicit SQLite shard to reclaim under the same writer and capacity guards.",
+    )
+    parser.add_argument("--scratch-dir", type=Path)
+    parser.add_argument(
+        "--out-file",
+        type=Path,
+        default=PROJECT_ROOT / "governance/health/sqlite_reclaim_control_latest.json",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-    db = maintenance._default_db_path().resolve()
+    if maintenance._protected_storage_path(args.out_file):
+        parser.error("protected output route")
+    db = args.db or maintenance._default_db_path()
     external = resolve_external_storage()
-    scratch = Path(
+    scratch = args.scratch_dir or Path(
         os.getenv("SQLITE_VACUUM_TMPDIR") or str(external.external_root / ".sqlite_tmp")
     )
     try:
@@ -245,7 +258,7 @@ def main() -> int:
             "error": str(exc),
             "vacuum_ran": False,
         }
-    out = PROJECT_ROOT / "governance/health/sqlite_reclaim_control_latest.json"
+    out = args.out_file
     temporary = out.with_suffix(".tmp")
     temporary.write_text(json.dumps(payload, indent=2) + "\n")
     temporary.replace(out)

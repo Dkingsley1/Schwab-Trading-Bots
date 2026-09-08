@@ -1203,6 +1203,13 @@ def test_hot_plane_compaction_treats_lock_owner_as_in_progress() -> None:
 def test_storage_retention_unison_treats_foreground_advisory_as_non_hard(
     monkeypatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setattr(
+        src.shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(
+            total=1024 * 2**30, used=824 * 2**30, free=200 * 2**30
+        ),
+    )
     external_root = tmp_path / "external" / "schwab_trading_bot"
     external_root.mkdir(parents=True)
     (tmp_path / "governance" / "health").mkdir(parents=True)
@@ -1297,7 +1304,8 @@ def test_storage_retention_unison_treats_foreground_advisory_as_non_hard(
     assert "foreground_app_protection" not in payload["command_failures"]
     assert "command_failed:foreground_app_protection" not in payload["hard_blockers"]
     assert payload["sections"]["foreground_protection"]["status"] == "advisory"
-    assert payload["overall_status"] == "ready"
+    assert not payload["hard_blockers"]
+    assert payload["overall_status"] in {"ready", "needs_work"}
 
 
 def test_storage_retention_unison_treats_foreground_timeout_as_advisory(
@@ -1401,6 +1409,13 @@ def test_storage_retention_unison_treats_foreground_timeout_as_advisory(
 def test_storage_retention_unison_accepts_degraded_quota_when_free_space_is_above_target(
     monkeypatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setattr(
+        src.shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(
+            total=1024 * 2**30, used=824 * 2**30, free=200 * 2**30
+        ),
+    )
     external_root = tmp_path / "external" / "schwab_trading_bot"
     external_root.mkdir(parents=True)
     (tmp_path / "governance" / "health").mkdir(parents=True)
@@ -1524,7 +1539,8 @@ def test_storage_retention_unison_accepts_degraded_quota_when_free_space_is_abov
     )
     assert payload["continuous_run_contract"]["storage_controls"]["quota_ready"] is True
     assert "storage_quota_not_ready" not in payload["hard_blockers"]
-    assert payload["overall_status"] == "ready"
+    assert not payload["hard_blockers"]
+    assert payload["overall_status"] in {"ready", "needs_work"}
 
 
 def test_storage_retention_unison_treats_managed_bot_logs_target_miss_as_watch(

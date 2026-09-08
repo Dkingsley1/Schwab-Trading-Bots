@@ -157,10 +157,15 @@ def _archive_file_fully_before_cutoff(path: Path, cutoff_dt: datetime) -> bool:
     return next_month <= cutoff_dt
 
 
+def _connect_readonly(path: Path) -> sqlite3.Connection:
+    # Do not open compressed archives writable merely to inspect their contents.
+    return sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True, timeout=30)
+
+
 def _count_archive_rows(path: Path) -> int:
     if not path.exists():
         return 0
-    conn = _connect(path)
+    conn = _connect_readonly(path)
     try:
         if not _table_exists(conn, "jsonl_records"):
             return 0
@@ -246,7 +251,7 @@ def _export_sqlite_archive_to_parquet(
             return pa.binary()
         return pa.string()
 
-    conn = sqlite3.connect(str(path))
+    conn = _connect_readonly(path)
     writer = None
     rows_exported = 0
     min_ingested_at = ""
@@ -385,6 +390,18 @@ def _prune_archive_storage(
             continue
 
         try:
+            probe = _connect_readonly(path)
+            try:
+                if not _table_exists(probe, "jsonl_records"):
+                    continue
+                expired = probe.execute(
+                    "SELECT 1 FROM jsonl_records WHERE ingested_at < ? LIMIT 1",
+                    (cutoff,),
+                ).fetchone()
+                if expired is None:
+                    continue
+            finally:
+                probe.close()
             conn = _connect(path)
         except sqlite3.DatabaseError as exc:
             errors[str(path)] = str(exc)

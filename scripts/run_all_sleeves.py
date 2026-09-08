@@ -944,6 +944,28 @@ def _launcher_readiness_contract(
     }
 
 
+def _resource_admission_exit(spec: JobSpec, code: int | None) -> bool:
+    wrappers = {
+        "baseline_parallel": "run_parallel_shadows.py",
+        "aggressive_modes": "run_parallel_aggressive_modes.py",
+    }
+    expected = wrappers.get(spec.name)
+    return bool(
+        code == 4 and expected and any(Path(part).name == expected for part in spec.cmd)
+    )
+
+
+def _resource_admission_retry_due(
+    name: str,
+    deferred_since: dict[str, float],
+    *,
+    now: float,
+    retry_seconds: float = 60.0,
+) -> bool:
+    since = deferred_since.setdefault(name, now)
+    return now - since >= max(float(retry_seconds), 60.0)
+
+
 def _launcher_health_payload(
     *,
     specs: dict[str, JobSpec],
@@ -998,11 +1020,14 @@ def _launcher_health_payload(
                 "state": state,
                 "pid": pid,
                 "exit_code": code,
-                "uptime_seconds": round(max(now - started, 0.0), 3) if started > 0 else 0.0,
+                "uptime_seconds": (
+                    round(max(now - started, 0.0), 3) if started > 0 else 0.0
+                ),
                 "restart_count_last_hour": recent_restart_count,
                 "quarantined": name in quarantined_jobs,
                 "policy_parked": name in parked_jobs,
                 "clean_exited": name in clean_jobs,
+                "resource_admission_deferred": _resource_admission_exit(spec, code),
                 "breaker_group": spec.breaker_group,
             }
         )
@@ -2125,6 +2150,7 @@ def main() -> int:
     planned_recycles: dict[str, dict[str, object]] = {}
     quarantined_jobs: dict[str, dict[str, object]] = {}
     clean_exited_at: dict[str, float] = {}
+    resource_deferred_since: dict[str, float] = {}
     breaker_streaks: dict[str, int] = {EXECUTION_BREAKER_GROUP: 0}
     breaker_latched_groups: set[str] = set()
     group_disabled_until: dict[str, float] = {
@@ -2465,6 +2491,7 @@ def main() -> int:
                     continue
                 code = proc.poll()
                 if code is None:
+                    resource_deferred_since.pop(name, None)
                     if name in policy_parked_jobs:
                         if name not in parked_jobs_reported:
                             print(f"[{name}] parking reason=process_fanout_guard_active")
@@ -2660,6 +2687,28 @@ def main() -> int:
                             clean_exited_jobs=set(clean_exited_at),
                         )
                     )
+                    continue
+                if args.restart_on_exit and _resource_admission_exit(specs[name], code):
+                    first_deferral = name not in resource_deferred_since
+                    retry_due = _resource_admission_retry_due(
+                        name, resource_deferred_since, now=now
+                    )
+                    if first_deferral:
+                        print(
+                            f"[{name}] resource_admission_deferred retry_seconds=60 failure_restart_counted=0"
+                        )
+                    if (
+                        retry_due
+                        and group_disabled_until.get(specs[name].breaker_group, 0.0)
+                        <= now
+                    ):
+                        # Both wrappers rerun their resource guard before spawning any workers.
+                        procs[name] = _spawn(specs[name])
+                        proc_started_at[name] = time.time()
+                        resource_deferred_since.pop(name, None)
+                        print(
+                            f"[{name}] resource_admission_retry failure_restart_counted=0"
+                        )
                     continue
                 print(f"[{name}] exited code={code}")
                 if code == 0:

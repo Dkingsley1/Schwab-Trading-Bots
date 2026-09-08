@@ -248,3 +248,119 @@ order placement, candidate acceptance, or reserve/qualification relaxation.
 - The staged project guard passed all seven checks and the staged secret scan
   found zero findings before publication. The live hook enforcement gap remains
   separate; no hook was installed, disabled, or bypassed.
+
+### September 8 Continued Recovery
+
+The follow-up repair fixes storage-pressure trigger alignment, scheduled recovery
+admission, protected-route checks, verified telemetry rotation, inactive cold
+SQLite compression, historical offload, and duplicate-removal proof requirements.
+These are implemented repairs, not a claim that every platform area is complete.
+
+- The old self-healing trigger waited for memory-disk warning/emergency levels
+  even though SQL ingestion pauses below 64 GiB. The launcher also exported an
+  urgent quiet-hours exception that its nested environment reload overwrote.
+  A storage-only pass now runs before heavy maintenance, under the shared
+  self-healing lock, fresh load/memory admission, existing writer handoff,
+  bounded work limits, and retry/circuit state. Heavy repairs remain gated.
+- Forty-four inactive cold SQLite archives have full matching source/copy
+  hashes, SQLite quick-check results, and atomic replacement receipts. Their
+  physical block savings total **39.362 GiB**, including 2.893 GiB from the
+  scheduled pass. Original SQL paths remain readable. Proofs are in the two
+  compaction manifests under the permitted cold archive; runtime data is not
+  committed to Git.
+- Two explicit telemetry rotations reclaimed **5.588 GiB net** after full gzip
+  restoration verification. Guarded reclamation of the explanations shard
+  reclaimed **3.765 GiB**. The historical offload moved **22.117 GiB** with full
+  restore hashes, durable receipts, and atomic original-path links while
+  preserving the destination admission reserve. Physical free space can vary
+  independently because collection, SQL writes, archives, and swap continue.
+- The bounded backlog recovery reduced 26,445 pending lines to 11,400 at
+  16:12 UTC. The process watchdog then reported ready, with no active restart
+  storm, based on fresh writer progress. The 5 GiB channel queue passed a full
+  SQLite quick-check. The larger primary cache was explicitly skipped by that
+  fast integrity pass, not fully certified.
+- The deployed storage-only pass triggered without manual invocation at
+  16:47 UTC. It measured 59.216 GiB initially and 64.213 GiB after recovery.
+  Three cold files verified; the fourth exceeded the shared 600-second work
+  budget, retained its original, and reported failure. The owned maintenance
+  hold was released. Successful pressure relief does not erase a failed step.
+- Native `ditto` did not actually compress the attempted large SQLite copies;
+  their unchanged allocated size caused rejection and preserved the originals.
+  The optional `afsctool` backend is installed locally. Files are capped below
+  2 GiB; selection is explicitly a bounded wave, not a complete archive census.
+- The duplicate guard previously treated 2,422 files / **116.638 GiB** of
+  retained cold/quarantine fallback history as active duplicate debt. These
+  remain visible, unreconciled, and nondeletable archive inventory. Active
+  duplicate release now requires full restored bytes/hash, stable identities,
+  no open handles, synced canonical data, and a durable proof. Unverified
+  partial files, failed SQLite files, and failover backups are preserved.
+- The machine shut down during this work and rebooted around 17:00 UTC. Source
+  edits and archive receipts survived. No maintenance hold remained, and the
+  reboot owner reported required services loaded at 17:02 UTC. Startup load
+  remains a separate admission constraint; loaded services are not proof of
+  current ingest throughput or live execution readiness.
+- Reboot CPU pressure made the baseline and aggressive wrappers correctly exit
+  with resource-admission code 4. The parent incorrectly charged each deferral
+  against its crash budget and quarantined both after 22 retries. This exit now
+  retries at most once per minute, reruns resource admission, remains visibly
+  non-ready, and does not consume the crash budget. Other failures retain their
+  normal restart limits. A scoped graceful supervisor recycle adopted the fix;
+  at 17:33 UTC all 24 jobs ran with zero quarantines and zero child crash retries.
+  Paper execution remained resident but safety-held, and live trading stayed off.
+- The watchdog previously ignored fresh incomplete-collection evidence when the
+  parent process was healthy. It now reports that child degradation without
+  restarting the healthy parent or suppressing the launcher's repair ownership.
+- A subsequent physical-allocation audit caught compression being undone by
+  writable archive inspections, including no-op retention. Native tests reproduced
+  this for counts, retention, and integrity checks. These paths and export reads
+  now use read-only SQLite connections; expiry probes keep unexpired archives
+  read-only and still see committed WAL data. Of the first 44 compressed files,
+  23 had expanded again by 17:43 UTC, undoing about 20.225 GiB of receipt-time
+  savings; 21 remained compressed. The 39.362 GiB figure above is historical
+  verified gross recovery, not current net free space. No old receipts were
+  rewritten and no file ages were reset to make recent files compression-eligible.
+- The normal post-reboot One Numbers refresh remained deferred by the current
+  Mac-fluidity admission guard. The support-freeze exception did not override
+  that additional resource gate. Stale execution evidence was not marked fresh.
+- The first small production compaction recheck deferred without mutation when
+  writer handoff exceeded 30 seconds; its owned hold was released. The SQL manager
+  was complete but retained its lock through the inter-cycle sleep. That sleep
+  now polls the existing maintenance-hold owner and wakes promptly, preserving
+  active-batch completion and exclusive writer ownership.
+
+Still open: the 125 GiB internal unattended reserve, full-size snapshot/restore
+certification, sustained post-reboot writer/queue recovery, retained historical
+quarantine reconciliation, installed hook enforcement, independent off-host
+monitoring, and organic candidate/live qualification. The compatibility-cache
+rebuild plan was blocked by writer ownership and staging reserve; it was not
+applied. No risk or reserve threshold was lowered, no candidate was accepted,
+and no live orders were enabled. Additional permitted storage was requested.
+
+### Continued Recovery Closeout
+
+- The final combined 27-file regression suite passed **543 tests and two
+  subtests**, including actual macOS compression, no-op retention, WAL visibility,
+  export and integrity reads, child restart policy, and idle writer handoff.
+  This is focused regression coverage, not whole-platform certification.
+- A second compaction attempt also deferred at the 120-second handoff limit.
+  At 18:00 UTC, the existing completed-writer coordinator safely released the old
+  idle manager. Its replacement loaded the new code and handed off in 6.163
+  seconds. The guarded single-archive compaction then reclaimed another
+  **0.352 GiB**, verified all bytes, and released its owned maintenance hold.
+- Production read-only verification checked 289,882 archive rows, SQLite
+  quick-check, and the full receipt SHA-256. Physical allocation remained exactly
+  55,128,064 bytes with compression still set after both repaired readers ran.
+  The local receipt is `governance/health/cold_archive_readonly_lifecycle_20260908.json`.
+- Seven lightweight diagnostic owners were refreshed at 18:03 UTC without apply
+  authority or a full graph refresh. Real storage/plumbing and qualification
+  failures remained visible. The required regression guard and non-applying
+  autopilot reported two blocked and four degraded surfaces.
+- Renewed SQL growth crossed local storage admission after the runtime repair.
+  At 18:06 UTC, free space was approximately **49 GiB local / 100 GiB BOT_LOGS**;
+  the writer correctly paused below 64 GiB. All 24 supervised launcher jobs had
+  recovered, but this is not sustained SQL-ingestion recovery. No maintenance
+  hold was left behind. Telemetry preview found no remaining eligible files.
+  Read-only page accounting found no material free pages in the five large
+  trading/governance shards; the primary cache had only 0.040 GiB free pages.
+  These are retained rows, not a vacuum cleanup opportunity. An additional
+  permitted archive/restore destination is required; the reserve was not lowered.

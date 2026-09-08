@@ -1116,6 +1116,7 @@ def test_cycle_sleep_wakes_when_focused_request_changes(
         active_request={},
         request_path=request_path,
         poll_seconds=2,
+        project_root=tmp_path,
     )
 
     assert result == "request_changed"
@@ -1145,10 +1146,35 @@ def test_cycle_sleep_preserves_interval_when_request_is_unchanged(
         active_request=active_request,
         request_path=request_path,
         poll_seconds=3,
+        project_root=tmp_path,
     )
 
     assert result == "interval_elapsed"
     assert sleeps == [3.0, 3.0, 3.0, 1.0]
+
+
+def test_cycle_sleep_wakes_for_maintenance_without_starting_another_write(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sleeps = []
+    monkeypatch.setattr(
+        shard_manager.time, "sleep", lambda seconds: sleeps.append(seconds)
+    )
+    monkeypatch.setattr(shard_manager, "_load_active_request", lambda _path: {})
+    monkeypatch.setattr(
+        shard_manager,
+        "_cycle_boundary_maintenance_hold",
+        lambda _root: {"active": True} if sleeps else {},
+    )
+    result = shard_manager._sleep_until_next_cycle(
+        900,
+        active_request={},
+        request_path=tmp_path / "request.json",
+        poll_seconds=2,
+        project_root=tmp_path,
+    )
+    assert result == "maintenance_hold"
+    assert sleeps == [2.0]
 
 
 def test_effective_cycle_args_applies_live_request_env() -> None:

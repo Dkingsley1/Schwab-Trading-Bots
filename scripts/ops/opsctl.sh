@@ -1483,6 +1483,9 @@ case "$cmd" in
   cold-archive-compactor|compact-cold-archive|cold-archive-compact)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/cold_archive_compactor.py" "$@"
     ;;
+  sqlite-reclaim-control)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/sqlite_reclaim_control.py" "$@"
+    ;;
   retention-intelligence-v2|retention-v2|retention-intelligence|retention-report-card)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/retention_intelligence_v2.py" "$@"
     ;;
@@ -3615,7 +3618,8 @@ opsctl commands:
   storage-safe-eject [--no-refresh] [--no-eject]
   soak-self-heal|soak-self-healing [--apply] [--target-days N] [--daily-max-age-minutes N] [--json]
   deep-cold-storage-layer [--apply] [--adaptive] [--move-to-second-cold] [--planning-horizon-days N] [--json]
-  cold-archive-compactor [--apply] [--max-files N] [--max-raw-gb N] [--coordinate-writer-handoff] [--vacuum-sqlite] [--allow-active-writer] [--json]
+  cold-archive-compactor [--apply] [--max-files N] [--max-raw-gb N] [--coordinate-writer-handoff] [--vacuum-sqlite] [--filesystem-compress-sqlite PATH] [--filesystem-timeout-seconds N] [--json]
+  sqlite-reclaim-control [--db PATH] [--scratch-dir PATH] [--apply] [--json]
   retention-intelligence-v2 [--apply] [--sample-limit N] [--json]
   hot-lane-retention-control [--apply] [--target-free-gb N] [--hot-total-thin-gb N] [--json]
   storage-retention-unison [--apply] [--raw-max-files N] [--raw-max-gb N] [--cold-archive-max-files N] [--cold-archive-max-gb N] [--cleanup-max-delete-gb N] [--telemetry-max-gb N] [--lifecycle-max-gb N] [--decision-max-gb N] [--target-free-gb N] [--json]
