@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -13,15 +14,18 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from core.bot_organization import canonical_hash, organize_registry
+    from core.bot_definition_contracts import audit_definitions, render_audit_markdown
     from core.hierarchical_ensemble import aggregate_shadow_votes
     from scripts.ops.long_runtime_common import (
         iso_now,
         load_json,
         ordered_unique,
         write_payload,
+        write_text_atomic,
     )
 else:
     from core.bot_organization import canonical_hash, organize_registry
+    from core.bot_definition_contracts import audit_definitions, render_audit_markdown
     from core.hierarchical_ensemble import aggregate_shadow_votes
     from .long_runtime_common import (
         PROJECT_ROOT,
@@ -29,8 +33,19 @@ else:
         load_json,
         ordered_unique,
         write_payload,
+        write_text_atomic,
     )
 
+
+from core.bot_operating_definitions import (
+    CATALOG_PATH as OPERATING_CATALOG_PATH,
+    POLICY_PATH as OPERATING_POLICY_PATH,
+    compile_catalog as compile_operating_catalog,
+    expand_definition,
+    validate_catalog as validate_operating_catalog,
+)
+from core.bot_process_definitions import expand_definition as expand_process_definition
+from core.status_label_contract import bot_definition_labels
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "bot_organization_v1.json"
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
@@ -251,6 +266,42 @@ def build_payload(
         project_root=project_root,
     )
     assignments = list(result.pop("assignments", []))
+    trading_mandate_audit = audit_definitions(
+        registry,
+        catalog,
+        assignments,
+        policy.get("definition_audit_contract") or {},
+        project_root,
+    )
+    definition_audit = validate_operating_catalog(
+        registry,
+        catalog,
+        trading_mandate_audit,
+        load_json(project_root / OPERATING_POLICY_PATH),
+        load_json(project_root / OPERATING_CATALOG_PATH),
+        project_root,
+    )
+    registry_by_id = {
+        str(bot.get("bot_id") or bot.get("id") or ""): bot
+        for bot in registry.get("sub_bots", []) if isinstance(bot, dict)
+    }
+    definition_by_id = {row["bot_id"]: row for row in definition_audit["records"]}
+    for assignment in assignments:
+        bot_id = assignment["bot_id"]
+        assignment["status_labels"] = bot_definition_labels(
+            registry_by_id.get(bot_id, {}), definition_by_id.get(bot_id, {})
+        )
+    label_audit = {
+        "scope": "all_registry_assignments_not_all_runtime_or_training_outcomes",
+        "registered_count": len(registry_by_id),
+        "labeled_count": len(assignments),
+        "coverage_complete": set(registry_by_id) == {row["bot_id"] for row in assignments},
+        "counts": {
+            key: dict(Counter(row["status_labels"][key] for row in assignments))
+            for key in ("registry", "collection", "definition", "implementation", "process", "runtime", "economic_evidence")
+        },
+        "definition_completeness_is_not_runtime_or_economic_evidence": True,
+    }
     self_test = _shadow_integrity_self_test(policy)
     blockers = ordered_unique(
         list(result.get("blockers") or [])
@@ -266,6 +317,7 @@ def build_payload(
         "registry_sha256": _sha256(registry_path),
         "catalog_input_sha256": _sha256(catalog_input_path),
         "assignment_receipt_sha256": result.get("assignment_receipt_sha256"),
+        "definition_audit_sha256": definition_audit.get("audit_sha256"),
         "shadow_integrity_self_test": self_test,
     }
     receipt = canonical_hash(receipt_input)
@@ -335,6 +387,8 @@ def build_payload(
         "tripwire_contract": result.get("tripwire_contract") or {},
         "tripwire_summary": result.get("tripwire_summary") or {},
         "assignments": assignments,
+        "status_label_audit": label_audit,
+        "definition_audit": definition_audit,
         "authority_contract": {
             "metadata_only": True,
             "paper_execution_authority": False,
@@ -345,6 +399,13 @@ def build_payload(
         "timestamp_utc": iso_now(),
         "schema_version": 1,
         "ok": ok,
+        "definition_audit": {
+            key: value
+            for key, value in definition_audit.items()
+            if key not in {"records", "shared_source_contracts"}
+        },
+        "grade_scope": "organization_structure_not_definition_completeness_or_economic_evidence",
+        "status_label_audit": label_audit,
         "overall_status": str(
             result.get("overall_status") or ("ready" if ok else "blocked")
         ),
@@ -539,6 +600,25 @@ def main() -> int:
     parser.add_argument("--catalog-input", type=Path)
     parser.add_argument("--out-file", type=Path)
     parser.add_argument("--hierarchy-out", type=Path)
+    parser.add_argument("--definition-markdown", type=Path)
+    parser.add_argument(
+        "--materialize-operating-definitions",
+        action="store_true",
+        help="Explicitly author/rebind the operating-definition catalog from reviewed local sources; never run by routine refresh.",
+    )
+    parser.add_argument(
+        "--require-trading-mandate-complete",
+        action="store_true",
+        help="Require the original standalone trading mandates independently of operating definitions; no economic clearance.",
+    )
+    parser.add_argument(
+        "--bot-definition", help="Print one expanded seven-area operating definition."
+    )
+    parser.add_argument(
+        "--require-definition-complete",
+        action="store_true",
+        help="Require source-bound operating definitions for all registered bots, not trading-mandate or economic readiness; does not alter runtime gates.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     project_root = args.project_root.resolve()
@@ -555,6 +635,14 @@ def main() -> int:
         args.hierarchy_out,
         "governance/bot_organization/bot_hierarchy_latest.json",
     )
+    if args.materialize_operating_definitions:
+        manifest = compile_operating_catalog(
+            load_json(registry_path),
+            load_json(catalog_input_path),
+            load_json(project_root / OPERATING_POLICY_PATH),
+            project_root,
+        )
+        write_payload(project_root / OPERATING_CATALOG_PATH, manifest, compact=True)
     health, hierarchy = build_payload(
         project_root,
         config_path=config_path,
@@ -562,9 +650,71 @@ def main() -> int:
         catalog_input_path=catalog_input_path,
         hierarchy_out_path=hierarchy_out_path,
     )
-    write_payload(hierarchy_out_path, hierarchy)
+    write_payload(hierarchy_out_path, hierarchy, compact=True)
     write_payload(out_path, health)
-    if args.json:
+    markdown_path = _resolve(
+        project_root,
+        args.definition_markdown,
+        "exports/reports/operator/bot_definition_audit_latest.md",
+    )
+    write_text_atomic(
+        markdown_path, render_audit_markdown(hierarchy["definition_audit"])
+    )
+    if args.bot_definition:
+        manifest = load_json(project_root / OPERATING_CATALOG_PATH)
+        entry = (manifest.get("entries") or {}).get(args.bot_definition)
+        record = next(
+            (
+                row
+                for row in hierarchy["definition_audit"]["records"]
+                if row["bot_id"] == args.bot_definition
+            ),
+            None,
+        )
+        if not entry or not record or not record["definition_complete"]:
+            print(
+                json.dumps(
+                    {
+                        "bot_id": args.bot_definition,
+                        "definition_complete": False,
+                        "issues": (record or {}).get("issues", ["bot_not_found"]),
+                    }
+                )
+            )
+            return 2
+        expanded_entry = {
+            "binding": record["binding"],
+            "binding_sha256": record["binding_sha256"],
+        }
+        print(
+            json.dumps(
+                {
+                    "bot_id": args.bot_definition,
+                    "definition_sha256": record["definition_sha256"],
+                    "completion_scope": record["completion_scope"],
+                    "status_labels": next(
+                        row["status_labels"] for row in hierarchy["assignments"]
+                        if row["bot_id"] == args.bot_definition
+                    ),
+                    "areas": expand_definition(
+                        expanded_entry, load_json(project_root / OPERATING_POLICY_PATH)
+                    ),
+                    "processes": expand_process_definition(
+                        record["binding"],
+                        hierarchy["definition_audit"]["process_contract"],
+                    ),
+                    "shared_source_contracts": hierarchy["definition_audit"][
+                        "shared_source_contracts"
+                    ],
+                    "economic_evidence": record["economic_evidence"],
+                    "standalone_trading_mandate_complete": record[
+                        "standalone_trading_mandate"
+                    ].get("definition_complete", False),
+                },
+                ensure_ascii=True,
+            )
+        )
+    elif args.json:
         print(json.dumps(health, ensure_ascii=True))
     else:
         print(
@@ -572,7 +722,16 @@ def main() -> int:
             f"status={health['overall_status']} grade={health['grade']} "
             f"organized={health['organized_bot_count']}/{health['registry_bot_count']} "
             f"review={health['review_queue_count']}"
+            f" operating_definitions={health['definition_audit'].get('definition_complete_count', 0)}/{health['registry_bot_count']}"
         )
+    if args.require_definition_complete and not health["definition_audit"].get(
+        "definition_complete"
+    ):
+        return 2
+    if args.require_trading_mandate_complete and not health["definition_audit"].get(
+        "standalone_trading_mandate_summary", {}
+    ).get("definition_complete"):
+        return 2
     return 0 if health["ok"] else 2
 
 

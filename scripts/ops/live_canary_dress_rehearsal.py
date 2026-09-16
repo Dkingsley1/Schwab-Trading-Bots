@@ -30,6 +30,7 @@ from core.live_execution_envelope import (
     verify_live_execution_envelope,
 )
 from core.order_intent import build_order_intent_evidence, canonical_payload_sha256
+from core.storage_router import inspect_storage_path
 from scripts.brokers.schwab.common import build_schwab_trader
 from scripts.ops.schwab_account_hash_keychain_sync import (
     _keychain_account,
@@ -949,6 +950,105 @@ def _restore_environment(previous: Mapping[str, str | None]) -> None:
             os.environ[key] = value
 
 
+def _refresh_technical_evidence() -> dict[str, Any]:
+    steps = (
+        (
+            "tax_ledger",
+            "schwab-tax-ledger-refresh",
+            "schwab_tax_ledger_refresh_latest.json",
+            180,
+        ),
+        ("release_guard", "release-freeze", "release_freeze_guard_latest.json", 60),
+        (
+            "order_ledger",
+            "live-order-ledger",
+            "live_order_ledger_control_latest.json",
+            60,
+        ),
+    )
+    required_paths = [
+        PROJECT_ROOT / "governance" / "health" / filename for _, _, filename, _ in steps
+    ] + [
+        PROJECT_ROOT / "governance/runtime/live_order_ledger.sqlite3",
+        PROJECT_ROOT / "governance/soak/release_freeze_window.json",
+        PROJECT_ROOT
+        / "governance/tax"
+        / f"trading_tax_ledger_{datetime.now(timezone.utc).year}_latest.json",
+    ]
+    rejected = [
+        path.relative_to(PROJECT_ROOT).as_posix()
+        for path in required_paths
+        if inspect_storage_path(
+            path, boundary_root=PROJECT_ROOT, allow_external=False
+        ).get("status")
+        not in {"present", "missing"}
+    ]
+    if rejected:
+        return {
+            "ok": False,
+            "blockers": ["technical_evidence_route_unavailable"],
+            "rejected_paths": rejected,
+            "steps": [],
+        }
+    observations = []
+    for name, command, filename, timeout in steps:
+        path = PROJECT_ROOT / "governance" / "health" / filename
+        previous_digest = file_sha256(path)
+        started = datetime.now(timezone.utc)
+        error = ""
+        returncode = None
+        try:
+            proc = subprocess.run(
+                [str(PROJECT_ROOT / "scripts/ops/opsctl.sh"), command, "--json"],
+                cwd=str(PROJECT_ROOT),
+                env={
+                    **os.environ,
+                    **READ_ONLY_ENVIRONMENT,
+                    "SCHWAB_AUTH_INTERACTIVE": "0",
+                },
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            returncode = proc.returncode
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            error = type(exc).__name__
+        source = _load_json(path)
+        observed = _parse_timestamp(source.get("timestamp_utc"))
+        fresh_publication = bool(
+            observed
+            and started <= observed <= datetime.now(timezone.utc)
+            and previous_digest != file_sha256(path)
+        )
+        # A freshly observed blocked release is valid observation, not release approval.
+        refreshed = returncode == 0 and fresh_publication
+        observations.append(
+            {
+                "name": name,
+                "refreshed": refreshed,
+                "returncode": returncode,
+                "error": error,
+                "timestamp_utc": source.get("timestamp_utc"),
+                "source_status": source.get(
+                    "overall_status", source.get("status", "missing")
+                ),
+                "source_ok": source.get("ok") is True,
+            }
+        )
+    blockers = [
+        f"technical_evidence_refresh_failed:{row['name']}"
+        for row in observations
+        if not row["refreshed"]
+    ]
+    return {
+        "ok": not blockers,
+        "blockers": blockers,
+        "steps": observations,
+        "live_execution_authority": False,
+    }
+
+
 def _refresh_account_study(*, quiet_auth: bool) -> dict[str, Any]:
     snapshot = refresh(quiet_auth=quiet_auth, rebuild_derived=False)
     if not bool(snapshot.get("ok", False)):
@@ -1026,7 +1126,9 @@ def run(
     out_path: Path,
 ) -> dict[str, Any]:
     previous = _read_only_environment()
+    technical_refresh: dict[str, Any] = {}
     try:
+        technical_refresh = _refresh_technical_evidence()
         account_refresh = (
             _refresh_account_study(quiet_auth=quiet_auth)
             if refresh_account
@@ -1068,6 +1170,15 @@ def run(
             env=dict(os.environ),
             now=now,
         )
+        if not technical_refresh.get("ok", False):
+            preflight = dict(preflight)
+            preflight["ready"] = False
+            preflight["blockers"] = _ordered_unique(
+                list(preflight.get("blockers", []))
+                + list(technical_refresh.get("blockers", []))
+            )
+            preflight.pop("receipt_sha256", None)
+            preflight["receipt_sha256"] = _payload_sha256(preflight)
         payload = build_dress_rehearsal_payload(
             now=now,
             plan=plan,
@@ -1100,6 +1211,7 @@ def run(
         }
     finally:
         _restore_environment(previous)
+    payload["technical_evidence_refresh"] = technical_refresh
     safe_write_json_atomic(
         str(out_path),
         payload,

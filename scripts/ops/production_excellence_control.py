@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -446,48 +447,83 @@ def candidate_source_coverage(
 def _read_jsonl(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
-    if not path.exists():
-        return rows, errors
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except Exception as exc:
-        return [], [f"event_log_read_failed:{type(exc).__name__}"]
-    for index, line in enumerate(lines, start=1):
-        if not line.strip():
+    sources = [path] if path.suffix == ".gz" else [
+        path.with_name(path.name + ".gz"),
+        path.with_name(path.name + ".raw-training.gz"),
+        path,
+    ]
+    seen: dict[str, dict[str, Any]] = {}
+    for source in sources:
+        if not source.exists():
             continue
+        partition_seen: dict[str, dict[str, Any]] = {}
         try:
-            payload = json.loads(line)
-        except Exception:
-            errors.append(f"invalid_json_line={index}")
-            continue
-        if not isinstance(payload, dict):
-            errors.append(f"non_object_line={index}")
-            continue
-        rows.append(payload)
+            opener = gzip.open if source.suffix == ".gz" else open
+            with opener(source, "rt", encoding="utf-8") as handle:
+                for index, line in enumerate(handle, start=1):
+                    if not line.strip():
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except ValueError:
+                        errors.append(f"invalid_json_line={index}")
+                        continue
+                    if not isinstance(payload, dict):
+                        errors.append(f"non_object_line={index}")
+                        continue
+                    event_hash = str(payload.get("event_hash") or "")
+                    # Compaction may retain identical copies at partition boundaries.
+                    if event_hash and seen.get(event_hash) == payload:
+                        continue
+                    if event_hash:
+                        partition_seen[event_hash] = payload
+                    rows.append(payload)
+            seen.update(partition_seen)
+        except (OSError, EOFError, UnicodeError) as exc:
+            errors.append(f"event_log_read_failed:{type(exc).__name__}")
     return rows, errors
 
 
-def verify_candidate_event_chain(path: Path) -> dict[str, Any]:
+def read_candidate_event_chain(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read retained partitions and validate the exact rows consumed by readers."""
     rows, errors = _read_jsonl(path)
     expected_previous = ""
+    recovery_boundaries: list[int] = []
     for index, row in enumerate(rows, start=1):
         actual_hash = str(row.get("event_hash") or "")
         previous_hash = str(row.get("previous_event_hash") or "")
         unsigned = dict(row)
         unsigned.pop("event_hash", None)
         expected_hash = _canonical_hash(unsigned)
-        if previous_hash != expected_previous:
+        recovery = _as_dict(row.get("recovery_evidence"))
+        verified_recovery = bool(
+            expected_previous
+            and not previous_hash
+            and row.get("event_type") == "candidate_chain_recovery_anchor"
+            and recovery.get("all_evidence_windows_reset") is True
+            and recovery.get("prior_state_event_chain_head") == expected_previous
+            and actual_hash == expected_hash
+        )
+        if verified_recovery:
+            recovery_boundaries.append(index)
+        elif previous_hash != expected_previous:
             errors.append(f"previous_hash_mismatch_line={index}")
         if actual_hash != expected_hash:
             errors.append(f"event_hash_mismatch_line={index}")
         expected_previous = actual_hash
-    return {
+    chain = {
         "ok": not errors,
         "event_count": len(rows),
         "chain_head": expected_previous,
         "errors": errors,
+        "verified_recovery_boundary_lines": recovery_boundaries,
         "path": str(path),
     }
+    return ([] if errors else rows), chain
+
+
+def verify_candidate_event_chain(path: Path) -> dict[str, Any]:
+    return read_candidate_event_chain(path)[1]
 
 
 def _append_candidate_event(path: Path, event: dict[str, Any]) -> None:

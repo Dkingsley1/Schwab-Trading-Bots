@@ -3,6 +3,7 @@ import sys
 import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -200,6 +201,7 @@ def test_storage_soak_blocker_runs_compaction_retention_and_cold_offload(tmp_pat
 
     retention_calls = [call for call in calls if "storage-retention-unison" in call]
     raw_compaction_calls = [call for call in calls if "raw-training-compaction" in call]
+    evidence_calls = [call for call in calls if "cold-evidence-compactor" in call]
     offload_calls = [call for call in calls if "manifest-backed-offload" in call]
     assert payload["ok"] is True
     assert payload["overall_status"] == "guarded_storage_capacity"
@@ -207,6 +209,10 @@ def test_storage_soak_blocker_runs_compaction_retention_and_cold_offload(tmp_pat
     assert payload["storage"]["recovery"]["raw_compaction_attempted"] is True
     assert payload["storage"]["recovery"]["manifest_cold_offload_attempted"] is True
     assert raw_compaction_calls
+    assert evidence_calls
+    assert "--target-free-gb 125.0" in evidence_calls[0]
+    assert "--seconds 540" in evidence_calls[0]
+    assert calls.index(evidence_calls[0]) < calls.index(raw_compaction_calls[0])
     assert "--jumbo-gb 12.0" in raw_compaction_calls[0]
     assert offload_calls
     assert "--release-source-after-verify" in offload_calls[0]
@@ -289,6 +295,7 @@ def test_local_storage_target_warning_triggers_bounded_storage_recovery(tmp_path
     assert retention_calls
     assert "--target-free-gb 125.0" in retention_calls[0]
     assert payload["storage"]["retention_attempted"] is True
+    assert any("cold-evidence-compactor --apply --target-free-gb 125.0" in call for call in calls)
 
 
 def test_ingestion_soak_blocker_runs_bounded_repair_and_rechecks(tmp_path: Path, monkeypatch) -> None:
@@ -546,6 +553,49 @@ def _storage_recovery_fixture(tmp_path, monkeypatch, free_gb=40):
     return calls
 
 
+@pytest.mark.parametrize("lease_state", ["fresh", "stale", "denied", "missing"])
+def test_adaptive_pressure_entry_is_compression_only(tmp_path, monkeypatch, lease_state):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(src.os, "cpu_count", lambda: 10)
+    monkeypatch.setattr(src.os, "getloadavg", lambda: (7.5, 7.5, 7.5))
+    monkeypatch.setattr(src, "_configure_cold_archive_env",
+                        lambda *a, **kw: pytest.fail("extra CPU admission cannot invoke external/heavy recovery"))
+    now = datetime.now(timezone.utc).isoformat()
+    lease = {
+        "schema_version": 1, "timestamp_utc": now, "source_timestamp_utc": now,
+        "input_evidence_ready": True, "workloads": {"storage_recovery": {"admitted": True}},
+    }
+    if lease_state == "stale":
+        lease["source_timestamp_utc"] = "2000-01-01T00:00:00Z"
+    elif lease_state == "denied":
+        lease["workloads"]["storage_recovery"]["admitted"] = False
+    if lease_state != "missing":
+        src.write_payload(tmp_path / "governance/health/runtime_throttle_control_latest.json",
+                    {"workload_admission": lease})
+    payload = src.build_storage_recovery_payload(tmp_path, apply=True)
+    if lease_state != "fresh":
+        assert not payload["admitted"]
+        assert not calls
+        return
+    assert payload["admitted"] and payload["adaptive_compression_only"]
+    assert not payload["ok"] and not payload["live_execution_authority"]
+    assert [cmd[1] for cmd in calls[1:]] == [
+        "cold-evidence-compactor", "governance-lifecycle-compactor", "local-storage-reserve-guard"
+    ]
+    lifecycle = calls[2]
+    assert lifecycle[lifecycle.index("--max-files") + 1] == "32"
+    assert lifecycle[lifecycle.index("--seconds") + 1] == "180"
+    assert "--include-current-day" not in lifecycle
+
+
+@pytest.mark.parametrize("load", [float("nan"), float("inf"), -1])
+def test_invalid_outer_recovery_load_cannot_admit(tmp_path, monkeypatch, load):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(src.os, "getloadavg", lambda: (load, load, load))
+    payload = src.build_storage_recovery_payload(tmp_path, apply=True)
+    assert not payload["admitted"] and not calls
+
+
 def _memory_result(**snapshot_overrides):
     return _result(
         [],
@@ -665,16 +715,228 @@ def test_storage_recovery_only_is_bounded_and_does_not_claim_complete(
     assert not payload["ok"]
     assert not payload["live_execution_authority"]
     assert not payload["heavy_maintenance_allowed"]
-    assert len(calls) == 4
+    assert len(calls) == 7
     assert "memory_efficiency_control.py" in calls[0][1]
     assert [cmd[1] for cmd in calls[1:]] == [
+        "cold-evidence-compactor",
+        "governance-lifecycle-compactor",
         "governance-telemetry-compactor",
         "cold-archive-compactor",
         "deep-cold-storage-layer",
+        "local-storage-reserve-guard",
     ]
-    assert calls[2][calls[2].index("--max-raw-gb") + 1] == "8"
-    assert calls[3][calls[3].index("--destination-reserve-gb") + 1] == "125"
-    assert "--no-include-local-quarantine" in calls[3]
+    assert calls[1][calls[1].index("--seconds") + 1] == "840"
+    assert calls[2][calls[2].index("--seconds") + 1] == "180"
+    assert "--include-current-day" not in calls[2]
+    assert calls[4][calls[4].index("--max-raw-gb") + 1] == "4"
+    assert calls[4][calls[4].index("--filesystem-timeout-seconds") + 1] == "1200"
+    assert calls[4][calls[4].index("--maintenance-hold-ttl-seconds") + 1] == "1320"
+    assert calls[4][calls[4].index("--filesystem-compressor") + 1] == "auto"
+    assert calls[5][calls[5].index("--destination-reserve-gb") + 1] == "125"
+    assert "--no-include-local-quarantine" in calls[5]
+    assert "--include-registry-backups" in calls[5]
+    assert "--closed-history-min-age-hours" not in calls[5]
+    assert "--reserve-only" in calls[6]
+    assert "--skip-governor-reconcile" in calls[6]
+
+
+def _disk_only_memory_result():
+    result = _memory_result(
+        memory_pressure_state="yellow", memory_pressure_kind="disk_swap_headroom"
+    )
+    result["parsed"].update(
+        input_evidence_ready=True,
+        storage_recovery_memory_observation={
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "input_evidence_ready": True,
+            "memory_pressure_state": "yellow",
+            "memory_pressure_kind": "disk_swap_headroom",
+            "memory_pressure_reasons": ["local_disk_swap_headroom_gb:17<32"],
+            "memory_free_pct": 91,
+            "swap_used_gb": 6.9,
+            "compressor_gb": 0.23,
+            "pages_throttled": 0,
+        },
+    )
+    return result
+
+
+def test_pressure_recovery_keeps_offload_separate_from_apfs_compression(tmp_path, monkeypatch):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    offload = str(tmp_path / "separate_archive")
+    monkeypatch.setenv("BOT_DEEP_COLD_OFFLOAD_ROOT", offload)
+    monkeypatch.setenv("BOT_DEEP_COLD_MAX_MOVE_FILES", "9999")
+    monkeypatch.setenv("BOT_DEEP_COLD_MIN_SIZE_MB", "0.1")
+    src.build_storage_recovery_payload(tmp_path, apply=True)
+    compression = next(cmd for cmd in calls if "cold-archive-compactor" in cmd)
+    move = next(cmd for cmd in calls if "deep-cold-storage-layer" in cmd)
+    assert compression[compression.index("--archive-root") + 1] != offload
+    assert move[move.index("--second-cold-root") + 1] == offload
+    assert move[move.index("--max-move-files") + 1] == "256"
+    assert float(move[move.index("--min-size-mb") + 1]) == 1
+    assert move[move.index("--destination-reserve-gb") + 1] == "125"
+
+
+def test_disk_only_pressure_admits_only_bounded_storage_recovery(tmp_path, monkeypatch):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    original_runner = src._run_command
+
+    def runner(cmd, **kwargs):
+        if "memory_efficiency_control.py" in cmd[1]:
+            calls.append(cmd)
+            return _disk_only_memory_result()
+        return original_runner(cmd, **kwargs)
+
+    monkeypatch.setattr(src, "_run_command", runner)
+    payload = src.build_storage_recovery_payload(tmp_path, apply=True)
+    assert payload["admitted"]
+    assert not payload["ok"]
+    assert not payload["heavy_maintenance_allowed"]
+    assert not payload["live_execution_authority"]
+    assert len(calls) == 7
+    assert (
+        payload["steps"][0]["observation_reason"]
+        == "disk_only_pressure_memory_admitted"
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("timestamp_utc", "2000-01-01T00:00:00Z"),
+        ("timestamp_utc", "2100-01-01T00:00:00Z"),
+        ("timestamp_utc", "2026-09-13T20:00:00"),
+        ("input_evidence_ready", False),
+        ("input_evidence_ready", "true"),
+        ("memory_pressure_state", "red"),
+        ("memory_pressure_kind", "mixed"),
+        ("memory_pressure_reasons", []),
+        (
+            "memory_pressure_reasons",
+            ["local_disk_swap_headroom_gb:17<32", "free_pct:3<8"],
+        ),
+        ("memory_free_pct", 84),
+        ("memory_free_pct", True),
+        ("memory_free_pct", float("nan")),
+        ("swap_used_gb", 8.1),
+        ("swap_used_gb", None),
+        ("compressor_gb", 1.1),
+        ("compressor_gb", "0.23"),
+        ("pages_throttled", 1),
+        ("pages_throttled", False),
+        ("memory_free_pct", 10**1000),
+    ],
+)
+def test_disk_only_admission_rejects_real_or_unverified_pressure(field, value):
+    result = _disk_only_memory_result()
+    result["parsed"]["storage_recovery_memory_observation"][field] = value
+    assert not src._storage_memory_observation(result)["admission_ready"]
+
+
+def test_disk_only_admission_requires_raw_evidence_and_completed_observation():
+    result = _disk_only_memory_result()
+    result["parsed"].pop("storage_recovery_memory_observation")
+    assert not src._storage_memory_observation(result)["admission_ready"]
+    result = _disk_only_memory_result()
+    result["timed_out"] = True
+    assert not src._storage_memory_observation(result)["admission_ready"]
+
+
+def test_quick_storage_recovery_is_compression_only_and_preserves_bounds(
+    tmp_path, monkeypatch
+):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("quick recovery must not inspect offload routes")
+
+    monkeypatch.setattr(src, "_configure_cold_archive_env", forbidden)
+    original = src._run_command
+    timeouts = []
+
+    def runner(cmd, **kwargs):
+        timeouts.append(kwargs["timeout_sec"])
+        return original(cmd, **kwargs)
+
+    monkeypatch.setattr(src, "_run_command", runner)
+    payload = src.build_storage_recovery_payload(
+        tmp_path, apply=True, quick_bounded=True
+    )
+    assert payload["quick_bounded"]
+    assert payload["shared_deadline_seconds"] == 90
+    assert not payload["ok"]
+    assert all(timeout <= 30 for timeout in timeouts)
+    compactors = [cmd for cmd in calls if any("compactor" in str(part) for part in cmd)]
+    assert len(compactors) == 2
+    for cmd in compactors:
+        assert cmd[cmd.index("--max-files") + 1] == "4"
+        assert cmd[cmd.index("--seconds") + 1] == "25"
+    assert not any(
+        "--force" in part or "--include-current-day" in part
+        for cmd in calls
+        for part in cmd
+    )
+
+
+def test_quick_storage_recovery_reconciles_owner_after_external_relief(
+    tmp_path, monkeypatch
+):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch, free_gb=80)
+    payload = src.build_storage_recovery_payload(
+        tmp_path, apply=True, quick_bounded=True
+    )
+    assert payload["ok"]
+    assert len(calls) == 1
+    assert "local-storage-reserve-guard" in calls[0]
+    assert "--reserve-only" in calls[0]
+    assert "--skip-governor-reconcile" in calls[0]
+
+
+def test_quick_storage_recovery_keeps_existing_cooldowns_and_holds(
+    tmp_path, monkeypatch
+):
+    from datetime import timedelta
+
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    until = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    monkeypatch.setattr(
+        src,
+        "_load_state",
+        lambda root: {
+            "steps": {
+                name: {"cooldown_until_utc": until}
+                for name in (
+                    "local_disk_cold_evidence_compaction",
+                    "local_disk_lifecycle_backup_compaction",
+                )
+            }
+        },
+    )
+    src.build_storage_recovery_payload(tmp_path, apply=True, quick_bounded=True)
+    assert not any("compactor" in part for cmd in calls for part in cmd)
+    calls.clear()
+    monkeypatch.setattr(src, "maintenance_hold_snapshot", lambda root: {"active": True})
+    payload = src.build_storage_recovery_payload(
+        tmp_path, apply=True, quick_bounded=True
+    )
+    assert payload["reason"] == "existing_maintenance_hold"
+    assert calls == []
+
+
+def test_quick_storage_recovery_requires_recovery_only_mode():
+    with pytest.raises(SystemExit) as exc:
+        src.main(["--quick-storage-recovery"])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("args", [
+    ["--rebuild-reserve"],
+    ["--storage-recovery-only", "--rebuild-reserve", "--quick-storage-recovery"],
+])
+def test_proactive_recovery_requires_its_dedicated_mode(args):
+    with pytest.raises(SystemExit) as exc:
+        src.main(args)
+    assert exc.value.code == 2
 
 
 def test_storage_recovery_only_noop_and_read_only_do_not_run_repairs(
@@ -685,6 +947,29 @@ def test_storage_recovery_only_noop_and_read_only_do_not_run_repairs(
     assert not calls
     calls = _storage_recovery_fixture(tmp_path, monkeypatch, free_gb=40)
     assert not src.build_storage_recovery_payload(tmp_path, apply=False)["ok"]
+    assert not calls
+
+
+def test_proactive_recovery_starts_before_writer_pressure_and_keeps_floors(tmp_path, monkeypatch):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch, free_gb=80)
+    monkeypatch.setenv("BOT_LOCAL_STORAGE_TARGET_FREE_GB", "125")
+    monkeypatch.setenv("SOAK_SELF_HEAL_STORAGE_TARGET_FREE_GB", "135")
+    payload = src.build_storage_recovery_payload(tmp_path, apply=True, rebuild_reserve=True)
+    assert payload["admitted"]
+    assert not payload["ok"]
+    assert payload["pressure_free_gb"] == 64
+    assert payload["recovery_trigger_free_gb"] == 125
+    assert payload["recovery_target_free_gb"] == 135
+    assert calls[1][calls[1].index("--target-free-gb") + 1] == "135.0"
+    assert not payload["heavy_maintenance_allowed"]
+
+
+def test_proactive_recovery_does_not_churn_inside_hysteresis_band(tmp_path, monkeypatch):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch, free_gb=130)
+    monkeypatch.setenv("BOT_LOCAL_STORAGE_TARGET_FREE_GB", "125")
+    monkeypatch.setenv("SOAK_SELF_HEAL_STORAGE_TARGET_FREE_GB", "135")
+    payload = src.build_storage_recovery_payload(tmp_path, apply=True, rebuild_reserve=True)
+    assert payload["ok"] and not payload["admitted"]
     assert not calls
 
 
@@ -724,6 +1009,64 @@ def test_storage_recovery_launcher_precedes_heavy_gate():
         "run_guarded_maintenance.sh"
     )
     assert "MAINTENANCE_SLOT_DEFER_OUTSIDE_QUIET_WINDOW=0" not in launcher
+    assert "--storage-recovery-only --rebuild-reserve --apply" in launcher
+
+
+def test_storage_recovery_shared_deadline_reserves_final_assessment(tmp_path, monkeypatch):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    clock = [0]
+    monkeypatch.setattr(src.time, "monotonic", lambda: clock[0])
+    runner = src._run_command
+    def slow(cmd, **kwargs):
+        result = runner(cmd, **kwargs)
+        if "cold-evidence-compactor" in cmd:
+            clock[0] = 1750
+        return result
+    monkeypatch.setattr(src, "_run_command", slow)
+    payload = src.build_storage_recovery_payload(tmp_path, apply=True)
+    assert [cmd[1] for cmd in calls[1:]] == ["cold-evidence-compactor", "local-storage-reserve-guard"]
+    assert payload["reason"] == "storage_recovery_deadline"
+    assert not payload["ok"]
+
+
+def test_storage_target_stops_more_compression_but_reconciles_reserve(tmp_path, monkeypatch):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    runner = src._run_command
+    def recovered(cmd, **kwargs):
+        result = runner(cmd, **kwargs)
+        if "cold-evidence-compactor" in cmd:
+            monkeypatch.setattr(src.shutil, "disk_usage", lambda p: SimpleNamespace(free=80*1024**3))
+        return result
+    monkeypatch.setattr(src, "_run_command", recovered)
+    payload = src.build_storage_recovery_payload(tmp_path, apply=True)
+    assert payload["ok"]
+    assert [cmd[1] for cmd in calls[1:]] == ["cold-evidence-compactor", "local-storage-reserve-guard"]
+
+
+def test_sqlite_compression_requires_its_complete_verification_window(tmp_path, monkeypatch):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    clock = [0]
+    monkeypatch.setattr(src.time, "monotonic", lambda: clock[0])
+    runner = src._run_command
+
+    def slow(cmd, **kwargs):
+        result = runner(cmd, **kwargs)
+        if "cold-evidence-compactor" in cmd:
+            clock[0] = 700
+        return result
+
+    monkeypatch.setattr(src, "_run_command", slow)
+    payload = src.build_storage_recovery_payload(tmp_path, apply=True)
+    assert not any("cold-archive-compactor" in cmd for cmd in calls)
+    deferred = next(
+        row
+        for row in payload["steps"]
+        if row["name"] == "local_disk_cold_sqlite_compression"
+    )
+    assert deferred["executed"] is False
+    assert deferred["reason"] == "insufficient_complete_compression_window"
+    assert deferred["required_seconds"] == 1300
+    assert any("local-storage-reserve-guard" in cmd for cmd in calls)
 
 
 def test_cold_archive_configuration_defers_locally_when_external_root_is_offline(

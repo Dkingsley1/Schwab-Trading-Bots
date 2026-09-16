@@ -18,6 +18,17 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def _verified_snapshot():
+    return {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "ok": True,
+        "files_checked": 5,
+        "files_restore_verified": 5,
+        "latest_write_verified": True,
+        "published_latest_write_verified": True,
+    }
+
+
 def test_storage_resilience_control_scores_warm_failover_and_checksums(
     tmp_path: Path,
 ) -> None:
@@ -40,7 +51,7 @@ def test_storage_resilience_control_scores_warm_failover_and_checksums(
     )
     _write_json(
         project_root / "exports" / "state_snapshot_drills" / "latest.json",
-        {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True},
+        _verified_snapshot(),
     )
     _write_json(
         project_root / "governance" / "health" / "daily_auto_verify_latest.json",
@@ -80,7 +91,7 @@ def test_storage_resilience_control_fast_mode_skips_large_db_quick_check(
     )
     _write_json(
         project_root / "exports" / "state_snapshot_drills" / "latest.json",
-        {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True},
+        _verified_snapshot(),
     )
     _write_json(
         project_root / "governance" / "health" / "daily_auto_verify_latest.json",
@@ -122,7 +133,7 @@ def test_storage_resilience_control_fast_zero_threshold_skips_db_quick_check(
     )
     _write_json(
         project_root / "exports" / "state_snapshot_drills" / "latest.json",
-        {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True},
+        _verified_snapshot(),
     )
     _write_json(
         project_root / "governance" / "health" / "daily_auto_verify_latest.json",
@@ -220,7 +231,7 @@ def test_storage_resilience_accepts_verified_local_hot_external_archive_topology
     )
     _write_json(
         project_root / "exports" / "state_snapshot_drills" / "latest.json",
-        {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True},
+        _verified_snapshot(),
     )
     _write_json(health / "daily_auto_verify_latest.json", {"ok": True})
 

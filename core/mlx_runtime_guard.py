@@ -14,8 +14,12 @@ import types
 from typing import Any
 
 
-class MLXUnavailableError(RuntimeError):
-    """Raised when MLX cannot be used safely for the lifetime of this process."""
+class MLXUnavailableError(RuntimeError, AttributeError):
+    """Unavailable MLX operations also fail normal optional-attribute probes.
+
+    Libraries such as matplotlib and torch inspect imported array modules;
+    their getattr/hasattr checks must not break unrelated CPU work.
+    """
 
 
 class _UnavailableMLXModule(types.ModuleType):

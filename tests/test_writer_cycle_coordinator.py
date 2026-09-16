@@ -10,6 +10,30 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import writer_cycle_coordinator as src
 
 
+def test_completed_handoff_requires_live_identity_and_unchanged_owner(tmp_path, monkeypatch):
+    state = {
+        "writer_lock_held": True, "current_step": "complete", "status": "ok",
+        "planned_shard_count": 2, "completed_shard_count": 2, "child_writer_active": False,
+        "writer_lock_owner": "pid=123 cmd=sql_link_shard_manager",
+    }
+    signals = []
+    monkeypatch.setattr(src.os, "kill", lambda *args: signals.append(args))
+    monkeypatch.setattr(src, "_pid_command", lambda pid: "unrelated-process")
+    result = src._release_completed_writer_lock(tmp_path, state)
+    assert result["reason"] == "pid_not_sql_link_shard_manager"
+    monkeypatch.setattr(src, "_pid_command", lambda pid: "python scripts/ops/sql_link_shard_manager.py")
+    monkeypatch.setattr(src, "writer_state_snapshot", lambda root: {**state, "current_step": "merge"})
+    result = src._release_completed_writer_lock(tmp_path, state)
+    assert result["reason"] == "writer_changed_before_handoff"
+    assert signals == []
+
+
+def test_storage_launcher_handoff_runs_before_maintenance_admission():
+    script = (PROJECT_ROOT / 'scripts/ops/run_storage_backpressure_autopilot_launchd.sh').read_text()
+    assert script.index('writer_cycle_coordinator.py" --apply --handoff-only') < script.index('run_guarded_maintenance.sh" storage_backpressure_autopilot')
+    assert '--no-control-plane-refresh' in script
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")

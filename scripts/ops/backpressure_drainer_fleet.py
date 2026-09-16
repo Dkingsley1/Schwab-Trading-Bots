@@ -19,8 +19,10 @@ if __package__ in {None, ""}:
         iso_now,
         load_json,
         ordered_unique,
+        run_bounded_process_group,
         write_payload,
     )
+    from scripts.ops.sql_writer_lock_path import configured_sql_writer_lock_path
 else:
     from .long_runtime_common import (
         PROJECT_ROOT,
@@ -28,8 +30,10 @@ else:
         iso_now,
         load_json,
         ordered_unique,
+        run_bounded_process_group,
         write_payload,
     )
+    from .sql_writer_lock_path import configured_sql_writer_lock_path
 
 
 DEFAULT_OUT_PATH = (
@@ -41,7 +45,7 @@ DEFAULT_LOCK_PATH = (
 SERVICE_REQUEST_PATH = (
     PROJECT_ROOT / "governance" / "health" / "sql_link_service_request_latest.json"
 )
-WRITER_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "jsonl_sql_writer.lock"
+WRITER_LOCK_PATH = configured_sql_writer_lock_path(PROJECT_ROOT)
 MIN_MATERIAL_PENDING_LINES = 100
 MICRO_STALE_READY_AGE_SECONDS = 1_800.0
 CORE_HARD_PENDING_LINES = 50_000
@@ -1298,6 +1302,7 @@ def _pending_source_row(
         "sample_newlines",
         "line_estimate_method",
         "sparse_large_line",
+        "checkpoint_service_age_seconds",
     ):
         if key in row:
             out[key] = row.get(key)
@@ -1320,6 +1325,7 @@ def _merge_pending_source_metadata(
         "sample_newlines",
         "line_estimate_method",
         "sparse_large_line",
+        "checkpoint_service_age_seconds",
     ):
         if key in row and key not in current:
             current[key] = row.get(key)
@@ -1992,6 +1998,7 @@ def _base_env(
         "SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS": "120" if critical else "90",
         "SQL_LINK_SERVICE_SKIP_IDLE_SENTINELS": "0",
         "SQL_LINK_SERVICE_MERGE_MAX_SECONDS_PER_CYCLE": str(accelerator_merge_seconds),
+        "SQL_LINK_SERVICE_RAW_LIVE_OVERRIDE_EXPLICIT_SCOPE": "1",
         "SQL_LINK_SERVICE_CATCH_UP_WAVE": "1",
         "WRITER_CYCLE_MAX_CATCH_UP_WAVES": str(accelerator_wave_limit),
         "BACKLOG_ACCELERATOR_ENABLED": "1",
@@ -2503,7 +2510,13 @@ def _apply_age_pressure_priority(
             and canonical_core_pending <= reserve_core * 2
         )
         raw_live_priority_drainer = bool(
-            name in RAW_LIVE_EXPANSION_HOT_DRAINERS
+            (
+                name in RAW_LIVE_EXPANSION_HOT_DRAINERS
+                and not (
+                    name == "runtime_channel_drainer"
+                    and readiness_reason == "stale_tail"
+                )
+            )
             or dominant_support_pressure
             or risk_channel_pressure
             or dominant_risk_support_pressure
@@ -2579,6 +2592,7 @@ def _apply_age_pressure_priority(
                         raw_size_bonus
                     ),
                     "SQL_LINK_SERVICE_RAW_LIVE_RESERVE_WAVE": "1",
+                    "SQL_LINK_SERVICE_RAW_LIVE_OVERRIDE_EXPLICIT_SCOPE": "1",
                     "SQL_LINK_SERVICE_COLD_STAGE_YIELDS_TO_RAW_LIVE": "1",
                 }
             )
@@ -2850,9 +2864,43 @@ def _decision_drainer_env(
 def _api_ingress_drainer_env(
     base: dict[str, str], rows: list[dict[str, Any]], *, critical: bool
 ) -> tuple[list[str], dict[str, str]]:
+    selected = list(rows[:12])
+    def service_age(row: dict[str, Any]) -> float:
+        return max(
+            _safe_float(row.get("oldest_pending_age_seconds"), 0.0),
+            _safe_float(row.get("checkpoint_service_age_seconds"), 0.0),
+        )
+
+    # Keep one overdue source inside each already-selected lane's path budget.
+    for crypto in (False, True):
+        positions = [
+            index
+            for index, row in enumerate(selected)
+            if _is_crypto_decision_source(str(row.get("source_rel") or "")) == crypto
+        ][:8 if crypto else 12]
+        if len(positions) < 2 or any(
+            service_age(selected[index])
+            >= MICRO_STALE_READY_AGE_SECONDS
+            for index in positions
+        ):
+            continue
+        stale = [
+            row
+            for row in rows
+            if row not in selected
+            and _safe_int(row.get("pending_lines"), 0) > 0
+            and _is_crypto_decision_source(str(row.get("source_rel") or "")) == crypto
+            and service_age(row)
+            >= MICRO_STALE_READY_AGE_SECONDS
+        ]
+        if stale:
+            selected[positions[-1]] = max(
+                stale,
+                key=service_age,
+            )
     regular_focus: list[str] = []
     crypto_focus: list[str] = []
-    for row in rows[:12]:
+    for row in selected:
         source_rel = str(row.get("source_rel") or "").strip()
         if not source_rel:
             continue
@@ -2890,6 +2938,70 @@ def _api_ingress_drainer_env(
         shards = ["api_ingress", "crypto_api_ingress"]
     shards = ordered_unique([*shards, "health_fast"])
     env["SQL_LINK_SERVICE_SHARDS"] = ",".join(shards)
+    return shards, env
+
+
+def _runtime_tail_slot_budget(
+    backpressure: dict[str, Any], *, now: datetime | None = None
+) -> int:
+    stamp = _parse_iso_utc(backpressure.get("timestamp_utc"))
+    current = now or datetime.now(timezone.utc)
+    core = backpressure.get("pending_lines")
+    total = backpressure.get("pending_lines_total")
+    age = backpressure.get("oldest_pending_age_seconds")
+    clear = (
+        stamp is not None
+        and 0 <= (current - stamp).total_seconds() <= 90
+        and type(core) is int
+        and 0 <= core <= 5000
+        and type(total) is int
+        and 0 <= total <= 15000
+        and type(age) in (int, float)
+        and 0 <= age <= 240
+    )
+    return 4 if clear else 1
+
+
+def _runtime_drainer_env(
+    base: dict[str, str], rows: list[dict[str, Any]], *, tail_slots: int = 1
+) -> tuple[list[str], dict[str, str]]:
+    env = {**base}
+    shards: list[str] = []
+    for shard, crypto, max_files, max_lines in (
+        ("runtime", False, 8, 24000),
+        ("crypto_runtime", True, 6, 16000),
+    ):
+        candidates = [
+            row
+            for row in rows
+            if _is_crypto_decision_source(str(row.get("source_rel") or "")) == crypto
+        ]
+        if not candidates:
+            continue
+        stale = sorted(
+            [
+                row
+                for row in candidates
+                if _safe_float(row.get("oldest_pending_age_seconds"), 0.0)
+                >= MICRO_STALE_READY_AGE_SECONDS
+            ],
+            key=lambda row: _safe_float(row.get("oldest_pending_age_seconds"), 0.0),
+            reverse=True,
+        )
+        # Fill existing slots with more stale work only after hot pressure subsides.
+        selected = stale[: max(1, min(int(tail_slots), max_files))]
+        candidates = [*selected, *[row for row in candidates if row not in selected]]
+        shards.append(shard)
+        env[_shard_env_key(shard, "PATH_CONTAINS")] = ",".join(
+            str(row["source_rel"]) for row in candidates[:max_files]
+        )
+        env[_shard_env_key(shard, "MAX_FILES")] = str(max_files)
+        env[_shard_env_key(shard, "MAX_LINES_PER_FILE")] = str(max_lines)
+        env[_shard_env_key(shard, "STATE_CHECKPOINT_LINES")] = "1000"
+    shards = [*(shards or ["runtime", "crypto_runtime"]), "health_fast"]
+    env["SQL_LINK_SERVICE_SHARDS"] = ",".join(shards)
+    env["SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS"] = "0"
+    env["SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS"] = "0"
     return shards, env
 
 
@@ -3708,6 +3820,9 @@ def _candidate_drainers(
     api_ingress_shards, api_ingress_env = _api_ingress_drainer_env(
         base, api_ingress_rows, critical=critical
     )
+    runtime_shards, runtime_env = _runtime_drainer_env(
+        base, runtime_rows, tail_slots=_runtime_tail_slot_budget(backpressure)
+    )
     operations_guard_shards, operations_guard_env = _focused_shard_env(
         base,
         operations_guard_rows,
@@ -4315,24 +4430,11 @@ def _candidate_drainers(
             name="runtime_channel_drainer",
             reason="drain runtime channel files without pulling cold analytics work forward",
             rows=runtime_rows,
-            shards=["runtime", "crypto_runtime", "health_fast"],
+            shards=runtime_shards,
             priority_boost=50_000,
             live_window_safe=True,
-            env={
-                **base,
-                "SQL_LINK_SERVICE_SHARDS": "runtime,crypto_runtime,health_fast",
-                "SQL_LINK_SERVICE_SHARD_RUNTIME_PATH_CONTAINS": ",".join(
-                    str(row["source_rel"]) for row in runtime_rows[:8]
-                ),
-                "SQL_LINK_SERVICE_SHARD_RUNTIME_MAX_FILES": "8",
-                "SQL_LINK_SERVICE_SHARD_RUNTIME_MAX_LINES_PER_FILE": "24000",
-                "SQL_LINK_SERVICE_SHARD_RUNTIME_STATE_CHECKPOINT_LINES": "1000",
-                "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_MAX_FILES": "6",
-                "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_MAX_LINES_PER_FILE": "16000",
-                "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_STATE_CHECKPOINT_LINES": "1000",
-                "SQL_LINK_SERVICE_SKIP_FRESH_IDLE_SHARDS": "0",
-                "SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS": "0",
-            },
+            stale_ready_age_seconds=MICRO_STALE_READY_AGE_SECONDS,
+            env=runtime_env,
         ),
         _profile(
             name="schema_violation_drainer",
@@ -4576,7 +4678,7 @@ def _write_service_request(
             )
             return preserved
 
-    expires_utc = now_utc.timestamp() + max(int(ttl_seconds), 300)
+    expires_utc = now_utc.timestamp() + max(int(ttl_seconds), 60)
     payload = {
         "timestamp_utc": now_utc.isoformat(),
         "active": True,
@@ -4770,7 +4872,7 @@ def build_payload(
         else {}
     )
     writer_lock_state = _writer_lock_snapshot(
-        project_root / "governance" / "locks" / "jsonl_sql_writer.lock"
+        configured_sql_writer_lock_path(project_root)
     )
     self_accommodation = _fleet_self_accommodation(
         active_drainer=active_drainer,
@@ -4890,6 +4992,78 @@ def build_payload(
     return payload
 
 
+def _refresh_backlog_observation(project_root: Path) -> dict[str, Any]:
+    started = datetime.now(timezone.utc)
+    result = run_bounded_process_group(
+        [
+            sys.executable,
+            str(project_root / "scripts/ingestion_backpressure_guard.py"),
+            "--project-root",
+            str(project_root),
+            "--max-files",
+            "512",
+            "--top-pending-files",
+            "512",
+            "--json",
+        ],
+        cwd=project_root,
+        timeout_seconds=10,
+    )
+    try:
+        observed = json.loads(result.get("stdout", "").strip().splitlines()[-1])
+        stamp = _parse_iso_utc(observed.get("timestamp_utc"))
+    except (ValueError, TypeError, AttributeError, IndexError):
+        observed, stamp = {}, None
+    published = load_json(
+        project_root / "governance/health/ingestion_backpressure_latest.json"
+    )
+    now = datetime.now(timezone.utc)
+    fresh = bool(
+        not result.get("timed_out")
+        and result.get("rc") in {0, 2}
+        and stamp is not None
+        and started <= stamp <= now
+        and published.get("timestamp_utc") == observed.get("timestamp_utc")
+    )
+    return {
+        "ok": fresh,
+        "timestamp_utc": observed.get("timestamp_utc"),
+        "elapsed_seconds": round((now - started).total_seconds(), 3),
+        "timeout_seconds": 10,
+        "reason": (
+            "fresh_backlog_observation" if fresh else "backlog_refresh_incomplete"
+        ),
+        "journal_progress_scan": observed.get("journal_progress_scan", {}),
+        "scan_selection": observed.get("scan_selection", {}),
+    }
+
+
+def _refresh_accelerator_status(project_root: Path) -> dict[str, Any]:
+    started = datetime.now(timezone.utc)
+    result = run_bounded_process_group(
+        [
+            sys.executable,
+            str(project_root / "scripts/ops/backlog_pcore_accelerator.py"),
+            "--runtime-only",
+            "--json",
+        ],
+        cwd=project_root,
+        timeout_seconds=10,
+    )
+    published = load_json(project_root / "governance/health/backlog_pcore_accelerator_latest.json")
+    stamp = _parse_iso_utc(published.get("timestamp_utc"))
+    now = datetime.now(timezone.utc)
+    return {
+        "ok": bool(
+            not result.get("timed_out") and result.get("rc") == 0
+            and stamp is not None and started <= stamp <= now
+            and published.get("runtime_only") is True
+        ),
+        "elapsed_seconds": round((now - started).total_seconds(), 3),
+        "timeout_seconds": 10,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Score and hand off focused backpressure drainers to the single SQL writer."
@@ -4898,6 +5072,8 @@ def main() -> int:
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--lock-file", default=str(DEFAULT_LOCK_PATH))
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--refresh-backlog", action="store_true")
+    parser.add_argument("--refresh-accelerator", action="store_true")
     parser.add_argument("--force-live-window", action="store_true")
     parser.add_argument("--ttl-seconds", type=int, default=900)
     parser.add_argument("--json", action="store_true")
@@ -4925,14 +5101,24 @@ def main() -> int:
         return 0
 
     with lock:
+        refresh = (
+            _refresh_backlog_observation(project_root) if args.refresh_backlog else None
+        )
         payload = build_payload(
             project_root,
-            apply=bool(args.apply),
+            apply=bool(args.apply and (refresh is None or refresh["ok"])),
             force_live_window=bool(args.force_live_window),
             ttl_seconds=int(args.ttl_seconds),
         )
+        if refresh is not None:
+            payload["observation_refresh"] = refresh
+            if not refresh["ok"]:
+                payload.update(ok=False, overall_status="deferred_observation")
         payload["lock_file"] = str(lock_file)
         write_payload(out_file, payload)
+        if args.refresh_accelerator:
+            payload["accelerator_refresh"] = _refresh_accelerator_status(project_root)
+            write_payload(out_file, payload)
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

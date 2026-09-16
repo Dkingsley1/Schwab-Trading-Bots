@@ -7,12 +7,20 @@ import hmac
 import json
 import os
 import secrets
+import stat
+import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.storage_router import inspect_storage_path
+
 DEFAULT_HISTORY_DIR = PROJECT_ROOT / "governance" / "champion_challenger" / "promotion_packets"
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "champion_challenger" / "promotion_packet_latest.json"
 DEFAULT_SIGNING_KEY_PATH = PROJECT_ROOT / "governance" / "champion_challenger" / "promotion_packet_signing_key.txt"
@@ -203,28 +211,72 @@ def _sha256_json(payload: Any) -> str:
     ).hexdigest()
 
 
+def _checked_signing_key_path(path: Path) -> Path:
+    candidate = path.expanduser()
+    if inspect_storage_path(candidate).get("status") not in {"present", "missing"}:
+        raise ValueError("signing_key_route_unavailable")
+    if candidate.is_symlink():
+        raise ValueError("signing_key_symlink_refused")
+    return candidate
+
+
 def _load_signing_key(path: Path | None = None) -> tuple[str, str]:
     env_key = str(os.getenv("PROMOTION_PACKET_SIGNING_KEY", "") or "").strip()
     if env_key:
         return env_key, "env:PROMOTION_PACKET_SIGNING_KEY"
-    candidate = path or DEFAULT_SIGNING_KEY_PATH
+    candidate = _checked_signing_key_path(path or DEFAULT_SIGNING_KEY_PATH)
     try:
-        file_key = candidate.read_text(encoding="utf-8").strip()
-    except Exception:
+        fd = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
         file_key = ""
+    else:
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ValueError("signing_key_not_regular_file")
+            raw = handle.read(4097)
+        if len(raw) > 4096:
+            raise ValueError("signing_key_oversized")
+        file_key = raw.decode("utf-8").strip()
     if file_key:
         return file_key, str(candidate)
     return "", ""
 
 
 def _bootstrap_signing_key(path: Path | None = None) -> tuple[str, str]:
-    candidate = path or DEFAULT_SIGNING_KEY_PATH
-    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate = _checked_signing_key_path(path or DEFAULT_SIGNING_KEY_PATH)
     signing_key, signing_source = _load_signing_key(candidate)
     if signing_key:
         return signing_key, signing_source
+    candidate.parent.mkdir(parents=True, exist_ok=True)
     generated = secrets.token_hex(32)
-    candidate.write_text(generated + "\n", encoding="utf-8")
+    # Publish a complete private key without replacing an existing or raced key.
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=candidate.parent,
+        prefix=".promotion_signing_key_",
+        delete=False,
+    ) as handle:
+        temporary = Path(handle.name)
+        try:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(generated + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            try:
+                os.link(temporary, candidate, follow_symlinks=False)
+            except FileExistsError:
+                existing, source = _load_signing_key(candidate)
+                if not existing:
+                    raise ValueError("existing_signing_key_empty_preserved")
+                return existing, source
+            directory = os.open(candidate.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            temporary.unlink(missing_ok=True)
     return generated, str(candidate)
 
 

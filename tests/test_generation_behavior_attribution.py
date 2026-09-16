@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
 from pathlib import Path
 
-from scripts.ops.generation_behavior_attribution import build_payload
+from scripts.ops.generation_behavior_attribution import build_payload, _read_events
+from scripts.ops.production_excellence_control import read_candidate_event_chain
 
 
 def _canonical_hash(value: object) -> str:
@@ -28,6 +30,73 @@ def _write_event_chain(path: Path, events: list[dict]) -> None:
         previous = event["event_hash"]
         rows.append(json.dumps(event, ensure_ascii=True, sort_keys=True))
     path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def test_candidate_history_survives_split_archives_and_active_tail(tmp_path):
+    path = tmp_path / "production_candidate_events.jsonl"
+    _write_event_chain(path, [
+        {"event_type": "candidate_change_accepted", "generation": i,
+         "candidate_id": f"candidate-g{i}", "timestamp_utc": f"2026-09-0{i}T12:00:00+00:00"}
+        for i in range(1, 4)
+    ])
+    lines = path.read_bytes().splitlines(keepends=True)
+    path.with_name(path.name + ".gz").write_bytes(gzip.compress(lines[0]))
+    path.with_name(path.name + ".raw-training.gz").write_bytes(gzip.compress(lines[1]))
+    path.write_bytes(lines[2])
+    events, chain = _read_events(path)
+    assert chain["ok"] and chain["event_count"] == 3
+    assert [row["generation"] for row in events] == [1, 2, 3]
+    path.with_name(path.name + ".raw-training.gz").write_bytes(gzip.compress(b"".join(lines[1:])))
+    assert _read_events(path)[1]["event_count"] == 3
+    path.unlink()
+    assert _read_events(path)[1]["event_count"] == 3
+
+
+def test_candidate_archive_corruption_or_missing_prefix_fails_closed(tmp_path):
+    path = tmp_path / "production_candidate_events.jsonl"
+    _write_event_chain(path, [
+        {"event_type": "candidate_change_accepted", "generation": i,
+         "candidate_id": f"candidate-g{i}", "timestamp_utc": f"2026-09-0{i}T12:00:00+00:00"}
+        for i in range(1, 3)
+    ])
+    lines = path.read_bytes().splitlines(keepends=True)
+    archive = path.with_name(path.name + ".gz")
+    archive.write_bytes(gzip.compress(lines[0]))
+    path.write_bytes(lines[1])
+    archive.unlink()
+    events, chain = read_candidate_event_chain(path)
+    assert not events and not chain["ok"]
+    assert "previous_hash_mismatch_line=1" in chain["errors"]
+    archive.write_bytes(b"not gzip")
+    assert not _read_events(path)[1]["ok"]
+    archive.write_bytes(gzip.compress(lines[0].replace(b"candidate-g1", b"candidate-g9")))
+    assert not _read_events(path)[1]["ok"]
+
+
+def test_candidate_reader_does_not_hide_replayed_rows_within_partition(tmp_path):
+    path = tmp_path / "events.jsonl"
+    _write_event_chain(path, [{"generation": 1}])
+    path.write_bytes(path.read_bytes() * 2)
+    assert not read_candidate_event_chain(path)[1]["ok"]
+
+
+def test_archived_recovery_anchor_must_prove_prior_head_and_window_reset(tmp_path):
+    path = tmp_path / "events.jsonl"
+    _write_event_chain(path, [{"generation": 8}])
+    prior = json.loads(path.read_text())["event_hash"]
+    path.with_name(path.name + ".gz").write_bytes(gzip.compress(path.read_bytes()))
+    anchor = {"generation": 9, "event_type": "candidate_chain_recovery_anchor",
+              "recovery_evidence": {"prior_state_event_chain_head": prior, "all_evidence_windows_reset": True}}
+    _write_event_chain(path, [anchor, {"generation": 10}])
+    rows, chain = read_candidate_event_chain(path)
+    assert chain["ok"] and [row["generation"] for row in rows] == [8, 9, 10]
+    assert chain["verified_recovery_boundary_lines"] == [2]
+    anchor["recovery_evidence"]["all_evidence_windows_reset"] = False
+    _write_event_chain(path, [anchor])
+    assert not read_candidate_event_chain(path)[1]["ok"]
+    anchor["recovery_evidence"].update(all_evidence_windows_reset=True, prior_state_event_chain_head="wrong")
+    _write_event_chain(path, [anchor])
+    assert not read_candidate_event_chain(path)[1]["ok"]
 
 
 def _decision(

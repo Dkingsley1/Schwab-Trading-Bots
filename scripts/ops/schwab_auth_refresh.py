@@ -260,7 +260,10 @@ def main() -> int:
     )
     parser.add_argument("--skip-account-probe", action="store_true")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--operator-interactive-session", action="store_true", help="Mark the explicit operator flow so supervision preserves its bounded callback and truth-refresh window.")
     args = parser.parse_args()
+    if args.operator_interactive_session and not 5 <= args.callback_timeout_seconds <= 600:
+        parser.error("operator callback timeout must be between 5 and 600 seconds")
 
     credentials = schwab_credentials_from_env()
     api_key = credentials.api_key

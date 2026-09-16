@@ -177,7 +177,7 @@ def test_default_queue_db_path_respects_explicit_override(
     assert default_queue_db_path(tmp_path) == str(override)
 
 
-def test_channel_queue_schema_check_skips_locked_existing_db(
+def test_channel_queue_schema_check_rejects_locked_unverified_db(
     tmp_path: Path, monkeypatch
 ) -> None:
     queue_path = tmp_path / "data" / "bot_channel_queue.sqlite3"
@@ -195,9 +195,9 @@ def test_channel_queue_schema_check_skips_locked_existing_db(
         sqlite3, "connect", lambda *_args, **_kwargs: _LockedSchemaConnection()
     )
 
-    queue = ChannelQueue(queue_path)
-
-    assert queue.db_path == queue_path
+    with pytest.raises(sqlite3.OperationalError, match="channel_queue_schema_unverified_locked"):
+        ChannelQueue(queue_path)
+    assert queue_path.read_text(encoding="utf-8") == "placeholder"
 
 
 def test_channel_queue_connect_tolerates_locked_wal_pragma(

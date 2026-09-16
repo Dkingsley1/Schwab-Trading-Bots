@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.runtime_python import resolve_runtime_python
 from scripts.ops import ingestion_storage_governor as governor_src
 from scripts.ops.long_runtime_common import us_equity_market_holiday
+from scripts.ops.sql_writer_lock_path import configured_sql_writer_lock_path
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
@@ -29,7 +30,7 @@ SERVICE_REQUEST_PATH = PROJECT_ROOT / "governance" / "health" / "sql_link_servic
 LOCAL_TZ = ZoneInfo("America/New_York")
 OFF_HOURS_START = time(16, 15)
 OFF_HOURS_END = time(9, 20)
-SQL_WRITER_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "jsonl_sql_writer.lock"
+SQL_WRITER_LOCK_PATH = configured_sql_writer_lock_path(PROJECT_ROOT)
 DEFAULT_DRAIN_SHARDS = [
     "health_fast",
     "trading_fast",
@@ -1443,7 +1444,7 @@ def _follow_through_retry(
     while datetime.now(timezone.utc).timestamp() <= deadline:
         attempts += 1
         result = _run_json_command(
-            [str(PY), str(project_root / "scripts" / "ops" / "sql_link_shard_manager.py"), "--once", "--json"],
+            [str(PY), str(project_root / "scripts" / "ops" / "sql_link_shard_manager.py"), "--once"],
             cwd=project_root,
             payload_path=health_root / "sql_link_service_latest.json",
             env_overrides=drain_env,
@@ -1649,7 +1650,7 @@ def build_payload(
             if resource_ok:
                 apply_executed = True
                 shard_manager_initial = _run_json_command(
-                    [str(PY), str(project_root / "scripts" / "ops" / "sql_link_shard_manager.py"), "--once", "--json"],
+                    [str(PY), str(project_root / "scripts" / "ops" / "sql_link_shard_manager.py"), "--once"],
                     cwd=project_root,
                     payload_path=health_root / "sql_link_service_latest.json",
                     env_overrides=drain_env,

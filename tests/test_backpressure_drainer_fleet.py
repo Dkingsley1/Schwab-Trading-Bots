@@ -15,6 +15,49 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def test_minute_handoff_honors_requested_ttl_and_expires_old_focus(tmp_path):
+    from datetime import timedelta
+
+    now = datetime.now(timezone.utc)
+    path = tmp_path / "request.json"
+    old = {"name": "old", "env_overrides": {"SQL_LINK_SERVICE_SHARDS": "trading"}}
+    new = {"name": "new", "env_overrides": {"SQL_LINK_SERVICE_SHARDS": "runtime"}}
+    first = src._write_service_request(
+        path, active_drainer=old, now_utc=now, ttl_seconds=120
+    )
+    assert datetime.fromisoformat(first["expires_utc"]) == now + timedelta(seconds=120)
+    held = src._write_service_request(
+        path, active_drainer=new, now_utc=now + timedelta(seconds=60), ttl_seconds=120
+    )
+    assert held["reason"] == first["reason"]
+    replaced = src._write_service_request(
+        path, active_drainer=new, now_utc=now + timedelta(seconds=121), ttl_seconds=120
+    )
+    assert replaced["reason"].endswith(":new")
+
+
+def test_accelerator_refresh_is_bounded_observation_only(tmp_path, monkeypatch):
+    def runner(command, **kwargs):
+        assert "--runtime-only" in command
+        assert "--apply" not in command
+        assert kwargs["timeout_seconds"] == 10
+        _write_json(
+            tmp_path / "governance/health/backlog_pcore_accelerator_latest.json",
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "runtime_only": True,
+            },
+        )
+        return {"rc": 0, "timed_out": False}
+
+    monkeypatch.setattr(src, "run_bounded_process_group", runner)
+    assert src._refresh_accelerator_status(tmp_path)["ok"] is True
+    monkeypatch.setattr(
+        src, "run_bounded_process_group", lambda *a, **kw: {"rc": 0, "timed_out": True}
+    )
+    assert src._refresh_accelerator_status(tmp_path)["ok"] is False
+
+
 def test_backpressure_drainer_fleet_routes_concentrated_decisions_to_trading(
     tmp_path: Path,
 ) -> None:
@@ -3240,6 +3283,254 @@ def test_backpressure_drainer_fleet_keeps_futures_loop_state_out_of_derivatives_
         payload["active_env_overrides"]["SQL_LINK_SERVICE_IDLE_SHARD_MAX_AGE_SECONDS"]
         == "0"
     )
+
+
+def test_runtime_focus_reserves_a_stale_slot_per_shard_without_growing_batches() -> (
+    None
+):
+    regular = [
+        {
+            "source_rel": f"governance/channels/runtime/equities_{i}/runtime_today.jsonl",
+            "pending_lines": 1000 - i,
+            "oldest_pending_age_seconds": 30.0,
+        }
+        for i in range(10)
+    ]
+    crypto = [
+        {
+            "source_rel": f"governance/channels/runtime/default_crypto_coinbase/runtime_{i}.jsonl",
+            "pending_lines": 100 - i,
+            "oldest_pending_age_seconds": 30.0,
+        }
+        for i in range(10)
+    ]
+    old_regular = {
+        "source_rel": "governance/channels/loop_state/equities/loop_state_old.jsonl",
+        "pending_lines": 1,
+        "oldest_pending_age_seconds": 1800.0,
+    }
+    old_crypto = {
+        "source_rel": "governance/channels/loop_state/default_crypto_coinbase/loop_state_old.jsonl",
+        "pending_lines": 1,
+        "oldest_pending_age_seconds": 3600.0,
+    }
+    rows = [*regular, *crypto, old_regular, old_crypto]
+    original = list(rows)
+    shards, env = src._runtime_drainer_env({"INGEST_MAX_DEFERRED_FILES": "4"}, rows)
+
+    assert shards == ["runtime", "crypto_runtime", "health_fast"]
+    for shard, old, fresh, limit, lines in (
+        ("RUNTIME", old_regular, regular, 8, 24000),
+        ("CRYPTO_RUNTIME", old_crypto, crypto, 6, 16000),
+    ):
+        prefix = f"SQL_LINK_SERVICE_SHARD_{shard}_"
+        focus = env[prefix + "PATH_CONTAINS"].split(",")
+        assert focus == [
+            old["source_rel"],
+            *[row["source_rel"] for row in fresh[: limit - 1]],
+        ]
+        assert env[prefix + "MAX_FILES"] == str(limit)
+        assert env[prefix + "MAX_LINES_PER_FILE"] == str(lines)
+        assert env[prefix + "STATE_CHECKPOINT_LINES"] == "1000"
+    assert rows == original
+    assert env["INGEST_MAX_DEFERRED_FILES"] == "4"
+
+
+def test_runtime_focus_keeps_material_order_before_stale_threshold() -> None:
+    rows = [
+        {
+            "source_rel": f"governance/channels/runtime/equities_{i}/runtime.jsonl",
+            "pending_lines": 1000 - i,
+            "oldest_pending_age_seconds": 20.0,
+        }
+        for i in range(8)
+    ]
+    rows.append(
+        {
+            "source_rel": "governance/channels/loop_state/equities/loop_state.jsonl",
+            "pending_lines": 1,
+            "oldest_pending_age_seconds": 1799.0,
+        }
+    )
+    shards, env = src._runtime_drainer_env({}, rows)
+
+    assert shards == ["runtime", "health_fast"]
+    assert env["SQL_LINK_SERVICE_SHARD_RUNTIME_PATH_CONTAINS"].split(",") == [
+        row["source_rel"] for row in rows[:8]
+    ]
+    assert "SQL_LINK_SERVICE_SHARD_CRYPTO_RUNTIME_PATH_CONTAINS" not in env
+
+
+def test_runtime_tail_budget_requires_fresh_typed_headroom() -> None:
+    from datetime import timedelta
+
+    now = datetime.now(timezone.utc)
+    clear = {
+        "timestamp_utc": now.isoformat(),
+        "pending_lines": 5000,
+        "pending_lines_total": 15000,
+        "oldest_pending_age_seconds": 240,
+    }
+    assert src._runtime_tail_slot_budget(clear, now=now) == 4
+    for override in (
+        {"timestamp_utc": None},
+        {"timestamp_utc": (now - timedelta(seconds=91)).isoformat()},
+        {"timestamp_utc": (now + timedelta(seconds=1)).isoformat()},
+        {"pending_lines": True},
+        {"pending_lines": 5001},
+        {"pending_lines_total": 15001},
+        {"pending_lines_total": "0"},
+        {"oldest_pending_age_seconds": 241},
+        {"oldest_pending_age_seconds": float("nan")},
+    ):
+        assert src._runtime_tail_slot_budget({**clear, **override}, now=now) == 1
+
+
+def test_runtime_adaptive_tail_slots_stay_inside_existing_file_cap() -> None:
+    rows = [
+        {
+            "source_rel": f"governance/channels/runtime/equities/runtime_{i}.jsonl",
+            "pending_lines": 1000 - i,
+            "oldest_pending_age_seconds": 10.0,
+        }
+        for i in range(8)
+    ] + [
+        {
+            "source_rel": f"governance/channels/loop_state/equities/loop_state_{i}.jsonl",
+            "pending_lines": 1,
+            "oldest_pending_age_seconds": 3600.0 + i,
+        }
+        for i in range(8)
+    ]
+    _, env = src._runtime_drainer_env({}, rows, tail_slots=4)
+    focus = env["SQL_LINK_SERVICE_SHARD_RUNTIME_PATH_CONTAINS"].split(",")
+    assert len(focus) == 8
+    assert focus[:4] == [row["source_rel"] for row in reversed(rows[-4:])]
+    assert focus[4:] == [row["source_rel"] for row in rows[:4]]
+    assert env["SQL_LINK_SERVICE_SHARD_RUNTIME_MAX_FILES"] == "8"
+
+
+def test_backlog_refresh_accepts_fresh_overload_but_rejects_failed_or_stale_scan(
+    tmp_path, monkeypatch
+) -> None:
+    from datetime import timedelta
+
+    for scenario in (
+        "fresh",
+        "overloaded",
+        "stale",
+        "future",
+        "timeout",
+        "error",
+        "interleaved",
+    ):
+
+        def runner(cmd, **kwargs):
+            assert kwargs["timeout_seconds"] == 10
+            assert cmd[cmd.index("--max-files") + 1] == "512"
+            assert cmd[cmd.index("--top-pending-files") + 1] == "512"
+            stamp = datetime.now(timezone.utc)
+            if scenario == "stale":
+                stamp -= timedelta(minutes=1)
+            if scenario == "future":
+                stamp += timedelta(minutes=1)
+            observed = {"timestamp_utc": stamp.isoformat()}
+            published = {} if scenario == "interleaved" else observed
+            _write_json(
+                tmp_path / "governance/health/ingestion_backpressure_latest.json",
+                published,
+            )
+            return {
+                "rc": (
+                    2 if scenario == "overloaded" else (1 if scenario == "error" else 0)
+                ),
+                "timed_out": scenario == "timeout",
+                "stdout": json.dumps(observed),
+            }
+
+        monkeypatch.setattr(src, "run_bounded_process_group", runner)
+        assert src._refresh_backlog_observation(tmp_path)["ok"] == (
+            scenario in {"fresh", "overloaded"}
+        )
+
+
+def test_failed_backlog_refresh_cannot_apply_a_replacement_request(
+    tmp_path, monkeypatch
+) -> None:
+    request = tmp_path / "governance/health/sql_link_service_request_latest.json"
+    _write_json(request, {"reason": "existing-request"})
+    original = request.read_bytes()
+    applied = []
+    monkeypatch.setattr(src, "_refresh_backlog_observation", lambda root: {"ok": False})
+
+    def build(root, **kwargs):
+        applied.append(kwargs["apply"])
+        return {"overall_status": "ready"}
+
+    monkeypatch.setattr(src, "build_payload", build)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fleet",
+            "--project-root",
+            str(tmp_path),
+            "--apply",
+            "--refresh-backlog",
+            "--lock-file",
+            str(tmp_path / "fleet.lock"),
+            "--out-file",
+            str(tmp_path / "result.json"),
+        ],
+    )
+    assert src.main() == 2
+    assert applied == [False]
+    assert request.read_bytes() == original
+
+
+def test_runtime_micro_tail_becomes_ready_only_at_stale_threshold(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    source = "governance/channels/loop_state/equities/loop_state_old.jsonl"
+    for age, expected in ((1799.0, "idle"), (1800.0, "ready")):
+        _write_json(
+            health / "ingestion_backpressure_latest.json",
+            {
+                "pending_lines": 0,
+                "pending_lines_total": 1,
+                "pending_lines_deferred": 1,
+                "top_deferred_pending_files": [
+                    {
+                        "source_rel": source,
+                        "pending_lines": 1,
+                        "oldest_pending_age_seconds": age,
+                    }
+                ],
+            },
+        )
+        payload = src.build_payload(
+            project_root,
+            apply=False,
+            now_utc=datetime(2026, 6, 25, 15, 0, tzinfo=timezone.utc),
+        )
+        runtime = next(
+            row
+            for row in payload["candidate_drainers"]
+            if row["name"] == "runtime_channel_drainer"
+        )
+        assert runtime["status"] == expected
+        assert runtime["live_window_safe"] is True
+        assert runtime["path_focus"] == [source]
+        if expected == "ready":
+            assert payload["active_drainer"]["name"] == "runtime_channel_drainer"
+            assert (
+                payload["active_env_overrides"][
+                    "SQL_LINK_SERVICE_SHARD_RUNTIME_PATH_CONTAINS"
+                ]
+                == source
+            )
 
 
 def test_backpressure_drainer_fleet_keeps_fx_loop_state_out_of_provider_drainer(

@@ -437,12 +437,27 @@ def _notification_group_key(key: str, message: str) -> str:
 
 
 def _event_repeat_seconds(key: str, default_seconds: float) -> float:
+    if ":nvda_routine:" in str(key):
+        return max(21600.0, float(default_seconds))
     if str(key or "").strip().lower().startswith("auth_lease:"):
         return max(
             _env_float(AUTH_MIN_REPEAT_SECONDS_ENV, DEFAULT_AUTH_MIN_REPEAT_SECONDS),
             float(default_seconds),
         )
     return float(default_seconds)
+
+
+def _delivery_signature(key: str, body: str) -> str:
+    if ":nvda_routine:" in key:
+        return key
+    return body
+
+
+def _retain_routine_notification_memory(signature: str, last_sent: str, now: datetime) -> bool:
+    if ":nvda_routine:" not in signature:
+        return False
+    sent_at = _parse_datetime_value(last_sent)
+    return sent_at is not None and 0 <= (now - sent_at).total_seconds() < 21600
 
 
 def _notification_body(key: str, message: str) -> str:
@@ -1344,6 +1359,13 @@ def _critical_alert_events(max_age_seconds: float) -> List[Tuple[str, str]]:
         profile = str(payload.get("profile", "default")).strip() or "default"
         broker = str(payload.get("broker", "unknown")).strip() or "unknown"
         key = f"critical_alert:{_normalize_severity(severity, 'critical')}:{path.stem}"
+        policy = payload.get("notification_policy")
+        policy = policy if isinstance(policy, dict) else {}
+        fingerprint = policy.get("fingerprint")
+        if (event == "covered_call_roll_watch" and policy.get("symbol") == "NVDA"
+                and policy.get("mode") == "material_change_or_reminder"
+                and isinstance(fingerprint, str) and re.fullmatch(r"[0-9a-f]{64}", fingerprint)):
+            key += f":nvda_routine:{fingerprint}"
         label = _human_event_label(event)
         context = _compact_context(profile, broker)
         out.append((key, f"{label} [{context}]\n{message}"))
@@ -1518,6 +1540,7 @@ def _run_watch_loop(
 ) -> int:
     state = _load_state(state_path)
     sent: Dict[str, str] = dict((state.get("sent") or {}))
+    sent_signatures: Dict[str, str] = dict(state.get("sent_signatures") or {})
     last_sent_at: Dict[str, str] = dict((state.get("last_sent_at") or {}))
     pending_confirmations: Dict[str, Dict[str, Any]] = dict(
         (state.get("pending_confirmations") or {})
@@ -1563,7 +1586,8 @@ def _run_watch_loop(
                     continue
             else:
                 pending_confirmations.pop(group_key, None)
-            should_send = sent.get(group_key) != body
+            signature = _delivery_signature(key, body)
+            should_send = sent_signatures.get(group_key, sent.get(group_key)) != signature
             if not should_send:
                 event_repeat_seconds = _event_repeat_seconds(key, min_repeat_seconds)
                 ts_raw = str(last_sent_at.get(group_key, "")).strip()
@@ -1617,10 +1641,14 @@ def _run_watch_loop(
                     flush=True,
                 )
                 sent[group_key] = body
+                sent_signatures[group_key] = signature
                 last_sent_at[group_key] = datetime.now(timezone.utc).isoformat()
         for key in list(sent.keys()):
             if key not in active_keys:
+                if _retain_routine_notification_memory(sent_signatures.get(key, ""), last_sent_at.get(key, ""), datetime.now(timezone.utc)):
+                    continue
                 sent.pop(key, None)
+                sent_signatures.pop(key, None)
                 last_sent_at.pop(key, None)
         for key in list(pending_confirmations.keys()):
             if key not in active_keys:
@@ -1630,6 +1658,7 @@ def _run_watch_loop(
             {
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "sent": sent,
+                "sent_signatures": sent_signatures,
                 "last_sent_at": last_sent_at,
                 "pending_confirmations": pending_confirmations,
                 "imessage_enabled": bool(imessage_enabled),

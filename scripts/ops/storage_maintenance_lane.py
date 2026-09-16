@@ -6,7 +6,6 @@ import fcntl
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time as time_mod
 from datetime import datetime, timezone
@@ -26,12 +25,14 @@ from core.runtime_maintenance import (
 )
 from core.runtime_python import resolve_runtime_python
 from core.storage_mounts import resolve_external_storage
+from scripts.ops.sql_writer_lock_path import configured_sql_writer_lock_path
+from scripts.ops.long_runtime_common import run_bounded_process_group
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_maintenance_latest.json"
 DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "storage_maintenance.lock"
-DEFAULT_SQL_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "jsonl_sql_writer.lock"
+DEFAULT_SQL_LOCK_PATH = configured_sql_writer_lock_path(PROJECT_ROOT)
 DEFAULT_SQL_MAINTENANCE_SHARDS = (
     "health_fast,crypto_trading_fast,trading_fast,crypto_explanations,explanations,"
     "crypto_shadow_attribution,shadow_attribution,crypto_governance,crypto_trading,governance,aggressive_trading,trading,data"
@@ -79,30 +80,46 @@ def _run_json_command(
     cwd: Path,
     payload_path: Path | None = None,
     env_overrides: dict[str, str] | None = None,
+    timeout_seconds: int = 1800,
 ) -> dict[str, Any]:
     started = datetime.now(timezone.utc)
     env = os.environ.copy()
     if env_overrides:
         env.update({str(key): str(value) for key, value in env_overrides.items()})
-    proc = subprocess.run(
+    result = run_bounded_process_group(
         cmd,
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        check=False,
+        cwd=cwd,
         env=env,
+        timeout_seconds=timeout_seconds,
     )
-    payload = _parse_json_output(proc.stdout or "")
-    if not payload and payload_path is not None:
-        payload = _load_json(payload_path)
-    duration_ms = round((datetime.now(timezone.utc) - started).total_seconds() * 1000.0, 3)
+    stdout = str(result.get("stdout") or "")
+    stderr = str(result.get("stderr") or "")
+    timed_out = bool(result.get("timed_out", False))
+    payload = _parse_json_output(stdout)
+    if timed_out:
+        payload = {"ok": False, "reason": "storage_maintenance_child_timeout"}
+    elif not payload and int(result["rc"]) == 0 and payload_path is not None:
+        # A previous successful receipt must not stand in for this invocation.
+        try:
+            if payload_path.stat().st_mtime >= started.timestamp():
+                payload = _load_json(payload_path)
+        except OSError:
+            pass
+    if not payload:
+        payload = {"ok": False, "reason": "storage_maintenance_child_evidence_missing"}
+    duration_ms = round(
+        (datetime.now(timezone.utc) - started).total_seconds() * 1000.0, 3
+    )
     return {
         "cmd": list(cmd),
-        "rc": int(proc.returncode),
+        "rc": int(result["rc"]),
         "duration_ms": duration_ms,
         "payload": payload,
-        "stdout_tail": "\n".join((proc.stdout or "").splitlines()[-12:]),
-        "stderr_tail": "\n".join((proc.stderr or "").splitlines()[-12:]),
+        "timed_out": timed_out,
+        "timeout_seconds": timeout_seconds,
+        "timeout_cleanup": result.get("timeout_cleanup", {}),
+        "stdout_tail": "\n".join(stdout.splitlines()[-12:]),
+        "stderr_tail": "\n".join(stderr.splitlines()[-12:]),
     }
 
 
@@ -112,7 +129,11 @@ def _payload_reason_tokens(payload: dict[str, Any]) -> set[str]:
         value = str(payload.get(key) or "").strip()
         if value:
             tokens.add(value)
-    resource_guard = payload.get("resource_guard") if isinstance(payload.get("resource_guard"), dict) else {}
+    resource_guard = (
+        payload.get("resource_guard")
+        if isinstance(payload.get("resource_guard"), dict)
+        else {}
+    )
     for key in ("reason", "skipped_reason"):
         value = str(resource_guard.get(key) or "").strip()
         if value:
@@ -143,7 +164,11 @@ def _support_maintenance_frozen(payload: dict[str, Any]) -> bool:
     )
 
 
-def _step_status(result: dict[str, Any], *, nonfatal_reasons: set[str] | None = None) -> str:
+def _step_status(
+    result: dict[str, Any], *, nonfatal_reasons: set[str] | None = None
+) -> str:
+    if result.get("timed_out"):
+        return "error"
     payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
     accepted = nonfatal_reasons or set()
     reason = str(payload.get("reason") or "")
@@ -160,7 +185,9 @@ def _step_status(result: dict[str, Any], *, nonfatal_reasons: set[str] | None = 
     return "ok"
 
 
-def _step_record(result: dict[str, Any], *, nonfatal_reasons: set[str] | None = None) -> dict[str, Any]:
+def _step_record(
+    result: dict[str, Any], *, nonfatal_reasons: set[str] | None = None
+) -> dict[str, Any]:
     return {
         "status": _step_status(result, nonfatal_reasons=nonfatal_reasons),
         "rc": int(result.get("rc", 1)),
@@ -168,6 +195,8 @@ def _step_record(result: dict[str, Any], *, nonfatal_reasons: set[str] | None = 
         "cmd": list(result.get("cmd") or []),
         "stdout_tail": str(result.get("stdout_tail") or ""),
         "stderr_tail": str(result.get("stderr_tail") or ""),
+        "timed_out": bool(result.get("timed_out", False)),
+        "timeout_cleanup": result.get("timeout_cleanup", {}),
     }
 
 
@@ -189,6 +218,30 @@ def _normalize_sqlite_maintenance_result(result: dict[str, Any]) -> dict[str, An
     normalized["rc"] = 0
     normalized["payload"] = normalized_payload
     return normalized
+
+
+def _normalize_retention_result(result: dict[str, Any]) -> dict[str, Any]:
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    rows = [payload.get("hot_retention"), payload.get("queue_retention")]
+    shards = payload.get("shard_hot_retention")
+    rows.extend(shards if isinstance(shards, list) else [])
+    failed = [
+        row
+        for row in rows
+        if isinstance(row, dict) and row.get("ran") and int(row.get("rc", 1)) != 0
+    ]
+    if not failed:
+        return result
+    return {
+        **result,
+        "rc": 1,
+        "payload": {
+            **payload,
+            "ok": False,
+            "reason": "storage_retention_batch_incomplete",
+            "failed_retention_batch_count": len(failed),
+        },
+    }
 
 
 def _usage_snapshot(path: Path) -> dict[str, Any]:
@@ -287,12 +340,19 @@ def _priority_retention_focus(project_root: Path, base_env: dict[str, str]) -> d
         )
     )
     current_shards = _split_csv(base_env.get("SQL_LINK_SERVICE_SHARDS") or os.getenv("SQL_LINK_SERVICE_SHARDS", DEFAULT_SQL_MAINTENANCE_SHARDS))
-    if severe_focus:
-        ordered_shards = _ordered_unique(list(DEFAULT_PRIORITY_RETENTION_SHARDS))
-    else:
-        ordered_shards = _ordered_unique(["health_fast", *focus_shards, *current_shards])
+    # Ingestion requests must not starve ordinary retention on the larger shards.
+    ordered_shards = _ordered_unique(
+        [
+            "health_fast",
+            *focus_shards,
+            *current_shards,
+            *_split_csv(DEFAULT_SQL_MAINTENANCE_SHARDS),
+        ]
+    )
 
-    env_overrides: dict[str, str] = {}
+    env_overrides: dict[str, str] = {
+        "SQL_LINK_SERVICE_SHARDS": ",".join(ordered_shards)
+    }
     if focus_rows:
         env_overrides["SQL_LINK_SERVICE_SHARDS"] = ",".join(ordered_shards)
         if severe_focus:
@@ -452,7 +512,7 @@ def _coordinate_priority_retention_handoff(
         return payload
 
     started = time_mod.monotonic()
-    lock_path = project_root / "governance" / "locks" / "jsonl_sql_writer.lock"
+    lock_path = configured_sql_writer_lock_path(project_root)
     while _sql_writer_lock_held(lock_path):
         waited = max(time_mod.monotonic() - started, 0.0)
         if waited >= max(float(wait_timeout_seconds), 0.0):
@@ -506,6 +566,20 @@ def _public_priority_retention_handoff(handoff: dict[str, Any]) -> dict[str, Any
     return public
 
 
+def _maintenance_writer_command(
+    project_root: Path, env_overrides: dict[str, str]
+) -> list[str]:
+    return [
+        str(PY),
+        str(project_root / "scripts/ops/sql_link_shard_manager.py"),
+        "--once",
+        "--maintenance-scope",
+        "--shards",
+        env_overrides.get("SQL_LINK_SERVICE_SHARDS") or DEFAULT_SQL_MAINTENANCE_SHARDS,
+        "--json",
+    ]
+
+
 def _retry_writer_maintenance(
     *,
     project_root: Path,
@@ -523,7 +597,7 @@ def _retry_writer_maintenance(
     while datetime.now(timezone.utc).timestamp() <= deadline:
         attempts += 1
         result = _run_json_command(
-            [str(PY), str(project_root / "scripts" / "ops" / "sql_link_shard_manager.py"), "--once", "--json"],
+            _maintenance_writer_command(project_root, env_overrides),
             cwd=project_root,
             payload_path=health_root / "sql_link_service_latest.json",
             env_overrides=env_overrides,
@@ -638,12 +712,18 @@ def build_storage_maintenance_payload(
             wait_timeout_seconds=handoff_wait_seconds,
         )
         manager_env = dict(env_overrides)
+        # Ordinary one-pass writers defer retention here. Admit it only after
+        # this lane's resource gate, with a bounded non-vacuum batch.
+        manager_env["SQL_LINK_SERVICE_ONCE_INLINE_RETENTION"] = (
+            "1" if resource_ok and not resource_support_frozen else "0"
+        )
+        manager_env["SQL_LINK_SERVICE_BOUNDED_STORAGE_RETENTION"] = "1"
         if bool(priority_retention_handoff.get("ready", False)) and str(priority_retention_handoff.get("token") or ""):
             manager_env[MAINTENANCE_HOLD_TOKEN_ENV] = str(priority_retention_handoff["token"])
         try:
             if bool(priority_retention_handoff.get("enabled", False)) and not bool(priority_retention_handoff.get("ready", False)):
                 shard_manager = {
-                    "cmd": [str(PY), str(project_root / "scripts" / "ops" / "sql_link_shard_manager.py"), "--once", "--json"],
+                    "cmd": _maintenance_writer_command(project_root, manager_env),
                     "rc": 75,
                     "duration_ms": round(float(priority_retention_handoff.get("waited_seconds", 0.0) or 0.0) * 1000.0, 3),
                     "payload": {
@@ -656,7 +736,7 @@ def build_storage_maintenance_payload(
                 }
             else:
                 shard_manager = _run_json_command(
-                    [str(PY), str(project_root / "scripts" / "ops" / "sql_link_shard_manager.py"), "--once", "--json"],
+                    _maintenance_writer_command(project_root, manager_env),
                     cwd=project_root,
                     payload_path=project_root / "governance" / "health" / "sql_link_service_latest.json",
                     env_overrides=manager_env,
@@ -677,6 +757,7 @@ def build_storage_maintenance_payload(
                 project_root,
                 priority_retention_handoff,
             )
+        shard_manager = _normalize_retention_result(shard_manager)
         sqlite_cmd = [str(PY), str(project_root / "scripts" / "sqlite_performance_maintenance.py")]
         if vacuum:
             sqlite_cmd.append("--vacuum")
@@ -709,6 +790,8 @@ def build_storage_maintenance_payload(
                 "--apply",
                 "--no-stale-stage",
                 "--no-stale-purge",
+                "--skip-sqlite-vacuum",
+                "--no-archive-prune-vacuum",
                 "--json",
             ],
             cwd=project_root,

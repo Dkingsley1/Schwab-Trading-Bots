@@ -44,7 +44,9 @@ PROFILE_STEP_NAMES: dict[str, tuple[str, ...]] = {
         "runtime_training_snapshot",
         "point_in_time_event_store",
         "snapshot_coverage",
+        "snapshot_coverage_training",
         "feature_store_manifest",
+        "coherent_training_refresh",
         "research_context_expansion",
         "collector_contracts",
         "source_verification",
@@ -67,7 +69,9 @@ PROFILE_STEP_NAMES: dict[str, tuple[str, ...]] = {
         "runtime_training_snapshot",
         "point_in_time_event_store",
         "snapshot_coverage",
+        "snapshot_coverage_training",
         "feature_store_manifest",
+        "coherent_training_refresh",
         "research_context_expansion",
         "collector_contracts",
         "source_verification",
@@ -101,6 +105,8 @@ PROFILE_STEP_NAMES: dict[str, tuple[str, ...]] = {
     "production": (
         "memory_pressure_intelligence",
         "autonomic_resource_governor",
+        "memory_efficiency_status",
+        "host_capability_contract",
         "coherent_training_profitability_refresh",
         "sleeve_strategy_specialization",
         "quantitative_challenger_report",
@@ -195,6 +201,7 @@ def _step(
     allowed_returncodes: tuple[int, ...] = (0,),
     depends_on: tuple[str, ...] = (),
     refresh_after: tuple[str, ...] = (),
+    owner_timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
     return {
         "name": name,
@@ -205,6 +212,7 @@ def _step(
         "allowed_returncodes": list(allowed_returncodes),
         "depends_on": list(depends_on),
         "refresh_after": list(refresh_after),
+        "owner_timeout_seconds": owner_timeout_seconds,
     }
 
 
@@ -228,16 +236,36 @@ def default_steps() -> list[dict[str, Any]]:
             depends_on=("memory_pressure_intelligence",),
         ),
         _step(
+            "memory_efficiency_status",
+            "scripts/ops/memory_efficiency_control.py",
+            "governance/health/memory_efficiency_control_latest.json",
+            "status",
+            "--json",
+            max_age_minutes=60,
+            allowed_returncodes=(0, 2),
+        ),
+        _step(
+            "host_capability_contract",
+            "scripts/ops/host_capability_contract.py",
+            "governance/health/host_capability_contract_latest.json",
+            "--json",
+            max_age_minutes=60,
+            depends_on=("memory_efficiency_status",),
+        ),
+        _step(
             "coherent_training_profitability_refresh",
             "scripts/ops/runtime_artifact_refresh.py",
             "governance/health/runtime_artifact_refresh_latest.json",
             "--scope",
             "training-profitability",
+            "--max-run-seconds",
+            "1200",
             "--skip-dashboard",
             "--json",
             max_age_minutes=60,
             allowed_returncodes=(0, 2),
             depends_on=("memory_pressure_intelligence", "autonomic_resource_governor"),
+            owner_timeout_seconds=1500,
         ),
         _step(
             "training_quality_control",
@@ -311,6 +339,19 @@ def default_steps() -> list[dict[str, Any]]:
             depends_on=("runtime_training_snapshot",),
         ),
         _step(
+            "snapshot_coverage_training",
+            "scripts/snapshot_coverage_sentinel.py",
+            "governance/health/snapshot_coverage_training_latest.json",
+            "--hours",
+            "24",
+            "--out-file",
+            "governance/health/snapshot_coverage_training_latest.json",
+            "--json",
+            max_age_minutes=15,
+            allowed_returncodes=(0, 2),
+            depends_on=("runtime_training_snapshot",),
+        ),
+        _step(
             "feature_store_manifest",
             "scripts/feature_store_manifest.py",
             "governance/feature_store/latest.json",
@@ -321,7 +362,25 @@ def default_steps() -> list[dict[str, Any]]:
                 "runtime_training_snapshot",
                 "point_in_time_event_store",
                 "snapshot_coverage",
+                "snapshot_coverage_training",
             ),
+        ),
+        _step(
+            "coherent_training_refresh",
+            "scripts/ops/runtime_artifact_refresh.py",
+            "governance/health/training_accrual_refresh_latest.json",
+            "--scope",
+            "training",
+            "--max-run-seconds",
+            "240",
+            "--skip-dashboard",
+            "--out-file",
+            "governance/health/training_accrual_refresh_latest.json",
+            "--json",
+            max_age_minutes=15,
+            allowed_returncodes=(0, 2),
+            depends_on=("feature_store_manifest",),
+            owner_timeout_seconds=390,
         ),
         _step(
             "research_context_expansion",
@@ -782,6 +841,7 @@ def default_steps() -> list[dict[str, Any]]:
             "exports/state_snapshot_drills/latest.json",
             "--json",
             max_age_minutes=120,
+            owner_timeout_seconds=2100,
         ),
         _step(
             "storage_resilience_control",
@@ -1307,7 +1367,9 @@ def profile_steps(
 def _artifact_age(path: Path, *, now: datetime) -> float | None:
     payload = load_json(path)
     freshness = evidence_freshness(payload, now=now)
-    return freshness["age_minutes"] if freshness["status"] in {"fresh", "stale"} else None
+    return (
+        freshness["age_minutes"] if freshness["status"] in {"fresh", "stale"} else None
+    )
 
 
 def _acquire_lock(path: Path) -> tuple[Any | None, str]:
@@ -1430,7 +1492,11 @@ def refresh(
     )
     prior_profile = _profile_report(prior, profile_key)
     prior_freshness = evidence_freshness(prior_profile, now=current)
-    prior_age = prior_freshness["age_minutes"] if prior_freshness["status"] in {"fresh", "stale"} else None
+    prior_age = (
+        prior_freshness["age_minutes"]
+        if prior_freshness["status"] in {"fresh", "stale"}
+        else None
+    )
     if (
         not force
         and prior
@@ -1582,7 +1648,9 @@ def refresh(
             result = runner(
                 command,
                 cwd=project_root,
-                timeout_seconds=max(int(timeout_seconds), 30),
+                timeout_seconds=max(
+                    int(spec.get("owner_timeout_seconds") or timeout_seconds), 30
+                ),
                 env={
                     **os.environ,
                     "MARKET_DATA_ONLY": "1",

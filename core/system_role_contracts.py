@@ -218,6 +218,176 @@ def _source_matches_component(owner_source: str, component: Mapping[str, Any]) -
     return source in exact or any(fnmatch.fnmatch(source, pattern) for pattern in patterns)
 
 
+def _infrastructure_catalog_errors(contract: Mapping[str, Any]) -> list[str]:
+    catalog = _dict(contract.get("infrastructure_responsibility_contract"))
+    errors: list[str] = []
+    prefix = "infrastructure_definition"
+    if catalog.get("contract_id") != "infrastructure_responsibility_domains_v1":
+        return [f"{prefix}:contract_missing_or_invalid"]
+    if catalog.get("mode") != "definition_and_owner_routing_only":
+        errors.append(f"{prefix}:mode_invalid")
+    authority = _dict(catalog.get("authority"))
+    fields = {
+        "grants_component_actions",
+        "changes_role_bindings",
+        "changes_state_ownership",
+        "starts_workers",
+        "changes_resource_limits",
+        "changes_trade_logic",
+        "submits_paper_order",
+        "submits_live_order",
+        "promotes_candidate",
+        "clears_health_without_evidence",
+    }
+    if set(authority) != fields or any(
+        value is not False for value in authority.values()
+    ):
+        errors.append(f"{prefix}:authority_expansion_forbidden")
+    for field in ("definition", "cadence_policy", "completion_policy"):
+        if not isinstance(catalog.get(field), str) or not catalog[field].strip():
+            errors.append(f"{prefix}:{field}_missing")
+    for field in ("lifecycle", "safety_invariants"):
+        value = catalog.get(field)
+        if (
+            not isinstance(value, list)
+            or not value
+            or not all(isinstance(item, str) and item.strip() for item in value)
+        ):
+            errors.append(f"{prefix}:{field}_invalid")
+    rows = catalog.get("domains")
+    if not isinstance(rows, list) or not rows:
+        return errors + [f"{prefix}:domains_missing"]
+    components = _component_map(contract)
+    state_domains = _domain_map(contract)
+    roles = _role_map(contract)
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            errors.append(f"{prefix}:domain_not_object")
+            continue
+        domain_id = row.get("domain_id")
+        if not isinstance(domain_id, str) or not domain_id.strip():
+            errors.append(f"{prefix}:domain_id_missing")
+            continue
+        if domain_id in seen:
+            errors.append(f"{prefix}:{domain_id}:duplicate")
+        seen.add(domain_id)
+        for field in (
+            "display_name",
+            "owner_component_id",
+            "state_domain_id",
+            "purpose",
+        ):
+            if not isinstance(row.get(field), str) or not row[field].strip():
+                errors.append(f"{prefix}:{domain_id}:{field}_missing")
+        for field in (
+            "requested_actions",
+            "inputs",
+            "outputs",
+            "success_metrics",
+            "completion_evidence",
+            "escalation_conditions",
+        ):
+            value = row.get(field)
+            if (
+                not isinstance(value, list)
+                or not value
+                or not all(isinstance(item, str) and item.strip() for item in value)
+            ):
+                errors.append(f"{prefix}:{domain_id}:{field}_invalid")
+        owner_id = str(row.get("owner_component_id") or "")
+        owner = components.get(owner_id, {})
+        role = roles.get(str(owner.get("role_id") or ""), {})
+        domain = state_domains.get(str(row.get("state_domain_id") or ""), {})
+        if not owner:
+            errors.append(f"{prefix}:{domain_id}:unknown_owner")
+        if owner.get("role_id") not in {
+            "data_collector",
+            "context_processor",
+            "infrastructure_maintainer",
+            "truth_reconciliation",
+            "observability_reporter",
+            "evaluation_auditor",
+        }:
+            errors.append(f"{prefix}:{domain_id}:non_operational_owner")
+        if (
+            not domain
+            or domain.get("writer_component_id") != owner_id
+            or row.get("state_domain_id") not in _strings(owner.get("state_domains"))
+        ):
+            errors.append(f"{prefix}:{domain_id}:state_owner_mismatch")
+        actions = set(_strings(row.get("requested_actions")))
+        allowed = set(_strings(owner.get("allowed_actions"))) & set(
+            _strings(role.get("allowed_actions"))
+        )
+        forbidden = {
+            "paper_submit",
+            "live_submit",
+            "promote_candidate",
+            "write_candidate_state",
+            "recommend_trade",
+            "score_signal",
+            "emit_order_intent",
+            "allocate_shadow_capital",
+            "allocate_shadow_weight",
+            "set_risk_limit",
+        }
+        if not actions.issubset(allowed) or actions & forbidden:
+            errors.append(
+                f"{prefix}:{domain_id}:action_outside_existing_nontrading_authority"
+            )
+    required = {
+        "ingestion_quality",
+        "runtime_liveness",
+        "storage_durability",
+        "resource_admission",
+        "artifact_freshness",
+        "broker_truth",
+        "research_lineage",
+        "observability",
+        "security_authority",
+        "incident_recovery",
+    }
+    errors.extend(
+        f"{prefix}:required_domain_missing:{item}" for item in sorted(required - seen)
+    )
+    return errors
+
+
+def _infrastructure_definition_report(contract: Mapping[str, Any]) -> dict[str, Any]:
+    catalog = _dict(contract.get("infrastructure_responsibility_contract"))
+    components = _component_map(contract)
+    roles = _role_map(contract)
+    rows = []
+    for row in _list(catalog.get("domains")):
+        if not isinstance(row, dict):
+            continue
+        owner = components.get(str(row.get("owner_component_id") or ""), {})
+        role = roles.get(str(owner.get("role_id") or ""), {})
+        rows.append(
+            {
+                **row,
+                "owner_role_id": owner.get("role_id", ""),
+                "owner_sources": _strings(owner.get("source_paths")),
+                "inherited_freshness_slo": _dict(role.get("freshness_slo")),
+                "inherited_resource_budget": _dict(role.get("resource_budget")),
+                "inherited_failure_behavior": _dict(role.get("failure_behavior")),
+                "escalation_owner": role.get("escalation_owner", ""),
+                "operational_outcome": "not_assessed_by_definition",
+            }
+        )
+    errors = _infrastructure_catalog_errors(contract)
+    return {
+        **catalog,
+        "domains": rows,
+        "definition_complete": not errors,
+        "definition_errors": errors,
+        "definition_sha256": _canonical_sha256(rows),
+        "operational_health_verified": False,
+        "new_workers_started": False,
+    }
+
+
 def validate_contract(
     contract: Mapping[str, Any],
     *,
@@ -239,6 +409,7 @@ def validate_contract(
     domains = _domain_map(contract)
     taxonomies = _dict(contract.get("taxonomies"))
     hierarchy = _dict(contract.get("hierarchy"))
+    blockers.extend(_infrastructure_catalog_errors(contract))
 
     if int(contract.get("schema_version") or 0) != 1:
         blockers.append("schema_version_invalid")
@@ -807,6 +978,7 @@ def build_contract_report(
         "hierarchy": _dict(contract.get("hierarchy")),
         "taxonomies": _dict(contract.get("taxonomies")),
         "authority_matrix": authority_matrix,
+        "infrastructure_responsibilities": _infrastructure_definition_report(contract),
         "escalation_routes": escalation_routes,
         "definition_coverage": {
             "required_role_field_count": len(REQUIRED_ROLE_FIELDS),

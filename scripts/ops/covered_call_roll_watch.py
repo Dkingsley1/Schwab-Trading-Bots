@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -663,6 +664,24 @@ def _alert_message(payload: dict[str, Any]) -> str:
     )
 
 
+def _notification_policy(payload: dict[str, Any]) -> dict[str, Any]:
+    active = [row for row in payload.get("covered_calls", []) if row.get("severity") == "critical"]
+    if not active or any(row.get("underlying") != "NVDA" or row.get("status") != "roll_window_active" for row in active):
+        return {}
+    states = []
+    for row in active:
+        reasons = row.get("reasons") or []
+        risk_band = "deep_itm" if any(str(r).startswith("deep_itm=") for r in reasons) else "itm" if float(row.get("moneyness_pct") or 0) > 0 else "otm"
+        states.append({key: row.get(key) for key in ("account_label", "option_symbol", "strike", "expiration", "short_contracts", "covered", "status", "severity")})
+        states[-1]["risk_band"] = risk_band
+        preference = row.get("operator_roll_preference") or {}
+        states[-1]["operator_trigger_hit"] = preference.get("trigger_hit")
+    encoded = json.dumps(sorted(states, key=lambda row: json.dumps(row, sort_keys=True)), sort_keys=True)
+    return {"mode": "material_change_or_reminder", "symbol": "NVDA", "reminder_seconds": 21600,
+            "fingerprint": hashlib.sha256(encoded.encode()).hexdigest(),
+            "scope": "notification_delivery_only_no_risk_or_order_changes"}
+
+
 def write_alert(
     payload: dict[str, Any], *, alert_path: Path = DEFAULT_ALERT_LATEST_PATH
 ) -> None:
@@ -685,6 +704,7 @@ def write_alert(
         "next_roll_window": payload.get("next_roll_window", {}),
         "operator_only": True,
         "auto_order_enabled": False,
+        "notification_policy": _notification_policy(payload),
     }
     write_payload(alert_path, alert)
 

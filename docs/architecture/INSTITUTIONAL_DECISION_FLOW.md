@@ -36,6 +36,45 @@ Policy v4 separates a broad family from its concrete profile variant. Every reso
 
 The action contract joins the proposed direction to fresh broker position truth. BUY is classified as entering or adding a long, or covering a short. SELL is classified as reducing a long, entering a short, or adding to a short. The resolved strategy may forbid the transition or require short permission, linked-leg truth, or a defined-risk structure. Unknown account position state is visible during paper collection and fails closed for future live execution.
 
+## Priority Research Families
+
+`research_priority_contract` in the existing decision policy defines a research
+catalog, not another trading policy. Its five priorities are swing trend,
+intraday momentum, relative value, macro/sector rotation, and quality/income.
+They reuse `swing_directional`, `intraday_momentum`, `relative_value`,
+`macro_rates_fx`, and `long_horizon_income`; no new runtime family is invented.
+
+Each priority specifies a falsifiable hypothesis, market universe, signal-test
+specification, required inputs, abstention conditions, exits/invalidation,
+benchmarks, cost stress, evaluation metric, and rejection criteria. Existing
+family horizon, sizing, regime, capacity and execution definitions remain
+unchanged. Every experiment must declare one primary family and hypothesis,
+candidate/data lineage, holding horizon, entry/exit specification, risk-contract
+reference, benchmark and untouched evaluation window. Related variants count as
+separate trials, not independent evidence of multiple profitable strategies.
+
+The catalog recommends reviewing three families concurrently, bounded to the
+five priorities. This is a planning recommendation, not a new concurrency limit
+or an automatic allocation of compute. Event-driven, volatility, commodities,
+digital-asset basis and tail hedging remain deferred research entries. A tail
+hedge is judged on portfolio protection net of cost. Other existing families
+remain visible and unchanged; infrastructure, research models and structured
+credit never acquire a trading priority from this catalog.
+
+`build_research_priority_catalog` validates known, unique families, consecutive
+ranks, bounded review recommendations, complete definitions and strictly false
+mutation authority. It has a separate content digest. Research rank and wording
+are deliberately outside the resolved execution-policy and playbook digests;
+tests compare receipts for every registered profile. Normal source-integrity
+review still applies to changed repository files; no candidate is auto-accepted.
+
+Run `./scripts/ops/opsctl.sh sleeve-alpha-toolbox --json`. Its JSON includes the
+catalog and each sleeve's research-priority label; its operator Markdown renders
+the expanded definitions. Neither a priority label nor a complete definition
+proves economic edge, satisfies promotion, starts workers, or changes signals,
+thresholds, sizing, allocation, holds or trading permissions. Existing native
+refresh owns report publication; no additional scheduler is installed.
+
 ## Resolved Sleeve Playbook
 
 The resolver now compiles each family definition plus its profile override into one immutable decision playbook. The playbook includes the economic objective, entry and exit contracts, sizing and capacity methods, regime and cost assumptions, validation method, shorting rules, allowed position transitions, family evidence focus, required quantitative axes, ordered stage sequence, mode-specific required stages, and a family-weight-derived stage priority. Its SHA-256 digest is part of the resolved policy receipt and is revalidated in the execution lane. A changed playbook therefore cannot silently reuse an older evaluation or execution intent.

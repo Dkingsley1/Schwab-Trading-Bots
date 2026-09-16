@@ -11,6 +11,13 @@ if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
   # shellcheck disable=SC1091
   source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
 fi
+if [[ -f "$PROJECT_ROOT/scripts/ops/adaptive_ops_recovery_policy.py" ]]; then
+  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/adaptive_ops_recovery_policy.py" --apply --no-control-plane-refresh --out-file "$PROJECT_ROOT/governance/health/adaptive_ops_recovery_inputs_latest.json" --json >/dev/null 2>&1 || true
+  if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$PROFILE" --quiet
+  fi
+fi
 
 export BOT_RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-$PROFILE}"
 

@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.runtime_maintenance import maintenance_hold_snapshot, maintenance_hold_token_authorized
+from core.sqlite_runtime import sqlite_pressure_snapshot
 
 DEFAULT_DB = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "sqlite_maintenance_latest.json"
@@ -68,64 +69,82 @@ def _normalize_temp_store_mode(raw: Any, default: str = "MEMORY") -> str:
     return str(default or "MEMORY").strip().upper()
 
 
-def _resource_guard_snapshot(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
-    payload = _read_json(project_root / "governance" / "health" / "resource_guard_latest.json")
-    return payload if isinstance(payload, dict) else {}
-
-
 def resolve_runtime_settings(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
-    resource_guard = _resource_guard_snapshot(project_root)
-    memory_state = str(resource_guard.get("memory_pressure_state") or "").strip().lower()
-    memory_kind = str(resource_guard.get("memory_pressure_kind") or "").strip().lower()
-    swap_used_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
-    memory_free_pct = _safe_float(resource_guard.get("memory_free_pct"), 0.0)
-
-    pressure_level = "green"
-    if memory_state == "red" or memory_kind in {"red", "throttled"} or swap_used_gb >= 20.0 or memory_free_pct <= 10.0:
-        pressure_level = "red"
-    elif (
-        memory_state == "yellow"
-        or memory_kind.startswith("swap_only")
-        or swap_used_gb >= 10.0
-        or (0.0 < memory_free_pct <= 18.0)
-    ):
-        pressure_level = "yellow"
+    pressure = sqlite_pressure_snapshot(project_root)
+    pressure_level = pressure["pressure_level"]
 
     defaults = {
-        "green": {"temp_store_mode": "MEMORY", "cache_size_kb": 20000, "mmap_size_mb": 0, "analyze_enabled": True},
-        "yellow": {"temp_store_mode": "FILE", "cache_size_kb": 12000, "mmap_size_mb": 0, "analyze_enabled": True},
-        "red": {"temp_store_mode": "FILE", "cache_size_kb": 4096, "mmap_size_mb": 0, "analyze_enabled": False},
+        "green": {
+            "temp_store_mode": "MEMORY",
+            "cache_size_kb": 20000,
+            "mmap_size_mb": 0,
+            "analyze_enabled": False,
+        },
+        "yellow": {
+            "temp_store_mode": "FILE",
+            "cache_size_kb": 12000,
+            "mmap_size_mb": 0,
+            "analyze_enabled": False,
+        },
+        "red": {
+            "temp_store_mode": "FILE",
+            "cache_size_kb": 4096,
+            "mmap_size_mb": 0,
+            "analyze_enabled": False,
+        },
     }[pressure_level]
     temp_store_mode = _normalize_temp_store_mode(
         os.getenv("SQLITE_TEMP_STORE_MODE", defaults["temp_store_mode"]),
         default=defaults["temp_store_mode"],
     )
-    cache_size_kb = max(_safe_int(os.getenv("SQLITE_CACHE_SIZE_KB", str(defaults["cache_size_kb"])), defaults["cache_size_kb"]), 1024)
+    cache_size_kb = max(
+        _safe_int(
+            os.getenv("SQLITE_CACHE_SIZE_KB", str(defaults["cache_size_kb"])),
+            defaults["cache_size_kb"],
+        ),
+        1024,
+    )
     requested_mmap_size_mb = max(
-        _safe_int(os.getenv("SQLITE_MMAP_SIZE_MB", str(defaults["mmap_size_mb"])), defaults["mmap_size_mb"]),
+        _safe_int(
+            os.getenv("SQLITE_MMAP_SIZE_MB", str(defaults["mmap_size_mb"])),
+            defaults["mmap_size_mb"],
+        ),
         0,
     )
     mmap_explicitly_allowed = _truthy(os.getenv("SQLITE_ALLOW_MMAP", "0"), False)
     mmap_size_mb = requested_mmap_size_mb if mmap_explicitly_allowed else 0
+    if pressure_level != "green":
+        temp_store_mode = "FILE"
+        cache_size_kb = min(cache_size_kb, defaults["cache_size_kb"])
+        mmap_size_mb = 0
     cache_spill = _truthy(os.getenv("SQLITE_CACHE_SPILL", "1"), True)
-    analyze_enabled = _truthy(
-        os.getenv("SQLITE_ANALYZE_ENABLED", "1" if defaults["analyze_enabled"] else "0"),
-        defaults["analyze_enabled"],
+    analyze_enabled = pressure_level == "green" and _truthy(
+        os.getenv("SQLITE_ANALYZE_ENABLED", "0"), False
     )
-    optimize_enabled = _truthy(os.getenv("SQLITE_OPTIMIZE_ENABLED", "1"), True)
-    auto_vacuum_allowed = pressure_level != "red" or not _truthy(os.getenv("SQLITE_SKIP_AUTO_VACUUM_ON_MEMORY_PRESSURE", "1"), True)
+    optimize_enabled = pressure_level != "red" and _truthy(
+        os.getenv("SQLITE_OPTIMIZE_ENABLED", "1"), True
+    )
+    auto_vacuum_allowed = pressure_level != "red"
     return {
-        "pressure_level": pressure_level,
-        "memory_pressure_state": memory_state,
-        "memory_pressure_kind": memory_kind,
-        "memory_free_pct": round(memory_free_pct, 3),
-        "swap_used_gb": round(swap_used_gb, 3),
+        **pressure,
+        "planner_maintenance_mode": (
+            "full_analyze_opt_in" if analyze_enabled else "bounded_optimize"
+        ),
+        "analysis_limit": 1000,
         "temp_store_mode": temp_store_mode,
         "cache_size_kb": cache_size_kb,
         "cache_size_pragma": -cache_size_kb,
         "mmap_requested_mb": requested_mmap_size_mb,
         "mmap_enabled": bool(mmap_explicitly_allowed and mmap_size_mb > 0),
-        "mmap_disabled_reason": "" if mmap_explicitly_allowed or requested_mmap_size_mb <= 0 else "sqlite_mmap_opt_in_required",
+        "mmap_disabled_reason": (
+            "resource_pressure_or_unavailable_evidence"
+            if pressure_level != "green" and requested_mmap_size_mb > 0
+            else (
+                ""
+                if mmap_explicitly_allowed or requested_mmap_size_mb <= 0
+                else "sqlite_mmap_opt_in_required"
+            )
+        ),
         "mmap_size_mb": mmap_size_mb,
         "mmap_size_bytes": int(mmap_size_mb * 1024 * 1024),
         "cache_spill": cache_spill,
@@ -135,25 +154,56 @@ def resolve_runtime_settings(project_root: Path = PROJECT_ROOT) -> dict[str, Any
     }
 
 
-def _apply_runtime_pragmas(conn: sqlite3.Connection, runtime_settings: dict[str, Any], *, timeout_seconds: float) -> None:
+def _apply_runtime_pragmas(
+    conn: sqlite3.Connection,
+    runtime_settings: dict[str, Any],
+    *,
+    timeout_seconds: float,
+) -> None:
+    conn.execute(f"PRAGMA busy_timeout={int(max(float(timeout_seconds), 0.0) * 1000)}")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute(f"PRAGMA temp_store={_normalize_temp_store_mode(runtime_settings.get('temp_store_mode'), 'MEMORY')}")
-    conn.execute(f"PRAGMA cache_size={int(runtime_settings.get('cache_size_pragma') or -20000)}")
-    conn.execute(f"PRAGMA mmap_size={int(runtime_settings.get('mmap_size_bytes') or 0)}")
-    conn.execute(f"PRAGMA cache_spill={1 if bool(runtime_settings.get('cache_spill', True)) else 0}")
-    conn.execute(f"PRAGMA busy_timeout={int(max(float(timeout_seconds), 1.0) * 1000)}")
+    conn.execute(
+        f"PRAGMA temp_store={_normalize_temp_store_mode(runtime_settings.get('temp_store_mode'), 'MEMORY')}"
+    )
+    conn.execute(
+        f"PRAGMA cache_size={int(runtime_settings.get('cache_size_pragma') or -20000)}"
+    )
+    conn.execute(
+        f"PRAGMA mmap_size={int(runtime_settings.get('mmap_size_bytes') or 0)}"
+    )
+    conn.execute(
+        f"PRAGMA cache_spill={1 if bool(runtime_settings.get('cache_spill', True)) else 0}"
+    )
+
+
+def _optimize_planner(
+    conn: sqlite3.Connection, *, lock_retries: int, lock_retry_delay_seconds: float
+) -> None:
+    # This short-lived maintenance connection must consider tables it has not queried.
+    # Limit sampling explicitly; the 0x10002 mask alone does not request a temporary limit.
+    conn.execute("PRAGMA analysis_limit=1000")
+    _sqlite_exec_with_retry(
+        conn,
+        "PRAGMA optimize=0x10002",
+        lock_retries=lock_retries,
+        lock_retry_delay_seconds=lock_retry_delay_seconds,
+    ).fetchall()
 
 
 def _default_db_path() -> Path:
     configured = str(os.getenv("SQL_LINK_SERVICE_PRIMARY_DB", "") or "").strip()
     if configured:
         return Path(configured)
-    progress = _read_json(PROJECT_ROOT / "governance" / "health" / "sql_link_service_progress_latest.json")
+    progress = _read_json(
+        PROJECT_ROOT / "governance" / "health" / "sql_link_service_progress_latest.json"
+    )
     primary_db = str(progress.get("primary_db") or "").strip()
     if primary_db:
         return Path(primary_db)
-    latest = _read_json(PROJECT_ROOT / "governance" / "health" / "sql_link_service_latest.json")
+    latest = _read_json(
+        PROJECT_ROOT / "governance" / "health" / "sql_link_service_latest.json"
+    )
     latest_db = str(latest.get("db_path") or latest.get("primary_db") or "").strip()
     if latest_db:
         return Path(latest_db)
@@ -161,7 +211,9 @@ def _default_db_path() -> Path:
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
     return row is not None
 
 
@@ -519,6 +571,10 @@ def main() -> int:
     }
     runtime_settings = resolve_runtime_settings(PROJECT_ROOT)
     payload["sqlite_runtime_settings"] = {
+        "resource_evidence_ready": runtime_settings["resource_evidence_ready"],
+        "adaptive_safety_hold": runtime_settings["adaptive_safety_hold"],
+        "planner_maintenance_mode": runtime_settings["planner_maintenance_mode"],
+        "analysis_limit": runtime_settings["analysis_limit"],
         "pressure_level": str(runtime_settings.get("pressure_level") or ""),
         "temp_store_mode": str(runtime_settings.get("temp_store_mode") or ""),
         "cache_size_kb": int(runtime_settings.get("cache_size_kb") or 0),
@@ -638,6 +694,9 @@ def main() -> int:
         analyze_ran = False
         optimize_ran = False
         payload["analyze_ran"] = False
+        if not args.checkpoint_only and not runtime_settings["analyze_enabled"]:
+            payload["analyze_skipped"] = True
+            payload["analyze_skipped_reason"] = "full_analyze_not_opted_in_or_resource_pressure"
         payload["optimize_ran"] = False
         if not args.checkpoint_only and (bool(runtime_settings.get("analyze_enabled", True)) or bool(runtime_settings.get("optimize_enabled", True))):
             _raise_if_deadline_expired(deadline_monotonic)
@@ -653,7 +712,9 @@ def main() -> int:
                     conn,
                     "ANALYZE",
                     lock_retries=max(args.sqlite_lock_retries, 0),
-                    lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                    lock_retry_delay_seconds=max(
+                        args.sqlite_lock_retry_delay_seconds, 0.01
+                    ),
                 )
                 analyze_ran = True
                 payload["analyze_ran"] = True
@@ -665,12 +726,18 @@ def main() -> int:
                     as_json=args.json,
                 )
             if bool(runtime_settings.get("optimize_enabled", True)):
-                _write_heartbeat(payload, out_path, current_step="optimize", started_monotonic=started_monotonic)
-                _sqlite_exec_with_retry(
+                _write_heartbeat(
+                    payload,
+                    out_path,
+                    current_step="optimize",
+                    started_monotonic=started_monotonic,
+                )
+                _optimize_planner(
                     conn,
-                    "PRAGMA optimize",
                     lock_retries=max(args.sqlite_lock_retries, 0),
-                    lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                    lock_retry_delay_seconds=max(
+                        args.sqlite_lock_retry_delay_seconds, 0.01
+                    ),
                 )
                 optimize_ran = True
                 payload["optimize_ran"] = True
@@ -685,7 +752,12 @@ def main() -> int:
             payload["checkpoint_skipped_reason"] = "wal_below_threshold"
         else:
             _raise_if_deadline_expired(deadline_monotonic)
-            _write_heartbeat(payload, out_path, current_step="wal_checkpoint", started_monotonic=started_monotonic)
+            _write_heartbeat(
+                payload,
+                out_path,
+                current_step="wal_checkpoint",
+                started_monotonic=started_monotonic,
+            )
             _emit_progress("sqlite_maintenance step=wal_checkpoint", as_json=args.json)
             checkpoint_mode_applied = _checkpoint_mode_for_wal(
                 wal_size_gb=wal_size_gb_before,
@@ -697,7 +769,9 @@ def main() -> int:
                     conn,
                     f"PRAGMA wal_checkpoint({checkpoint_mode_applied.upper()})",
                     lock_retries=max(args.sqlite_lock_retries, 0),
-                    lock_retry_delay_seconds=max(args.sqlite_lock_retry_delay_seconds, 0.01),
+                    lock_retry_delay_seconds=max(
+                        args.sqlite_lock_retry_delay_seconds, 0.01
+                    ),
                 ).fetchone()
                 payload["checkpoint_ran"] = True
                 payload["checkpoint_mode_applied"] = checkpoint_mode_applied

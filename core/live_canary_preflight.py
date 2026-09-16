@@ -829,6 +829,21 @@ def evaluate_live_canary_preflight(
         "live_order_ledger_ready": ledger_ready,
         "immutable_release_boundary_ready": release_ready,
         "immutable_release_manifest_ready": release_manifest_ready,
+        "technical_gate_diagnostics": {
+            "order_ledger": {
+                "ready": ledger_ready,
+                "fresh": ledger_fresh,
+                "source_blockers": list(order_ledger.get("blockers") or []),
+            },
+            "release": {
+                "ready": release_ready,
+                "fresh": release_fresh,
+                "manifest_ready": release_manifest_ready,
+                "source_blockers": list(immutable_boundary.get("blockers") or []),
+                "changed_path_count": git_integrity.get("changed_path_count"),
+            },
+            "tax_ledger": {"ready": bool(tax_valid and tax_fresh), "fresh": tax_fresh},
+        },
         "tax_review": tax_review,
         "equity_session": session_state,
         "operator_attestation_confirmations_complete": not missing_confirmations,

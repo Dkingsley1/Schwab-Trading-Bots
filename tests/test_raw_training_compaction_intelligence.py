@@ -117,8 +117,8 @@ def test_compaction_detects_same_size_source_change(
     target = tmp_path / "source.jsonl.gz"
     digest = raw_compaction._digest_stream
 
-    def mutate_after_verify(handle, deadline):
-        result = digest(handle, deadline)
+    def mutate_after_verify(handle, deadline, guard=None):
+        result = digest(handle, deadline, guard)
         path.write_bytes(b"new\n")
         return result
 

@@ -24,6 +24,7 @@ from scripts.ops.storage_maintenance_lane import (
     _coordinate_priority_retention_handoff,
     _release_priority_retention_handoff,
 )
+from scripts.ops.sql_writer_lock_path import configured_sql_writer_lock_path
 
 
 def database_space(path: Path) -> dict:
@@ -137,9 +138,7 @@ def build_payload(project_root: Path, db: Path, scratch: Path, *, apply: bool) -
                     blockers=[handoff.get("reason", "writer_busy")],
                 )
                 return payload
-            with (project_root / "governance/locks/jsonl_sql_writer.lock").open(
-                "a+"
-            ) as writer:
+            with configured_sql_writer_lock_path(project_root).open("a+") as writer:
                 fcntl.flock(writer, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 space = database_space(db)
                 blockers = reclaim_blockers(

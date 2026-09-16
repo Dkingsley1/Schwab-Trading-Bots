@@ -1,6 +1,6 @@
-from core.mlx_runtime_guard import require_mlx
+from core.mlx_runtime_guard import mlx_modules, require_mlx
 
-mx, nn, optim = require_mlx()
+mx, nn, optim, _MLX_IMPORT_ERROR = mlx_modules()
 import numpy as np
 import json
 from datetime import datetime
@@ -48,8 +48,9 @@ def rolling_std(x, window):
 # -----------------------------
 # Model
 # -----------------------------
-class TradingBrain(nn.Module):
+class TradingBrain(nn.Module if nn is not None else object):
     def __init__(self, input_dim):
+        require_mlx()
         super().__init__()
         self.layer1 = nn.Linear(input_dim, 128)
         self.layer2 = nn.Linear(128, 64)

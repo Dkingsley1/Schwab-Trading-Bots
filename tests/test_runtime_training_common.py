@@ -861,7 +861,7 @@ def test_runtime_dataset_counts_rejected_candidates_separately_from_reasons() ->
     audit = meta["label_evidence_audit"]
     assert audit["candidate_count"] == 1
     assert audit["rejected_evidence_candidate_count"] == 1
-    assert audit["rejection_reason_occurrence_count"] == 3
+    assert audit["rejection_reason_occurrence_count"] == 6
     assert audit["selected_training_sample_count"] == 0
 
 

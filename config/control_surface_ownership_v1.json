@@ -243,6 +243,24 @@
       "coordination": "atomic_replace"
     },
     {
+      "control_id": "bot_definition_audit_report",
+      "resource_path": "exports/reports/operator/bot_definition_audit_latest.md",
+      "owner_source": "scripts/ops/bot_organization_control.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "bot-organization", "--json"],
+      "owner_marker": "bot_definition_audit_latest.md",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "bot_operating_definition_catalog",
+      "resource_path": "config/bot_operating_definitions_v1.json",
+      "owner_source": "scripts/ops/bot_organization_control.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "bot-organization", "--json"],
+      "owner_marker": "OPERATING_CATALOG_PATH",
+      "mutation_mode": "atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
       "control_id": "collector_capability_materialization",
       "resource_path": "governance/collector_capabilities/materialized_capabilities_latest.json",
       "owner_source": "scripts/ops/capability_materialization_control.py",

@@ -1,11 +1,16 @@
 import argparse
 import json
 import os
+import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from core.status_label_contract import evidence_label, read_paper_hold_labels
 DEFAULT_OUT_PATH = (
     PROJECT_ROOT / "governance" / "health" / "runtime_gate_dashboard_latest.json"
 )
@@ -1147,7 +1152,7 @@ def _infer_ok(payload: Dict[str, Any]) -> bool | None:
 
 
 def _infer_status(payload: Dict[str, Any], ok_value: bool | None) -> str:
-    status = str(payload.get("status", "") or "").strip().lower()
+    status = str(payload.get("overall_status") or payload.get("status") or "").strip().lower()
     if status:
         return status
     if ok_value is True:
@@ -2911,6 +2916,7 @@ def _artifact_contract(
         "source_path": str(artifact.get("path") or ""),
         "required": bool(artifact.get("required", False)),
         "status": status or "unknown",
+        "status_label": artifact.get("status_label", {}),
     }
 
 
@@ -3010,6 +3016,7 @@ def _artifact_waiting_on_evidence_not_degraded(
 
 _CONTAINED_ATTENTION = {
     "paper_execution_safety_guard_active",
+    "memory_efficiency_control_needs_work",
     "external_backlog_drain_recommended",
     "external_backlog_drain_writer_busy",
     "external_backlog_retry_bot_followups",
@@ -3017,6 +3024,7 @@ _CONTAINED_ATTENTION = {
     "promotion_not_ready",
     "training_quality_control_blocked",
     "bot_quality_autopilot_evidence_pending",
+    "teacher_quality_evidence_pending",
     "infrastructure_autofix_bot_needs_work",
     "roster_resilience_planner_needs_work",
     "source_verification_context_debt",
@@ -3024,6 +3032,7 @@ _CONTAINED_ATTENTION = {
 }
 
 _ADVISORY_ATTENTION = {
+    "teacher_quality_evidence_pending",
     "memory_efficiency_control_needs_work",
     "paper_execution_safety_guard_active",
     "external_backlog_drain_recommended",
@@ -3071,6 +3080,18 @@ _DEGRADED_ATTENTION = {
 }
 
 _ATTENTION_OWNER_ACTIONS: dict[str, dict[str, Any]] = {
+    "teacher_quality_guard_blocked": {
+        "owner": "teacher_quality_guard",
+        "command": ["./scripts/ops/opsctl.sh", "teacher-quality", "--json"],
+        "timeout_seconds": 120,
+        "success_condition": "teacher guard is ready or fresh evidence confirms teaching is disabled and all blocked teachers are safely contained",
+    },
+    "teacher_quality_evidence_pending": {
+        "owner": "teacher_quality_guard",
+        "command": ["./scripts/ops/opsctl.sh", "teacher-quality", "--json"],
+        "timeout_seconds": 120,
+        "success_condition": "independent evidence qualifies teachers; teaching remains disabled until then",
+    },
     "master_grandmaster_evidence_v2_not_ok": {
         "owner": "master_grandmaster_evidence_v2",
         "command": [
@@ -3284,6 +3305,24 @@ _ATTENTION_OWNER_ACTIONS: dict[str, dict[str, Any]] = {
         "timeout_seconds": 90,
         "success_condition": "blackstart recovery is ready or degraded only by non-critical drill freshness",
     },
+    "blackstart_recovery_blocked": {
+        "owner": "blackstart_recovery",
+        "command": ["./scripts/ops/opsctl.sh", "blackstart-recovery", "--json"],
+        "timeout_seconds": 90,
+        "success_condition": "current restore, storage, and auth evidence satisfies the blackstart owner; assessment alone does not restart services",
+    },
+    "auth_lease_manager_blocked": {
+        "owner": "auth_lease_manager",
+        "command": ["./scripts/ops/opsctl.sh", "auth-lease", "--json"],
+        "timeout_seconds": 60,
+        "success_condition": "auth owner measures a valid current lease; invalid_grant requires operator browser reauthorization and cannot be cleared by assessment",
+    },
+    "storage_resilience_control_needs_work": {
+        "owner": "storage_resilience_control",
+        "command": ["./scripts/ops/opsctl.sh", "storage-resilience", "--fast", "--json"],
+        "timeout_seconds": 90,
+        "success_condition": "storage owner verifies current capacity and complete selected-file restore proof without implying full-platform or independent-media recovery",
+    },
     "coordination_state_control_blocked": {
         "owner": "coordination_state_control",
         "command": ["./scripts/ops/opsctl.sh", "coordination-status", "--json"],
@@ -3469,6 +3508,64 @@ def _snapshot_cache_ready_for_soak(artifacts: Dict[str, Dict[str, Any]]) -> bool
     )
 
 
+def _bounded_live_writer_lag_ready_for_storage_soak(
+    ingestion_storage: Dict[str, Any],
+) -> bool:
+    bounded = (
+        ingestion_storage.get("bounded_live_writer_lag")
+        if isinstance(ingestion_storage.get("bounded_live_writer_lag"), dict)
+        else {}
+    )
+    if not bool(bounded.get("active", False)):
+        return False
+    inputs = bounded.get("inputs") if isinstance(bounded.get("inputs"), dict) else {}
+    limits = bounded.get("limits") if isinstance(bounded.get("limits"), dict) else {}
+    contract = (
+        ingestion_storage.get("continuous_run_soak_contract")
+        if isinstance(ingestion_storage.get("continuous_run_soak_contract"), dict)
+        else {}
+    )
+    contract_blockers = {
+        str(item or "").strip()
+        for item in (
+            contract.get("blockers")
+            if isinstance(contract.get("blockers"), list)
+            else []
+        )
+        if str(item or "").strip()
+    }
+    severity = str(
+        bounded.get("effective_severity")
+        or bounded.get("candidate_severity")
+        or ingestion_storage.get("severity")
+        or ""
+    ).strip()
+    pressure_index = _safe_float(
+        inputs.get("pressure_index"),
+        _safe_float(ingestion_storage.get("pressure_index"), 0.0),
+    )
+    core_pending = _safe_int(inputs.get("core_pending_lines"), 0)
+    total_pending = _safe_int(inputs.get("total_pending_lines"), core_pending)
+    oldest_age = _safe_float(inputs.get("oldest_pending_age_seconds"), 0.0)
+    return bool(
+        bool(contract.get("soak_ready", False) or contract.get("ready", False))
+        and not contract_blockers
+        and severity in {"stable", "low", "normal", "watch", "elevated", "ready", ""}
+        and pressure_index <= _safe_float(limits.get("max_pressure_index"), 2.25)
+        and core_pending <= _safe_int(limits.get("core_pending_lines"), 7500)
+        and total_pending <= _safe_int(limits.get("total_pending_lines"), 40000)
+        and oldest_age <= _safe_float(limits.get("max_oldest_age_seconds"), 900.0)
+        and bool(inputs.get("hard_paths_clear", False))
+        and bool(inputs.get("route_verified", False))
+        and not bool(inputs.get("route_drift", False))
+        and bool(inputs.get("integrity_clear", False))
+        and bool(inputs.get("storage_resilience_ready", False))
+        and bool(inputs.get("sql_progress_fresh", False))
+        and str(ingestion_storage.get("recommended_operating_mode") or "")
+        in {"live_full", "guarded_live_full", "paper_soak", "collection_full", ""}
+    )
+
+
 def _roster_resilience_ready_for_soak(artifacts: Dict[str, Dict[str, Any]]) -> bool:
     summary = artifacts.get("roster_resilience_planner", {}).get("summary", {})
     contract = (
@@ -3500,11 +3597,15 @@ def _ingestion_soak_ready_for_dashboard(artifacts: Dict[str, Dict[str, Any]]) ->
     if severity not in {"stable", "low", "normal", "elevated", ""}:
         return False
     pressure_index = float(summary.get("pressure_index", 0.0) or 0.0)
-    if pressure_index >= BOUNDED_TRANSIENT_STORAGE_PRESSURE_MAX:
-        return False
     payload = _load_json(
         Path(str(artifacts.get("ingestion_storage_control", {}).get("path", "") or ""))
     )
+    bounded_live_writer_ready = _bounded_live_writer_lag_ready_for_storage_soak(payload)
+    if (
+        pressure_index >= BOUNDED_TRANSIENT_STORAGE_PRESSURE_MAX
+        and not bounded_live_writer_ready
+    ):
+        return False
     contract = (
         payload.get("continuous_run_soak_contract")
         if isinstance(payload.get("continuous_run_soak_contract"), dict)
@@ -3513,6 +3614,8 @@ def _ingestion_soak_ready_for_dashboard(artifacts: Dict[str, Dict[str, Any]]) ->
     if severity != "elevated" and bool(
         contract.get("ready", False) or contract.get("soak_ready", False)
     ):
+        return True
+    if bounded_live_writer_ready:
         return True
     bounded = (
         payload.get("bounded_recovery_contract")
@@ -3801,7 +3904,7 @@ def _teacher_quality_deferred_for_paper_soak(
     artifacts: Dict[str, Dict[str, Any]],
 ) -> bool:
     artifact = artifacts.get("teacher_quality_guard", {})
-    if artifact.get("stale") is True:
+    if artifact.get("stale") is not False:
         return False
     payload = _load_json(Path(str(artifact.get("path") or "")))
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
@@ -4073,15 +4176,25 @@ def _ingestion_storage_governor_deferred_for_paper_soak(
     contract_blockers = (
         contract.get("blockers") if isinstance(contract.get("blockers"), list) else []
     )
+    bounded_live_writer_ready = _bounded_live_writer_lag_ready_for_storage_soak(
+        storage_payload
+    )
     return bool(
         str(storage_payload.get("overall_status") or "") in {"ready", "ok"}
-        and str(storage_payload.get("severity") or "")
-        in {"stable", "low", "normal", ""}
-        and bool(contract.get("soak_ready", False) or contract.get("ready", False))
+        and (
+            (
+                str(storage_payload.get("severity") or "")
+                in {"stable", "low", "normal", ""}
+                and bool(
+                    contract.get("soak_ready", False) or contract.get("ready", False)
+                )
+            )
+            or bounded_live_writer_ready
+        )
         and not contract_blockers
         and (not contract_grade or contract_grade in {"A", "A+"})
         and str(forecast.get("continuous_run_status") or "ready")
-        in {"ready", "stable", "stable_or_improving"}
+        in {"ready", "stable", "stable_or_improving", "watch"}
         and bool(storage.get("sql_primary_route_drift", False)) is False
     )
 
@@ -4375,6 +4488,14 @@ def _ordered_unique(items: Iterable[Any]) -> list[str]:
 def _containment_rule_for_attention(item: str) -> Dict[str, Any]:
     key = str(item or "").strip()
     exact: Dict[str, Dict[str, Any]] = {
+        "teacher_quality_evidence_pending": {
+            "domain": "training_promotion",
+            "blast_radius": "teacher_qualification_only",
+            "trading_impact": "no_teacher_authority_until_qualified",
+            "data_collection_impact": "none",
+            "containment_action": "keep_unqualified_teachers_disabled_while_collecting_independent_evidence",
+            "release_condition": "teacher_quality_guard_has_qualified_teachers_and_no_risk_findings",
+        },
         "paper_execution_safety_guard_active": {
             "domain": "execution_safety",
             "blast_radius": "paper_execution_only",
@@ -4446,6 +4567,14 @@ def _containment_rule_for_attention(item: str) -> Dict[str, Any]:
             "data_collection_impact": "background_retry_only",
             "containment_action": "retry_backlog_handoff_without_escalating_to_hot_path_failure",
             "release_condition": "external_backlog_retry_bot_ready_or_no_actionable_followups",
+        },
+        "memory_efficiency_control_needs_work": {
+            "domain": "runtime_resources",
+            "blast_radius": "memory_tuning_advisory",
+            "trading_impact": "none_while_memory_pressure_is_green",
+            "data_collection_impact": "none_while_hot_path_and_soak_storage_are_ready",
+            "containment_action": "keep_memory_tuning_on_its_owner_lane_without_blocking_paper_collection_or_storage_soak",
+            "release_condition": "memory_efficiency_control_ready_or_green_memory_pressure_with_named_advisory_findings",
         },
         "infrastructure_autofix_bot_needs_work": {
             "domain": "ops_self_healing",
@@ -5345,6 +5474,10 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             "stale": stale,
             "status": status,
             "summary": summary,
+            "status_label": evidence_label(
+                payload, scope=name, source=str(path),
+                max_age_seconds=float(cfg["max_age_minutes"]) * 60, now=now,
+            ),
         }
         if bool(cfg["required"]) and not exists:
             attention.append(f"{name}_missing")
@@ -5633,6 +5766,12 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
                 severity = max(severity, 1)
             continue
         if status == "blocked":
+            if (
+                name == "teacher_quality_guard"
+                and _teacher_quality_deferred_for_paper_soak(artifacts)
+            ):
+                attention.append("teacher_quality_evidence_pending")
+                continue
             if (
                 name == "bot_quality_autopilot"
                 and _bot_quality_autopilot_deferred_for_evidence_collection(artifacts)
@@ -5930,6 +6069,7 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         "degradation_containment": degradation_containment,
         "ops_smoothing": ops_smoothing,
         "execution_runtime": {
+            "hold_labels": read_paper_hold_labels(project_root),
             "collection_fanout_ready": bool(
                 launcher_summary.get("collection_fanout_ready", False)
             ),
@@ -6283,6 +6423,18 @@ def build_dashboard(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             ),
         },
         "artifacts": artifacts,
+        "status_label_audit": {
+            "scope": "configured_dashboard_artifacts_not_every_historical_report",
+            "artifact_count": len(artifacts),
+            "labeled_count": sum(bool(row.get("status_label")) for row in artifacts.values()),
+            "evidence_counts": dict(Counter(
+                row.get("status_label", {}).get("evidence_status", "unlabeled")
+                for row in artifacts.values()
+            )),
+            "display_field": "artifacts.<name>.status_label.display",
+            "legacy_gate_fields_preserved": True,
+            "live_process_presence_does_not_renew_artifact_observations": True,
+        },
         "registry": _registry_summary(project_root),
     }
     return payload

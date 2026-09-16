@@ -305,6 +305,7 @@ def test_ready_preflight_binds_candidate_account_cash_and_release(
     assert result["account_reference_matches"] is True
     assert result["risk_boundary_ready"] is True
     assert result["immutable_release_manifest_ready"] is True
+    assert all(row["ready"] for row in result["technical_gate_diagnostics"].values())
     assert result["live_execution_authority"] is False
 
 

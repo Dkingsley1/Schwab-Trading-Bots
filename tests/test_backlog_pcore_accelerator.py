@@ -1,12 +1,158 @@
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.ops import backlog_pcore_accelerator as src
+
+
+@pytest.fixture
+def activation_inputs(tmp_path, monkeypatch):
+    from scripts.ops import sql_writer_admission
+
+    now = datetime.now(timezone.utc)
+    health = tmp_path / "governance/health"
+    _write_json(
+        health / "backpressure_drainer_fleet_latest.json",
+        {
+            "timestamp_utc": now.isoformat(),
+            "overall_status": "handoff_requested",
+            "active_drainer": {"name": "core_decision_drainer"},
+        },
+    )
+    _write_json(
+        health / "sql_link_service_request_latest.json",
+        {
+            "active": True,
+            "request_kind": "backpressure_drainer_fleet",
+            "requested_at": now.isoformat(),
+            "expires_utc": (now + timedelta(seconds=120)).isoformat(),
+            "env_overrides": {
+                "BACKLOG_ACCELERATOR_ENABLED": "1",
+                "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "5",
+            },
+        },
+    )
+    admission = {
+        "writer_start_allowed": True,
+        "blockers": [],
+        "local_storage_reserve": {"free_gb": 70, "pressure_free_gb": 64},
+    }
+    monkeypatch.setattr(
+        sql_writer_admission, "storage_admission", lambda root: admission
+    )
+    return health, now, admission
+
+
+def test_requested_acceleration_is_not_running(tmp_path, activation_inputs):
+    result = src._activation_contract(tmp_path)
+    assert result["state"] == "handoff_requested"
+    assert result["requested_workers"] == 5
+    assert result["observed_worker_budget"] == 0
+    assert result["writer_running_observed"] is False
+
+
+def test_storage_hold_keeps_accelerator_armed_but_not_active(
+    tmp_path, activation_inputs
+):
+    _, _, admission = activation_inputs
+    admission.update(
+        writer_start_allowed=False, blockers=["local_storage_reserve_pause"]
+    )
+    result = src._activation_contract(tmp_path)
+    assert result["state"] == "held_storage"
+    assert result["requested"] is True
+    assert result["storage_start_allowed"] is False
+
+
+@pytest.mark.parametrize(
+    "age,running,expected",
+    [(0, True, True), (0, False, False), (91, True, False), (-60, True, False)],
+)
+def test_only_fresh_running_evidence_reports_observed_workers(
+    tmp_path, activation_inputs, age, running, expected
+):
+    health, now, _ = activation_inputs
+    _write_json(
+        health / "sql_link_service_progress_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(seconds=age)).isoformat(),
+            "running": running,
+            "merged_rows_this_cycle": 99999,
+            "shard_writer_lane_contract": {"selected_shard_writer_lanes": 3},
+        },
+    )
+    result = src._activation_contract(tmp_path)
+    assert result["writer_running_observed"] is expected
+    assert result["observed_worker_budget"] == (3 if expected else 0)
+
+
+@pytest.mark.parametrize(
+    "kind", ["expired", "future", "inactive", "consumed", "malformed", "naive"]
+)
+def test_invalid_or_consumed_request_is_not_activation(
+    tmp_path, activation_inputs, kind
+):
+    health, now, _ = activation_inputs
+    path = health / "sql_link_service_request_latest.json"
+    request = json.loads(path.read_text())
+    if kind == "expired":
+        request["expires_utc"] = (now - timedelta(seconds=1)).isoformat()
+    elif kind == "future":
+        request["requested_at"] = (now + timedelta(seconds=30)).isoformat()
+    elif kind == "inactive":
+        request["active"] = False
+    elif kind == "consumed":
+        _write_json(
+            health / "sql_link_service_request_consumed_latest.json",
+            {"active_request": request},
+        )
+    elif kind == "naive":
+        request["requested_at"] = now.replace(tzinfo=None).isoformat()
+    else:
+        request["expires_utc"] = "bad"
+    _write_json(path, request)
+    result = src._activation_contract(tmp_path)
+    assert result["state"] == "awaiting_fresh_plan"
+    assert result["requested"] is False
+    assert result["requested_workers"] == 0
+
+
+def test_stale_plan_cannot_report_ready_handoff(tmp_path, activation_inputs):
+    health, now, _ = activation_inputs
+    _write_json(
+        health / "backpressure_drainer_fleet_latest.json",
+        {
+            "timestamp_utc": (now - timedelta(seconds=91)).isoformat(),
+        },
+    )
+    assert src._activation_contract(tmp_path)["state"] == "awaiting_fresh_plan"
+
+
+def test_runtime_refresh_does_not_scan_inventory_or_apply_configuration(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        src, "_bounded_tree_size", lambda *a, **kw: pytest.fail("inventory scan")
+    )
+    payload = src.build_payload(tmp_path, runtime_only=True)
+    assert payload["runtime_only"] is True
+    assert (
+        payload["storage_maintenance_pcore_contract"]["active_storage_route"][
+            "local_fallback_tree"
+        ]["size_kind"]
+        == "not_scanned"
+    )
+    monkeypatch.setattr(sys, "argv", ["accelerator", "--runtime-only", "--apply"])
+    with pytest.raises(SystemExit) as exc:
+        src.main()
+    assert exc.value.code == 2
 
 
 def _write_json(path: Path, payload: dict) -> None:

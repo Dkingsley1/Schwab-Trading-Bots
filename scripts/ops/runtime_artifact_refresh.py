@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,11 +51,12 @@ REFRESH_ACTIVE_ENV = "RUNTIME_ARTIFACT_REFRESH_ACTIVE"
 EVIDENCE_EPOCH_ID_ENV = "BOT_EVIDENCE_EPOCH_ID"
 EVIDENCE_EPOCH_STARTED_ENV = "BOT_EVIDENCE_EPOCH_STARTED_UTC"
 EVIDENCE_EPOCH_STEP_ENV = "BOT_EVIDENCE_EPOCH_STEP"
-SERIALIZED_PROFITABILITY_SCOPES = {"profitability", "training-profitability"}
+SERIALIZED_PROFITABILITY_SCOPES = {"training", "profitability", "training-profitability", "lineage-inputs"}
 REFRESH_SCOPE_ROOTS: dict[str, tuple[str, ...]] = {
     "grade-health": ("low_grade_finalizer_verified",),
     "cell-health": ("low_grade_finalizer_verified",),
     "training": ("training_runtime_control_verified",),
+    "lineage-inputs": ("feature_store_manifest_verified", "paper_replay_training"),
     "profitability": (
         "source_verification",
         "source_verification_autorefresh",
@@ -1891,6 +1893,7 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "cmd": [
                 str(PY),
                 str(ops_root / "data_plane_recovery_controller.py"),
+                "--apply",
                 "--json",
             ],
             "timeout_sec": 180,
@@ -2277,12 +2280,14 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
         },
         {
             "name": "data_collection_observation_rollup_terminal",
+            "producer_owned_publication": True,
             "payload_path": health_root
             / "data_collection_observation_rollup_latest.json",
             "cmd": [
                 str(ops_root / "opsctl.sh"),
                 "data-collection-observation-rollup",
                 "--apply",
+                "--state-only",
                 "--bootstrap-tail-lines",
                 "5000",
                 "--json",
@@ -2770,6 +2775,7 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "cmd": [
                 str(PY),
                 str(ops_root / "data_plane_recovery_controller.py"),
+                "--apply",
                 "--json",
             ],
             "timeout_sec": 180,
@@ -4059,7 +4065,23 @@ def _select_scope_specs(
             if dependency_name not in selected:
                 selected.add(dependency_name)
                 pending.append(dependency_name)
-    return [spec for spec in specs if str(spec.get("name") or "") in selected]
+    result = [spec for spec in specs if str(spec.get("name") or "") in selected]
+    if scope_key == "lineage-inputs":
+        result = [dict(spec) for spec in result]
+        for spec in result:
+            if spec["name"] == "runtime_training_snapshot_verified":
+                # Light refresh verifies stored rows and recomputes current windows.
+                command = list(spec["cmd"])
+                command[command.index("--reuse-if-fresh-minutes") + 1] = "0"
+                spec["cmd"] = [
+                    *command,
+                    "--max-runtime-seconds",
+                    "120",
+                    "--incremental-max-runtime-seconds",
+                    "15",
+                ]
+                spec["timeout_sec"] = 125
+    return result
 
 
 def _run_spec(spec: dict[str, Any], project_root: Path) -> dict[str, Any]:
@@ -4303,6 +4325,20 @@ def _run_spec_with_freshness(
     path_freshness: dict[Path, bool] = {path: False for path in tracked_paths}
 
     for attempt in range(1, 3):
+        deadline = spec.get("_workflow_deadline")
+        if deadline is not None:
+            remaining = int(float(deadline) - time.monotonic())
+            if remaining < 1:
+                result = {
+                    "rc": 124,
+                    "timed_out": True,
+                    "stderr_tail": "workflow_deadline_exhausted",
+                }
+                break
+            spec = {
+                **spec,
+                "timeout_sec": min(int(spec.get("timeout_sec", 120)), remaining),
+            }
         attempt_started = datetime.now(timezone.utc)
         previous_signatures = {
             path: _artifact_signature(path) for path in tracked_paths
@@ -4901,8 +4937,11 @@ def build_payload(
     specs: list[dict[str, Any]] | None = None,
     runner: RefreshRunner | None = None,
     scope: str = "all",
+    max_run_seconds: int = 0,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     cycle_started = datetime.now(timezone.utc)
+    deadline = time.monotonic() + max_run_seconds if max_run_seconds > 0 else None
     evidence_epoch_id = uuid.uuid4().hex
     evidence_epoch_started_utc = cycle_started.isoformat()
     all_specs = list(specs or _step_specs(project_root))
@@ -4928,11 +4967,31 @@ def build_payload(
     missing_after: list[str] = []
     recovered = 0
     completed_steps: dict[str, dict[str, Any]] = {}
+
+    def publish_progress(state: str, active_step: str = "") -> None:
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "timestamp_utc": iso_now(),
+                    "run_state": state,
+                    "refresh_scope": refresh_scope,
+                    "evidence_epoch_id": evidence_epoch_id,
+                    "active_step": active_step,
+                    "completed_step_count": len(steps),
+                    "target_step_count": len(refresh_specs),
+                    "max_run_seconds": max_run_seconds,
+                    "progress_only": True,
+                    "readiness_authority": False,
+                }
+            )
+
     paper_soak_ready_before_refresh = _paper_soak_contract_ready(project_root)
     for raw_spec in refresh_specs:
         spec = dict(raw_spec)
         spec["_evidence_epoch_id"] = evidence_epoch_id
         spec["_evidence_epoch_started_utc"] = evidence_epoch_started_utc
+        if deadline is not None:
+            spec["_workflow_deadline"] = deadline
         dependencies = [
             str(item) for item in spec.get("depends_on", []) if str(item or "").strip()
         ]
@@ -4956,11 +5015,16 @@ def build_payload(
             )
         spec["_evidence_dependency_rows"] = dependency_rows
         payload_path = Path(spec["payload_path"])
-        result = (
-            _dependency_failure_result(spec, missing_dependencies)
-            if missing_dependencies
-            else _run_spec_with_freshness(spec, project_root, run_step)
-        )
+        publish_progress("running", str(spec["name"]))
+        try:
+            result = (
+                _dependency_failure_result(spec, missing_dependencies)
+                if missing_dependencies
+                else _run_spec_with_freshness(spec, project_root, run_step)
+            )
+        except BaseException:
+            publish_progress("interrupted", str(spec["name"]))
+            raise
         payload = (
             result.get("payload") if isinstance(result.get("payload"), dict) else {}
         )
@@ -5110,10 +5174,14 @@ def build_payload(
     elif degraded_step_count > 0:
         overall_status = "degraded"
 
+    publish_progress("completed")
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
         "refresh_cycle_started_utc": cycle_started.isoformat(),
+        "max_run_seconds": max_run_seconds,
+        "workflow_deadline_exhausted": deadline is not None
+        and time.monotonic() >= deadline,
         "evidence_epoch_id": evidence_epoch_id,
         "evidence_epoch_started_utc": evidence_epoch_started_utc,
         "evidence_epoch_atomic_publish": True,
@@ -5178,21 +5246,56 @@ def build_payload(
     }
 
 
-def build_payload_serialized(project_root: Path, *, scope: str) -> dict[str, Any]:
+def build_payload_serialized(
+    project_root: Path, *, scope: str, **kwargs: Any
+) -> dict[str, Any]:
     scope_key = str(scope or "all").strip().lower()
     if scope_key not in SERIALIZED_PROFITABILITY_SCOPES:
-        return build_payload(project_root, scope=scope_key)
+        return build_payload(project_root, scope=scope_key, **kwargs)
 
     previous_lock_env = os.environ.get(PAPER_PROFITABILITY_LOCK_ENV)
-    with paper_profitability_generation_lock(project_root, timeout_seconds=120.0):
-        os.environ[PAPER_PROFITABILITY_LOCK_ENV] = "1"
-        try:
-            payload = build_payload(project_root, scope=scope_key)
-        finally:
-            if previous_lock_env is None:
-                os.environ.pop(PAPER_PROFITABILITY_LOCK_ENV, None)
-            else:
-                os.environ[PAPER_PROFITABILITY_LOCK_ENV] = previous_lock_env
+    lock_wait = 5.0 if scope_key == "lineage-inputs" else 120.0
+    lock_acquired = False
+    try:
+        with paper_profitability_generation_lock(project_root, timeout_seconds=lock_wait):
+            lock_acquired = True
+            os.environ[PAPER_PROFITABILITY_LOCK_ENV] = "1"
+            try:
+                payload = build_payload(project_root, scope=scope_key, **kwargs)
+            finally:
+                if previous_lock_env is None:
+                    os.environ.pop(PAPER_PROFITABILITY_LOCK_ENV, None)
+                else:
+                    os.environ[PAPER_PROFITABILITY_LOCK_ENV] = previous_lock_env
+    except TimeoutError:
+        if scope_key != "lineage-inputs" or lock_acquired:
+            raise
+        return {
+            "timestamp_utc": iso_now(),
+            "schema_version": 1,
+            "project_root": str(project_root),
+            "refresh_scope": scope_key,
+            "ok": False,
+            "overall_status": "deferred",
+            "reason": "generation_lock_contention",
+            "receipt_only": True,
+            "refresh_started": False,
+            "artifact_refreshed_this_cycle": False,
+            "all_required_artifacts_fresh": False,
+            "artifacts_recovered_count": 0,
+            "previous_evidence_preserved": True,
+            "max_run_seconds": kwargs.get("max_run_seconds", 0),
+            "single_writer_epoch_lock": {
+                "held": False,
+                "lock_family": "paper_profitability_generation",
+                "scope": scope_key,
+                "wait_budget_seconds": lock_wait,
+            },
+            "steps": [],
+            "recommended_actions": [
+                "retry the bounded lineage-inputs refresh after the active producer releases its generation lock"
+            ],
+        }
     payload["single_writer_epoch_lock"] = {
         "held": True,
         "lock_family": "paper_profitability_generation",
@@ -5264,6 +5367,12 @@ def main() -> int:
         help="Refresh all artifacts or one dependency-closed evidence graph.",
     )
     parser.add_argument("--skip-dashboard", action="store_true")
+    parser.add_argument(
+        "--max-run-seconds",
+        type=int,
+        default=None,
+        help="Shared step/retry budget; serialized lock wait adds at most 120 seconds.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -5287,10 +5396,38 @@ def main() -> int:
             print("runtime_artifact_refresh overall_status=nested_refresh_skipped")
         return 0
 
-    payload = build_payload_serialized(
-        Path(args.project_root).resolve(), scope=str(args.scope)
-    )
     out_path = Path(args.out_file).expanduser()
+    if args.max_run_seconds is not None and not 1 <= args.max_run_seconds <= 1800:
+        parser.error("--max-run-seconds must be between 1 and 1800")
+    run_budget = (
+        args.max_run_seconds
+        if args.max_run_seconds is not None
+        else (
+            1200 if args.scope in {"training", *SERIALIZED_PROFITABILITY_SCOPES} else 0
+        )
+    )
+    payload = build_payload_serialized(
+        Path(args.project_root).resolve(),
+        scope=str(args.scope),
+        max_run_seconds=run_budget,
+        progress_callback=lambda row: write_payload(
+            out_path.with_suffix(".progress.json"), row
+        ),
+    )
+    if payload.get("overall_status") == "deferred":
+        # Record the attempt separately without refreshing the last evidence or progress.
+        receipt_path = out_path.with_suffix(".deferred.json")
+        payload["deferred_receipt_path"] = str(receipt_path)
+        write_payload(receipt_path, payload)
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=True))
+        else:
+            print(
+                "runtime_artifact_refresh "
+                f"scope={payload['refresh_scope']} overall_status=deferred "
+                f"reason={payload['reason']}"
+            )
+        return 2
     write_payload(out_path, payload)
     if bool(args.skip_dashboard) or str(args.scope) != "all":
         payload["dashboard_publish"] = {

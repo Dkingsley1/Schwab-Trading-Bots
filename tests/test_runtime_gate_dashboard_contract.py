@@ -19,6 +19,15 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def test_blocked_auth_restore_and_storage_have_observational_owners():
+    attention = ["auth_lease_manager_blocked", "blackstart_recovery_blocked", "storage_resilience_control_needs_work"]
+    actions = runtime_gate_dashboard._remediation_actions(attention)
+    assert [row["owner"] for row in actions] == ["auth_lease_manager", "blackstart_recovery", "storage_resilience_control"]
+    assert [row["tier"] for row in actions[:2]] == ["degraded", "degraded"]
+    assert all("--apply" not in row["command"] for row in actions)
+    assert all("token-refresh-interactive" not in row["command"] for row in actions)
+
+
 def test_runtime_gate_dashboard_marks_missing_sections_with_explicit_contract_state(
     tmp_path,
 ):
@@ -216,6 +225,86 @@ def test_runtime_gate_dashboard_manages_bounded_transient_backlog_attention(tmp_
     assert reason == "external_backlog_handoff_managed_while_ingestion_soak_is_green"
 
 
+def test_runtime_gate_dashboard_manages_bounded_live_writer_lag_governor_attention(
+    tmp_path,
+):
+    health = tmp_path / "governance" / "health"
+    storage_path = health / "ingestion_storage_control_latest.json"
+    governor_path = health / "ingestion_storage_governor_latest.json"
+    storage_payload = {
+        "overall_status": "ready",
+        "severity": "elevated",
+        "pressure_index": 1.347,
+        "recommended_operating_mode": "live_full",
+        "continuous_run_soak_contract": {
+            "status": "watch",
+            "ready": False,
+            "soak_ready": True,
+            "grade": "A",
+            "blockers": [],
+            "forecast": {"continuous_run_status": "watch"},
+        },
+        "bounded_live_writer_lag": {
+            "active": True,
+            "candidate_severity": "elevated",
+            "effective_severity": "elevated",
+            "limits": {
+                "max_pressure_index": 2.25,
+                "core_pending_lines": 7500,
+                "total_pending_lines": 40000,
+                "max_oldest_age_seconds": 900.0,
+            },
+            "inputs": {
+                "pressure_index": 1.347,
+                "core_pending_lines": 5269,
+                "total_pending_lines": 25000,
+                "oldest_pending_age_seconds": 320.0,
+                "hard_paths_clear": True,
+                "route_verified": True,
+                "route_drift": False,
+                "integrity_clear": True,
+                "storage_resilience_ready": True,
+                "sql_progress_fresh": True,
+            },
+        },
+    }
+    _write_json(storage_path, storage_payload)
+    _write_json(
+        governor_path,
+        {
+            "profile": "critical_backpressure",
+            "sql_primary_db": {"route_drift": False},
+        },
+    )
+    artifacts = {
+        "ingestion_storage_control": {
+            "path": str(storage_path),
+            "summary": {
+                "overall_status": "ready",
+                "severity": "elevated",
+                "pressure_index": 1.347,
+            },
+        },
+        "ingestion_storage_governor": {
+            "path": str(governor_path),
+            "summary": {
+                "profile": "critical_backpressure",
+                "route_drift": False,
+            },
+        },
+    }
+
+    assert runtime_gate_dashboard._ingestion_soak_ready_for_dashboard(artifacts) is True
+    reason = runtime_gate_dashboard._attention_managed_by_green_soak(
+        "ingestion_storage_governor_critical",
+        artifacts,
+        {"enabled": True},
+    )
+    assert (
+        reason == "deferred_backlog_governor_profile_managed_by_storage_soak_contract"
+    )
+
+
 def _teacher_quality_artifact(tmp_path: Path) -> tuple[Path, dict]:
     path = tmp_path / "governance" / "distillation" / "teacher_quality_latest.json"
     payload = {
@@ -254,6 +343,49 @@ def test_runtime_gate_dashboard_manages_fail_closed_unqualified_teacher_pool(tmp
         reason
         == "teacher_qualification_deferred_while_unqualified_teachers_are_fail_closed"
     )
+
+
+def test_teacher_evidence_hold_is_visible_without_arming_paper(tmp_path, monkeypatch):
+    path, payload = _teacher_quality_artifact(tmp_path)
+    payload["timestamp_utc"] = datetime.now(timezone.utc).isoformat()
+    _write_json(path, payload)
+    monkeypatch.setattr(
+        runtime_gate_dashboard,
+        "_artifact_config",
+        lambda root: {
+            "teacher_quality_guard": {
+                "paths": [path],
+                "max_age_minutes": 60,
+                "required": False,
+            },
+        },
+    )
+    dashboard = runtime_gate_dashboard.build_dashboard(tmp_path)
+    overall = dashboard["overall"]
+    assert "teacher_quality_evidence_pending" in overall["attention_tiers"]["advisory"]
+    assert "teacher_quality_guard_blocked" not in overall["attention"]
+    assert overall["soak_management_context"]["enabled"] is False
+    action = next(
+        row
+        for row in overall["remediation_actions"]
+        if row["attention"] == "teacher_quality_evidence_pending"
+    )
+    assert action["owner"] == "teacher_quality_guard"
+    assert json.loads(path.read_text())["summary"]["teaching_enabled"] is False
+
+    payload["overfitting_awareness"]["risk_bot_count"] = 1
+    _write_json(path, payload)
+    unsafe = runtime_gate_dashboard.build_dashboard(tmp_path)
+    assert (
+        "teacher_quality_guard_blocked"
+        in unsafe["overall"]["attention_tiers"]["degraded"]
+    )
+
+    payload["overfitting_awareness"]["risk_bot_count"] = 0
+    payload["timestamp_utc"] = "2020-01-01T00:00:00+00:00"
+    _write_json(path, payload)
+    stale = runtime_gate_dashboard.build_dashboard(tmp_path)
+    assert "teacher_quality_evidence_pending" not in stale["overall"]["attention"]
 
 
 def test_runtime_gate_dashboard_does_not_manage_unsafe_or_unknown_teacher_blocks(

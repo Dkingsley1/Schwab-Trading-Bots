@@ -1357,6 +1357,147 @@ def _paper_env_pause_keys(env_values: dict[str, str]) -> dict[str, str]:
     }
 
 
+def _runtime_paper_lane_guarded_ready(
+    runtime: dict[str, Any], paper: dict[str, Any], env_values: dict[str, str]
+) -> dict[str, Any]:
+    status = _lower(runtime.get("overall_status"))
+    if status in READY_LIKE_STATUSES:
+        return {
+            "ready": True,
+            "reason": "runtime_status_ready_like",
+            "runtime_status": status,
+        }
+
+    soft_cap = _as_dict(runtime.get("soft_cap_advisory_reclassification"))
+    measurements = _as_dict(soft_cap.get("measurements"))
+    thresholds = _as_dict(soft_cap.get("thresholds"))
+    paper_policy = _as_dict(runtime.get("paper_execution_policy"))
+    live_policy = _as_dict(
+        _as_dict(runtime.get("runtime_saturation_governor_v2")).get(
+            "paper_live_data_policy"
+        )
+    )
+    env_pause_keys = _paper_env_pause_keys(env_values)
+    paper_blockers = _paper_and_gate_blockers(paper)
+    hot_lanes = [
+        name
+        for name in (
+            "support_jobs_hot",
+            "paper_execution_hot",
+            "research_training_hot",
+            "storage_writer_hot",
+        )
+        if _bool(measurements.get(name, False))
+    ]
+    memory = _lower(
+        measurements.get("memory_pressure_level")
+        or runtime.get("memory_pressure_level")
+    )
+    compute = _lower(
+        measurements.get("compute_pressure_level")
+        or runtime.get("compute_pressure_level")
+    )
+    host_saturation = _safe_float(measurements.get("host_saturation_score"), 999.0)
+    host_limit = max(
+        _safe_float(
+            thresholds.get(
+                "max_guarded_ready_full_force_elevated_host_saturation_score"
+            ),
+            62.0,
+        ),
+        62.0,
+    )
+    bot_owned = _safe_float(
+        measurements.get("bot_owned_non_operator_cpu_percent"),
+        _safe_float(measurements.get("bot_owned_cpu_percent"), 999.0),
+    )
+    bot_limit = _safe_float(
+        thresholds.get("max_guarded_ready_bounded_bot_owned_cpu_percent"), 220.0
+    )
+    protected = _safe_float(
+        measurements.get("protected_live_or_macro_cpu_percent"), 0.0
+    )
+    protected_limit = _safe_float(
+        thresholds.get("max_guarded_ready_protected_lane_cpu_percent"), 125.0
+    )
+    operator = _safe_float(measurements.get("operator_observability_cpu_percent"), 0.0)
+    operator_limit = _safe_float(
+        thresholds.get("max_guarded_operator_observability_high_compute_cpu_percent"),
+        100.0,
+    )
+    checks = {
+        "runtime_status_degraded": status == "degraded",
+        "paper_artifact_armed_clean": bool(
+            paper
+            and _bool(paper.get("armed", False))
+            and _bool(paper.get("ok", False))
+            and _lower(paper.get("stage")) == "armed"
+            and not paper_blockers
+        ),
+        "paper_policy_open": bool(
+            _bool(paper_policy.get("paper_execution_allowed", False))
+            and not _bool(paper_policy.get("pause_paper_execution", False))
+            and _lower(paper_policy.get("stage")) == "armed"
+            and _bool(paper_policy.get("ok", False))
+            and not _as_list(paper_policy.get("blockers"))
+        ),
+        "live_policy_open": bool(
+            _bool(live_policy.get("paper_execution_allowed", False))
+            and not _bool(live_policy.get("paper_execution_consumer_paused", False))
+            and _bool(live_policy.get("protect_live_execution_read_only", True))
+        ),
+        "runtime_override_open": not env_pause_keys,
+        "measurement_paper_lane_open": bool(
+            _bool(measurements.get("paper_ramp_armed", False))
+            and _bool(measurements.get("paper_execution_allowed", False))
+            and not _bool(measurements.get("paper_execution_paused", False))
+        ),
+        "memory_guarded_for_paper": bool(
+            memory in {"", "normal"}
+            or _bool(measurements.get("paper_ramp_memory_guarded", False))
+        ),
+        "compute_clear_for_paper": compute in {"", "normal"},
+        "storage_ready_for_runtime_advisory": _bool(
+            measurements.get("storage_ready_for_runtime_advisory", False)
+        ),
+        "live_money_read_only": bool(
+            _bool(measurements.get("live_read_only", False))
+            or _bool(live_policy.get("protect_live_execution_read_only", False))
+        ),
+        "hot_lanes_clear": not hot_lanes,
+        "host_saturation_bounded": host_saturation <= host_limit,
+        "bot_owned_bounded": bot_owned <= bot_limit,
+        "protected_lane_bounded": protected <= protected_limit,
+        "operator_observability_bounded": operator <= operator_limit,
+    }
+    return {
+        "ready": bool(measurements and all(checks.values())),
+        "reason": (
+            "degraded_runtime_has_guarded_paper_lane_envelope"
+            if measurements and all(checks.values())
+            else "runtime_degraded_without_guarded_paper_lane_envelope"
+        ),
+        "runtime_status": status,
+        "checks": checks,
+        "measurements": {
+            "memory_pressure_level": memory,
+            "compute_pressure_level": compute,
+            "host_saturation_score": host_saturation,
+            "host_saturation_limit": host_limit,
+            "bot_owned_non_operator_cpu_percent": bot_owned,
+            "bot_owned_limit": bot_limit,
+            "protected_live_or_macro_cpu_percent": protected,
+            "protected_limit": protected_limit,
+            "operator_observability_cpu_percent": operator,
+            "operator_limit": operator_limit,
+            "hot_lanes": hot_lanes,
+        },
+        "paper_policy": paper_policy,
+        "live_policy": live_policy,
+        "env_pause_keys": env_pause_keys,
+    }
+
+
 def _profitability_control_posture(
     runtime_profitability: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1806,9 +1947,11 @@ def _soak_30_day_continuity_guard(
     )
     session_ready = _session_ready(session)
     capacity_limited_gate_safe = _capacity_limited_paper_gate_safe(paper_gate)
+    runtime_paper_lane = _runtime_paper_lane_guarded_ready(runtime, paper, env_values)
     runtime_status_ready = bool(
         _lower(runtime.get("overall_status")) in READY_LIKE_STATUSES
         or capacity_limited_gate_safe
+        or _bool(runtime_paper_lane.get("ready", False))
     )
     strict_paper_ramp_open = bool(
         paper
@@ -1886,6 +2029,7 @@ def _soak_30_day_continuity_guard(
             "blockers": ordered_unique(blockers),
             "runtime_status": runtime.get("overall_status") if runtime else "missing",
             "runtime_status_ready": runtime_status_ready,
+            "runtime_paper_lane_guarded_ready": runtime_paper_lane,
             "paper_stage": paper.get("stage") if paper else "missing",
             "paper_ramp_open": paper_ramp_open,
             "strict_paper_ramp_open": strict_paper_ramp_open,

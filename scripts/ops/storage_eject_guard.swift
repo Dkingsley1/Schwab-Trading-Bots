@@ -120,7 +120,7 @@ final class StorageEjectGuard {
         let resolvedMountRoot = candidateMountRoots.first { FileManager.default.fileExists(atPath: $0) } ?? configuredMountRoot
         mountRoot = resolvedMountRoot
         let url = URL(fileURLWithPath: resolvedMountRoot) as CFURL
-        guard let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url) else {
+        guard let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url), matchesMountPath(disk) else {
             targetVolumeBSDName = nil
             targetWholeBSDName = nil
             log("target identity unavailable for mountRoot=\(resolvedMountRoot)")
@@ -375,6 +375,17 @@ final class StorageEjectGuard {
             timeout: 120
         )
         log("opsctl storage-switch-external --no-refresh rc=\(switchRC)")
+        guard switchRC == 0 else {
+            writeTransitionState(
+                status: "degraded",
+                event: "external_failback_switch_failed",
+                detail: "external route certification failed; feed restart and post-transition mutations suppressed",
+                externalAvailable: externalMountAvailableNow(),
+                stackRestartRequired: false,
+                transitionRC: switchRC
+            )
+            return
+        }
         let refreshRC = run(
             launchPath: "/bin/zsh",
             arguments: [
@@ -576,6 +587,10 @@ final class StorageEjectGuard {
     }
 
     func shouldRestoreExternalOnAppear() -> Bool {
+        guard externalPreferredByConfig() else {
+            log("automatic external failback suppressed by local storage override or preference")
+            return false
+        }
         let autoFailback = ProcessInfo.processInfo.environment["BOT_LOGS_AUTO_FAILBACK_ON_APPEAR"] ?? "0"
         guard ["1", "true", "yes", "on"].contains(
             autoFailback.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -854,9 +869,13 @@ final class StorageEjectGuard {
     }
 
     func externalMountAvailableNow() -> Bool {
+        guard let session = DASessionCreate(kCFAllocatorDefault) else { return false }
         for candidate in candidateMountRoots {
             let volumeURL = URL(fileURLWithPath: candidate)
-            if StorageEjectGuard.projectRootExists(on: volumeURL, projectDir: expectedProjectDir) {
+            if let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, volumeURL as CFURL),
+               matchesMountPath(disk),
+               StorageEjectGuard.volumeURL(for: disk)?.path == candidate,
+               StorageEjectGuard.projectRootExists(on: volumeURL, projectDir: expectedProjectDir) {
                 mountRoot = candidate
                 return true
             }
@@ -944,75 +963,30 @@ final class StorageEjectGuard {
     }
 
     func discoverTargetVolume() -> TargetVolume? {
-        let plist = diskutilListPlist()
-        let rows = plist["AllDisksAndPartitions"] as? [[String: Any]] ?? []
-        var bestScore = Int.min
-        var bestMatch: TargetVolume?
-
-        func consider(_ row: [String: Any]) {
-            guard let identifier = row["DeviceIdentifier"] as? String, !identifier.isEmpty else {
-                return
-            }
-            let volumeName = (row["VolumeName"] as? String) ?? ""
-            let volumeUUID = (row["VolumeUUID"] as? String) ?? ((row["DiskUUID"] as? String) ?? "")
-            let mountPoint = row["MountPoint"] as? String
-
-            var score = 0
-            if !targetDiskIdentifierHint.isEmpty && identifier == targetDiskIdentifierHint {
-                score += 100
-            }
-            if !targetVolumeUUIDHint.isEmpty && volumeUUID.caseInsensitiveCompare(targetVolumeUUIDHint) == .orderedSame {
-                score += 80
-            }
-            if volumeName == targetVolumeName {
-                score += 40
-            }
-            guard score > 0 else {
-                return
-            }
-            if score <= bestScore {
-                return
-            }
-            bestScore = score
-            bestMatch = TargetVolume(
-                deviceIdentifier: identifier,
-                volumeName: volumeName,
-                volumeUUID: volumeUUID,
-                mountPoint: mountPoint
-            )
-        }
-
-        for row in rows {
-            consider(row)
-            for key in ["Partitions", "APFSVolumes"] {
-                guard let children = row[key] as? [[String: Any]] else {
-                    continue
-                }
-                for child in children {
-                    consider(child)
-                }
-            }
-        }
-        return bestMatch
+        let row = diskutilTargetInfoPlist()
+        guard let identifier = row["DeviceIdentifier"] as? String, !identifier.isEmpty else { return nil }
+        let volumeName = (row["VolumeName"] as? String) ?? ""
+        let volumeUUID = (row["VolumeUUID"] as? String) ?? ""
+        let mountPoint = row["MountPoint"] as? String
+        guard matchesVolumeIdentity(uuid: volumeUUID, name: volumeName, mountPath: mountPoint) else { return nil }
+        return TargetVolume(deviceIdentifier: identifier, volumeName: volumeName, volumeUUID: volumeUUID, mountPoint: mountPoint)
     }
 
-    func diskutilListPlist() -> [String: Any] {
+    func diskutilTargetInfoPlist() -> [String: Any] {
+        // BSD identifiers can be recycled after disconnect; never select by that hint.
+        let selector = targetVolumeUUIDHint.isEmpty ? configuredMountRoot : targetVolumeUUIDHint
         let result = runCapture(
             launchPath: "/usr/sbin/diskutil",
-            arguments: [
-                "list",
-                "-plist",
-                "external",
-            ],
-            timeout: 45
+            arguments: ["info", "-plist", selector],
+            timeout: 8
         )
         guard result.rc == 0 else {
-            log("diskutil list -plist external rc=\(result.rc)")
+            log("diskutil info -plist target rc=\(result.rc)")
             return [:]
         }
         guard let plist = try? PropertyListSerialization.propertyList(from: result.stdout, options: [], format: nil),
               let dict = plist as? [String: Any] else {
-            log("diskutil list -plist external parse_failed")
+            log("diskutil info -plist target parse_failed")
             return [:]
         }
         return dict
@@ -1035,18 +1009,33 @@ final class StorageEjectGuard {
         guard let description = DADiskCopyDescription(disk) as? [String: Any] else {
             return false
         }
-        if let url = description[kDADiskDescriptionVolumePathKey as String] as? URL {
-            if candidateMountRoots.contains(url.path) {
-                return true
-            }
-            if StorageEjectGuard.projectRootExists(on: url, projectDir: expectedProjectDir) {
-                return true
-            }
+        let uuid = StorageEjectGuard.volumeUUID(description)
+        let name = (description[kDADiskDescriptionVolumeNameKey as String] as? String) ?? ""
+        let path = (description[kDADiskDescriptionVolumePathKey as String] as? URL)?.path
+        return matchesVolumeIdentity(uuid: uuid, name: name, mountPath: path)
+    }
+
+    func matchesVolumeIdentity(uuid: String, name: String, mountPath: String?) -> Bool {
+        return StorageEjectGuard.matchesVolumeIdentity(
+            uuid: uuid, name: name, mountPath: mountPath,
+            expectedUUID: targetVolumeUUIDHint, expectedName: targetVolumeName, mountRoots: candidateMountRoots
+        )
+    }
+
+    static func matchesVolumeIdentity(uuid: String, name: String, mountPath: String?, expectedUUID: String, expectedName: String, mountRoots: [String]) -> Bool {
+        if !expectedUUID.isEmpty {
+            return !uuid.isEmpty && uuid.caseInsensitiveCompare(expectedUUID) == .orderedSame
         }
-        if let name = description[kDADiskDescriptionVolumeNameKey as String] as? String {
-            return candidateVolumeNames.contains(name)
-        }
-        return false
+        // A same-named project folder is not evidence that this is the target drive.
+        guard name == expectedName else { return false }
+        return mountPath == nil || mountPath == "" || mountRoots.contains(mountPath!)
+    }
+
+    static func volumeUUID(_ description: [String: Any]) -> String {
+        guard let value = description[kDADiskDescriptionVolumeUUIDKey as String] else { return "" }
+        if let uuid = value as? UUID { return uuid.uuidString }
+        guard CFGetTypeID(value as CFTypeRef) == CFUUIDGetTypeID() else { return "" }
+        return CFUUIDCreateString(kCFAllocatorDefault, (value as! CFUUID)) as String
     }
 
     func matchesTargetDisk(_ disk: DADisk) -> Bool {

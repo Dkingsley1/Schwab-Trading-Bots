@@ -271,6 +271,49 @@ def build_data_plane_definition(project_root: Path) -> dict[str, Any]:
         "route_observations": observations,
         "route_observation_findings": findings,
         "ingestion_stages": [dict(stage) for stage in INGESTION_STAGES],
+        "data_classes": [
+            {
+                "class": "source_payload",
+                "owner": "scripts/collector_contracts.py",
+                "completion": "source-owned persistence and qualification; not SQL ingestion",
+            },
+            {
+                "class": "append_only_evidence",
+                "owner": "scripts/link_jsonl_to_sql.py",
+                "completion": "committed jsonl_records plus validated source cursor; rejects remain separate",
+            },
+            {
+                "class": "versioned_json_snapshot",
+                "owner": "scripts/link_jsonl_to_sql.py",
+                "completion": "json_file_records keyed by source_rel and payload_sha1; not a line cursor",
+            },
+            {
+                "class": "durable_queue",
+                "owner": "core/channel_queue.py",
+                "completion": "queue-owner acknowledgment and destination commit; not a dispatch-index count",
+            },
+            {
+                "class": "analytical_mirror",
+                "owner": "scripts/ops/sql_analytics_mirror.py",
+                "completion": "atomic DuckDB mirror generation; not the operational authority",
+            },
+            {
+                "class": "sealed_history",
+                "owner": "scripts/sql_hot_retention.py and cold archive owners",
+                "completion": "manifest-bound stable bytes and verified restoration; not age alone",
+            },
+        ],
+        "verification_contract": {
+            "owner": "scripts/ops/ingestion_verification.py",
+            "command": "ingestion-storage-control --verify-new-ingestion --since ISO_UTC --json",
+            "artifact": "governance/health/ingestion_verification_latest.json",
+            "window": "inclusive ingestion timestamp start and exclusive end; not market event time",
+            "scope": "bounded indexed reads of discovered primary/shard jsonl_records and json_file_records",
+            "proof": "per-database committed rows, stored payload hashes and parseability; not full source reconciliation",
+            "incomplete": "missing index, route error, unreadable DB, deadline or payload/row cap cannot certify complete verification",
+            "global_unique_event_count": False,
+            "new_scheduler": False,
+        },
         "durability_contract": {
             "http_fetch_watermark_is_sql_checkpoint": False,
             "exactly_once_end_to_end_claimed": False,

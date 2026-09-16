@@ -11,6 +11,36 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import schwab_auth_supervisor as supervisor
 
 
+def test_operator_browser_flow_is_not_killed_or_raced_by_scheduled_refresh(tmp_path, monkeypatch):
+    token = tmp_path / "token.json"
+    _token(token, expires_at=1)
+    command = f"python {tmp_path}/scripts/ops/schwab_auth_refresh.py --operator-interactive-session --callback-timeout-seconds 300 --json"
+    row = supervisor.ProcessRow(pid=101, ppid=1, elapsed_seconds=180, command=command)
+    monkeypatch.setattr(supervisor, "_list_auth_processes", lambda: [row])
+    monkeypatch.setattr(supervisor, "_callback_port_open", lambda *args: True)
+    monkeypatch.setattr(supervisor, "_kill_process", lambda *args: (_ for _ in ()).throw(AssertionError("active operator flow killed")))
+    monkeypatch.setattr(supervisor, "_run_json", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("competing refresh")))
+    payload = supervisor.build_payload(tmp_path, apply=True, token_path=token)
+    assert payload["overall_status"] == "blocked"
+    assert payload["auth_processes"][0]["stale"] is False
+    assert payload["auth_processes"][0]["operator_session_budget_seconds"] == 840
+    assert payload["attempts"][0]["action"] == "defer_automatic_auth_repair"
+    _token(token)
+    payload = supervisor.build_payload(tmp_path, apply=True, token_path=token)
+    assert payload["auth_processes"][0]["stale"] is False
+    assert payload["overall_status"] != "ready"
+
+
+def test_operator_auth_exception_is_exact_and_bounded(tmp_path):
+    command = f"python {tmp_path}/scripts/ops/schwab_auth_refresh.py --operator-interactive-session"
+    assert supervisor._operator_auth_budget(command, tmp_path) == 840
+    assert supervisor._operator_auth_budget(command + " --callback-timeout-seconds 600", tmp_path) == 1140
+    for suffix in (" --callback-timeout-seconds nan", " --callback-timeout-seconds 100000", " --callback-timeout-seconds -1", " --no-browser"):
+        assert supervisor._operator_auth_budget(command + suffix, tmp_path) == 0
+    assert supervisor._operator_auth_budget(command.replace(str(tmp_path), "/unowned"), tmp_path) == 0
+    assert supervisor._operator_auth_budget(command.replace("--operator-interactive-session", ""), tmp_path) == 0
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")

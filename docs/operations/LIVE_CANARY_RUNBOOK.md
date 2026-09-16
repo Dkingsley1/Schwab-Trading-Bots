@@ -48,6 +48,8 @@ The preflight and dress rehearsal are expected to remain `ready_locked` until fu
 
 ## Connected Read-Only Dress Rehearsal
 
+Before the time-sensitive account and quote reads, the command refreshes the three technical owners: Schwab tax history (reusing the existing six-hour cache when valid), release integrity, and order-ledger integrity. The report includes `technical_evidence_refresh` and preflight `technical_gate_diagnostics`. Each owner must publish new evidence during the run; a failed, timed-out, stale, or unchanged publication cannot reuse a ready preflight. Existing source TTLs remain enforced. This refresh does not renew a freeze window, write a release manifest, change Git state, resolve uncertain orders, issue an attestation/allowlist, or schedule background work.
+
 The connected dress rehearsal is the last safe step before a supervised canary window. It refreshes all connected Schwab account truth, fetches a real `SCHD` provider quote, selects the designated account only through its opaque Keychain binding, and constructs the exact one-share `LIMIT` / `NORMAL` / `DAY` request in memory. The persisted artifact contains only the account-reference digest and compact quote evidence, never the raw account number, routing hash, or provider payload.
 
 Review `governance/health/live_canary_dress_rehearsal_latest.json` for:
@@ -64,6 +66,8 @@ An `ok=true` result means the connected read-only control completed without a br
 ## Immutable Release
 
 The candidate must be committed, pushed, clean, and synchronized before creating the canary release receipt:
+
+Inspect `immutable_release_boundary.blockers` in the release guard report for the exact unmet conditions. An expired freeze and dirty worktree remain release prerequisites, not refresh errors; unrelated changes must be reviewed separately. Failed Git status, commit, tree, or upstream probes fail closed. A current observation of an unreleased worktree does not certify it as an immutable release.
 
 ```bash
 ./scripts/ops/opsctl.sh release-freeze --activate-days 1 --reason supervised_live_canary --write-release-manifest --json

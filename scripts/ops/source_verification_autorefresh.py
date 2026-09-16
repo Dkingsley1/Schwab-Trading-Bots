@@ -404,9 +404,17 @@ def _route_known_source_fallback(
         if isinstance(source_row.get("evidence"), dict)
         else {}
     )
+    status = str(evidence.get("overall_status") or "").strip().lower()
     native_available = bool(evidence.get("broker_native_news_endpoint_available", True))
     fallback_active = bool(evidence.get("fallback_active", False))
-    if native_available or not fallback_active:
+    fallback_contract = (
+        evidence.get("fallback_source_contract")
+        if isinstance(evidence.get("fallback_source_contract"), dict)
+        else {}
+    )
+    fallback_source_fresh = bool(fallback_contract.get("fresh", False))
+    endpoint_missing = (not native_available) or status == "degraded_no_broker_news_endpoint"
+    if not endpoint_missing or (not fallback_active and not fallback_source_fresh):
         return command
     routed = _append_flag_if_missing(command, "--public-fallback-only")
     return _set_option(routed, "--max-runtime-seconds", "30")

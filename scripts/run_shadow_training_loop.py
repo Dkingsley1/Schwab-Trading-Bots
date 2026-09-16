@@ -60,6 +60,7 @@ _DYNAMIC_STORAGE_OVERRIDE_CACHE: Dict[str, Any] = {
     "values": {},
 }
 _DYNAMIC_STORAGE_OVERRIDE_POLL_SECONDS = 5.0
+_RUNTIME_CACHE_BUDGET_STATE: Dict[str, Any] = {}
 _PRODUCTION_CANDIDATE_CACHE: Dict[str, Any] = {
     "checked_at_monotonic": 0.0,
     "fingerprint": None,
@@ -148,6 +149,10 @@ from core.advanced_quant_models import (
 from core.central_bank_liquidity import (
     CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS,
     central_bank_liquidity_context_ready,
+)
+from core.schwab_crypto_data import (
+    FEATURE_KEYS as SCHWAB_CRYPTO_CONTEXT_FEATURE_KEYS,
+    current_features as current_schwab_crypto_features,
 )
 from core.global_central_bank_context import (
     CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS,
@@ -491,6 +496,7 @@ _EXTERNAL_CONTEXT_FEATURE_KEYS = list(
         + list(CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS)
         + list(DECISION_CONTEXT_MESH_FEATURE_KEYS)
         + list(PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS)
+        + list(SCHWAB_CRYPTO_CONTEXT_FEATURE_KEYS)
     )
 )
 
@@ -5678,6 +5684,8 @@ def _external_context_feature_set(
         else {}
     )
     for key in _EXTERNAL_CONTEXT_FEATURE_KEYS:
+        if key in SCHWAB_CRYPTO_CONTEXT_FEATURE_KEYS:
+            continue
         if key in CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS and not central_bank_ready:
             continue
         if key in GLOBAL_CENTRAL_BANK_FEATURE_KEYS and not global_central_bank_ready:
@@ -5705,6 +5713,7 @@ def _external_context_feature_set(
             out[key] = _hint_float(symbol_row.get(key), 0.0)
         elif key in global_features:
             out[key] = _hint_float(global_features.get(key), 0.0)
+    out.update(current_schwab_crypto_features(snapshot, str(symbol or "").strip().upper()))
     return out
 
 
@@ -22486,6 +22495,37 @@ def _dynamic_storage_value(name: str, default: str = "") -> str:
     return str(raw or "").strip()
 
 
+def _refresh_runtime_cache_budgets(
+    caches: Dict[str, Dict[str, Any]], defaults: Dict[str, int]
+) -> Dict[str, int]:
+    """Apply tighter live cache budgets on the loop thread, including existing entries."""
+    state = _RUNTIME_CACHE_BUDGET_STATE
+    now = time.monotonic()
+    if state.get("defaults") != defaults or now - float(state.get("checked_at", -10.0)) >= 5.0:
+        limits = dict(defaults)
+        for name in (".env.memory_efficiency_override", ".env.swap_pressure_override"):
+            values = _parse_env_override_file(PROJECT_ROOT_PATH / "config" / name)
+            for key in defaults:
+                if key not in values:
+                    continue
+                try:
+                    value = int(values[key].strip("\"'"))
+                    if value < 0:
+                        raise ValueError("negative cache budget")
+                except (TypeError, ValueError):
+                    value = int(state.get("limits", {}).get(key, defaults[key]))
+                if value > 0:
+                    limits[key] = min(limits[key], value) if limits[key] > 0 else value
+        state.update(checked_at=now, limits=limits, defaults=dict(defaults))
+    limits = dict(state.get("limits", defaults))
+    for key, cache in caches.items():
+        limit = limits.get(key, defaults[key])
+        if limit > 0:
+            while len(cache) > limit:
+                cache.pop(next(iter(cache)), None)
+    return limits
+
+
 def _compact_infrastructure_governance_rows(
     rows: Iterable[Dict[str, Any]],
     *,
@@ -25081,8 +25121,25 @@ def run_loop(
     )
     symbol_resume_index = 0
     _set_loop_state("starting", reason="loop_bootstrap")
+    runtime_cache_defaults = {
+        "RUNTIME_FEATURE_CACHE_MAX_ENTRIES": feature_cache_max_entries,
+        "RUNTIME_SLOW_BOT_CACHE_MAX_SYMBOLS": slow_bot_rows_cache_max_symbols,
+        f"{broker.upper()}_NEWS_CACHE_MAX_SYMBOLS": news_cache_max_symbols,
+        f"{broker.upper()}_OPTIONS_CHAIN_CACHE_MAX_SYMBOLS": options_chain_cache_max_symbols,
+    }
+    runtime_caches = {
+        "RUNTIME_FEATURE_CACHE_MAX_ENTRIES": feature_cache,
+        "RUNTIME_SLOW_BOT_CACHE_MAX_SYMBOLS": slow_bot_rows_cache,
+        f"{broker.upper()}_NEWS_CACHE_MAX_SYMBOLS": news_cache,
+        f"{broker.upper()}_OPTIONS_CHAIN_CACHE_MAX_SYMBOLS": options_chain_cache,
+    }
 
     while True:
+        cache_limits = _refresh_runtime_cache_budgets(runtime_caches, runtime_cache_defaults)
+        feature_cache_max_entries = cache_limits["RUNTIME_FEATURE_CACHE_MAX_ENTRIES"]
+        slow_bot_rows_cache_max_symbols = cache_limits["RUNTIME_SLOW_BOT_CACHE_MAX_SYMBOLS"]
+        news_cache_max_symbols = cache_limits[f"{broker.upper()}_NEWS_CACHE_MAX_SYMBOLS"]
+        options_chain_cache_max_symbols = cache_limits[f"{broker.upper()}_OPTIONS_CHAIN_CACHE_MAX_SYMBOLS"]
         halt_active = _global_trading_halt_enabled()
         _log_gate(
             "*",

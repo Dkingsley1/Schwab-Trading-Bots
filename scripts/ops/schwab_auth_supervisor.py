@@ -153,6 +153,25 @@ def _is_auth_refresh_command(command: str) -> bool:
     return False
 
 
+def _operator_auth_budget(command: str, project_root: Path) -> int:
+    tokens = _command_tokens(command)
+    if (len(tokens) < 3 or tokens[1] != str(project_root / "scripts/ops/schwab_auth_refresh.py")
+            or not Path(tokens[0]).name.lower().startswith("python")
+            or tokens[2:].count("--operator-interactive-session") != 1
+            or "--no-browser" in tokens[2:]):
+        return 0
+    try:
+        if tokens.count("--callback-timeout-seconds") > 1:
+            return 0
+        seconds = float(tokens[tokens.index("--callback-timeout-seconds") + 1]) if "--callback-timeout-seconds" in tokens else 300.0
+        if not 5 <= seconds <= 600:
+            return 0
+        # Browser callback, bounded post-refresh owner, and cleanup margin.
+        return int(seconds) + 480 + 60
+    except (ValueError, IndexError, OverflowError):
+        return 0
+
+
 def _is_test_runner_command(command: str) -> bool:
     tokens = [Path(token).name.lower() for token in _command_tokens(command)]
     return any(
@@ -326,11 +345,14 @@ def build_payload(
     signals = _recent_auth_signals(project_root)
     processes = _list_auth_processes()
     callback_port_in_use = _callback_port_open(callback_host, int(callback_port))
+    operator_auth_active = [row for row in processes if 0 <= row.elapsed_seconds < _operator_auth_budget(row.command, project_root)]
     stale_processes = [
         row
         for row in processes
-        if row.elapsed_seconds >= int(stale_auth_process_seconds)
-        or (token_ready and "--force" not in row.command)
+        if row not in operator_auth_active and (
+            row.elapsed_seconds >= int(stale_auth_process_seconds)
+            or (token_ready and "--force" not in row.command)
+        )
     ]
 
     broker_ready = bool(broker_readiness.get("ready_for_open", premarket_guard.get("ok", False)))
@@ -462,7 +484,15 @@ def build_payload(
     )
 
     attempts: list[dict[str, Any]] = []
-    if apply:
+    if operator_auth_active:
+        if status == "ready":
+            status = "degraded"
+        findings.append("operator_browser_auth_in_progress")
+        repair_plan = [{"name": "await_operator_auth", "action": "finish_existing_browser_authorization"}]
+        operator_followups = ["finish the existing Schwab browser sign-in; do not start a competing refresh"]
+        if apply:
+            attempts.append({"action": "defer_automatic_auth_repair", "reason": "bounded_operator_auth_in_progress", "ok": True})
+    if apply and not operator_auth_active:
         initial_status = status
         initial_findings = sorted(set(findings))
         for row in stale_processes:
@@ -572,6 +602,8 @@ def build_payload(
                 "ppid": row.ppid,
                 "elapsed_seconds": row.elapsed_seconds,
                 "stale": row in stale_processes,
+                "operator_interactive_active": row in operator_auth_active,
+                "operator_session_budget_seconds": _operator_auth_budget(row.command, project_root),
                 "command": row.command,
             }
             for row in processes

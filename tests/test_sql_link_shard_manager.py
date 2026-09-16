@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+import pytest
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +13,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import scripts.ops.sql_link_shard_manager as shard_manager
+
+
+@pytest.fixture(autouse=True)
+def isolated_storage_admission(monkeypatch):
+    monkeypatch.setattr(
+        shard_manager, "storage_admission", lambda _: {"writer_start_allowed": True}
+    )
 
 
 def test_sql_link_routes_hot_shards_local_when_external_hot_storage_is_disabled(
@@ -2612,6 +2620,94 @@ def test_raw_live_priority_focus_scales_batch_for_large_single_source(
     )
 
 
+def test_raw_live_priority_focus_routes_aggressive_shadow_master_control(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    snapshot_path = tmp_path / "ingestion_backpressure_latest.json"
+    now = shard_manager.datetime(2026, 9, 11, 17, 55, tzinfo=shard_manager.timezone.utc)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "pending_lines": 8500,
+                "top_pending_files": [
+                    {
+                        "source_rel": (
+                            "governance/shadow_swing_aggressive_equities/"
+                            "master_control_20260911.jsonl"
+                        ),
+                        "pending_lines": 5200,
+                        "oldest_pending_age_seconds": 220.0,
+                    },
+                    {
+                        "source_rel": (
+                            "governance/shadow_intraday_aggressive_equities/"
+                            "master_control_20260911.jsonl"
+                        ),
+                        "pending_lines": 3000,
+                        "oldest_pending_age_seconds": 360.0,
+                    },
+                    {
+                        "source_rel": (
+                            "decisions/shadow_aggressive_equities/"
+                            "trade_decisions_20260911.jsonl"
+                        ),
+                        "pending_lines": 300,
+                        "oldest_pending_age_seconds": 12.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED", "1")
+    shards = [
+        {
+            "name": "aggressive_trading",
+            "path_contains": "",
+            "max_files": 4,
+            "max_lines_per_file": 8000,
+            "max_bytes_per_file": 128 * 1024 * 1024,
+            "sqlite_batch_max_bytes": 32 * 1024 * 1024,
+        },
+        {"name": "governance", "path_contains": "", "max_files": 4},
+    ]
+
+    focused, contract = shard_manager._apply_raw_live_priority_focus(
+        shards,
+        backpressure_path=snapshot_path,
+        now_utc=now,
+    )
+
+    aggressive = next(row for row in focused if row["name"] == "aggressive_trading")
+    assert contract["applied"] is True
+    assert contract["reason"] == "fresh_material_raw_live_pressure"
+    assert contract["focused_shards"] == [
+        {
+            "shard": "aggressive_trading",
+            "pending_lines": 8500,
+            "sources": [
+                "governance/shadow_swing_aggressive_equities/master_control_20260911.jsonl",
+                "governance/shadow_intraday_aggressive_equities/master_control_20260911.jsonl",
+                "decisions/shadow_aggressive_equities/trade_decisions_20260911.jsonl",
+            ],
+            "max_files": 4,
+            "max_lines_per_file": 32000,
+        }
+    ]
+    assert aggressive["path_contains"] == (
+        "governance/shadow_swing_aggressive_equities/master_control_20260911.jsonl,"
+        "governance/shadow_intraday_aggressive_equities/master_control_20260911.jsonl,"
+        "decisions/shadow_aggressive_equities/trade_decisions_20260911.jsonl"
+    )
+    assert aggressive["include_streams"] == "governance,decisions"
+    assert aggressive["raw_live_priority_pending_lines"] == 8500
+    assert aggressive["max_lines_per_file"] == 32000
+    assert aggressive["max_bytes_per_file"] == 256 * 1024 * 1024
+    assert aggressive["sqlite_batch_max_bytes"] == 64 * 1024 * 1024
+
+
 def test_raw_live_priority_focus_ignores_stale_snapshot(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -2728,6 +2824,56 @@ def test_raw_live_priority_focus_drains_aged_hot_source_below_line_threshold(
     )
 
 
+@pytest.mark.parametrize("source", [
+    "governance/training/generation_fill_learning/g126_quarantine_rows.jsonl",
+    "governance/storage_recovery/cold_evidence_compression.jsonl",
+])
+def test_raw_live_focus_reserves_capacity_for_aged_governance_tail(tmp_path, monkeypatch, source):
+    now = shard_manager.datetime(2026, 9, 11, 19, 0, tzinfo=shard_manager.timezone.utc)
+    snapshot_path = tmp_path / "backpressure.json"
+    snapshot_path.write_text(json.dumps({
+        "timestamp_utc": now.isoformat(),
+        "pending_lines": 4238,
+        "top_pending_files": [
+            {"source_rel": "governance/events/signal_generation_20260911.jsonl",
+             "pending_lines": 4000, "oldest_pending_age_seconds": 20},
+            {"source_rel": source, "pending_lines": 238,
+             "oldest_pending_age_seconds": 1900},
+        ],
+    }))
+    monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_SOURCE_MIN_LINES", "100")
+    monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MAX_SOURCES_PER_SHARD", "1")
+    shards = [{"name": "governance", "path_contains": "", "max_files": 1}]
+    focused, contract = shard_manager._apply_raw_live_priority_focus(
+        shards, backpressure_path=snapshot_path, now_utc=now,
+    )
+    assert contract["applied"] is True
+    assert focused[0]["raw_live_priority_sources"] == [source]
+    assert focused[0]["path_contains"] == source
+    assert focused[0]["include_streams"] == "governance"
+    assert shards[0]["path_contains"] == ""
+
+
+def test_raw_live_focus_does_not_add_unrequested_governance_writer(tmp_path, monkeypatch):
+    now = shard_manager.datetime(2026, 9, 11, 19, 0, tzinfo=shard_manager.timezone.utc)
+    snapshot_path = tmp_path / "backpressure.json"
+    snapshot_path.write_text(json.dumps({
+        "timestamp_utc": now.isoformat(), "pending_lines": 238,
+        "top_pending_files": [{
+            "source_rel": "governance/training/generation_fill_learning/g126_quarantine_rows.jsonl",
+            "pending_lines": 238, "oldest_pending_age_seconds": 1900,
+        }],
+    }))
+    monkeypatch.setenv("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_SOURCE_MIN_LINES", "100")
+    shards = [{"name": "api_ingress", "path_contains": "governance/channels/api/"}]
+    focused, contract = shard_manager._apply_raw_live_priority_focus(
+        shards, backpressure_path=snapshot_path, now_utc=now,
+    )
+    assert contract["applied"] is False
+    assert contract["reason"] == "no_routable_pending_sources"
+    assert focused == shards
+
+
 def test_raw_live_priority_focus_can_be_explicitly_disabled(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -2787,6 +2933,13 @@ def test_raw_live_priority_focus_preserves_explicit_drainer_scope(
 
 
 def test_raw_live_priority_source_routing_covers_operational_lanes() -> None:
+    for source in (
+        "governance/training/generation_fill_learning/g126_quarantine_rows.jsonl",
+        "governance/walk_forward/coverage_gap_closer_queue.jsonl",
+        "governance/system_intelligence/storage_causal_replay_memory.jsonl",
+        "governance/storage_recovery/cold_evidence_compression.jsonl",
+    ):
+        assert shard_manager._raw_live_priority_shard_for_source(source) == "governance"
     assert (
         shard_manager._raw_live_priority_shard_for_source(
             "governance/events/signal_generation_20260805.jsonl"
@@ -2803,7 +2956,13 @@ def test_raw_live_priority_source_routing_covers_operational_lanes() -> None:
         shard_manager._raw_live_priority_shard_for_source(
             "governance/health/infrabot_adaptive_feedback.jsonl"
         )
-        == "health_fast"
+        == "governance"
+    )
+    assert not shard_manager._normal_shard_accepts_source(
+        "governance/health/infrabot_adaptive_feedback.jsonl", "health_fast"
+    )
+    assert shard_manager._normal_shard_accepts_source(
+        "governance/health/infrabot_adaptive_feedback.jsonl", "governance"
     )
     assert (
         shard_manager._raw_live_priority_shard_for_source(
@@ -2834,6 +2993,12 @@ def test_raw_live_priority_source_routing_covers_operational_lanes() -> None:
             "governance/channels/risk/default_schwab/risk.jsonl"
         )
         == "risk_support"
+    )
+    assert (
+        shard_manager._raw_live_priority_shard_for_source(
+            "governance/shadow_swing_aggressive_equities/master_control_20260911.jsonl"
+        )
+        == "aggressive_trading"
     )
 
 
@@ -3004,6 +3169,12 @@ def test_connect_primary_db_quarantines_malformed_primary_and_recreates(
     assert recovery["primary_db"] == str(primary_db)
     assert "quarantined_malformed_primary" in recovery["recovery_action"]
     assert len(recovery["moved_paths"]) == 3
+    preserved = {
+        Path(path).name: Path(path).read_bytes() for path in recovery["moved_paths"]
+    }
+    assert preserved["jsonl_link.sqlite3"] == b"not a sqlite database"
+    assert preserved["jsonl_link.sqlite3-wal"] == b"bad wal"
+    assert preserved["jsonl_link.sqlite3-shm"] == b"bad shm"
     assert primary_db.exists()
     assert list((primary_db.parent / "corrupt_quarantine").glob("primary_*/*.sqlite3"))
 

@@ -9,9 +9,130 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import grade_regression_guard as src
 
 
+def test_source_diagnostics_preserve_old_evidence_and_exact_failed_checks(tmp_path):
+    _write_json(
+        tmp_path / "governance/health/training_quality_control_latest.json",
+        {
+            "timestamp_utc": "2020-01-01T00:00:00+00:00",
+            "overall_status": "blocked",
+            "training_quality_score": 71,
+            "improvements": [
+                {
+                    "key": "feature_store_lineage",
+                    "status": "blocked",
+                    "summary": "coverage below floor",
+                    "recommendation": "rebuild bounded coverage",
+                }
+            ],
+        },
+    )
+    row = next(
+        row
+        for row in src.build_payload(tmp_path)["surfaces"]
+        if row["surface"] == "training_quality"
+    )
+    evidence = row["source_evidence"]
+    assert row["state"] == "blocked"
+    assert evidence["producer_timestamp_utc"] == "2020-01-01T00:00:00+00:00"
+    assert evidence["producer_age_seconds"] > 3600
+    assert evidence["issues"][0]["check"] == "feature_store_lineage"
+    assert evidence["issues"][0]["recommended_action"] == "rebuild bounded coverage"
+    assert evidence["age_is_not_freshness_or_recovery_clearance"]
+
+
+def test_low_pressure_does_not_hide_missing_restore_proof(tmp_path):
+    _write_json(
+        tmp_path / "governance/health/ingestion_storage_control_latest.json",
+        {
+            "overall_status": "needs_work",
+            "pressure_index": 0.02,
+            "recovery_state": "steady_state",
+            "storage_resilience": {"restore_drill_fresh": False},
+            "steady_state": {"target_status": {"target_breaches": []}},
+        },
+    )
+    row = next(
+        row
+        for row in src.build_payload(tmp_path)["surfaces"]
+        if row["surface"] == "storage_control"
+    )
+    assert row["state"] == "blocked"
+    assert "regressed" not in row["summary"]
+    assert "restore_drill_fresh=False" in row["summary"]
+    assert "--recover-latest-verified" in row["recommended_command"]
+    assert (
+        row["source_evidence"]["issues"][0]["check"]
+        == "restore_drill_not_verified_fresh"
+    )
+
+
+def test_missing_and_future_source_time_never_claims_current_evidence():
+    assert not src._source_diagnostics({}, "absent.json")["timestamp_valid"]
+    result = src._source_diagnostics(
+        {"timestamp_utc": "2999-01-01T00:00:00Z"}, "future.json"
+    )
+    assert not result["timestamp_valid"]
+    assert result["producer_age_seconds"] < 0
+
+
+def test_operational_storage_ready_cannot_hide_explicit_steady_state_debt(tmp_path):
+    _write_json(
+        tmp_path / "governance/health/ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "pressure_index": 0.67,
+            "steady_state": {
+                "target_status": {
+                    "steady_state_ready": False,
+                    "target_breaches": ["core_pending_lines"],
+                }
+            },
+        },
+    )
+    row = next(
+        row
+        for row in src.build_payload(tmp_path)["surfaces"]
+        if row["surface"] == "storage_control"
+    )
+    assert row["state"] == "degraded"
+    assert row["severity"] == "warning"
+    assert row["metrics"]["target_breaches"] == ["core_pending_lines"]
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def test_zero_display_incidents_do_not_clear_explicit_closeout_blockers(tmp_path):
+    _write_json(tmp_path / "governance/health/incident_closeout_autopilot_latest.json", {
+        "overall_status": "blocked", "open_incident_count": 0, "closeout_ready": False,
+        "blocking_surfaces": [{"surface": "data_plane_recovery", "severity": "critical", "summary": "write recovery unverified"}],
+    })
+    row = next(row for row in src.build_payload(tmp_path)["surfaces"] if row["surface"] == "incident_closeout")
+    assert row["state"] == "blocked"
+    assert not row["metrics"]["stale_status_overridden"]
+    assert row["source_evidence"]["issues"][0]["check"] == "data_plane_recovery"
+
+
+def test_lineage_names_missing_replay_without_claiming_signature_missing(tmp_path):
+    _write_json(
+        tmp_path / "governance/health/training_lineage_manifest_latest.json",
+        {
+            "lineage_score": 100.0,
+            "promotion_packet_seed_ready": True,
+            "missing_contracts": ["paper_replay_drill"],
+        },
+    )
+    row = next(
+        row
+        for row in src.build_payload(tmp_path)["surfaces"]
+        if row["surface"] == "training_lineage"
+    )
+    assert row["state"] == "degraded"
+    assert "paper_replay_drill" in row["summary"]
+    assert "signing" not in row["summary"]
+    assert row["metrics"]["missing_contracts"] == ["paper_replay_drill"]
 
 
 def test_grade_regression_guard_reports_degraded_when_surfaces_are_recovering(

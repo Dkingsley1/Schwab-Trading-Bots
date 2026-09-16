@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from core.runtime_override_precedence import merge_runtime_override_layers
+from core.write_path_recovery import failed_records, record_success
 
 
 def now_utc_iso() -> str:
@@ -1020,6 +1022,7 @@ def safe_append_jsonl_batch(
 
     lines = [json.dumps(p, ensure_ascii=True) + "\n" for p in payloads]
     if _write_lines(path, lines):
+        record_success(project_root, source or "jsonl_writer_batch", path, "".join(lines).encode(), kind="jsonl")
         _signal_generation_events(project_root=project_root, target_path=path, payloads=payloads)
         return len(payloads)
 
@@ -1028,6 +1031,7 @@ def safe_append_jsonl_batch(
         source=source or "jsonl_writer_batch",
         target_path=path,
         error=RuntimeError("batch_append_failed"),
+        record_checkpoint=failed_records(payloads),
     )
     return 0
 
@@ -1194,8 +1198,11 @@ def safe_append_channel_batch(
             source=source or "channel_writer",
             target_path=path,
             error=RuntimeError("channel_batch_append_failed"),
+            record_checkpoint=failed_records(valid_payloads),
         )
         return 0
+
+    record_success(project_root, source or "channel_writer_batch", path, "".join(lines).encode(), kind="jsonl")
     _signal_generation_events(project_root=project_root, target_path=path, payloads=valid_payloads)
 
     mirrors = [str(p) for p in (mirror_paths or []) if str(p or "").strip()]
@@ -1208,7 +1215,10 @@ def safe_append_channel_batch(
                 source=source or "channel_writer_mirror",
                 target_path=mirror,
                 error=RuntimeError("channel_mirror_append_failed"),
+                record_checkpoint=failed_records(valid_payloads),
             )
+        else:
+            record_success(project_root, source or "channel_writer_mirror", mirror, "".join(lines).encode(), kind="jsonl")
 
     if ch:
         _queue_publish(
@@ -1282,6 +1292,22 @@ def safe_write_json(
         return False
 
 
+def _write_json_unique_temp(target: Path, payload: Dict[str, Any], indent: int) -> None:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=target.parent,
+            prefix=f".{target.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii=True, indent=indent)
+            handle.flush()
+        temporary.replace(target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def safe_write_json_atomic(
     path: str,
     payload: Dict[str, Any],
@@ -1294,9 +1320,7 @@ def safe_write_json_atomic(
     try:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(target.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=indent), encoding="utf-8")
-        tmp.replace(target)
+        _write_json_unique_temp(target, payload, indent)
 
         if marker:
             marker_path = target.with_suffix(target.suffix + ".ok")
@@ -1306,8 +1330,9 @@ def safe_write_json_atomic(
                 "payload_sha256": sha256_json_obj(payload),
                 "target": str(target),
             }
-            marker_path.write_text(json.dumps(marker_payload, ensure_ascii=True, indent=2), encoding="utf-8",
-            )
+            _write_json_unique_temp(marker_path, marker_payload, 2)
+        record_success(project_root, source or "json_writer_atomic", path,
+                       json.dumps(payload, ensure_ascii=True, indent=indent).encode(), kind="json")
         return True
     except Exception as exc:
         _emit_write_failure_event(
@@ -1325,6 +1350,7 @@ def _emit_write_failure_event(
     source: str,
     target_path: str,
     error: Exception,
+    record_checkpoint: Optional[Dict[str, Any]] = None,
 ) -> None:
     if not project_root:
         print(f"[WriteFail] source={source} target={target_path} err={error}")
@@ -1341,6 +1367,8 @@ def _emit_write_failure_event(
         "error_type": type(error).__name__,
         "log_schema_version": log_schema_version(),
     }
+    if record_checkpoint:
+        row.update(record_checkpoint)
     corr = current_correlation()
     if corr.get("run_id"):
         row["run_id"] = corr["run_id"]
@@ -1351,6 +1379,9 @@ def _emit_write_failure_event(
         os.makedirs(os.path.dirname(fail_path), exist_ok=True)
         with open(fail_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=True) + "\n")
+            if record_checkpoint:
+                f.flush()
+                os.fsync(f.fileno())
     except Exception as inner_exc:
         print(
             f"[WriteFail] source={source} target={target_path} err={error} "

@@ -36,6 +36,107 @@ def test_quant_research_collectors_use_lighter_storage_profile() -> None:
     assert profile["max_daily_storage_mb"] <= 20
 
 
+@pytest.mark.parametrize("compute_mode", ["", "protect_live"])
+def test_policy_apply_is_idempotent_across_fresh_observations(
+    tmp_path, monkeypatch, compute_mode
+):
+    registry = tmp_path / "master_bot_registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "sub_bots": [
+                    {
+                        "bot_id": "collector",
+                        "active": True,
+                        "data_collection_active": True,
+                        "lifecycle_state": "data_collection_only",
+                        "data_collection_compute_guard_mode": compute_mode,
+                    }
+                ]
+            }
+        )
+    )
+    free_gb = 70
+    now = "2026-09-13T20:00:00Z"
+    monkeypatch.setattr(src, "iso_now", lambda: now)
+    monkeypatch.setattr(
+        src,
+        "_disk_usage",
+        lambda _: {
+            "available_bytes": int(free_gb * 1024**3),
+            "used_ratio": 0.5,
+        },
+    )
+    kwargs = dict(
+        external_root=tmp_path,
+        registry_path=registry,
+        warn_gb=120,
+        throttle_gb=80,
+        critical_gb=40,
+        apply=True,
+        cleanup_duplicates=False,
+    )
+    first = src.build_payload(**kwargs)
+    assert first["changed_count"] == 1
+    assert Path(first["registry_backup_path"]).exists()
+    before = registry.read_bytes()
+    before_stat = registry.stat()
+    free_gb = 69.123
+    now = "2026-09-13T20:05:00Z"
+    second = src.build_payload(**kwargs)
+    assert second["timestamp_utc"] == now
+    assert second["disk"]["available_gb"] == free_gb
+    assert second["changed_count"] == 0
+    assert second["registry_backup_path"] == ""
+    assert registry.read_bytes() == before
+    assert registry.stat().st_mtime_ns == before_stat.st_mtime_ns
+    assert len(list((tmp_path / "governance/lifecycle").glob("*.json"))) == 1
+    free_gb = 30
+    now = "2026-09-13T20:10:00Z"
+    third = src.build_payload(**kwargs)
+    assert third["changed_count"] == 1
+    assert third["guard_mode"] == "critical"
+    row = json.loads(registry.read_text())["sub_bots"][0]
+    assert row["data_collection_storage_guard_updated_utc"] == now
+    assert row["data_collection_sample_rate"] <= 0.05
+
+
+def test_unchanged_policy_preview_does_not_create_backups(tmp_path, monkeypatch):
+    registry = tmp_path / "master_bot_registry.json"
+    original = {
+        "sub_bots": [
+            {
+                "bot_id": "collector",
+                "active": True,
+                "data_collection_active": True,
+                "lifecycle_state": "data_collection_only",
+            }
+        ]
+    }
+    registry.write_text(json.dumps(original))
+    monkeypatch.setattr(
+        src,
+        "_disk_usage",
+        lambda _: {
+            "available_bytes": 70 * 1024**3,
+            "used_ratio": 0.5,
+        },
+    )
+    result = src.build_payload(
+        external_root=tmp_path,
+        registry_path=registry,
+        warn_gb=120,
+        throttle_gb=80,
+        critical_gb=40,
+        apply=False,
+        cleanup_duplicates=False,
+    )
+    assert result["changed_count"] == 1
+    assert result["registry_backup_path"] == ""
+    assert json.loads(registry.read_text()) == original
+    assert not (tmp_path / "governance").exists()
+
+
 @pytest.mark.parametrize("compressed", [False, True])
 def test_duplicate_removal_requires_full_content_and_durable_proof(
     tmp_path, compressed

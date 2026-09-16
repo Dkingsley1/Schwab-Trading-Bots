@@ -1,6 +1,5 @@
 import numpy as np
 
-from indicator_bot_common import train_runtime_indicator_bot
 from runtime_requested_bot_common import (
     base_runtime_gate,
     centered01,
@@ -130,8 +129,8 @@ def _runtime_crypto_relief_label(sequence, idx, horizon):
     )
 
 
-def train_brain():
-    return train_runtime_indicator_bot(
+def runtime_training_options():
+    return dict(
         run_tag="brain_refinery_v103_crypto_throttle_relief_momentum",
         feature_names=[
             "pct_from_close",
@@ -187,6 +186,12 @@ def train_brain():
         max_acted_coverage=0.28,
         allow_fallback_on_insufficient_data=False,
     )
+
+
+def train_brain():
+    from indicator_bot_common import train_runtime_indicator_bot
+
+    return train_runtime_indicator_bot(**runtime_training_options())
 
 
 if __name__ == "__main__":

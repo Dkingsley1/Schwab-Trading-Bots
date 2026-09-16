@@ -8,8 +8,11 @@ import gc
 import hashlib
 import json
 import os
+import re
+import stat
 import sys
 import time
+import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -36,6 +39,9 @@ DEFAULT_ROWS_PATH = PROJECT_ROOT / "exports" / "training" / "runtime_training_sn
 DEFAULT_HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_training_snapshot_latest.json"
 DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "runtime_training_snapshot.lock"
 _FILE_HASH_CHUNK_BYTES = 1024 * 1024
+_LIGHT_COVERAGE_MAX_SECONDS = 15.0
+_LIGHT_COVERAGE_MAX_LINE_BYTES = 2 * 1024 * 1024
+_LIGHT_COVERAGE_MAX_INDEX_BYTES = 128 * 1024 * 1024
 
 
 def _env_int(name: str, default: int) -> int:
@@ -56,8 +62,14 @@ def _sha256_file(path: Path) -> str:
     try:
         h = hashlib.sha256()
         with path.open("rb") as handle:
+            before = os.fstat(handle.fileno())
             for chunk in iter(lambda: handle.read(_FILE_HASH_CHUNK_BYTES), b""):
                 h.update(chunk)
+            after = os.fstat(handle.fileno())
+            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_size, after.st_mtime_ns, after.st_ctime_ns
+            ):
+                return ""
         return h.hexdigest()
     except Exception:
         return ""
@@ -102,6 +114,11 @@ def _publish_snapshot_rows(rows_path: Path, sequences: dict) -> tuple[int, int, 
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, rows_path)
+        directory_fd = os.open(rows_path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         temporary.unlink(missing_ok=True)
     return row_count, len(sequences), digest.hexdigest()
@@ -113,6 +130,43 @@ def _phase(name: str) -> None:
         file=sys.stderr,
         flush=True,
     )
+
+
+def _generation_rows_path(rows_path: Path) -> Path:
+    directory = rows_path.with_name(f".{rows_path.stem}.generations")
+    if inspect_storage_path(directory)["status"] not in {"present", "missing"} or directory.is_symlink():
+        raise ValueError("snapshot generation route is protected or unavailable")
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"{uuid.uuid4().hex}.jsonl"
+
+
+def _finish_generation_publication(
+    rows_path: Path, generation: Path, previous_summary: dict[str, Any]
+) -> None:
+    # The manifest is authoritative. Update the compatibility alias only after
+    # that pointer commits, then retain the previous generation and a reader grace window.
+    temporary = rows_path.with_name(f".{rows_path.name}.alias-building")
+    try:
+        temporary.unlink(missing_ok=True)
+        os.link(generation, temporary, follow_symlinks=False)
+        os.replace(temporary, rows_path)
+        previous = Path(str(previous_summary.get("rows_path") or ""))
+        cutoff = time.time() - 3600
+        with os.scandir(generation.parent) as entries:
+            for index, entry in enumerate(entries):
+                if index >= 256:
+                    break
+                if not re.fullmatch(r"(?:[a-f0-9]{32}\.jsonl|\.[a-f0-9]{32}\.jsonl\.building)", entry.name):
+                    continue
+                path = Path(entry.path)
+                info = entry.stat(follow_symlinks=False)
+                if path not in {generation, previous} and stat.S_ISREG(info.st_mode) and info.st_mtime < cutoff:
+                    path.unlink()
+    except OSError as exc:
+        # A compatibility/retention failure must not roll back a committed manifest.
+        print(json.dumps({"snapshot_post_publication_warning": str(exc)}), file=sys.stderr)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _run_bounded_snapshot(argv: list[str], *, timeout_seconds: int) -> int:
@@ -319,6 +373,7 @@ def _light_refresh_existing_snapshot_payload(
     mode_allowlist: list[str],
     symbol_allowlist: list[str],
     prefer_sqlite: bool,
+    deadline_monotonic: float | None = None,
 ) -> dict[str, Any]:
     if not _summary_config_compatible(
         summary,
@@ -331,15 +386,19 @@ def _light_refresh_existing_snapshot_payload(
         return {}
     if int(summary.get("sequence_count", 0) or 0) <= 0 or int(summary.get("row_count", 0) or 0) <= 0:
         return {}
-    rows_path = Path(str(summary.get("rows_path") or "")).expanduser()
-    if not _snapshot_rows_match(summary):
-        return {}
-    content_freshness = _snapshot_content_freshness(summary)
+    now = datetime.now(timezone.utc)
+    content_freshness = _snapshot_content_freshness(summary, now=now)
     if not bool(content_freshness.get("content_fresh", False)):
+        return {}
+    verified_coverage = _verified_stored_coverage_windows(
+        summary, now=now, deadline_monotonic=deadline_monotonic
+    )
+    if not verified_coverage:
         return {}
     payload = dict(summary)
     payload.update(content_freshness)
-    payload["timestamp_utc"] = datetime.now(timezone.utc).isoformat()
+    payload["coverage"] = {**summary.get("coverage", {}), **verified_coverage}
+    payload["timestamp_utc"] = now.isoformat()
     payload["health_path"] = str(health_path)
     payload["reused"] = True
     payload["reuse_reason"] = "light_refresh_existing_snapshot"
@@ -905,6 +964,9 @@ def _incremental_snapshot_sequences(
     since_summary_utc = _summary_latest_row_timestamp(summary) or _parse_ts(summary.get("timestamp_utc"))
     if since_summary_utc is None:
         return None
+    if not _snapshot_rows_match(summary):
+        _phase("incremental_base_digest_rejected")
+        return None
 
     _phase("incremental_base_read")
     base_sequences = rtc._load_runtime_snapshot_rows(
@@ -913,6 +975,7 @@ def _incremental_snapshot_sequences(
         mode_allowlist=mode_allowlist,
         symbol_allowlist=symbol_allowlist,
         snapshot_file=health_path,
+        deadline_monotonic=deadline_monotonic or 0.0,
     )
     if not base_sequences:
         return None
@@ -1022,6 +1085,9 @@ def _seeded_snapshot_sequences(
         return None
 
     target_lookback_days = max(int(lookback_days), 1)
+    if not _snapshot_rows_match(seed_summary):
+        _phase("seed_base_digest_rejected")
+        return None
     seed_lookback_days = max(int(seed_summary.get("lookback_days", 0) or 0), 1)
     base_lookback_days = min(seed_lookback_days, target_lookback_days)
     base_sequences = rtc._load_runtime_snapshot_rows(
@@ -1030,6 +1096,7 @@ def _seeded_snapshot_sequences(
         mode_allowlist=mode_allowlist,
         symbol_allowlist=symbol_allowlist,
         snapshot_file=seed_health_path,
+        deadline_monotonic=deadline_monotonic or 0.0,
     )
     if not base_sequences:
         return None
@@ -1093,17 +1160,146 @@ def _seeded_snapshot_sequences(
     }
 
 
+def _recent_window_buckets() -> dict[int, dict[str, Any]]:
+    return {
+        hours: {"row_count": 0, "rows_with_snapshot_id": 0,
+                "snapshot_ids": set(), "symbols": set()}
+        for hours in (1, 2, 6, 24)
+    }
+
+
+def _record_recent_row(
+    recent: dict[int, dict[str, Any]], row: dict[str, Any], *,
+    now: datetime, symbol: str = "",
+) -> int:
+    timestamp = _parse_ts(row.get("timestamp_utc"))
+    if timestamp is None or timestamp > now:
+        return 0
+    age_hours = (now - timestamp).total_seconds() / 3600.0
+    retained_bytes = 0
+    for hours, bucket in recent.items():
+        if age_hours > hours:
+            continue
+        bucket["row_count"] += 1
+        snapshot_id = str(row.get("snapshot_id") or "").strip()
+        if snapshot_id:
+            bucket["rows_with_snapshot_id"] += 1
+        for key, value in (
+            ("snapshot_ids", snapshot_id),
+            ("symbols", str(row.get("symbol") or symbol).strip().upper()),
+        ):
+            if value and value not in bucket[key]:
+                bucket[key].add(value)
+                retained_bytes += sys.getsizeof(value)
+    return retained_bytes
+
+
+def _recent_windows_payload(
+    recent: dict[int, dict[str, Any]], *, now: datetime
+) -> dict[str, Any]:
+    return {
+        str(hours): {
+            "window_hours": hours,
+            "window_ended_utc": now.isoformat(),
+            "row_count": bucket["row_count"],
+            "rows_with_snapshot_id": bucket["rows_with_snapshot_id"],
+            "unique_snapshot_ids": len(bucket["snapshot_ids"]),
+            "unique_symbols": len(bucket["symbols"]),
+        }
+        for hours, bucket in recent.items()
+    }
+
+
+def _verified_stored_coverage_windows(
+    summary: dict[str, Any], *, now: datetime,
+    deadline_monotonic: float | None = None,
+    max_bytes: int | None = None,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    deadline = started + _LIGHT_COVERAGE_MAX_SECONDS
+    if deadline_monotonic is not None:
+        deadline = min(deadline, deadline_monotonic)
+
+    def reject(reason: str) -> dict[str, Any]:
+        _phase(f"light_coverage_rejected_{reason}")
+        return {}
+
+    def identity(info: os.stat_result) -> tuple[int, ...]:
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    expected_hash = str(summary.get("rows_sha256") or "")
+    expected_count = summary.get("row_count")
+    if (summary.get("schema_version") != 2
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_hash)
+            or type(expected_count) is not int or expected_count <= 0):
+        return reject("manifest")
+    rows_path = Path(str(summary.get("rows_path") or "")).expanduser()
+    if inspect_storage_path(rows_path)["status"] != "present":
+        return reject("route")
+    if time.monotonic() >= deadline:
+        return reject("deadline")
+    recent = _recent_window_buckets()
+    digest = hashlib.sha256()
+    bytes_read = row_count = retained_bytes = 0
+    try:
+        descriptor = os.open(rows_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            # Read this fixed generation only; never chase appended bytes or load sequences.
+            byte_limit = before.st_size if max_bytes is None else min(before.st_size, max_bytes)
+            if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= byte_limit:
+                return reject("byte_budget")
+            while bytes_read < byte_limit:
+                if time.monotonic() >= deadline:
+                    return reject("deadline")
+                raw = handle.readline(min(_LIGHT_COVERAGE_MAX_LINE_BYTES + 1, byte_limit - bytes_read))
+                if not raw or len(raw) > _LIGHT_COVERAGE_MAX_LINE_BYTES or not raw.endswith(b"\n"):
+                    return reject("incomplete_line")
+                digest.update(raw)
+                bytes_read += len(raw)
+                row = json.loads(raw)
+                if (not isinstance(row, dict) or _parse_ts(row.get("timestamp_utc")) is None
+                        or not isinstance(row.get("symbol"), str) or not row["symbol"].strip()):
+                    return reject("invalid_row")
+                row_count += 1
+                if row_count > expected_count:
+                    return reject("row_count")
+                retained_bytes += _record_recent_row(recent, row, now=now)
+                index_bytes = retained_bytes + sum(
+                    sys.getsizeof(bucket[key])
+                    for bucket in recent.values() for key in ("snapshot_ids", "symbols")
+                )
+                if index_bytes > _LIGHT_COVERAGE_MAX_INDEX_BYTES:
+                    return reject("index_budget")
+                del row, raw
+            if (identity(before) != identity(os.fstat(handle.fileno()))
+                    or identity(before) != identity(rows_path.stat(follow_symlinks=False))):
+                return reject("source_changed")
+        if row_count != expected_count or digest.hexdigest() != expected_hash:
+            return reject("integrity")
+        if time.monotonic() >= deadline:
+            return reject("deadline")
+    except (OSError, ValueError, TypeError, RecursionError):
+        return reject("unreadable_rows")
+    return {
+        "recent_windows": _recent_windows_payload(recent, now=now),
+        "recent_windows_scope": "stored_snapshot_rows",
+        "current_ingestion_verified": False,
+        "recent_windows_verification": {
+            "status": "complete", "rows_sha256": expected_hash,
+            "row_count": row_count, "bytes_read": bytes_read, "byte_limit": byte_limit,
+            "max_runtime_seconds": _LIGHT_COVERAGE_MAX_SECONDS,
+        },
+    }
+
+
 def _coverage_summary(
     sequences: dict[tuple[str, str], list[dict[str, Any]]],
     *,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     current = now or datetime.now(timezone.utc)
-    recent_window_hours = (1, 2, 6, 24)
-    recent: dict[int, dict[str, Any]] = {
-        hours: {"row_count": 0, "snapshot_ids": set(), "symbols": set()}
-        for hours in recent_window_hours
-    }
+    recent = _recent_window_buckets()
     mode_row_counts: dict[str, int] = {}
     mode_sequence_counts: dict[str, int] = {}
     symbol_row_counts: dict[str, int] = {}
@@ -1117,18 +1313,7 @@ def _coverage_summary(
         mode_sequence_counts[mode] = int(mode_sequence_counts.get(mode, 0) + 1)
         symbol_row_counts[symbol] = int(symbol_row_counts.get(symbol, 0) + row_count)
         for row in rows:
-            timestamp = _parse_ts(row.get("timestamp_utc"))
-            if timestamp is None:
-                continue
-            age_hours = max((current - timestamp).total_seconds(), 0.0) / 3600.0
-            for hours, bucket in recent.items():
-                if age_hours > float(hours):
-                    continue
-                bucket["row_count"] = int(bucket["row_count"]) + 1
-                bucket["symbols"].add(str(row.get("symbol") or symbol).strip().upper())
-                snapshot_id = str(row.get("snapshot_id") or "").strip()
-                if snapshot_id:
-                    bucket["snapshot_ids"].add(snapshot_id)
+            _record_recent_row(recent, row, now=current, symbol=symbol)
         first_ts = str(rows[0].get("timestamp_utc") or "") if rows else ""
         last_ts = str(rows[-1].get("timestamp_utc") or "") if rows else ""
         for raw in (first_ts, last_ts):
@@ -1168,17 +1353,7 @@ def _coverage_summary(
         "top_sequences": sequence_rows[:25],
         "earliest_row_timestamp_utc": min(parsed_timestamps).isoformat() if parsed_timestamps else "",
         "latest_row_timestamp_utc": max(parsed_timestamps).isoformat() if parsed_timestamps else "",
-        "recent_windows": {
-            str(hours): {
-                "window_hours": hours,
-                "window_ended_utc": current.isoformat(),
-                "row_count": int(bucket["row_count"]),
-                "rows_with_snapshot_id": len(bucket["snapshot_ids"]),
-                "unique_snapshot_ids": len(bucket["snapshot_ids"]),
-                "unique_symbols": len(bucket["symbols"]),
-            }
-            for hours, bucket in recent.items()
-        },
+        "recent_windows": _recent_windows_payload(recent, now=current),
     }
 
 
@@ -1317,6 +1492,28 @@ def _build_locked_snapshot(
 ) -> int:
     _phase("existing_snapshot_validation")
     current_summary = _load_json(health_path)
+    if args.light_refresh_existing:
+        light_refresh = _light_refresh_existing_snapshot_payload(
+            current_summary,
+            project_root=project_root,
+            health_path=health_path,
+            lookback_days=max(int(args.lookback_days), 1),
+            mode_allowlist=mode_allowlist,
+            symbol_allowlist=symbol_allowlist,
+            prefer_sqlite=bool(args.prefer_sqlite),
+            deadline_monotonic=getattr(args, "scan_deadline_monotonic", None),
+        )
+        if light_refresh:
+            write_payload(health_path, light_refresh)
+            if args.json:
+                print(json.dumps(light_refresh, ensure_ascii=True))
+            else:
+                print(
+                    f"runtime_training_snapshot light_refresh=1 sequences={int(light_refresh.get('sequence_count', 0) or 0)} "
+                    f"rows={int(light_refresh.get('row_count', 0) or 0)} rows_path={light_refresh.get('rows_path', '')}"
+                )
+            return 0
+
     reusable = _reusable_snapshot_payload(
         current_summary,
         project_root=project_root,
@@ -1335,27 +1532,6 @@ def _build_locked_snapshot(
                 f"rows={int(reusable.get('row_count', 0) or 0)} rows_path={reusable.get('rows_path', '')}"
             )
         return 0
-
-    if args.light_refresh_existing:
-        light_refresh = _light_refresh_existing_snapshot_payload(
-            current_summary,
-            project_root=project_root,
-            health_path=health_path,
-            lookback_days=max(int(args.lookback_days), 1),
-            mode_allowlist=mode_allowlist,
-            symbol_allowlist=symbol_allowlist,
-            prefer_sqlite=bool(args.prefer_sqlite),
-        )
-        if light_refresh:
-            write_payload(health_path, light_refresh)
-            if args.json:
-                print(json.dumps(light_refresh, ensure_ascii=True))
-            else:
-                print(
-                    f"runtime_training_snapshot light_refresh=1 sequences={int(light_refresh.get('sequence_count', 0) or 0)} "
-                    f"rows={int(light_refresh.get('row_count', 0) or 0)} rows_path={light_refresh.get('rows_path', '')}"
-                )
-            return 0
 
     incremental_meta: dict[str, Any] = {}
     _phase("incremental_load_discovery_and_scan")
@@ -1415,9 +1591,8 @@ def _build_locked_snapshot(
 
     coverage = _coverage_summary(sequences)
     _phase("atomic_rows_publication")
-    row_count, sequence_count, rows_hash = _publish_snapshot_rows(rows_path, sequences)
-    del sequences
-    gc.collect()
+    generation = _generation_rows_path(rows_path)
+    row_count, sequence_count, rows_hash = _publish_snapshot_rows(generation, sequences)
 
     payload: dict[str, Any] = {
         "schema_version": 2,
@@ -1430,7 +1605,9 @@ def _build_locked_snapshot(
         "max_observation_rows": max(int(args.max_observation_rows), 0),
         "max_sequences": max(int(args.max_sequences), 0),
         "max_rows_per_sequence": max(int(args.max_rows_per_sequence), 0),
-        "rows_path": str(rows_path),
+        "rows_path": str(generation),
+        "compatibility_rows_path": str(rows_path),
+        "publication_contract": "immutable_rows_then_atomic_manifest",
         "health_path": str(health_path),
         "lock_path": str(lock_path),
         "jsonl_discovery_manifest": str(
@@ -1453,6 +1630,9 @@ def _build_locked_snapshot(
     payload.update(incremental_meta)
     _phase("atomic_health_publication")
     write_payload(health_path, payload)
+    _finish_generation_publication(rows_path, generation, current_summary)
+    del sequences
+    gc.collect()
     _phase("completed")
 
     if args.json:

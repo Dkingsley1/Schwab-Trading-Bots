@@ -292,6 +292,42 @@ class StorageRouterTests(unittest.TestCase):
             self.assertIn('data/jsonl_link.sqlite3', result.switched_links)
             self.assertIn('nested_sqlite_skipped:data/bot_channel_queue.sqlite3', result.passthrough_paths)
 
+    def test_passthrough_sqlite_never_routes_sidecars_independently(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'repo'
+            active = Path(td) / 'active'
+            for database in ('jsonl_link', 'bot_channel_queue', 'snapshot_context'):
+                rel = f'data/{database}.sqlite3'
+                self._write_text(root / rel, 'active-passthrough')
+                self._write_text(active / rel, 'inactive-standby')
+            switched, skipped = storage_router._reconcile_nested_sqlite_routes(root, active)
+            self.assertEqual(switched, [])
+            for rel in storage_router.NESTED_SQLITE_ROUTE_RELS:
+                self.assertIn(f'nested_sqlite_passthrough:{rel}', skipped)
+                self.assertFalse((root / rel).is_symlink())
+            # Repeat after SQLite has created its own live journal files.
+            self._write_text(root / 'data/bot_channel_queue.sqlite3-wal', 'live-journal')
+            storage_router._reconcile_nested_sqlite_routes(root, active)
+            self.assertEqual((root / 'data/bot_channel_queue.sqlite3-wal').read_text(), 'live-journal')
+
+    def test_nested_local_routes_leave_passthrough_sqlite_sidecars_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'repo'
+            active = Path(td) / 'active'
+            old = Path(td) / 'old'
+            rel = 'data/bot_channel_queue.sqlite3'
+            self._write_text(root / rel, 'active-passthrough')
+            self._write_text(active / f'{rel}-wal', 'standby-journal')
+            sidecar = root / f'{rel}-wal'
+            sidecar.symlink_to(old / f'{rel}-wal')
+            backup = root / f'{rel}-shm.route_symlink_disabled_evidence'
+            backup.symlink_to(old / f'{rel}-shm')
+            switched, skipped = storage_router._reconcile_nested_local_routes(root, active)
+            self.assertEqual(switched, [])
+            self.assertEqual(sidecar.readlink(), old / f'{rel}-wal')
+            self.assertEqual(backup.readlink(), old / f'{rel}-shm')
+            self.assertIn(f'nested_sqlite_passthrough:{rel}-wal', skipped)
+
     def test_auto_sync_records_copy_error_details(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

@@ -278,8 +278,7 @@ def _storage_overlay_relief(
         and _safe_int(effective.get("core_pending_lines"), 0) <= 5000
         and _safe_int(effective.get("total_pending_lines"), 0)
         <= _safe_int(pressure_view.get("pending_lines_threshold"), 15000)
-        and _safe_float(effective.get("oldest_pending_age_seconds"), 0.0)
-        <= 15 * 60
+        and _safe_float(effective.get("oldest_pending_age_seconds"), 0.0) <= 15 * 60
     ):
         return {
             "active": True,
@@ -311,6 +310,79 @@ def _storage_overlay_relief(
         "overlay_total_pending_lines": overlay_total,
         "raw_total_pending_lines": raw_total,
         "policy": "SQL-overlay-only pressure is managed as architecture advisory when raw-live queue health is cool",
+    }
+
+
+def _bounded_soak_pressure_relief(
+    storage: dict[str, Any],
+    plumbing: dict[str, Any],
+    pressure_view: dict[str, Any],
+) -> dict[str, Any]:
+    continuous_soak = _as_dict(storage.get("continuous_run_soak_contract"))
+    soak_inputs = _as_dict(continuous_soak.get("inputs"))
+    non_blocking = {
+        str(item)
+        for item in _as_list(continuous_soak.get("non_blocking_conditions"))
+        if str(item)
+    }
+    plumbing_queue = _as_dict(
+        _as_dict(plumbing.get("sections")).get("queue_backpressure")
+    )
+    plumbing_relief = _as_dict(plumbing_queue.get("bounded_soak_pressure_relief"))
+    selected = _as_dict(pressure_view.get("selected"))
+    pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
+    storage_status = _status(
+        storage.get("severity") or storage.get("overall_status") or "missing"
+    )
+    pending_threshold = _safe_int(pressure_view.get("pending_lines_threshold"), 15000)
+    total_pending = _safe_int(
+        pressure_view.get("effective_total_pending_lines"),
+        _safe_int(selected.get("total_pending_lines"), 0),
+    )
+    core_pending = _safe_int(selected.get("core_pending_lines"), total_pending)
+    oldest_age = _safe_float(selected.get("oldest_pending_age_seconds"), 0.0)
+    managed_conditions = {
+        key
+        for key in (
+            "pressure_only_writer_lag_relief_safe",
+            "managed_deep_cold_backlog_relief_soak_watch",
+            "bounded_sparse_reserve_soak_watch",
+        )
+        if bool(soak_inputs.get(key, False))
+    }
+    managed_conditions.update(
+        condition
+        for condition in (
+            "pressure_only_storage_relief_under_soak_controls",
+            "storage_latency_sparse_tail_managed_by_deep_cold_relief",
+            "managed_sparse_jsonl_backlog_under_storage_efficiency_contract",
+        )
+        if condition in non_blocking
+    )
+    active = bool(
+        storage_status in {"stable", "ready", "normal", "calm"}
+        and 0.25 <= pressure_index < 1.0
+        and total_pending <= pending_threshold
+        and core_pending <= 5000
+        and oldest_age <= 300.0
+        and bool(continuous_soak.get("soak_ready", False))
+        and not _as_list(continuous_soak.get("blockers"))
+        and (managed_conditions or bool(plumbing_relief.get("active", False)))
+        and _status(plumbing.get("overall_status")) in {"ready", "guarded_ready"}
+        and not plumbing.get("blockers")
+    )
+    return {
+        "active": active,
+        "pressure_index": round(pressure_index, 3),
+        "total_pending_lines": total_pending,
+        "core_pending_lines": core_pending,
+        "oldest_pending_age_seconds": round(oldest_age, 3),
+        "pending_lines_threshold": pending_threshold,
+        "soak_ready": bool(continuous_soak.get("soak_ready", False)),
+        "soak_status": str(continuous_soak.get("status") or ""),
+        "managed_conditions": sorted(managed_conditions),
+        "plumbing_relief_active": bool(plumbing_relief.get("active", False)),
+        "policy": "soak-owned storage relief keeps architecture green when raw-live queues are under hard limits and plumbing is ready",
     }
 
 
@@ -767,21 +839,20 @@ def _storage_writer_data_plane(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]
     pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
     backpressure = _as_dict(storage.get("backpressure"))
     pressure_view = _storage_pressure_view(storage)
-    raw_total_pending = _safe_int(
-        pressure_view.get("raw_total_pending_lines"), 0
-    )
+    raw_total_pending = _safe_int(pressure_view.get("raw_total_pending_lines"), 0)
     total_pending = _safe_int(
         pressure_view.get("effective_total_pending_lines"), raw_total_pending
     )
-    pending_threshold = _safe_int(
-        pressure_view.get("pending_lines_threshold"), 15000
-    )
+    pending_threshold = _safe_int(pressure_view.get("pending_lines_threshold"), 15000)
     data_status = _status(data_plane.get("overall_status"))
     plumbing_status = _status(plumbing.get("overall_status"))
     overlay_relief = _storage_overlay_relief(storage, plumbing)
     overlay_relief_active = bool(overlay_relief.get("active", False))
     bounded_recovery = _as_dict(storage.get("bounded_recovery_contract"))
     continuous_soak = _as_dict(storage.get("continuous_run_soak_contract"))
+    bounded_soak_pressure = _bounded_soak_pressure_relief(
+        storage, plumbing, pressure_view
+    )
     raw_live = _as_dict(pressure_view.get("selected"))
     bounded_active_recovery = bool(
         0.35 <= pressure_index < 1.0
@@ -821,7 +892,9 @@ def _storage_writer_data_plane(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]
         and not risk_flags
     )
     bounded_writer_pressure_managed = bool(
-        bounded_active_recovery or bounded_steady_state_storage
+        bounded_active_recovery
+        or bounded_steady_state_storage
+        or bool(bounded_soak_pressure.get("active", False))
     )
     findings: list[str] = []
     watch_items: list[str] = []
@@ -868,6 +941,8 @@ def _storage_writer_data_plane(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]
         findings.append("storage_pressure_index_high")
     elif pressure_index >= 0.35 and overlay_relief_active:
         watch_items.append("storage_pressure_index_managed_by_sql_overlay_relief")
+    elif pressure_index >= 0.35 and bool(bounded_soak_pressure.get("active", False)):
+        watch_items.append("storage_pressure_index_managed_by_ingestion_soak")
     if total_pending >= pending_threshold:
         findings.append("storage_pending_above_threshold")
     if data_plane and data_status in {"blocked", "critical"}:
@@ -918,6 +993,7 @@ def _storage_writer_data_plane(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]
             "storage_status": storage_status,
             "storage_pressure_index": pressure_index,
             "storage_overlay_relief": overlay_relief,
+            "bounded_soak_pressure_relief": bounded_soak_pressure,
             "bounded_writer_pressure_managed": bounded_writer_pressure_managed,
             "bounded_active_recovery": bounded_active_recovery,
             "bounded_steady_state_storage": bounded_steady_state_storage,
@@ -978,10 +1054,15 @@ def _runtime_capacity_partition(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
     storage_pending_threshold = _safe_int(
         storage_pressure_view.get("pending_lines_threshold"), 0
     )
+    bounded_soak_pressure = _bounded_soak_pressure_relief(
+        storage, plumbing, storage_pressure_view
+    )
     storage_clear = (
         bool(storage)
         and storage_status in {"stable", "ready", "normal", "calm"}
-        and storage_pressure <= 0.25
+        and (
+            storage_pressure <= 0.25 or bool(bounded_soak_pressure.get("active", False))
+        )
         and (
             storage_pending_threshold <= 0
             or storage_total_pending <= storage_pending_threshold
@@ -1014,6 +1095,16 @@ def _runtime_capacity_partition(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
         in {"ready", "guarded_ready", "advisory"}
         and bool(plumbing_runtime.get("ok", False))
         and bool(plumbing_runtime.get("paper_only_runtime_memory_relief", False))
+        and _status(plumbing_runtime.get("memory_pressure_level"))
+        not in {"high", "critical"}
+    )
+    plumbing_compute_advisory_relief = bool(
+        _status(plumbing.get("overall_status"))
+        in {"ready", "guarded_ready", "advisory"}
+        and not _as_list(plumbing.get("blockers"))
+        and bool(plumbing_runtime.get("ok", False))
+        and _status(plumbing_runtime.get("status")) in {"ready", "advisory"}
+        and bool(plumbing_runtime.get("compute_pressure_advisory", False))
         and _status(plumbing_runtime.get("memory_pressure_level"))
         not in {"high", "critical"}
     )
@@ -1155,9 +1246,9 @@ def _runtime_capacity_partition(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
     managed_plumbing_runtime_contract = {
         "active": bool(
             (findings or watch_items)
-            and plumbing_runtime_memory_relief
+            and (plumbing_runtime_memory_relief or plumbing_compute_advisory_relief)
             and host_score < 75.0
-            and compute_level in {"normal", "elevated"}
+            and compute_level in {"normal", "elevated", "high"}
             and memory_level not in {"high", "critical"}
             and swap_tier in {"normal", "calm", ""}
             and storage_clear
@@ -1174,6 +1265,7 @@ def _runtime_capacity_partition(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
         "plumbing_status": _status(plumbing.get("overall_status")),
         "plumbing_runtime_status": _status(plumbing_runtime.get("status")),
         "paper_only_runtime_memory_relief": plumbing_runtime_memory_relief,
+        "compute_pressure_advisory_relief": plumbing_compute_advisory_relief,
         "host_below_guarded_ceiling": host_score < 75.0,
         "memory_pressure_level": memory_level,
         "managed_findings": list(findings),
@@ -1218,6 +1310,7 @@ def _runtime_capacity_partition(ctx: dict[str, dict[str, Any]]) -> dict[str, Any
             "storage_effective_pressure_contract": bool(
                 storage_pressure_view.get("contract_active", False)
             ),
+            "bounded_soak_pressure_relief": bounded_soak_pressure,
             "storage_pressure_view_source": str(
                 storage_pressure_view.get("source") or ""
             ),
@@ -1416,14 +1509,24 @@ def _platform_watch_semantics(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]:
     watch_items: list[str] = []
     statuses: dict[str, str] = {}
     source_freshness = {}
+    managed_source_statuses: list[str] = []
     for name in source_names:
         payload = ctx[name]
         status = _status(payload.get("overall_status"))
         statuses[name] = status
         freshness = evidence_freshness(payload)
         source_freshness[name] = freshness
+        status_managed_by_owner_ok = bool(
+            status in {"needs_work", "degraded"}
+            and payload.get("ok") is True
+            and not _as_list(payload.get("blockers"))
+            and not bool(payload.get("blocks_guarded_paper", False))
+        )
         if not freshness["fresh"]:
             findings.append(f"{name}_evidence={freshness['status']}")
+        elif status_managed_by_owner_ok:
+            watch_items.append(f"{name}_status={status}")
+            managed_source_statuses.append(name)
         elif status in {"blocked", "critical", "needs_work", "degraded"}:
             findings.append(f"{name}_status={status}")
         elif status in WATCH_STATES:
@@ -1466,13 +1569,16 @@ def _platform_watch_semantics(ctx: dict[str, dict[str, Any]]) -> dict[str, Any]:
             "source_statuses": statuses,
             "source_freshness": source_freshness,
             "managed_watch_contract": managed_watch_contract,
+            "managed_source_statuses": managed_source_statuses,
         },
         findings=findings,
         watch_items=(
             [] if bool(managed_watch_contract.get("active", False)) else watch_items
         ),
         recommendations=(
-            ["./scripts/ops/opsctl.sh readiness-evidence-refresh --profile production --apply --json"]
+            [
+                "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile production --apply --json"
+            ]
             if findings
             else []
         ),

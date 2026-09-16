@@ -20,6 +20,7 @@ def test_support_maintenance_gate_activates_from_runtime_override(tmp_path: Path
     _write_json(
         tmp_path / "governance" / "health" / "runtime_throttle_control_latest.json",
         {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "mac_fluidity_contract": {
                 "overall_status": "needs_work",
                 "fluidity_band": "strained",

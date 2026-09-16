@@ -5,6 +5,7 @@ import argparse
 import json
 import sqlite3
 import sys
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -46,7 +47,9 @@ def _write_duckdb_mirror(*, ops_db_path: Path, duckdb_path: Path) -> dict[str, A
         duckdb_path.parent.mkdir(parents=True, exist_ok=True)
         stream_rows: list[tuple[Any, ...]] = []
         symbol_rows: list[tuple[Any, ...]] = []
-        with connect_sqlite(ops_db_path, project_root=PROJECT_ROOT, timeout_seconds=30.0, query_only=True, readonly=True) as sqlite_conn:
+        with closing(connect_sqlite(ops_db_path, project_root=PROJECT_ROOT, timeout_seconds=30.0, query_only=True, readonly=True)) as sqlite_conn:
+            # Both summaries must come from the same committed source snapshot.
+            sqlite_conn.execute("BEGIN")
             stream_rows = sqlite_conn.execute(
                 """
                 SELECT day_utc, stream, record_count, distinct_sources, min_schema_version,
@@ -66,6 +69,7 @@ def _write_duckdb_mirror(*, ops_db_path: Path, duckdb_path: Path) -> dict[str, A
 
         conn = duckdb.connect(str(duckdb_path))
         try:
+            conn.execute("BEGIN TRANSACTION")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS materialized_stream_daily (
@@ -106,7 +110,9 @@ def _write_duckdb_mirror(*, ops_db_path: Path, duckdb_path: Path) -> dict[str, A
                     "INSERT INTO materialized_symbol_daily VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     symbol_rows,
                 )
+            conn.execute("COMMIT")
         finally:
+            # Closing an uncommitted connection rolls back both table replacements.
             conn.close()
     except Exception as exc:
         return {

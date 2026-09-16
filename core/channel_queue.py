@@ -128,7 +128,7 @@ class ChannelQueue:
                 conn.close()
         except sqlite3.OperationalError as exc:
             if "locked" in str(exc).lower():
-                return True
+                raise sqlite3.OperationalError("channel_queue_schema_unverified_locked") from exc
             return False
         except sqlite3.DatabaseError as exc:
             self._quarantine_corrupt_db(str(exc))

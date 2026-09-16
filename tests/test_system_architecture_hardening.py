@@ -971,6 +971,78 @@ def test_architecture_hardening_consumes_plumbing_runtime_memory_relief(
     )
 
 
+def test_architecture_hardening_consumes_plumbing_compute_advisory_relief(
+    tmp_path: Path,
+) -> None:
+    _seed_ready_project(tmp_path)
+    health = tmp_path / "governance" / "health"
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "host_saturation_score": 51.15,
+            "compute_pressure_level": "high",
+            "memory_pressure_level": "normal",
+            "mac_fluidity_contract": {
+                "overall_status": "watch",
+                "fluidity_band": "strained",
+                "fluidity_score": 76.35,
+            },
+        },
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {"overall_status": "advisory"},
+    )
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "pressure_index": 0.116,
+            "backpressure": {
+                "core_pending_lines": 1736,
+                "total_pending_lines": 9695,
+                "pending_lines_threshold": 15000,
+                "oldest_pending_age_seconds": 5.524,
+            },
+        },
+    )
+    _write_json(
+        health / "system_plumbing_control_latest.json",
+        {
+            "overall_status": "ready",
+            "blockers": [],
+            "sections": {
+                "runtime_memory": {
+                    "ok": True,
+                    "status": "ready",
+                    "compute_pressure_advisory": True,
+                    "memory_pressure_level": "normal",
+                }
+            },
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+    runtime = payload["sections"]["runtime_capacity_partition"]
+
+    assert payload["overall_status"] == "ready"
+    assert runtime["overall_status"] == "ready"
+    assert runtime["findings"] == []
+    assert runtime["evidence"]["managed_plumbing_runtime_contract"]["active"] is True
+    assert (
+        runtime["evidence"]["managed_plumbing_runtime_contract"][
+            "compute_pressure_advisory_relief"
+        ]
+        is True
+    )
+    assert (
+        "runtime_pressure=degraded"
+        in runtime["evidence"]["managed_plumbing_runtime_contract"]["managed_findings"]
+    )
+
+
 def test_architecture_hardening_treats_platform_watch_as_managed_under_strict_clear(
     tmp_path: Path,
 ) -> None:

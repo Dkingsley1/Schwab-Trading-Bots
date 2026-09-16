@@ -130,3 +130,62 @@ def test_daily_auto_verify_keeps_bad_promotion_packet_blocking() -> None:
     )
 
     assert daily_auto_verify._promotion_packet_builder_ok(2, stdout, "") is False
+
+
+def test_daily_auto_verify_accepts_busy_snapshot_drill_with_fresh_verified_latest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(daily_auto_verify, "PROJECT_ROOT", tmp_path)
+    latest = tmp_path / "exports" / "state_snapshot_drills" / "latest.json"
+    latest.parent.mkdir(parents=True, exist_ok=True)
+    latest.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": daily_auto_verify.datetime.now(
+                    daily_auto_verify.timezone.utc
+                ).isoformat(),
+                "ok": True,
+                "latest_write_verified": True,
+                "published_latest_write_verified": True,
+                "files_restore_verified": 4,
+                "files_checked": 4,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        daily_auto_verify._state_snapshot_drill_ok(
+            2,
+            json.dumps(
+                {
+                    "ok": False,
+                    "overall_status": "deferred",
+                    "reason": "storage_maintenance_lock_busy",
+                }
+            ),
+            "",
+        )
+        is True
+    )
+
+
+def test_daily_auto_verify_rejects_busy_snapshot_drill_without_verified_latest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(daily_auto_verify, "PROJECT_ROOT", tmp_path)
+
+    assert (
+        daily_auto_verify._state_snapshot_drill_ok(
+            2,
+            json.dumps(
+                {
+                    "ok": False,
+                    "overall_status": "deferred",
+                    "reason": "storage_maintenance_lock_busy",
+                }
+            ),
+            "",
+        )
+        is False
+    )

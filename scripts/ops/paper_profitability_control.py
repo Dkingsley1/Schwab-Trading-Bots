@@ -1372,23 +1372,33 @@ def _load_paper_performance_input(path: Path) -> tuple[dict[str, Any], dict[str,
         if isinstance(row, dict)
     )
     if stat_after is not None:
-        age_seconds = max(
-            (datetime.now(timezone.utc).timestamp() - stat_after.st_mtime), 0.0
-        )
+        mtime_age_seconds = datetime.now(timezone.utc).timestamp() - stat_after.st_mtime
         size_bytes = int(stat_after.st_size)
         mtime_ns = int(stat_after.st_mtime_ns)
     else:
-        age_seconds = float("inf")
+        mtime_age_seconds = float("inf")
         size_bytes = 0
         mtime_ns = 0
     source_stable = bool(
         stat_before is not None
         and stat_after is not None
         and stat_before.st_mtime_ns == stat_after.st_mtime_ns
+        and (stat_before.st_dev, stat_before.st_ino)
+        == (stat_after.st_dev, stat_after.st_ino)
         and stat_before.st_size == stat_after.st_size
         and len(raw) == stat_after.st_size
     )
-    source_fresh = age_seconds <= 3600.0
+    # Copying an old report must not renew the evidence used by runtime controls.
+    try:
+        produced_at = datetime.fromisoformat(
+            str(paper.get("timestamp_utc") or "").replace("Z", "+00:00")
+        )
+        if produced_at.tzinfo is None:
+            raise ValueError("paper_performance_timestamp_timezone_missing")
+        age_seconds = (datetime.now(timezone.utc) - produced_at).total_seconds()
+    except (ValueError, TypeError, OverflowError):
+        age_seconds = float("inf")
+    source_fresh = 0 <= age_seconds <= 3600.0
     payload_ok = bool(paper) and paper.get("ok", True) is not False
     usable = bool(
         payload_ok and sleeves and executions > 0 and source_fresh and source_stable
@@ -1414,6 +1424,10 @@ def _load_paper_performance_input(path: Path) -> tuple[dict[str, Any], dict[str,
             None if age_seconds == float("inf") else round(age_seconds, 3)
         ),
         "source_max_age_seconds": 3600,
+        "freshness_basis": "producer_timestamp_utc",
+        "source_mtime_age_seconds": (
+            None if mtime_age_seconds == float("inf") else round(mtime_age_seconds, 3)
+        ),
         "source_size_bytes": size_bytes,
         "sleeve_count": len([row for row in sleeves if isinstance(row, dict)]),
         "execution_count": executions,
@@ -12354,6 +12368,111 @@ def build_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_safe_hold_runtime_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    control_payload = build_runtime_control_payload(payload)
+    input_contract = _as_dict(payload.get("paper_performance_input_contract"))
+    blockers = [
+        str(item)
+        for item in input_contract.get("blockers", [])
+        if str(item or "").strip()
+    ]
+    global_policy = (
+        control_payload.get("global_runtime_policy")
+        if isinstance(control_payload.get("global_runtime_policy"), dict)
+        else {}
+    )
+    global_policy = {
+        **global_policy,
+        "block_new_paper_entries_from_profitability_controls": True,
+        "keep_reduce_only_paths_open_during_no_gradeable_execution_hold": True,
+        "profitability_claims_require_gradeable_current_execution": True,
+        "live_execution_allowed": False,
+        "automatic_promotion_allowed": False,
+    }
+    hold_contract = build_operating_contract(
+        contract_id="paper_profitability_safe_hold_no_gradeable_execution_v1",
+        owner="paper_profitability_control",
+        domain="paper_profitability_runtime_control",
+        status="safe_hold_no_gradeable_execution",
+        why="paper_performance_input_not_gradeable",
+        safe_authority=[
+            "publish_current_safe_hold_runtime_control",
+            "preserve_quarantine_and_reduce_only_controls",
+            "withhold_profitability_based_entry_and_size_authority",
+            "keep_data_collection_and_reduce_only_paths_open",
+        ],
+        blocked_authority=[
+            "paper_profitability_claim_until_current_execution_evidence_exists",
+            "new_paper_order_submission_from_profitability_controls",
+            "live_order_submission",
+            "model_promotion",
+            "size_widening_from_ungradeable_profitability",
+        ],
+        evidence_missing=blockers or ["paper_performance_gradeable_execution_evidence"],
+        release_conditions=[
+            "paper_performance_input_contract_usable_for_profitability_grade_true",
+            "paper_performance_execution_count_above_zero",
+            "paper_performance_source_fresh_and_stable",
+            "ordered_profitability_refresh_publishes_current_epoch_sidecar",
+        ],
+        next_commands=[
+            ["./scripts/ops/opsctl.sh", "paper-performance", "--json"],
+            [
+                "./scripts/ops/opsctl.sh",
+                "paper-profitability-control",
+                "--apply",
+                "--json",
+            ],
+        ],
+        definition_gaps=blockers,
+        measurement={
+            "paper_performance_path": input_contract.get("path", ""),
+            "paper_performance_execution_count": input_contract.get(
+                "execution_count", 0
+            ),
+            "paper_performance_source_fresh": bool(
+                input_contract.get("source_fresh", False)
+            ),
+            "paper_performance_source_stable_during_read": bool(
+                input_contract.get("source_stable_during_read", False)
+            ),
+            "profile_control_count": len(control_payload.get("profile_controls") or {}),
+            "strategy_control_count": len(
+                control_payload.get("strategy_controls") or {}
+            ),
+        },
+        hardening={
+            "paper_only": True,
+            "live_execution_allowed": False,
+            "automatic_promotion_allowed": False,
+            "profitability_based_new_entries_blocked": True,
+            "independently_authorized_paper_probation_unchanged": True,
+            "reduce_only_paths_remain_open": True,
+            "raw_profitability_grade_not_lifted": True,
+            "current_sidecar_publication_required_even_on_safe_hold": True,
+        },
+    )
+    return {
+        **control_payload,
+        "ok": False,
+        "overall_status": "safe_hold_no_gradeable_execution",
+        "safe_hold_active": True,
+        "safe_hold_reason": "paper_performance_input_not_gradeable",
+        "safe_hold_scope": "profitability_evidence_and_control_authority",
+        "execution_hold_observed": False,
+        "execution_authority_owner": "paper_live_data_standard_and_execution_lane",
+        "runtime_control_write_blocked": False,
+        "runtime_control_write_blocked_reason": "",
+        "paper_execution_authority": False,
+        "live_execution_authority": False,
+        "promotion_authority": False,
+        "allocation_authority": False,
+        "global_runtime_policy": global_policy,
+        "safe_hold_contract": hold_contract,
+        "operating_contract": hold_contract,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Convert paper trading losses into paper-only profitability controls."
@@ -12396,13 +12515,18 @@ def main() -> int:
             fresh_paper_recovery_reason=str(args.fresh_paper_recovery_reason or ""),
         )
         input_contract = _as_dict(payload.get("paper_performance_input_contract"))
-        if args.apply and bool(
-            input_contract.get("usable_for_profitability_grade", False)
-        ):
-            control_payload = build_runtime_control_payload(payload)
-            control_path = Path(args.control_out).expanduser()
-            if not control_path.is_absolute():
-                control_path = project_root / control_path
+        control_path = Path(args.control_out).expanduser()
+        if not control_path.is_absolute():
+            control_path = project_root / control_path
+        if args.apply:
+            input_gradeable = bool(
+                input_contract.get("usable_for_profitability_grade", False)
+            )
+            control_payload = (
+                build_runtime_control_payload(payload)
+                if input_gradeable
+                else build_safe_hold_runtime_control_payload(payload)
+            )
             write_payload(control_path, control_payload)
             payload["applied_runtime_control_file"] = str(control_path)
             payload["applied_runtime_control_summary"] = {
@@ -12412,17 +12536,17 @@ def main() -> int:
                 "strategy_control_count": len(
                     control_payload.get("strategy_controls") or {}
                 ),
+                "safe_hold_active": bool(
+                    control_payload.get("safe_hold_active", False)
+                ),
             }
-        elif args.apply:
-            payload["runtime_control_write_blocked"] = True
-            payload["runtime_control_write_blocked_reason"] = (
-                "paper_performance_input_not_gradeable"
-            )
-            payload["applied_runtime_control_summary"] = {
-                "profile_control_count": 0,
-                "strategy_control_count": 0,
-                "preserved_previous_control": True,
-            }
+            if input_gradeable:
+                payload["runtime_control_write_blocked"] = False
+                payload["runtime_control_write_blocked_reason"] = ""
+            else:
+                payload["runtime_control_safe_hold_published"] = True
+                payload["runtime_control_write_blocked"] = False
+                payload["runtime_control_write_blocked_reason"] = ""
 
         out_path = Path(args.out_file).expanduser()
         if not out_path.is_absolute():

@@ -1,15 +1,76 @@
 import hashlib
 import json
 import os
+import plistlib
 from pathlib import Path
 import sqlite3
 import sys
 import shutil
+import subprocess
 import time
+from contextlib import contextmanager
 
 import pytest
 
 from scripts.ops import cold_sqlite_filesystem_compaction as compact
+
+
+@pytest.mark.parametrize("available,expected", [(True, "afsctool"), (False, "ditto")])
+def test_auto_backend_prefers_installed_large_file_compressor(
+    monkeypatch, available, expected
+):
+    monkeypatch.setattr(compact.streaming, "installed", lambda: False)
+    monkeypatch.setattr(
+        compact.shutil, "which", lambda _: "/tool/afsctool" if available else None
+    )
+    assert compact.select_compressor("auto") == expected
+    assert compact.select_compressor("ditto") == "ditto"
+    assert compact.select_compressor("afsctool") == "afsctool"
+    with pytest.raises(ValueError, match="unknown_filesystem_compressor"):
+        compact.select_compressor("unknown")
+
+
+def test_builtin_compression_does_not_require_optional_afsctool(monkeypatch):
+    monkeypatch.setattr(
+        compact.os, "access", lambda path, mode: path == "/usr/bin/ditto"
+    )
+    monkeypatch.setattr(compact.shutil, "which", lambda name: None)
+    assert compact.require_compressor("ditto") == "/usr/bin/ditto"
+    with pytest.raises(RuntimeError, match="afsctool_not_installed"):
+        compact.require_compressor("afsctool")
+
+
+def test_optional_backend_still_requires_its_copy_dependency(monkeypatch):
+    monkeypatch.setattr(compact.os, "access", lambda *a: False)
+    monkeypatch.setattr(compact.shutil, "which", lambda name: "/tool/afsctool")
+    with pytest.raises(RuntimeError, match="ditto_not_installed"):
+        compact.require_compressor("afsctool")
+
+
+@pytest.fixture
+def native_apfs(tmp_path):
+    try:
+        device = (
+            subprocess.run(
+                ["df", "-P", str(tmp_path)],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5,
+            )
+            .stdout.splitlines()[-1]
+            .split()[0]
+        )
+        result = subprocess.run(
+            ["/usr/sbin/diskutil", "info", "-plist", device],
+            capture_output=True,
+            check=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        pytest.skip(f"native APFS inspection unavailable: {type(exc).__name__}")
+    if plistlib.loads(result.stdout).get("FilesystemType") != "apfs":
+        pytest.skip("native compression integration requires an APFS test directory")
 
 
 def _database(root):
@@ -30,7 +91,7 @@ def _compact(path, root, **kwargs):
         archive_root=root,
         manifest=root / "proof.jsonl",
         deadline=time.monotonic() + 60,
-        **kwargs
+        **kwargs,
     )
 
 
@@ -75,19 +136,44 @@ def test_first_oversized_file_does_not_bypass_wave_budget(tmp_path):
     assert path.exists()
 
 
+def test_streaming_wave_budget_accounts_for_pacing_and_verification(tmp_path):
+    large, fitting = tmp_path / "large.sqlite3", tmp_path / "fitting.sqlite3"
+    for path, size in ((large, 3 * 1024**3), (fitting, 1024**3)):
+        with path.open("wb") as handle:
+            handle.truncate(size)
+    result = compact.build_payload(
+        paths=[large, fitting],
+        archive_root=tmp_path,
+        manifest=tmp_path / "proof.jsonl",
+        apply=False,
+        max_files=4,
+        max_raw_gb=8,
+        timeout_seconds=300,
+        min_age_hours=24,
+        compressor="applesauce",
+    )
+    assert result["selected_paths"] == [str(fitting)]
+    assert result["requested_max_raw_gb"] == 8
+    assert result["effective_max_raw_gb"] == 2
+
+
 @pytest.mark.skipif(
     sys.platform != "darwin", reason="native APFS compression integration"
 )
-@pytest.mark.parametrize("compressor", ["ditto", "afsctool"])
+@pytest.mark.parametrize("compressor", ["ditto", "afsctool", "applesauce"])
 def test_native_compression_keeps_sqlite_readable_and_proves_all_bytes(
-    tmp_path, compressor
+    tmp_path, compressor, native_apfs
 ):
     if compressor == "afsctool" and not shutil.which("afsctool"):
         pytest.skip("optional afsctool backend not installed")
+    if compressor == "applesauce" and not compact.streaming.installed():
+        pytest.skip("pinned applesauce backend not installed")
     path = _database(tmp_path)
     original = path.read_bytes()
     result = _compact(path, tmp_path, compressor=compressor)
-    assert result["status"] == "filesystem_compressed_verified", result
+    assert result["status"] == "filesystem_compressed_verified", result.get(
+        "error", result
+    )
     assert result["allocated_bytes_reclaimed"] > 1024**2
     assert path.read_bytes() == original
     assert result["source_sha256"] == hashlib.sha256(original).hexdigest()
@@ -104,7 +190,10 @@ def test_native_compression_keeps_sqlite_readable_and_proves_all_bytes(
         "filesystem_compressed_verified",
     ]
     assert not list(tmp_path.glob(".filesystem_compaction_*"))
-    assert _compact(path, tmp_path)["status"] == "already_compressed"
+    assert (
+        _compact(path, tmp_path, compressor=compressor)["status"]
+        == "already_compressed"
+    )
 
 
 def test_large_archive_is_rejected_before_expensive_copy(tmp_path, monkeypatch):
@@ -118,11 +207,54 @@ def test_large_archive_is_rejected_before_expensive_copy(tmp_path, monkeypatch):
     assert not result["original_replaced"]
 
 
+@pytest.mark.parametrize("source_changes", [False, True])
+def test_isolated_copy_is_verified_before_short_publication_guard(
+    tmp_path, monkeypatch, native_apfs, source_changes
+):
+    path = _database(tmp_path)
+    original = path.read_bytes()
+    publishing = [False]
+    hash_calls = []
+    original_hash = compact._hash
+
+    def checked_hash(path, deadline):
+        assert not publishing[0], "full-file reads must not hold the hot writer"
+        hash_calls.append(path)
+        return original_hash(path, deadline)
+
+    @contextmanager
+    def publish(deadline):
+        assert len(hash_calls) == 2
+        publishing[0] = True
+        if source_changes:
+            path.write_bytes(original + b"changed")
+        try:
+            yield deadline, {"scope": "verified_copy_publication_only"}
+        finally:
+            publishing[0] = False
+
+    monkeypatch.setattr(compact, "_hash", checked_hash)
+    result = _compact(path, tmp_path, publication_guard=publish)
+    assert not publishing[0]
+    if source_changes:
+        assert "source_changed_during_compaction" in result["error"]
+        assert not result["original_replaced"]
+        assert path.read_bytes() == original + b"changed"
+    else:
+        assert result["status"] == "filesystem_compressed_verified", result
+        assert path.read_bytes() == original
+        assert (
+            result["publication_handoff"]["scope"] == "verified_copy_publication_only"
+        )
+
+
 @pytest.mark.skipif(
     sys.platform != "darwin", reason="native APFS compression integration"
 )
 @pytest.mark.parametrize("operation", ["count", "retention", "integrity", "export"])
-def test_archive_readers_and_noop_retention_preserve_compression(tmp_path, operation):
+def test_archive_readers_and_noop_retention_preserve_compression(
+    tmp_path, operation, native_apfs
+):
     from datetime import datetime, timezone
     from scripts import sql_hot_retention as retention
     from scripts.ops import sql_link_shard_manager as manager
@@ -173,7 +305,10 @@ def test_archive_readers_and_noop_retention_preserve_compression(tmp_path, opera
     assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
 
 
-def test_bounded_selection_skips_protected_alias_and_large_or_fresh_files(tmp_path):
+def test_bounded_selection_skips_protected_alias_and_large_or_fresh_files(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(compact, "_require_idle", lambda *a: None)
     old = tmp_path / "old.sqlite3"
     fresh = tmp_path / "fresh.sqlite3"
     large = tmp_path / "large.sqlite3"
@@ -190,6 +325,15 @@ def test_bounded_selection_skips_protected_alias_and_large_or_fresh_files(tmp_pa
     assert compact.select_inactive_archives(
         tmp_path, max_files=4, max_raw_gb=8, min_age_hours=24
     ) == [old]
+    assert set(
+        compact.select_inactive_archives(
+            tmp_path,
+            max_files=4,
+            max_raw_gb=8,
+            min_age_hours=24,
+            compressor="applesauce",
+        )
+    ) == {old, large}
     assert (
         compact.select_inactive_archives(
             tmp_path, max_files=4, max_raw_gb=0.01, min_age_hours=24
@@ -198,10 +342,29 @@ def test_bounded_selection_skips_protected_alias_and_large_or_fresh_files(tmp_pa
     )
 
 
+def test_bounded_selection_skips_busy_archive_before_spending_wave_budget(
+    tmp_path, monkeypatch
+):
+    busy, idle = tmp_path / "a_busy.sqlite3", tmp_path / "b_idle.sqlite3"
+    for path in (busy, idle):
+        with path.open("wb") as handle:
+            handle.truncate(110 * 1024**2)
+        os.utime(path, (time.time() - 172800,) * 2)
+
+    def probe(path, deadline):
+        if path == busy:
+            raise RuntimeError("cold_database_open_or_process_probe_failed")
+
+    monkeypatch.setattr(compact, "_require_idle", probe)
+    assert compact.select_inactive_archives(
+        tmp_path, max_files=1, max_raw_gb=1, min_age_hours=24
+    ) == [idle]
+
+
 @pytest.mark.skipif(
     sys.platform != "darwin", reason="native APFS compression integration"
 )
-def test_cold_root_may_be_a_verified_storage_alias(tmp_path):
+def test_cold_root_may_be_a_verified_storage_alias(tmp_path, native_apfs):
     root = tmp_path / "real"
     root.mkdir()
     path = _database(root)
@@ -217,7 +380,12 @@ def test_cold_root_may_be_a_verified_storage_alias(tmp_path):
 @pytest.mark.parametrize(
     "failure", ["hash", "source_change", "manifest", "timeout", "open"]
 )
-def test_failure_preserves_original(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize("compressor", ["ditto", "applesauce"])
+def test_failure_preserves_original(
+    tmp_path, monkeypatch, failure, native_apfs, compressor
+):
+    if compressor == "applesauce" and not compact.streaming.installed():
+        pytest.skip("pinned applesauce backend not installed")
     path = _database(tmp_path)
     original = path.read_bytes()
     if failure in {"hash", "source_change"}:
@@ -250,7 +418,7 @@ def test_failure_preserves_original(tmp_path, monkeypatch, failure):
             raise TimeoutError("deadline")
 
         monkeypatch.setattr(compact, "_remaining", expired)
-    result = _compact(path, tmp_path)
+    result = _compact(path, tmp_path, compressor=compressor)
     assert result["status"] == "failed"
     assert not result["original_replaced"]
     assert path.read_bytes() == original

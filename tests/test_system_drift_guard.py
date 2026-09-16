@@ -26,6 +26,27 @@ def _write_guarded_paper_health_fast(health_root: Path) -> None:
     )
 
 
+def test_system_drift_guard_direct_lifecycle_marks_findings_non_failed() -> None:
+    payload = {
+        "timestamp_utc": "2026-09-09T12:00:00+00:00",
+        "ok": False,
+        "overall_status": "blocked",
+    }
+
+    updated = src._attach_direct_lifecycle(
+        payload,
+        rc=2,
+        terminal_status="completed_with_findings",
+    )
+
+    lifecycle = updated["job_lifecycle"]
+    assert lifecycle["job_id"] == "system_drift_guard"
+    assert lifecycle["scheduled"] is False
+    assert lifecycle["failed"] is False
+    assert lifecycle["terminal_status"] == "completed_with_findings"
+    assert lifecycle["rc"] == 2
+
+
 def test_system_drift_guard_treats_operator_gated_command_surface_as_ready(
     monkeypatch, tmp_path: Path
 ) -> None:

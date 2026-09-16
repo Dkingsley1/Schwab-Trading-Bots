@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from contextlib import closing
+from contextlib import closing, nullcontext
 import json
 import math
 import os
@@ -15,16 +15,49 @@ import stat
 import sys
 import tempfile
 import time
+from typing import Callable, ContextManager
 
 from core.storage_router import inspect_storage_path
 from scripts.ops.long_runtime_common import iso_now, run_bounded_process_group
+from scripts.ops import cold_sqlite_streaming_compressor as streaming
 
 GIB = 1024**3
 MAX_NATIVE_FILE_BYTES = 2 * GIB - 1
 
 
+def select_compressor(requested: str) -> str:
+    if requested == "auto":
+        if streaming.installed():
+            return "applesauce"
+        return "afsctool" if shutil.which("afsctool") else "ditto"
+    if requested not in {"ditto", "afsctool", "applesauce"}:
+        raise ValueError("unknown_filesystem_compressor")
+    return requested
+
+
+def require_compressor(compressor: str) -> str:
+    if compressor not in {"ditto", "afsctool", "applesauce"}:
+        raise ValueError("unknown_filesystem_compressor")
+    # Every backend works on an isolated physical copy made by ditto.
+    if not os.access("/usr/bin/ditto", os.X_OK):
+        raise RuntimeError("ditto_not_installed")
+    if compressor == "applesauce":
+        return streaming.require_executable()
+    executable = (
+        shutil.which("afsctool") if compressor == "afsctool" else "/usr/bin/ditto"
+    )
+    if not executable:
+        raise RuntimeError("afsctool_not_installed")
+    return executable
+
+
 def select_inactive_archives(
-    root: Path, *, max_files: int, max_raw_gb: float, min_age_hours: float
+    root: Path,
+    *,
+    max_files: int,
+    max_raw_gb: float,
+    min_age_hours: float,
+    compressor: str = "ditto",
 ) -> list[Path]:
     _allowed(root)
     selected = []
@@ -54,12 +87,21 @@ def select_inactive_archives(
             info = path.stat()
             if (
                 info.st_size < 100 * 1024**2
-                or info.st_size > MAX_NATIVE_FILE_BYTES
+                or info.st_size
+                > (
+                    streaming.MAX_FILE_BYTES
+                    if compressor == "applesauce"
+                    else MAX_NATIVE_FILE_BYTES
+                )
                 or getattr(info, "st_flags", 0) & stat.UF_COMPRESSED
                 or info.st_nlink != 1
                 or time.time() - info.st_mtime < max(min_age_hours, 24) * 3600
                 or total + info.st_size > max_raw_gb * GIB
             ):
+                continue
+            try:
+                _require_idle(path, deadline)
+            except (RuntimeError, TimeoutError, OSError, ValueError):
                 continue
             selected.append(path)
             total += info.st_size
@@ -116,6 +158,21 @@ def _require_idle(path: Path, deadline: float) -> None:
             raise RuntimeError("cold_database_has_uncheckpointed_sidecar")
 
 
+def _require_apfs(device: str, parent: Path, deadline: float) -> None:
+    probe = _run(["/usr/sbin/diskutil", "info", "-plist", device], parent, deadline)
+    if probe["rc"] != 0 or probe.get("timed_out"):
+        raise RuntimeError("filesystem_type_probe_failed")
+    try:
+        info = plistlib.loads(probe["stdout"].encode())
+        filesystem = info.get("FilesystemType") if isinstance(info, dict) else None
+    except (ValueError, TypeError, AttributeError, plistlib.InvalidFileException):
+        filesystem = None
+    if not isinstance(filesystem, str) or not filesystem.strip():
+        raise RuntimeError("filesystem_type_probe_incomplete")
+    if filesystem != "apfs":
+        raise RuntimeError("transparent_compression_requires_apfs")
+
+
 def _sync_directory(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY)
     try:
@@ -143,6 +200,7 @@ def compact_one(
     deadline: float,
     min_age_hours: float = 24.0,
     compressor: str = "ditto",
+    publication_guard: Callable[[float], ContextManager] | None = None,
 ) -> dict:
     result = {
         "path": str(path),
@@ -161,13 +219,13 @@ def compact_one(
         ) or not path.resolve().is_relative_to(root):
             raise ValueError("source_outside_cold_archive")
         identity = _identity(path)
-        if identity[2] > MAX_NATIVE_FILE_BYTES:
+        file_limit = (
+            streaming.MAX_FILE_BYTES
+            if compressor == "applesauce"
+            else MAX_NATIVE_FILE_BYTES
+        )
+        if identity[2] > file_limit:
             raise ValueError("archive_exceeds_bounded_native_compression_size")
-        if compressor not in {"ditto", "afsctool"}:
-            raise ValueError("unknown_filesystem_compressor")
-        executable = shutil.which("afsctool") if compressor == "afsctool" else None
-        if compressor == "afsctool" and not executable:
-            raise RuntimeError("afsctool_not_installed")
         before = path.stat()
         if path.suffix not in {".sqlite3", ".sqlite", ".db"}:
             raise ValueError("not_sqlite_archive")
@@ -175,6 +233,8 @@ def compact_one(
             raise ValueError("archive_not_old_enough")
         if sys.platform != "darwin":
             raise RuntimeError("transparent_compression_requires_macos_apfs")
+        backend = require_compressor(compressor)
+        executable = backend if compressor == "afsctool" else None
         if before.st_flags & stat.UF_COMPRESSED:
             return {**result, "status": "already_compressed"}
         mounted = _run(["/bin/df", "-P", str(path.parent)], path.parent, deadline)
@@ -183,20 +243,26 @@ def compact_one(
         device = mounted["stdout"].splitlines()[1].split()[0]
         if not device.startswith("/dev/disk"):
             raise RuntimeError("not_a_local_disk_device")
-        filesystem = _run(
-            ["/usr/sbin/diskutil", "info", "-plist", device], path.parent, deadline
-        )
-        if (
-            filesystem["rc"] != 0
-            or plistlib.loads(filesystem["stdout"].encode()).get("FilesystemType")
-            != "apfs"
-        ):
-            raise RuntimeError("transparent_compression_requires_apfs")
+        _require_apfs(device, path.parent, deadline)
         reserve = float(os.getenv("BOT_LOCAL_STORAGE_EMERGENCY_FREE_GB", "16"))
         if not math.isfinite(reserve) or reserve < 0:
             raise ValueError("invalid_recovery_reserve")
-        reserve_bytes = int(max(reserve, 16.0) * GIB)
-        if shutil.disk_usage(path.parent).free < identity[2] * 1.01 + reserve_bytes:
+        external = path.stat().st_dev != Path(__file__).resolve().stat().st_dev
+        reserve_bytes = int(max(reserve, 64.0 if external else 16.0) * GIB)
+        extra_scratch = (
+            streaming.extra_scratch_bytes(identity[2])
+            if compressor == "applesauce"
+            else 0
+        )
+        result.update(
+            compressor=compressor,
+            reserve_bytes=reserve_bytes,
+            extra_scratch_bytes=extra_scratch,
+        )
+        if (
+            shutil.disk_usage(path.parent).free
+            < identity[2] * 1.01 + extra_scratch + reserve_bytes
+        ):
             raise RuntimeError("insufficient_recovery_scratch")
         _require_idle(path, deadline)
         source_hash = _hash(path, deadline)
@@ -226,6 +292,12 @@ def compact_one(
             )
             if compressed["rc"] != 0 or compressed.get("timed_out"):
                 raise RuntimeError("afsctool_failed_or_timed_out")
+        elif compressor == "applesauce":
+            result["streaming_compression"] = streaming.compress(
+                backend, target, deadline=deadline, reserve_bytes=reserve_bytes
+            )
+            if result["streaming_compression"]["rc"] != 0:
+                raise RuntimeError("applesauce_failed")
         after = target.stat()
         result.update(
             copy_logical_bytes=after.st_size,
@@ -250,11 +322,6 @@ def compact_one(
                 raise RuntimeError("compressed_sqlite_integrity_failed")
         with target.open("rb") as handle:
             os.fsync(handle.fileno())
-        _require_idle(path, deadline)
-        if _identity(path) != identity:
-            raise RuntimeError("source_changed_during_compaction")
-        if shutil.disk_usage(path.parent).free < reserve_bytes:
-            raise RuntimeError("recovery_reserve_consumed_during_compaction")
         proof = {
             **result,
             "logical_bytes": before.st_size,
@@ -266,20 +333,39 @@ def compact_one(
             "temporary_path": str(target),
             "status": "verified_pending_replace",
         }
-        _receipt(manifest, proof)
-        _remaining(deadline)
-        if _identity(path) != identity:
-            raise RuntimeError("source_changed_before_replace")
-        os.replace(target, path)
-        result = {
-            **proof,
-            "status": "filesystem_compressed_verified",
-            "original_replaced": True,
-            "allocated_bytes_reclaimed": reclaimed,
-            "completed_at_utc": iso_now(),
-        }
-        _sync_directory(path.parent)
-        _receipt(manifest, result)
+        guard = (
+            publication_guard(deadline)
+            if publication_guard
+            else nullcontext((deadline, {}))
+        )
+        with guard as (publication_deadline, publication):
+            _remaining(publication_deadline)
+            _require_idle(path, publication_deadline)
+            if _identity(path) != identity:
+                raise RuntimeError("source_changed_during_compaction")
+            if shutil.disk_usage(path.parent).free < reserve_bytes:
+                raise RuntimeError("recovery_reserve_consumed_during_compaction")
+            if publication:
+                proof["publication_handoff"] = publication
+            _receipt(manifest, proof)
+            _remaining(publication_deadline)
+            if _identity(path) != identity:
+                raise RuntimeError("source_changed_before_replace")
+            os.replace(target, path)
+            result = {
+                **proof,
+                "status": "filesystem_compressed_verified",
+                "original_replaced": True,
+                "allocated_bytes_reclaimed": reclaimed,
+                "completed_at_utc": iso_now(),
+            }
+            _sync_directory(path.parent)
+            _receipt(manifest, result)
+        if publication and publication.get("released") is False:
+            result.update(
+                status="publication_hold_release_failed",
+                error="owned_hold_not_released",
+            )
         return result
     except Exception as exc:
         return {**result, "status": "failed", "error": f"{type(exc).__name__}:{exc}"}
@@ -299,6 +385,7 @@ def build_payload(
     timeout_seconds: int,
     min_age_hours: float,
     compressor: str = "ditto",
+    publication_guard: Callable[[float], ContextManager] | None = None,
 ) -> dict:
     deadline = time.monotonic() + max(int(timeout_seconds), 1)
     if (
@@ -308,6 +395,10 @@ def build_payload(
         or min_age_hours < 0
     ):
         raise ValueError("invalid_filesystem_compaction_budget")
+    requested_max_raw_gb = max_raw_gb
+    if compressor == "applesauce":
+        # Leave room for the paced compressor, physical copy and two read proofs.
+        max_raw_gb = min(max_raw_gb, max(int(timeout_seconds), 1) / 150.0)
     selected = []
     total = 0
     for path in paths:
@@ -329,6 +420,7 @@ def build_payload(
                 deadline=deadline,
                 min_age_hours=min_age_hours,
                 compressor=compressor,
+                publication_guard=publication_guard,
             )
             for path in selected
         ]
@@ -347,7 +439,13 @@ def build_payload(
         "overall_status": "ready" if ok else "blocked",
         "mode": "transparent_cold_sqlite_compression",
         "compressor": compressor,
-        "maximum_file_bytes": MAX_NATIVE_FILE_BYTES,
+        "requested_max_raw_gb": requested_max_raw_gb,
+        "effective_max_raw_gb": max_raw_gb,
+        "maximum_file_bytes": (
+            streaming.MAX_FILE_BYTES
+            if compressor == "applesauce"
+            else MAX_NATIVE_FILE_BYTES
+        ),
         "selected_paths": [str(path) for path in selected],
         "selected_logical_bytes": total,
         "actions": actions,

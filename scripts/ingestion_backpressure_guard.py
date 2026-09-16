@@ -1,10 +1,17 @@
 import argparse
 import json
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from link_jsonl_to_sql import discover_jsonl_files
+from link_jsonl_to_sql import (
+    INGESTION_CONTROL_PREFIXES,
+    _derive_start_cursor,
+    _load_journal_resume_progress,
+    discover_jsonl_files,
+)
+from scripts.ops.long_runtime_common import write_payload
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -15,9 +22,10 @@ def _env_int(name: str, default: int, *, minimum: int = 1, maximum: int = 100) -
     except Exception:
         value = int(default)
     return max(min(value, int(maximum)), int(minimum))
+
+
 IGNORED_BACKPRESSURE_PREFIXES = (
-    "governance/health/jsonl_ingest_batch_journal",
-    "governance/events/jsonl_ingest_batches_",
+    *INGESTION_CONTROL_PREFIXES,
     "governance/training/raw_training_source_queue_latest.jsonl",
     "governance/training/raw_training_eligible_source_queue_latest.jsonl",
     "governance/evidence/canary_rollout_observations.jsonl",
@@ -341,69 +349,48 @@ def _parse_iso_utc(raw: object) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def _load_journal_progress(project_root: Path) -> tuple[dict[str, dict], list[str]]:
+def _load_journal_progress(
+    project_root: Path, *, scan_detail: dict | None = None
+) -> tuple[dict[str, dict], list[str]]:
     health_root = project_root / "governance" / "health"
     journal_files = sorted(p for p in health_root.glob(JOURNAL_GLOB) if p.is_file())
     merged: dict[str, dict] = {}
     sources: list[str] = []
+    scans: list[dict] = []
     for path in journal_files:
         sources.append(str(path))
         try:
-            handle = path.open(encoding="utf-8")
-        except Exception:
+            entries, detail = _load_journal_resume_progress(
+                path,
+                index_path=path.with_name(f"{path.name}.backpressure_index.json"),
+                max_scan_bytes=0,
+            )
+        except OSError:
             continue
-        with handle:
-            for raw in handle:
-                line = str(raw or "").strip()
-                if not line:
-                    continue
-                try:
-                    payload = json.loads(line)
-                except Exception:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                if str(payload.get("event") or "") not in JOURNAL_RECONCILE_EVENTS:
-                    continue
-                rel = str(payload.get("source_rel") or "").strip()
-                if not rel:
-                    continue
-                last_line = int(float(payload.get("last_line", 0) or 0))
-                last_offset = int(float(payload.get("last_offset_bytes", 0) or 0))
-                if last_line <= 0:
-                    continue
-                current = merged.get(rel, {})
-                current_line = (
-                    int(float(current.get("last_line", 0) or 0))
-                    if isinstance(current, dict)
-                    else 0
-                )
-                current_offset = (
-                    int(float(current.get("last_offset_bytes", 0) or 0))
-                    if isinstance(current, dict)
-                    else 0
-                )
-                if last_line < current_line:
-                    continue
-                if last_line == current_line and last_offset <= current_offset:
-                    continue
-                ts = _parse_iso_utc(payload.get("timestamp_utc"))
-                merged[rel] = {
-                    "last_line": last_line,
-                    "last_offset_bytes": last_offset,
-                    "file_inode": int(float(payload.get("file_inode", 0) or 0)),
-                    "file_size_bytes": int(
-                        float(payload.get("file_size_bytes", 0) or 0)
-                    ),
-                    "source_file_identity": str(
-                        payload.get("source_file_identity") or ""
-                    ),
-                    "journal_timestamp_utc": str(payload.get("timestamp_utc") or ""),
-                    "journal_timestamp_epoch": (
-                        ts.timestamp() if ts is not None else 0.0
-                    ),
-                    "journal_source": str(path),
-                }
+        scans.append(detail)
+        for rel, payload in entries.items():
+            last_line = int(payload.get("last_line", 0) or 0)
+            last_offset = int(payload.get("last_offset_bytes", 0) or 0)
+            current = merged.get(rel, {})
+            if last_line <= 0 or (last_line, last_offset) <= (
+                int(current.get("last_line", 0)),
+                int(current.get("last_offset_bytes", 0)),
+            ):
+                continue
+            ts = _parse_iso_utc(payload.get("timestamp_utc"))
+            merged[rel] = {
+                **payload,
+                "journal_timestamp_utc": str(payload.get("timestamp_utc") or ""),
+                "journal_timestamp_epoch": ts.timestamp() if ts is not None else 0.0,
+                "journal_source": str(path),
+            }
+    if scan_detail is not None:
+        scan_detail.update(
+            scanned_bytes=sum(row["scanned_bytes"] for row in scans),
+            reused_indexes=sum(bool(row["index_reused"]) for row in scans),
+            journal_count=len(journal_files),
+            policy="observer_owned_append_checkpoint_cache_full_cold_scan",
+        )
     return merged, sources
 
 
@@ -492,6 +479,25 @@ def _journal_reconciled_last_line(
     return journal_last_line, True
 
 
+def _checkpoint_service_age_seconds(stat, progress: dict, now_ts: float) -> float:
+    # Scheduling age only: a new append must not disguise an unserved tail.
+    try:
+        line, offset, reset = _derive_start_cursor(progress, stat)
+        observed = float(progress.get("mtime", 0) or 0)
+        if (
+            reset
+            or line <= 0
+            or not 0 < offset < stat.st_size
+            or int(progress.get("file_inode", 0) or 0) != stat.st_ino
+            or not math.isfinite(observed)
+            or not 0 < observed <= now_ts
+        ):
+            return 0.0
+        return round(now_ts - observed, 3)
+    except (TypeError, ValueError, OverflowError, AttributeError):
+        return 0.0
+
+
 def _record_top_pending(
     rows: list[dict],
     *,
@@ -513,6 +519,9 @@ def _record_top_pending(
         "last_line": int(last_line),
     }
     if isinstance(line_estimate, dict) and line_estimate:
+        row["checkpoint_service_age_seconds"] = line_estimate.get(
+            "checkpoint_service_age_seconds", 0.0
+        )
         file_size_bytes = int(float(line_estimate.get("file_size_bytes", 0) or 0))
         row.update(
             {
@@ -620,8 +629,8 @@ def main() -> int:
     )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--state-file", default=None)
-    parser.add_argument("--max-files", type=int, default=200)
-    parser.add_argument("--max-exact-count-bytes", type=int, default=64 * 1024 * 1024)
+    parser.add_argument("--max-files", type=int, default=512)
+    parser.add_argument("--max-exact-count-bytes", type=int, default=8 * 1024 * 1024)
     parser.add_argument("--sample-bytes", type=int, default=256 * 1024)
     parser.add_argument("--pending-lines-threshold", type=int, default=15000)
     parser.add_argument("--pending-files-threshold", type=int, default=45)
@@ -636,7 +645,7 @@ def main() -> int:
     parser.add_argument(
         "--top-pending-files",
         type=int,
-        default=_env_int("INGEST_TOP_PENDING_FILES", 24),
+        default=_env_int("INGEST_TOP_PENDING_FILES", 512),
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -645,7 +654,10 @@ def main() -> int:
     sqlite_state, state_files, state_mode = _resolve_sqlite_state(
         project_root, args.state_file
     )
-    journal_progress, journal_sources = _load_journal_progress(project_root)
+    journal_scan: dict = {}
+    journal_progress, journal_sources = _load_journal_progress(
+        project_root, scan_detail=journal_scan
+    )
 
     files, scan_selection = _select_backpressure_scan_files(
         discover_jsonl_files(project_root),
@@ -724,6 +736,10 @@ def main() -> int:
         pending_lines = max(int(total) - int(last_line), 0)
         if pending_lines <= 0:
             continue
+        line_estimate["checkpoint_service_age_seconds"] = (
+            _checkpoint_service_age_seconds(st, progress, now_ts)
+            if not journal_reconciled else 0.0
+        )
         if bool(line_estimate.get("sparse_large_line", False)):
             sparse_large_line_files += 1
             sparse_large_line_pending_lines += int(pending_lines)
@@ -912,6 +928,7 @@ def main() -> int:
         "state_files": list(state_files),
         "state_mode": state_mode,
         "journal_sources": list(journal_sources),
+        "journal_progress_scan": journal_scan,
         "pending_lines": int(pending_core),
         "pending_files": int(file_count_core),
         "pending_lines_total": int(pending_core + pending_deferred),
@@ -1016,9 +1033,7 @@ def main() -> int:
         ),
     }
 
-    out_parent = out.parent.resolve() if out.parent.exists() else out.parent
-    out_parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(out, payload)
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

@@ -206,11 +206,16 @@ def test_control_build_is_path_isolated_and_does_not_write(tmp_path: Path) -> No
     assert health["hierarchy_contract"]["bot_setup_hardening_ready"] is True
     assert hierarchy["bot_setup_summary"]["hardening"]["overall_status"] == "ready"
     assert hierarchy["assignment_count"] == 1
+    assert health["status_label_audit"]["coverage_complete"]
+    assert hierarchy["assignments"][0]["status_labels"]["registry"] == "declared_active"
+    assert hierarchy["assignments"][0]["status_labels"]["runtime"] == "not_assessed_by_definition_audit"
     assert not hierarchy_out.exists()
 
 
 def test_repository_registry_is_fully_organized() -> None:
     health, hierarchy = bot_organization_control.build_payload(PROJECT_ROOT)
+    assert health["status_label_audit"]["coverage_complete"]
+    assert health["status_label_audit"]["labeled_count"] == health["registry_bot_count"]
 
     assert health["ok"] is True
     assert health["structural_grade"] == "A+"

@@ -35,6 +35,12 @@ if [[ "${GENERATION_FILL_LEARNING_ENABLED:-1}" == "1" ]]; then
 fi
 
 export RETRAIN_ACTIVE_ONLY=1
+if [[ "${TRAINING_DATASET_EVALUATION_ENABLED:-1}" == "1" ]]; then
+  "$PROJECT_ROOT/scripts/ops/opsctl.sh" training-dataset-evaluate --prepare || {
+    echo "training_dataset_evaluation waiting_for_verified_data"
+  }
+fi
+
 export RETRAIN_MAX_TARGETS=0
 export RETRAIN_MIN_MODEL_AGE_HOURS=0
 export RETRAIN_PROFILE="${RETRAIN_PROFILE:-full_overnight}"

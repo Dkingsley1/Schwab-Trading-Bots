@@ -1824,8 +1824,25 @@ def _materialize_working_subset(
     pnl_like: str,
     watchdog_like: str,
 ) -> int:
-    # Build a temp subset table named jsonl_records so all downstream queries stay unchanged.
-    # This dramatically reduces runtime on very large main tables.
+    # Project the large master-control documents once. Keep every row and every
+    # field used by this report; decisions, PnL, watchdogs and source data stay intact.
+    governance_projection = """
+        CASE WHEN source_rel LIKE ?
+          AND source_rel NOT LIKE ? AND source_rel NOT LIKE ? AND source_rel NOT LIKE ?
+        THEN json_object(
+            'timestamp_utc', json_extract(payload_json, '$.timestamp_utc'),
+            'options_plan', json_object(
+                'options_style', json_extract(payload_json, '$.options_plan.options_style'),
+                'contracts', json_extract(payload_json, '$.options_plan.contracts')),
+            'futures_plan', json_object(
+                'futures_style', json_extract(payload_json, '$.futures_plan.futures_style')),
+            'options_master', json_object(
+                'action', json_extract(payload_json, '$.options_master.action')),
+            'active_futures_sub_bots', json_extract(payload_json, '$.active_futures_sub_bots'),
+            'active_options_sub_bots', json_extract(payload_json, '$.active_options_sub_bots'))
+        ELSE payload_json END
+    """
+    projection_params = (governance_like, decision_like, pnl_like, watchdog_like)
     conn.execute("DROP TABLE IF EXISTS temp.jsonl_records")
     conn.execute(
         """
@@ -1836,7 +1853,8 @@ def _materialize_working_subset(
             line_no INTEGER,
             ingested_at TEXT,
             payload_sha1 TEXT,
-            payload_json TEXT
+            payload_json TEXT,
+            payload_contains_canary INTEGER
         )
         """
     )
@@ -1849,25 +1867,29 @@ def _materialize_working_subset(
             conn.execute(
                 f"""
                 INSERT INTO temp.jsonl_records (
-                    id, source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json
+                    id, source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json,
+                    payload_contains_canary
                 )
                 SELECT
-                    id, source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json
+                    id, source_file, source_rel, line_no, ingested_at, payload_sha1,
+                    {governance_projection}, payload_json LIKE '%canary%'
                 FROM main.jsonl_records
                 WHERE source_rel IN ({placeholders})
                 """,
-                tuple(chunk),
+                projection_params + tuple(chunk),
             )
         inserted = _safe_int(conn.execute("SELECT COUNT(*) FROM temp.jsonl_records").fetchone()[0], 0)
 
     if inserted == 0:
         conn.execute(
-            """
+            f"""
             INSERT INTO temp.jsonl_records (
-                id, source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json
+                id, source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json,
+                payload_contains_canary
             )
             SELECT
-                id, source_file, source_rel, line_no, ingested_at, payload_sha1, payload_json
+                id, source_file, source_rel, line_no, ingested_at, payload_sha1,
+                {governance_projection}, payload_json LIKE '%canary%'
             FROM main.jsonl_records
             WHERE source_rel LIKE ?
                OR source_rel LIKE ?
@@ -1875,7 +1897,7 @@ def _materialize_working_subset(
                OR source_rel LIKE ?
                OR source_rel='governance/health/preopen_replay_drift_history.jsonl'
             """,
-            (decision_like, governance_like, pnl_like, watchdog_like),
+            projection_params + (decision_like, governance_like, pnl_like, watchdog_like),
         )
         inserted = _safe_int(conn.execute("SELECT COUNT(*) FROM temp.jsonl_records").fetchone()[0], 0)
 
@@ -2992,6 +3014,7 @@ def main() -> int:
             pass
         return 0
 
+    _emit_progress("one_numbers working_subset=building_compact_governance")
     working_subset_rows = _materialize_working_subset(
         conn,
         source_rel_values=(
@@ -3392,6 +3415,7 @@ def main() -> int:
     if governance_total_rows <= 0 or _timestamp_age_seconds(sqlite_last_governance_ts, now_utc=now_utc) > int(
         overlay_policy["governance_grace_seconds"]
     ):
+        _emit_progress("one_numbers raw_governance=reading_full_evidence")
         raw_governance = _raw_governance_snapshot(PROJECT_ROOT, day, cutoff_utc=cutoff_4h_utc)
         raw_governance_row_count = _safe_int(raw_governance.get("row_count"), 0)
         raw_governance_source_files = _safe_int(raw_governance.get("source_file_count"), 0)
@@ -3560,7 +3584,7 @@ def main() -> int:
             SELECT COUNT(*)
             FROM jsonl_records
             WHERE source_rel LIKE ?
-              AND payload_json LIKE '%canary%'
+              AND payload_contains_canary=1
             """,
             (governance_like,),
         ),

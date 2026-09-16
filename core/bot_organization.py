@@ -10,6 +10,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from core.bot_definition_contracts import safe_project_file, validate_definition_policy
 from core.operating_contracts import build_operating_contract
 from core.regime_taxonomy import (
     build_regime_metadata_access,
@@ -230,6 +231,9 @@ def _validate_tripwire_contract(policy: Mapping[str, Any]) -> list[str]:
 
 def validate_policy(policy: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
+    errors.extend(
+        validate_definition_policy(_as_dict(policy.get("definition_audit_contract")))
+    )
     hierarchy = _as_dict(policy.get("hierarchy"))
     classification = _as_dict(policy.get("classification"))
     resources = _as_dict(policy.get("resource_budgets"))
@@ -481,12 +485,15 @@ def load_literal_bot_spec(
 def _module_path(
     project_root: Path, bot_id: str, catalog_row: Mapping[str, Any]
 ) -> Path | None:
-    exact = project_root / "core" / f"{bot_id}.py"
-    if exact.is_file():
+    exact = (
+        safe_project_file(project_root, f"core/{bot_id}.py")
+        if re.fullmatch(r"[A-Za-z0-9_]+", bot_id)
+        else None
+    )
+    if exact is not None:
         return exact
     raw = str(catalog_row.get("core_file") or "").strip()
-    candidate = project_root / raw
-    return candidate if raw and candidate.is_file() else None
+    return safe_project_file(project_root, raw)
 
 
 def _field_value(

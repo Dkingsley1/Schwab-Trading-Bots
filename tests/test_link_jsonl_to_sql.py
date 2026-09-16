@@ -17,6 +17,59 @@ SPEC.loader.exec_module(MODULE)
 
 
 class LinkJsonlToSqlTests(unittest.TestCase):
+    def test_count_lines_preserves_exact_line_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "source.jsonl"
+            for content, expected in ((b"", 0), (b"one", 1), (b"one\n", 1),
+                                      (b"one\r\n\nlast", 3),
+                                      (b"x" * (2 * 1024 * 1024) + b"\nlast", 2)):
+                path.write_bytes(content)
+                self.assertEqual(MODULE._count_lines(path), expected)
+
+    def test_count_lines_reads_only_validated_cursor_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "source.jsonl"
+            prefix = b"x" * (2 * 1024 * 1024) + b"\n"
+            path.write_bytes(prefix + b"new\nlast")
+            with path.open("rb") as source:
+                tracked = mock.MagicMock(wraps=source)
+                tracked.__enter__.return_value = tracked
+                with mock.patch.object(MODULE, "open", return_value=tracked, create=True):
+                    self.assertEqual(MODULE._count_lines(
+                        path, start_line=1, start_offset_bytes=len(prefix)
+                    ), 3)
+                self.assertEqual(tracked.read.call_args_list, [mock.call(1), mock.call(8)])
+                self.assertEqual(tracked.seek.call_args_list,
+                                 [mock.call(len(prefix) - 1), mock.call(len(prefix))])
+
+    def test_count_lines_falls_back_for_legacy_or_nonboundary_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "source.jsonl"
+            path.write_bytes(b"one\ntwo\nlast")
+            for line, offset in ((1, 0), (1, 2), (9, 99), (-1, 4)):
+                self.assertEqual(MODULE._count_lines(
+                    path, start_line=line, start_offset_bytes=offset
+                ), 3)
+
+    def test_count_lines_uses_reset_cursor_after_rotation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "source.jsonl"
+            path.write_bytes(b"new\n")
+            stat = path.stat()
+            line, offset, reason = MODULE._derive_start_cursor(
+                {"last_line": 8000, "last_offset_bytes": 100000,
+                 "file_inode": stat.st_ino + 1}, stat,
+            )
+            self.assertEqual(reason, "inode_changed")
+            self.assertEqual(MODULE._count_lines(
+                path, start_line=line, start_offset_bytes=offset
+            ), 1)
+
+    def test_count_lines_does_not_certify_unreadable_source_as_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(OSError):
+                MODULE._count_lines(Path(td) / "missing.jsonl")
+
     def test_ingest_cooldown_yields_when_host_load_exceeds_cap(self) -> None:
         sleeps: list[float] = []
         with mock.patch.object(MODULE.os, "getloadavg", return_value=(9.5, 7.0, 6.0)):

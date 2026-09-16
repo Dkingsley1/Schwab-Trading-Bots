@@ -36,6 +36,7 @@ CONTROL_ENV_KEYS = {
     "PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED",
     "PAPER_EXECUTION_RUNTIME_NICE",
     "PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE",
+    "PAPER_EXECUTION_RUNTIME_PAUSE_REASON",
     "PAPER_EXECUTION_RUNTIME_PAUSED_FOR_LOCAL_STORAGE",
     "PAPER_RECONCILIATION_HEARTBEAT_WHEN_PAUSED",
     "PAPER_RECONCILIATION_HEARTBEAT_SECONDS",
@@ -683,6 +684,20 @@ def _paper_execution_paused_for_runtime() -> bool:
     )
 
 
+def _paper_runtime_pause_reason() -> str:
+    # Called after the control snapshot is loaded; this changes diagnosis, not admission.
+    if _env_flag("PAPER_EXECUTION_RUNTIME_PAUSED_FOR_LOCAL_STORAGE", "0"):
+        return "paper_execution_paused_for_local_storage"
+    declared = _control_env_value("PAPER_EXECUTION_RUNTIME_PAUSE_REASON", "").strip()
+    if declared and _env_flag("PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE", "0"):
+        return declared
+    if _env_flag("PAPER_400_RAMP_BLOCKED_RUNTIME_PAUSE", "0"):
+        return "paper_execution_paused_for_paper_ramp"
+    if _env_flag("PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE", "0"):
+        return "paper_execution_paused_for_runtime_pressure"
+    return "paper_execution_queue_consumer_disabled"
+
+
 def _build_trader(mode: str, broker: str) -> tuple[BaseTrader, bool, str]:
     trader = BaseTrader.from_env(mode=mode, broker=broker)
     configure_trader_for_lane(trader, mode)
@@ -878,10 +893,11 @@ def main() -> int:
     paper_runtime_hold_reported = False
 
     if args.mode == "paper" and _paper_execution_paused_for_runtime():
-        pause_reason = "paper_execution_paused_for_runtime_pressure"
+        pause_reason = _paper_runtime_pause_reason()
         print(f"[ExecutionLane] paper paused: {pause_reason}")
         trader, auth_ok, auth_error = _build_trader(args.mode, broker)
         while _paper_execution_paused_for_runtime():
+            pause_reason = _paper_runtime_pause_reason()
             if trader is not None and _env_flag(
                 "PAPER_RECONCILIATION_HEARTBEAT_WHEN_PAUSED", "1"
             ):
@@ -1021,7 +1037,7 @@ def main() -> int:
                     queue_db_override=args.queue_db,
                     auth_ok=bool(auth_ok),
                     auth_error=(auth_error if not auth_ok else ""),
-                    hold_reason="paper_execution_paused_for_runtime_pressure",
+                    hold_reason=_paper_runtime_pause_reason(),
                 )
                 last_lane_health_update = time.monotonic()
             if args.once:

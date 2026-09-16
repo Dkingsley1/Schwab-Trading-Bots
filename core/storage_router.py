@@ -87,7 +87,12 @@ def _resolve_link_target(link_path: Path) -> Path | None:
     return _normalized_path_no_io(target)
 
 
-def inspect_storage_path(path: Path | str) -> dict[str, object]:
+def inspect_storage_path(
+    path: Path | str,
+    *,
+    boundary_root: Path | str | None = None,
+    allow_external: bool = True,
+) -> dict[str, object]:
     """Inspect one route, stopping before any metadata access to protected storage.
 
     This is a bounded, point-in-time observation, not a writer lease, integrity
@@ -97,6 +102,20 @@ def inspect_storage_path(path: Path | str) -> dict[str, object]:
     original = Path(path).expanduser()
     if not original.is_absolute():
         original = Path.cwd() / original
+    boundary = _normalized_path_no_io(boundary_root) if boundary_root is not None else None
+
+    def rejection(candidate: Path, *, final: bool = False) -> str:
+        normalized = _normalized_path_no_io(candidate)
+        text = str(normalized).casefold()
+        if text == "/volumes/video" or text.startswith("/volumes/video/"):
+            return "protected_path"
+        if not allow_external and (text == "/volumes" or text.startswith("/volumes/")):
+            return "external_path"
+        if boundary is not None and not normalized.is_relative_to(boundary):
+            if final or not boundary.is_relative_to(normalized):
+                return "boundary_escape"
+        return ""
+
     pending = deque(original.parts[1:])
     current = Path("/")
     links: list[dict[str, str]] = []
@@ -115,9 +134,9 @@ def inspect_storage_path(path: Path | str) -> dict[str, object]:
                 current = current.parent
                 continue
             candidate = current / part
-            candidate_text = str(candidate).casefold()
-            if candidate_text == "/volumes/video" or candidate_text.startswith("/volumes/video/"):
-                result.update(status="protected_path", resolved_path=str(candidate))
+            denied = rejection(candidate)
+            if denied:
+                result.update(status=denied, resolved_path=str(candidate))
                 return result
             info = candidate.lstat()
             if stat.S_ISLNK(info.st_mode):
@@ -135,6 +154,10 @@ def inspect_storage_path(path: Path | str) -> dict[str, object]:
                 if pending and not stat.S_ISDIR(info.st_mode):
                     raise NotADirectoryError(str(candidate))
                 current = candidate
+        denied = rejection(current, final=True)
+        if denied:
+            result.update(status=denied, resolved_path=str(current))
+            return result
         info = current.lstat()
         result.update(
             status="present",
@@ -143,10 +166,17 @@ def inspect_storage_path(path: Path | str) -> dict[str, object]:
             size_bytes=info.st_size if stat.S_ISREG(info.st_mode) else None,
         )
     except FileNotFoundError:
-        result.update(status="missing", resolved_path=str(candidate.joinpath(*pending)))
+        missing = candidate.joinpath(*pending)
+        result.update(status=rejection(missing, final=True) or "missing", resolved_path=str(missing))
     except OSError as exc:
         result.update(error_type=type(exc).__name__, resolved_path=str(current))
     return result
+
+
+def _require_local_fallback_path(path: Path, local_root: Path) -> None:
+    route = inspect_storage_path(path, boundary_root=local_root, allow_external=False)
+    if route["status"] not in {"present", "missing"}:
+        raise RuntimeError(f"local_fallback_route_rejected:{json.dumps(route, sort_keys=True)}")
 
 
 def _is_writable_directory(path: Path) -> bool:
@@ -585,8 +615,15 @@ def _reconcile_nested_sqlite_routes(
     skipped: list[str] = []
     for rel in NESTED_SQLITE_ROUTE_RELS:
         repo_path = project_root / rel
+        primary_rel = rel.removesuffix("-wal").removesuffix("-shm")
+        primary_repo = project_root / primary_rel
+        # A passthrough database owns its sidecars; routing them independently
+        # splits SQLite's journal from its database and prevents connections.
+        if not primary_repo.is_symlink() and primary_repo.exists():
+            skipped.append(f"nested_sqlite_passthrough:{rel}")
+            continue
         target = active_root / rel
-        primary_target = active_root / rel.removesuffix("-wal").removesuffix("-shm")
+        primary_target = active_root / primary_rel
         target_available = bool(target.exists() or primary_target.exists())
         if not target_available:
             skipped.append(f"nested_sqlite_skipped:{rel}")
@@ -611,7 +648,7 @@ def _reconcile_nested_local_routes(project_root: Path, local_root: Path) -> tupl
     skipped: list[str] = []
     for root_name in NESTED_LOCAL_ROUTE_ROOTS:
         scan_root = project_root / root_name
-        if not scan_root.is_dir() or scan_root.is_symlink():
+        if scan_root.is_symlink() or not scan_root.is_dir():
             continue
         for current_root, dir_names, file_names in os.walk(scan_root, followlinks=False):
             current = Path(current_root)
@@ -626,7 +663,13 @@ def _reconcile_nested_local_routes(project_root: Path, local_root: Path) -> tupl
                 if any(marker in rel_text for marker in NESTED_LOCAL_ROUTE_SKIP_MARKERS):
                     skipped.append(f"nested_local_route_backup_skipped:{rel_text}")
                     continue
+                if rel_text in NESTED_SQLITE_ROUTE_RELS:
+                    primary = project_root / rel_text.removesuffix("-wal").removesuffix("-shm")
+                    if not primary.is_symlink() and primary.exists():
+                        skipped.append(f"nested_sqlite_passthrough:{rel_text}")
+                        continue
                 target = local_root / rel
+                _require_local_fallback_path(target, local_root)
                 if name in symlink_dirs:
                     target.mkdir(parents=True, exist_ok=True)
                 elif not target.exists():
@@ -781,6 +824,12 @@ def route_runtime_storage(
                 mode = "local_fallback_split_brain"
                 active_root = local_root
 
+    if mode.startswith("local_fallback"):
+        # Validate every fallback destination before the first mkdir or relink.
+        _require_local_fallback_path(local_root, local_root)
+        for rel in (*link_dirs_tuple, *NESTED_SQLITE_ROUTE_RELS):
+            _require_local_fallback_path(local_root / str(rel).strip().strip("/"), local_root)
+
     if not _is_writable_directory(active_root):
         raise RuntimeError(f"active storage root is not writable: {active_root}")
 
@@ -790,6 +839,8 @@ def route_runtime_storage(
             continue
         path_in_repo = root / name
         target = active_root / name
+        if mode.startswith("local_fallback"):
+            _require_local_fallback_path(target, local_root)
         target.mkdir(parents=True, exist_ok=True)
 
         if path_in_repo.is_symlink():

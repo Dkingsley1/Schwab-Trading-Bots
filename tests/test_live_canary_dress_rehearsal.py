@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pytest
+
+from scripts.ops import live_canary_dress_rehearsal as rehearsal
 
 from scripts.ops.live_canary_dress_rehearsal import (
     READ_ONLY_ENVIRONMENT,
@@ -303,3 +310,158 @@ def test_rehearsal_forces_every_live_runtime_switch_off() -> None:
         "EXECUTION_LANE_LIVE_ENABLED": "0",
         "RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR": "0",
     }
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "exit", "timeout", "stale", "future", "unchanged"]
+)
+def test_technical_refresh_requires_new_owner_evidence(tmp_path, monkeypatch, failure):
+    monkeypatch.setattr(rehearsal, "PROJECT_ROOT", tmp_path)
+    health = tmp_path / "governance/health"
+    health.mkdir(parents=True)
+    names = {
+        "schwab-tax-ledger-refresh": "schwab_tax_ledger_refresh_latest.json",
+        "release-freeze": "release_freeze_guard_latest.json",
+        "live-order-ledger": "live_order_ledger_control_latest.json",
+    }
+    old = {
+        "timestamp_utc": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+        "ok": True,
+    }
+    for filename in names.values():
+        (health / filename).write_text(json.dumps(old))
+    calls = []
+
+    def run(command, **kwargs):
+        name = command[1]
+        calls.append(name)
+        assert command[2:] == ["--json"]
+        assert kwargs["timeout"] <= 180
+        assert kwargs["env"]["SCHWAB_AUTH_INTERACTIVE"] == "0"
+        for key, value in READ_ONLY_ENVIRONMENT.items():
+            assert kwargs["env"][key] == value
+        if name == "schwab-tax-ledger-refresh" and failure == "timeout":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        observed = datetime.now(timezone.utc)
+        if name == "schwab-tax-ledger-refresh":
+            if failure == "stale":
+                observed -= timedelta(days=1)
+            if failure == "future":
+                observed += timedelta(days=1)
+        if name != "schwab-tax-ledger-refresh" or failure != "unchanged":
+            (health / names[name]).write_text(
+                json.dumps(
+                    {
+                        "timestamp_utc": observed.isoformat(),
+                        "ok": name != "release-freeze",
+                        "overall_status": (
+                            "degraded" if name == "release-freeze" else "ready"
+                        ),
+                    }
+                )
+            )
+        return SimpleNamespace(
+            returncode=(
+                2 if name == "schwab-tax-ledger-refresh" and failure == "exit" else 0
+            )
+        )
+
+    monkeypatch.setattr(rehearsal.subprocess, "run", run)
+    payload = rehearsal._refresh_technical_evidence()
+    assert calls == list(names)
+    assert payload["ok"] is (failure is None)
+    assert payload["steps"][1]["refreshed"] is True
+    assert payload["steps"][1]["source_ok"] is False
+    assert payload["live_execution_authority"] is False
+    if failure:
+        assert payload["blockers"] == ["technical_evidence_refresh_failed:tax_ledger"]
+
+
+def test_technical_refresh_rejects_redirected_route_before_read_or_launch(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(rehearsal, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        rehearsal,
+        "inspect_storage_path",
+        lambda *args, **kwargs: {"status": "external_path"},
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("must not access a rejected route")
+
+    monkeypatch.setattr(rehearsal, "file_sha256", forbidden)
+    monkeypatch.setattr(rehearsal.subprocess, "run", forbidden)
+    assert rehearsal._refresh_technical_evidence()["ok"] is False
+
+
+def test_refresh_failure_cannot_reuse_a_ready_preflight(tmp_path, monkeypatch):
+    sequence = []
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "prior-value")
+
+    def technical_refresh():
+        sequence.append("technical")
+        assert os.environ["ALLOW_ORDER_EXECUTION"] == "0"
+        return {
+            "ok": False,
+            "blockers": ["technical_evidence_refresh_failed:tax_ledger"],
+        }
+
+    def account_refresh(**kwargs):
+        sequence.append("account")
+        return {"ok": True}
+
+    class ReadOnlyTrader:
+        def _fetch_live_quote(self, **kwargs):
+            sequence.append("quote")
+            return {}
+
+    captured = {}
+
+    def build(**kwargs):
+        receipt = kwargs["preflight_receipt"]
+        captured.update(receipt)
+        return {
+            "ok": True,
+            "canary_ready": receipt["ready"],
+            "blockers": receipt["blockers"],
+        }
+
+    monkeypatch.setattr(rehearsal, "_refresh_technical_evidence", technical_refresh)
+    monkeypatch.setattr(rehearsal, "_refresh_account_study", account_refresh)
+    monkeypatch.setattr(rehearsal, "_load_json", lambda path: {})
+    monkeypatch.setattr(
+        rehearsal,
+        "_resolve_account_references",
+        lambda **kwargs: ("test", "test", "test"),
+    )
+    monkeypatch.setattr(
+        rehearsal, "build_schwab_trader", lambda *args, **kwargs: ReadOnlyTrader()
+    )
+    monkeypatch.setattr(rehearsal, "_quiet_auth", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        rehearsal,
+        "evaluate_live_canary_preflight",
+        lambda *args, **kwargs: {
+            "ready": True,
+            "blockers": [],
+            "receipt_sha256": "old",
+        },
+    )
+    monkeypatch.setattr(rehearsal, "file_sha256", lambda path: "test")
+    monkeypatch.setattr(rehearsal, "build_dress_rehearsal_payload", build)
+    monkeypatch.setattr(
+        rehearsal, "safe_write_json_atomic", lambda *args, **kwargs: None
+    )
+    payload = rehearsal.run(
+        symbol="SCHD",
+        refresh_account=True,
+        quiet_auth=True,
+        out_path=tmp_path / "result.json",
+    )
+    assert sequence == ["technical", "account", "quote"]
+    assert payload["canary_ready"] is False
+    assert payload["blockers"] == ["technical_evidence_refresh_failed:tax_ledger"]
+    digest = captured.pop("receipt_sha256")
+    assert digest == rehearsal._payload_sha256(captured)
+    assert os.environ["ALLOW_ORDER_EXECUTION"] == "prior-value"

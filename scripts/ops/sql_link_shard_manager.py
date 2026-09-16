@@ -26,7 +26,10 @@ from core.runtime_maintenance import (
 )
 from core.runtime_python import resolve_runtime_python
 from core.sqlite_runtime import connect_sqlite, resolve_sqlite_runtime_settings
+from core.storage_router import inspect_storage_path
 from scripts import ops_data_plane
+from scripts.ops.sql_writer_lock_path import configured_sql_writer_lock_path
+from scripts.ops.sql_writer_admission import defer_storage_writer, storage_admission
 
 
 def _resolve_child_python() -> Path:
@@ -689,6 +692,7 @@ DEFAULT_SHARD_DEFS = {
         "include_streams": "data,external_context,external_feeds,feature_store,event_store",
         "path_contains": (
             "data/external_context/,"
+            "data/jsonl_link_archives/cold_archive_compaction_manifest.jsonl,"
             "exports/external_context/,"
             "exports/external_feeds/,"
             "governance/feature_store/,"
@@ -846,7 +850,15 @@ def _retention_safety_contract(
     }
 
 
+def _once_inline_retention_enabled(args: argparse.Namespace) -> bool:
+    if not bool(getattr(args, "once", False)):
+        return True
+    return _env_flag("SQL_LINK_SERVICE_ONCE_INLINE_RETENTION", False)
+
+
 def _hot_retention_vacuum_requested(db_path: Path, threshold_gb: float) -> bool:
+    if _env_flag("SQL_LINK_SERVICE_BOUNDED_STORAGE_RETENTION", False):
+        return False
     try:
         physical_gb = db_path.stat().st_size / float(1024**3)
     except OSError:
@@ -1717,6 +1729,29 @@ def _connect_primary_db(
     primary_db: Path, sqlite_timeout_seconds: int
 ) -> sqlite3.Connection:
     try:
+        # Detect malformed headers/schema read-only, before writable-open cleanup
+        # can discard journal evidence that the recovery owner must quarantine.
+        route = inspect_storage_path(primary_db)
+        if route["status"] not in {"present", "missing"}:
+            raise PermissionError(f"sqlite_route_rejected:{route['status']}")
+        if route["status"] == "present":
+            # Even mode=ro may rebuild SHM. Reject a malformed header before SQLite
+            # opens the family, so recovery retains the original sidecar bytes.
+            with Path(str(route["resolved_path"])).open("rb") as handle:
+                header = handle.read(16)
+            if header and header != b"SQLite format 3\x00":
+                raise sqlite3.DatabaseError("file is not a database")
+            probe = connect_sqlite(
+                primary_db,
+                project_root=PROJECT_ROOT,
+                timeout_seconds=max(float(sqlite_timeout_seconds), 0.0),
+                readonly=True,
+                query_only=True,
+            )
+            try:
+                probe.execute("PRAGMA schema_version").fetchone()
+            finally:
+                probe.close()
         return connect_sqlite(
             primary_db,
             project_root=PROJECT_ROOT,
@@ -1766,6 +1801,7 @@ def _write_service_progress(
         str((row or {}).get("shard", ""))
         for row in (shard_results or [])
         if str((row or {}).get("shard", "")).strip()
+        and not bool((row or {}).get("storage_deferred", False))
     ]
     timed_out_names = [
         str((row or {}).get("shard", ""))
@@ -1792,7 +1828,11 @@ def _write_service_progress(
     )
     payload = {
         "timestamp_utc": _now_utc(),
-        "status": ("running" if running else ("ok" if ok else "error")),
+        "status": (
+            "deferred"
+            if current_step == "storage_deferred"
+            else ("running" if running else ("ok" if ok else "error"))
+        ),
         "ok": bool(ok),
         "running": bool(running),
         "cycle_started_utc": str(cycle_started_utc or ""),
@@ -1813,7 +1853,7 @@ def _write_service_progress(
         "active_shard_count": len(active_links),
         "max_active_shard_elapsed_seconds": round(float(max_active_elapsed_seconds), 3),
         "planned_shard_count": len(planned_names),
-        "completed_shard_count": len(shard_results or []),
+        "completed_shard_count": len(completed_names),
         "pending_shard_count": len(pending_names),
         "timed_out_shard_count": len(timed_out_names),
         "completed_merge_count": len(merge_results or []),
@@ -2361,6 +2401,22 @@ def _env_float(name: str, default: float) -> float:
         return float(default)
 
 
+def _normal_shard_accepts_source(source_rel: str, shard_name: str) -> bool:
+    from scripts.link_jsonl_to_sql import _classify_stream, _matches_rel_filters
+
+    defaults = DEFAULT_SHARD_DEFS[shard_name]
+    return _matches_rel_filters(
+        source_rel=source_rel,
+        stream=_classify_stream(source_rel),
+        **{
+            key: _filter_list(defaults.get(key, ""))
+            for key in (
+                "include_streams", "exclude_streams", "path_contains", "path_not_contains"
+            )
+        },
+    )
+
+
 def _raw_live_priority_shard_for_source(source_rel: str) -> str:
     rel = str(source_rel or "").strip().lower()
     if not rel:
@@ -2377,16 +2433,21 @@ def _raw_live_priority_shard_for_source(source_rel: str) -> str:
     if rel.startswith("governance/events/channel_schema_violations_"):
         return "schema_violations"
     if rel.startswith("governance/health/"):
-        return "health_fast"
+        if _normal_shard_accepts_source(rel, "health_fast"):
+            return "health_fast"
+        return "governance" if _normal_shard_accepts_source(rel, "governance") else ""
     if rel.startswith("governance/watchdog/"):
         return "support_watchdog"
     if rel.startswith("governance/channels/risk/"):
         return "risk_support"
     if rel.startswith(("governance/channels/api/", "governance/channels/ingress/")):
         return "crypto_api_ingress" if is_crypto else "api_ingress"
-    if rel.startswith(
-        ("governance/channels/runtime/", "governance/channels/loop_state/")
-    ):
+    if rel.startswith("governance/channels/loop_state/"):
+        for owner in ("governance", "crypto_governance"):
+            if _normal_shard_accepts_source(rel, owner):
+                return owner
+        return ""
+    if rel.startswith("governance/channels/runtime/"):
         return "crypto_runtime" if is_crypto else "runtime"
     if rel.startswith("governance/events/"):
         return "governance"
@@ -2395,6 +2456,10 @@ def _raw_live_priority_shard_for_source(source_rel: str) -> str:
             "governance/cells/",
             "governance/evidence/",
             "governance/system_expansion_execution/",
+            "governance/training/",
+            "governance/walk_forward/",
+            "governance/system_intelligence/",
+            "governance/storage_recovery/",
         )
     ):
         return "governance"
@@ -2402,6 +2467,15 @@ def _raw_live_priority_shard_for_source(source_rel: str) -> str:
         return "crypto_explanations" if is_crypto else "explanations"
     if "shadow_pnl_attribution_" in rel:
         return "crypto_shadow_attribution" if is_crypto else "shadow_attribution"
+    if any(
+        token in rel
+        for token in (
+            "shadow_aggressive_",
+            "shadow_intraday_aggressive_",
+            "shadow_swing_aggressive_",
+        )
+    ):
+        return "crypto_trading" if is_crypto else "aggressive_trading"
     if (
         "paper_broker_bridge" in rel
         or rel.startswith("paper_trades_")
@@ -2421,6 +2495,8 @@ def _raw_live_priority_shard_for_source(source_rel: str) -> str:
         ):
             return "aggressive_trading"
         return "trading"
+    if rel == "data/jsonl_link_archives/cold_archive_compaction_manifest.jsonl":
+        return "data"
     if rel.startswith(
         (
             "data/external_context/",
@@ -2429,7 +2505,45 @@ def _raw_live_priority_shard_for_source(source_rel: str) -> str:
         )
     ):
         return "data"
+    if rel.startswith(
+        (
+            "governance/allocator/",
+            "governance/archive/",
+            "governance/regime/",
+            "governance/research/",
+            "governance/risk/",
+        )
+    ):
+        if _normal_shard_accepts_source(rel, "governance"):
+            return "governance"
     return ""
+
+
+def _raw_live_priority_stream_for_source(source_rel: str) -> str:
+    rel = str(source_rel or "").strip()
+    if rel.startswith("decision_explanations/"):
+        return "decision_explanations"
+    if rel.startswith("decisions/"):
+        return "decisions"
+    if rel.startswith("governance/channels/decision/"):
+        return "decisions"
+    if rel.startswith("governance/events/channel_schema_violations_"):
+        return "schema_violations"
+    if rel.startswith("governance/events/"):
+        return "governance_events"
+    if rel.startswith("governance/watchdog/"):
+        return "governance_watchdog"
+    if rel.startswith("governance/"):
+        return "governance"
+    if rel.startswith("exports/trade_logs/"):
+        return "trade_logs"
+    if rel.startswith("exports/paper_broker_bridge/"):
+        return "paper_broker_bridge"
+    if rel.startswith("paper_trades_") or rel.startswith("live_orders_"):
+        return "top_level_trade_links"
+    if rel.startswith("data/"):
+        return "data"
+    return "other"
 
 
 def _apply_raw_live_priority_focus(
@@ -2564,7 +2678,17 @@ def _apply_raw_live_priority_focus(
         contract["reason"] = "pressure_below_focus_threshold"
         return focused_shards, contract
 
+    # Reserve the bounded focus for aged tails before newer high-volume files.
+    # Otherwise a small, continually starved source can hold the age gate forever.
     candidate_rows = rows if material_pressure else aged_source_rows
+    candidate_rows = sorted(
+        candidate_rows,
+        key=lambda row: (
+            _as_float(row.get("oldest_pending_age_seconds"), 0.0) >= aged_source_seconds,
+            _as_int(row.get("pending_lines"), 0),
+        ),
+        reverse=True,
+    )
     max_sources_per_shard = max(
         min(
             _env_int("SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MAX_SOURCES_PER_SHARD", 8), 16
@@ -2585,6 +2709,50 @@ def _apply_raw_live_priority_focus(
         if len(bucket) < max_sources_per_shard:
             bucket.append({"source_rel": source_rel, "pending_lines": row_pending})
 
+    # Spend an existing slot on a small old tail while material work owns the
+    # focus. Tiny tails alone cannot activate the raw-live priority override.
+    tail_shards: set[str] = set()
+    tail_rows = list(rows)
+    # Deferred accounting must not hide small receipts already owned by governance.
+    deferred_rows = snapshot.get("top_deferred_pending_files")
+    if isinstance(deferred_rows, list):
+        tail_rows.extend(
+            row for row in deferred_rows
+            if isinstance(row, dict)
+            and (owner := _raw_live_priority_shard_for_source(str(row.get("source_rel") or "")))
+            in {"governance", "crypto_governance"}
+            and _normal_shard_accepts_source(str(row.get("source_rel") or ""), owner)
+        )
+    if max_sources_per_shard > 1:
+        for row in sorted(
+            tail_rows,
+            key=lambda item: max(
+                _as_float(item.get("oldest_pending_age_seconds"), 0.0),
+                _as_float(item.get("checkpoint_service_age_seconds"), 0.0),
+            ),
+            reverse=True,
+        ):
+            pending = _as_int(row.get("pending_lines"), 0)
+            age = max(
+                _as_float(row.get("oldest_pending_age_seconds"), 0.0),
+                _as_float(row.get("checkpoint_service_age_seconds"), 0.0),
+            )
+            source_rel = str(row.get("source_rel") or "").strip()
+            shard_name = _raw_live_priority_shard_for_source(source_rel)
+            if (
+                not 0 < pending < source_minimum
+                or age < 1800
+                or shard_name not in available_shards
+                or shard_name in tail_shards
+            ):
+                continue
+            bucket = sources_by_shard.setdefault(shard_name, [])
+            if len(bucket) >= max_sources_per_shard:
+                bucket.pop()
+            bucket.append({"source_rel": source_rel, "pending_lines": pending})
+            tail_shards.add(shard_name)
+    contract["small_tail_reserved_shards"] = sorted(tail_shards)
+
     if not sources_by_shard:
         contract["reason"] = "no_routable_pending_sources"
         return focused_shards, contract
@@ -2596,6 +2764,19 @@ def _apply_raw_live_priority_focus(
         if not source_rows:
             continue
         source_paths = [str(row["source_rel"]) for row in source_rows]
+        source_streams = [
+            _raw_live_priority_stream_for_source(path) for path in source_paths
+        ]
+        include_streams = _parse_csv(str(shard.get("include_streams", "") or ""))
+        if source_streams:
+            shard["include_streams"] = ",".join(
+                dict.fromkeys(
+                    [
+                        *include_streams,
+                        *(stream for stream in source_streams if stream),
+                    ]
+                )
+            )
         shard_pending_lines = sum(
             _as_int(row.get("pending_lines"), 0) for row in source_rows
         )
@@ -2618,18 +2799,19 @@ def _apply_raw_live_priority_focus(
         shard["max_files"] = max(
             _as_int(shard.get("max_files"), 0), len(source_paths), 1
         )
-        shard["max_lines_per_file"] = max(
-            _as_int(shard.get("max_lines_per_file"), 0),
-            adaptive_max_lines,
-        )
-        shard["max_bytes_per_file"] = max(
-            _as_int(shard.get("max_bytes_per_file"), 0),
-            1024 * 1024 * 1024 if has_signal_generation else 256 * 1024 * 1024,
-        )
-        shard["sqlite_batch_max_bytes"] = max(
-            _as_int(shard.get("sqlite_batch_max_bytes"), 0),
-            256 * 1024 * 1024 if has_signal_generation else 64 * 1024 * 1024,
-        )
+        if largest_source_pending_lines >= source_minimum:
+            shard["max_lines_per_file"] = max(
+                _as_int(shard.get("max_lines_per_file"), 0),
+                adaptive_max_lines,
+            )
+            shard["max_bytes_per_file"] = max(
+                _as_int(shard.get("max_bytes_per_file"), 0),
+                1024 * 1024 * 1024 if has_signal_generation else 256 * 1024 * 1024,
+            )
+            shard["sqlite_batch_max_bytes"] = max(
+                _as_int(shard.get("sqlite_batch_max_bytes"), 0),
+                256 * 1024 * 1024 if has_signal_generation else 64 * 1024 * 1024,
+            )
         shard["raw_live_priority_focus"] = True
         shard["raw_live_priority_pending_lines"] = shard_pending_lines
         shard["raw_live_priority_sources"] = source_paths
@@ -2639,7 +2821,7 @@ def _apply_raw_live_priority_focus(
                 "pending_lines": shard_pending_lines,
                 "sources": source_paths,
                 "max_files": shard["max_files"],
-                "max_lines_per_file": shard["max_lines_per_file"],
+                "max_lines_per_file": shard.get("max_lines_per_file", 0),
             }
         )
 
@@ -3652,6 +3834,14 @@ def _run_hot_retention(
     cold_export_compression: str,
     vacuum: bool,
 ) -> tuple[int, str, str]:
+    bounded = _env_flag("SQL_LINK_SERVICE_BOUNDED_STORAGE_RETENTION", False)
+    if bounded:
+        batch_size = min(max(batch_size, 1000), 1000)
+        max_rows = min(max_rows, 5000) if max_rows > 0 else 5000
+        # Archive expiry and physical compaction have separate cold-lane owners.
+        archive_retention_days = 0
+        archive_prune_vacuum = False
+        vacuum = False
     cmd = [
         str(PY),
         str(HOT_RETENTION_SCRIPT),
@@ -3668,6 +3858,7 @@ def _run_hot_retention(
         "--archive-retention-days",
         str(max(archive_retention_days, 0)),
         "--skip-remaining-count",
+        "--preserve-conflicting-versions",
         "--json",
     ]
     if int(hot_hours) > 0:
@@ -3693,14 +3884,24 @@ def _run_hot_retention(
         )
     if vacuum:
         cmd.append("--vacuum")
-    proc = subprocess.run(
-        cmd,
-        cwd=str(PROJECT_ROOT),
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    if bounded:
+        cmd.extend(["--min-archive-free-gb", "64"])
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120 if bounded else None,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            124,
+            "",
+            "hot_retention_batch_timeout_source_or_verified_archive_preserved",
+        )
     return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
 
 
@@ -4259,6 +4460,19 @@ def _run_shard_links(
         shard: dict[str, object], timeout_seconds: int
     ) -> dict[str, object]:
         started = time.monotonic()
+        admission = storage_admission(PROJECT_ROOT)
+        if not admission["writer_start_allowed"]:
+            return {
+                "shard": str(shard["name"]),
+                "sqlite_db": str(shard["sqlite_db"]),
+                "state_file": str(shard["state_file"]),
+                "health_file": str(shard["health_file"]),
+                "rc": 75,
+                "timed_out": False,
+                "storage_deferred": True,
+                "storage_admission": admission,
+                "health": {},
+            }
         skip_record = _fresh_idle_shard_skip_record(
             shard,
             worker_count=worker_count,
@@ -4363,6 +4577,22 @@ def _run_shard_links(
                 force_reason="sqlite_corruption_after_write_failure",
             )
             if bool(post_failure_recovery.get("triggered", False)):
+                admission = storage_admission(PROJECT_ROOT)
+                if not admission["writer_start_allowed"]:
+                    return {
+                        "shard": str(shard["name"]),
+                        "sqlite_db": str(shard["sqlite_db"]),
+                        "state_file": str(shard["state_file"]),
+                        "health_file": str(shard["health_file"]),
+                        "rc": returncode,
+                        "timed_out": timed_out,
+                        "recovery": {**recovery, "post_failure": post_failure_recovery},
+                        "stdout_tail": stdout[-4000:],
+                        "stderr_tail": stderr[-4000:],
+                        "storage_deferred": True,
+                        "storage_admission": admission,
+                        "health": {},
+                    }
                 try:
                     retry = subprocess.run(
                         cmd,
@@ -4674,7 +4904,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--lock-path",
-        default=str(PROJECT_ROOT / "governance" / "locks" / "jsonl_sql_writer.lock"),
+        default=str(configured_sql_writer_lock_path(PROJECT_ROOT)),
     )
     parser.add_argument(
         "--primary-db",
@@ -4915,8 +5145,16 @@ def main() -> int:
         ),
     )
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--scheduled-drain", action="store_true")
+    parser.add_argument("--maintenance-scope", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    if args.scheduled_drain and (not args.once or args.maintenance_scope):
+        parser.error("--scheduled-drain requires --once and excludes --maintenance-scope")
+    storage_hold = defer_storage_writer(PROJECT_ROOT, owner="sql_link_shard_manager")
+    if storage_hold:
+        print(json.dumps(storage_hold, ensure_ascii=True))
+        return 75
     maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
     maintenance_hold_token = str(
         os.getenv(MAINTENANCE_HOLD_TOKEN_ENV, "") or ""
@@ -5003,8 +5241,14 @@ def main() -> int:
     last_wal_checkpoint_ts = 0.0
     last_hot_retention_ts = 0.0
     last_queue_retention_ts = 0.0
+    scheduled_started = time.monotonic()
+    scheduled_cycles = 0
 
     while True:
+        storage_hold = defer_storage_writer(PROJECT_ROOT, owner="sql_link_shard_manager")
+        if storage_hold:
+            print(json.dumps(storage_hold, ensure_ascii=True))
+            return 75
         boundary_hold = _cycle_boundary_maintenance_hold(
             PROJECT_ROOT,
             authorized_token=(
@@ -5024,7 +5268,10 @@ def main() -> int:
             break
         ts = _now_utc()
         cycle_ts = time.time()
-        active_request = _load_active_request(REQUEST_PATH)
+        cycle_started_monotonic = time.monotonic()
+        active_request = (
+            {} if args.maintenance_scope else _load_active_request(REQUEST_PATH)
+        )
         request_overrides = _apply_explicit_cycle_scope(
             args, _cycle_runtime_overrides(active_request)
         )
@@ -5044,6 +5291,66 @@ def main() -> int:
                 overrides=request_overrides,
             )
         merge_results: list[dict[str, object]] = []
+
+        def stop_for_storage(admission: dict[str, Any]) -> int:
+            merged_rows = _merged_rows_inserted(merge_results)
+            failed = any(
+                _shard_link_hard_failed(row)
+                and (not row.get("storage_deferred") or row.get("rc") != 75)
+                for row in shard_results
+            ) or any(not row.get("ok", False) for row in merge_results)
+            payload = {
+                **admission,
+                "timestamp_utc": _now_utc(),
+                "owner": "sql_link_shard_manager",
+                "overall_status": "error" if failed else "deferred",
+                "ok": False,
+                "deferred": True,
+                "running": False,
+                "rc": 1 if failed else 75,
+                "cycle_started_utc": ts,
+                "current_step": "storage_deferred",
+                "shards": shard_results,
+                "merge_results": merge_results,
+                "merged_rows_this_cycle": merged_rows,
+                "planned_shard_count": len(shards),
+                "completed_shard_count": sum(
+                    not row.get("storage_deferred", False) for row in shard_results
+                ),
+                "active_request": active_request,
+            }
+            _write_service_progress(
+                cycle_started_utc=ts,
+                current_step="storage_deferred",
+                lock_path=lock_path,
+                primary_db=primary_db,
+                shards=shards,
+                shard_results=shard_results,
+                merge_results=merge_results,
+                merged_rows_this_cycle=merged_rows,
+                running=False,
+                ok=False,
+                note="local_storage_writer_admission",
+                active_request=active_request,
+                shard_link_plan=shard_link_plan,
+                shard_writer_lane_contract=shard_writer_lane_contract,
+            )
+            for key in ("wal_checkpoint", "hot_retention"):
+                bucket = maintenance_state.get(key)
+                if isinstance(bucket, dict):
+                    bucket["rows_since_last_run"] = (
+                        _as_int(bucket.get("rows_since_last_run"), 0) + merged_rows
+                    )
+            _write_json(MAINTENANCE_STATE_PATH, maintenance_state)
+            _write_json(LATEST_HEALTH, payload)
+            _write_json(
+                PROJECT_ROOT
+                / "governance/health/sql_link_storage_admission_latest.json",
+                payload,
+            )
+            print(json.dumps(payload, ensure_ascii=True))
+            return payload["rc"]
+
         _write_service_progress(
             cycle_started_utc=ts,
             current_step="shard_linking",
@@ -5091,6 +5398,9 @@ def main() -> int:
                 ),
             )
 
+        for row in shard_results:
+            if row.get("storage_deferred"):
+                return stop_for_storage(row["storage_admission"])
         _write_service_progress(
             cycle_started_utc=ts,
             current_step="merge_primary",
@@ -5108,6 +5418,9 @@ def main() -> int:
         )
         merge_started_ts = time.time()
         for shard in shards:
+            admission = storage_admission(PROJECT_ROOT)
+            if not admission["writer_start_allowed"]:
+                return stop_for_storage(admission)
             result = next(
                 (row for row in shard_results if row["shard"] == shard["name"]), None
             )
@@ -5315,6 +5628,16 @@ def main() -> int:
                     shard_writer_lane_contract=shard_writer_lane_contract,
                 )
 
+        admission = storage_admission(PROJECT_ROOT)
+        if not admission["writer_start_allowed"]:
+            return stop_for_storage(admission)
+        once_inline_retention_enabled = _once_inline_retention_enabled(cycle_args)
+        once_inline_retention_skip_reason = (
+            ""
+            if once_inline_retention_enabled
+            else "once_inline_retention_deferred_to_storage_lane"
+        )
+
         shard_hot_retention_results: list[dict[str, object]] = []
         for shard in shards:
             shard_name = str(shard["name"])
@@ -5335,6 +5658,25 @@ def main() -> int:
                 max_db_gb=float(shard.get("hot_retention_max_db_gb", 0.0) or 0.0),
                 free_gb=_filesystem_free_gb(db_path),
             )
+            if not once_inline_retention_enabled:
+                shard_hot_retention_results.append(
+                    {
+                        "shard": shard_name,
+                        "enabled": False,
+                        "configured_enabled": bool(cycle_args.auto_hot_retention),
+                        "retention_safety_contract": shard_retention_safety,
+                        "db_path": str(db_path),
+                        "db_size_gb_before": round(db_size, 3),
+                        "db_size_gb_after": round(db_size, 3),
+                        "ran": False,
+                        "rc": 0,
+                        "stdout_tail": "",
+                        "stderr_tail": "",
+                        "details": {},
+                        "skipped_reason": once_inline_retention_skip_reason,
+                    }
+                )
+                continue
             if not bool(shard_retention_safety.get("effective_enabled", False)):
                 continue
             shard_state = _load_shard_hot_state(
@@ -5760,7 +6102,10 @@ def main() -> int:
             "skipped_reason": "",
             "maintenance_blockers": archive_blockers,
         }
-        if archive_blockers:
+        if not once_inline_retention_enabled:
+            hot_retention["enabled"] = False
+            hot_retention["skipped_reason"] = once_inline_retention_skip_reason
+        elif archive_blockers:
             hot_retention["skipped_reason"] = "archive_maintenance_blocked"
         elif (
             bool(primary_retention_safety.get("effective_enabled", False))
@@ -5878,7 +6223,10 @@ def main() -> int:
             "details": {},
             "skipped_reason": "",
         }
-        if (
+        if not once_inline_retention_enabled:
+            queue_retention["enabled"] = False
+            queue_retention["skipped_reason"] = once_inline_retention_skip_reason
+        elif (
             bool(queue_retention_safety.get("effective_enabled", False))
             and overall_rc == 0
             and queue_db_path.exists()
@@ -6053,7 +6401,53 @@ def main() -> int:
             )
 
         if args.once:
-            break
+            if not args.scheduled_drain:
+                break
+            from scripts.ops.backpressure_drainer_fleet import (
+                _refresh_backlog_observation,
+            )
+            from scripts.ops.scheduled_sql_drain import follow_through
+
+            scheduled_cycles += 1
+            rows_written = sum(
+                _shard_inserted_rows(row) for row in shard_results
+            ) + int(merged_rows)
+            cycle_seconds = time.monotonic() - cycle_started_monotonic
+            refresh = (
+                _refresh_backlog_observation(PROJECT_ROOT)
+                if focused_request_completed
+                and rows_written > 0
+                and time.monotonic() - scheduled_started < 140
+                and scheduled_cycles < 8
+                else {}
+            )
+            observation = _load_json(
+                PROJECT_ROOT / "governance/health/ingestion_backpressure_latest.json"
+            )
+            follow = follow_through(
+                observation,
+                cycles=scheduled_cycles,
+                elapsed_seconds=time.monotonic() - scheduled_started,
+                cycle_seconds=cycle_seconds,
+                rows_written=rows_written,
+                cycle_ok=focused_request_completed,
+                refresh_ok=refresh.get("ok") is True,
+                interval_seconds=cycle_args.interval_seconds,
+            )
+            _write_json(
+                PROJECT_ROOT / "governance/health/scheduled_sql_drain_latest.json",
+                {
+                    "timestamp_utc": _now_utc(),
+                    **follow,
+                    "policy": "same admitted writer; fresh debt and measured progress; all cycle-boundary holds and resource caps retained",
+                },
+            )
+            if not follow["continue"]:
+                break
+            _sleep_until_next_cycle(
+                follow["delay_seconds"], active_request=active_request
+            )
+            continue
         _sleep_until_next_cycle(
             cycle_args.interval_seconds,
             active_request=active_request,

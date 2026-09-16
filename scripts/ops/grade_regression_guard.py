@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ if __package__ in {None, ""}:
         iso_now,
         load_json,
         ordered_unique,
+        parse_iso_utc,
         write_payload,
     )
 else:
@@ -24,6 +26,7 @@ else:
         iso_now,
         load_json,
         ordered_unique,
+        parse_iso_utc,
         write_payload,
     )
 
@@ -31,6 +34,9 @@ else:
 DEFAULT_OUT_PATH = (
     PROJECT_ROOT / "governance" / "health" / "grade_regression_guard_latest.json"
 )
+
+from core.status_label_contract import evidence_label
+from scripts.ops.runtime_gate_dashboard import _artifact_config as dashboard_artifact_config
 
 
 def _as_dict(raw: Any) -> dict[str, Any]:
@@ -73,6 +79,70 @@ def _bool(raw: Any) -> bool:
 
 def _lower(raw: Any) -> str:
     return str(raw or "").strip().lower()
+
+
+def _source_diagnostics(source: dict[str, Any], path: str) -> dict[str, Any]:
+    produced = parse_iso_utc(source.get("timestamp_utc"))
+    age = (datetime.now(timezone.utc) - produced).total_seconds() if produced else None
+    issues = []
+    for field in ("blockers", "blocking_reasons", "missing_contracts", "failed_checks"):
+        issues.extend(
+            {"check": str(value), "source_field": field}
+            for value in _as_list(source.get(field))
+        )
+    for item in _as_list(source.get("improvements")):
+        item = _as_dict(item)
+        if _lower(item.get("status")) not in {"ready", "ok", "complete"}:
+            issues.append(
+                {
+                    "check": str(item.get("key") or "unknown"),
+                    "status": item.get("status"),
+                    "summary": item.get("summary"),
+                    "recommended_action": item.get("recommendation"),
+                    "source_field": "improvements",
+                }
+            )
+    for name, status in _as_dict(source.get("component_statuses")).items():
+        if _lower(status) not in {"ready", "ok", "complete"}:
+            issues.append(
+                {"check": name, "status": status, "source_field": "component_statuses"}
+            )
+    for item in _as_list(source.get("blocking_surfaces")):
+        item = _as_dict(item)
+        issues.append({"check": str(item.get("surface") or "unknown"),
+                       "severity": item.get("severity"), "summary": item.get("summary"),
+                       "source_field": "blocking_surfaces"})
+    for name in ("steady_state", "continuous_run_soak_contract"):
+        contract = _as_dict(source.get(name))
+        values = (
+            _as_dict(contract.get("target_status")).get("target_breaches")
+            if name == "steady_state"
+            else contract.get("blockers")
+        )
+        issues.extend(
+            {"check": str(value), "source_field": name} for value in _as_list(values)
+        )
+    resilience = _as_dict(source.get("storage_resilience"))
+    if resilience.get("restore_drill_fresh") is False:
+        issues.append(
+            {
+                "check": "restore_drill_not_verified_fresh",
+                "source_field": "storage_resilience.restore_drill_fresh",
+                "recommended_action": "Verify an unexpired retained restore receipt, or run a capacity-admitted restore drill; do not lower the reserve or infer proof from low backlog.",
+            }
+        )
+    return {
+        "path": path,
+        "present": bool(source),
+        "producer_timestamp_utc": source.get("timestamp_utc"),
+        "producer_age_seconds": round(age, 3) if age is not None else None,
+        "timestamp_valid": age is not None and age >= 0,
+        "age_is_not_freshness_or_recovery_clearance": True,
+        "reported_status": source.get("overall_status"),
+        "issues": issues,
+        "recommended_actions": _as_list(source.get("recommended_actions"))
+        or _as_list(source.get("top_actions")),
+    }
 
 
 def _row(
@@ -427,7 +497,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             _row(
                 surface="training_lineage",
                 state="degraded",
-                summary=f"lineage_score={lineage_score:.2f} with seeded recovery evidence still needs final replay and signing proof",
+                summary=(
+                    f"lineage_score={lineage_score:.2f}; missing contracts: "
+                    + ", ".join(
+                        str(item) for item in training_lineage["missing_contracts"]
+                    )
+                    if isinstance(training_lineage.get("missing_contracts"), list)
+                    and training_lineage["missing_contracts"]
+                    else f"lineage_score={lineage_score:.2f} with seeded recovery evidence still needs final replay and signing proof"
+                ),
                 recommended_command=[
                     "./scripts/ops/opsctl.sh",
                     "grade-lift-hardening",
@@ -436,6 +514,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 metrics={
                     "lineage_score": round(lineage_score, 2),
                     "lineage_recovery_ready": lineage_recovery_ready,
+                    "missing_contracts": _as_list(
+                        training_lineage.get("missing_contracts")
+                    ),
                 },
             )
         )
@@ -517,7 +598,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             _row(
                 surface="storage_control",
                 state="blocked",
-                summary=f"pressure_index={pressure_index:.3f} or recovery_state={recovery_state or 'unknown'} regressed below the storage guardrail",
+                summary=(
+                    f"storage_status={storage_status or 'unknown'}; pressure_index={pressure_index:.3f}; "
+                    f"recovery_state={recovery_state or 'unknown'}; "
+                    f"restore_drill_fresh={_as_dict(storage_control.get('storage_resilience')).get('restore_drill_fresh', 'unknown')}"
+                ),
                 recommended_command=[
                     "./scripts/ops/opsctl.sh",
                     "storage-backpressure-autopilot",
@@ -934,9 +1019,80 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             notify_tenant=True,
         ),
     }
+    sources = {
+        "training_quality": (
+            training_quality,
+            "governance/health/training_quality_control_latest.json",
+        ),
+        "training_lineage": (
+            training_lineage,
+            "governance/health/training_lineage_manifest_latest.json",
+        ),
+        "storage_control": (
+            storage_control,
+            "governance/health/ingestion_storage_control_latest.json",
+        ),
+        "security_audit": (
+            security_audit,
+            "governance/health/security_audit_latest.json",
+        ),
+        "incident_closeout": (
+            incident_closeout,
+            "governance/health/incident_closeout_autopilot_latest.json",
+        ),
+        "live_canary": (
+            live_canary,
+            "governance/health/live_canary_control_latest.json",
+        ),
+        "autonomy_control": (
+            autonomy,
+            "governance/health/autonomy_control_plane_latest.json",
+        ),
+        "promotion_autopilot": (
+            promotion_autopilot,
+            "governance/champion_challenger/promotion_autopilot_packet_latest.json",
+        ),
+    }
+    display_age_budgets = {
+        str(path): float(spec["max_age_minutes"]) * 60
+        for spec in dashboard_artifact_config(project_root).values()
+        for path in spec["paths"]
+    }
     for row in rows:
         surface = str(row.get("surface") or "")
+        row["source_evidence"] = _source_diagnostics(*sources[surface])
+        if surface == "incident_closeout" and row["state"] == "ready" and incident_closeout.get("closeout_ready") is False and incident_closeout.get("blocking_surfaces"):
+            critical = any(_as_dict(item).get("severity") == "critical" for item in _as_list(incident_closeout.get("blocking_surfaces")))
+            row.update(state="blocked" if critical else "degraded",
+                       severity="critical" if critical else "warning",
+                       summary="No open display incidents, but explicit closeout requirements remain unmet")
+            row["metrics"]["stale_status_overridden"] = False
+        targets = _as_dict(
+            _as_dict(storage_control.get("steady_state")).get("target_status")
+        )
+        if (
+            surface == "storage_control"
+            and row["state"] == "ready"
+            and targets.get("steady_state_ready") is False
+        ):
+            row["state"] = "degraded"
+            row["severity"] = "warning"
+            row[
+                "summary"
+            ] += "; storage operations are ready but steady-state targets remain unmet"
+            row["metrics"]["steady_state_ready"] = False
+            row["metrics"]["target_breaches"] = _as_list(targets.get("target_breaches"))
         state = str(row.get("state") or "")
+        if surface == "storage_control" and any(
+            issue["check"] == "restore_drill_not_verified_fresh"
+            for issue in row["source_evidence"]["issues"]
+        ):
+            row["recommended_command"] = [
+                "./scripts/ops/opsctl.sh",
+                "state-snapshot-drill",
+                "--recover-latest-verified",
+                "--json",
+            ]
         row["retry_budget"] = retry_policies.get(
             surface,
             _retry_budget(
@@ -952,6 +1108,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         row["notification_contract"] = _notification_contract(
             surface, state, str(row.get("summary") or "")
         )
+        row["status_label"] = evidence_label(
+            sources[surface][0], scope=surface, source=sources[surface][1],
+            max_age_seconds=display_age_budgets.get(str(project_root / sources[surface][1])),
+            reported_state=state,
+        )
+        row["status_label"]["producer_reported_status"] = sources[surface][0].get("overall_status")
 
     blocked_count = sum(1 for row in rows if row["state"] == "blocked")
     degraded_count = sum(1 for row in rows if row["state"] == "degraded")

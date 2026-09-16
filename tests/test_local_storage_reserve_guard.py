@@ -24,6 +24,31 @@ def _usage(*, free_gb: float, total_gb: float = 100.0) -> SimpleNamespace:
     return SimpleNamespace(total=total, free=free, used=total - free)
 
 
+def test_reserve_only_applies_controls_without_modifying_logs(tmp_path, monkeypatch):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    log = logs / "worker.out.log"
+    log.write_bytes(b"retained evidence\n" * 1000)
+    original = log.read_bytes()
+    monkeypatch.setattr(
+        guard, "local_storage_reserve_contract",
+        lambda root, **kwargs: local_storage_reserve_contract(
+            root, disk_usage_fn=lambda p: _usage(free_gb=80, total_gb=1000), **kwargs),
+    )
+    monkeypatch.setattr(guard, "telemetry_route_contract", lambda root: {"ready": True})
+    monkeypatch.setattr(guard, "fallback_route_pressure_contract",
+                        lambda *args: {"route_rehome_required": False, "ordered_recovery_pipeline": []})
+    override = tmp_path / "reserve.env"
+    result = guard.build_payload(
+        tmp_path, apply=True, override_path=override, log_root=logs,
+        additional_log_roots=[], max_log_bytes=1024, tail_bytes=128,
+        reserve_only=True, reconcile_governor=False,
+    )
+    assert override.is_file()
+    assert log.read_bytes() == original
+    assert not result["storage_governor_reconciliation"]["attempted"]
+
+
 def test_live_reserve_contract_blocks_before_enospc(tmp_path: Path) -> None:
     payload = local_storage_reserve_contract(
         tmp_path,
@@ -270,14 +295,15 @@ def test_fallback_route_pressure_contract_defines_ordered_pipeline(
     assert payload["status"] == "route_rehome_ready"
     assert payload["route_rehome_required"] is True
     assert payload["route_rehome_ready"] is True
-    assert payload["pipeline_summary"]["stage_count"] == 9
+    assert payload["pipeline_summary"]["stage_count"] == 10
     assert payload["pipeline_summary"]["operator_route_mutation_stage_count"] == 1
     assert payload["local_fallback_sql_link_shards"]["size_bytes"] == 4096
     assert rehome["authority"] == "operator_route_mutation"
     assert rehome["auto_execute_allowed"] is False
     assert "active_writer_not_quiesced" in rehome["blocked_by"]
     assert prune["authority"] == "automatic_verified_standby_delete"
-    assert prune["next_on_success"] == "verify"
+    assert prune["next_on_success"] == "prune_sql_shard_standby"
+    assert any(row["stage"] == "prune_sql_shard_standby" for row in pipeline)
 
 
 def test_local_reserve_guard_routes_pressure_to_external_rehome_plan(

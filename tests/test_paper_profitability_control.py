@@ -2,6 +2,7 @@ import importlib.util
 import json
 import sys
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,8 @@ def _load_module():
 
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.name == "paper_performance_latest.json":
+        payload = {"timestamp_utc": datetime.now(timezone.utc).isoformat(), **payload}
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
@@ -614,13 +617,72 @@ def test_paper_profitability_control_fails_closed_without_execution_evidence(
     finally:
         sys.argv = old_argv
 
-    assert json.loads(control_path.read_text(encoding="utf-8")) == {
-        "sentinel": "preserve"
-    }
+    control_payload = json.loads(control_path.read_text(encoding="utf-8"))
+    assert control_payload["overall_status"] == "safe_hold_no_gradeable_execution"
+    assert control_payload["safe_hold_active"] is True
+    assert (
+        control_payload["global_runtime_policy"][
+            "block_new_paper_entries_from_profitability_controls"
+        ]
+        is True
+    )
+    assert (
+        "paper_performance_has_no_execution_evidence"
+        in control_payload["safe_hold_contract"]["evidence_missing"]
+    )
+    assert control_payload["paper_execution_authority"] is False
+    assert control_payload["execution_hold_observed"] is False
+    assert (
+        control_payload["safe_hold_scope"]
+        == "profitability_evidence_and_control_authority"
+    )
+    assert control_payload["live_execution_authority"] is False
+    assert control_payload["promotion_authority"] is False
     written = json.loads(
         (health / "paper_profitability_control_latest.json").read_text(encoding="utf-8")
     )
-    assert written["runtime_control_write_blocked"] is True
+    assert written["runtime_control_write_blocked"] is False
+    assert written["runtime_control_safe_hold_published"] is True
+    assert written["applied_runtime_control_summary"]["safe_hold_active"] is True
+
+
+@pytest.mark.parametrize(
+    "stamp", [None, "invalid", "2026-01-01T00:00:00", "old", "future"]
+)
+def test_paper_input_fresh_mtime_cannot_renew_invalid_producer_evidence(
+    tmp_path, stamp
+):
+    module = _load_module()
+    if stamp in {"old", "future"}:
+        offset = timedelta(hours=-2 if stamp == "old" else 1)
+        stamp = (datetime.now(timezone.utc) + offset).isoformat()
+    path = tmp_path / "paper_performance_latest.json"
+    _write_json(
+        path,
+        {
+            "timestamp_utc": stamp,
+            "ok": True,
+            "sleeve_latest": [{"profile": "default", "executions": 100}],
+        },
+    )
+    _, contract = module._load_paper_performance_input(path)
+    assert contract["source_mtime_age_seconds"] < 5
+    assert not contract["source_fresh"]
+    assert not contract["usable_for_profitability_grade"]
+    assert "paper_performance_source_stale" in contract["blockers"]
+    assert contract["freshness_basis"] == "producer_timestamp_utc"
+
+
+def test_paper_input_fresh_producer_does_not_depend_on_copy_mtime(tmp_path):
+    import os
+
+    module = _load_module()
+    path = tmp_path / "paper_performance_latest.json"
+    _write_json(path, {"ok": True, "sleeve_latest": [{"executions": 100}]})
+    os.utime(path, (1, 1))
+    _, contract = module._load_paper_performance_input(path)
+    assert contract["source_fresh"]
+    assert contract["usable_for_profitability_grade"]
 
 
 def test_financial_grade_lift_contract_maps_b_grade_to_exact_recovery_gaps(

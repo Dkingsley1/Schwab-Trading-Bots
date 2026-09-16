@@ -10,6 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.operating_contracts import build_operating_contract
+from core.ingestion_health_evidence import ingestion_observation_ready
 from scripts.ops.long_runtime_common import write_payload
 
 OPS_THRESHOLDS_FILE = PROJECT_ROOT / "governance" / "ops_thresholds.json"
@@ -163,6 +164,7 @@ def _resolve_daily_verify_failures(
     paper_execution_calibration: dict[str, Any] | None = None,
     resource_guard: dict[str, Any] | None = None,
     ignored_failed_checks: set[str] | None = None,
+    ingestion_backpressure: dict[str, Any] | None = None,
 ) -> tuple[list[str], list[str]]:
     failed = (
         daily_verify.get("failed_checks")
@@ -184,6 +186,15 @@ def _resolve_daily_verify_failures(
             resolved.append(name)
             continue
         if name == "incomplete_run_recovered":
+            resolved.append(name)
+            continue
+        if (
+            name == "ingestion_backpressure"
+            and daily_verify.get("running") is False
+            and ingestion_observation_ready(
+                ingestion_backpressure, after_utc=daily_verify.get("timestamp_utc")
+            )
+        ):
             resolved.append(name)
             continue
         if name == "new_bot_graduation_gate" and _graduation_effective_ok(
@@ -340,6 +351,7 @@ def evaluate_quality(
     paper_execution_calibration: dict[str, Any] | None = None,
     resource_guard: dict[str, Any] | None = None,
     *,
+    ingestion_backpressure: dict[str, Any] | None = None,
     max_fail_share: float,
     min_considered_bots: int,
     require_replay: bool,
@@ -433,6 +445,7 @@ def evaluate_quality(
         paper_execution_calibration=paper_execution_calibration,
         resource_guard=resource_guard,
         ignored_failed_checks=ignore_daily_verify_failed_checks,
+        ingestion_backpressure=ingestion_backpressure,
     )
 
     promotion_scope_active = _promotion_scope_active(promotion_gate, graduation_gate)
@@ -543,6 +556,14 @@ def evaluate_quality(
         "daily_verify_ok": len(unresolved_daily_verify) == 0,
         "daily_verify_unresolved_failed_checks": unresolved_daily_verify,
         "daily_verify_resolved_failed_checks": resolved_daily_verify,
+        "daily_verify_ingestion_observation": {
+            "timestamp_utc": (
+                ingestion_backpressure.get("timestamp_utc")
+                if isinstance(ingestion_backpressure, dict) else None
+            ),
+            "resolved": "ingestion_backpressure" in resolved_daily_verify,
+            "scope": "bounded_hot_lane_pressure_only",
+        },
         "graduation_ok": bool(graduation_gate.get("ok", False)),
         "graduation_effective_ok": bool(graduation_effective_ok),
         "bot_support_owner_guard_ok": (
@@ -674,6 +695,10 @@ def main() -> int:
             / "walk_forward"
             / "new_bot_graduation_latest.json"
         ),
+    )
+    parser.add_argument(
+        "--ingestion-backpressure-file",
+        default=str(PROJECT_ROOT / "governance" / "health" / "ingestion_backpressure_latest.json"),
     )
     parser.add_argument(
         "--bot-support-owner-file",
@@ -891,6 +916,7 @@ def main() -> int:
 
     promotion = _load_json(Path(args.promotion_gate_file))
     daily_verify = _load_json(Path(args.daily_verify_file))
+    ingestion_backpressure = _load_json(Path(args.ingestion_backpressure_file))
     graduation = _load_json(Path(args.graduation_file))
     owner_guard = _load_json(Path(args.bot_support_owner_file))
     new_bot_admission = _load_json(Path(args.new_bot_admission_file))
@@ -928,6 +954,7 @@ def main() -> int:
         replay,
         replay_hash_registry,
         reconciliation,
+        ingestion_backpressure=ingestion_backpressure,
         feature_store_manifest=feature_store_manifest,
         bot_support_owner_guard=owner_guard,
         new_bot_admission_guard=new_bot_admission,
@@ -1078,6 +1105,7 @@ def main() -> int:
         "source_files": {
             "promotion_gate": str(args.promotion_gate_file),
             "daily_verify": str(args.daily_verify_file),
+            "ingestion_backpressure": str(args.ingestion_backpressure_file),
             "graduation": str(args.graduation_file),
             "bot_support_owner_guard": str(args.bot_support_owner_file),
             "new_bot_admission": str(args.new_bot_admission_file),

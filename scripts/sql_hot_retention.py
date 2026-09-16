@@ -1,7 +1,9 @@
 import argparse
+import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,6 +42,27 @@ def _size_gb(path: Path) -> float:
         return float(path.stat().st_size) / float(GIB)
     except Exception:
         return 0.0
+
+
+def _archive_batch_capacity(
+    path: Path, rows: list[sqlite3.Row], *, reserve_gb: float
+) -> None:
+    if reserve_gb <= 0:
+        return
+    parent = path.parent
+    while not parent.exists() and parent != parent.parent:
+        parent = parent.parent
+    # Budget the payload, indexes and WAL before allocating this batch. Unknown
+    # capacity raises before the source can be deleted.
+    payload_bytes = sum(
+        len(value) if isinstance(value, bytes) else len(str(value).encode("utf-8"))
+        for row in rows
+        for value in row
+        if value is not None
+    )
+    required = int(reserve_gb * GIB) + payload_bytes * 4 + 64 * 1024**2
+    if shutil.disk_usage(parent).free < required:
+        raise RuntimeError("archive_batch_capacity_guard_source_preserved")
 
 
 def _load_env_file(path: Path) -> dict[str, str]:
@@ -215,6 +238,40 @@ def _verify_archived_rows(
             raise RuntimeError("archive_copy_verification_failed_source_preserved")
 
 
+def _write_verified_archive_rows(conn, columns, rows) -> None:
+    names = ",".join('"' + name.replace('"', '""') + '"' for name in columns)
+    marks = ",".join("?" for _ in columns)
+    conn.executemany(
+        f"INSERT OR IGNORE INTO jsonl_records ({names}) VALUES ({marks})",
+        [tuple(row[name] for name in columns) for row in rows],
+    )
+    _verify_archived_rows(conn, columns, rows)
+    conn.commit()
+
+
+def _preserve_conflicting_archive_version(src, archive_path, columns, rows) -> Path:
+    # Reingestion and rewritten source files can reuse archive primary/unique
+    # keys. Preserve both versions, never overwrite the old row or waive proof.
+    receipt = hashlib.sha256(json.dumps(columns).encode())
+    for row in sorted(rows, key=lambda item: int(item["id"])):
+        values = [
+            {"sqlite_blob_hex": row[name].hex()} if isinstance(row[name], bytes)
+            else row[name] for name in columns
+        ]
+        encoded = json.dumps(values, ensure_ascii=True, separators=(",", ":"), allow_nan=False).encode()
+        receipt.update(len(encoded).to_bytes(8, "big"))
+        receipt.update(encoded)
+    path = archive_path.with_name(f"{archive_path.stem}_versions_{receipt.hexdigest()}.sqlite3")
+    conn = _connect(path)
+    try:
+        conn.execute("PRAGMA synchronous=FULL")
+        _ensure_archive_schema(src, conn)
+        _write_verified_archive_rows(conn, columns, rows)
+    finally:
+        conn.close()
+    return path
+
+
 def _sqlite_column_specs(conn: sqlite3.Connection, table: str) -> list[tuple[str, str]]:
     return [
         (str(row[1]), str(row[2] or "TEXT"))
@@ -349,6 +406,7 @@ def _prune_archive_storage(
     deleted_archive_files: list[str] = []
     vacuumed_archive_dbs: list[str] = []
     errors: dict[str, str] = {}
+    protected_version_partitions: list[str] = []
     cold_export = {
         "enabled": bool(cold_export_root),
         "root": str(cold_export_root) if cold_export_root else "",
@@ -361,6 +419,9 @@ def _prune_archive_storage(
     }
 
     for path in _archive_db_candidates(archive_db=archive_db, archive_root=archive_root):
+        if re.search(r"_versions_[0-9a-f]{64}\.sqlite3$", path.name):
+            protected_version_partitions.append(str(path))
+            continue
         if archive_root is not None and path.parent == archive_root and _archive_file_fully_before_cutoff(path, cutoff_dt):
             try:
                 row_count = _count_archive_rows(path)
@@ -441,6 +502,7 @@ def _prune_archive_storage(
         "cutoff_utc": cutoff,
         "pruned_rows": int(pruned_rows),
         "rows_pruned_by_db": rows_pruned_by_db,
+        "protected_version_partitions": protected_version_partitions,
         "deleted_archive_files": sorted(set(deleted_archive_files)),
         "vacuumed_archive_dbs": sorted(set(vacuumed_archive_dbs)),
         "cold_archive_export": cold_export,
@@ -455,8 +517,13 @@ def main() -> int:
     parser.add_argument("--archive-root", default="")
     parser.add_argument("--archive-period", choices=("single", "day", "month"), default="single")
     parser.add_argument("--archive-retention-days", type=int, default=0, help="Prune archived rows/files older than this many days (0 = disabled).")
+    parser.add_argument("--min-archive-free-gb", type=float, default=64.0, help="Preserve archive free-space reserve plus current batch allocation.")
     parser.add_argument("--archive-prune-vacuum", action="store_true", help="Vacuum archive DBs after row-level pruning when rows remain.")
-    parser.add_argument("--cold-export-root", default="", help="Optional root for compressed cold archive exports before old monthly archive files are deleted.")
+    parser.add_argument(
+        "--cold-export-root",
+        default="",
+        help="Optional root for compressed cold archive exports before old monthly archive files are deleted.",
+    )
     parser.add_argument("--cold-export-format", choices=("parquet",), default="parquet")
     parser.add_argument("--cold-export-batch-size", type=int, default=50000)
     parser.add_argument("--cold-export-compression", default="zstd")
@@ -471,6 +538,7 @@ def main() -> int:
         default=float(os.getenv("SQL_HOT_RETENTION_REMAINING_COUNT_SKIP_OVER_GB", "50")),
     )
     parser.add_argument("--vacuum", action="store_true")
+    parser.add_argument("--preserve-conflicting-versions", action="store_true", help="Preserve conflicting archive rows in a separate content-addressed partition; exact verification still precedes hot-row release.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -512,12 +580,11 @@ def main() -> int:
         return 0
 
     cols = [r[1] for r in src.execute("PRAGMA table_info(jsonl_records)").fetchall()]
-    col_list = ",".join(cols)
-    qmarks = ",".join(["?"] * len(cols))
 
     archive_conns: dict[Path, sqlite3.Connection] = {}
     archive_rows_by_db: dict[str, int] = {}
     total_moved = 0
+    conflict_partitions = []
     max_rows = max(int(args.max_rows), 0)
 
     try:
@@ -553,6 +620,7 @@ def main() -> int:
                 grouped.setdefault(archive_path, []).append(row)
 
             for archive_path, group_rows in grouped.items():
+                _archive_batch_capacity(archive_path, group_rows, reserve_gb=max(float(args.min_archive_free_gb), 64.0))
                 conn = archive_conns.get(archive_path)
                 if conn is None:
                     archive_path.parent.mkdir(parents=True, exist_ok=True)
@@ -561,14 +629,16 @@ def main() -> int:
                     _ensure_archive_schema(src, conn)
                     archive_conns[archive_path] = conn
 
-                payload = [tuple(r[c] for c in cols) for r in group_rows]
-                conn.executemany(
-                    f"INSERT OR IGNORE INTO jsonl_records ({col_list}) VALUES ({qmarks})",
-                    payload,
-                )
-                _verify_archived_rows(conn, cols, group_rows)
-                conn.commit()
-                archive_rows_by_db[str(archive_path)] = archive_rows_by_db.get(str(archive_path), 0) + len(group_rows)
+                verified_path = archive_path
+                try:
+                    _write_verified_archive_rows(conn, cols, group_rows)
+                except RuntimeError as exc:
+                    conn.rollback()
+                    if not args.preserve_conflicting_versions or str(exc) != "archive_copy_verification_failed_source_preserved":
+                        raise
+                    verified_path = _preserve_conflicting_archive_version(src, archive_path, cols, group_rows)
+                    conflict_partitions.append(str(verified_path))
+                archive_rows_by_db[str(verified_path)] = archive_rows_by_db.get(str(verified_path), 0) + len(group_rows)
 
             ids = [int(r["id"]) for r in rows]
             _delete_jsonl_record_ids(src, ids)
@@ -609,6 +679,7 @@ def main() -> int:
         "archive_db": str(archive_db),
         "archive_root": str(archive_root) if archive_root else "",
         "archive_period": str(args.archive_period),
+        "preserved_conflict_partitions": sorted(set(conflict_partitions)),
         "hot_days": int(args.hot_days),
         "hot_hours": int(max(args.hot_hours, 0)),
         "hot_window": hot_window,

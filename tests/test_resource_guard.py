@@ -354,6 +354,7 @@ def test_music_app_counts_as_audio_playback_cotenant(monkeypatch) -> None:
 
 def test_named_process_scan_ignores_helper_and_path_false_positives(monkeypatch) -> None:
     class Result:
+        returncode = 0
         stdout = "\n".join(
             [
                 "0.0 /System/Library/PrivateFrameworks/iTunesCloud.framework/Support/itunescloudd",

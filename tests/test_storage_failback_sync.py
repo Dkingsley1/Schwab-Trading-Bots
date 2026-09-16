@@ -379,6 +379,7 @@ def test_build_sqlite_skip_report_classifies_active_queue_and_warm_standby(
     assert payload["route_verification"]["ready_count"] == 3
 
 
+
 def test_build_sqlite_skip_report_certifies_curated_external_mode(
     monkeypatch, tmp_path
 ):
@@ -475,6 +476,37 @@ def test_build_sqlite_skip_report_certifies_active_local_nested_links(
     assert payload["route_verification"]["verification_state"] == "active_local_ready"
     assert payload["route_verification"]["ready_count"] == 3
     assert payload["route_verification"]["mismatches"] == []
+
+
+def test_local_queue_route_does_not_require_an_external_standby(monkeypatch, tmp_path):
+    project_root = tmp_path / 'project'
+    local_root = project_root / 'local_fallback_storage'
+    repo_data = project_root / 'data'
+    local_data = local_root / 'data'
+    repo_data.mkdir(parents=True)
+    local_data.mkdir(parents=True)
+    for name in ('jsonl_link.sqlite3', 'snapshot_context.sqlite3'):
+        (local_data / name).write_bytes(b'local-db')
+        (repo_data / name).symlink_to(local_data / name)
+    queue_path = local_data / 'bot_channel_queue.sqlite3'
+    ChannelQueue(queue_path).enqueue(channel='observations', payload={'value': 1})
+    (repo_data / 'bot_channel_queue.sqlite3').write_bytes(b'inactive-repo-queue')
+    monkeypatch.setenv('BOT_LOGS_LOCAL_FALLBACK_ROOT', str(local_root))
+    monkeypatch.setenv('BOT_CHANNEL_QUEUE_DB', str(queue_path))
+    monkeypatch.setenv('BOT_LOGS_PREFER_EXTERNAL', '0')
+    payload = storage_failback_sync._build_sqlite_skip_report(
+        project_root, tmp_path / 'external', mode='local_fallback', active_root=local_root,
+    )
+    row = next(row for row in payload['entries'] if row['relative_path'] == 'data/bot_channel_queue.sqlite3')
+    assert row['classification'] == 'active_local_queue'
+    assert row['route_verification']['state'] == 'active_local_ready'
+    assert row['prune_eligible'] is False
+    assert payload['route_verification']['mismatches'] == []
+    queue_path.unlink()
+    missing = storage_failback_sync._build_sqlite_skip_report(
+        project_root, tmp_path / 'external', mode='local_fallback', active_root=local_root,
+    )
+    assert 'data/bot_channel_queue.sqlite3' in missing['route_verification']['mismatches']
 
 
 def test_build_sqlite_skip_report_names_verified_mixed_route_external_curated(
@@ -725,6 +757,24 @@ def test_build_sqlite_skip_report_verifies_repo_passthrough_queue_db(
     assert payload["summary"]["active_passthrough_count"] == 1
     assert payload["summary"]["verification_mismatch_count"] == 0
     assert payload["route_verification"]["ready_count"] == 3
+
+    # A regular active database must never be certified with routed sidecars,
+    # including dangling links that Path.exists() does not report.
+    sidecar = repo_data / "bot_channel_queue.sqlite3-wal"
+    sidecar.symlink_to(local_data / "bot_channel_queue.sqlite3-wal")
+    conflicted = storage_failback_sync._build_sqlite_skip_report(
+        project_root, external_root, mode="external", active_root=external_root
+    )
+    queue = next(
+        row for row in conflicted["entries"]
+        if row["relative_path"] == "data/bot_channel_queue.sqlite3"
+    )
+    assert queue["route_verification"]["state"] == "passthrough_sidecar_route_conflict"
+    assert queue["passthrough_sidecar_conflicts"] == [str(sidecar)]
+    assert queue["prune_eligible"] is False
+    assert conflicted["summary"]["verification_mismatch_count"] == 1
+    assert conflicted["route_verification"]["ready_count"] == 2
+    sidecar.unlink()
 
 
 def test_refresh_frozen_sqlite_skip_report_updates_stale_queue_metadata(

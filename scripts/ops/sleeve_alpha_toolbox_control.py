@@ -18,6 +18,7 @@ if __package__ in {None, ""}:
     from core.alpha_concept_engine import MEASUREMENT_FUNCTIONS
     from core.institutional_decision_flow import (
         QUANTITATIVE_EVIDENCE_AXES,
+        build_research_priority_catalog,
         load_policy,
         resolve_sleeve_policy,
     )
@@ -26,6 +27,7 @@ else:
     from core.alpha_concept_engine import MEASUREMENT_FUNCTIONS
     from core.institutional_decision_flow import (
         QUANTITATIVE_EVIDENCE_AXES,
+        build_research_priority_catalog,
         load_policy,
         resolve_sleeve_policy,
     )
@@ -202,6 +204,8 @@ def build_payload(
     if not sleeves:
         raise ValueError("sleeve strategy expansion has no sleeves")
     decision_policy = load_policy(decision_policy_path)
+    priority_catalog = build_research_priority_catalog(decision_policy)
+    family_priorities = {row["family_id"]: row for row in priority_catalog["families"]}
     alpha_report = load_json(alpha_report_path)
     candidate = load_json(candidate_path)
     candidate_id = str(candidate.get("candidate_id") or "")
@@ -305,6 +309,11 @@ def build_payload(
                 "strategies": [str(value) for value in sleeve.get("strategies") or []],
                 "policy_family_id": family_id,
                 "policy_match_source": match_source,
+                "research_priority": {
+                    "status": family_priorities[family_id]["research_status"],
+                    "rank": family_priorities[family_id]["research_rank"],
+                    "definition_only": True,
+                },
                 "execution_eligible_by_policy": bool(
                     receipt.get("execution_eligible", False)
                 ),
@@ -395,6 +404,7 @@ def build_payload(
         ],
         "engine_route_counts": dict(sorted(engine_route_counts.items())),
         "universal_foundation_tools": foundation,
+        "research_priority_catalog": priority_catalog,
         "sleeve_routes": route_rows,
         "blockers": blockers,
         "source_receipts": {
@@ -446,6 +456,44 @@ def render_markdown(payload: Mapping[str, Any]) -> str:
             f"| `{row.get('axis', '')}` | {row.get('required_sleeve_count', 0)} | "
             f"{row.get('candidate_evidence_ready_sleeve_count', 0)} | {row.get('collection_priority', '')} |"
         )
+    catalog = _mapping(payload.get("research_priority_catalog"))
+    lines.extend(
+        [
+            "",
+            "## Priority Research Families",
+            "",
+            "Research order only: one primary hypothesis per bot. No workers, capital or trading permissions are activated by this catalog.",
+            "",
+        ]
+    )
+    for row in catalog.get("families") or []:
+        research = _mapping(row.get("research_definition"))
+        if not research:
+            continue
+        definition = _mapping(row.get("strategy_definition"))
+        lines.extend(
+            [
+                f"### {row['research_rank']}. {research['display_name']}",
+                "",
+                f"- Family: `{row['family_id']}`; horizon: `{definition.get('decision_horizon', '')}`.",
+                f"- Hypothesis: {research['hypothesis']}",
+                f"- Test: {research['signal_specification']}",
+                f"- Inputs: {', '.join(research['inputs_required'])}.",
+                f"- Abstain: {', '.join(research['abstain_when'])}.",
+                f"- Exits and invalidation: {research['exit_and_invalidation']}",
+                f"- Benchmarks: {', '.join(research['benchmarks'])}.",
+                f"- Cost stress: {research['cost_stress']}",
+                f"- Measure: {research['evaluation_metric']}",
+                f"- Reject: {', '.join(research['failure_criteria'])}.",
+                "",
+            ]
+        )
+    lines.append(
+        "Deferred research families: "
+        + ", ".join(catalog.get("deferred_family_ids") or [])
+        + "."
+    )
+    lines.append(str(catalog.get("deferred_policy") or ""))
     lines.extend(
         [
             "",

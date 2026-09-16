@@ -10,6 +10,7 @@ import statistics
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,10 @@ else:
     )
 
 from core.runtime_maintenance import maintenance_hold_snapshot
+from core.memory_pressure_evidence import allocation_only_memory_evidence
+from core.adaptive_resource_safety import adaptive_headroom_guard
+from core.workload_admission import build_admission
+from scripts.ops.long_runtime_common import evidence_freshness, governor_observation_contract, write_text_atomic
 from core.cpu_workload_policy import (
     load_cpu_workload_policy,
     nice_target_for_class,
@@ -587,7 +592,7 @@ PROCESS_RULES: tuple[tuple[str, str, str, bool], ...] = (
     ("/Applications/PyCharm", "interactive_cotenant", "external_cotenant", False),
     ("PyCharm.app", "interactive_cotenant", "external_cotenant", False),
     ("com.jetbrains.pycharm", "interactive_cotenant", "external_cotenant", False),
-    ("WindowServer", "interactive_cotenant", "external_cotenant", False),
+    ("WindowServer", "system_cotenant", "external_cotenant", False),
     ("Code Helper", "interactive_cotenant", "external_cotenant", False),
     ("spotlightknowledged", "system_cotenant", "external_system", False),
     ("mds_stores", "system_cotenant", "external_system", False),
@@ -636,11 +641,11 @@ def _run_capture(command: list[str]) -> str:
             check=False,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=1,
         )
     except Exception:
         return ""
-    return completed.stdout or ""
+    return (completed.stdout or "") if completed.returncode == 0 else ""
 
 
 def _run_apply_command(command: list[str]) -> dict[str, Any]:
@@ -893,6 +898,7 @@ def _parse_thermal_snapshot(text: str) -> dict[str, Any]:
         and "cpu power status" in normalized
     )
     return {
+        "measurement_available": "thermal warning" in normalized and "performance warning" in normalized,
         "thermal_warning_active": thermal_warning,
         "performance_warning_active": performance_warning,
         "cpu_power_warning_active": cpu_power_warning,
@@ -949,6 +955,16 @@ def _classify_process(command: str) -> dict[str, Any]:
             "priority_tier": "throttle_first",
             "throttle_candidate": True,
         }
+    if any(f"scripts/ops/{name}.py" in lowered for name in (
+        "training_research_batch", "training_dataset_preflight", "training_dataset_evaluation",
+    )):
+        return {"category": "research_training", "priority_tier": "research_downshift", "throttle_candidate": True}
+    if any(f"scripts/ops/{name}.py" in lowered for name in (
+        "production_hardening_watch", "governor_refresh", "memory_efficiency_control",
+        "memory_pressure_intelligence", "autonomic_resource_governor", "swap_pressure_governor",
+        "ingestion_storage_control", "soak_reliability_sentinel", "local_storage_reserve_guard",
+    )):
+        return {"category": "operator_observability", "priority_tier": "operator_visible", "throttle_candidate": False}
     for needle, category, priority, throttle_candidate in PROCESS_RULES:
         if needle.lower() in lowered:
             return {
@@ -1108,6 +1124,17 @@ def _apply_process_cpu_sample_windows(
     }
 
 
+def _protective_runtime_snapshot() -> dict[str, Any]:
+    # Only census owned processes; do not retry failed thermal/memory probes before holding work.
+    rows = _parse_process_rows(_run_capture(["ps", "-axo", "pid,ni,pcpu,pmem,etime,command"]), limit=128)
+    return {
+        "cpu_count": max(os.cpu_count() or 1, 1),
+        "top_processes": rows,
+        "critical_priority_processes": [row for row in rows if _workload_class_for_candidate(row) in {"live_execution", "paper_execution", "market_decision"}],
+        "measurement_evidence": {"ready": False, "mode": "protective_process_census_only"},
+    }
+
+
 def collect_runtime_snapshot(
     *, max_processes: int = TOP_PROCESS_COUNT
 ) -> dict[str, Any]:
@@ -1186,6 +1213,15 @@ def collect_runtime_snapshot(
         )
         category_counts[category] = category_counts.get(category, 0) + 1
 
+    thermal = _parse_thermal_snapshot(thermal_text)
+    vm = _parse_vm_stat(vm_stat_text)
+    missing_sensors = []
+    if not thermal["measurement_available"]:
+        missing_sensors.append("thermal")
+    if "pages_throttled" not in vm:
+        missing_sensors.append("vm_stat")
+    if not parsed_process_rows or not process_cpu_sampling["active"] or process_cpu_sampling["sample_window_count"] != process_cpu_sample_windows:
+        missing_sensors.append("process_cpu")
     return {
         "cpu_count": cpu_count,
         "load_averages": {
@@ -1193,8 +1229,9 @@ def collect_runtime_snapshot(
             "five_minutes": round(float(load_5m), 3),
             "fifteen_minutes": round(float(load_15m), 3),
         },
-        "thermal": _parse_thermal_snapshot(thermal_text),
-        "vm_stat": _parse_vm_stat(vm_stat_text),
+        "thermal": thermal,
+        "vm_stat": vm,
+        "measurement_evidence": {"ready": not missing_sensors, "missing_sensors": missing_sensors},
         "top_processes": process_rows,
         "critical_priority_processes": critical_priority_processes,
         "category_cpu": category_cpu,
@@ -1210,8 +1247,9 @@ def collect_runtime_snapshot(
 
 
 def _memory_pressure_level(
-    resource_guard: dict[str, Any], memory_efficiency: dict[str, Any]
+    resource_guard: dict[str, Any], memory_efficiency: dict[str, Any], swap_governor: dict[str, Any] | None = None
 ) -> str:
+    allocation_only = allocation_only_memory_evidence(resource_guard, swap_governor or {})["ready"]
     pressure_state = (
         str(resource_guard.get("memory_pressure_state") or "").strip().lower()
     )
@@ -1284,13 +1322,13 @@ def _memory_pressure_level(
         for reason in memory_reasons
         if not (
             reason in {"compressed_memory_high", "compressed_memory_critical"}
-            and (allocation_only_compression or managed_compression_relief)
+            and (allocation_only_compression or managed_compression_relief or allocation_only)
         )
     ]
     memory_clear_by_efficiency = bool(
         efficiency_state in {"green", "none", "normal", "clear"}
         and efficiency_kind in {"", "none", "normal", "green", "clear"}
-        and bool(cotenant.get("memory_pressure_clear", False))
+        and (bool(cotenant.get("memory_pressure_clear", False)) or allocation_only)
         and not effective_memory_reasons
     )
     if (
@@ -1307,8 +1345,8 @@ def _memory_pressure_level(
             efficiency_status in {"degraded", "needs_work"}
             and not memory_clear_by_efficiency
         )
-        or swap_used_gb >= 8.0
-        or efficiency_swap_used_gb >= 8.0
+        or (swap_used_gb >= 8.0 and not allocation_only)
+        or (efficiency_swap_used_gb >= 8.0 and not allocation_only)
     ):
         return "elevated"
     return "normal"
@@ -2027,9 +2065,45 @@ def _soft_cap_low_pressure_advisory(
         and (not operator_hot or operator_cpu < 80.0 or not operator_dominant)
         and saturation_score < 75.0
     )
+    attributed_cpu = max(
+        bot_owned_cpu,
+        round(
+            interactive_cpu
+            + system_cpu
+            + operator_cpu
+            + protected_cpu
+            + support_cpu
+            + storage_writer_cpu
+            + paper_cpu
+            + research_cpu,
+            3,
+        ),
+    )
+    unattributed_high_compute_guarded = bool(
+        throttle_profile == "sustain"
+        and compute_pressure_level == "high"
+        and attributed_cpu < 5.0
+        and memory_pressure_level == "normal"
+        and bool(live_read_only)
+        and saturation_score < 75.0
+        and not thermal_warning_active
+        and not performance_warning_active
+    )
+    unattributed_elevated_compute_guarded = bool(
+        throttle_profile in {"soft_cap", "sustain"}
+        and compute_pressure_level == "elevated"
+        and attributed_cpu < 5.0
+        and memory_pressure_level == "normal"
+        and bool(live_read_only)
+        and saturation_score < 62.0
+        and not thermal_warning_active
+        and not performance_warning_active
+    )
     bounded_storage_overlay_guarded = bool(
         (
             external_high_compute_guarded
+            or unattributed_high_compute_guarded
+            or unattributed_elevated_compute_guarded
             or external_cotenant_guarded
             or foreground_guarded
             or support_low_priority_guarded
@@ -2621,6 +2695,8 @@ def _soft_cap_low_pressure_advisory(
             or protected_work_guarded
             or external_cotenant_guarded
             or external_high_compute_guarded
+            or unattributed_high_compute_guarded
+            or unattributed_elevated_compute_guarded
             or paper_lane_low_priority_guarded
             or full_force_paper_research_mix_guarded_advisory
             or storage_writer_cooling_guarded_advisory
@@ -2662,6 +2738,8 @@ def _soft_cap_low_pressure_advisory(
             or storage_writer_cooling_guarded_advisory
             or external_cotenant_guarded
             or external_high_compute_guarded
+            or unattributed_high_compute_guarded
+            or unattributed_elevated_compute_guarded
             or storage_writer_cooling_guarded_ready
             or storage_writer_burst_complete_guarded_ready
             or bounded_writer_with_quiet_protected_lane_guarded_ready
@@ -2780,6 +2858,14 @@ def _soft_cap_low_pressure_advisory(
         reason = "external_high_compute_with_bounded_storage_overlay_is_capacity_limited_advisory"
     elif active and external_high_compute_guarded:
         reason = "external_high_compute_pressure_is_capacity_limited_advisory_not_bot_runtime_degradation"
+    elif active and unattributed_high_compute_guarded and bounded_storage_overlay_guarded:
+        reason = "unattributed_high_compute_with_bounded_storage_overlay_is_capacity_limited_advisory"
+    elif active and unattributed_high_compute_guarded:
+        reason = "unattributed_high_compute_is_capacity_limited_advisory_not_bot_runtime_degradation"
+    elif active and unattributed_elevated_compute_guarded and bounded_storage_overlay_guarded:
+        reason = "unattributed_elevated_compute_with_bounded_storage_overlay_is_capacity_limited_advisory"
+    elif active and unattributed_elevated_compute_guarded:
+        reason = "unattributed_elevated_compute_is_capacity_limited_advisory_not_bot_runtime_degradation"
     elif active and external_cotenant_guarded:
         reason = (
             "external_cotenant_pressure_is_guarded_advisory_not_bot_runtime_degradation"
@@ -2926,6 +3012,9 @@ def _soft_cap_low_pressure_advisory(
             "foreground_guarded": foreground_guarded,
             "external_cotenant_guarded": external_cotenant_guarded,
             "external_high_compute_guarded": external_high_compute_guarded,
+            "unattributed_high_compute_guarded": unattributed_high_compute_guarded,
+            "unattributed_elevated_compute_guarded": unattributed_elevated_compute_guarded,
+            "attributed_cpu_percent": round(attributed_cpu, 3),
             "system_secondary_to_bot_owned": system_secondary_to_bot_owned,
             "support_low_priority_guarded": support_low_priority_guarded,
             "throttle_candidate_support_cpu_percent": round(float(support_cpu), 3),
@@ -3689,6 +3778,8 @@ def _drain_friendly_sql_overrides(
 def _storage_drain_requires_acceleration(
     storage_pressure: dict[str, Any],
     sql_writer_coordination: dict[str, Any],
+    *,
+    responsive_tail: bool = False,
 ) -> bool:
     total_pending = max(
         _safe_int(storage_pressure.get("total_pending_lines"), 0),
@@ -3696,11 +3787,22 @@ def _storage_drain_requires_acceleration(
     )
     oldest_age = _safe_float(storage_pressure.get("oldest_pending_age_seconds"), 0.0)
     pressure_index = _safe_float(storage_pressure.get("pressure_index"), 0.0)
+    core_pending = max(
+        _safe_int(storage_pressure.get("core_pending_lines"), 0),
+        _safe_int(sql_writer_coordination.get("core_pending_lines"), 0),
+    )
+    # Match scheduled follow-through without widening the hard-pressure envelope.
+    tail_needs_service = responsive_tail and (
+        core_pending > 1000
+        or total_pending > 2500
+        or (core_pending > 0 and oldest_age > 60.0)
+    )
     return bool(
         bool(sql_writer_coordination.get("concentrated_core_drain", False))
         or pressure_index >= 0.5
         or total_pending >= 5000
         or oldest_age >= 240.0
+        or tail_needs_service
     )
 
 
@@ -3791,6 +3893,8 @@ def _sql_overrides_for_runtime_pressure(
     if not _storage_drain_requires_acceleration(
         storage_pressure,
         sql_writer_coordination,
+        responsive_tail=str(throttle_profile or "").strip().lower()
+        in {"observe", "soft_cap", "sustain"},
     ):
         coordination_pending = max(
             _safe_int(sql_writer_coordination.get("total_pending_lines"), 0),
@@ -4021,6 +4125,11 @@ def _runtime_env_overrides(
                         else "0"
                     ),
                     "PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE": "1",
+                    "PAPER_EXECUTION_RUNTIME_PAUSE_REASON": (
+                        str(paper_execution_policy.get("pressure_pause_reason") or "paper_execution_cpu_pressure")
+                        if paper_execution_policy.get("pressure_pause_active")
+                        else str(paper_execution_policy.get("reason") or "paper_admission_blocked")
+                    ),
                     "PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED": "0",
                     "PAPER_RECONCILIATION_HEARTBEAT_WHEN_PAUSED": "1",
                     "PAPER_400_RAMP_BLOCKED_RUNTIME_PAUSE": "1",
@@ -4035,6 +4144,7 @@ def _runtime_env_overrides(
                 {
                     "PAPER_CRYPTO_FEED_RUNTIME_PAUSED_FOR_PRESSURE": "0",
                     "PAPER_EXECUTION_RUNTIME_PAUSED_FOR_PRESSURE": "0",
+                    "PAPER_EXECUTION_RUNTIME_PAUSE_REASON": "",
                     "PAPER_EXECUTION_QUEUE_CONSUMER_ENABLED": "1",
                     "PAPER_RECONCILIATION_HEARTBEAT_WHEN_PAUSED": "1",
                     "PAPER_400_RAMP_BLOCKED_RUNTIME_PAUSE": "0",
@@ -4411,7 +4521,7 @@ def _write_env_override(path: Path, overrides: dict[str, str], *, profile: str) 
     current = path.read_text(encoding="utf-8") if path.exists() else ""
     if current == content:
         return False
-    path.write_text(content, encoding="utf-8")
+    write_text_atomic(path, content)
     return True
 
 
@@ -4916,6 +5026,44 @@ def _support_pause_exempt_for_storage_recovery(
     )
 
 
+def _risk_refresh_pause_exempt(
+    project_root: Path, row: dict[str, Any], payload: dict[str, Any]
+) -> bool:
+    """Give overdue risk evidence bounded progress, never bypass hard admission."""
+    try:
+        command = shlex.split(str(row.get("command") or ""))
+        if str(project_root / "scripts/build_one_numbers_report.py") not in command:
+            return False
+        elapsed = str(row.get("elapsed") or "")
+        if "-" in elapsed:
+            return False
+        parts = [int(part) for part in elapsed.split(":")]
+        if len(parts) not in {2, 3} or any(part < 0 for part in parts):
+            return False
+        seconds = sum(part * 60 ** index for index, part in enumerate(reversed(parts)))
+        if not 0 <= seconds < 900 or _safe_int(row.get("nice"), 0) < 15:
+            return False
+        if not 0 <= _safe_float(row.get("cpu_percent"), 101.0) <= 100:
+            return False
+        from scripts.ops.one_numbers_refresh_policy import bounded_refresh_admitted
+
+        return bounded_refresh_admitted(project_root, payload)
+    except (OSError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def _support_live_process(pid: int) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "pid=,nice=,%cpu=,%mem=,etime=,command="],
+            capture_output=True, text=True, check=False, timeout=2,
+        )
+        rows = _parse_process_rows(result.stdout, limit=1)
+        return rows[0] if result.returncode == 0 and rows else {}
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+
+
 def _apply_support_maintenance_pause(
     project_root: Path,
     candidates: list[dict[str, Any]],
@@ -4923,6 +5071,8 @@ def _apply_support_maintenance_pause(
     *,
     state_path: Path | None = None,
 ) -> dict[str, Any]:
+    from scripts.ops.approved_storage_recovery import process_exempt
+
     state_path = state_path or (
         project_root / "governance" / "health" / DEFAULT_SUPPORT_PAUSE_STATE_PATH.name
     )
@@ -4940,6 +5090,24 @@ def _apply_support_maintenance_pause(
     resumed: list[dict[str, Any]] = []
 
     if pause_requested:
+        retained = []
+        for paused in paused_rows:
+            pid = _safe_int(paused.get("pid"), 0)
+            live = _support_live_process(pid) if pid > 0 else {}
+            recovery_exempt = bool(live and process_exempt(project_root, live, payload))
+            if live and (recovery_exempt or _risk_refresh_pause_exempt(project_root, live, payload)):
+                try:
+                    os.kill(pid, signal.SIGCONT)
+                    resumed.append({
+                        "pid": pid, "ok": True, "signal": "SIGCONT",
+                        "reason": "operator_approved_bounded_storage_recovery" if recovery_exempt else "bounded_overdue_risk_refresh",
+                        "command_excerpt": str(live.get("command") or "")[:220],
+                    })
+                    continue
+                except OSError:
+                    pass
+            retained.append(paused)
+        paused_rows = retained
         eligible = [
             row
             for row in candidates
@@ -4954,6 +5122,8 @@ def _apply_support_maintenance_pause(
             and not _support_pause_exempt_for_storage_recovery(
                 row, payload, project_root=project_root
             )
+            and not _risk_refresh_pause_exempt(project_root, row, payload)
+            and not process_exempt(project_root, row, payload)
         ]
         pause_limit = max(
             1, _safe_int(os.getenv("RUNTIME_SUPPORT_MAINTENANCE_PAUSE_LIMIT", "2"), 2)
@@ -5881,6 +6051,7 @@ def apply_runtime_guard(
         active_sql_overrides.update(
             {str(key): str(value) for key, value in sql_writer_fluidity_env.items()}
         )
+    env_overrides["RUNTIME_GOVERNOR_LEASE_TIMESTAMP_UTC"] = str(payload.get("timestamp_utc") or "")
     return {
         "applied": True,
         "override_path": str(override_path),
@@ -7050,11 +7221,13 @@ def _sql_writer_fluidity_contract(
 
 
 def build_payload(
-    project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[str, Any] | None = None
+    project_root: Path = PROJECT_ROOT, *, runtime_snapshot: dict[str, Any] | None = None,
+    protective_hold: bool = False,
 ) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     resource_guard = load_json(health_root / "resource_guard_latest.json")
     memory_efficiency = load_json(health_root / "memory_efficiency_control_latest.json")
+    swap_governor = load_json(health_root / "swap_pressure_governor_latest.json")
     live_runtime = load_json(
         health_root / "live_runtime_separation_control_latest.json"
     )
@@ -7067,6 +7240,15 @@ def build_payload(
         health_root / "backpressure_drainer_fleet_latest.json"
     )
     computer_task = load_json(health_root / "computer_task_intelligence_latest.json")
+    observation = governor_observation_contract({"resource_guard": (resource_guard, 120.0)})
+    contextual_evidence = {
+        name: evidence_freshness(value, max_age_minutes=2.0)
+        for name, value in {"memory_efficiency": memory_efficiency, "computer_task": computer_task}.items()
+    }
+    if not contextual_evidence["memory_efficiency"]["fresh"]:
+        memory_efficiency = {}
+    if not contextual_evidence["computer_task"]["fresh"]:
+        computer_task = {}
     paper_ramp = load_json(health_root / "paper_400_ramp_latest.json") or load_json(
         health_root / "paper_400_ramp_control_latest.json"
     )
@@ -7074,8 +7256,25 @@ def build_payload(
     snapshot = (
         runtime_snapshot
         if isinstance(runtime_snapshot, dict)
-        else collect_runtime_snapshot()
+        else _protective_runtime_snapshot() if protective_hold else collect_runtime_snapshot()
     )
+    runtime_evidence = snapshot.get("measurement_evidence")
+    runtime_evidence = runtime_evidence if isinstance(runtime_evidence, dict) else {}
+    if protective_hold or runtime_evidence.get("ready") is False:
+        observation.update(input_evidence_ready=False, freshness_state="awaiting_fresh_inputs")
+    previous_runtime = load_json(health_root / "runtime_throttle_control_latest.json")
+    prior_safety = previous_runtime.get("adaptive_safety_limits")
+    safety_limits = adaptive_headroom_guard(resource_guard, prior_safety if isinstance(prior_safety, dict) else {})
+    if not safety_limits["input_evidence_ready"]:
+        observation.update(input_evidence_ready=False, freshness_state="awaiting_fresh_inputs")
+    if protective_hold or runtime_evidence.get("ready") is False:
+        safety_limits.update(active=True, state="protective_hold", minimum_memory_pressure_level="high",
+                             clear_since_source_timestamp_utc=None,
+                             reasons=["upstream_refresh_failed" if protective_hold else "runtime_sensor_unavailable"])
+    thermal_input = snapshot.get("thermal")
+    if isinstance(thermal_input, dict) and (thermal_input.get("thermal_warning_active") or thermal_input.get("performance_warning_active")):
+        safety_limits.update(active=True, state="protective_hold", minimum_memory_pressure_level="high",
+                             clear_since_source_timestamp_utc=None, reasons=[*safety_limits["reasons"], "thermal_or_performance_warning"])
     cpu_count = max(_safe_int(snapshot.get("cpu_count"), os.cpu_count() or 1), 1)
     load_averages = (
         snapshot.get("load_averages")
@@ -7117,7 +7316,16 @@ def build_payload(
             and bool(paper_execution_policy.get("paper_execution_allowed", False))
         )
     )
-    memory_pressure_level = _memory_pressure_level(resource_guard, memory_efficiency)
+    memory_pressure_level = _memory_pressure_level(resource_guard, memory_efficiency, swap_governor)
+    observed_memory_pressure_level = memory_pressure_level
+    if safety_limits["active"]:
+        if safety_limits["minimum_memory_pressure_level"] == "high":
+            memory_pressure_level = "high"
+        elif memory_pressure_level == "normal":
+            memory_pressure_level = "elevated"
+    if not observation["input_evidence_ready"]:
+        # Unknown observations must not reopen work using default zero counters.
+        memory_pressure_level = "high"
     cotenant_contract = _cotenant_awareness_contract(memory_efficiency, computer_task)
     mlx_intelligence_contract = _mlx_intelligence_contract(mlx_router)
     library_utilization_contract = _library_utilization_contract(library_router)
@@ -7147,6 +7355,8 @@ def build_payload(
         memory_pressure_level=memory_pressure_level,
         saturation_score=saturation_score,
     )
+    if not observation["input_evidence_ready"]:
+        throttle_profile = "protect_live"
     storage_pressure_index = _safe_float(storage_control.get("pressure_index"), 0.0)
     storage_severity = str(storage_control.get("severity") or "").strip().lower()
     storage_backpressure = (
@@ -7718,15 +7928,43 @@ def build_payload(
         ]
     )
 
+    workload_admission = build_admission(
+        resource_guard,
+        {
+            **observation,
+            "runtime_measurement_evidence": runtime_evidence,
+            "protective_hold": protective_hold,
+            "adaptive_safety_limits": safety_limits,
+            "memory_pressure_level": memory_pressure_level,
+            "host_saturation_score": saturation_score,
+            "host_pressure_attribution": host_pressure_attribution,
+            "mac_fluidity_contract": mac_fluidity_contract,
+            "runtime_snapshot": {
+                "cpu_count": cpu_count,
+                "load_averages": load_averages,
+                "thermal": thermal,
+            },
+        },
+        memory_efficiency,
+        previous_runtime.get("workload_admission"),
+    )
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
+        "workload_admission": workload_admission,
         "ok": overall_status in {"ready", "advisory"},
         "overall_status": overall_status,
         "throttle_profile": throttle_profile,
         "host_saturation_score": saturation_score,
         "compute_pressure_level": compute_pressure_level,
         "memory_pressure_level": memory_pressure_level,
+        "observed_memory_pressure_level": observed_memory_pressure_level,
+        "adaptive_safety_limits": safety_limits,
+        "runtime_measurement_evidence": runtime_evidence,
+        "protective_hold": protective_hold,
+        "memory_pressure_evidence": allocation_only_memory_evidence(resource_guard, swap_governor),
+        **observation,
+        "contextual_input_evidence": contextual_evidence,
         "protect_live_autonomic_reclassification": protect_live_autonomic_reclassification,
         "soft_cap_advisory_reclassification": soft_cap_advisory_reclassification,
         "runtime_snapshot": {
@@ -7920,12 +8158,13 @@ def main() -> int:
         help="Allow this intentional operator command to update the tracked master_bot_registry.json source file.",
     )
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--protective-hold", action="store_true", help="Tighten host controls after an upstream refresh failure; never grants workload admission.")
     parser.add_argument("--max-renice-processes", type=int, default=4)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
-    payload = build_payload(project_root)
+    payload = build_payload(project_root, protective_hold=True) if args.protective_hold else build_payload(project_root)
     payload["apply_result"] = {
         "applied": False,
         "override_path": str(Path(args.override_file).expanduser()),
@@ -7942,9 +8181,10 @@ def main() -> int:
             allow_source_registry_write=args.allow_source_registry_write,
             max_renice_processes=args.max_renice_processes,
         )
-        payload = build_payload(project_root)
+        # Publish the decision actually applied; observe its effects on the next pass.
         payload["apply_result"] = apply_result
         payload["controller_contract"]["mode"] = "applied"
+        payload["controller_contract"]["observation_phase"] = "pre_apply"
     out_path = Path(args.out_file).expanduser()
     write_payload(out_path, payload)
     if args.json:

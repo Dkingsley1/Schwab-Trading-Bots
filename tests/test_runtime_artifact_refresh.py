@@ -1,5 +1,6 @@
 import json
 import os
+import pytest
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,71 @@ from scripts.ops import runtime_artifact_refresh
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_workflow_deadline_bounds_retries_and_publishes_unfinished_debt(
+    tmp_path, monkeypatch
+):
+    clock = [0.0]
+    monkeypatch.setattr(runtime_artifact_refresh.time, "monotonic", lambda: clock[0])
+    calls = []
+    progress = []
+
+    def runner(spec, root):
+        calls.append((spec["name"], spec["timeout_sec"]))
+        clock[0] += 10
+        return {"rc": 1, "payload": {}, "payload_source": "artifact_fallback"}
+
+    specs = [
+        {
+            "name": name,
+            "payload_path": tmp_path / f"{name}.json",
+            "cmd": ["unused"],
+            "timeout_sec": 300,
+            "producer_owned_publication": True,
+        }
+        for name in ("first", "second")
+    ]
+    payload = runtime_artifact_refresh.build_payload(
+        tmp_path,
+        specs=specs,
+        runner=runner,
+        max_run_seconds=10,
+        progress_callback=progress.append,
+    )
+    assert calls == [("first", 10)]
+    assert payload["workflow_deadline_exhausted"] is True
+    assert payload["overall_status"] == "blocked"
+    assert payload["all_required_artifacts_fresh"] is False
+    assert progress[-1]["completed_step_count"] == 2
+    assert all(row["readiness_authority"] is False for row in progress)
+    assert not (tmp_path / "first.json").exists()
+
+
+def test_workflow_progress_records_interruption(tmp_path):
+    progress = []
+
+    def interrupted(spec, root):
+        raise KeyboardInterrupt()
+
+    import pytest
+
+    with pytest.raises(KeyboardInterrupt):
+        runtime_artifact_refresh.build_payload(
+            tmp_path,
+            specs=[
+                {
+                    "name": "first",
+                    "payload_path": tmp_path / "first.json",
+                    "cmd": ["unused"],
+                }
+            ],
+            runner=interrupted,
+            max_run_seconds=10,
+            progress_callback=progress.append,
+        )
+    assert progress[-1]["run_state"] == "interrupted"
+    assert progress[-1]["active_step"] == "first"
 
 
 def test_runtime_artifact_refresh_caps_single_line_diagnostic_tails() -> None:
@@ -88,23 +154,25 @@ def test_runtime_artifact_refresh_skips_nested_entry_without_overwriting_outer_a
     assert not out_path.exists()
 
 
+@pytest.mark.parametrize("refresh_scope", ["training", "profitability", "training-profitability", "lineage-inputs"])
 def test_profitability_scope_holds_generation_lock_for_the_whole_epoch(
     monkeypatch,
     tmp_path: Path,
+    refresh_scope: str,
 ) -> None:
     events: list[str] = []
 
     @contextmanager
     def fake_lock(project_root: Path, *, timeout_seconds: float):
         assert project_root == tmp_path
-        assert timeout_seconds == 120.0
+        assert timeout_seconds == (5.0 if refresh_scope == "lineage-inputs" else 120.0)
         events.append("acquired")
         yield object()
         events.append("released")
 
     def fake_build(project_root: Path, *, scope: str):
         assert project_root == tmp_path
-        assert scope == "training-profitability"
+        assert scope == refresh_scope
         assert os.environ[runtime_artifact_refresh.PAPER_PROFITABILITY_LOCK_ENV] == "1"
         events.append("built")
         return {"ok": True, "overall_status": "ready"}
@@ -119,7 +187,7 @@ def test_profitability_scope_holds_generation_lock_for_the_whole_epoch(
 
     payload = runtime_artifact_refresh.build_payload_serialized(
         tmp_path,
-        scope="training-profitability",
+        scope=refresh_scope,
     )
 
     assert events == ["acquired", "built", "released"]
@@ -131,6 +199,172 @@ def test_profitability_scope_holds_generation_lock_for_the_whole_epoch(
         ]
         is True
     )
+
+
+def test_lineage_lock_contention_returns_deferred_without_starting_refresh(
+    monkeypatch, tmp_path: Path
+) -> None:
+    waits = []
+
+    @contextmanager
+    def busy_lock(project_root: Path, *, timeout_seconds: float):
+        assert project_root == tmp_path
+        waits.append(timeout_seconds)
+        raise TimeoutError("generation lock busy")
+        yield
+
+    def forbidden_refresh(*args, **kwargs):
+        pytest.fail("lock contention must not start producers or publish progress")
+
+    monkeypatch.setenv(runtime_artifact_refresh.PAPER_PROFITABILITY_LOCK_ENV, "previous")
+    monkeypatch.setattr(
+        runtime_artifact_refresh, "paper_profitability_generation_lock", busy_lock
+    )
+    monkeypatch.setattr(runtime_artifact_refresh, "build_payload", forbidden_refresh)
+    payload = runtime_artifact_refresh.build_payload_serialized(
+        tmp_path,
+        scope="lineage-inputs",
+        max_run_seconds=165,
+        progress_callback=forbidden_refresh,
+    )
+
+    assert waits == [5.0]
+    assert payload["overall_status"] == "deferred"
+    assert payload["reason"] == "generation_lock_contention"
+    assert payload["ok"] is False
+    assert payload["receipt_only"] is True
+    assert payload["refresh_started"] is False
+    assert payload["artifact_refreshed_this_cycle"] is False
+    assert payload["all_required_artifacts_fresh"] is False
+    assert payload["artifacts_recovered_count"] == 0
+    assert payload["max_run_seconds"] == 165
+    assert payload["steps"] == []
+    assert not payload.get("evidence_epoch_id")
+    assert not payload.get("evidence_epoch_started_utc")
+    assert payload["single_writer_epoch_lock"]["held"] is False
+    assert payload["single_writer_epoch_lock"]["wait_budget_seconds"] == 5.0
+    assert os.environ[runtime_artifact_refresh.PAPER_PROFITABILITY_LOCK_ENV] == "previous"
+
+
+def test_lineage_lock_wait_preserves_refresh_budget(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    @contextmanager
+    def acquired_lock(project_root: Path, *, timeout_seconds: float):
+        calls.append(("lock", timeout_seconds))
+        yield
+
+    def build(project_root: Path, *, scope: str, max_run_seconds: int):
+        assert project_root == tmp_path
+        assert scope == "lineage-inputs"
+        calls.append(("refresh", max_run_seconds))
+        return {"ok": True, "overall_status": "ready"}
+
+    monkeypatch.setattr(
+        runtime_artifact_refresh, "paper_profitability_generation_lock", acquired_lock
+    )
+    monkeypatch.setattr(runtime_artifact_refresh, "build_payload", build)
+    payload = runtime_artifact_refresh.build_payload_serialized(
+        tmp_path, scope="lineage-inputs", max_run_seconds=165
+    )
+
+    assert calls == [("lock", 5.0), ("refresh", 165)]
+    assert payload["single_writer_epoch_lock"]["held"] is True
+
+
+def test_lineage_producer_timeout_is_not_mislabeled_lock_contention(
+    monkeypatch, tmp_path: Path
+) -> None:
+    released = []
+
+    @contextmanager
+    def acquired_lock(project_root: Path, *, timeout_seconds: float):
+        try:
+            yield
+        finally:
+            released.append(True)
+
+    def timed_out(*args, **kwargs):
+        raise TimeoutError("producer timed out")
+
+    monkeypatch.delenv(runtime_artifact_refresh.PAPER_PROFITABILITY_LOCK_ENV, raising=False)
+    monkeypatch.setattr(
+        runtime_artifact_refresh, "paper_profitability_generation_lock", acquired_lock
+    )
+    monkeypatch.setattr(runtime_artifact_refresh, "build_payload", timed_out)
+
+    with pytest.raises(TimeoutError, match="producer timed out"):
+        runtime_artifact_refresh.build_payload_serialized(tmp_path, scope="lineage-inputs")
+
+    assert released == [True]
+    assert runtime_artifact_refresh.PAPER_PROFITABILITY_LOCK_ENV not in os.environ
+
+
+def test_other_scope_lock_timeout_is_unchanged(monkeypatch, tmp_path: Path) -> None:
+    @contextmanager
+    def busy_lock(project_root: Path, *, timeout_seconds: float):
+        assert timeout_seconds == 120.0
+        raise TimeoutError("generation lock busy")
+        yield
+
+    monkeypatch.setattr(
+        runtime_artifact_refresh, "paper_profitability_generation_lock", busy_lock
+    )
+    with pytest.raises(TimeoutError, match="generation lock busy"):
+        runtime_artifact_refresh.build_payload_serialized(tmp_path, scope="profitability")
+
+
+def test_lineage_lock_contention_cli_publishes_receipt_preserving_evidence(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    out_path = tmp_path / "lineage_inputs_refresh_latest.json"
+    progress_path = out_path.with_suffix(".progress.json")
+    evidence_path = tmp_path / "governance/health/runtime_training_snapshot_latest.json"
+    preserved = {}
+    for path in (out_path, progress_path, evidence_path):
+        _write_json(path, {"timestamp_utc": "2026-09-15T18:59:00Z", "existing": True})
+        preserved[path] = (path.read_bytes(), path.stat().st_mtime_ns)
+
+    @contextmanager
+    def busy_lock(project_root: Path, *, timeout_seconds: float):
+        assert project_root == tmp_path
+        assert timeout_seconds == 5.0
+        raise TimeoutError("generation lock busy")
+        yield
+
+    def forbidden_refresh(*args, **kwargs):
+        pytest.fail("deferred CLI must not run a producer or dashboard")
+
+    monkeypatch.delenv(runtime_artifact_refresh.REFRESH_ACTIVE_ENV, raising=False)
+    monkeypatch.setattr(
+        runtime_artifact_refresh, "paper_profitability_generation_lock", busy_lock
+    )
+    monkeypatch.setattr(runtime_artifact_refresh, "build_payload", forbidden_refresh)
+    monkeypatch.setattr(runtime_artifact_refresh, "_publish_dashboard", forbidden_refresh)
+    monkeypatch.setattr(
+        runtime_artifact_refresh.sys,
+        "argv",
+        [
+            "runtime_artifact_refresh.py",
+            "--project-root", str(tmp_path),
+            "--scope", "lineage-inputs",
+            "--max-run-seconds", "165",
+            "--out-file", str(out_path),
+            "--json",
+        ],
+    )
+
+    assert runtime_artifact_refresh.main() == 2
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert captured.err == ""
+    assert payload["overall_status"] == "deferred"
+    assert payload["ok"] is False
+    assert payload["artifact_refreshed_this_cycle"] is False
+    receipt_path = out_path.with_suffix(".deferred.json")
+    assert json.loads(receipt_path.read_text()) == payload
+    for path, original in preserved.items():
+        assert (path.read_bytes(), path.stat().st_mtime_ns) == original
 
 
 def test_runtime_artifact_refresh_reports_recovered_and_blocked_outputs(
@@ -630,6 +864,49 @@ def test_runtime_artifact_refresh_training_scope_is_dependency_closed(
     )
 
 
+def test_lineage_inputs_forces_bounded_snapshot_refresh_without_mutating_other_scopes(
+    tmp_path: Path,
+) -> None:
+    specs = runtime_artifact_refresh._step_specs(tmp_path)
+    original_snapshot = next(
+        row for row in specs if row["name"] == "runtime_training_snapshot_verified"
+    )
+    original_command = list(original_snapshot["cmd"])
+    original_timeout = original_snapshot["timeout_sec"]
+
+    selected = runtime_artifact_refresh._select_scope_specs(specs, "lineage-inputs")
+    assert [row["name"] for row in selected] == [
+        "paper_replay_training",
+        "runtime_training_snapshot_verified",
+        "snapshot_coverage_training_verified",
+        "point_in_time_event_store_verified",
+        "feature_store_manifest_verified",
+    ]
+    snapshot = next(
+        row for row in selected if row["name"] == "runtime_training_snapshot_verified"
+    )
+    command = snapshot["cmd"]
+    assert command.count("--light-refresh-existing") == 1
+    for flag, value in (
+        ("--reuse-if-fresh-minutes", "0"),
+        ("--max-runtime-seconds", "120"),
+        ("--incremental-max-runtime-seconds", "15"),
+    ):
+        assert command.count(flag) == 1
+        assert command[command.index(flag) + 1] == value
+    assert snapshot["timeout_sec"] == 125
+    assert snapshot["producer_owned_publication"] is True
+    assert original_snapshot["cmd"] == original_command
+    assert original_snapshot["timeout_sec"] == original_timeout
+    training_snapshot = next(
+        row
+        for row in runtime_artifact_refresh._select_scope_specs(specs, "training")
+        if row["name"] == "runtime_training_snapshot_verified"
+    )
+    assert training_snapshot["cmd"] == original_command
+    assert training_snapshot["timeout_sec"] == original_timeout
+
+
 def test_runtime_artifact_refresh_cell_health_scope_refreshes_every_cell_input(
     tmp_path: Path,
 ) -> None:
@@ -831,6 +1108,15 @@ def test_runtime_artifact_refresh_uses_collection_operational_projection() -> No
     )
 
     assert status == "ready_operational"
+
+
+def test_collection_terminal_persists_cursors_without_registry_writes(tmp_path) -> None:
+    spec = next(row for row in runtime_artifact_refresh._step_specs(tmp_path)
+                if row["name"] == "data_collection_observation_rollup_terminal")
+    assert "--apply" in spec["cmd"]
+    assert "--state-only" in spec["cmd"]
+    assert spec["timeout_sec"] == 180
+    assert spec["producer_owned_publication"] is True
 
 
 def test_runtime_artifact_refresh_uses_generic_operational_projection() -> None:

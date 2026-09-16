@@ -525,6 +525,25 @@ def test_auth_notification_repeat_floor_defaults_to_thirty_minutes(monkeypatch) 
     assert watch._event_repeat_seconds("tripwire:all_sleeves", 300.0) == 300.0
 
 
+def test_routine_nvda_delivery_uses_material_signature_and_six_hour_repeat():
+    key = "critical_alert:critical:critical_latest_covered_call_roll_watch:nvda_routine:" + "a" * 64
+    assert watch._event_repeat_seconds(key, 300) == 21600
+    assert watch._delivery_signature(key, "price one") == watch._delivery_signature(key, "price two")
+    assert watch._delivery_signature(key.replace("a" * 64, "b" * 64), "price one") != watch._delivery_signature(key, "price one")
+    urgent = "critical_alert:critical:critical_latest_covered_call_roll_watch"
+    assert watch._event_repeat_seconds(urgent, 300) == 300
+    assert watch._delivery_signature(urgent, "urgent") == "urgent"
+
+
+def test_routine_nvda_memory_survives_missing_alert_refresh():
+    now = datetime.now(timezone.utc)
+    signature = "critical_alert:nvda_routine:" + "a" * 64
+    assert watch._retain_routine_notification_memory(signature, now.isoformat(), now)
+    assert not watch._retain_routine_notification_memory(signature, "bad", now)
+    assert not watch._retain_routine_notification_memory("auth_lease", now.isoformat(), now)
+    assert not watch._retain_routine_notification_memory(signature, (now - timedelta(hours=7)).isoformat(), now)
+
+
 def test_critical_alert_events_suppress_training_done(
     monkeypatch, tmp_path: Path
 ) -> None:

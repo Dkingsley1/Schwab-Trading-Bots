@@ -161,7 +161,13 @@ def _write_text_with_local_fallback(path: Path, text: str) -> dict[str, str]:
         path.write_text(text, encoding="utf-8")
         return {"storage_mode": "primary", "path": str(path)}
     except OSError as exc:
-        if exc.errno not in {errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)}:
+        fallback_errnos = {
+            errno.EACCES,
+            errno.EPERM,
+            errno.ENOSPC,
+            getattr(errno, "EDQUOT", errno.ENOSPC),
+        }
+        if exc.errno not in fallback_errnos:
             raise
         fallback = _local_fallback_path(path)
         if fallback is None:

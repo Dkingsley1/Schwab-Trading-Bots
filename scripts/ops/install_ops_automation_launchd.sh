@@ -16,6 +16,7 @@ if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
   source "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" "$RUNTIME_PROFILE" --quiet
 fi
 PY="$(resolve_runtime_python)"
+SCHEDULED_LIFECYCLE_RUNNER="$PROJECT_ROOT/scripts/ops/run_scheduled_lifecycle_job.py"
 SQL_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_sql_link_writer_launchd.sh"
 FX_MARKET_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_fx_market_context_launchd.sh"
 OPTIONS_FLOW_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_options_flow_context_launchd.sh"
@@ -29,6 +30,7 @@ BACKLOG_RETRY_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_external_backlog_retry_l
 STORAGE_BACKPRESSURE_AUTOPILOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_storage_backpressure_autopilot_launchd.sh"
 TRAINING_DRAIN_AUTOPILOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_training_drain_autopilot_launchd.sh"
 STORAGE_PRESSURE_CLEARANCE_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_storage_pressure_clearance_launchd.sh"
+LOCAL_SQL_SHARD_STANDBY_PRUNE_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_local_sql_shard_standby_prune_launchd.sh"
 STORAGE_RECONNECT_INFRABOT_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_storage_reconnect_infrabot_launchd.sh"
 INFRA_AUTOFIX_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_infrastructure_autofix_launchd.sh"
 MASTER_INFRA_SUPERVISOR_RUN_SCRIPT="$PROJECT_ROOT/scripts/ops/run_master_infrastructure_supervisor_launchd.sh"
@@ -70,6 +72,7 @@ chmod +x "$BACKLOG_RETRY_RUN_SCRIPT"
 chmod +x "$STORAGE_BACKPRESSURE_AUTOPILOT_RUN_SCRIPT"
 chmod +x "$TRAINING_DRAIN_AUTOPILOT_RUN_SCRIPT"
 chmod +x "$STORAGE_PRESSURE_CLEARANCE_RUN_SCRIPT"
+chmod +x "$LOCAL_SQL_SHARD_STANDBY_PRUNE_RUN_SCRIPT"
 chmod +x "$STORAGE_RECONNECT_INFRABOT_RUN_SCRIPT"
 chmod +x "$INFRA_AUTOFIX_RUN_SCRIPT"
 chmod +x "$MASTER_INFRA_SUPERVISOR_RUN_SCRIPT"
@@ -91,6 +94,38 @@ chmod +x "$RUNTIME_SMOOTH_MODE_RUN_SCRIPT"
 chmod +x "$SOAK_SELF_HEAL_RUN_SCRIPT"
 chmod +x "$PRODUCTION_HARDENING_WATCH_RUN_SCRIPT"
 
+xml_escape() {
+  local value="$1"
+  value="${value//&/&amp;}"
+  value="${value//</&lt;}"
+  value="${value//>/&gt;}"
+  value="${value//\"/&quot;}"
+  value="${value//\'/&apos;}"
+  print -rn -- "$value"
+}
+
+scheduled_program_arguments() {
+  local job_id="$1"
+  local artifact="$2"
+  local interval="$3"
+  local deadline="$4"
+  shift 4
+  local arg
+  print -r -- "  <key>ProgramArguments</key><array>"
+  for arg in "$PY" "$SCHEDULED_LIFECYCLE_RUNNER" \
+    "--job-id" "$job_id" \
+    "--artifact" "$artifact" \
+    "--schedule-interval-seconds" "$interval" \
+    "--deadline-seconds" "$deadline" \
+    "--"; do
+    print -r -- "    <string>$(xml_escape "$arg")</string>"
+  done
+  for arg in "$@"; do
+    print -r -- "    <string>$(xml_escape "$arg")</string>"
+  done
+  print -r -- "  </array>"
+}
+
 WATCHDOG_PLIST="$AGENTS_DIR/com.dankingsley.ops.watchdog.plist"
 REPORT_PLIST="$AGENTS_DIR/com.dankingsley.ops.daily_report.plist"
 CANARY_PLIST="$AGENTS_DIR/com.dankingsley.ops.canary_tuner.plist"
@@ -111,17 +146,22 @@ ONE_NUMBERS_REGRESSION_GUARD_PLIST="$AGENTS_DIR/com.dankingsley.ops.one_numbers_
 ONE_NUMBERS_INTERVAL="${ONE_NUMBERS_REFRESH_LAUNCHD_INTERVAL_SECONDS:-180}"
 ONE_NUMBERS_REGRESSION_GUARD_INTERVAL="${ONE_NUMBERS_REGRESSION_GUARD_INTERVAL_SECONDS:-300}"
 WATCHDOG_INTERVAL="${OPS_WATCHDOG_LAUNCHD_INTERVAL_SECONDS:-180}"
+ADAPTIVE_OPS_POLICY_INTERVAL="${ADAPTIVE_OPS_POLICY_INTERVAL_SECONDS:-60}"
 MAINT_STRATEGY_PLIST="$AGENTS_DIR/com.dankingsley.ops.maintenance_strategy_reloader.plist"
+ADAPTIVE_OPS_POLICY_PLIST="$AGENTS_DIR/com.dankingsley.ops.adaptive_ops_recovery_policy.plist"
 RETENTION_PLIST="$AGENTS_DIR/com.dankingsley.ops.data_retention.plist"
 RETENTION_INTERVAL="${RETENTION_REFRESH_INTERVAL_SECONDS:-3600}"
 BACKLOG_RETRY_PLIST="$AGENTS_DIR/com.dankingsley.ops.external_backlog_retry.plist"
 BACKLOG_RETRY_INTERVAL="${EXTERNAL_BACKLOG_RETRY_LAUNCHD_INTERVAL_SECONDS:-300}"
+SQL_LINK_WRITER_INTERVAL="${SQL_LINK_WRITER_INTERVAL_SECONDS:-60}"
 STORAGE_BACKPRESSURE_AUTOPILOT_PLIST="$AGENTS_DIR/com.dankingsley.ops.storage_backpressure_autopilot.plist"
-STORAGE_BACKPRESSURE_AUTOPILOT_INTERVAL="${STORAGE_BACKPRESSURE_AUTOPILOT_INTERVAL_SECONDS:-300}"
+STORAGE_BACKPRESSURE_AUTOPILOT_INTERVAL="${STORAGE_BACKPRESSURE_AUTOPILOT_INTERVAL_SECONDS:-60}"
 TRAINING_DRAIN_AUTOPILOT_PLIST="$AGENTS_DIR/com.dankingsley.ops.training_drain_autopilot.plist"
 TRAINING_DRAIN_AUTOPILOT_INTERVAL="${TRAINING_DRAIN_AUTOPILOT_INTERVAL_SECONDS:-300}"
 STORAGE_PRESSURE_CLEARANCE_PLIST="$AGENTS_DIR/com.dankingsley.ops.storage_pressure_clearance.plist"
 STORAGE_PRESSURE_CLEARANCE_INTERVAL="${STORAGE_PRESSURE_CLEARANCE_INTERVAL_SECONDS:-180}"
+LOCAL_SQL_SHARD_STANDBY_PRUNE_PLIST="$AGENTS_DIR/com.dankingsley.ops.local_sql_shard_standby_prune.plist"
+LOCAL_SQL_SHARD_STANDBY_PRUNE_INTERVAL="${LOCAL_SQL_SHARD_STANDBY_PRUNE_INTERVAL_SECONDS:-300}"
 STORAGE_RECONNECT_INFRABOT_PLIST="$AGENTS_DIR/com.dankingsley.ops.storage_reconnect_infrabot.plist"
 STORAGE_RECONNECT_INFRABOT_INTERVAL="${STORAGE_RECONNECT_INFRABOT_INTERVAL_SECONDS:-240}"
 WRITER_COORDINATOR_PLIST="$AGENTS_DIR/com.dankingsley.ops.writer_cycle_coordinator.plist"
@@ -160,7 +200,7 @@ CREATIVE_COTENANT_GUARD_INTERVAL="${CREATIVE_COTENANT_GUARD_INTERVAL_SECONDS:-20
 SWAP_PRESSURE_GOVERNOR_PLIST="$AGENTS_DIR/com.dankingsley.ops.swap_pressure_governor.plist"
 SWAP_PRESSURE_GOVERNOR_INTERVAL="${SWAP_PRESSURE_GOVERNOR_INTERVAL_SECONDS:-60}"
 RUNTIME_SMOOTH_MODE_PLIST="$AGENTS_DIR/com.dankingsley.ops.runtime_smooth_mode.plist"
-RUNTIME_SMOOTH_MODE_INTERVAL="${RUNTIME_SMOOTH_MODE_INTERVAL_SECONDS:-60}"
+RUNTIME_SMOOTH_MODE_INTERVAL="${RUNTIME_SMOOTH_MODE_INTERVAL_SECONDS:-20}"
 SOAK_SELF_HEAL_PLIST="$AGENTS_DIR/com.dankingsley.ops.soak_self_healing.plist"
 SOAK_SELF_HEAL_INTERVAL="${SOAK_SELF_HEAL_INTERVAL_SECONDS:-900}"
 SOAK_RELIABILITY_SENTINEL_PLIST="$AGENTS_DIR/com.dankingsley.ops.soak_reliability_sentinel.plist"
@@ -175,7 +215,7 @@ cat > "$WATCHDOG_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.watchdog</string>
-  <key>ProgramArguments</key><array><string>$PY</string><string>$PROJECT_ROOT/scripts/ops/process_watchdog.py</string></array>
+$(scheduled_program_arguments watchdog "governance/health/process_watchdog_latest.json" "$WATCHDOG_INTERVAL" 120 "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py")
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>Nice</key><integer>0</integer>
   <key>RunAtLoad</key><true/>
@@ -190,7 +230,7 @@ cat > "$REPORT_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.daily_report</string>
-  <key>ProgramArguments</key><array><string>$PY</string><string>$PROJECT_ROOT/scripts/ops/daily_ops_report.py</string></array>
+$(scheduled_program_arguments daily_report "exports/reports/daily_ops_report_latest.json" 86400 1800 "$PY" "$PROJECT_ROOT/scripts/ops/daily_ops_report.py")
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>10</integer></dict>
   <key>RunAtLoad</key><false/>
@@ -204,7 +244,7 @@ cat > "$CANARY_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.canary_tuner</string>
-  <key>ProgramArguments</key><array><string>$PY</string><string>$PROJECT_ROOT/scripts/ops/canary_auto_tuner.py</string></array>
+$(scheduled_program_arguments canary_tuner "governance/health/canary_auto_tuner_latest.json" 1800 300 "$PY" "$PROJECT_ROOT/scripts/ops/canary_auto_tuner.py")
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>1800</integer>
@@ -218,11 +258,11 @@ cat > "$SQL_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.sql_link_writer</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SQL_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments sql_link_writer "governance/health/sql_link_service_latest.json" "$SQL_LINK_WRITER_INTERVAL" 900 /bin/zsh "$SQL_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>StartInterval</key><integer>$SQL_LINK_WRITER_INTERVAL</integer>
   <key>StandardOutPath</key><string>$LOG_DIR/ops_sql_link_writer.out.log</string>
   <key>StandardErrorPath</key><string>$LOG_DIR/ops_sql_link_writer.err.log</string>
 </dict></plist>
@@ -233,7 +273,7 @@ cat > "$PROMO_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.promotion_pipeline</string>
-  <key>ProgramArguments</key><array><string>$PY</string><string>$PROJECT_ROOT/scripts/ops/promotion_pipeline.py</string></array>
+$(scheduled_program_arguments promotion_pipeline "governance/walk_forward/promotion_pipeline_latest.json" 86400 1800 "$PY" "$PROJECT_ROOT/scripts/ops/promotion_pipeline.py")
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
   <key>RunAtLoad</key><false/>
@@ -247,7 +287,7 @@ cat > "$MARKET_CORR_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.market_crypto_correlation</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$MARKET_CORR_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments market_crypto_correlation "governance/health/market_crypto_correlation_sync_latest.json" "$MARKET_CORR_INTERVAL" 240 /bin/zsh "$MARKET_CORR_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -262,7 +302,7 @@ cat > "$FX_MARKET_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.fx_market_context</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$FX_MARKET_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments fx_market_context "governance/health/fx_market_context_sync_latest.json" "$FX_MARKET_INTERVAL" 240 /bin/zsh "$FX_MARKET_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -277,7 +317,7 @@ cat > "$OPTIONS_FLOW_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.options_flow_context</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$OPTIONS_FLOW_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments options_flow_context "governance/health/options_flow_context_sync_latest.json" "$OPTIONS_FLOW_INTERVAL" 900 /bin/zsh "$OPTIONS_FLOW_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -292,7 +332,7 @@ cat > "$OFFICIAL_MACRO_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.official_macro_context</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$OFFICIAL_MACRO_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments official_macro_context "governance/health/official_macro_context_sync_latest.json" "$OFFICIAL_MACRO_INTERVAL" 900 /bin/zsh "$OFFICIAL_MACRO_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -307,7 +347,7 @@ cat > "$SCHWAB_EDUCATION_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.schwab_education_context</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SCHWAB_EDUCATION_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments schwab_education_context "governance/health/schwab_education_context_sync_latest.json" "$SCHWAB_EDUCATION_INTERVAL" 900 /bin/zsh "$SCHWAB_EDUCATION_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -322,7 +362,7 @@ cat > "$ONE_NUMBERS_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.one_numbers_refresh</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$ONE_NUMBERS_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments one_numbers_refresh "governance/health/one_numbers_latest.json" "$ONE_NUMBERS_INTERVAL" 900 /bin/zsh "$ONE_NUMBERS_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -337,7 +377,7 @@ cat > "$ONE_NUMBERS_REGRESSION_GUARD_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.one_numbers_regression_guard</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$ONE_NUMBERS_REGRESSION_GUARD_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments one_numbers_regression_guard "governance/health/one_numbers_regression_guard_latest.json" "$ONE_NUMBERS_REGRESSION_GUARD_INTERVAL" 900 /bin/zsh "$ONE_NUMBERS_REGRESSION_GUARD_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -352,7 +392,7 @@ cat > "$COMMAND_VALIDITY_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.command_validity</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$COMMAND_VALIDITY_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments command_validity "governance/health/command_validity_latest.json" "$COMMAND_VALIDITY_INTERVAL" 300 /bin/zsh "$COMMAND_VALIDITY_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -367,7 +407,7 @@ cat > "$SYSTEM_DRIFT_GUARD_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.system_drift_guard</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SYSTEM_DRIFT_GUARD_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments system_drift_guard "governance/health/system_drift_guard_latest.json" "$SYSTEM_DRIFT_GUARD_INTERVAL" 300 /bin/zsh "$SYSTEM_DRIFT_GUARD_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -382,7 +422,7 @@ cat > "$SYSTEM_DRIFT_AUTOPILOT_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.system_drift_autopilot</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SYSTEM_DRIFT_AUTOPILOT_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments system_drift_autopilot "governance/health/system_drift_autopilot_latest.json" "$SYSTEM_DRIFT_AUTOPILOT_INTERVAL" 900 /bin/zsh "$SYSTEM_DRIFT_AUTOPILOT_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -397,7 +437,7 @@ cat > "$SYSTEM_CELL_FEDERATION_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.system_cell_federation</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SYSTEM_CELL_FEDERATION_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments system_cell_federation "governance/health/system_cell_federation_latest.json" "$SYSTEM_CELL_FEDERATION_INTERVAL" 900 /bin/zsh "$SYSTEM_CELL_FEDERATION_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
     <key>BOT_PROTECTED_VOLUME_DENYLIST</key><string>/Volumes/VIDEO</string>
@@ -415,7 +455,7 @@ cat > "$MAINT_STRATEGY_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.maintenance_strategy_reloader</string>
-  <key>ProgramArguments</key><array><string>$PY</string><string>$PROJECT_ROOT/scripts/ops/maintenance_strategy_reloader.py</string></array>
+$(scheduled_program_arguments maintenance_strategy_reloader "governance/health/maintenance_strategy_reloader_latest.json" 300 300 "$PY" "$PROJECT_ROOT/scripts/ops/maintenance_strategy_reloader.py")
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>300</integer>
@@ -424,12 +464,26 @@ cat > "$MAINT_STRATEGY_PLIST" <<PLIST
 </dict></plist>
 PLIST
 
+cat > "$ADAPTIVE_OPS_POLICY_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.adaptive_ops_recovery_policy</string>
+$(scheduled_program_arguments adaptive_ops_recovery_policy "governance/health/adaptive_ops_recovery_policy_latest.json" "$ADAPTIVE_OPS_POLICY_INTERVAL" 240 "$PY" "$PROJECT_ROOT/scripts/ops/adaptive_ops_recovery_policy.py" --apply --json)
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$ADAPTIVE_OPS_POLICY_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_adaptive_ops_recovery_policy.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_adaptive_ops_recovery_policy.err.log</string>
+</dict></plist>
+PLIST
+
 cat > "$RETENTION_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.data_retention</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$RETENTION_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments data_retention "governance/health/data_retention_latest.json" "$RETENTION_INTERVAL" 1800 /bin/zsh "$RETENTION_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -444,7 +498,7 @@ cat > "$BACKLOG_RETRY_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.external_backlog_retry</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$BACKLOG_RETRY_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments external_backlog_retry "governance/health/external_backlog_retry_bot_latest.json" "$BACKLOG_RETRY_INTERVAL" 1800 /bin/zsh "$BACKLOG_RETRY_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -459,7 +513,7 @@ cat > "$STORAGE_BACKPRESSURE_AUTOPILOT_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.storage_backpressure_autopilot</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$STORAGE_BACKPRESSURE_AUTOPILOT_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments storage_backpressure_autopilot "governance/health/storage_backpressure_autopilot_latest.json" "$STORAGE_BACKPRESSURE_AUTOPILOT_INTERVAL" 600 /bin/zsh "$STORAGE_BACKPRESSURE_AUTOPILOT_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -474,7 +528,7 @@ cat > "$TRAINING_DRAIN_AUTOPILOT_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.training_drain_autopilot</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$TRAINING_DRAIN_AUTOPILOT_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments training_drain_autopilot "governance/health/training_drain_autopilot_latest.json" "$TRAINING_DRAIN_AUTOPILOT_INTERVAL" 1800 /bin/zsh "$TRAINING_DRAIN_AUTOPILOT_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
     <key>BOT_PROTECTED_VOLUME_DENYLIST</key><string>/Volumes/VIDEO</string>
@@ -492,7 +546,7 @@ cat > "$STORAGE_PRESSURE_CLEARANCE_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.storage_pressure_clearance</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$STORAGE_PRESSURE_CLEARANCE_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments storage_pressure_clearance "governance/health/storage_pressure_clearance_latest.json" "$STORAGE_PRESSURE_CLEARANCE_INTERVAL" 600 /bin/zsh "$STORAGE_PRESSURE_CLEARANCE_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -507,7 +561,7 @@ cat > "$STORAGE_RECONNECT_INFRABOT_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.storage_reconnect_infrabot</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$STORAGE_RECONNECT_INFRABOT_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments storage_reconnect_infrabot "governance/health/storage_reconnect_infrabot_latest.json" "$STORAGE_RECONNECT_INFRABOT_INTERVAL" 900 /bin/zsh "$STORAGE_RECONNECT_INFRABOT_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -522,7 +576,7 @@ cat > "$INFRA_AUTOFIX_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.infrastructure_autofix</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$INFRA_AUTOFIX_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments infrastructure_autofix "governance/health/infrastructure_autofix_bot_latest.json" "$INFRA_AUTOFIX_INTERVAL" 900 /bin/zsh "$INFRA_AUTOFIX_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -537,7 +591,7 @@ cat > "$BOT_QUALITY_AUTOPILOT_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.bot_quality_autopilot</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$BOT_QUALITY_AUTOPILOT_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments bot_quality_autopilot "governance/health/bot_quality_autopilot_latest.json" "$BOT_QUALITY_AUTOPILOT_INTERVAL" 1800 /bin/zsh "$BOT_QUALITY_AUTOPILOT_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -552,7 +606,7 @@ cat > "$MASTER_INFRA_SUPERVISOR_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.master_infrastructure_supervisor</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$MASTER_INFRA_SUPERVISOR_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments master_infrastructure_supervisor "governance/health/master_infrastructure_supervisor_latest.json" "$MASTER_INFRA_SUPERVISOR_INTERVAL" 900 /bin/zsh "$MASTER_INFRA_SUPERVISOR_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -567,7 +621,7 @@ cat > "$SCHWAB_AUTH_SUPERVISOR_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.schwab_auth_supervisor</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SCHWAB_AUTH_SUPERVISOR_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments schwab_auth_supervisor "governance/health/schwab_auth_supervisor_latest.json" "$SCHWAB_AUTH_SUPERVISOR_INTERVAL" 300 /bin/zsh "$SCHWAB_AUTH_SUPERVISOR_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -582,7 +636,7 @@ cat > "$STORAGE_STANDBY_PRUNE_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.storage_standby_prune</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$STORAGE_STANDBY_PRUNE_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments storage_standby_prune "governance/health/storage_standby_prune_latest.json" "$STORAGE_STANDBY_PRUNE_INTERVAL" 900 /bin/zsh "$STORAGE_STANDBY_PRUNE_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -592,12 +646,27 @@ cat > "$STORAGE_STANDBY_PRUNE_PLIST" <<PLIST
 </dict></plist>
 PLIST
 
+cat > "$LOCAL_SQL_SHARD_STANDBY_PRUNE_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.dankingsley.ops.local_sql_shard_standby_prune</string>
+$(scheduled_program_arguments local_sql_shard_standby_prune "governance/health/local_sql_shard_standby_prune_latest.json" "$LOCAL_SQL_SHARD_STANDBY_PRUNE_INTERVAL" 900 /bin/zsh "$LOCAL_SQL_SHARD_STANDBY_PRUNE_RUN_SCRIPT")
+  <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
+  <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$LOCAL_SQL_SHARD_STANDBY_PRUNE_INTERVAL</integer>
+  <key>StandardOutPath</key><string>$LOG_DIR/ops_local_sql_shard_standby_prune.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/ops_local_sql_shard_standby_prune.err.log</string>
+</dict></plist>
+PLIST
+
 cat > "$GRADE_REGRESSION_AUTOPILOT_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.grade_regression_autopilot</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$GRADE_REGRESSION_AUTOPILOT_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments grade_regression_autopilot "governance/health/grade_regression_autopilot_latest.json" "$GRADE_REGRESSION_AUTOPILOT_INTERVAL" 900 /bin/zsh "$GRADE_REGRESSION_AUTOPILOT_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -612,7 +681,7 @@ cat > "$ADAPTIVE_REGRESSION_GUARD_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.adaptive_regression_guard</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$ADAPTIVE_REGRESSION_GUARD_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments adaptive_regression_guard "governance/health/adaptive_regression_guard_latest.json" "$ADAPTIVE_REGRESSION_GUARD_INTERVAL" 900 /bin/zsh "$ADAPTIVE_REGRESSION_GUARD_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -627,7 +696,7 @@ cat > "$SECTION_GRADE_AUTOPILOT_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.section_grade_autopilot</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SECTION_GRADE_AUTOPILOT_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments section_grade_autopilot "governance/health/section_grade_autopilot_latest.json" "$SECTION_GRADE_AUTOPILOT_INTERVAL" 900 /bin/zsh "$SECTION_GRADE_AUTOPILOT_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -642,7 +711,7 @@ cat > "$CHROME_HEADLESS_GUARD_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.chrome_headless_guard</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$CHROME_HEADLESS_GUARD_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments chrome_headless_guard "governance/health/chrome_headless_guard_latest.json" "$CHROME_HEADLESS_GUARD_INTERVAL" 300 /bin/zsh "$CHROME_HEADLESS_GUARD_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -657,7 +726,7 @@ cat > "$SYSTEM_SUMMARY_AUTOPILOT_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.system_summary_autopilot</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SYSTEM_SUMMARY_AUTOPILOT_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments system_summary_autopilot "governance/health/system_summary_autopilot_latest.json" "$SYSTEM_SUMMARY_AUTOPILOT_INTERVAL" 900 /bin/zsh "$SYSTEM_SUMMARY_AUTOPILOT_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -672,7 +741,7 @@ cat > "$SWAP_PRESSURE_GOVERNOR_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.swap_pressure_governor</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SWAP_PRESSURE_GOVERNOR_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments swap_pressure_governor "governance/health/swap_pressure_governor_latest.json" "$SWAP_PRESSURE_GOVERNOR_INTERVAL" 240 /bin/zsh "$SWAP_PRESSURE_GOVERNOR_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -687,7 +756,7 @@ cat > "$RUNTIME_SMOOTH_MODE_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.runtime_smooth_mode</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$RUNTIME_SMOOTH_MODE_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments runtime_smooth_mode "governance/health/runtime_smooth_mode_latest.json" "$RUNTIME_SMOOTH_MODE_INTERVAL" 60 /bin/zsh "$RUNTIME_SMOOTH_MODE_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
     <key>BOT_PROTECTED_VOLUME_DENYLIST</key><string>/Volumes/VIDEO</string>
@@ -705,7 +774,7 @@ cat > "$SOAK_SELF_HEAL_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.soak_self_healing</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$SOAK_SELF_HEAL_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments soak_self_healing "governance/health/soak_self_healing_control_latest.json" "$SOAK_SELF_HEAL_INTERVAL" 2400 /bin/zsh "$SOAK_SELF_HEAL_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
     <key>MARKET_DATA_ONLY</key><string>1</string>
@@ -732,9 +801,7 @@ cat > "$SOAK_RELIABILITY_SENTINEL_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.soak_reliability_sentinel</string>
-  <key>ProgramArguments</key><array>
-    <string>$PY</string><string>$SOAK_RELIABILITY_SENTINEL_SCRIPT</string><string>--apply</string><string>--json</string>
-  </array>
+$(scheduled_program_arguments soak_reliability_sentinel "governance/health/soak_reliability_sentinel_latest.json" "$SOAK_RELIABILITY_SENTINEL_INTERVAL" 300 "$PY" "$SOAK_RELIABILITY_SENTINEL_SCRIPT" --apply --json)
   <key>EnvironmentVariables</key><dict>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
     <key>MARKET_DATA_ONLY</key><string>1</string>
@@ -757,9 +824,7 @@ cat > "$PRODUCTION_RESILIENCE_CONTROL_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.production_resilience_control</string>
-  <key>ProgramArguments</key><array>
-    <string>$PY</string><string>$PRODUCTION_RESILIENCE_CONTROL_SCRIPT</string><string>--json</string>
-  </array>
+$(scheduled_program_arguments production_resilience_control "governance/health/production_resilience_control_latest.json" "$PRODUCTION_RESILIENCE_CONTROL_INTERVAL" 300 "$PY" "$PRODUCTION_RESILIENCE_CONTROL_SCRIPT" --json)
   <key>EnvironmentVariables</key><dict>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
     <key>MARKET_DATA_ONLY</key><string>1</string>
@@ -782,7 +847,7 @@ cat > "$PRODUCTION_HARDENING_WATCH_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.production_hardening_watch</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$PRODUCTION_HARDENING_WATCH_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments production_hardening_watch "governance/health/production_hardening_watch_latest.json" "$PRODUCTION_HARDENING_WATCH_INTERVAL" 1800 /bin/zsh "$PRODUCTION_HARDENING_WATCH_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
     <key>MARKET_DATA_ONLY</key><string>1</string>
@@ -811,7 +876,7 @@ cat > "$CREATIVE_COTENANT_GUARD_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.dankingsley.ops.creative_cotenant_guard</string>
-  <key>ProgramArguments</key><array><string>/bin/zsh</string><string>$CREATIVE_COTENANT_GUARD_RUN_SCRIPT</string></array>
+$(scheduled_program_arguments creative_cotenant_guard "governance/health/creative_cotenant_guard_latest.json" "$CREATIVE_COTENANT_GUARD_INTERVAL" 60 /bin/zsh "$CREATIVE_COTENANT_GUARD_RUN_SCRIPT")
   <key>EnvironmentVariables</key><dict><key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string></dict>
   <key>WorkingDirectory</key><string>$PROJECT_ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -857,11 +922,13 @@ install_job "com.dankingsley.ops.system_drift_guard" "$SYSTEM_DRIFT_GUARD_PLIST"
 install_job "com.dankingsley.ops.system_drift_autopilot" "$SYSTEM_DRIFT_AUTOPILOT_PLIST"
 install_job "com.dankingsley.ops.system_cell_federation" "$SYSTEM_CELL_FEDERATION_PLIST"
 install_job "com.dankingsley.ops.maintenance_strategy_reloader" "$MAINT_STRATEGY_PLIST"
+install_job "com.dankingsley.ops.adaptive_ops_recovery_policy" "$ADAPTIVE_OPS_POLICY_PLIST"
 install_job "com.dankingsley.ops.data_retention" "$RETENTION_PLIST"
 install_job "com.dankingsley.ops.external_backlog_retry" "$BACKLOG_RETRY_PLIST"
 install_job "com.dankingsley.ops.storage_backpressure_autopilot" "$STORAGE_BACKPRESSURE_AUTOPILOT_PLIST"
 install_job "com.dankingsley.ops.training_drain_autopilot" "$TRAINING_DRAIN_AUTOPILOT_PLIST"
 install_job "com.dankingsley.ops.storage_pressure_clearance" "$STORAGE_PRESSURE_CLEARANCE_PLIST"
+install_job "com.dankingsley.ops.local_sql_shard_standby_prune" "$LOCAL_SQL_SHARD_STANDBY_PRUNE_PLIST"
 install_job "com.dankingsley.ops.storage_reconnect_infrabot" "$STORAGE_RECONNECT_INFRABOT_PLIST"
 remove_job "com.dankingsley.ops.writer_cycle_coordinator" "$WRITER_COORDINATOR_PLIST"
 remove_job "com.dankingsley.ops.retention_debt_sheriff" "$RETENTION_SHERIFF_PLIST"

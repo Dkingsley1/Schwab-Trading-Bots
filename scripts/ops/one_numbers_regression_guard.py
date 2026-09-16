@@ -577,12 +577,18 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
 
 def _builder_running() -> bool:
-    proc = subprocess.run(
-        ["pgrep", "-f", "scripts/build_one_numbers_report.py"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["pgrep", "-f", "scripts/build_one_numbers_report.py"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True  # Unknown ownership must not start a competing builder.
+    if proc.returncode not in (0, 1):
+        return True
     pids = [_safe_int(row.strip(), 0) for row in str(proc.stdout or "").splitlines() if row.strip()]
     for pid in [pid for pid in pids if pid > 0]:
         _continue_stopped_process(pid)
@@ -590,13 +596,17 @@ def _builder_running() -> bool:
 
 
 def _process_stat(pid: int) -> str:
-    proc = subprocess.run(
-        ["ps", "-o", "stat=", "-p", str(pid)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return str(proc.stdout or "").strip()
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return str(proc.stdout or "").strip() if proc.returncode == 0 else ""
 
 
 def _continue_stopped_process(pid: int) -> bool:

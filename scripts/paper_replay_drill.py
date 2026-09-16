@@ -1,15 +1,78 @@
 import argparse
 import gzip
-import glob
 import hashlib
 import json
 import os
 import re
+import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.storage_router import inspect_storage_path
+from scripts.paper_performance_report import _paper_source_files
+from scripts.ops.long_runtime_common import write_payload
+
+MAX_REPLAY_BYTES = 128 * 1024**2
+MAX_REPLAY_LINE_BYTES = 2 * 1024**2
+MAX_REPLAY_ROWS = 20000
+
+
+class ReplayScan:
+    def __init__(self):
+        self.deadline = time.monotonic() + 45
+        self.bytes_read = 0
+        self.rows_read = 0
+        self.errors: set[str] = set()
+        self.duplicates = 0
+
+    def rows(self, path):
+        route = inspect_storage_path(path)
+        if route["status"] != "present":
+            self.errors.add("source_route_" + str(route["status"]))
+            return
+        try:
+            opener = gzip.open if path.suffix == ".gz" else open
+            with opener(path, "rb") as stream:
+                while True:
+                    remaining = MAX_REPLAY_BYTES - self.bytes_read
+                    if time.monotonic() >= self.deadline or remaining <= 0:
+                        self.errors.add("source_scan_budget_exceeded")
+                        return
+                    line = stream.readline(min(MAX_REPLAY_LINE_BYTES, remaining))
+                    self.bytes_read += len(line)
+                    if not line:
+                        return
+                    if not line.endswith(b"\n"):
+                        self.errors.add("incomplete_or_oversized_source_row")
+                        return
+                    if not line.strip():
+                        continue
+                    self.rows_read += 1
+                    if self.rows_read > MAX_REPLAY_ROWS:
+                        self.errors.add("source_row_budget_exceeded")
+                        return
+                    row = json.loads(line)
+                    if not isinstance(row, dict):
+                        self.errors.add("source_row_not_object")
+                        continue
+                    yield row
+        except (OSError, EOFError, ValueError):
+            self.errors.add("source_read_or_decode_failed")
+
+
+def _external_root() -> Path | None:
+    configured = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    if PROJECT_ROOT != Path(__file__).resolve().parents[1]:
+        return None
+    return Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")) / os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot")
 
 
 def _parse_iso_utc(value: str) -> datetime | None:
@@ -25,79 +88,63 @@ def _parse_iso_utc(value: str) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def _candidate_paths(in_file: str, profile: str, domain: str) -> list[Path]:
+def _candidate_paths(in_file: str, profile: str, domain: str, *, audit=None) -> list[Path]:
     if in_file:
-        p = Path(in_file).expanduser().resolve()
-        return [p]
-
-    out: list[Path] = []
-    patterns = [
-        str(PROJECT_ROOT / "exports" / "trade_logs" / "**" / "paper_trades_*.jsonl"),
-        str(PROJECT_ROOT / "paper_trades_*.jsonl"),
-    ]
+        return [Path(in_file).expanduser()]
+    paths, _, _ = _paper_source_files(PROJECT_ROOT, audit=audit)
     profile_l = str(profile or "").strip().lower()
     domain_l = str(domain or "").strip().lower()
-    for pat in patterns:
-        for raw in sorted(glob.glob(pat, recursive=True)):
-            rel = raw.lower()
-            if profile_l and (f"shadow_{profile_l}" not in rel):
-                continue
-            if domain_l and (f"_{domain_l}" not in rel):
-                continue
-            out.append(Path(raw))
-    uniq: list[Path] = []
-    seen: set[str] = set()
-    for p in out:
-        k = str(p.resolve())
-        if k in seen:
+    return [path for path in paths
+        if (path.match("paper_trades_*.jsonl") or path.match("paper_trades_*.jsonl.gz"))
+        and "independent_fills" not in path.parts
+        and (not profile_l or f"shadow_{profile_l}" in str(path).lower())
+        and (not domain_l or f"_{domain_l}" in str(path).lower())]
+
+
+def _candidate_execution_result_paths(*, audit=None) -> list[Path]:
+    return _execution_paths("execution_results_", audit=audit)
+
+
+def _candidate_execution_intent_paths(*, audit=None) -> list[Path]:
+    return _execution_paths("execution_intents_", audit=audit)
+
+
+def _execution_paths(prefix: str, *, audit=None) -> list[Path]:
+    audit = audit if audit is not None else {}
+
+    def inspect(path):
+        observed = inspect_storage_path(path)
+        if observed["status"] == "missing":
+            audit["unmaterialized_source_count"] = audit.get("unmaterialized_source_count", 0) + 1
+        elif observed["status"] != "present":
+            failed(path, observed["status"])
+        return observed
+
+    def failed(path, reason):
+        audit["discovery_error_count"] = audit.get("discovery_error_count", 0) + 1
+        errors = audit.setdefault("discovery_errors", [])
+        if len(errors) < 10:
+            errors.append({"path": str(path), "reason": reason})
+
+    roots = [PROJECT_ROOT, PROJECT_ROOT / "local_fallback_storage"]
+    external = _external_root()
+    if external is not None:
+        roots.append(external)
+    paths = {}
+    for root in roots:
+        folder = root / "governance/execution_lanes"
+        if inspect(folder)["status"] != "present":
             continue
-        seen.add(k)
-        uniq.append(p)
-    return uniq
-
-
-def _candidate_execution_result_paths() -> list[Path]:
-    patterns = [
-        str(PROJECT_ROOT / "governance" / "execution_lanes" / "execution_results_*.jsonl"),
-        str(PROJECT_ROOT / "governance" / "execution_lanes" / "execution_results_*.jsonl.gz"),
-        str(PROJECT_ROOT / "local_fallback_storage" / "governance" / "execution_lanes" / "execution_results_*.jsonl"),
-        str(PROJECT_ROOT / "local_fallback_storage" / "governance" / "execution_lanes" / "execution_results_*.jsonl.gz"),
-        str(Path("/Volumes/BOT_LOGS/schwab_trading_bot/governance/execution_lanes/execution_results_*.jsonl")),
-        str(Path("/Volumes/BOT_LOGS/schwab_trading_bot/governance/execution_lanes/execution_results_*.jsonl.gz")),
-    ]
-    out: list[Path] = []
-    seen: set[str] = set()
-    for pat in patterns:
-        for raw in sorted(glob.glob(pat)):
-            path = Path(raw)
-            key = str(path.resolve(strict=False))
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(path)
-    return out
-
-
-def _candidate_execution_intent_paths() -> list[Path]:
-    patterns = [
-        str(PROJECT_ROOT / "governance" / "execution_lanes" / "execution_intents_*.jsonl"),
-        str(PROJECT_ROOT / "governance" / "execution_lanes" / "execution_intents_*.jsonl.gz"),
-        str(PROJECT_ROOT / "local_fallback_storage" / "governance" / "execution_lanes" / "execution_intents_*.jsonl"),
-        str(PROJECT_ROOT / "local_fallback_storage" / "governance" / "execution_lanes" / "execution_intents_*.jsonl.gz"),
-        str(Path("/Volumes/BOT_LOGS/schwab_trading_bot/governance/execution_lanes/execution_intents_*.jsonl")),
-        str(Path("/Volumes/BOT_LOGS/schwab_trading_bot/governance/execution_lanes/execution_intents_*.jsonl.gz")),
-    ]
-    out: list[Path] = []
-    seen: set[str] = set()
-    for pat in patterns:
-        for raw in sorted(glob.glob(pat)):
-            path = Path(raw)
-            key = str(path.resolve(strict=False))
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(path)
-    return out
+        try:
+            for path in folder.iterdir():
+                if not path.name.startswith(prefix) or not (path.name.endswith(".jsonl") or path.name.endswith(".jsonl.gz")):
+                    continue
+                route = inspect(path)
+                if route["status"] == "present":
+                    paths[str(route["resolved_path"])] = path
+        except OSError as exc:
+            failed(folder, type(exc).__name__)
+    return sorted(paths.values())
 
 
 def _path_date(path: Path) -> datetime | None:
@@ -119,12 +166,6 @@ def _recent_paths(paths: Iterable[Path], since: datetime) -> list[Path]:
             continue
         out.append(path)
     return out
-
-
-def _open_text(path: Path):
-    if path.suffix == ".gz":
-        return gzip.open(path, "rt", encoding="utf-8")
-    return path.open("r", encoding="utf-8")
 
 
 def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -261,30 +302,36 @@ def main() -> int:
 
     now = datetime.now(timezone.utc)
     since = now - timedelta(hours=max(int(args.hours), 1))
-    paths = _candidate_paths(args.in_file, args.profile, args.domain)
+    scan = ReplayScan()
+    audit: dict[str, Any] = {}
+    paths = _recent_paths(_candidate_paths(args.in_file, args.profile, args.domain, audit=audit), since)
 
     normalized: list[dict[str, Any]] = []
+    seen_rows: set[str] = set()
+
+    def append_row(row: dict[str, Any]) -> bool:
+        key = json.dumps(row, sort_keys=True, allow_nan=False)
+        if key in seen_rows:
+            scan.duplicates += 1
+            return False
+        seen_rows.add(key)
+        normalized.append(row)
+        return True
+
     files_scanned = 0
     for path in paths:
         files_scanned += 1
         try:
-            with _open_text(path) as f:
-                for line in f:
-                    s = line.strip()
-                    if not s:
-                        continue
-                    try:
-                        row = json.loads(s)
-                    except Exception:
-                        continue
-                    if not isinstance(row, dict):
-                        continue
-                    ts = _parse_iso_utc(str(row.get("timestamp_utc", "")))
-                    if ts is None or ts < since:
-                        continue
-                    normalized.append(_normalize_row(row))
-        except Exception:
-            continue
+            for row in scan.rows(path):
+                ts = _parse_iso_utc(str(row.get("timestamp_utc", "")))
+                if ts is None or ts > now:
+                    scan.errors.add("invalid_source_timestamp")
+                    continue
+                if ts < since:
+                    continue
+                append_row(_normalize_row(row))
+        except (ValueError, TypeError, OverflowError):
+            scan.errors.add("invalid_source_values")
 
     execution_result_files_scanned = 0
     execution_result_rows = 0
@@ -293,68 +340,55 @@ def main() -> int:
     execution_intent_files_scanned = 0
     execution_intent_rows = 0
     fallback_row_cap = max(int(args.max_fallback_rows), max(int(args.min_rows), 1))
-    if not normalized and not args.in_file:
-        for path in _recent_paths(_candidate_execution_result_paths(), since):
+    fallback_allowed = not (args.in_file or args.profile or args.domain)
+    if not normalized and fallback_allowed:
+        for path in _recent_paths(_candidate_execution_result_paths(audit=audit), since):
             execution_result_files_scanned += 1
             try:
-                with _open_text(path) as f:
-                    for line in f:
-                        s = line.strip()
-                        if not s:
-                            continue
-                        try:
-                            row = json.loads(s)
-                        except Exception:
-                            continue
-                        if not isinstance(row, dict):
-                            continue
-                        if _is_stale_execution_result(row):
-                            execution_result_stale_skip_rows += 1
-                            stale_ts = _parse_iso_utc(str(row.get("timestamp_utc") or ""))
-                            if stale_ts is not None and (latest_stale_skip_ts is None or stale_ts > latest_stale_skip_ts):
-                                latest_stale_skip_ts = stale_ts
-                            continue
-                        replay_row = _normalize_execution_result(row)
-                        if not replay_row:
-                            continue
-                        ts = _parse_iso_utc(str(replay_row.get("timestamp_utc", "")))
-                        if ts is None or ts < since:
-                            continue
-                        normalized.append(replay_row)
+                for row in scan.rows(path):
+                    if _is_stale_execution_result(row):
+                        execution_result_stale_skip_rows += 1
+                        stale_ts = _parse_iso_utc(str(row.get("timestamp_utc") or ""))
+                        if stale_ts is not None and stale_ts <= now and (latest_stale_skip_ts is None or stale_ts > latest_stale_skip_ts):
+                            latest_stale_skip_ts = stale_ts
+                        continue
+                    replay_row = _normalize_execution_result(row)
+                    if not replay_row:
+                        continue
+                    ts = _parse_iso_utc(str(replay_row.get("timestamp_utc", "")))
+                    if ts is None or ts > now:
+                        scan.errors.add("invalid_source_timestamp")
+                        continue
+                    if ts < since:
+                        continue
+                    if append_row(replay_row):
                         execution_result_rows += 1
-                        if execution_result_rows >= fallback_row_cap:
-                            break
-            except Exception:
-                continue
+                    if execution_result_rows >= fallback_row_cap:
+                        break
+            except (ValueError, TypeError, OverflowError):
+                scan.errors.add("invalid_source_values")
             if execution_result_rows >= fallback_row_cap:
                 break
-    if not normalized and not args.in_file:
-        for path in _recent_paths(_candidate_execution_intent_paths(), since):
+    if not normalized and fallback_allowed:
+        for path in _recent_paths(_candidate_execution_intent_paths(audit=audit), since):
             execution_intent_files_scanned += 1
             try:
-                with _open_text(path) as f:
-                    for line in f:
-                        s = line.strip()
-                        if not s:
-                            continue
-                        try:
-                            row = json.loads(s)
-                        except Exception:
-                            continue
-                        if not isinstance(row, dict):
-                            continue
-                        replay_row = _normalize_execution_intent(row)
-                        if not replay_row:
-                            continue
-                        ts = _parse_iso_utc(str(replay_row.get("timestamp_utc", "")))
-                        if ts is None or ts < since:
-                            continue
-                        normalized.append(replay_row)
+                for row in scan.rows(path):
+                    replay_row = _normalize_execution_intent(row)
+                    if not replay_row:
+                        continue
+                    ts = _parse_iso_utc(str(replay_row.get("timestamp_utc", "")))
+                    if ts is None or ts > now:
+                        scan.errors.add("invalid_source_timestamp")
+                        continue
+                    if ts < since:
+                        continue
+                    if append_row(replay_row):
                         execution_intent_rows += 1
-                        if execution_intent_rows >= fallback_row_cap:
-                            break
-            except Exception:
-                continue
+                    if execution_intent_rows >= fallback_row_cap:
+                        break
+            except (ValueError, TypeError, OverflowError):
+                scan.errors.add("invalid_source_values")
             if execution_intent_rows >= fallback_row_cap:
                 break
 
@@ -369,7 +403,11 @@ def main() -> int:
     blob = json.dumps(canonical, sort_keys=True, ensure_ascii=True)
     replay_hash = hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
-    failed: list[str] = []
+    failed: list[str] = sorted(scan.errors)
+    if audit.get("discovery_error_count", 0):
+        failed.append("source_discovery_incomplete")
+    if execution_intent_rows:
+        failed.append("execution_intents_only_not_paper_replay")
     active_stale_skip_age_seconds = (
         max((now - latest_stale_skip_ts).total_seconds(), 0.0)
         if latest_stale_skip_ts is not None
@@ -419,6 +457,11 @@ def main() -> int:
             ),
             "window_hours": int(args.hours),
             "since_utc": since.isoformat(),
+            "bytes_read": scan.bytes_read,
+            "maximum_bytes": MAX_REPLAY_BYTES,
+            "duplicate_rows_excluded": scan.duplicates,
+            "scan_errors": sorted(scan.errors),
+            "discovery": audit,
         },
         "profile": args.profile or "all",
         "domain": args.domain or "all",
@@ -432,8 +475,9 @@ def main() -> int:
     }
 
     out_path = Path(args.out_file)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, ensure_ascii=True, indent=2), encoding="utf-8")
+    if inspect_storage_path(out_path)["status"] not in {"present", "missing"}:
+        raise ValueError("unsafe_replay_publication_route")
+    write_payload(out_path, out)
 
     if args.json:
         print(json.dumps(out, ensure_ascii=True))

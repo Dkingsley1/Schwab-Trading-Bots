@@ -401,11 +401,14 @@ def _observer_overhead(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 def _memory_trend(previous: dict[str, Any], current_snapshot: dict[str, Any], current_ts: str) -> dict[str, Any]:
     prior_snapshot = _as_dict(previous.get("snapshot"))
-    previous_ts = parse_iso_utc(previous.get("timestamp_utc")) if previous else None
+    previous_ts = parse_iso_utc(previous.get("source_timestamp_utc", previous.get("timestamp_utc"))) if previous else None
     current_dt = parse_iso_utc(current_ts)
     elapsed_seconds = None
     if previous_ts is not None and current_dt is not None:
-        elapsed_seconds = max((current_dt - previous_ts).total_seconds(), 0.0)
+        elapsed_seconds = (current_dt - previous_ts).total_seconds()
+    valid_previous = elapsed_seconds is not None and 0 <= elapsed_seconds <= 300
+    if not valid_previous:
+        prior_snapshot = {}
 
     previous_compressed_pressure = _safe_float(
         prior_snapshot.get("compressed_pressure_gb"),
@@ -437,7 +440,7 @@ def _memory_trend(previous: dict[str, Any], current_snapshot: dict[str, Any], cu
         status = "cooling"
     else:
         status = "flat"
-    previous_gate = _as_dict(previous.get("reopen_gate"))
+    previous_gate = _as_dict(previous.get("reopen_gate")) if valid_previous else {}
     previous_clear = _safe_int(previous_gate.get("consecutive_memory_clear_samples"), 0)
     previous_cooling = _safe_int(previous_gate.get("consecutive_cooling_samples"), 0)
     return {
@@ -451,6 +454,7 @@ def _memory_trend(previous: dict[str, Any], current_snapshot: dict[str, Any], cu
         "heating": heating,
         "previous_clear_samples": previous_clear,
         "previous_cooling_samples": previous_cooling,
+        "new_observation": elapsed_seconds != 0,
     }
 
 
@@ -541,8 +545,9 @@ def _reopen_gate(classification: dict[str, Any], trend: dict[str, Any], snapshot
     clear_statuses = {"clear", "foreground_headroom"}
     status = str(classification.get("status") or "")
     current_clear = status in clear_statuses and not bool(trend.get("heating", False))
-    clear_samples = _safe_int(trend.get("previous_clear_samples"), 0) + 1 if current_clear else 0
-    cooling_samples = _safe_int(trend.get("previous_cooling_samples"), 0) + 1 if bool(trend.get("cooling", False)) else 0
+    increment = int(bool(trend.get("recovery_sample_due", trend.get("new_observation", True))))
+    clear_samples = _safe_int(trend.get("previous_clear_samples"), 0) + increment if current_clear else 0
+    cooling_samples = _safe_int(trend.get("previous_cooling_samples"), 0) + increment if bool(trend.get("cooling", False)) else 0
     safe_to_widen = bool(clear_samples >= 2)
     safe_for_training = bool(clear_samples >= 3 and str(classification.get("status")) == "clear")
     pressure_level = str(snapshot.get("pressure_level") or "normal").lower()
@@ -1013,6 +1018,7 @@ def write_outputs(
     override_path: Path = DEFAULT_OVERRIDE_PATH,
     apply: bool = False,
 ) -> dict[str, Any]:
+    from scripts.ops.long_runtime_common import write_text_atomic
     write_payload(out_path, payload)
     applied = False
     if apply:
@@ -1023,12 +1029,14 @@ def write_outputs(
             "",
         ]
         override_path.parent.mkdir(parents=True, exist_ok=True)
-        override_path.write_text("\n".join(lines), encoding="utf-8")
+        write_text_atomic(override_path, "\n".join(lines))
         applied = True
     return {"out_path": str(out_path), "override_path": str(override_path), "applied": applied}
 
 
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+    from scripts.ops.long_runtime_common import evidence_freshness, governor_observation_contract, governor_recovery_observation
+
     health = project_root / "governance" / "health"
     previous = load_json(health / "memory_pressure_intelligence_latest.json")
     host = load_json(health / "host_capability_contract_latest.json")
@@ -1036,14 +1044,43 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     memory_efficiency = load_json(health / "memory_efficiency_control_latest.json") or load_json(health / "memory_efficiency_latest.json")
     computer = load_json(health / "computer_task_intelligence_latest.json")
     swap_pressure = load_json(health / "swap_pressure_governor_latest.json")
+    observation = governor_observation_contract({
+        "runtime_throttle": (runtime, 120.0),
+        "memory_efficiency": (memory_efficiency, 120.0),
+    })
+    contextual_evidence = {
+        name: evidence_freshness(value, max_age_minutes=2.0)
+        for name, value in {"host": host, "computer": computer, "swap_pressure": swap_pressure}.items()
+    }
+    if not contextual_evidence["host"]["fresh"]:
+        host = {}
+    if not contextual_evidence["computer"]["fresh"]:
+        computer = {}
+    if not contextual_evidence["swap_pressure"]["fresh"]:
+        swap_pressure = {}
     timestamp = iso_now()
     snapshot = _reconcile_stale_allocation(_memory_snapshot(host, runtime, memory_efficiency, computer), swap_pressure)
+    safety_limits = _as_dict(runtime.get("adaptive_safety_limits"))
+    if safety_limits.get("active") is True:
+        # Allocation relief cannot cancel a separate forecast or sensor-failure hold.
+        snapshot["adaptive_headroom_guard_active"] = True
+        snapshot["pressure_level"] = "high" if runtime.get("memory_pressure_level") == "high" else "elevated"
+        snapshot["pressure_kind"] = "adaptive_headroom_guard"
+    snapshot["app_context_quality"]["ignored_stale_host_foreground"] = bool(
+        snapshot["app_context_quality"]["ignored_stale_host_foreground"] or not contextual_evidence["host"]["fresh"]
+    )
     multitasking = _multitasking_headroom(snapshot)
     observer = _observer_overhead(snapshot)
-    trend = _memory_trend(previous, snapshot, timestamp)
+    trend = _memory_trend(previous, snapshot, str(observation.get("source_timestamp_utc") or timestamp))
+    recovery = governor_recovery_observation(previous, observation.get("source_timestamp_utc"), inputs_ready=observation["input_evidence_ready"])
+    trend["recovery_sample_due"] = recovery["credit_due"]
+    if recovery["reset_history"]:
+        trend.update(previous_clear_samples=0, previous_cooling_samples=0)
+    if not observation["input_evidence_ready"]:
+        trend.update(new_observation=False, previous_clear_samples=0, previous_cooling_samples=0)
     classification = _classify(snapshot, trend, multitasking)
     gate = _reopen_gate(classification, trend, snapshot, multitasking, observer)
-    if bool(multitasking.get("training_hard_block_by_multitasking", False)) or not bool(multitasking.get("training_allowed_by_multitasking", True)):
+    if not observation["input_evidence_ready"] or bool(multitasking.get("training_hard_block_by_multitasking", False)) or not bool(multitasking.get("training_allowed_by_multitasking", True)):
         gate["safe_for_training"] = False
         gate["small_canary_training_safe"] = False
         gate["small_batch_training_safe"] = False
@@ -1057,20 +1094,25 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         gate["batch30_max_parallel_trainings"] = 0
         gate["training_batch_cap"] = 0
         gate["training_profile"] = ""
-        gate["training_blocked_by_multitasking"] = True
+        gate["training_blocked_by_multitasking"] = bool(multitasking.get("training_hard_block_by_multitasking", False)) or not bool(multitasking.get("training_allowed_by_multitasking", True))
+        gate["training_blocked_by_stale_evidence"] = not observation["input_evidence_ready"]
     needs = _what_do_you_need(snapshot, classification, gate, observer)
     managed_controls = _managed_controls(snapshot, classification, gate)
     overall = "ready" if not needs and classification["status"] == "clear" else "advisory"
     pressure_level = str(snapshot.get("pressure_level") or "normal").strip().lower()
     pressure_kind = str(snapshot.get("pressure_kind") or "none").strip().lower()
     operational_ok = bool(
-        str(classification.get("status") or "") in {"clear", "foreground_headroom"}
+        observation["input_evidence_ready"]
+        and str(classification.get("status") or "") in {"clear", "foreground_headroom"}
         and pressure_level == "normal"
         and pressure_kind in {"", "none", "normal"}
         and _safe_float(snapshot.get("pages_throttled"), 0.0) <= 0.0
     )
     return {
         "timestamp_utc": timestamp,
+        **observation,
+        "recovery_observation": recovery,
+        "contextual_input_evidence": contextual_evidence,
         "schema_version": 1,
         "ok": overall == "ready",
         "overall_status": overall,
@@ -1122,7 +1164,8 @@ def main() -> int:
     parser.add_argument("--override", default=str(DEFAULT_OVERRIDE_PATH))
     args = parser.parse_args()
     payload = build_payload(PROJECT_ROOT)
-    result = write_outputs(payload, out_path=Path(args.out), override_path=Path(args.override), apply=args.apply)
+    result = write_outputs(payload, out_path=Path(args.out), override_path=Path(args.override), apply=args.apply and payload["input_evidence_ready"])
+    result["deferred_reason"] = "" if payload["input_evidence_ready"] else "governor_inputs_require_refresh"
     payload["write_result"] = result
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

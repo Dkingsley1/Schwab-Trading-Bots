@@ -1211,6 +1211,18 @@ case "$cmd" in
   training-label-audit|label-audit)
     exec "$PY" "$PROJECT_ROOT/scripts/training_label_audit.py" "$@"
     ;;
+  training-dataset-preflight)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/training_dataset_preflight.py" "$@"
+    ;;
+  training-dataset-evaluate)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/training_dataset_evaluation.py" "$@"
+    ;;
+  training-research-batch)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/training_research_batch.py" "$@"
+    ;;
+  historical-sleeve-labeling)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/historical_sleeve_labeling.py" "$@"
+    ;;
   training-labeling-intelligence|training-labeling|training-process-intelligence|labeling-intelligence)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/training_labeling_intelligence.py" "$@"
     ;;
@@ -1316,6 +1328,11 @@ case "$cmd" in
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/raw_backlog_refiner.py" "$@"
     ;;
   raw-training-compaction|raw-training-queue|raw-training-clear|training-raw-clear)
+    for arg in "$@"; do
+      if [[ "$arg" == "--operator-approved-recovery" ]]; then
+        exec "$PY" "$PROJECT_ROOT/scripts/ops/raw_training_compaction_intelligence.py" "$@"
+      fi
+    done
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/raw_training_compaction_intelligence.py" "$@"
     ;;
   backpressure-drainer-fleet|backpressure-drainers|drainer-fleet)
@@ -1459,6 +1476,9 @@ case "$cmd" in
   storage-resilience|storage-resilience-control)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_resilience_control.py" --fast "$@"
     ;;
+  state-snapshot-drill)
+    exec "$PY" "$PROJECT_ROOT/scripts/daily_state_snapshot_drill.py" "$@"
+    ;;
   notification-escalation-ladder|notification-ladder|alert-ladder)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/notification_escalation_ladder.py" "$@"
     ;;
@@ -1503,6 +1523,9 @@ case "$cmd" in
     ;;
   governance-lifecycle-compactor|lifecycle-compactor|governance-backup-compactor)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/governance_lifecycle_compactor.py" "$@"
+    ;;
+  cold-evidence-compactor)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/cold_evidence_compactor.py" "$@"
     ;;
   decision-log-compactor|decisions-compactor|decision-compactor)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/decision_log_compactor.py" "$@"
@@ -1587,6 +1610,9 @@ case "$cmd" in
     ;;
   coinbase-api-health|coinbase-health)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/coinbase_api_health.py" "$@"
+    ;;
+  coinbase-account|coinbase-account-link)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/coinbase_account_link.py" "$@"
     ;;
   system-drift-registry|drift-registry)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/system_drift_registry.py" "$@"
@@ -1717,6 +1743,9 @@ case "$cmd" in
   production-hardening-watch|hardening-watch|production-watch)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/production_hardening_watch.py" "$@"
     ;;
+  ops-scheduled-jobs|scheduled-job-lifecycle|scheduled-jobs|job-lifecycle)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/ops_scheduled_job_lifecycle.py" "$@"
+    ;;
   readiness-evidence-refresh|evidence-refresh|promotion-evidence-refresh)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/readiness_evidence_refresh.py" "$@"
     ;;
@@ -1759,6 +1788,9 @@ case "$cmd" in
   runtime-throttle|throttle-control|throttle-bot)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/runtime_throttle_control.py" "$@"
     ;;
+  governor-refresh)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/governor_refresh.py" "$@"
+    ;;
   process-watchdog|watchdog-refresh|watchdog)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/process_watchdog.py" "$@"
     ;;
@@ -1773,6 +1805,9 @@ case "$cmd" in
     ;;
   pressure-relief|pressure-relief-control|pressure-governor|pressure-infrabot)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/pressure_relief_control.py" "$@"
+    ;;
+  adaptive-ops-policy|adaptive-recovery-policy|ops-recovery-policy)
+    run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/adaptive_ops_recovery_policy.py" "$@"
     ;;
   mode-switchboard|mode-switchboard-mission-control)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/mode_switchboard_mission_control.py" "$@"
@@ -2864,6 +2899,9 @@ case "$cmd" in
   storage-prune-standby|storage-standby-prune)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_standby_prune.py" "$@"
     ;;
+  local-sql-shard-standby-prune|sql-shard-standby-prune|prune-local-sql-shard-standby)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/local_sql_shard_standby_prune.py" "$@"
+    ;;
   storage-transition-coordinator|storage-transition-bots)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_transition_coordinator.py" "$@"
     ;;
@@ -3158,7 +3196,7 @@ case "$cmd" in
     exec "$PY" "$PROJECT_ROOT/scripts/experiment_tracker.py" "$@"
     ;;
   token-refresh-interactive)
-    exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_auth_refresh.py" "$@"
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/schwab_auth_refresh.py" --operator-interactive-session "$@"
     ;;
   token-install-autorefresh)
     exec "$PROJECT_ROOT/scripts/install_premarket_token_guard_launchd.sh" "$@"
@@ -3268,6 +3306,10 @@ opsctl commands:
   sql-audit [--json]
   training-registry-audit [--json]
   training-label-audit [--json]
+  training-dataset-preflight [--include-bot-ids CSV] [--materialize] [--json]
+  training-dataset-evaluate [--prepare] [--json]
+  training-research-batch [--include-bot-ids CSV] [--seconds 600] [--new-run] [--status] [--json]
+  historical-sleeve-labeling [--run] [--full] [--seconds 120] [--new-inventory]
   training-labeling-intelligence [--apply|--refresh-artifacts] [--materialize-collect-only-diagnostics] [--collect-only-diagnostic-min-version N] [--collect-only-diagnostic-limit N] [--json]
   training-data-intake|data-intake-expansion|bot-data-intake [--apply] [--focus-limit N] [--include-bot-ids CSV] [--json]
   training-quality [--json]
@@ -3296,8 +3338,8 @@ opsctl commands:
   security-audit
   secret-scan [--staged]
   schema-migration [--json]
-  ingestion-storage-control [--definitions-only] [--json]
-  data-plane-recovery|write-path-recovery [--json]
+  ingestion-storage-control [--definitions-only | --verify-new-ingestion --since ISO_UTC [--until ISO_UTC]] [--json]
+  data-plane-recovery|write-path-recovery [--apply] [--json]
   ingestion-storage-governor [status|apply] [--json]
   local-storage-reserve-guard [--apply] [--json]
   ops-data-plane-compaction [--apply] [--archive-root PATH] [--skip-vacuum] [--json]
@@ -3332,13 +3374,15 @@ opsctl commands:
   distillation-plan|teacher-student-plan [--teacher-max N] [--student-max-runs N] [--teachers-per-student N] [--json]
   strategy-generation|strategy-offspring [--propose | --train-next | --reconcile-stale | --evaluate-offspring ID --evaluation-file PATH | --retire-offspring ID --reason TEXT] [--json]
   pycharm-active-bot-highlights [--apply] [--json]
-  retention-debt-sheriff [--apply] [--force] [--poll-seconds N] [--wait-timeout-seconds N] [--command-timeout-seconds N] [--json]
+  retention-debt-sheriff [--apply] [--force] [--scheduled] [--schedule-interval-seconds N] [--poll-seconds N] [--wait-timeout-seconds N] [--command-timeout-seconds N] [--json]
   backpressure-slo-bot [--apply] [--command-timeout-seconds N] [--json]
   backlog-quarantine [--apply] [--max-move-files N] [--json]
   ingestion-priority-queue [--top-n N] [--mark-retry REL] [--ack REL] [--json]
   content-store [--path REL_OR_ABS] [--json]
   split-brain-reconcile [--force-failback-if-hashes-match] [--json]
   storage-resilience [--json]
+  storage-sqlite-hot-route|sqlite-hot-route|storage-hot-sqlite [--rebuild-local-cache] [--apply] [--json]
+  state-snapshot-drill [--capacity-only|--recover-latest-verified] [--json]
   storage-tier-policy [--top-n N] [--hot-budget-gb N] [--cold-candidate-min-mb N] [--offload-manifest-max-gb N] [--json]
   retention-intelligence-v2 [--apply] [--sample-limit N] [--json]
   hot-lane-retention-control [--apply] [--target-free-gb N] [--hot-total-thin-gb N] [--json]
@@ -3346,6 +3390,7 @@ opsctl commands:
   manifest-backed-offload [--apply] [--target-root PATH] [--max-files N] [--max-gb N] [--release-source-after-verify] [--json]
   governance-telemetry-compactor [--apply] [--channels CSV|all] [--target-free-gb N] [--min-file-mb N] [--json]
   governance-lifecycle-compactor [--apply] [--target-free-gb N] [--keep-latest N] [--json]
+  cold-evidence-compactor [--apply] [--target-free-gb N] [--max-files N] [--seconds N] [--json]
   decision-log-compactor [--apply] [--target-free-gb N] [--min-file-mb N] [--json]
   runtime-training-snapshot [--lookback-days N] [--reuse-if-fresh-minutes N] [--max-runtime-seconds N] [--incremental-max-runtime-seconds N] [--incremental-max-candidate-rows N] [--light-refresh-existing] [--json]
   hdf5-training-cache|h5-training-cache [--apply] [--max-rows N] [--benchmark] [--assert-fresh] [--retention-keep-generated N] [--json]
@@ -3395,6 +3440,7 @@ opsctl commands:
   degradation-swarm|degradation-swarm-coordinator [--apply] [--execute-safe-repairs] [--max-execute-actions N] [--command-timeout-seconds N] [--json]
   master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor [--apply] [--timeout-sec N] [--json]
   coinbase-api-health|coinbase-health [--symbol SYMBOL] [--snapshot] [--json]
+  coinbase-account|coinbase-account-link [--status | --link-key-file PATH [--replace]] [--json]
   halt-trigger-status|kill-switch-status|halts-status [--assert-clear] [--json]
   coordination-status|coordination-state [--assert-ready] [--json]
   global-halt-status|halt-status [--json]
@@ -3443,6 +3489,7 @@ opsctl commands:
   continuous-soak-integrity|soak-integrity [--json]
   production-quality-slo|production-slo-guard [--apply] [--refresh-quality] [--json]
   production-hardening-watch|hardening-watch [--apply] [--execute-safe-repairs] [--execute-on-watch] [--max-actions N] [--max-execute-actions N] [--json]
+  ops-scheduled-jobs|scheduled-job-lifecycle [--apply] [--queue-only] [--preflight-only] [--launch-agents-dir PATH] [--json]
   readiness-evidence-refresh|evidence-refresh [--profile all|accrual|dashboard|production] [--status] [--apply] [--force] [--cooldown-minutes N] [--timeout-seconds N] [--json]
   market-replay-fill-capture|replay-fill-capture [--apply] [--min-latency-seconds N] [--max-latency-seconds N] [--json]
   independent-fill-acquisition|independent-fill-evidence [--apply] [--inbox PATH] [--json]
@@ -3460,6 +3507,7 @@ opsctl commands:
   source-mutation-guard|source-guard [--check-clean] [--json]
   sleeve-ticker-universe|expand-tickers [--apply] [--json]
   runtime-throttle|throttle-control|throttle-bot [--apply] [--allow-source-registry-write] [--max-renice-processes N] [--json]
+  governor-refresh [--json]
   process-watchdog|watchdog-refresh [--json]
   watchdog-intelligence|watchdog-brain [--apply] [--json]
   notification-escalation-ladder|notification-ladder [--json]
@@ -3470,6 +3518,7 @@ opsctl commands:
   process-fanout-guard|process-fanout|fanout-guard [--apply] [--json]
   guard-intelligence|guard-brain [--apply] [--json]
   pressure-relief|pressure-governor [--apply] [--json]
+  adaptive-ops-policy|adaptive-recovery-policy|ops-recovery-policy [--apply] [--no-control-plane-refresh] [--max-control-refresh-steps N] [--control-refresh-budget-seconds N] [--json]
   backlog-organizer|organize-backlog [--apply] [--json]
   health-fast|fast-health [--json]
   a-plus-operating-packet|a-plus-packet|a-plus-scorecard [--apply] [--timeout-sec N] [--no-md] [--json]
@@ -3583,7 +3632,7 @@ opsctl commands:
   institutional-alpha-validation|institutional-validation [--apply] [--json]
   trading-muscle-systems|trading-muscles [--apply] [--json]
   platform-organ-systems|platform-organs [--apply] [--json]
-  whole-system-governor|system-governor [--apply] [--json]
+  whole-system-governor|system-governor [--apply|--refresh] [--json]
   quant-operational-intelligence|quant-ops-intelligence [--apply] [--json]
   autonomic-governance-mesh|governance-mesh [--apply] [--json]
   quant-strategy-gap|strategy-gap-expansion [--apply] [--json]
@@ -3613,6 +3662,7 @@ opsctl commands:
   storage-switch-external [--no-refresh]
   storage-sqlite-local-failover [--apply] [--json]
   storage-prune-standby [--apply] [--include-curated-standby] [--min-route-soak-hours N] [--relative-path PATH] [--json]
+  local-sql-shard-standby-prune [--apply] [--max-delete-gb N] [--min-age-minutes N] [--json]
   storage-transition-coordinator [--transition-mode local|external] [--apply] [--json]
   storage-disaster-recovery|storage-recovery-bot [--apply] [--json]
   storage-safe-eject [--no-refresh] [--no-eject]

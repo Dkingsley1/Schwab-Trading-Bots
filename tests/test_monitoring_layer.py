@@ -2610,9 +2610,12 @@ def test_runtime_gate_dashboard_treats_empty_stale_sweeper_lock_as_nonblocking(
 
     assert "stale_artifact_sweeper_bot_not_ok" not in payload["overall"]["attention"]
     assert payload["overall"]["attention_tiers"]["degraded"] == []
-    assert payload["artifacts"]["stale_artifact_sweeper_bot"]["summary"][
-        "maintenance_contention_nonblocking"
-    ] is True
+    assert (
+        payload["artifacts"]["stale_artifact_sweeper_bot"]["summary"][
+            "maintenance_contention_nonblocking"
+        ]
+        is True
+    )
 
 
 def test_runtime_gate_dashboard_keeps_stale_sweeper_errors_degraded(
@@ -2840,6 +2843,13 @@ def test_runtime_gate_dashboard_keeps_advisory_controls_from_degrading_operation
     )
     assert payload["overall"]["attention_tiers"]["critical"] == []
     assert payload["overall"]["attention_tiers"]["degraded"] == []
+    containment = payload["overall"]["degradation_containment"]
+    contained = {row["attention"]: row for row in containment["containment_rows"]}
+    assert contained["memory_efficiency_control_needs_work"]["contained"] is True
+    assert (
+        contained["memory_efficiency_control_needs_work"]["domain"]
+        == "runtime_resources"
+    )
     owners = {
         row["attention"]: row["owner"]
         for row in payload["overall"]["remediation_actions"]
@@ -3626,6 +3636,54 @@ def test_health_gate_raw_stream_ages_cross_utc_midnight(tmp_path: Path) -> None:
 
     assert decision_age == 90.0
     assert governance_age == 90.0
+
+
+def test_health_gate_freshness_reads_bounded_complete_tail(tmp_path: Path):
+    now = datetime.now(timezone.utc)
+    path = tmp_path / "master_control.jsonl"
+    valid = json.dumps(
+        {"timestamp_utc": (now - timedelta(seconds=10)).isoformat()}
+    ).encode()
+    future = json.dumps(
+        {"timestamp_utc": (now + timedelta(hours=1)).isoformat()}
+    ).encode()
+    incomplete = json.dumps({"timestamp_utc": now.isoformat()}).encode()
+    path.write_bytes(
+        b"x" * (health_gates.RAW_FRESHNESS_TAIL_BYTES * 3)
+        + b"\n"
+        + valid
+        + b"\n"
+        + future
+        + b"\n"
+        + incomplete
+    )
+    assert health_gates._bounded_raw_tail_age([path], now_utc=now) == 10.0
+
+
+def test_health_gate_freshness_does_not_read_archives_or_truncated_rows(tmp_path: Path):
+    now = datetime.now(timezone.utc)
+    archived = tmp_path / "master_control.jsonl.gz"
+    archived.write_bytes(
+        json.dumps({"timestamp_utc": now.isoformat()}).encode() + b"\n"
+    )
+    oversized = tmp_path / "master_control.jsonl"
+    oversized.write_bytes(
+        b"x" * (health_gates.RAW_FRESHNESS_TAIL_BYTES * 2)
+        + json.dumps({"timestamp_utc": now.isoformat()}).encode()
+        + b"\n"
+    )
+    assert (
+        health_gates._bounded_raw_tail_age([archived, oversized], now_utc=now) is None
+    )
+
+
+def test_health_gate_freshness_limits_file_count(tmp_path: Path, monkeypatch):
+    now = datetime.now(timezone.utc)
+    first, second = tmp_path / "first.jsonl", tmp_path / "second.jsonl"
+    first.write_text("invalid\n")
+    second.write_text(json.dumps({"timestamp_utc": now.isoformat()}) + "\n")
+    monkeypatch.setattr(health_gates, "RAW_FRESHNESS_MAX_FILES", 1)
+    assert health_gates._bounded_raw_tail_age([first, second], now_utc=now) is None
 
 
 def test_health_gates_fail_on_priority_shard_latency_and_storage(

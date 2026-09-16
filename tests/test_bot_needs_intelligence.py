@@ -275,6 +275,7 @@ def test_balanced_signal_bot_gets_long_precision_assignment(tmp_path: Path) -> N
         diagnostic={
             "sample_count": 420,
             "positive_rate": 0.49,
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "metrics": {
                 "acted_coverage": 0.44,
                 "acted_accuracy": 0.55,
@@ -295,7 +296,7 @@ def test_balanced_signal_bot_gets_long_precision_assignment(tmp_path: Path) -> N
     assert record["evidence"]["precision_gaps"]["long_precision_gap"] > 0
 
 
-def test_bot_needs_uses_fresh_repaired_diagnostic_file_age(tmp_path: Path) -> None:
+def test_bot_needs_does_not_refresh_old_evidence_from_repaired_file_age(tmp_path: Path) -> None:
     bot_id = "brain_refinery_v47_swing_1w_3w"
     now = datetime.now(timezone.utc)
     diagnostic_path = tmp_path / "diagnostic.json"
@@ -332,8 +333,8 @@ def test_bot_needs_uses_fresh_repaired_diagnostic_file_age(tmp_path: Path) -> No
     )
 
     need_keys = {need["key"] for need in record["all_needs"]}
-    assert "refresh_training_diagnostics" not in need_keys
-    assert record["evidence"]["diagnostic_age_hours"] == 0.0
+    assert "refresh_training_diagnostics" in need_keys
+    assert record["evidence"]["diagnostic_age_hours"] >= 95.0
     assert record["evidence"]["diagnostic_payload_age_hours"] >= 95.0
     assert record["evidence"]["diagnostic_label_age_hours"] == 96.0
     assert record["evidence"]["diagnostic_file_age_hours"] == 0.0
@@ -359,6 +360,7 @@ def test_defensive_bot_does_not_require_long_precision_first(tmp_path: Path) -> 
         diagnostic={
             "sample_count": 420,
             "positive_rate": 0.52,
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "metrics": {
                 "acted_coverage": 0.36,
                 "acted_accuracy": 0.54,
@@ -399,6 +401,7 @@ def test_infrastructure_bot_gets_guard_precision_assignment(tmp_path: Path) -> N
         diagnostic={
             "sample_count": 420,
             "positive_rate": 0.48,
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "metrics": {
                 "acted_coverage": 0.86,
                 "acted_accuracy": 0.49,

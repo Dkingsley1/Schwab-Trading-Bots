@@ -16,6 +16,16 @@ SCRIPT_PATH = (
 )
 
 
+@pytest.fixture(autouse=True)
+def stable_test_disk_capacity(monkeypatch):
+    # Copy-integrity tests must not depend on the host's current free space.
+    # Capacity-policy tests below override this sensor with their explicit limits.
+    monkeypatch.setattr(
+        "shutil.disk_usage",
+        lambda path: SimpleNamespace(total=2 * 1024**4, used=1024**4, free=1024**4),
+    )
+
+
 def _load_module():
     spec = importlib.util.spec_from_file_location(
         "daily_state_snapshot_drill", SCRIPT_PATH
@@ -68,6 +78,39 @@ class DailyStateSnapshotDrillTests(unittest.TestCase):
             self.assertEqual(row["metadata_observation"]["size_bytes"], 128)
             self.assertFalse(latest["full_platform_restore_verified"])
 
+    def test_large_metadata_only_mode_keeps_restore_counts_explicit(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            module.PROJECT_ROOT = root
+            (root / "governance" / "watchdog").mkdir(parents=True, exist_ok=True)
+
+            large_file = root / "large.bin"
+            large_file.write_bytes(b"A" * 128)
+
+            out_root = root / "exports" / "state_snapshot_drills"
+            argv = [
+                "daily_state_snapshot_drill.py",
+                "--out-root",
+                str(out_root),
+                "--targets",
+                str(large_file),
+                "--max-copy-bytes",
+                "16",
+                "--allow-large-metadata-only",
+                "--json",
+            ]
+            with mock.patch.object(sys, "argv", argv):
+                rc = module.main()
+
+            self.assertEqual(rc, 0)
+            latest = json.loads((out_root / "latest.json").read_text(encoding="utf-8"))
+            self.assertTrue(latest["ok"])
+            self.assertFalse(latest["large_file_restore_required"])
+            self.assertEqual(latest["accepted_metadata_only_large_files"], 1)
+            self.assertEqual(latest["files_restore_verified"], 0)
+            self.assertFalse(latest["full_platform_restore_verified"])
+
     def test_small_file_copy_restore_mode(self) -> None:
         module = _load_module()
         with tempfile.TemporaryDirectory() as td:
@@ -101,6 +144,40 @@ class DailyStateSnapshotDrillTests(unittest.TestCase):
             self.assertNotEqual(row["snapshot"], "")
             self.assertNotEqual(row["restored"], "")
             self.assertTrue(row["restore_ok"])
+
+    def test_local_scratch_can_publish_standard_latest(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            module.PROJECT_ROOT = root
+            (root / "governance" / "watchdog").mkdir(parents=True, exist_ok=True)
+            target = root / "state.json"
+            target.write_text('{"ready":true}', encoding="utf-8")
+            out_root = root / "local_fallback_storage" / "exports" / "state_snapshot_drills"
+            published_latest = root / "exports" / "state_snapshot_drills" / "latest.json"
+
+            argv = [
+                "daily_state_snapshot_drill.py",
+                "--out-root",
+                str(out_root),
+                "--publish-latest",
+                str(published_latest),
+                "--targets",
+                str(target),
+                "--max-copy-bytes",
+                "1024",
+                "--json",
+            ]
+            with mock.patch.object(sys, "argv", argv):
+                rc = module.main()
+
+            self.assertEqual(rc, 0)
+            scratch_latest = json.loads((out_root / "latest.json").read_text(encoding="utf-8"))
+            published = json.loads(published_latest.read_text(encoding="utf-8"))
+            self.assertEqual(scratch_latest["latest_file"], str(out_root / "latest.json"))
+            self.assertEqual(scratch_latest["published_latest_file"], str(published_latest))
+            self.assertTrue(scratch_latest["published_latest_write_verified"])
+            self.assertEqual(published["timestamp_utc"], scratch_latest["timestamp_utc"])
 
     def test_broken_routed_sqlite_uses_local_fallback_source(self) -> None:
         module = _load_module()

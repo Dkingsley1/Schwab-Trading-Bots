@@ -22,6 +22,10 @@ DEFAULT_ABSTENTION_TUNING_MIN_ACTED = 30
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.training_diagnostic_contract import diagnostic_age_hours as producer_diagnostic_age_hours
+from core.training_diagnostic_contract import materialization_contract_valid
+from scripts.ops.long_runtime_common import write_payload
+
 try:
     from scripts.ops.training_labeling_intelligence import FREE_LABEL_CONTEXT_SOURCE_MAP
 except Exception:
@@ -343,13 +347,7 @@ def _audit_row(registry_row: dict[str, Any], diag_dir: Path, *, max_diagnostic_a
         observed_contract = dict(label_contract)
         observed_contract["source"] = "registry_fallback_for_legacy_diagnostic"
     contract_complete = _label_contract_complete(label_contract, observed_contract)
-    diagnostic_age_hours = None
-    if diag_path and diag_path.exists():
-        try:
-            modified = datetime.fromtimestamp(diag_path.stat().st_mtime, tz=timezone.utc)
-            diagnostic_age_hours = max((datetime.now(timezone.utc) - modified).total_seconds() / 3600.0, 0.0)
-        except Exception:
-            diagnostic_age_hours = None
+    diagnostic_age_hours = producer_diagnostic_age_hours(diag, datetime.now(timezone.utc))
     sample_count = _int(diag.get("sample_count", runtime_meta.get("sample_count", 0)))
     skipped_filtered = _int(diag.get("skipped_filtered", runtime_meta.get("skipped_filtered", 0)))
     skipped_low_confidence = _int(diag.get("skipped_low_confidence", runtime_meta.get("skipped_low_confidence", 0)))
@@ -427,7 +425,67 @@ def _audit_row(registry_row: dict[str, Any], diag_dir: Path, *, max_diagnostic_a
         "diagnostics_path": str(diag_path) if bot_id else "",
     }
     out["recommendation"] = _recommendation(out)
+    out["materialization_evidence"] = _materialization_evidence(registry_row, diag, out)
     return out
+
+
+def _materialization_evidence(registry_row: dict[str, Any], diag: dict[str, Any], audit: dict[str, Any]) -> dict[str, Any]:
+    """Inventory producer claims without treating a registry contract as evidence."""
+    contract = registry_row.get("training_label_materialization_contract")
+    contract = contract if isinstance(contract, dict) else {}
+    runtime = diag.get("runtime_meta")
+    runtime = runtime if isinstance(runtime, dict) else {}
+    evidence = runtime.get("label_evidence_audit")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    disposition = runtime.get("label_disposition_audit")
+    disposition = disposition if isinstance(disposition, dict) else {}
+    expected_hash = str(contract.get("contract_sha256") or "")
+    contract_valid = materialization_contract_valid(contract, audit["bot_id"])
+    objective = str(contract.get("objective_class") or "unclassified")
+    observed_hash = str(evidence.get("label_contract_sha256") or "")
+    reported_samples = _int(evidence.get("selected_training_sample_count"))
+    blockers = []
+    if not audit["diagnostic_present"]:
+        blockers.append("missing_diagnostic")
+    elif not audit["diagnostic_fresh"]:
+        blockers.append("stale_or_unknown_diagnostic_time")
+    if not contract_valid:
+        blockers.append("missing_or_invalid_materialization_contract")
+    if objective in {"operational_effect", "research_validation"}:
+        blockers.append("authority_specific_outcome_materializer_required")
+    elif objective != "market_outcome":
+        blockers.append("unclassified_outcome_authority")
+    if not evidence:
+        blockers.append("missing_measured_label_evidence")
+    else:
+        if observed_hash != expected_hash or not observed_hash or evidence.get("label_owner_id") != audit["bot_id"]:
+            blockers.append("measured_label_contract_or_owner_mismatch")
+        if evidence.get("objective_class") != objective:
+            blockers.append("measured_outcome_authority_mismatch")
+        if evidence.get("point_in_time_guard_enforced") is not True or evidence.get("invalid_evidence_admitted") != 0:
+            blockers.append("point_in_time_guard_unverified")
+        if reported_samples <= 0:
+            blockers.append("no_selected_materialized_samples")
+        if reported_samples != audit["sample_count"]:
+            blockers.append("diagnostic_sample_count_mismatch")
+    inactive = not audit["active"] or str(audit["lifecycle_state"]).lower() in {"retired", "deleted", "disabled", "inactive", "tombstoned"}
+    status = "inactive" if inactive else "outcome_evidence_pending" if blockers else "producer_summary_consistent_not_reverified"
+    return {
+        "status": status, "objective_class": objective,
+        "outcome_authority": str(contract.get("outcome_authority") or "unknown"),
+        "contract_integrity_valid": contract_valid,
+        "expected_contract_sha256": expected_hash, "observed_contract_sha256": observed_hash,
+        "reported_selected_sample_count": reported_samples,
+        "reported_accepted_label_count": _int(evidence.get("accepted_materialized_label_count")),
+        "required_outputs": list(contract.get("required_outputs") or []),
+        "rejection_counts": dict(disposition.get("rejection_counts") or evidence.get("rejection_counts") or {}),
+        "blockers": blockers,
+        "next_action": "preserve_inactive" if inactive else blockers[0] if blockers else "verify_dataset_receipts_and_out_of_sample_quality",
+        "raw_history_relabelled": False,
+        "dataset_receipts_reverified": False,
+        "training_admission_authority": False,
+        "live_execution_authority": False,
+    }
 
 
 def build_label_audit_payload(
@@ -494,6 +552,36 @@ def build_label_audit_payload(
         if recommendation_counts.get(name, 0) > 0:
             top_actions.append(name)
     payload["top_actions"] = top_actions
+    inventory = [{
+        "bot_id": row["bot_id"], "active": row["active"],
+        "bot_role": row["bot_role"], "lifecycle_state": row["lifecycle_state"],
+        "label_family": row["label_family"], "primary_label_horizon": row["primary_label_horizon"],
+        "diagnostic_age_hours": row["diagnostic_age_hours"],
+        "diagnostic_fresh": row["diagnostic_fresh"],
+        "observation_count": row["observation_count"],
+        "sample_count": row["sample_count"],
+        **row["materialization_evidence"],
+    } for row in rows]
+    payload["all_bot_label_inventory"] = inventory
+    payload["label_evidence_coverage"] = {
+        "schema_version": 1, "registry_bot_count": len(rows), "audited_bot_count": len(inventory),
+        "inventory_truncated": False,
+        "status_counts": dict(Counter(row["status"] for row in inventory)),
+        "objective_counts": dict(Counter(row["objective_class"] for row in inventory)),
+        "blocker_counts": dict(Counter(reason for row in inventory if row["active"] for reason in row["blockers"])),
+        "scope": "all_registry_bots_and_existing_diagnostic_summaries_not_all_raw_history",
+        "policy": "contract coverage and producer summaries are not verified outcome labels or training admission",
+    }
+    preflight = _load_json(registry_path.parent / "governance/health/training_dataset_preflight_latest.json")
+    payload["latest_dataset_preparation"] = {
+        "timestamp_utc": preflight.get("timestamp_utc"),
+        "status": preflight.get("overall_status", "missing"),
+        "blockers": preflight.get("blockers", []),
+        "snapshot_read_audit": preflight.get("snapshot_read_audit", {}),
+        "materialized_sample_count": preflight.get("materialized_sample_count", 0),
+        "model_validation_performed": False,
+        "historical_backfill_complete": False,
+    }
     return payload
 
 
@@ -512,8 +600,7 @@ def main() -> int:
         max_diagnostic_age_hours=float(args.max_diagnostic_age_hours),
     )
     output_path = Path(args.output_path).expanduser()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(output_path, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

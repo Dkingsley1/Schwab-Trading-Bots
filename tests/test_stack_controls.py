@@ -201,11 +201,12 @@ def test_runtime_smooth_mode_launchd_applies_memory_and_runtime_controls() -> No
 
     assert "runtime_smooth_mode_launchd.lock" in text
     assert "RUNTIME_SMOOTH_MODE_LOCK_ROOT" in text
-    assert "RUNTIME_SMOOTH_MODE_LOCK_STALE_SECONDS" in text
+    assert "Legacy locks are not stolen by age" in text
     assert "RUNTIME_SMOOTH_MODE_AUTOMATIC" in text
-    assert "memory-pressure-intelligence --apply --json" in text
-    assert "runtime-throttle --apply --json" in text
-    assert "exec /usr/bin/nice" not in text
+    assert "governor_refresh.py" in text
+    assert "--scheduled --json" in text
+    assert "RUNTIME_SMOOTH_MODE_NICE:-10" in text
+    assert "infrabot-adaptive-governor" not in text
 
 
 def test_storage_backpressure_autopilot_launchd_runs_multi_cycle_clearance() -> None:
@@ -1926,7 +1927,8 @@ def test_runtime_env_and_storage_guard_support_mount_candidates() -> None:
         'ProcessInfo.processInfo.environment["BOT_LOGS_EXTERNAL_VOLUME_UUID"]'
         in guard_text
     )
-    assert "diskutil list -plist external" in guard_text
+    assert "diskutil info -plist target" in guard_text
+    assert "diskutil list -plist external" not in guard_text
     assert "diskutil mount reason=" in guard_text
     assert "handleObservedDiskAppeared" in guard_text
     assert "startMountPollTimer" in guard_text

@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ else:
 PY = resolve_runtime_python(PROJECT_ROOT)
 from core.runtime_maintenance import maintenance_hold_snapshot
 from core.storage_router import inspect_storage_path
+from core.workload_admission import POLICIES, current_lease
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "soak_self_healing_control_latest.json"
 DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "soak_self_healing_state.json"
@@ -339,7 +341,15 @@ def _update_step_state(
     steps = _as_dict(state.setdefault("steps", {}))
     parsed = _as_dict(row.get("parsed"))
     ok = bool(row.get("ok", False))
+    prior = _as_dict(steps.get(step_name))
+    progress = row.get("storage_recovery_progress")
+    no_progress_count = _safe_int(prior.get("no_progress_count"), 0)
+    if isinstance(progress, dict):
+        no_progress_count = 0 if progress["made_progress"] else min(no_progress_count + 1, 16)
     until = _utc_now() + timedelta(seconds=max(int(cooldown_seconds), 0)) if (not ok and cooldown_seconds > 0) else None
+    if ok and isinstance(progress, dict) and not progress["made_progress"]:
+        delay = min(max(int(cooldown_seconds), 60) * 2 ** min(no_progress_count - 1, 6), 3600)
+        until = _utc_now() + timedelta(seconds=delay)
     failure_count = 0 if ok else _safe_int(_as_dict(steps.get(step_name)).get("failure_count"), 0) + 1
     circuit_until = (
         _utc_now() + timedelta(seconds=max(int(circuit_open_seconds), 1))
@@ -357,6 +367,10 @@ def _update_step_state(
         "circuit_until_utc": circuit_until.isoformat() if circuit_until else "",
         "circuit_reason": "bounded_repair_failure_budget_exhausted" if circuit_until else "",
     }
+    if isinstance(progress, dict):
+        steps[step_name].update(no_progress_count=no_progress_count, storage_recovery_progress=progress)
+        if ok and not progress["made_progress"]:
+            steps[step_name]["cooldown_reason"] = "storage_recovery_no_measured_progress"
     if step_name == STORAGE_MEMORY_STEP:
         steps[step_name]["observation_contract_version"] = 1
         steps[step_name]["admission_ready"] = bool(row.get("admission_ready"))
@@ -366,6 +380,58 @@ def _update_step_state(
                 "legacy_circuit_revalidation"
             ]
     state["steps"] = steps
+
+
+def _disk_only_recovery_memory_ready(payload: dict[str, Any]) -> bool:
+    """Separate memory admission from disk pressure without clearing disk guards."""
+    observed = _as_dict(payload.get("storage_recovery_memory_observation"))
+    if (
+        payload.get("input_evidence_ready") is not True
+        or observed.get("input_evidence_ready") is not True
+    ):
+        return False
+    try:
+        measured = datetime.fromisoformat(
+            str(observed.get("timestamp_utc", "")).replace("Z", "+00:00")
+        )
+        if (
+            measured.tzinfo is None
+            or not 0 <= (_utc_now() - measured).total_seconds() <= 90
+        ):
+            return False
+        values = [
+            observed.get(key)
+            for key in (
+                "memory_free_pct",
+                "swap_used_gb",
+                "compressor_gb",
+                "pages_throttled",
+            )
+        ]
+        if any(
+            type(value) not in {int, float} or not math.isfinite(value)
+            for value in values
+        ):
+            return False
+    except (TypeError, ValueError, OverflowError):
+        return False
+    free, swap, compressor, throttled = values
+    reasons = observed.get("memory_pressure_reasons")
+    return bool(
+        observed.get("memory_pressure_state") == "yellow"
+        and observed.get("memory_pressure_kind") == "disk_swap_headroom"
+        and isinstance(reasons, list)
+        and reasons
+        and all(
+            isinstance(reason, str)
+            and reason.startswith("local_disk_swap_headroom_gb:")
+            for reason in reasons
+        )
+        and 85 <= free <= 100
+        and 0 <= swap <= 8
+        and 0 <= compressor <= 1
+        and throttled == 0
+    )
 
 
 def _storage_memory_observation(result: dict[str, Any]) -> dict[str, Any]:
@@ -413,13 +479,47 @@ def _storage_memory_observation(result: dict[str, Any]) -> dict[str, Any]:
         or pressure not in {"green", "normal", "yellow", "red"}
     ):
         return invalid
-    admitted = pressure in {"green", "normal"} and free >= 25 and swap <= 8
+    disk_only = (
+        pressure == "yellow"
+        and snapshot.get("memory_pressure_kind") == "disk_swap_headroom"
+        and _disk_only_recovery_memory_ready(payload)
+    )
+    admitted = (pressure in {"green", "normal"} or disk_only) and free >= 25 and swap <= 8
     return {
         "ok": True,
         "admission_ready": admitted,
         "observation_reason": (
-            "memory_admitted" if admitted else "memory_pressure_not_admitted"
+            "disk_only_pressure_memory_admitted"
+            if admitted and disk_only
+            else "memory_admitted" if admitted else "memory_pressure_not_admitted"
         ),
+    }
+
+
+def _storage_recovery_progress(name: str, result: dict[str, Any]) -> dict[str, Any] | None:
+    """Owner receipts measure recovery; a successful exit alone does not."""
+    fields = {
+        "local_disk_cold_evidence_compaction": ("saved_bytes",),
+        "local_disk_lifecycle_backup_compaction": ("summary", "estimated_reduction_bytes"),
+        "local_disk_governance_telemetry_compaction": ("summary", "estimated_hot_reduction_bytes"),
+        "local_disk_cold_sqlite_compression": ("allocated_bytes_reclaimed",),
+        "local_disk_resumable_deep_cold_offload": ("second_cold_move", "moved_bytes"),
+    }
+    if name not in fields or result.get("ok") is not True:
+        return None
+    payload = _as_dict(result.get("parsed"))
+    value: Any = payload
+    for key in fields[name]:
+        value = _as_dict(value).get(key)
+    valid = type(value) in (int, float) and math.isfinite(value) and value >= 0
+    reclaimed = int(value) if valid else 0
+    return {
+        "made_progress": reclaimed > 0,
+        "reported_reclaimed_bytes": reclaimed,
+        "measurement_present": valid,
+        "owner_status": _status(payload),
+        "reason": "measured_reclamation" if reclaimed > 0 else "no_measured_reclamation",
+        "proves_local_reserve_recovered": False,
     }
 
 
@@ -472,6 +572,9 @@ def _run_step(
         return row
     result = _run_command(cmd, project_root=project_root, timeout_sec=timeout_sec, env=env)
     row = {"name": name, "executed": True, **result}
+    progress = _storage_recovery_progress(name, result)
+    if progress is not None:
+        row["storage_recovery_progress"] = progress
     if name == STORAGE_MEMORY_STEP:
         row["assessment_payload_ok"] = bool(result.get("ok"))
         row.update(_storage_memory_observation(result))
@@ -776,8 +879,12 @@ def build_storage_recovery_payload(
     project_root: Path = PROJECT_ROOT,
     *,
     apply: bool = False,
+    quick_bounded: bool = False,
+    rebuild_reserve: bool = False,
 ) -> dict[str, Any]:
     """Pressure relief only; never inherit heavy maintenance or release authority."""
+    deadline_seconds = 90 if quick_bounded else 1800
+    recovery_deadline = time.monotonic() + deadline_seconds
     project_root = Path(project_root)
     if _protected_storage_path(project_root):
         return {
@@ -789,18 +896,38 @@ def build_storage_recovery_payload(
     env = {**os.environ, **SAFE_ENV}
     state = _load_state(project_root)
     steps: list[dict[str, Any]] = []
-    threshold = max(
+    pressure_threshold = max(
         _safe_float(env.get("BOT_LOCAL_STORAGE_PRESSURE_FREE_GB"), 64.0), 1.0
     )
+    trigger = pressure_threshold
+    threshold = pressure_threshold
+    if rebuild_reserve:
+        trigger = max(
+            pressure_threshold,
+            _safe_float(env.get("BOT_LOCAL_STORAGE_TARGET_FREE_GB"), 125.0),
+        )
+        threshold = max(
+            trigger,
+            _safe_float(env.get("SOAK_SELF_HEAL_STORAGE_TARGET_FREE_GB"), 135.0),
+        )
     free_before = shutil.disk_usage(project_root).free / 1024**3
     reason = "headroom_above_pressure_threshold"
     admitted = False
-    if apply and free_before < threshold:
+    adaptive_compression_only = False
+    if apply and free_before < trigger:
         hold = maintenance_hold_snapshot(project_root)
-        load_ratio = os.getloadavg()[1] / max(os.cpu_count() or 1, 1)
+        try:
+            load_ratio = os.getloadavg()[1] / max(os.cpu_count() or 1, 1)
+        except Exception:
+            load_ratio = float("inf")
+        runtime = load_json(health_root / "runtime_throttle_control_latest.json")
+        adaptive_compression_only = bool(
+            math.isfinite(load_ratio) and 0.62 < load_ratio <= POLICIES["storage_recovery"]["load"]
+            and current_lease(runtime.get("workload_admission"), "storage_recovery")
+        )
         if hold.get("active"):
             reason = "existing_maintenance_hold"
-        elif load_ratio > 0.62:
+        elif not math.isfinite(load_ratio) or load_ratio < 0 or (load_ratio > 0.62 and not adaptive_compression_only):
             reason = "host_load_above_recovery_budget"
         else:
             memory = _run_step(
@@ -813,7 +940,7 @@ def build_storage_recovery_payload(
                     "--json",
                 ),
                 project_root=project_root,
-                timeout_sec=60,
+                timeout_sec=10 if quick_bounded else 60,
                 env=env,
                 state=state,
             )
@@ -825,13 +952,38 @@ def build_storage_recovery_payload(
             reason = (
                 "bounded_storage_recovery" if admitted else "memory_admission_not_ready"
             )
-    elif free_before < threshold:
+    elif free_before < trigger:
         reason = "storage_recovery_required"
 
     if admitted:
         opsctl = project_root / "scripts/ops/opsctl.sh"
-        cold = _configure_cold_archive_env(env, apply=False)
+        cold = {} if adaptive_compression_only or quick_bounded else _configure_cold_archive_env(env, apply=False)
         commands = [
+            (
+                "local_disk_cold_evidence_compaction",
+                _cmd(
+                    opsctl,
+                    "cold-evidence-compactor",
+                    "--apply",
+                    "--target-free-gb",
+                    str(threshold),
+                    "--max-files",
+                    "256",
+                    "--seconds",
+                    "840",
+                    "--json",
+                ),
+                900,
+            ),
+            (
+                "local_disk_lifecycle_backup_compaction",
+                _cmd(
+                    opsctl, "governance-lifecycle-compactor", "--apply",
+                    "--max-files", "32", "--target-free-gb", "2",
+                    "--seconds", "180", "--json",
+                ),
+                210,
+            ),
             (
                 "local_disk_governance_telemetry_compaction",
                 _cmd(
@@ -852,6 +1004,25 @@ def build_storage_recovery_payload(
                 600,
             )
         ]
+        if adaptive_compression_only:
+            commands = commands[:2]
+        if quick_bounded:
+            commands = [
+                (
+                    "local_disk_cold_evidence_compaction",
+                    _cmd(opsctl, "cold-evidence-compactor", "--apply",
+                         "--target-free-gb", str(threshold), "--max-files", "4",
+                         "--seconds", "25", "--json"),
+                    30,
+                ),
+                (
+                    "local_disk_lifecycle_backup_compaction",
+                    _cmd(opsctl, "governance-lifecycle-compactor", "--apply",
+                         "--max-files", "4", "--target-free-gb", "2",
+                         "--seconds", "25", "--json"),
+                    30,
+                ),
+            ]
         if cold.get("configured") and cold.get("redundancy_ready"):
             commands.extend(
                 [
@@ -865,19 +1036,21 @@ def build_storage_recovery_payload(
                             cold["path"],
                             "--filesystem-select-inactive",
                             "--filesystem-compressor",
-                            "afsctool",
+                            "auto",
                             "--coordinate-writer-handoff",
                             "--writer-handoff-timeout-seconds",
                             "30",
+                            "--maintenance-hold-ttl-seconds",
+                            "1320",
                             "--filesystem-timeout-seconds",
-                            "600",
+                            "1200",
                             "--max-files",
                             "4",
                             "--max-raw-gb",
-                            "8",
+                            "4",
                             "--json",
                         ),
-                        700,
+                        1300,
                     ),
                     (
                         "local_disk_resumable_deep_cold_offload",
@@ -888,7 +1061,7 @@ def build_storage_recovery_payload(
                             "--adaptive",
                             "--move-to-second-cold",
                             "--second-cold-root",
-                            cold["path"],
+                            env.get("BOT_DEEP_COLD_OFFLOAD_ROOT") or cold["path"],
                             "--source-free-path",
                             project_root,
                             "--destination-reserve-gb",
@@ -896,10 +1069,28 @@ def build_storage_recovery_payload(
                             "--max-move-gb",
                             "8",
                             "--max-move-files",
-                            "20",
+                            str(
+                                max(
+                                    1,
+                                    min(
+                                        _safe_int(
+                                            env.get("BOT_DEEP_COLD_MAX_MOVE_FILES"), 20
+                                        ),
+                                        256,
+                                    ),
+                                )
+                            ),
                             "--min-size-mb",
-                            "25",
+                            str(
+                                max(
+                                    _safe_float(
+                                        env.get("BOT_DEEP_COLD_MIN_SIZE_MB"), 25
+                                    ),
+                                    1,
+                                )
+                            ),
                             "--include-compressed-history",
+                            "--include-registry-backups",
                             "--no-include-local-quarantine",
                             "--no-include-failover-backups",
                             "--json",
@@ -914,15 +1105,61 @@ def build_storage_recovery_payload(
             if maintenance_hold_snapshot(project_root).get("active"):
                 reason = "existing_maintenance_hold"
                 break
+            remaining = int(recovery_deadline - time.monotonic()) - (
+                10 if quick_bounded else 60
+            )
+            if remaining < (15 if quick_bounded else 30):
+                reason = "storage_recovery_deadline"
+                break
+            if name == "local_disk_cold_sqlite_compression" and remaining < timeout:
+                steps.append(
+                    {
+                        "name": name,
+                        "executed": False,
+                        "deferred": True,
+                        "reason": "insufficient_complete_compression_window",
+                        "required_seconds": timeout,
+                        "remaining_seconds": remaining,
+                    }
+                )
+                continue
             _run_step(
                 steps,
                 name=name,
                 cmd=cmd,
                 project_root=project_root,
-                timeout_sec=timeout,
+                timeout_sec=min(timeout, remaining),
                 env=env,
                 state=state,
-                cooldown_seconds=3600,
+                cooldown_seconds=(
+                    (60 if quick_bounded else 900)
+                    if name
+                    in {
+                        "local_disk_cold_evidence_compaction",
+                        "local_disk_lifecycle_backup_compaction",
+                    }
+                    else 3600
+                ),
+            )
+    if admitted or (apply and quick_bounded and free_before >= threshold):
+        remaining = int(recovery_deadline - time.monotonic()) - 10
+        if remaining >= 10:
+            # Reconcile only the reserve owner's pause, including after external relief.
+            recheck = _run_command(
+                _cmd(
+                    project_root / "scripts/ops/opsctl.sh",
+                    "local-storage-reserve-guard",
+                    "--apply",
+                    "--reserve-only",
+                    "--skip-governor-reconcile",
+                    "--json",
+                ),
+                project_root=project_root,
+                timeout_sec=min(10 if quick_bounded else 60, remaining),
+                env=env,
+            )
+            steps.append(
+                {"name": "local_disk_reserve_recheck", "executed": True, **recheck}
             )
     if any(step.get("executed") for step in steps):
         _write_state(project_root, state)
@@ -932,14 +1169,31 @@ def build_storage_recovery_payload(
         "schema_version": 1,
         "apply": apply,
         "mode": "storage_recovery_only",
-        "ok": free_after >= threshold,
-        "overall_status": "ready" if free_after >= threshold else "needs_work",
+        "ok": free_after >= trigger,
+        "overall_status": "ready" if free_after >= trigger else "needs_work",
         "reason": reason,
         "admitted": admitted,
+        "adaptive_compression_only": adaptive_compression_only,
+        "quick_bounded": quick_bounded,
+        "rebuild_reserve": rebuild_reserve,
         "steps": steps,
         "local_free_before_gb": round(free_before, 3),
         "local_free_after_gb": round(free_after, 3),
-        "pressure_free_gb": threshold,
+        "net_local_headroom_change_gb": round(free_after - free_before, 3),
+        "recovery_effectiveness": {
+            "measured_progress_steps": [step["name"] for step in steps if _as_dict(step.get("storage_recovery_progress")).get("made_progress")],
+            "no_progress_steps": [step["name"] for step in steps if isinstance(step.get("storage_recovery_progress"), dict) and not step["storage_recovery_progress"]["made_progress"]],
+            "capacity_shortfall_gb": round(max(threshold - free_after, 0), 3),
+            "next_action": "reserve_recovered" if free_after >= threshold else "continue_admitted_recovery_owners; retain_capacity_blocker_if_no_eligible_work",
+            "successful_exit_is_not_recovery": True,
+            "no_progress_backoff_max_seconds": 3600,
+        },
+        "pressure_free_gb": pressure_threshold,
+        "recovery_trigger_free_gb": trigger,
+        "recovery_target_free_gb": threshold,
+        "recovery_target_met": free_after >= threshold,
+        "shared_deadline_seconds": deadline_seconds,
+        "storage_ready_is_current_free_space_only": True,
         "live_execution_authority": False,
         "automatic_promotion_authority": False,
         "heavy_maintenance_allowed": False,
@@ -1118,20 +1372,22 @@ def build_payload(
                         str(env["BOT_SECOND_COLD_ROOT"]),
                         "--filesystem-select-inactive",
                         "--filesystem-compressor",
-                        "afsctool",
+                        "auto",
                         "--coordinate-writer-handoff",
                         "--writer-handoff-timeout-seconds",
                         "30",
+                        "--maintenance-hold-ttl-seconds",
+                        "1320",
                         "--filesystem-timeout-seconds",
-                        "600",
+                        "1200",
                         "--max-files",
                         "4",
                         "--max-raw-gb",
-                        "8",
+                        "4",
                         "--json",
                     ),
                     project_root=project_root,
-                    timeout_sec=max(int(step_timeout_sec), 660),
+                    timeout_sec=max(int(step_timeout_sec), 1300),
                     env=env,
                     state=state,
                     cooldown_seconds=int(
@@ -1152,6 +1408,7 @@ def build_payload(
                         "--adaptive",
                         "--move-to-second-cold",
                         "--include-compressed-history",
+                        "--include-registry-backups",
                         "--planning-horizon-days",
                         str(round(float(target_days), 3)),
                         "--json",
@@ -1519,7 +1776,13 @@ def build_payload(
     soak_row = _run_step(
         steps,
         name="unattended_soak_readiness",
-        cmd=_cmd(py, project_root / "scripts" / "ops" / "unattended_soak_readiness.py", "--target-days", str(round(float(target_days), 3)), "--json"),
+        cmd=_cmd(
+            py,
+            project_root / "scripts" / "ops" / "unattended_soak_readiness.py",
+            "--target-days",
+            str(round(float(target_days), 3)),
+            "--json",
+        ),
         project_root=project_root,
         timeout_sec=min(max(int(step_timeout_sec), 30), 90),
         env=env,
@@ -1527,11 +1790,38 @@ def build_payload(
         cooldown_seconds=0,
         respect_cooldowns=False,
     )
-    soak_payload = _as_dict(soak_row.get("parsed")) or load_json(health_root / "unattended_soak_readiness_latest.json")
+    soak_payload = _as_dict(soak_row.get("parsed")) or load_json(
+        health_root / "unattended_soak_readiness_latest.json"
+    )
 
     storage_retention_payload: dict[str, Any] = {}
     storage_recovery_payloads: dict[str, Any] = {}
     if apply and _storage_blockers(soak_payload):
+        evidence_row = _run_step(
+            steps,
+            name="storage_cold_evidence_compaction",
+            cmd=_cmd(
+                opsctl,
+                "cold-evidence-compactor",
+                "--apply",
+                "--target-free-gb",
+                str(round(float(storage_target_free_gb), 3)),
+                "--max-files",
+                "256",
+                "--seconds",
+                "540",
+                "--json",
+            ),
+            project_root=project_root,
+            timeout_sec=600,
+            env=env,
+            state=state,
+            cooldown_seconds=int(max(float(storage_cooldown_minutes), 1.0) * 60),
+            respect_cooldowns=respect_cooldowns,
+        )
+        storage_recovery_payloads["cold_evidence_compaction"] = _as_dict(
+            evidence_row.get("parsed")
+        )
         raw_compaction_row = _run_step(
             steps,
             name="storage_raw_training_compaction",
@@ -1542,7 +1832,9 @@ def build_payload(
                 "--max-files",
                 "24",
                 "--max-gb",
-                str(round(max(min(float(storage_cleanup_max_delete_gb), 12.0), 4.0), 3)),
+                str(
+                    round(max(min(float(storage_cleanup_max_delete_gb), 12.0), 4.0), 3)
+                ),
                 "--jumbo-gb",
                 "12.0",
                 "--min-age-hours",
@@ -2189,6 +2481,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Only bounded pressure relief; no heavy repair or release evaluation.",
     )
+    parser.add_argument("--quick-storage-recovery", action="store_true")
+    parser.add_argument("--rebuild-reserve", action="store_true")
     parser.add_argument("--target-days", type=float, default=30.0)
     parser.add_argument("--daily-max-age-minutes", type=float, default=360.0)
     parser.add_argument("--force-daily-verify", action="store_true")
@@ -2204,6 +2498,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lock-file", default=str(DEFAULT_LOCK_PATH))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.quick_storage_recovery and not args.storage_recovery_only:
+        parser.error("--quick-storage-recovery requires --storage-recovery-only")
+    if args.rebuild_reserve and (
+        not args.storage_recovery_only or args.quick_storage_recovery
+    ):
+        parser.error("--rebuild-reserve requires normal --storage-recovery-only")
 
     project_root = Path(args.project_root).expanduser()
     if _protected_storage_path(project_root):
@@ -2231,7 +2531,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.storage_recovery_only:
             payload = build_storage_recovery_payload(
-                project_root, apply=bool(args.apply)
+                project_root, apply=bool(args.apply), quick_bounded=bool(args.quick_storage_recovery),
+                rebuild_reserve=bool(args.rebuild_reserve),
             )
             if args.json:
                 print(json.dumps(payload, ensure_ascii=True))

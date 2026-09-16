@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ if __package__ in {None, ""}:
         payload_age_minutes,
         write_payload,
     )
+    from scripts.ops.scheduled_lifecycle_common import lifecycle_receipt
     from scripts.ops.system_drift_registry import surface_specs
 else:
     from .long_runtime_common import (
@@ -30,6 +32,7 @@ else:
         payload_age_minutes,
         write_payload,
     )
+    from .scheduled_lifecycle_common import lifecycle_receipt
     from .system_drift_registry import surface_specs
 
 
@@ -334,8 +337,7 @@ def _recovery_deferred_reason(
         }
         listed_counts_match = bool(
             _safe_int(payload.get("blocked_node_count"), -1) == len(blocked_nodes)
-            and _safe_int(payload.get("degraded_node_count"), -1)
-            == len(degraded_nodes)
+            and _safe_int(payload.get("degraded_node_count"), -1) == len(degraded_nodes)
         )
         if (
             not blocked_nodes
@@ -347,9 +349,7 @@ def _recovery_deferred_reason(
                 "system_self_model",
             }
             and listed_counts_match
-            and _architecture_graph_marks_nodes_optional_for_spec(
-                spec, degraded_nodes
-            )
+            and _architecture_graph_marks_nodes_optional_for_spec(spec, degraded_nodes)
             and _safe_int(payload.get("blocked_edge_count"), 0) == 0
             and _safe_int(payload.get("authority_violation_count"), 0) == 0
         ):
@@ -494,9 +494,7 @@ def _recovery_deferred_reason(
             and _safe_int(final_graph.get("blocked_edge_count"), 0) == 0
             and _safe_int(final_graph.get("authority_violation_count"), 0) == 0
         ):
-            return (
-                "guarded_paper_architecture_autopilot_recursive_earned_evidence_debt"
-            )
+            return "guarded_paper_architecture_autopilot_recursive_earned_evidence_debt"
 
     if (
         guarded_paper_strict_clear
@@ -1097,6 +1095,33 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     }
 
 
+def _attach_direct_lifecycle(
+    payload: dict[str, Any],
+    *,
+    rc: int,
+    terminal_status: str,
+) -> dict[str, Any]:
+    ts = datetime.now(timezone.utc)
+    updated = dict(payload)
+    updated["job_lifecycle"] = lifecycle_receipt(
+        job_id="system_drift_guard",
+        scheduled=False,
+        started_utc=ts,
+        completed_utc=ts,
+        schedule_interval_seconds=600,
+        rc=rc,
+        terminal_status=terminal_status,
+        ok=terminal_status in {"completed", "completed_with_findings"},
+        failure_reason="" if terminal_status != "failed" else f"command_rc_{rc}",
+        artifact_present_before=True,
+        artifact_present_after=True,
+        deadline_seconds=300,
+        command=["scripts/ops/system_drift_guard.py", "--json"],
+        source="system_drift_guard_direct",
+    )
+    return updated
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Aggregate system-wide drift surfaces into a registry-backed guard artifact."
@@ -1108,6 +1133,13 @@ def main() -> int:
 
     project_root = Path(args.project_root).resolve()
     payload = build_payload(project_root)
+    rc = 0 if payload.get("overall_status") in {"ready", "degraded"} else 2
+    terminal_status = "completed" if rc == 0 else "completed_with_findings"
+    payload = _attach_direct_lifecycle(
+        payload,
+        rc=rc,
+        terminal_status=terminal_status,
+    )
     out_file = (
         Path(args.out_file).expanduser()
         if args.out_file
@@ -1124,7 +1156,7 @@ def main() -> int:
             f"blocked={int((payload.get('metrics') or {}).get('blocked_surface_count', 0) or 0)} "
             f"degraded={int((payload.get('metrics') or {}).get('degraded_surface_count', 0) or 0)}"
         )
-    return 0 if payload.get("overall_status") in {"ready", "degraded"} else 2
+    return rc
 
 
 if __name__ == "__main__":

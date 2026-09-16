@@ -8,6 +8,69 @@ from pathlib import Path
 from scripts.ops import readiness_evidence_refresh as refresh
 
 
+@pytest.mark.parametrize("profile", ["accrual", "dashboard"])
+def test_feature_manifest_refreshes_its_preferred_training_coverage(profile):
+    steps = refresh.profile_steps(profile)
+    by_name = {row["name"]: row for row in steps}
+    names = [row["name"] for row in steps]
+    training = by_name["snapshot_coverage_training"]
+    operational = by_name["snapshot_coverage"]
+    assert training["artifact"] != operational["artifact"]
+    assert training["args"] == [
+        "--hours",
+        "24",
+        "--out-file",
+        training["artifact"],
+        "--json",
+    ]
+    assert training["depends_on"] == ["runtime_training_snapshot"]
+    assert training["max_age_minutes"] == 15
+    assert set(training["allowed_returncodes"]) == {0, 2}
+    assert (
+        "snapshot_coverage_training" in by_name["feature_store_manifest"]["depends_on"]
+    )
+    assert (
+        names.index("runtime_training_snapshot")
+        < names.index("snapshot_coverage_training")
+        < names.index("feature_store_manifest")
+    )
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_failed_training_coverage_cannot_refresh_feature_manifest(tmp_path, force):
+    steps = [
+        row
+        for row in refresh.profile_steps("accrual")
+        if row["name"] in {"snapshot_coverage_training", "feature_store_manifest"}
+    ]
+    calls = []
+
+    def runner(cmd, **kwargs):
+        calls.append(cmd)
+        return {"rc": 124, "stdout": "", "stderr": "timeout", "timed_out": True}
+
+    result = refresh.refresh(tmp_path, steps=steps, runner=runner, now=NOW, force=force)
+    assert len(calls) == 1
+    assert result["dependency_blocked_steps"] == ["feature_store_manifest"]
+    assert not result["ok"]
+
+
+@pytest.mark.parametrize("profile", ["accrual", "dashboard"])
+def test_frequent_profiles_restore_a_bounded_coherent_training_epoch(profile):
+    steps = refresh.profile_steps(profile)
+    names = [row["name"] for row in steps]
+    step = next(row for row in steps if row["name"] == "coherent_training_refresh")
+    assert names.index("feature_store_manifest") < names.index(step["name"])
+    assert step["depends_on"] == ["feature_store_manifest"]
+    assert step["max_age_minutes"] == 15
+    assert step["owner_timeout_seconds"] == 390
+    assert step["args"] == [
+        "--scope", "training", "--max-run-seconds", "240", "--skip-dashboard",
+        "--out-file", step["artifact"], "--json",
+    ]
+    assert "--apply" not in step["args"]
+
+
 def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
     accrual = [row["name"] for row in refresh.profile_steps("accrual")]
     dashboard = [row["name"] for row in refresh.profile_steps("dashboard")]
@@ -18,7 +81,9 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
         "runtime_training_snapshot",
         "point_in_time_event_store",
         "snapshot_coverage",
+        "snapshot_coverage_training",
         "feature_store_manifest",
+        "coherent_training_refresh",
         "research_context_expansion",
         "collector_contracts",
         "source_verification",
@@ -134,6 +199,11 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
     assert production.index("autonomic_resource_governor") < production.index(
         "coherent_training_profitability_refresh"
     )
+    assert (
+        production.index("memory_efficiency_status")
+        < production.index("host_capability_contract")
+        < production.index("coherent_training_profitability_refresh")
+    )
     assert production.index(
         "coherent_training_profitability_refresh"
     ) < production.index("promotion_candidate_advancement")
@@ -171,9 +241,21 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
     assert production_steps["coherent_training_profitability_refresh"]["args"] == [
         "--scope",
         "training-profitability",
+        "--max-run-seconds",
+        "1200",
         "--skip-dashboard",
         "--json",
     ]
+    assert (
+        production_steps["coherent_training_profitability_refresh"][
+            "owner_timeout_seconds"
+        ]
+        == 1500
+    )
+    assert (
+        production_steps["state_snapshot_restore_drill"]["owner_timeout_seconds"]
+        == 2100
+    )
     assert production_steps["content_addressed_store"]["args"] == ["--no-gc", "--json"]
     assert production_steps["security_evidence_autofix"]["args"] == ["--json"]
     assert production_steps["security_evidence_autofix"]["max_age_minutes"] == 60.0
@@ -230,17 +312,36 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
         "distributed_cell_architecture",
         "architecture_hardening",
     }
-    for name in ("platform_intelligence", "platform_brain_v5", "platform_stabilization_quality", "platform_settlement_stabilization", "system_plumbing_control"):
+    for name in (
+        "platform_intelligence",
+        "platform_brain_v5",
+        "platform_stabilization_quality",
+        "platform_settlement_stabilization",
+        "system_plumbing_control",
+    ):
         assert name in production
         assert production_steps[name]["max_age_minutes"] < 45
         assert "--apply" not in production_steps[name]["args"]
         assert production.index(name) < production.index("architecture_hardening")
-    assert "platform_settlement_stabilization" in production_steps["architecture_hardening"]["depends_on"]
-    assert production.index("writer_process_intelligence") < production.index("platform_settlement_stabilization")
-    assert "writer_process_intelligence" in production_steps["platform_settlement_stabilization"]["depends_on"]
+    assert (
+        "platform_settlement_stabilization"
+        in production_steps["architecture_hardening"]["depends_on"]
+    )
+    assert production.index("writer_process_intelligence") < production.index(
+        "platform_settlement_stabilization"
+    )
+    assert (
+        "writer_process_intelligence"
+        in production_steps["platform_settlement_stabilization"]["depends_on"]
+    )
     assert production_steps["writer_process_intelligence"]["args"] == ["--json"]
-    assert "system_plumbing_control" in production_steps["architecture_hardening"]["depends_on"]
-    assert production_steps["system_plumbing_control"]["depends_on"] == ["writer_process_intelligence"]
+    assert (
+        "system_plumbing_control"
+        in production_steps["architecture_hardening"]["depends_on"]
+    )
+    assert production_steps["system_plumbing_control"]["depends_on"] == [
+        "writer_process_intelligence"
+    ]
     assert production_steps["master_infrastructure_supervisor"]["depends_on"] == [
         "system_drift_guard"
     ]
@@ -846,12 +947,15 @@ def test_successful_accrual_preserves_production_failure_receipt(tmp_path):
     assert recovered["profile_runs"]["accrual"] == accrual["profile_runs"]["accrual"]
 
 
-@pytest.mark.parametrize("evidence", [
-    {"timestamp_utc": (NOW - timedelta(days=1)).isoformat()},
-    {"timestamp_utc": (NOW + timedelta(days=1)).isoformat()},
-    {"timestamp_utc": "invalid"},
-    {"ok": True},
-])
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"timestamp_utc": (NOW - timedelta(days=1)).isoformat()},
+        {"timestamp_utc": (NOW + timedelta(days=1)).isoformat()},
+        {"timestamp_utc": "invalid"},
+        {"ok": True},
+    ],
+)
 def test_success_exit_without_current_published_evidence_fails(tmp_path, evidence):
     artifact = tmp_path / "governance/health/test_latest.json"
     _write(artifact, evidence)
@@ -859,9 +963,17 @@ def test_success_exit_without_current_published_evidence_fails(tmp_path, evidenc
 
     def runner(*args, **kwargs):
         calls.append(args)
-        return {"rc": 0, "stdout": json.dumps({"ok": True, "timestamp_utc": NOW.isoformat()})}
+        return {
+            "rc": 0,
+            "stdout": json.dumps({"ok": True, "timestamp_utc": NOW.isoformat()}),
+        }
 
-    payload = refresh.refresh(tmp_path, steps=[_spec("governance/health/test_latest.json")], runner=runner, now=NOW)
+    payload = refresh.refresh(
+        tmp_path,
+        steps=[_spec("governance/health/test_latest.json")],
+        runner=runner,
+        now=NOW,
+    )
     assert calls
     assert not payload["ok"]
     assert payload["refreshed_step_count"] == 0
@@ -872,10 +984,22 @@ def test_refresh_status_comes_from_published_file_not_stdout(tmp_path):
     artifact = tmp_path / "governance/health/test_latest.json"
 
     def runner(*args, **kwargs):
-        _write(artifact, {"timestamp_utc": NOW.isoformat(), "ok": False, "overall_status": "blocked"})
+        _write(
+            artifact,
+            {
+                "timestamp_utc": NOW.isoformat(),
+                "ok": False,
+                "overall_status": "blocked",
+            },
+        )
         return {"rc": 2, "stdout": '{"ok":true,"overall_status":"ready"}'}
 
-    payload = refresh.refresh(tmp_path, steps=[_spec("governance/health/test_latest.json", allowed=(0, 2))], runner=runner, now=NOW)
+    payload = refresh.refresh(
+        tmp_path,
+        steps=[_spec("governance/health/test_latest.json", allowed=(0, 2))],
+        runner=runner,
+        now=NOW,
+    )
     assert payload["ok"]
     assert payload["steps"][0]["published_ok"] is False
     assert payload["steps"][0]["published_status"] == "blocked"
@@ -899,9 +1023,13 @@ def test_refresh_report_cooldown_returns_without_rewriting(tmp_path: Path) -> No
     assert payload["refresh_skip_reason"] == "cooldown_active"
 
 
-@pytest.mark.parametrize("evidence", [{"ok": True}, {"timestamp_utc": "2099-01-01T00:00:00Z"}])
+@pytest.mark.parametrize(
+    "evidence", [{"ok": True}, {"timestamp_utc": "2099-01-01T00:00:00Z"}]
+)
 def test_invalid_prior_timestamp_cannot_hold_refresh_in_cooldown(tmp_path, evidence):
-    _write(tmp_path / "governance/health/readiness_evidence_refresh_latest.json", evidence)
+    _write(
+        tmp_path / "governance/health/readiness_evidence_refresh_latest.json", evidence
+    )
     payload = refresh.refresh(tmp_path, steps=[], now=NOW)
     assert payload["refresh_skipped"] is False
     assert payload["write_latest"] is True

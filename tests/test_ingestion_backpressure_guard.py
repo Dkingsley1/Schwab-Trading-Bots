@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -388,6 +389,142 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
             self.assertEqual(progress[rel]["last_line"], 1600)
             self.assertEqual(progress[rel]["last_offset_bytes"], 200000)
             self.assertEqual(len(sources), 1)
+
+    def test_observer_journal_cache_is_incremental_and_separate_from_writer(
+        self,
+    ) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            health = root / "governance/health"
+            health.mkdir(parents=True)
+            journal = health / "jsonl_ingest_batch_journal_runtime_latest.jsonl"
+            row = {
+                "event": "file_checkpoint",
+                "source_rel": "source.jsonl",
+                "last_line": 1,
+                "last_offset_bytes": 10,
+                "file_inode": 42,
+                "file_size_bytes": 100,
+                "source_file_identity": "/source.jsonl",
+            }
+            journal.write_text(json.dumps(row) + "\n")
+            writer_index = journal.with_name(journal.name + ".resume_index.json")
+            writer_index.write_text("writer-owned sentinel")
+            first = {}
+            module._load_journal_progress(root, scan_detail=first)
+            observer_index = journal.with_name(
+                journal.name + ".backpressure_index.json"
+            )
+            old_mtime = observer_index.stat().st_mtime_ns
+            warm = {}
+            progress, _ = module._load_journal_progress(root, scan_detail=warm)
+            self.assertEqual(warm["scanned_bytes"], 0)
+            self.assertEqual(warm["reused_indexes"], 1)
+            self.assertEqual(observer_index.stat().st_mtime_ns, old_mtime)
+            self.assertEqual(progress["source.jsonl"]["file_inode"], 42)
+            self.assertEqual(
+                progress["source.jsonl"]["source_file_identity"], "/source.jsonl"
+            )
+            append = json.dumps({**row, "last_line": 2, "last_offset_bytes": 20}) + "\n"
+            with journal.open("a") as handle:
+                handle.write(append)
+            detail = {}
+            progress, _ = module._load_journal_progress(root, scan_detail=detail)
+            self.assertEqual(detail["scanned_bytes"], len(append.encode()))
+            self.assertEqual(progress["source.jsonl"]["last_line"], 2)
+            self.assertEqual(writer_index.read_text(), "writer-owned sentinel")
+
+    def test_observer_cache_rejects_partial_lines_and_honors_resets(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            health = root / "governance/health"
+            health.mkdir(parents=True)
+            journal = health / "jsonl_ingest_batch_journal_runtime_latest.jsonl"
+            row = {
+                "event": "file_checkpoint",
+                "source_rel": "source.jsonl",
+                "last_line": 9,
+                "last_offset_bytes": 90,
+            }
+            journal.write_text(json.dumps(row))
+            self.assertEqual(module._load_journal_progress(root)[0], {})
+            with journal.open("a") as handle:
+                handle.write("\n")
+            self.assertEqual(
+                module._load_journal_progress(root)[0]["source.jsonl"]["last_line"], 9
+            )
+            with journal.open("a") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "event": "file_start",
+                            "source_rel": "source.jsonl",
+                            "reset_reason": "source_changed",
+                        }
+                    )
+                    + "\n"
+                )
+                handle.write(
+                    json.dumps({**row, "last_line": 2, "last_offset_bytes": 20}) + "\n"
+                )
+            self.assertEqual(
+                module._load_journal_progress(root)[0]["source.jsonl"]["last_line"], 2
+            )
+
+    def test_observer_cache_invalidates_same_size_rewrite_and_corrupt_index(
+        self,
+    ) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            health = root / "governance/health"
+            health.mkdir(parents=True)
+            journal = health / "jsonl_ingest_batch_journal_runtime_latest.jsonl"
+            row = {
+                "event": "file_checkpoint",
+                "source_rel": "source.jsonl",
+                "last_line": 9,
+                "last_offset_bytes": 90,
+            }
+            journal.write_text(json.dumps(row) + "\n")
+            module._load_journal_progress(root)
+            st = journal.stat()
+            journal.write_text(
+                json.dumps({**row, "last_line": 2, "last_offset_bytes": 20}) + "\n"
+            )
+            os.utime(journal, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+            detail = {}
+            progress, _ = module._load_journal_progress(root, scan_detail=detail)
+            self.assertEqual(detail["reused_indexes"], 0)
+            self.assertEqual(progress["source.jsonl"]["last_line"], 2)
+            journal.with_name(journal.name + ".backpressure_index.json").write_text(
+                json.dumps({"journal_offset_bytes": "invalid"})
+            )
+            self.assertEqual(
+                module._load_journal_progress(root)[0]["source.jsonl"]["last_line"], 2
+            )
+
+    def test_observer_initial_cache_does_not_inherit_writer_tail_limit(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            health = root / "governance/health"
+            health.mkdir(parents=True)
+            journal = health / "jsonl_ingest_batch_journal_runtime_latest.jsonl"
+            row = {
+                "event": "file_checkpoint",
+                "source_rel": "source.jsonl",
+                "last_line": 9,
+                "last_offset_bytes": 90,
+            }
+            journal.write_text(json.dumps(row) + "\n" + "{}\n" * 100)
+            with patch.dict(os.environ, {"INGEST_JOURNAL_RESUME_SCAN_MAX_BYTES": "32"}):
+                self.assertEqual(
+                    module._load_journal_progress(root)[0]["source.jsonl"]["last_line"],
+                    9,
+                )
 
     def test_journal_reconciliation_recovers_missing_state_progress(self) -> None:
         module = _load_module()

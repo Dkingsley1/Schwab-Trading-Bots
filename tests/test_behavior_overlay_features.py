@@ -36,6 +36,31 @@ def test_behavior_feature_schema_appends_lane_overlay_features() -> None:
     assert behavior_ds.BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES == loop._BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES
 
 
+def test_schwab_context_runtime_ignores_unproven_cached_aggregates(monkeypatch):
+    from core import schwab_crypto_data
+
+    now = datetime.now(timezone.utc).timestamp()
+    key = "crypto_schwab_future_available_norm"
+    assert key in loop._EXTERNAL_CONTEXT_FEATURE_KEYS
+    snapshot = {
+        "provider": "crypto_market_context", "timestamp_utc": schwab_crypto_data.iso(now),
+        "derived": {"symbol_features": {"BTC-USD": {key: 1.0}}},
+        "sources": {"schwab_data_role": "context_only", "schwab_instruments": []},
+    }
+    assert key not in loop._external_context_feature_set(snapshot, symbol="BTC-USD")
+    snapshot["sources"]["schwab_instruments"] = [{
+        "provider": "schwab", "asset": "BTC", "requested_symbol": "/BTC", "instrument_type": "future",
+        "data_role": "context_only", "currency": "USD", "realtime": True,
+        "usable": True, "spot_price_eligible": False, "spread_bps": 2, "return_pct": -1,
+        "quote_timestamp_utc": schwab_crypto_data.iso(now), "observed_at": schwab_crypto_data.iso(now),
+        "bid_timestamp_utc": schwab_crypto_data.iso(now), "ask_timestamp_utc": schwab_crypto_data.iso(now),
+    }]
+    monkeypatch.setattr(schwab_crypto_data.time, "time", lambda: now)
+    assert loop._external_context_feature_set(snapshot, symbol="BTC-USD")[key] == 1.0
+    monkeypatch.setattr(schwab_crypto_data.time, "time", lambda: now + 121)
+    assert key not in loop._external_context_feature_set(snapshot, symbol="BTC-USD")
+
+
 def test_behavior_dataset_vector_matches_declared_feature_schema() -> None:
     features = {
         "dividend_compounding_quality_norm": 0.81,

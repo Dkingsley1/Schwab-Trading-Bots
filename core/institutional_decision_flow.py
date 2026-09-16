@@ -724,6 +724,181 @@ def load_policy(path: Path | str = POLICY_PATH) -> dict[str, Any]:
     return payload
 
 
+def validate_research_priorities(policy: Mapping[str, Any]) -> None:
+    contract = _mapping(policy.get("research_priority_contract"))
+    if contract.get("contract_id") != "strategy_family_research_priorities_v1":
+        raise ValueError("research priority contract missing or invalid")
+    if contract.get("mode") != "research_definition_only":
+        raise ValueError("research priorities must remain definition-only")
+    authority = _mapping(contract.get("authority"))
+    required_authority = {
+        "changes_signal",
+        "changes_action",
+        "changes_position_size",
+        "allocates_capital",
+        "submits_paper_order",
+        "submits_live_order",
+        "promotes_strategy",
+        "accepts_candidate_change",
+        "changes_worker_budget",
+    }
+    if set(authority) != required_authority or any(
+        value is not False for value in authority.values()
+    ):
+        raise ValueError("research priorities cannot grant authority")
+    mandate = _mapping(contract.get("bot_mandate"))
+    if (
+        mandate.get("one_primary_family") is not True
+        or mandate.get("variants_count_as_separate_trials") is not True
+        or mandate.get("priority_is_profitability_evidence") is not False
+    ):
+        raise ValueError(
+            "research bot mandate must preserve specialization and evidence"
+        )
+
+    def strings(value: Any) -> bool:
+        return (
+            isinstance(value, list)
+            and bool(value)
+            and all(isinstance(item, str) and bool(item.strip()) for item in value)
+        )
+
+    required_mandate = {
+        "hypothesis_id",
+        "candidate_id",
+        "primary_family_id",
+        "market_universe",
+        "decision_horizon",
+        "entry_and_exit_specification",
+        "abstention_conditions",
+        "cost_model",
+        "risk_contract_reference",
+        "point_in_time_data_lineage",
+        "untouched_evaluation_window",
+        "benchmark",
+        "experiment_trial_id",
+    }
+    if not strings(mandate.get("required_fields")) or not required_mandate.issubset(
+        mandate["required_fields"]
+    ):
+        raise ValueError("research bot mandate fields incomplete")
+    if not strings(contract.get("required_evidence")):
+        raise ValueError("research priority evidence requirements missing")
+    families = _mapping(policy.get("sleeve_policy_families"))
+    rows = contract.get("priority_families")
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 5:
+        raise ValueError("research priorities must contain one to five families")
+    seen: set[str] = set()
+    ranks: list[int] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("research priority family must be an object")
+        family_id = row.get("family_id")
+        if (
+            not isinstance(family_id, str)
+            or family_id not in families
+            or family_id in seen
+        ):
+            raise ValueError("research priority family unknown or duplicated")
+        if _mapping(families[family_id]).get("execution_eligible_default") is not True:
+            raise ValueError(
+                "non-trading families cannot receive trading research priority"
+            )
+        seen.add(family_id)
+        rank = row.get("rank")
+        if type(rank) is not int:
+            raise ValueError("research priority rank must be an integer")
+        ranks.append(rank)
+        for field in (
+            "display_name",
+            "hypothesis",
+            "market_universe",
+            "signal_specification",
+            "exit_and_invalidation",
+            "cost_stress",
+            "evaluation_metric",
+        ):
+            if not isinstance(row.get(field), str) or not row[field].strip():
+                raise ValueError(
+                    f"research priority definition missing: {family_id}.{field}"
+                )
+        for field in (
+            "inputs_required",
+            "abstain_when",
+            "benchmarks",
+            "failure_criteria",
+        ):
+            if not strings(row.get(field)):
+                raise ValueError(
+                    f"research priority definition missing: {family_id}.{field}"
+                )
+    if sorted(ranks) != list(range(1, len(rows) + 1)):
+        raise ValueError("research priority ranks must be unique and consecutive")
+    reviews = contract.get("recommended_concurrent_family_reviews")
+    if type(reviews) is not int or not 1 <= reviews <= len(rows):
+        raise ValueError("research family review recommendation invalid")
+    deferred = contract.get("deferred_family_ids")
+    if not strings(deferred) or len(rows) + len(deferred) > 10:
+        raise ValueError("research catalog must remain bounded to ten families")
+    for family_id in deferred:
+        if family_id not in families or family_id in seen:
+            raise ValueError("deferred research family unknown or duplicated")
+        if _mapping(families[family_id]).get("execution_eligible_default") is not True:
+            raise ValueError(
+                "non-trading families cannot join the trading research catalog"
+            )
+        seen.add(family_id)
+    for field in ("deferred_policy", "expansion_gate"):
+        if not isinstance(contract.get(field), str) or not contract[field].strip():
+            raise ValueError(f"research priority contract missing: {field}")
+
+
+def build_research_priority_catalog(policy: Mapping[str, Any]) -> dict[str, Any]:
+    """Describe research order separately from execution policy and earned evidence."""
+    validate_research_priorities(policy)
+    contract = deepcopy(dict(_mapping(policy["research_priority_contract"])))
+    priorities = {row["family_id"]: row for row in contract["priority_families"]}
+    deferred = set(contract["deferred_family_ids"])
+    definitions = _mapping(policy.get("strategy_definitions"))
+    rows = []
+    for family_id, family in _mapping(policy.get("sleeve_policy_families")).items():
+        research = priorities.get(family_id, {})
+        state = (
+            "priority_research"
+            if research
+            else (
+                "deferred_research"
+                if family_id in deferred
+                else (
+                    "non_trading"
+                    if not _mapping(family).get("execution_eligible_default")
+                    else "existing_unprioritized"
+                )
+            )
+        )
+        rows.append(
+            {
+                "family_id": family_id,
+                "research_status": state,
+                "research_rank": research.get("rank"),
+                "research_definition": deepcopy(research),
+                "strategy_definition": deepcopy(_mapping(definitions.get(family_id))),
+                "economic_evidence_status": "not_assessed_by_definition",
+            }
+        )
+    return {
+        **contract,
+        "catalog_sha256": _canonical_hash(
+            {"contract": contract, "definitions": definitions}
+        ),
+        "families": sorted(
+            rows, key=lambda row: (row["research_rank"] or 100, row["family_id"])
+        ),
+        "workers_started": False,
+        "profitability_verified": False,
+    }
+
+
 def _token_match(value: str, tokens: Sequence[Any]) -> bool:
     return any(str(token or "").strip().lower() in value for token in tokens if str(token or "").strip())
 

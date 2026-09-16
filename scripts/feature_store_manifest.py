@@ -119,6 +119,25 @@ def _line_count(path_text: Any) -> int | None:
         return None
 
 
+def _resolve_project_file(path_text: Any, *, project_root: Path) -> Path:
+    text = str(path_text or "").strip()
+    if not text:
+        return Path()
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = project_root / path
+    if path.is_file():
+        return path
+    try:
+        rel = path.relative_to(project_root)
+    except ValueError:
+        return path
+    fallback = project_root / "local_fallback_storage" / rel
+    if fallback.is_file():
+        return fallback
+    return path
+
+
 def _ordered_unique(items: list[str]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -210,9 +229,7 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     sequence_count = _safe_int(snapshot.get("sequence_count"), 0)
     rows_path = str(snapshot.get("rows_path") or "")
     rows_sha256 = str(snapshot.get("rows_sha256") or "")
-    resolved_rows_path = Path(rows_path).expanduser() if rows_path else Path()
-    if rows_path and not resolved_rows_path.is_absolute():
-        resolved_rows_path = project_root / resolved_rows_path
+    resolved_rows_path = _resolve_project_file(rows_path, project_root=project_root)
     actual_rows_sha256 = _sha256_file(resolved_rows_path) if rows_path else ""
     actual_row_count = _line_count(resolved_rows_path) if rows_path else None
     rows_file_exists = bool(rows_path and resolved_rows_path.is_file())

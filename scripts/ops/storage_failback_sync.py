@@ -734,9 +734,26 @@ def _build_sqlite_skip_report(
 
         verification_state = "missing_external_copy"
         verification_reason = "The external route does not currently have a verified SQLite copy for this tracked path."
-        if classification == "active_local_route" and local_bytes > 0:
+        passthrough_sidecar_conflicts = [
+            str(Path(f"{repo_path}{suffix}"))
+            for suffix in ("-wal", "-shm")
+            if repo_exists
+            and not repo_path.is_symlink()
+            and Path(f"{repo_path}{suffix}").is_symlink()
+        ]
+        if passthrough_sidecar_conflicts:
+            verification_state = "passthrough_sidecar_route_conflict"
+            verification_reason = (
+                "A regular repository database has routed SQLite sidecar links; "
+                "file presence cannot prove that this database is usable."
+            )
+            verification_mismatches.append(rel)
+        elif local_bytes > 0 and (
+            classification == "active_local_route"
+            or (classification == "active_local_queue" and str(mode or "").startswith("local_fallback"))
+        ):
             verification_state = "active_local_ready"
-            verification_reason = "The active route is local fallback and the repo link resolves to a present local SQLite copy."
+            verification_reason = "The repo link or configured active queue path selects a present local fallback SQLite database."
             external_ready_count += 1
             verified_count += 1
         elif classification == "active_repo_queue_passthrough" and repo_bytes > 0:
@@ -847,6 +864,7 @@ def _build_sqlite_skip_report(
                     "sidecars": external_sidecars,
                 },
                 "queue_handoff_evidence": queue_handoff_evidence,
+                "passthrough_sidecar_conflicts": passthrough_sidecar_conflicts,
                 "external_at_least_as_large": bool(
                     external_exists and local_exists and external_bytes >= local_bytes
                 ),

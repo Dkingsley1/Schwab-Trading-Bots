@@ -2,6 +2,410 @@
   "schema_version": 1,
   "policy_id": "system_responsibility_and_authority_v1",
   "operating_mode": "enforced_responsibility_contracts",
+  "infrastructure_responsibility_contract": {
+    "contract_id": "infrastructure_responsibility_domains_v1",
+    "mode": "definition_and_owner_routing_only",
+    "definition": "Infrastructure maintains the reliability, integrity, availability and recoverability of platform capabilities. Operational utility is measured by verified service outcomes, never market-direction accuracy or synthetic profitability.",
+    "authority": {
+      "grants_component_actions": false,
+      "changes_role_bindings": false,
+      "changes_state_ownership": false,
+      "starts_workers": false,
+      "changes_resource_limits": false,
+      "changes_trade_logic": false,
+      "submits_paper_order": false,
+      "submits_live_order": false,
+      "promotes_candidate": false,
+      "clears_health_without_evidence": false
+    },
+    "lifecycle": [
+      "observe",
+      "classify",
+      "request_owner_action",
+      "owner_admission",
+      "owner_bounded_repair",
+      "independent_recheck",
+      "verified_resolution_or_explicit_escalation"
+    ],
+    "cadence_policy": "Use each existing owner's trigger, freshness SLO and resource budget. Event response must remain inside those bounds; this catalog adds no scheduler, worker or polling interval.",
+    "completion_policy": "Requested, admitted, attempted, completed and independently verified are distinct. Exit zero, a new timestamp, or a complete definition does not prove recovery. A missing outcome stays unknown.",
+    "safety_invariants": [
+      "existing_component_action_and_state_domain_guards_required",
+      "single_writer_locks_and_maintenance_holds_preserved",
+      "owner_retry_cooldown_circuit_and_deadline_preserved",
+      "resource_and_storage_floors_unchanged",
+      "protected_volume_boundaries_preserved",
+      "no_unverified_source_deletion_or_cursor_reset",
+      "no_credentials_in_logs_or_definitions",
+      "operational_training_labels_not_market_returns"
+    ],
+    "domains": [
+      {
+        "domain_id": "ingestion_quality",
+        "display_name": "Ingestion And Data Quality",
+        "owner_component_id": "collector_capability_controller",
+        "state_domain_id": "collector_capability_metadata",
+        "requested_actions": [
+          "validate_evidence",
+          "publish_evidence",
+          "emit_health"
+        ],
+        "purpose": "Verify source provenance, ingestion coverage and cursor-generation consistency; route drain or collector repairs to their existing owners.",
+        "inputs": [
+          "source_timestamps_and_quality",
+          "native_backlog_census",
+          "writer_checkpoints_and_invalid_row_receipts"
+        ],
+        "outputs": [
+          "coverage_and_freshness_findings",
+          "source_scoped_repair_requests"
+        ],
+        "success_metrics": [
+          "uncovered_sources",
+          "invalid_row_rate",
+          "pending_bytes_and_checkpoint_service_age"
+        ],
+        "completion_evidence": [
+          "matching_source_generation_and_checkpoint",
+          "payload_verification_with_explicit_coverage"
+        ],
+        "escalation_conditions": [
+          "unreadable_or_changed_source",
+          "no_progress_after_owner_retry_budget"
+        ]
+      },
+      {
+        "domain_id": "runtime_liveness",
+        "display_name": "Runtime And Process Health",
+        "owner_component_id": "process_restart_controller",
+        "state_domain_id": "process_lifecycle",
+        "requested_actions": [
+          "restart_process",
+          "repair_infrastructure",
+          "emit_health"
+        ],
+        "purpose": "Recover failed owned processes without duplicating writers or treating intentional admission deferrals as crashes.",
+        "inputs": [
+          "process_identity_and_heartbeat",
+          "writer_locks",
+          "storage_pause_and_maintenance_holds"
+        ],
+        "outputs": [
+          "bounded_restart_receipts",
+          "process_lifecycle_observations"
+        ],
+        "success_metrics": [
+          "heartbeat_age",
+          "restart_recurrence",
+          "duplicate_writer_count"
+        ],
+        "completion_evidence": [
+          "fresh_child_heartbeat",
+          "confirmed_lock_ownership",
+          "original_deferral_or_failure_preserved"
+        ],
+        "escalation_conditions": [
+          "unknown_process_owner",
+          "restart_budget_exhausted",
+          "active_maintenance_hold"
+        ]
+      },
+      {
+        "domain_id": "storage_durability",
+        "display_name": "Storage And Archive Durability",
+        "owner_component_id": "storage_lifecycle_controller",
+        "state_domain_id": "storage_lifecycle",
+        "requested_actions": [
+          "manage_storage",
+          "repair_infrastructure",
+          "write_state",
+          "emit_health"
+        ],
+        "purpose": "Coordinate reserve recovery, archive organization and proof-gated lifecycle work while preserving occupied data and protected volumes.",
+        "inputs": [
+          "physical_free_space",
+          "route_identity",
+          "archive_manifests_and_restore_proofs",
+          "SQLite_and_WAL_observations"
+        ],
+        "outputs": [
+          "measured_reclaim_receipts",
+          "verified_archive_links",
+          "remaining_capacity_shortfall"
+        ],
+        "success_metrics": [
+          "net_free_space_change",
+          "reported_reclaimed_bytes",
+          "reserve_shortfall",
+          "restore_verification_failures"
+        ],
+        "completion_evidence": [
+          "full_restore_hash_and_stable_source_for_offload",
+          "durable_receipt_before_source_release",
+          "fresh_physical_reserve_recheck"
+        ],
+        "escalation_conditions": [
+          "destination_unavailable_or_unreliable",
+          "no_eligible_reclaimable_data",
+          "verification_mismatch"
+        ]
+      },
+      {
+        "domain_id": "resource_admission",
+        "display_name": "Compute And Workload Admission",
+        "owner_component_id": "production_resilience_controller",
+        "state_domain_id": "production_resilience_state",
+        "requested_actions": [
+          "repair_infrastructure",
+          "write_state",
+          "emit_health"
+        ],
+        "purpose": "Coordinate existing CPU, memory, thermal and workload governors; report requested versus observed acceleration without raising their limits.",
+        "inputs": [
+          "fresh_resource_owner_observations",
+          "workload_cost_and_queue_age",
+          "thermal_state",
+          "maintenance_and_operator_mode"
+        ],
+        "outputs": [
+          "owner_scoped_admission_requests",
+          "admitted_or_deferred_workload_evidence"
+        ],
+        "success_metrics": [
+          "admission_wait_time",
+          "completed_work_per_resource_budget",
+          "memory_pressure_and_swap_trend",
+          "observed_accelerator_usage"
+        ],
+        "completion_evidence": [
+          "fresh_underlying_measurements",
+          "owner_admission_receipt",
+          "measured_work_completion"
+        ],
+        "escalation_conditions": [
+          "stale_or_missing_resource_evidence",
+          "hard_thermal_memory_or_storage_stop",
+          "no_progress_within_work_budget"
+        ]
+      },
+      {
+        "domain_id": "artifact_freshness",
+        "display_name": "Artifact Freshness And Dependencies",
+        "owner_component_id": "artifact_lifecycle_controller",
+        "state_domain_id": "artifact_freshness_state",
+        "requested_actions": [
+          "manage_artifact_lifecycle",
+          "emit_health"
+        ],
+        "purpose": "Track producer age and dependency epochs; request bounded owner refreshes without restamping stale inputs as fresh.",
+        "inputs": [
+          "producer_timestamps",
+          "dependency_epoch_and_candidate_ids",
+          "existing_freshness_contracts"
+        ],
+        "outputs": [
+          "freshness_debt",
+          "dependency_scoped_refresh_requests"
+        ],
+        "success_metrics": [
+          "producer_age_vs_owner_SLO",
+          "incomplete_dependency_epochs",
+          "refresh_recurrence"
+        ],
+        "completion_evidence": [
+          "new_producer_timestamp",
+          "matching_dependency_epoch",
+          "complete_owner_payload"
+        ],
+        "escalation_conditions": [
+          "unknown_producer",
+          "incomplete_epoch",
+          "refresh_budget_exhausted"
+        ]
+      },
+      {
+        "domain_id": "broker_truth",
+        "display_name": "Broker Truth And Session Continuity",
+        "owner_component_id": "execution_truth_ledger",
+        "state_domain_id": "execution_truth",
+        "requested_actions": [
+          "record_truth",
+          "reconcile_broker",
+          "emit_health"
+        ],
+        "purpose": "Reconcile account, position and fill facts against broker truth and the current auth epoch; credentials stay with documented auth owners.",
+        "inputs": [
+          "broker_account_and_position_observations",
+          "append_only_execution_facts",
+          "auth_epoch_and_reconciliation_receipts"
+        ],
+        "outputs": [
+          "reconciliation_findings",
+          "append_only_truth_receipts"
+        ],
+        "success_metrics": [
+          "reconciliation_age",
+          "unresolved_fact_mismatches",
+          "auth_epoch_mismatch_count"
+        ],
+        "completion_evidence": [
+          "fresh_broker_bound_account_and_position_evidence",
+          "matching_auth_epoch",
+          "resolved_or_explicitly_unresolved_execution_ambiguity"
+        ],
+        "escalation_conditions": [
+          "interactive_reauthentication_required",
+          "ambiguous_order_outcome",
+          "broker_truth_unavailable"
+        ]
+      },
+      {
+        "domain_id": "research_lineage",
+        "display_name": "Training And Evaluation Lineage",
+        "owner_component_id": "strategy_quality_controller",
+        "state_domain_id": "strategy_quality_evidence",
+        "requested_actions": [
+          "validate_evidence",
+          "publish_evidence",
+          "emit_health"
+        ],
+        "purpose": "Audit candidate/data/model lineage and untouched evaluation evidence; request repairs from training owners without training or promoting through this domain.",
+        "inputs": [
+          "candidate_and_dataset_versions",
+          "model_hashes",
+          "replay_and_holdout_receipts",
+          "objective_specific_label_contracts"
+        ],
+        "outputs": [
+          "lineage_gaps",
+          "candidate_bound_validation_findings"
+        ],
+        "success_metrics": [
+          "lineage_coverage",
+          "replay_reproducibility",
+          "holdout_contamination_findings"
+        ],
+        "completion_evidence": [
+          "matching_candidate_data_and_model_hashes",
+          "reproducible_out_of_sample_receipts",
+          "operational_labels_separate_from_market_labels"
+        ],
+        "escalation_conditions": [
+          "missing_original_dataset",
+          "holdout_contamination",
+          "candidate_identity_changed"
+        ]
+      },
+      {
+        "domain_id": "observability",
+        "display_name": "Observability And Health Truth",
+        "owner_component_id": "observability_reporter",
+        "state_domain_id": "canonical_health_reporting",
+        "requested_actions": [
+          "report_health",
+          "publish_dashboard",
+          "emit_health"
+        ],
+        "purpose": "Publish source-backed health and distinguish definition completeness, observed progress, operational recovery and trading readiness.",
+        "inputs": [
+          "canonical_owner_receipts",
+          "producer_age_and_coverage",
+          "unresolved_incident_state"
+        ],
+        "outputs": [
+          "bounded_health_views",
+          "deduplicated_actionable_findings"
+        ],
+        "success_metrics": [
+          "stale_or_missing_health_sources",
+          "false_recovery_claims",
+          "notification_duplicates"
+        ],
+        "completion_evidence": [
+          "source_references_and_original_timestamps",
+          "explicit_partial_or_unknown_state",
+          "owner_verified_clearance_for_each_resolved_issue"
+        ],
+        "escalation_conditions": [
+          "conflicting_owner_truth",
+          "unavailable_required_source",
+          "unresolved_critical_findings"
+        ]
+      },
+      {
+        "domain_id": "security_authority",
+        "display_name": "Security And Authority Boundaries",
+        "owner_component_id": "system_role_contract_controller",
+        "state_domain_id": "system_role_contract_health",
+        "requested_actions": [
+          "validate_authority",
+          "publish_evidence",
+          "emit_health"
+        ],
+        "purpose": "Validate declared component actions, single-writer ownership and sensitive-action leases; never display credentials or grant permissions from a bot label.",
+        "inputs": [
+          "role_and_component_catalog",
+          "control_surface_ownership",
+          "sensitive_action_lease_evidence"
+        ],
+        "outputs": [
+          "authority_conflicts",
+          "source_backed_role_validation"
+        ],
+        "success_metrics": [
+          "unknown_action_count",
+          "ownership_conflict_count",
+          "invalid_or_expired_lease_count"
+        ],
+        "completion_evidence": [
+          "valid_owner_and_role_binding",
+          "unambiguous_state_domain",
+          "required_sensitive_action_lease"
+        ],
+        "escalation_conditions": [
+          "unknown_or_conflicting_authority",
+          "secret_exposure_suspected",
+          "operator_approval_required"
+        ]
+      },
+      {
+        "domain_id": "incident_recovery",
+        "display_name": "Incident Recovery And Verification",
+        "owner_component_id": "soak_reliability_controller",
+        "state_domain_id": "soak_reliability_state",
+        "requested_actions": [
+          "repair_infrastructure",
+          "write_state",
+          "emit_health"
+        ],
+        "purpose": "Coordinate allowlisted repairs through existing owners with per-surface retries, cooldowns, deadlines and independent post-repair checks.",
+        "inputs": [
+          "incident_identity_and_severity",
+          "owner_failure_receipts",
+          "repair_history_and_circuit_state"
+        ],
+        "outputs": [
+          "bounded_repair_requests_and_receipts",
+          "remaining_blockers_and_escalations"
+        ],
+        "success_metrics": [
+          "time_to_verified_recovery",
+          "repeated_incidents",
+          "measured_repair_progress"
+        ],
+        "completion_evidence": [
+          "fresh_owner_post_repair_check",
+          "original_incident_evidence_retained",
+          "no_remaining_failure_in_the_repaired_scope"
+        ],
+        "escalation_conditions": [
+          "repair_circuit_open",
+          "same_failure_after_budget",
+          "physical_capacity_or_external_dependency_required"
+        ]
+      }
+    ]
+  },
   "required_role_fields": [
     "role_id",
     "display_name",
@@ -861,7 +1265,7 @@
     {"domain_id": "artifact_freshness_state", "writer_component_id": "artifact_lifecycle_controller", "required_action": "manage_artifact_lifecycle", "resource_patterns": ["governance/health/artifact_freshness_slo_latest.json"], "reader_roles": ["infrastructure_maintainer", "observability_reporter", "evaluation_auditor"]},
     {"domain_id": "production_resilience_state", "writer_component_id": "production_resilience_controller", "required_action": "write_state", "resource_patterns": ["governance/health/production_resilience_control_latest.json"], "reader_roles": ["infrastructure_maintainer", "observability_reporter", "promotion_governance"]},
     {"domain_id": "canonical_health_reporting", "writer_component_id": "observability_reporter", "required_action": "publish_dashboard", "resource_patterns": ["governance/health/runtime_gate_dashboard_latest.json", "governance/health/system_self_model_latest.json", "governance/health/independent_runtime_monitor_latest.json"], "reader_roles": ["operator", "grand_master_coordinator", "risk_governance", "promotion_governance"]},
-    {"domain_id": "bot_organization_metadata", "writer_component_id": "bot_organization_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/bot_organization_latest.json", "governance/bot_organization/bot_hierarchy_latest.json"], "reader_roles": ["sleeve_manager", "master_coordinator", "evaluation_auditor"]},
+    {"domain_id": "bot_organization_metadata", "writer_component_id": "bot_organization_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/bot_organization_latest.json", "governance/bot_organization/bot_hierarchy_latest.json", "exports/reports/operator/bot_definition_audit_latest.md", "config/bot_operating_definitions_v1.json"], "reader_roles": ["sleeve_manager", "master_coordinator", "evaluation_auditor"]},
     {"domain_id": "collector_capability_metadata", "writer_component_id": "collector_capability_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/collector_capabilities/materialized_capabilities_latest.json", "governance/health/collector_capability_control_latest.json", "governance/collector_capabilities/bot_subscriptions_latest.json"], "reader_roles": ["data_collector", "context_processor", "evaluation_auditor"]},
     {"domain_id": "strategy_quality_evidence", "writer_component_id": "strategy_quality_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/bot_profitability_scalability_latest.json", "governance/bot_organization/bot_profitability_scalability_latest.json"], "reader_roles": ["master_coordinator", "promotion_governance", "evaluation_auditor"]},
     {"domain_id": "master_grandmaster_evidence", "writer_component_id": "master_grandmaster_evidence_controller", "required_action": "publish_evidence", "resource_patterns": ["governance/health/master_grandmaster_evidence_v2_latest.json", "governance/master_grandmaster/evidence_packets_v2_latest.json"], "reader_roles": ["grand_master_coordinator", "promotion_governance", "observability_reporter"]},
@@ -908,6 +1312,8 @@
     "production_resilience_control": "production_resilience_controller",
     "bot_organization_health": "bot_organization_controller",
     "bot_hierarchy_catalog": "bot_organization_controller",
+    "bot_definition_audit_report": "bot_organization_controller",
+    "bot_operating_definition_catalog": "bot_organization_controller",
     "collector_capability_materialization": "collector_capability_controller",
     "collector_capability_health": "collector_capability_controller",
     "collector_capability_bot_subscriptions": "collector_capability_controller",

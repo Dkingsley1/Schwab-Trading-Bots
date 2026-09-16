@@ -673,6 +673,29 @@ def _storage_recovery_pipeline(project_root: Path) -> list[dict[str, Any]]:
             outputs=["storage_standby_prune_latest.json"],
             command=[opsctl, "storage-prune-standby", "--apply", "--json"],
             failure_mode="standby_delete_error_or_route_guard_refusal",
+            next_on_success="prune_sql_shard_standby",
+        ),
+        _pipeline_stage(
+            order=65,
+            stage="prune_sql_shard_standby",
+            owner="local_sql_shard_standby_prune",
+            authority="automatic_derived_sqlite_cache_delete",
+            auto_execute=True,
+            resource_lock="local_sql_shard_standby_prune",
+            entry_condition="external sql_link_shards route is certified and inactive local fallback shard cache files remain",
+            release_condition="inactive local fallback SQL shard cache files are deleted or no mirrored candidates remain",
+            blocked_by=[
+                "active_route_is_local_fallback",
+                "open_handles_present",
+                "external_active_counterpart_missing",
+            ],
+            inputs=[
+                "stateful_storage_regression_guard_latest.json",
+                "storage_failback_sync_latest.json",
+            ],
+            outputs=["local_sql_shard_standby_prune_latest.json"],
+            command=[opsctl, "local-sql-shard-standby-prune", "--apply", "--json"],
+            failure_mode="inactive_shard_cache_delete_error_or_route_guard_refusal",
             next_on_success="verify",
         ),
         _pipeline_stage(
@@ -1030,6 +1053,7 @@ def build_payload(
     max_log_bytes: int,
     tail_bytes: int,
     reconcile_governor: bool = True,
+    reserve_only: bool = False,
     target_free_gb: float = DEFAULT_TARGET_FREE_GB,
     recovery_headroom_gb: float = DEFAULT_RECOVERY_HEADROOM_GB,
     pressure_free_gb: float = DEFAULT_PRESSURE_FREE_GB,
@@ -1047,8 +1071,9 @@ def build_payload(
         [log_root, *(additional_log_roots or [])],
         max_bytes=max_log_bytes,
         tail_bytes=tail_bytes,
-        apply=apply,
+        apply=apply and not reserve_only,
     )
+    logs["mutation_skipped_for_reserve_only"] = bool(reserve_only)
     reserve = local_storage_reserve_contract(project_root, **reserve_kwargs)
     changed = _write_override(override_path, reserve["control_env"]) if apply else False
     governor = {"attempted": False, "ok": True}
@@ -1251,6 +1276,11 @@ def main() -> int:
     )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--skip-governor-reconcile", action="store_true")
+    parser.add_argument(
+        "--reserve-only",
+        action="store_true",
+        help="Reconcile disk-reserve controls without modifying launchd logs.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -1300,6 +1330,7 @@ def main() -> int:
             max_log_bytes=max(int(args.max_log_bytes), 1),
             tail_bytes=max(int(args.tail_bytes), 0),
             reconcile_governor=not bool(args.skip_governor_reconcile),
+            reserve_only=bool(args.reserve_only),
             target_free_gb=max(float(args.target_free_gb), 0.0),
             recovery_headroom_gb=max(float(args.recovery_headroom_gb), 0.0),
             pressure_free_gb=max(float(args.pressure_free_gb), 0.0),

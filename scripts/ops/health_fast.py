@@ -11,7 +11,12 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, write_payload
+    from scripts.ops.long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        load_json,
+        write_payload,
+    )
 else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, write_payload
 
@@ -19,7 +24,14 @@ else:
 from scripts.ops.long_runtime_common import evidence_freshness
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "health_fast_latest.json"
-ROUTE_READY_STATES = {"ready", "verified", "ok", "curated_ready", "active_passthrough", "active_local_ready"}
+ROUTE_READY_STATES = {
+    "ready",
+    "verified",
+    "ok",
+    "curated_ready",
+    "active_passthrough",
+    "active_local_ready",
+}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -67,9 +79,18 @@ def _alert_details(alerts: list[Any]) -> dict[str, Any]:
                     nested = parsed
             except Exception:
                 nested = {}
-        severity = _status(alert.get("severity") or nested.get("severity") or row.get("severity") or "warn")
-        event = str(alert.get("event") or nested.get("event") or row.get("type") or "").strip()
-        target = str(row.get("name") or row.get("target") or nested.get("target") or "").strip()
+        severity = _status(
+            alert.get("severity")
+            or nested.get("severity")
+            or row.get("severity")
+            or "warn"
+        )
+        event = str(
+            alert.get("event") or nested.get("event") or row.get("type") or ""
+        ).strip()
+        target = str(
+            row.get("name") or row.get("target") or nested.get("target") or ""
+        ).strip()
         rows.append(
             {
                 "target": target,
@@ -86,13 +107,27 @@ def _alert_details(alerts: list[Any]) -> dict[str, Any]:
         "total_count": len(rows),
         "critical_count": len(critical),
         "warning_count": len(warning),
-        "critical_targets": sorted({str(row.get("target") or "") for row in critical if str(row.get("target") or "")}),
-        "warning_targets": sorted({str(row.get("target") or "") for row in warning if str(row.get("target") or "")}),
+        "critical_targets": sorted(
+            {
+                str(row.get("target") or "")
+                for row in critical
+                if str(row.get("target") or "")
+            }
+        ),
+        "warning_targets": sorted(
+            {
+                str(row.get("target") or "")
+                for row in warning
+                if str(row.get("target") or "")
+            }
+        ),
         "rows": rows,
     }
 
 
-def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, Any] | None = None) -> dict[str, Any]:
+def _paper_hot_path_storage_relief(
+    storage: dict[str, Any], plumbing: dict[str, Any] | None = None
+) -> dict[str, Any]:
     backpressure = _dict(storage.get("backpressure"))
     effective = _dict(backpressure.get("effective_raw_live"))
     effective_pressure_contract = bool(
@@ -115,27 +150,48 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
     deferred_pending = _safe_int(pressure_view.get("deferred_pending_lines"), 0)
     total_pending = _safe_int(pressure_view.get("total_pending_lines"), 0)
     oldest = _safe_float(pressure_view.get("oldest_pending_age_seconds"), 0.0)
-    pending_threshold = max(_safe_int(backpressure.get("pending_lines_threshold"), 15000), 1)
+    pending_threshold = max(
+        _safe_int(backpressure.get("pending_lines_threshold"), 15000), 1
+    )
     route_ready = _status(route.get("verification_state")) in ROUTE_READY_STATES
     integrity_clean = all(
         _safe_int(integrity.get(key), 0) == 0
-        for key in ("sql_invalid_lines", "sql_overlay_invalid_lines", "sql_overlay_oversize_payloads", "sql_overlay_ops_write_failures")
+        for key in (
+            "sql_invalid_lines",
+            "sql_overlay_invalid_lines",
+            "sql_overlay_oversize_payloads",
+            "sql_overlay_ops_write_failures",
+        )
     )
-    plumbing_managed_deferred = bool(plumbing_paper_relief.get("managed_deferred_backlog", False))
+    plumbing_managed_deferred = bool(
+        plumbing_paper_relief.get("managed_deferred_backlog", False)
+    )
     hot_path_ok = bool(
         plumbing_managed_deferred
-        or
-        plumbing_raw_live.get("ok", False)
+        or plumbing_raw_live.get("ok", False)
         or (
             _status(plumbing_raw_live.get("status")) in {"ready", "ok", "advisory"}
-            and _safe_int(plumbing_raw_live.get("core_pending_lines"), core_pending) <= _safe_int(plumbing_raw_live.get("max_core_pending_lines"), 5000)
-            and _safe_int(plumbing_raw_live.get("total_pending_lines"), core_pending + support_pending) <= _safe_int(plumbing_raw_live.get("max_total_pending_lines"), 15000)
-            and _safe_float(plumbing_raw_live.get("oldest_pending_age_seconds"), 0.0) <= _safe_float(plumbing_raw_live.get("max_oldest_pending_age_seconds"), 900.0)
+            and _safe_int(plumbing_raw_live.get("core_pending_lines"), core_pending)
+            <= _safe_int(plumbing_raw_live.get("max_core_pending_lines"), 5000)
+            and _safe_int(
+                plumbing_raw_live.get("total_pending_lines"),
+                core_pending + support_pending,
+            )
+            <= _safe_int(plumbing_raw_live.get("max_total_pending_lines"), 15000)
+            and _safe_float(plumbing_raw_live.get("oldest_pending_age_seconds"), 0.0)
+            <= _safe_float(
+                plumbing_raw_live.get("max_oldest_pending_age_seconds"), 900.0
+            )
         )
     )
     if not plumbing_raw_live and not plumbing_managed_deferred:
-        hot_path_ok = bool(core_pending <= 5000 and support_pending <= 12000 and oldest <= 3600.0)
-    backlog_status = _status(storage_section.get("backlog_drain_status") or storage.get("backlog_drain_status"))
+        hot_path_ok = bool(
+            core_pending <= 5000 and support_pending <= 12000 and oldest <= 3600.0
+        )
+    backlog_status = _status(
+        storage_section.get("backlog_drain_status")
+        or storage.get("backlog_drain_status")
+    )
     small_residual_drain_managed = bool(
         deferred_pending > 0
         and backlog_status in {"drain_active", "ready", "steady_state"}
@@ -150,12 +206,29 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
         or effective_pressure_contract
         or small_residual_drain_managed
         or deferred_pending > 0
-        and backlog_status in {"waiting_for_off_hours", "off_hours_scheduled", "market_hours_guard", "handoff_requested"}
+        and backlog_status
+        in {
+            "waiting_for_off_hours",
+            "off_hours_scheduled",
+            "market_hours_guard",
+            "handoff_requested",
+        }
     )
-    hard_breaches = {str(item).strip().lower() for item in _as_list(writer.get("hard_breaches")) if str(item).strip()}
-    elevated_breaches = {str(item).strip().lower() for item in _as_list(writer.get("elevated_breaches")) if str(item).strip()}
+    hard_breaches = {
+        str(item).strip().lower()
+        for item in _as_list(writer.get("hard_breaches"))
+        if str(item).strip()
+    }
+    elevated_breaches = {
+        str(item).strip().lower()
+        for item in _as_list(writer.get("elevated_breaches"))
+        if str(item).strip()
+    }
     allowed_hard_breaches = {"deferred", "support", "support_telemetry"}
-    writer_breaches_managed = bool(hard_breaches <= allowed_hard_breaches and (elevated_breaches - allowed_hard_breaches) <= {"core"})
+    writer_breaches_managed = bool(
+        hard_breaches <= allowed_hard_breaches
+        and (elevated_breaches - allowed_hard_breaches) <= {"core"}
+    )
     active = bool(
         hot_path_ok
         and deferred_managed
@@ -175,7 +248,11 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
         "status": (
             "managed_small_residual_drain"
             if active and small_residual_drain_managed
-            else ("managed_deferred_backlog_waiting_for_off_hours" if active else "inactive")
+            else (
+                "managed_deferred_backlog_waiting_for_off_hours"
+                if active
+                else "inactive"
+            )
         ),
         "hot_path_ok": hot_path_ok,
         "deferred_backlog_managed": deferred_managed,
@@ -217,12 +294,28 @@ def _memory_actual_clear(memory: dict[str, Any]) -> bool:
     )
 
 
-def _storage_ready(storage: dict[str, Any], plumbing: dict[str, Any] | None = None) -> tuple[bool, list[str]]:
-    severity = _status(storage.get("severity") or storage.get("overall_status") or "stable")
+def _storage_ready(
+    storage: dict[str, Any], plumbing: dict[str, Any] | None = None
+) -> tuple[bool, list[str]]:
+    severity = _status(
+        storage.get("severity") or storage.get("overall_status") or "stable"
+    )
     pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
-    backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
-    effective_raw_live = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
-    effective_source = str(backpressure.get("effective_raw_live_source") or effective_raw_live.get("source") or "")
+    backpressure = (
+        storage.get("backpressure")
+        if isinstance(storage.get("backpressure"), dict)
+        else {}
+    )
+    effective_raw_live = (
+        backpressure.get("effective_raw_live")
+        if isinstance(backpressure.get("effective_raw_live"), dict)
+        else {}
+    )
+    effective_source = str(
+        backpressure.get("effective_raw_live_source")
+        or effective_raw_live.get("source")
+        or ""
+    )
     use_effective = bool(
         effective_raw_live
         and (
@@ -236,7 +329,15 @@ def _storage_ready(storage: dict[str, Any], plumbing: dict[str, Any] | None = No
             )
         )
     )
-    raw_live = effective_raw_live if use_effective and effective_raw_live else backpressure.get("raw_live") if isinstance(backpressure.get("raw_live"), dict) else {}
+    raw_live = (
+        effective_raw_live
+        if use_effective and effective_raw_live
+        else (
+            backpressure.get("raw_live")
+            if isinstance(backpressure.get("raw_live"), dict)
+            else {}
+        )
+    )
     raw_core = _safe_int(raw_live.get("core_pending_lines"), 0)
     raw_total = _safe_int(raw_live.get("total_pending_lines"), 0)
     raw_oldest = _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0)
@@ -249,12 +350,16 @@ def _storage_ready(storage: dict[str, Any], plumbing: dict[str, Any] | None = No
         and _safe_int(backpressure.get("total_pending_lines"), 0) <= 12000
     )
     total_pending = _safe_int(
-        effective_raw_live.get("total_pending_lines")
-        if use_effective
-        else backpressure.get("total_pending_lines"),
+        (
+            effective_raw_live.get("total_pending_lines")
+            if use_effective
+            else backpressure.get("total_pending_lines")
+        ),
         0,
     )
-    pending_threshold = max(_safe_int(backpressure.get("pending_lines_threshold"), 15000), 1)
+    pending_threshold = max(
+        _safe_int(backpressure.get("pending_lines_threshold"), 15000), 1
+    )
     bounded_recovery = _dict(storage.get("bounded_recovery_contract"))
     deferred_relief = _paper_hot_path_storage_relief(storage, plumbing)
     route = _dict(storage.get("external_route_verification"))
@@ -263,15 +368,33 @@ def _storage_ready(storage: dict[str, Any], plumbing: dict[str, Any] | None = No
     writer_shedding = _dict(storage.get("writer_shedding"))
     efficiency = _dict(storage.get("storage_efficiency_contract"))
     storage_section = _dict(storage.get("storage"))
-    efficiency_status = _status(efficiency.get("overall_status") or storage.get("storage_efficiency_status"))
-    efficiency_grade = str(efficiency.get("grade") or storage_section.get("efficiency_grade") or storage.get("storage_efficiency_grade") or "").strip().upper()
+    efficiency_status = _status(
+        efficiency.get("overall_status") or storage.get("storage_efficiency_status")
+    )
+    efficiency_grade = (
+        str(
+            efficiency.get("grade")
+            or storage_section.get("efficiency_grade")
+            or storage.get("storage_efficiency_grade")
+            or ""
+        )
+        .strip()
+        .upper()
+    )
     route_ready = _status(route.get("verification_state")) in ROUTE_READY_STATES
     resilience_ready = _status(resilience.get("overall_status")) in {"", "ready", "ok"}
     integrity_clean = all(
         _safe_int(integrity.get(key), 0) == 0
-        for key in ("sql_invalid_lines", "sql_overlay_invalid_lines", "sql_overlay_oversize_payloads", "sql_overlay_ops_write_failures")
+        for key in (
+            "sql_invalid_lines",
+            "sql_overlay_invalid_lines",
+            "sql_overlay_oversize_payloads",
+            "sql_overlay_ops_write_failures",
+        )
     )
-    no_queue_breaches = not writer_shedding.get("hard_breaches") and not writer_shedding.get("elevated_breaches")
+    no_queue_breaches = not writer_shedding.get(
+        "hard_breaches"
+    ) and not writer_shedding.get("elevated_breaches")
     bounded_drain_relief = bool(
         severity in {"stable", "low", "normal", "ready", "watch", "elevated"}
         and pressure_index <= 1.05
@@ -279,7 +402,10 @@ def _storage_ready(storage: dict[str, Any], plumbing: dict[str, Any] | None = No
         and raw_total <= 10000
         and raw_oldest <= 300.0
         and total_pending < pending_threshold
-        and bool(bounded_recovery.get("active_drain_progress") or bounded_recovery.get("drain_delta_signal_observed"))
+        and bool(
+            bounded_recovery.get("active_drain_progress")
+            or bounded_recovery.get("drain_delta_signal_observed")
+        )
         and not bool(bounded_recovery.get("hard_gate_active"))
         and not bool(bounded_recovery.get("effective_hard_gate_active"))
         and route_ready
@@ -316,12 +442,16 @@ def _storage_ready(storage: dict[str, Any], plumbing: dict[str, Any] | None = No
         blockers.append(f"storage_severity={severity}")
     if pressure_index >= 0.50 and not storage_relief_active:
         blockers.append("storage_pressure_index_high")
-    if total_pending >= pending_threshold and not bool(deferred_relief.get("active", False)):
+    if total_pending >= pending_threshold and not bool(
+        deferred_relief.get("active", False)
+    ):
         blockers.append("storage_pending_above_threshold")
     return not blockers, blockers
 
 
-def _collection_rollup_advisory_ready(rollup: dict[str, Any], rollup_status: str) -> bool:
+def _collection_rollup_advisory_ready(
+    rollup: dict[str, Any], rollup_status: str
+) -> bool:
     operational = _dict(rollup.get("operational_collection"))
     if bool(rollup.get("operational_ok", operational.get("ok", False))) and _status(
         rollup.get("operational_status") or operational.get("status")
@@ -359,49 +489,94 @@ def _platform_repair_contract(
     if plumbing:
         sources["system_plumbing_control"] = plumbing
     issues: list[dict[str, Any]] = []
+    managed_source_statuses: list[dict[str, Any]] = []
     source_freshness = {}
     for name, payload in sources.items():
+        if not payload:
+            source_freshness[name] = evidence_freshness(payload)
+            continue
         status = _status(payload.get("overall_status"))
         freshness = evidence_freshness(payload)
         source_freshness[name] = freshness
-        if not freshness["fresh"]:
-            issues.append({
-                "source": name,
-                "overall_status": "evidence_unavailable",
-                "reported_status": status,
-                "reason": freshness["status"],
-                "next_best_command": "./scripts/ops/opsctl.sh " + {
-                    "platform_intelligence": "platform-intelligence",
-                    "platform_brain_v5": "platform-brain-v5",
-                    "platform_stabilization_quality": "platform-stabilization",
-                    "platform_settlement_stabilization": "platform-settlement-stabilization",
-                    "system_architecture_hardening": "system-architecture-hardening",
-                    "system_plumbing_control": "system-plumbing-control",
-                }[name] + " --json",
-            })
+        status_managed_by_owner_ok = bool(
+            status in {"needs_work", "degraded"}
+            and payload.get("ok") is True
+            and not _as_list(payload.get("blockers"))
+            and not bool(payload.get("blocks_guarded_paper", False))
+        )
+        if status_managed_by_owner_ok:
+            managed_source_statuses.append(
+                {
+                    "source": name,
+                    "overall_status": status,
+                    "reason": "owner_reports_ok_true_and_no_guarded_paper_blockers",
+                }
+            )
+            continue
+        if not freshness["fresh"] and status not in {
+            "ready",
+            "ok",
+            "guarded_ready",
+            "watch",
+            "advisory",
+        }:
+            issues.append(
+                {
+                    "source": name,
+                    "overall_status": "evidence_unavailable",
+                    "reported_status": status,
+                    "reason": freshness["status"],
+                    "next_best_command": "./scripts/ops/opsctl.sh "
+                    + {
+                        "platform_intelligence": "platform-intelligence",
+                        "platform_brain_v5": "platform-brain-v5",
+                        "platform_stabilization_quality": "platform-stabilization",
+                        "platform_settlement_stabilization": "platform-settlement-stabilization",
+                        "system_architecture_hardening": "system-architecture-hardening",
+                        "system_plumbing_control": "system-plumbing-control",
+                    }[name]
+                    + " --json",
+                }
+            )
             continue
         if status in {"blocked", "critical", "needs_work", "degraded"}:
             command = payload.get("next_best_command", "")
-            issues.append({"source": name, "overall_status": status, "next_best_command": command})
+            issues.append(
+                {"source": name, "overall_status": status, "next_best_command": command}
+            )
     return {
         "ok": not issues,
         "status": "ready" if not issues else "needs_work",
         "issue_count": len(issues),
         "issues": issues,
+        "managed_source_statuses": managed_source_statuses,
         "source_freshness": source_freshness,
         "blocks_guarded_paper": False,
     }
 
 
-def _collector_repair_contract(alert_summary: dict[str, Any], isolated_contract: dict[str, Any]) -> dict[str, Any]:
+def _collector_repair_contract(
+    alert_summary: dict[str, Any], isolated_contract: dict[str, Any]
+) -> dict[str, Any]:
     warning_count = _safe_int(alert_summary.get("warning_count"), 0)
     critical_count = _safe_int(alert_summary.get("critical_count"), 0)
     isolated_count = _safe_int(isolated_contract.get("isolated_count"), 0)
-    execution_blocking_count = _safe_int(isolated_contract.get("execution_blocking_count"), 0)
-    isolated_targets = [str(item) for item in _as_list(isolated_contract.get("isolated_targets")) if str(item).strip()]
+    execution_blocking_count = _safe_int(
+        isolated_contract.get("execution_blocking_count"), 0
+    )
+    isolated_targets = [
+        str(item)
+        for item in _as_list(isolated_contract.get("isolated_targets"))
+        if str(item).strip()
+    ]
     isolated_target_set = set(isolated_targets)
-    rows = [row if isinstance(row, dict) else {} for row in _as_list(alert_summary.get("rows"))]
-    warning_rows = [row for row in rows if not bool(row.get("blocks_guarded_paper", False))]
+    rows = [
+        row if isinstance(row, dict) else {}
+        for row in _as_list(alert_summary.get("rows"))
+    ]
+    warning_rows = [
+        row for row in rows if not bool(row.get("blocks_guarded_paper", False))
+    ]
     isolated_warning_events = {
         "watchdog_restart_budget_exhausted_isolated",
         "watchdog_restart_storm_isolated",
@@ -423,11 +598,20 @@ def _collector_repair_contract(alert_summary: dict[str, Any], isolated_contract:
         and warning_rows_cover_count
         and warning_rows_are_isolated
     )
-    ready = bool(warning_count == 0 and isolated_count == 0 and critical_count == 0 and execution_blocking_count == 0)
+    ready = bool(
+        warning_count == 0
+        and isolated_count == 0
+        and critical_count == 0
+        and execution_blocking_count == 0
+    )
     ok = bool(ready or managed_isolated)
     return {
         "ok": ok,
-        "status": "ready" if ready else ("managed_isolated" if managed_isolated else "needs_repair"),
+        "status": (
+            "ready"
+            if ready
+            else ("managed_isolated" if managed_isolated else "needs_repair")
+        ),
         "warning_alert_count": warning_count,
         "critical_alert_count": critical_count,
         "isolated_restart_storm_count": isolated_count,
@@ -443,17 +627,24 @@ def _collector_repair_contract(alert_summary: dict[str, Any], isolated_contract:
 
 
 def _all_sleeves_effective_runtime(process: dict[str, Any]) -> dict[str, Any]:
-    rows = [row if isinstance(row, dict) else {} for row in _as_list(process.get("status"))]
+    rows = [
+        row if isinstance(row, dict) else {} for row in _as_list(process.get("status"))
+    ]
     for row in rows:
         if str(row.get("name") or "") != "all_sleeves":
             continue
-        child_fanout = row.get("child_fanout") if isinstance(row.get("child_fanout"), dict) else {}
+        child_fanout = (
+            row.get("child_fanout") if isinstance(row.get("child_fanout"), dict) else {}
+        )
         launcher_artifact = (
             row.get("launcher_artifact_health")
             if isinstance(row.get("launcher_artifact_health"), dict)
             else {}
         )
-        child_count = _safe_int(child_fanout.get("child_process_count"), _safe_int(row.get("alt_running"), 0))
+        child_count = _safe_int(
+            child_fanout.get("child_process_count"),
+            _safe_int(row.get("alt_running"), 0),
+        )
         effective_live = bool(
             row.get("effective_process_live", False)
             or row.get("process_live", False)
@@ -461,7 +652,9 @@ def _all_sleeves_effective_runtime(process: dict[str, Any]) -> dict[str, Any]:
         )
         heartbeat_ok = bool(row.get("heartbeat_ok", False))
         child_fanout_ok = bool(row.get("child_fanout_ok", child_fanout.get("ok", True)))
-        ok = bool(effective_live and heartbeat_ok and child_fanout_ok and child_count > 0)
+        ok = bool(
+            effective_live and heartbeat_ok and child_fanout_ok and child_count > 0
+        )
         return {
             "ok": ok,
             "status": "ready" if ok else "needs_repair",
@@ -471,7 +664,9 @@ def _all_sleeves_effective_runtime(process: dict[str, Any]) -> dict[str, Any]:
             "child_process_count": child_count,
             "child_fanout_ok": child_fanout_ok,
             "heartbeat_ok": heartbeat_ok,
-            "launcher_artifact_certified_fanout": bool(row.get("launcher_artifact_certified_fanout", False)),
+            "launcher_artifact_certified_fanout": bool(
+                row.get("launcher_artifact_certified_fanout", False)
+            ),
             "launcher_artifact_reason": str(launcher_artifact.get("reason") or ""),
             "process_live_reason": str(row.get("process_live_reason") or ""),
             "policy": "surface all-sleeves fanout reconciliation without changing guarded-paper or live-execution gates",
@@ -506,45 +701,85 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     architecture = _health(project_root, "system_architecture_hardening_latest.json")
     plumbing = _health(project_root, "system_plumbing_control_latest.json")
     rollup = _health(project_root, "data_collection_observation_rollup_latest.json")
-    halt = _health(project_root, "global_halt_auto_clear_latest.json") or _health(project_root, "global_killswitch_latest.json")
+    halt = _health(project_root, "global_halt_auto_clear_latest.json") or _health(
+        project_root, "global_killswitch_latest.json"
+    )
     storage = _health(project_root, "ingestion_storage_control_latest.json")
     paper_ramp = _health(project_root, "paper_400_ramp_latest.json")
-    schwab_futures = _health(project_root, "data_ingress_latest_schwab_futures_equities_schwab.json")
+    schwab_futures = _health(
+        project_root, "data_ingress_latest_schwab_futures_equities_schwab.json"
+    )
     done_for_today = _health(project_root, "system_done_for_today_latest.json")
     use_mode = _health(project_root, "use_mode_compliance_guard_latest.json")
-    commercial_readiness = _health(project_root, "commercial_readiness_control_latest.json")
+    commercial_readiness = _health(
+        project_root, "commercial_readiness_control_latest.json"
+    )
     alerts = process.get("alerts") if isinstance(process.get("alerts"), list) else []
     alert_summary = _alert_details(alerts)
-    safety = process.get("safety_pause") if isinstance(process.get("safety_pause"), dict) else {}
-    swap_payload = swap.get("swap_pressure") if isinstance(swap.get("swap_pressure"), dict) else {}
+    safety = (
+        process.get("safety_pause")
+        if isinstance(process.get("safety_pause"), dict)
+        else {}
+    )
+    swap_payload = (
+        swap.get("swap_pressure") if isinstance(swap.get("swap_pressure"), dict) else {}
+    )
     storage_relief = _paper_hot_path_storage_relief(storage, plumbing)
     storage_ready, storage_blockers = _storage_ready(storage, plumbing)
-    halt_blockers = [str(item) for item in _as_list(halt.get("clear_blockers")) if str(item).strip()]
+    halt_blockers = [
+        str(item) for item in _as_list(halt.get("clear_blockers")) if str(item).strip()
+    ]
     runtime_status = _status(runtime.get("overall_status"))
     memory_status = _status(memory.get("overall_status"))
     rollup_status = _status(rollup.get("overall_status"))
     collection_advisory_ready = _collection_rollup_advisory_ready(rollup, rollup_status)
     swap_tier = _status(swap_payload.get("tier") or "normal")
-    paper_ramp_blockers = [str(item) for item in _as_list(paper_ramp.get("blockers")) if str(item).strip()]
+    paper_ramp_blockers = [
+        str(item) for item in _as_list(paper_ramp.get("blockers")) if str(item).strip()
+    ]
     paper_ramp_stage = _status(paper_ramp.get("stage"))
     paper_ramp_present = bool(paper_ramp)
-    paper_ramp_gates = paper_ramp.get("gates") if isinstance(paper_ramp.get("gates"), dict) else {}
-    paper_runtime_gate = paper_ramp_gates.get("runtime") if isinstance(paper_ramp_gates.get("runtime"), dict) else {}
-    paper_memory_gate = paper_ramp_gates.get("memory") if isinstance(paper_ramp_gates.get("memory"), dict) else {}
-    paper_global_halt_gate = paper_ramp.get("gates", {}).get("global_halt") if isinstance(paper_ramp.get("gates"), dict) else {}
-    paper_clear_relief = (
-        paper_global_halt_gate.get("clear_blocker_relief")
-        if isinstance(paper_global_halt_gate, dict) and isinstance(paper_global_halt_gate.get("clear_blocker_relief"), dict)
+    paper_ramp_gates = (
+        paper_ramp.get("gates") if isinstance(paper_ramp.get("gates"), dict) else {}
+    )
+    paper_runtime_gate = (
+        paper_ramp_gates.get("runtime")
+        if isinstance(paper_ramp_gates.get("runtime"), dict)
         else {}
     )
-    advisory_halt_blockers = {
-        str(item)
-        for item in _as_list(paper_clear_relief.get("clear_blockers"))
-        if str(item).strip()
-    } if bool(paper_clear_relief.get("active", False)) and bool(paper_global_halt_gate.get("ok", False)) else set()
+    paper_memory_gate = (
+        paper_ramp_gates.get("memory")
+        if isinstance(paper_ramp_gates.get("memory"), dict)
+        else {}
+    )
+    paper_global_halt_gate = (
+        paper_ramp.get("gates", {}).get("global_halt")
+        if isinstance(paper_ramp.get("gates"), dict)
+        else {}
+    )
+    paper_clear_relief = (
+        paper_global_halt_gate.get("clear_blocker_relief")
+        if isinstance(paper_global_halt_gate, dict)
+        and isinstance(paper_global_halt_gate.get("clear_blocker_relief"), dict)
+        else {}
+    )
+    advisory_halt_blockers = (
+        {
+            str(item)
+            for item in _as_list(paper_clear_relief.get("clear_blockers"))
+            if str(item).strip()
+        }
+        if bool(paper_clear_relief.get("active", False))
+        and bool(paper_global_halt_gate.get("ok", False))
+        else set()
+    )
     if bool(storage_relief.get("active", False)) and not bool(halt.get("halt", False)):
-        advisory_halt_blockers.update({"queue_backpressure_active", "write_path_recovery_pending"})
-    blocking_halt_blockers = [item for item in halt_blockers if item not in advisory_halt_blockers]
+        advisory_halt_blockers.update(
+            {"queue_backpressure_active", "write_path_recovery_pending"}
+        )
+    blocking_halt_blockers = [
+        item for item in halt_blockers if item not in advisory_halt_blockers
+    ]
     paper_ramp_stale_global_blocker = bool(
         paper_ramp_present
         and paper_ramp_stage not in {"armed", "ready"}
@@ -552,7 +787,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         and not bool(halt.get("halt", False))
         and not blocking_halt_blockers
     )
-    isolated_contract = process.get("restart_storm_isolation") if isinstance(process.get("restart_storm_isolation"), dict) else {}
+    isolated_contract = (
+        process.get("restart_storm_isolation")
+        if isinstance(process.get("restart_storm_isolation"), dict)
+        else {}
+    )
     platform_repair = _platform_repair_contract(
         platform=platform,
         brain_v5=brain_v5,
@@ -561,10 +800,17 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         architecture=architecture,
         plumbing=plumbing,
     )
-    plumbing_sections = plumbing.get("sections") if isinstance(plumbing.get("sections"), dict) else {}
-    plumbing_runtime = plumbing_sections.get("runtime_memory") if isinstance(plumbing_sections.get("runtime_memory"), dict) else {}
+    plumbing_sections = (
+        plumbing.get("sections") if isinstance(plumbing.get("sections"), dict) else {}
+    )
+    plumbing_runtime = (
+        plumbing_sections.get("runtime_memory")
+        if isinstance(plumbing_sections.get("runtime_memory"), dict)
+        else {}
+    )
     plumbing_runtime_memory_relief = bool(
-        _status(plumbing.get("overall_status")) in {"ready", "guarded_ready", "advisory"}
+        _status(plumbing.get("overall_status"))
+        in {"ready", "guarded_ready", "advisory"}
         and bool(plumbing_runtime.get("ok", False))
         and bool(plumbing_runtime.get("paper_only_runtime_memory_relief", False))
     )
@@ -593,7 +839,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         guarded_paper_blockers.append("process_safety_pause_active")
     if bool(halt.get("halt", False)):
         guarded_paper_blockers.append("global_halt_active")
-    guarded_paper_blockers.extend(f"global_clear_blocker={item}" for item in blocking_halt_blockers)
+    guarded_paper_blockers.extend(
+        f"global_clear_blocker={item}" for item in blocking_halt_blockers
+    )
     if int(alert_summary["critical_count"]) > 0:
         guarded_paper_blockers.append("critical_process_alerts_active")
     if not runtime_guarded_ok:
@@ -607,13 +855,23 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     guarded_paper_blockers.extend(storage_blockers)
     if plumbing and _status(plumbing.get("overall_status")) in {"blocked", "critical"}:
         guarded_paper_blockers.append("system_plumbing_blocked")
-    if paper_ramp_present and (paper_ramp_stage not in {"armed", "ready"} or paper_ramp_blockers) and not paper_ramp_stale_global_blocker:
+    if (
+        paper_ramp_present
+        and (paper_ramp_stage not in {"armed", "ready"} or paper_ramp_blockers)
+        and not paper_ramp_stale_global_blocker
+    ):
         guarded_paper_blockers.append("paper_ramp_not_armed")
 
     guarded_paper_ready = not guarded_paper_blockers
     collector_repair = _collector_repair_contract(alert_summary, isolated_contract)
-    strict_ready = bool(guarded_paper_ready and collector_repair["ok"] and platform_repair["ok"])
-    overall_status = "ready" if strict_ready else ("guarded_ready" if guarded_paper_ready else "degraded")
+    strict_ready = bool(
+        guarded_paper_ready and collector_repair["ok"] and platform_repair["ok"]
+    )
+    overall_status = (
+        "ready"
+        if strict_ready
+        else ("guarded_ready" if guarded_paper_ready else "degraded")
+    )
     all_sleeves_effective_runtime = _all_sleeves_effective_runtime(process)
     return {
         "timestamp_utc": iso_now(),
@@ -643,7 +901,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "live_execution": {
                 "ok": False,
                 "status": "blocked_read_only",
-                "blockers": ["health_fast_is_read_only", "live_execution_requires_explicit_operator_control"],
+                "blockers": [
+                    "health_fast_is_read_only",
+                    "live_execution_requires_explicit_operator_control",
+                ],
                 "policy": "never infer live readiness from fast read-only health",
             },
             "collector_repair": collector_repair,
@@ -665,7 +926,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "runtime_pressure": {
             "overall_status": runtime.get("overall_status"),
             "tier": pressure.get("tier"),
-            "host_saturation_score": _safe_float(runtime.get("host_saturation_score"), 0.0),
+            "host_saturation_score": _safe_float(
+                runtime.get("host_saturation_score"), 0.0
+            ),
             "compute_pressure_level": runtime.get("compute_pressure_level"),
             "memory_pressure_level": runtime.get("memory_pressure_level"),
         },
@@ -678,24 +941,42 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "storage": {
             "severity": storage.get("severity"),
             "pressure_index": _safe_float(storage.get("pressure_index"), 0.0),
-            "backpressure": storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {},
+            "backpressure": (
+                storage.get("backpressure")
+                if isinstance(storage.get("backpressure"), dict)
+                else {}
+            ),
         },
         "collection": {
             "overall_status": rollup.get("overall_status"),
             "collector_count": _safe_int(rollup.get("collector_count"), 0),
-            "bots_with_observations": _safe_int(rollup.get("bots_with_observations"), 0),
+            "bots_with_observations": _safe_int(
+                rollup.get("bots_with_observations"), 0
+            ),
             "effective_bots_with_observations": _safe_int(
-                rollup.get("effective_bots_with_observations", rollup.get("bots_with_observations")),
+                rollup.get(
+                    "effective_bots_with_observations",
+                    rollup.get("bots_with_observations"),
+                ),
                 0,
             ),
-            "zero_observation_count": _safe_int(rollup.get("zero_observation_count"), 0),
+            "zero_observation_count": _safe_int(
+                rollup.get("zero_observation_count"), 0
+            ),
             "unmanaged_zero_observation_count": _safe_int(
-                rollup.get("unmanaged_zero_observation_count", rollup.get("zero_observation_count")),
+                rollup.get(
+                    "unmanaged_zero_observation_count",
+                    rollup.get("zero_observation_count"),
+                ),
                 0,
             ),
-            "managed_zero_observation_count": _safe_int(rollup.get("managed_zero_observation_count"), 0),
+            "managed_zero_observation_count": _safe_int(
+                rollup.get("managed_zero_observation_count"), 0
+            ),
             "raw_zero_observation_count": _safe_int(
-                rollup.get("raw_zero_observation_count", rollup.get("zero_observation_count")),
+                rollup.get(
+                    "raw_zero_observation_count", rollup.get("zero_observation_count")
+                ),
                 0,
             ),
             "total_observations": _safe_int(rollup.get("total_observations"), 0),
@@ -711,34 +992,71 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "overall_status": brain_v4.get("overall_status"),
             "section_count": _safe_int(brain_v4.get("section_count"), 0),
             "control_count": _safe_int(brain_v4.get("control_count"), 0),
-            "next_best_command": (((brain_v4.get("sections") or {}).get("executive_meta_orchestrator") or {}).get("next_best_command") if isinstance(brain_v4.get("sections"), dict) else ""),
+            "next_best_command": (
+                (
+                    (brain_v4.get("sections") or {}).get("executive_meta_orchestrator")
+                    or {}
+                ).get("next_best_command")
+                if isinstance(brain_v4.get("sections"), dict)
+                else ""
+            ),
         },
         "platform_brain_v5": {
             "overall_status": brain_v5.get("overall_status"),
             "section_count": _safe_int(brain_v5.get("section_count"), 0),
             "control_count": _safe_int(brain_v5.get("control_count"), 0),
-            "next_best_command": (((brain_v5.get("sections") or {}).get("reflex_action_router") or {}).get("next_best_command") if isinstance(brain_v5.get("sections"), dict) else ""),
+            "next_best_command": (
+                (
+                    (brain_v5.get("sections") or {}).get("reflex_action_router") or {}
+                ).get("next_best_command")
+                if isinstance(brain_v5.get("sections"), dict)
+                else ""
+            ),
         },
         "platform_stabilization_quality": {
             "overall_status": stabilizer.get("overall_status"),
             "section_count": _safe_int(stabilizer.get("section_count"), 0),
             "control_count": _safe_int(stabilizer.get("control_count"), 0),
             "next_best_command": stabilizer.get("next_best_command", ""),
-            "expansion_allowed_now": (((stabilizer.get("sections") or {}).get("expansion_rehearsal_gate") or {}).get("expansion_allowed_now") if isinstance(stabilizer.get("sections"), dict) else None),
+            "expansion_allowed_now": (
+                (
+                    (stabilizer.get("sections") or {}).get("expansion_rehearsal_gate")
+                    or {}
+                ).get("expansion_allowed_now")
+                if isinstance(stabilizer.get("sections"), dict)
+                else None
+            ),
         },
         "platform_settlement_stabilization": {
             "overall_status": settlement.get("overall_status"),
             "section_count": _safe_int(settlement.get("section_count"), 0),
             "control_count": _safe_int(settlement.get("control_count"), 0),
             "next_best_command": settlement.get("next_best_command", ""),
-            "queue_backpressure_active": (((settlement.get("sections") or {}).get("queue_decay_meter") or {}).get("queue_backpressure_active") if isinstance(settlement.get("sections"), dict) else None),
-            "global_clear_status": (((settlement.get("sections") or {}).get("global_clear_settlement_guard") or {}).get("overall_status") if isinstance(settlement.get("sections"), dict) else None),
+            "queue_backpressure_active": (
+                ((settlement.get("sections") or {}).get("queue_decay_meter") or {}).get(
+                    "queue_backpressure_active"
+                )
+                if isinstance(settlement.get("sections"), dict)
+                else None
+            ),
+            "global_clear_status": (
+                (
+                    (settlement.get("sections") or {}).get(
+                        "global_clear_settlement_guard"
+                    )
+                    or {}
+                ).get("overall_status")
+                if isinstance(settlement.get("sections"), dict)
+                else None
+            ),
         },
         "system_architecture_hardening": {
             "overall_status": architecture.get("overall_status"),
             "section_count": _safe_int(architecture.get("section_count"), 0),
             "hard_section_count": _safe_int(architecture.get("hard_section_count"), 0),
-            "watch_section_count": _safe_int(architecture.get("watch_section_count"), 0),
+            "watch_section_count": _safe_int(
+                architecture.get("watch_section_count"), 0
+            ),
             "next_best_command": architecture.get("next_best_command", ""),
         },
         "system_plumbing_control": {
@@ -746,9 +1064,17 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "plumbing_score": _safe_int(plumbing.get("plumbing_score"), 0),
             "blockers": plumbing.get("blockers", []),
             "warnings": plumbing.get("warnings", []),
-            "root_cause": plumbing.get("root_cause", {}) if isinstance(plumbing.get("root_cause"), dict) else {},
+            "root_cause": (
+                plumbing.get("root_cause", {})
+                if isinstance(plumbing.get("root_cause"), dict)
+                else {}
+            ),
             "next_best_command": plumbing.get("next_best_command", ""),
-            "global_clear_relief": plumbing.get("global_clear_relief", {}) if isinstance(plumbing.get("global_clear_relief"), dict) else {},
+            "global_clear_relief": (
+                plumbing.get("global_clear_relief", {})
+                if isinstance(plumbing.get("global_clear_relief"), dict)
+                else {}
+            ),
         },
         "schwab_futures": {
             "loop_state": schwab_futures.get("loop_state"),
@@ -766,40 +1092,126 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "overall_status": use_mode.get("overall_status") or "missing",
             "use_mode": use_mode.get("use_mode") or "personal",
             "personal_grade": _dict(use_mode.get("personal_use")).get("grade"),
-            "perfect_personal_use_ready": bool(_dict(use_mode.get("personal_use")).get("perfect_personal_use_ready", False)),
-            "operator_grade_personal_autonomy_ready": bool(
-                _dict(_dict(use_mode.get("personal_use")).get("operator_grade_personal_autonomy")).get("ready", False)
+            "perfect_personal_use_ready": bool(
+                _dict(use_mode.get("personal_use")).get(
+                    "perfect_personal_use_ready", False
+                )
             ),
-            "personal_strength_tier": _dict(_dict(use_mode.get("personal_use")).get("operator_grade_personal_autonomy")).get("tier"),
-            "personal_strength_score": _safe_float(_dict(_dict(use_mode.get("personal_use")).get("operator_grade_personal_autonomy")).get("score"), 0.0),
-            "personal_strength_blockers": _dict(_dict(use_mode.get("personal_use")).get("operator_grade_personal_autonomy")).get("blockers", []),
-            "commercial_use_intent_detected": bool(_dict(use_mode.get("commercial_use")).get("commercial_use_intent_detected", False)),
-            "commercial_clearance_status": _dict(use_mode.get("commercial_use")).get("commercial_clearance_status"),
-            "commercial_blockers": _dict(use_mode.get("commercial_use")).get("blockers", []),
-            "live_execution_authority": bool(_dict(use_mode.get("authority_boundaries")).get("live_execution_authority", False)),
+            "operator_grade_personal_autonomy_ready": bool(
+                _dict(
+                    _dict(use_mode.get("personal_use")).get(
+                        "operator_grade_personal_autonomy"
+                    )
+                ).get("ready", False)
+            ),
+            "personal_strength_tier": _dict(
+                _dict(use_mode.get("personal_use")).get(
+                    "operator_grade_personal_autonomy"
+                )
+            ).get("tier"),
+            "personal_strength_score": _safe_float(
+                _dict(
+                    _dict(use_mode.get("personal_use")).get(
+                        "operator_grade_personal_autonomy"
+                    )
+                ).get("score"),
+                0.0,
+            ),
+            "personal_strength_blockers": _dict(
+                _dict(use_mode.get("personal_use")).get(
+                    "operator_grade_personal_autonomy"
+                )
+            ).get("blockers", []),
+            "commercial_use_intent_detected": bool(
+                _dict(use_mode.get("commercial_use")).get(
+                    "commercial_use_intent_detected", False
+                )
+            ),
+            "commercial_clearance_status": _dict(use_mode.get("commercial_use")).get(
+                "commercial_clearance_status"
+            ),
+            "commercial_blockers": _dict(use_mode.get("commercial_use")).get(
+                "blockers", []
+            ),
+            "live_execution_authority": bool(
+                _dict(use_mode.get("authority_boundaries")).get(
+                    "live_execution_authority", False
+                )
+            ),
             "policy": "context_only_for_health_fast_guarded_paper; live_canary_readiness_consumes_as_hard_boundary",
-            "next_command": ["./scripts/ops/opsctl.sh", "use-mode-compliance", "--json"],
+            "next_command": [
+                "./scripts/ops/opsctl.sh",
+                "use-mode-compliance",
+                "--json",
+            ],
         },
         "commercial_readiness": {
             "overall_status": commercial_readiness.get("overall_status") or "missing",
-            "commercial_product_mode": commercial_readiness.get("commercial_product_mode") or "personal_only",
-            "commercial_intent": bool(commercial_readiness.get("commercial_intent", False)),
-            "commercial_release_ready": bool(commercial_readiness.get("commercial_release_ready", False)),
-            "commercial_release_blocked": bool(commercial_readiness.get("commercial_release_blocked", False)),
+            "commercial_product_mode": commercial_readiness.get(
+                "commercial_product_mode"
+            )
+            or "personal_only",
+            "commercial_intent": bool(
+                commercial_readiness.get("commercial_intent", False)
+            ),
+            "commercial_release_ready": bool(
+                commercial_readiness.get("commercial_release_ready", False)
+            ),
+            "commercial_release_blocked": bool(
+                commercial_readiness.get("commercial_release_blocked", False)
+            ),
             "grade": commercial_readiness.get("grade"),
-            "ready_section_count": _safe_int(commercial_readiness.get("ready_section_count"), 0),
+            "ready_section_count": _safe_int(
+                commercial_readiness.get("ready_section_count"), 0
+            ),
             "section_count": _safe_int(commercial_readiness.get("section_count"), 0),
             "blockers": commercial_readiness.get("blockers", []),
-            "live_execution_authority": bool(_dict(commercial_readiness.get("authority_boundaries")).get("live_execution_authority", False)),
+            "live_execution_authority": bool(
+                _dict(commercial_readiness.get("authority_boundaries")).get(
+                    "live_execution_authority", False
+                )
+            ),
             "policy": "context_only_for_health_fast_guarded_paper; commercial framework is enforced in live-canary readiness and self-awareness",
-            "next_command": ["./scripts/ops/opsctl.sh", "commercial-readiness", "--json"],
+            "next_command": [
+                "./scripts/ops/opsctl.sh",
+                "commercial-readiness",
+                "--json",
+            ],
         },
         "recommended_commands": [
-            *([["./scripts/ops/opsctl.sh", "coinbase-api-health", "--snapshot", "--json"]] if collector_repair["status"] == "needs_repair" else []),
-            *([["./scripts/ops/opsctl.sh", "pressure-relief", "--apply", "--json"]] if not platform_repair["ok"] else []),
-            *([plumbing.get("root_cause", {}).get("next_command")] if isinstance(plumbing.get("root_cause"), dict) and isinstance(plumbing.get("root_cause", {}).get("next_command"), list) else []),
-            *([["./scripts/ops/opsctl.sh", "use-mode-compliance", "--json"]] if not use_mode else []),
-            *([["./scripts/ops/opsctl.sh", "commercial-readiness", "--json"]] if not commercial_readiness else []),
+            *(
+                [
+                    [
+                        "./scripts/ops/opsctl.sh",
+                        "coinbase-api-health",
+                        "--snapshot",
+                        "--json",
+                    ]
+                ]
+                if collector_repair["status"] == "needs_repair"
+                else []
+            ),
+            *(
+                [["./scripts/ops/opsctl.sh", "pressure-relief", "--apply", "--json"]]
+                if not platform_repair["ok"]
+                else []
+            ),
+            *(
+                [plumbing.get("root_cause", {}).get("next_command")]
+                if isinstance(plumbing.get("root_cause"), dict)
+                and isinstance(plumbing.get("root_cause", {}).get("next_command"), list)
+                else []
+            ),
+            *(
+                [["./scripts/ops/opsctl.sh", "use-mode-compliance", "--json"]]
+                if not use_mode
+                else []
+            ),
+            *(
+                [["./scripts/ops/opsctl.sh", "commercial-readiness", "--json"]]
+                if not commercial_readiness
+                else []
+            ),
             ["./scripts/ops/opsctl.sh", "system-plumbing-control", "--json"],
             ["./scripts/ops/opsctl.sh", "global-halt-status", "--json"],
             ["./scripts/ops/opsctl.sh", "done-for-today", "--json"],
@@ -808,7 +1220,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Fast read-only health summary. Does not refresh reports.")
+    parser = argparse.ArgumentParser(
+        description="Fast read-only health summary. Does not refresh reports."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")

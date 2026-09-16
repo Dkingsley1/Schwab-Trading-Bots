@@ -36,6 +36,53 @@ Every role declares all of the following fields:
 
 The contract also defines shared taxonomies for execution modes, freshness classes, failure classes, resource profiles, lifecycle states, severity, action classes, and configuration precedence. Safety flags and candidate-bound state outrank operator overrides, policy files, environment defaults, and code defaults.
 
+## Infrastructure Responsibilities
+
+Infrastructure means maintaining the reliability, integrity, availability and
+recoverability of platform capabilities. Its success labels are operational
+outcomes, not market-direction accuracy or synthetic trading profit. The
+`infrastructure_responsibility_contract` expands this definition into ten
+cross-plane domains without adding roles, writers, registry bindings or workers.
+
+| Domain | Existing Logical Owner | Completion Evidence |
+| --- | --- | --- |
+| Ingestion and data quality | `collector_capability_controller` | Source-generation/checkpoint agreement and explicit payload-verification coverage. |
+| Runtime and processes | `process_restart_controller` | Fresh child heartbeat, lock ownership, and preserved admission deferrals. |
+| Storage and archives | `storage_lifecycle_controller` | Full restoration proof, stable source, durable receipt, and physical reserve recheck. |
+| Compute admission | `production_resilience_controller` | Fresh underlying governor observations, owner admission and measured work. |
+| Artifact freshness | `artifact_lifecycle_controller` | Actual new producer output with matching dependency epoch. |
+| Broker truth | `execution_truth_ledger` | Current broker/account/position evidence, matching auth epoch and explicit execution ambiguity. |
+| Research lineage | `strategy_quality_controller` | Candidate/data/model identity and reproducible out-of-sample evidence. |
+| Observability | `observability_reporter` | Source references and original timestamps, with partial/unknown states retained. |
+| Security and authority | `system_role_contract_controller` | Valid owner, role, state-domain and required sensitive-action lease. |
+| Incident recovery | `soak_reliability_controller` | Fresh owner post-repair check and retained original incident evidence. |
+
+Every domain declares purpose, inputs, outputs, requested existing actions,
+success metrics, completion evidence and escalation conditions. Its report
+resolves the owner's source paths, role, freshness SLO, resource budget, failure
+behavior and escalation owner from the existing catalog. A general maintainer
+does not inherit broker-truth or auditing authority: these stay with their
+respective Data, Truth and Operations owners.
+
+The repair lifecycle is observe, classify, request owner action, owner admission,
+bounded owner repair, independent recheck, then verified resolution or explicit
+escalation. Requested, admitted, attempted, completed and verified are different
+states. Successful exit codes and new wrapper timestamps cannot clear an issue.
+Missing evidence stays unknown; physical capacity and external dependencies may
+require operator action rather than further automatic retries.
+
+Validation rejects missing required domains, unknown/duplicate definitions,
+wrong state owners, actions outside the owning component and role, trading or
+promotion owners, and any new mutation-authority flag. Native triggers, leases,
+single-writer locks, resource/storage limits, retry budgets, cooldowns, circuits,
+deadlines and protected-volume boundaries remain unchanged. Credentials remain
+with documented auth owners and are never copied into definitions or logs.
+
+`system-role-contract --json` publishes `infrastructure_responsibilities` with
+separate definition completeness and `operational_health_verified: false`.
+This is an expanded responsibility definition, not evidence that every domain
+has recovered, nor a new repair dispatcher or scheduler.
+
 ## State Ownership
 
 Each mutable domain declares one `writer_component_id`, one required action, its resource patterns, and permitted reader roles. Validation fails when a domain is missing an owner, a component claims an action outside its role, a resource has multiple writers, a control surface points to the wrong source, or a registry role is unmapped.

@@ -1058,11 +1058,25 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Advance native write-path verification",
+                ["./scripts/ops/opsctl.sh data-plane-recovery --apply --json"],
+                notes=[
+                    "Existing SQL and artifact-refresh schedules run this bounded owner. At most four requested paths are checked per pass; actual owner fsync/read-back receipts and independent 60-second probation are required. Six failed checks escalate with backoff. Exact stable-ID/payload checkpoints may reconcile append history; missing or ambiguous records remain unresolved. No synthetic writes, trade replay, new scheduler, reserve change or execution authority. Omit --apply for observation only.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Apply backlog writer catch-up waves",
                 ["./scripts/ops/opsctl.sh writer-cycle-coordinator --apply --json"],
                 notes=[
                     "This lets the single writer run bounded catch-up waves and then hands off follow-through to the active drainer lane.",
+                    "The runtime drainer reserves one existing file slot per regular/crypto shard for the oldest tail after 30 minutes, increasing to four when fresh hot debt is inside its 5,000-core/15,000-total/240-second envelope. Batch limits and protected-window rules remain unchanged.",
+                    "Both direct writer entry points enforce fresh storage admission before locks and at cycle boundaries. Storage deferral stops catch-up waves, publishes a separate admission receipt, and cannot count as completed drain work or bypass owner reserves with a maintenance token.",
+                    "The sharded writer also checks before new child launches, corruption retries, primary merges, and subsequent maintenance. Mid-cycle pressure retains completed rows and the focused request, marks unstarted shards pending, and returns 75; prior real errors remain errors. In-flight children retain their existing bounds. This does not predict a transaction's allocation or lower any reserve.",
                     "Associated bots/control layers: `writer-cycle-coordinator`, `backpressure-drainer-fleet`, `storage-backpressure-autopilot`, `retention-debt-sheriff`.",
+                    "The existing scheduled SQL writer also runs `backpressure-drainer-fleet --apply --refresh-backlog --ttl-seconds 120 --json` before ingestion. Observation has a ten-second deadline, explicitly requests a 512-source census, and cannot replace a request after failed or stale measurement. While storage-paused, the job offers `soak-self-healing --storage-recovery-only --quick-storage-recovery --apply --json` a 90-second compression-only pass; existing holds, cooldowns, memory/thermal checks, verification, and reserve gates remain mandatory. Neither command creates a new scheduler or Codex automation.",
+                    "Multi-wave super drains require a measured pending reduction or current-wave row work to continue. Successful empty calls and unchanged counters from a previous cycle stop as `progress_stalled` rather than consuming all retry waves.",
+                    "The native sharded launcher uses `--once --scheduled-drain`: fresh measured debt after a successful pass permits 5-15 second follow-up delays, at most eight cycles and a 180-second next-cycle admission window inside the existing outer job deadline. `governance/health/scheduled_sql_drain_latest.json` records the decision. Failure, no progress, invalid/stale observations or near-empty debt stop follow-through; all cycle-boundary holds and caps remain. The maintenance owner uses `--maintenance-scope --shards ...` to cover the full shard set without consuming focused ingestion requests.",
                 ],
             ),
             _command_entry(
@@ -1071,6 +1085,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh autonomic-governor --apply --json"],
                 notes=[
                     "This applies the host-aware budget for live loops, backlog writer, collectors, trainings, MLX/GPU jobs, reports, and foreground apps.",
+                    "For active drains outside hard protection, the runtime governor now requests its already-admitted worker budget above 1,000 core or 2,500 total pending rows, or for nonempty core debt older than 60 seconds. Empty-age noise cannot trigger this smaller-tail allowance. Hard-pressure behavior and the selected host worker ceiling remain unchanged. Accelerator activation receipts distinguish requested capacity from observed execution.",
                     "Associated bots/control layers: `autonomic-resource-governor`, `host-capability-contract`, `os-adapter-layer`, `workload-class-registry`, `computer-task-intelligence`.",
                 ],
             ),
@@ -1139,10 +1154,45 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Refresh governor observations and decisions",
+                [
+                    "./scripts/ops/opsctl.sh governor-refresh --json",
+                    "./scripts/ops/opsctl.sh whole-system-governor --refresh --json",
+                ],
+                notes=[
+                    "The native runtime publisher now exposes workload_admission for bounded observation, verified recovery, maintenance and single-target canary headroom. Source evidence expires after 90 seconds; independent clear spans, capacity-scaled CPU categories and per-class load/memory/disk ceilings govern extra admission. Aggregate protect alone cannot starve measured-clear observation or compression, while explicit pauses, thermal warnings and storage/quality/execution gates remain authoritative. See docs/architecture/WORKLOAD_ADMISSION.md.",
+                    "Guarded maintenance uses a lifetime kernel lease and a living supervisor. Adaptive repair slots recheck every five seconds, cap runs at 180 seconds and use duration-aware default cooldowns; heavy quiet/macro windows and explicit intervals remain. The infrastructure launcher first runs a fixed non-apply assessment with a 60-second ceiling and shorter jitter. Timeout or resource revocation is not completion; failed load readings cannot become zero load.",
+                    "Memory efficiency publishes the same sampled decision it applied, with a read-back-verified override hash. A blocked workload verdict or unchanged profile can complete the refresh only with fresh input and verified application; failed writes, stale input, mismatches, and timeouts retain protective fallback. Monitoring completion never means workload admission.",
+                    "The existing native runtime-smooth job has a 20-second interval and an 18-second work budget for ordered resource, memory, throttle, support-gate and autonomic refreshes. One kernel-held lock prevents overlap; bounded child cleanup has a 60-second outer lifecycle deadline. Actual start spacing includes scheduler and execution delays. No Codex automation is involved.",
+                    "`./scripts/ops/opsctl.sh backlog-pcore-accelerator --runtime-only --json` refreshes activation evidence without directory inventories or configuration changes; it cannot be combined with `--apply`. The native writer calls the fleet with `--refresh-backlog --refresh-accelerator --ttl-seconds 120` before storage-paused exits, and again after successful storage recovery. Each observer has its own ten-second bound. The accelerator's `activation_contract` reports requested versus observed workers and current storage blockers; an armed request is not a running writer. Operator holds still defer the whole pass.",
+                    "`./scripts/ops/opsctl.sh grade-regression-autopilot --apply --respect-quiet-hours --timeout-sec 180 --json` runs a bounded repair pass while deferring protected heavy storage work. Missing paper-replay proof invokes the existing 336-hour drill with strict failure reporting and unchanged row thresholds before packet/lineage regeneration. Promotion readiness, stage-only coverage assessment, and incident timeline are refreshed before their consumers. This is not candidate staging, training launch, approval, or promotion. Full child evidence stays in its owner artifact; copied stdout/stderr tails are limited to 4,000 characters each.",
+                    "Promotion dependencies now run `scripts/walk_forward_validate.py` then `scripts/walk_forward_promotion_gate.py` before readiness. The validator automatically reads routed plain/gzip logs under bounded file, byte, and time limits, deduplicates copies, and publishes scan completeness atomically. The gate rejects incomplete or older-than-15-minute scans and preserves the configured minimum considered bots; it does not shrink the four-bot floor to the available population. Repaired bots cannot reuse pre-repair runs. Neither command trains, promotes, or starts execution.",
+                    "SQL watchdog status can report `sql_writer_between_scheduled_cycles` after verified completed work and a matching native scheduled lifecycle receipt. Its grace is twice the cadence plus 30 seconds, bounded to cadences no greater than 120 seconds. It is not queue clearance: stale/failed/partial progress restores normal restart evaluation, and repeated scheduler deferrals do not reset the successful-progress clock. The native launcher itself counts as alive during admission/preparation.",
+                    "Adaptive safety projects 40-second memory/local-disk headroom against existing warning floors using independent 5-120 second source intervals and material drops. It only tightens controls; thermal/performance warnings and failed required sensor evidence also protect capacity. Probes have one-second bounds, clear evidence must span 60 seconds before adaptive release, and allocation relief cannot cancel a separate safety hold. Six seconds of the work budget are reserved for bounded protective fallback; failed refreshes remain degraded even when protection is applied.",
+                    "Training/paper views and read-only grade regression assessments refresh every five minutes; grade assessment has a five-second child bound and remains observable while heavy repairs are deferred. A fresh blocked verdict completes observation only and never renews upstream proof. Whole-system advisory health refreshes every fifteen without registry writes. Failed optional owners retain visible debt and a minimum one-minute retry. Heavy adaptive repairs remain with production hardening.",
+                    "Producer/source ages expire independently of file writes. Sensors continue during support pauses; healthy recovery credits require observations at least 60 seconds apart, while adverse readings reset recovery immediately. Runtime throttle publishes the decision actually applied from one sampled observation; the next pass measures its effect. Optional views only start with their full allowance plus cleanup reserve. Per-step and fast-pass elapsed times remain visible. Fast observers use nice 10, not hard core affinity; bulk CPU policy, operator holds, capacity ceilings and execution locks remain unchanged.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect grade regressions and bounded repairs",
+                [
+                    "./scripts/ops/opsctl.sh grade-regression-guard --json",
+                    "./scripts/ops/opsctl.sh grade-regression-autopilot --json",
+                ],
+                notes=[
+                    "Inspection does not run repairs. Approved --apply work shares --timeout-sec across children with ten seconds reserved for cleanup and final assessment; the guarded native job defaults to 840 seconds inside its 900-second lifecycle. Deferred work stays visible. The existing packet builder runs once before promotion assessment and lineage without bootstrapping keys, approving candidates, or granting live authority; routine incident repair does not render PDFs, and no full-graph refresh is implied.",
+                    "Missing or incomplete restore receipts trigger native resource-gated --recover-latest-verified before storage resilience and ingestion assessments, outside nested evidence refreshes. Archive verification remains bounded and preserves the original proof timestamp; owner deferrals do not count as completed repairs or new backups.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Apply runtime throttle and P-core priority controls",
                 ["./scripts/ops/opsctl.sh runtime-throttle --apply --json"],
                 notes=[
+                    "--apply --protective-hold is the restrictive native fallback after a failed fast control owner. It skips repeat hardware probes, uses a bounded process census and preserves existing process ownership/priority rules. It cannot grant workload admission, raise ceilings, promote models or enable orders.",
                     "This refreshes process priority, niceness, fanout limits, P-core feedback, and co-tenant headroom after the host pressure picture changes.",
+                    "Memory pressure is reconciled against fresh resource and normal-tier swap evidence before allocated swap/logical compression is treated as current pressure. Raw counters stay visible; stale evidence, real pressure, disk and thermal guards still block. WindowServer is system work; Codex CPU remains counted; research workers and hardening observability have explicit platform classifications.",
                     "Canonical `master_bot_registry.json` writes are blocked by default; runtime registry adjustments publish `runtime_throttle_registry_candidate_latest.json` unless explicitly source-write authorized.",
                     "Associated bots/control layers: `runtime-throttle`, `process-fanout-guard`, `memory-pressure-intelligence`, `autonomic-resource-governor`.",
                 ],
@@ -1227,6 +1277,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "./scripts/ops/opsctl.sh live-canary-dress-rehearsal --symbol SCHD --json"
                 ],
                 notes=[
+                    "First refreshes tax history through its existing six-hour cache, rechecks release integrity, and verifies the order ledger. Failed or stale owner publications block readiness; no freeze, release manifest, commit, attestation, or allowlist is created.",
                     "Refreshes designated Schwab account truth, fetches a real provider quote, and builds the exact redacted one-share LIMIT/NORMAL/DAY payload plus cash, position, collateral, and reconciliation projections.",
                     "Every live switch is forced off. The control never submits, cancels, replaces, or grants live authority; `ready_locked` is expected while funding, release, attestation, session, or earned-evidence gates remain.",
                 ],
@@ -1258,6 +1309,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh covered-call-roll-watch --json"],
                 notes=[
                     "Evaluates held covered calls against account aliases, DTE windows, ITM depth, hard roll targets, and per-underlying preferences before publishing roll alerts.",
+                    "Routine NVDA roll-window notifications repeat at most every six hours unless a material contract, coverage, quantity or risk-category change occurs. Urgent/assignment statuses retain normal delivery. Quote noise and daily DTE changes do not create new alerts; underlying risk and order controls are unchanged.",
                 ],
             ),
             _command_entry(
@@ -1633,6 +1685,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh sleeve-alpha-toolbox --json"],
                 notes=[
                     "Resolves every declared sleeve to an explicit policy family and routes each required evidence axis to deterministic candidate-bound diagnostics.",
+                    "Publishes five expanded priority research families, five deferred families, and per-sleeve priority labels; research order is definition-only and does not start workers or change execution-policy digests.",
                     "Full route coverage is structural only; current-candidate post-cost evidence must pass organically, and the toolbox has no action, sizing, paper-order, promotion, allocation, or live authority.",
                 ],
             ),
@@ -1669,22 +1722,99 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             "Storage",
             _command_entry(
                 project_root,
+                "Refresh analytical SQL summaries",
+                [
+                    'PY="$(zsh ./scripts/ops/runtime_python.sh)"',
+                    '"$PY" scripts/ops/sql_analytics_mirror.py --json',
+                ],
+                notes=[
+                    "The existing operations coordinator owns routine refreshes. This command refreshes operational summaries from primary history before updating the analytical cache; do not use it to bypass maintenance admission during storage pressure.",
+                    "Stream and symbol summaries share one read-only SQLite snapshot and one DuckDB publication transaction. A failed load preserves the previous complete mirror, and a first-load failure rolls back the schema. No new service, ledger authority, source deletion or migration is implied.",
+                    "Database direction: keep SQLite and DuckDB/Parquet; evaluate PostgreSQL for demonstrated concurrent-writer or multi-host needs; defer Redis/NoSQL pending a measured cache bottleneck and freshness/invalidation contract. This command does not install a backend or perform that evaluation. Under storage pressure, no unadmitted services, migration copies or history scans are allowed. See docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md#database-direction.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview verified compatibility-cache rebuild",
+                ["./scripts/ops/opsctl.sh storage-sqlite-hot-route --rebuild-local-cache --json"],
+                notes=[
+                    "The bounded source preview uses an available full timestamp-leading index, avoids combined MIN/MAX scans, reuses counts and estimates encoded payload bytes. Faster inspection does not bypass capacity, writer or restoration checks. An existing maintenance hold requires explicitly supplied matching-token authority; a rebuild cannot silently adopt or release another owner's hold.",
+                    "`staging_budget` separates the estimate from the enforced main-database ceiling. Fresh headroom can admit a smaller capped attempt when the measured hot payload fits; a verified SQLite `max_page_count` rejects excess growth. Cold export reserves the ceiling plus 256 MiB overhead, and live disk checks protect temporary work. Local staging/copy preserves at least 32 GiB and external staging at least 64 GiB, even when a lower argument is supplied. The local copy rechecks space per 16 MiB chunk and after verification. Unknown observations, oversized actual output, exhausted capacity or interrupted proofs cannot replace the source or count as recovery.",
+                    "The existing self-healing owner schedules apply after maintenance admission and writer handoff. Read-only inspection is capped at 60 seconds; --operation-seconds cooperatively caps rebuild work at 1800 seconds. Cold exports require full typed-row restoration hashes, hot staging reserves external space above a 64 GiB floor, and verified replacement preserves source stability, IDs, schema and merge cursors under storage/writer locks. A preview or interrupted run is not reclaimed space or snapshot completion.",
+                    "The separate guarded storage-maintenance lane now enables the retention work deferred by ordinary one-pass writers, with 1000-row batches, 5000 rows and 120 seconds per database. Archive allocation has a 64 GiB floor plus scratch; no inline vacuum or archive expiry runs in that bounded batch. Failed retention cannot count as successful maintenance merely because ingestion succeeded. Each child has a 1800-second process-group deadline and bounded cleanup, including stopped workers. Timeout rejects partial success and older receipts. The separate data-retention command uses --skip-sqlite-vacuum and --no-archive-prune-vacuum; its expiry policy is unchanged. Missing current child evidence remains an error.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect verified lifecycle backup compression",
+                ["./scripts/ops/opsctl.sh governance-lifecycle-compactor --json"],
+                notes=[
+                    "The existing native retention owner schedules this gzip backup lane. Default policy retains the newest 12 backups, current-day files and files younger than 24 hours. Only named registry backups in governance/lifecycle qualify. A shared storage lock, paced worker, fresh resource checks, scratch/emergency reserve, stable idle source and full restored SHA-256 receipt precede replacement. Existing archives are never overwritten; a valid matching archive can resume after re-verification. --seconds bounds work to 720 seconds by default and at most 840 seconds. Deferral is not batch completion or reserve readiness.",
+                    "The shared cold/lifecycle guard automatically allows compression-only CPU relief below 125 GiB local free space on >=8 logical CPUs, with fresh ready sensors, clear memory/thermal checks, no creative/cooldown or protective/support hold, and saturation <=70. Foreground CPU must stay <150%, system CPU <200%, their sum <300%, and five-minute load <=0.85 per logical CPU. One worker remains paced to 25% of one core with second-scale checks; operator holds, scratch/emergency reserves and full restoration verification remain mandatory. Other workload guards are unchanged."
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect verified decision-log compression",
+                ["./scripts/ops/opsctl.sh decision-log-compactor --json"],
+                notes=[
+                    "The existing native retention owner schedules this lane. Known pending or mismatched SQL checkpoints exclude logs of every age, including after UTC rollover. Checkpoints are rechecked before release; stable idle sources, full gzip restoration SHA-256, durable proof and no-clobber publication protect originals. Matching existing archives can be reused after verification; conflicts are preserved. Current-day exclusions and minimum ages remain unchanged. Deferred work is not compaction or ingestion completion.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect routed storage quotas",
+                ["./scripts/ops/opsctl.sh storage-quota-guard --json"],
+                notes=[
+                    "Read-only accounting includes canonical and fallback SQLite shards, counts distinct resident copies and deduplicates aliases/hard links by device and inode. Compressed-history deductions include safe gzip aliases with resolved-path deduplication matching the tier inventory; raw and protected targets cannot earn an archive exemption. Quota thresholds and physical capacity accounting remain unchanged. This command does not move, delete or rehome data.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect automatic cold evidence compression",
+                ["./scripts/ops/opsctl.sh cold-evidence-compactor --json"],
+                notes=[
+                    "After pressure relief, the normal guarded self-healing pass continues this same owner toward its configured recovery target (135 GiB by default), with normal maintenance admission and storage cooldowns.",
+                    "The lock watchdog preserves kernel-lock anchors, including idle and PID-less markers. Compression defers if its held lock path is lost or replaced; stale PID text does not authorize unlinking a shared lock.",
+                    "The existing 15-minute self-healing job invokes this owner under internal-storage pressure, before heavy maintenance. It selects only week-old, idle archived JSONL/log files in the fixed local quarantine cold root, bootstraps scratch space with fitting smaller files, and reserves at least 16 GiB. One worker is paced to 25% of one core, with fresh memory/thermal/foreground checks and a shared storage-maintenance lock. Full restored SHA-256 proofs and durable receipts precede source release; database files, active paths, symlinks and protected volumes are excluded. A completed assessment or partial batch is not storage readiness. The same pass reconciles reserve-only controls; the existing minute-scale guarded SQL recovery remains responsible for drains."
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Inspect pressure-triggered storage recovery",
                 [
                     "./scripts/ops/opsctl.sh soak-self-heal --storage-recovery-only --json"
                 ],
                 notes=[
-                    "The existing launchd owner runs bounded pressure relief before its heavy-maintenance gate. Apply keeps the shared self-healing lock, fresh typed memory admission, cold writer handoff, and destination reserve; it cannot run cache rebuilds, training, candidate acceptance, or trading. A completed storage-pressure assessment is not a failed memory repair; legacy observation-circuit revalidation retains its prior state."
+                    "Recovery receipts separate measured owner reclamation, net local headroom change, and remaining capacity shortfall. Successful empty/unmeasured compactor passes use per-owner exponential backoff capped at one hour, reset by positive measured reclamation; they do not open failure circuits or certify reserves.",
+                    "The existing 15-minute launcher adds `--rebuild-reserve` to the recovery-only apply pass. Preview with `./scripts/ops/opsctl.sh soak-self-heal --storage-recovery-only --rebuild-reserve --json`; add `--apply` for guarded recovery. It starts below the configured 125 GiB target and aims for 135 GiB, while the quick emergency lane keeps its existing 64 GiB pressure threshold. The modes cannot be combined. Capacity and full system readiness remain separately measured, and no heavy rebuild is admitted by this flag.",
+                    "The existing pressure-recovery owner also runs a 32-file/180-second lifecycle-backup compression batch with a 15-minute cooldown. Fresh workload-specific recovery admission can raise only the outer compression load allowance to 0.85 per logical CPU; this path excludes heavier telemetry, offload and database work. Reserve reconciliation and the writer's independent storage admission still follow.",
+                    "The existing launchd owner runs bounded pressure relief before its heavy-maintenance gate. Apply keeps the shared self-healing lock, fresh typed memory admission, cold writer handoff, and destination reserve; it cannot run cache rebuilds, training, candidate acceptance, or trading. Verified disk-only yellow pressure can admit this lane with raw source age <=90 seconds, free memory >=85%, swap <=8 GiB, resident compressor <=1 GiB, and zero throttled pages; the host verdict and other workload gates stay blocked. A completed storage-pressure assessment is not a failed memory repair; legacy observation-circuit revalidation retains its prior state."
                 ],
             ),
             _command_entry(
                 project_root,
                 "Preview bounded cold SQLite compression",
                 [
-                    "./scripts/ops/opsctl.sh cold-archive-compactor --filesystem-select-inactive --filesystem-compressor afsctool --max-files 4 --max-raw-gb 8 --json"
+                    "./scripts/ops/opsctl.sh cold-archive-compactor --filesystem-select-inactive --filesystem-compressor auto --max-files 4 --max-raw-gb 8 --json"
                 ],
                 notes=[
-                    "Requires the optional afsctool executable for apply. Only inactive 100 MiB to 2 GiB SQLite archives qualify; apply also requires --coordinate-writer-handoff. Full hashes, SQLite quick_check, durable receipts, and physical savings precede atomic replacement."
+                    "Archive inventory/vacuum close each SQLite connection explicitly, including on failure. A failed filesystem probe reports unknown observation separately from a confirmed non-APFS volume; both remain blocking. Neither a successful scan nor an unsupported-probe error counts as recovered capacity.",
+                    "The native cadence and CLI default use auto selection: prefer the pinned local Applesauce backend when installed, then afsctool, then built-in ditto. Explicit backend choices remain available, dependencies are checked before writer holds, and receipts identify the selected backend. Only inactive SQLite archives qualify; bounded selection starts at 100 MiB and apply requires --coordinate-writer-handoff. Legacy backends retain the 2 GiB ceiling. Applesauce accepts logical files below its built-in 4 GiB limit but limits compressed data to 3.5 GiB because AFSC offsets are 32-bit. It works on an isolated physical copy with additional scratch reserved, a sampled 256 MiB RSS ceiling, 50 ms CPU sampling and a quarter-core aggregate budget across its threads. External recovery preserves at least 64 GiB and local emergency recovery at least 16 GiB. Full hashes, SQLite quick_check, durable receipts, and physical savings precede atomic replacement. A successful copy without verified compression cannot count as recovery; backend failures preserve the source and do not trigger an unbounded fallback loop.",
+                    "",
+                    "Streaming batches also cap logical bytes at the command deadline divided by 150 seconds per GiB, leaving a conservative allowance for pacing, physical copying and read verification. Receipts expose requested and effective budgets; oversized entries cannot override either bound. Bounded selection skips busy, uncheckpointed or unknown-idleness archives before consuming that budget; apply repeats the idle check before replacement.",
+                    "",
+                    "Native scheduled SQLite recovery uses a 4 GiB batch, 1200-second filesystem budget and 1300-second child timeout. Isolated copying, compression and full-file verification leave the hot SQL writer free. Only publication requests an owned hold and the actual writer lock, with at most 60 seconds for handoff plus 30 seconds for final checks; expiry includes 60 seconds of cleanup headroom. Source identity, idleness, reserves, deadline and durable receipts are rechecked before replacement. The non-filesystem hold-TTL flag remains separate. The shared recovery pass still requires its complete child window. CPU, memory, reserve and repair-circuit limits are unchanged.",
+                    "",
+                    "`MAINTENANCE_SLOT_LEASE_WAIT_SECONDS=120 ./scripts/ops/run_guarded_maintenance.sh SLOT COMMAND [ARGS...]` opts into waiting for the existing kernel lease. The default remains zero; values outside 0-120 seconds are rejected. The guard runs fresh admission after acquiring ownership, retains all holds/cooldowns/resource checks, and never preempts another job. Include the wait and scheduler jitter in the caller's outer deadline; child runtime limits are unchanged.",
+                    "",
+                    "`./scripts/ops/opsctl.sh cold-archive-compactor --archive-root /Volumes/BOT_LOGS/schwab_trading_bot/cold_archive --index-only --apply --json` refreshes the dataset/month Markdown index and sorted CSV/JSON catalogs without moving files or taking a SQL-writer hold. It scans at most 50,000 entries within 20 seconds, with bounded path/manifest input and its own kernel publication lock. The native post-compaction refresh uses five seconds/15,000 entries. Incomplete scans remain explicitly partial; verification columns reflect compatible historical compression receipts, never a new content or restore check. SQLite sidecars, backups, quarantine and incomplete maintenance files remain separately labeled and untouched.",
+                    "",
+                    "Cold restoration verification selects `row_encoding=msgpack_sqlite_scalars_v1` when the existing MessagePack C extension is installed, otherwise `json_type_pairs_ascii_v1`. Both compare every typed source/restored row and compute independent SHA-256 streams. The binary encoding is domain-separated, retains binary/text and integer/float/bool distinctions and uses double-precision floats. No extra installation, sampling, source mutation, reserve or deadline change is enabled by this acceleration.",
+                    "",
+                    "The rebuilt hot database reports `index_build_strategy=maintained_during_row_copy`: exact source index definitions are installed on the empty destination and maintained by SQLite during insertion, avoiding repeated wide-row overflow scans. No index, uniqueness rule, partial predicate, collation, sort order, integrity check or capacity guard is removed.",
+                    "",
+                    "The optional backend is the official Apple Silicon Applesauce CLI 0.5.28 binary installed at `.venv314/bin/applesauce`, with its GPLv3 license alongside. Its archive SHA-256 is `7853dd51a33593a11f964054765b26bbc6a7a482f9b9655f3e86a010f331da3d`; the executable hash pinned by the owner is `38be5419c9b8068781880a22fda1ec4bec509e2e68042874d4faa6f65e7eb918`. No unattended download or executable upgrade occurs. Official release: https://github.com/Dr-Emann/applesauce/releases/tag/applesauce-cli-v0.5.28 . Installation here checked the release digest; GitHub attestation verification was unavailable because the local Sigstore verifier could not initialize. Missing optional installation falls back; a changed installed binary fails preflight.",
                 ],
             ),
             _command_entry(
@@ -1699,10 +1829,35 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 project_root,
                 "Inspect closed compressed history offload",
                 [
-                    "./scripts/ops/opsctl.sh deep-cold-storage-layer --adaptive --include-compressed-history --json"
+                    "./scripts/ops/opsctl.sh deep-cold-storage-layer --adaptive --include-compressed-history --include-registry-backups --json"
                 ],
                 notes=[
-                    "Only dated gzip history older than 24 hours joins the existing cold-storage inventory. Verified offload retains original paths as atomic archive links and never authorizes record deletion or retention expiry."
+                    "Only dated decision and governance JSONL gzip history older than 24 hours joins the existing cold-storage inventory. BOT_DEEP_COLD_OFFLOAD_ROOT selects offload independently of the APFS compression root. Missing external mounts fail closed. Adaptive moves preserve destination reserve; unsupported exclusive rename/hard links use exclusive-create copy with scratch/streaming reserve checks and full SHA-256 verification. Durable receipts precede atomic source links, and the destination must remain attached for archive reads. Offload never authorizes record deletion or retention expiry."
+                    " Full native recovery also includes named registry backups older than 24 hours, keeping the newest per producer family local. Explicit --closed-history-min-age-hours N changes only closed gzip offload age (minimum one hour); native recovery keeps 24 hours. Current/future/invalid dates, raw files, retention deletion and reserve relaxation remain excluded."
+                    " Catch-up reconciliation and file ordering reuse writer cursor validation: replaced, truncated, rewound or invalid-offset source generations cannot clear debt. Existing material raw-live focus reserves at most one existing source slot per requested shard for a small tail older than 30 minutes, without standalone tiny-tail activation or larger worker/source/storage limits."
+                    " The data shard accepts the named cold-archive compaction manifest without arbitrary archive traversal or primary merge. Existing governance allocator/archive/regime/research/risk receipts participate in priority selection only under their normal governance filters; selection does not certify referenced archive integrity."
+                    " Routine ordering reserves one existing second-position slot within each lane for its oldest overdue pending work, preserving the first file and lane quotas. The census exposes valid checkpoint observation age separately as checkpoint_service_age_seconds, scheduling evidence only; reset, invalid, EOF and journal-advanced state cannot supply stale age. API/ingress focus uses that signal for one overdue path per already-selected multi-slot lane without raising path, byte, worker or storage caps."
+                    " Owned ingestion journals and their indexes are excluded from payload selection even under explicit focus, sharing the existing census boundary. Journal files and checkpoint recovery remain intact; ordinary receipts and health snapshots remain eligible. This prevents recursive work without deleting history or changing measured backlog."
+                    " Health histories outside normal fast-health filters keep their governance owner. Small overdue deferred-accounting receipts accepted by normal governance filters may use the existing single tail slot after material raw-live admission; no new shard, sentinel replacement, cold expansion or standalone deferred activation."
+                    " Loop-state channels retain their normal governance or crypto-governance owner instead of an incompatible runtime shard; deferred-accounting loop-state tails use that already-selected owner's existing slot after material admission. Actual runtime routes, normal source filters and all work limits remain unchanged."
+                    " Separate checkpoint service age may schedule that tail slot while a receipt keeps appending, without redefining event lateness. Each sequential writer pass lazily reuses one fully integrity-checked ops receipt connection, committing per file/checkpoint and closing at pass end. Connection/write/commit failures remain visible and invalidate reuse; dry runs do not open it. Shared connection policy and primary source commit behavior stay unchanged."
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Refresh bounded collector observation counters",
+                ["./scripts/ops/opsctl.sh data-collection-observation-rollup --apply --state-only --bootstrap-tail-lines 5000 --json"],
+                notes=[
+                    "The native evidence refresh uses this state-only mode: persist complete-row cursors without registry or training-exclusion writes. One kernel lock serializes scans and publications. Reads share a 90-second cooperative budget, 256 MiB total and 4 MiB per source, including decompressed gzip bytes. The native child retains a 180-second outer timeout.",
+                    "Incomplete gzip decodes never advance cursors or count partial records. Partial scans remain degraded with explicit lower-bound counts, cannot release training exclusions, and do not prove full-history coverage, model qualification, or trading readiness. The existing guarded-collection projection remains separate from raw scan completeness.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect collector storage policy changes",
+                ["./scripts/ops/opsctl.sh data-collection-storage-guard --json"],
+                notes=[
+                    "Apply backs up and updates the registry only for policy changes. Assessment timestamps and changing free-space measurements remain in the health receipt; unchanged policy is a no-write operation. This command does not enable duplicate cleanup unless explicitly requested."
                 ],
             ),
             _command_entry(
@@ -1715,6 +1870,18 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "Prints bounded canonical-path observations, owning lane/lifecycle policies, and separate fetch, qualification, SQL checkpoint, merge, and archive boundaries.",
                     "This mode does not write a health artifact, inspect database contents, or apply route/throttle changes; --out-file is ignored. Exit 2 reports definition or route inspection issues, not a full runtime-health verdict.",
                     "The ordinary ingestion-storage-control --json report includes the same data_plane_definition section. See docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Verify newly committed ingestion rows",
+                [
+                    './scripts/ops/opsctl.sh ingestion-storage-control --verify-new-ingestion --since "$INGEST_VERIFY_SINCE" --json'
+                ],
+                notes=[
+                    "Set INGEST_VERIFY_SINCE to a timezone-aware whole-second ISO timestamp. Optional --until fixes the exclusive end; otherwise the current whole UTC second is used. Dates refer to SQL ingestion time, not market event time.",
+                    "Read-only indexed primary/shard checks verify stored payload SHA-1 consistency and JSON parsing. Defaults are 90 seconds, 256 MiB of payloads and 100,000 rows; explicit ceilings are 300 seconds, 1,024 MiB and 1,000,000 rows. A database has a 15-second query budget and a single payload is limited to 8 MiB. Missing indexes, route errors and exhausted budgets remain incomplete; split large windows instead of claiming sampled rows certify everything.",
+                    "Writes ingestion_verification_latest.json, separate from overall ingestion health, or the explicit --out-file. Exit 0 certifies only this scoped stored-row check, never source completeness, unique global events, primary merge equivalence, archive restoration or trading readiness. No new scheduler, cursor advancement or source mutation.",
                 ],
             ),
             _command_entry(
@@ -1862,6 +2029,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ],
                 notes=[
                     "Run this when you need to update the browser handshake after changing credentials, renewing consent, or clearing stale callback/token state.",
+                    "The explicit operator command marks a bounded interactive session. Supervision preserves its callback window plus the bounded post-refresh checks and defers competing auth repairs; even a newly written token does not authorize killing the unfinished truth refresh. This never grants live execution authority.",
                 ],
             ),
             _command_entry(
@@ -1989,15 +2157,19 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh system-role-contract --json"],
                 notes=[
                     "Validates all operating planes, role contracts, concrete components, state-domain writers, control bindings, and registry-role coverage.",
+                    "Includes ten infrastructure responsibility domains with inherited owner SLO/resource budgets, measured completion requirements and escalation boundaries; complete definitions do not prove operational recovery.",
                     "Use --component, --action, and --state-domain to evaluate one runtime action; unknown or ambiguous mutations fail closed.",
                 ],
             ),
             _command_entry(
                 project_root,
                 "Review hierarchical bot organization",
-                ["./scripts/ops/opsctl.sh bot-organization --json"],
+                ["./scripts/ops/opsctl.sh bot-organization --json", "./scripts/ops/opsctl.sh bot-organization --json --require-definition-complete", "./scripts/ops/opsctl.sh bot-organization --json --require-trading-mandate-complete"],
                 notes=[
                     "Audits every registered bot's sleeve, sub-sleeve, cohort, role, provenance, correlation cluster, and resource posture.",
+                    "Each assignment includes scoped status_labels separating declared activity and collection configuration from definition completeness, runtime verification and economic evidence; status_label_audit reports registry-wide coverage.",
+                    "Includes all seven operating-definition areas with pinned source/registry bindings; --require-definition-complete exits 2 for incomplete operating jobs. Original standalone trading requirements remain separate under --require-trading-mandate-complete; neither changes runtime gates or economic evidence.",
+                    "Use --bot-definition BOT_ID --json to inspect all 32 named and numbered area subsections, source parameters, shared defaults and the profile-specific process graph with owners, dependencies, source-reference gaps and completion evidence. Native reports include subsection and process counts, separate from runtime and economic verification. --materialize-operating-definitions explicitly authors/rebinds reviewed metadata; never add that flag to scheduled refresh or automatic repairs.",
                     "The generated ensemble contract is shadow-only and has no paper or live execution authority.",
                 ],
             ),
@@ -2102,6 +2274,18 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Review scheduled ops job lifecycle",
+                [
+                    "./scripts/ops/opsctl.sh ops-scheduled-jobs --json",
+                    "./scripts/ops/opsctl.sh ops-scheduled-jobs --queue-only --json",
+                    "./scripts/ops/opsctl.sh ops-scheduled-jobs --preflight-only --json",
+                ],
+                notes=[
+                    "This inventories launchd-backed ops jobs from the static scheduled-job catalog, the checked-in installer, local LaunchAgents plists, each producer's latest lifecycle artifact, and whether the installed plist uses the shared lifecycle runner. Missing plists/evidence are hard issues; stale evidence, wrapper adoption, and missing transition receipts are surfaced in the prioritized action queue. The preflight-only view validates queued commands against the local allowlist and keeps execution operator-confirmed.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Refresh readiness evidence without the full dashboard",
                 [
                     "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile production --status --json",
@@ -2112,6 +2296,8 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 notes=[
                     "Accrual uses a 15-minute default cooldown and production uses 45 minutes in the scheduled wrapper; admission and runtime failures can delay either. The wrapper continues independent observations after a failed profile, retains a failed cycle exit, and disables optional watcher repairs for that cycle. An OS-owned wrapper lock cannot be stolen by age.",
                     "Within a profile, failed or expired selected dependencies block their consumers even under --force; independent branches still run. Expected qualification-pending assessments remain separate from producer failure. Dependencies outside the selected profile stay consumer-owned instead of expanding a bounded profile into the full graph.",
+                    "Accrual and dashboard refresh both two-hour operational coverage and the distinct 24-hour training coverage after the runtime snapshot, before publishing the feature manifest. Training coverage remains its preferred input; fresh operational coverage cannot substitute for a failed training-coverage publication.",
+                    "A matching generation-locked training refresh follows the feature manifest, with 240 seconds of work, at most 120 seconds of lock wait, and a separate training_accrual_refresh_latest.json receipt. Qualification holds remain visible and no trainer or order is launched.",
                     "--status is read-only and shows the current lock-bound run, active step, interruption state, and the requested profile's own completion receipt. --apply publishes an atomic .progress.json journal plus the terminal report. Cooldowns start at completion; old, unfinished, or another profile's evidence cannot imply current success. No training-launch or live-order authority is added.",
                 ],
             ),
@@ -2267,7 +2453,19 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Coinbase API health",
                 ["./scripts/ops/opsctl.sh coinbase-api-health --json"],
                 notes=[
-                    "This checks Coinbase public market-data endpoints and reports only credential presence booleans, never secret values.",
+                    "This checks Coinbase public market-data endpoints, reports credential presence booleans, and includes separately aged read-only personal-account status. Public API readiness does not mean the account is linked.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Coinbase read-only account connection",
+                [
+                    "./scripts/ops/opsctl.sh coinbase-account --status --json",
+                    "./scripts/ops/opsctl.sh coinbase-account --link-key-file /path/to/cdp_api_key.json --json",
+                    "./scripts/ops/opsctl.sh coinbase-account --json",
+                ],
+                notes=[
+                    "Use the documented COINBASE_ACCOUNT_LINK.md auth flow with an Ed25519 or P-256 key and View permission; never put key contents in arguments. Transfer and Receive must be disabled; any Trade capability is reported but never used. Import verifies permissions and complete account pagination before storing credentials and holdings in an owner-only directory outside the repository. Refresh is on-demand; status expires after five minutes. No orders, transfers, collector restart, account switching, or live promotion are authorized.",
                 ],
             ),
             _command_entry(
@@ -2353,10 +2551,16 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/daily_log_refresh.sh"],
                 notes=[
                     "Use this when you want the full SQL/log/report refresh instead of the one-pass writer sync.",
+                    "Routine SQLite planner maintenance uses bounded optimization; full ANALYZE is opt-in and resource-gated. Existing storage reserves, maintenance ownership, and writer locks remain mandatory.",
                 ],
             ),
             _command_entry(
-                project_root, "Quick SQL sync", ["./scripts/ops/opsctl.sh sql-sync"]
+                project_root,
+                "Quick SQL sync",
+                ["./scripts/ops/opsctl.sh sql-sync"],
+                notes=[
+                    "Native scheduled SQL writers always run one pass, with or without shards; lifecycle deadlines and storage/maintenance deferrals remain enforced."
+                ],
             ),
             _command_entry(
                 project_root,
@@ -2433,7 +2637,8 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ],
                 notes=[
                     "Run this before a manual full retrain so SQL state, runtime snapshots, coverage, and promotion gates are fresh.",
-                    "The snapshot worker has a total deadline, bounded decompressed price scans, a shared incremental/seed deadline with publication reserve, partial-coverage diagnostics, atomic row publication, and hash-bound readers. The epoch coordinator preserves the producer-owned manifest and writes a separate failure receipt; timeout or changed mtime is not successful refresh or qualification.",
+                    "Promotion quality can reconcile a completed daily run's ingestion failure only from a newer typed healthy hot-lane observation no older than five minutes. Native daily-verify-remediation retries that owner; stale, partial, overloaded or failed retries retain debt, and historical results and qualification floors remain unchanged.",
+                    "The snapshot worker rejects bad base digests before parsing and shares its scan deadline with base/seed reads. Unique row generations commit before the atomic manifest pointer, followed by the compatibility alias; bounded cleanup retains current/previous generations and a one-hour reader grace window. The total deadline, bounded decompressed scans and partial-coverage diagnostics remain enforced. The epoch coordinator preserves the producer-owned manifest and writes a separate failure receipt; timeout or changed mtime is not successful refresh or qualification.",
                 ],
             ),
             _command_entry(
@@ -2456,23 +2661,122 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Materialize training data without launching models",
+                [
+                    "./scripts/ops/opsctl.sh training-dataset-preflight --materialize --json"
+                ],
+                notes=[
+                    "Defaults to the ten registered CryptoRuntimeSpec strategies against a verified, bounded runtime snapshot. Explicit --include-bot-ids selections additionally support v35 DMI, v100 stock/crypto overlap, and v103 crypto throttle-relief, reusing unchanged production callbacks, filters, stride, and thresholds. At most ten bots per batch; unselected or unsupported strategies remain unassessed.",
+                    "Exports compressed research arrays with source hashes and row-aligned label lineage, purges overlapping feature/outcome intervals from chronological splits, and reports class and sequence gaps. This command has no training, promotion, paper, or live execution authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Prepare and evaluate an explicitly selected research bot",
+                [
+                    ".venv314/bin/python scripts/resource_guard.py --profile refresh --json",
+                    "./scripts/ops/opsctl.sh training-dataset-preflight --include-bot-ids brain_refinery_v103_crypto_throttle_relief_momentum --materialize --json",
+                    "./scripts/ops/opsctl.sh training-dataset-evaluate --json",
+                ],
+                notes=[
+                    "Proceed only after the resource guard succeeds. Select v35, v100, or v103 by its full module ID, or comma-separated supported IDs. Smaller selections retain fewer snapshot features; byte/time budgets and data floors are unchanged. The saved snapshot must still have valid producer and observation timestamps.",
+                    "Evaluate immediately after successful materialization to consume that selected cohort; --prepare would replace it with the default crypto cohort. This does not alter the production roster, deployed weights, or execution authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Evaluate prepared datasets on held-out market outcomes",
+                ["./scripts/ops/opsctl.sh training-dataset-evaluate --prepare --json"],
+                notes=[
+                    "Prepares bounded research datasets, verifies content/source receipts and purged partitions, and selects logistic regularization using nested purged training intervals only. Single-thread fits report untouched outer validation/test accuracy, balanced accuracy, calibration, and training-majority baselines.",
+                    "Existing guarded daily/weekly jobs use --prepare: resource admission, a bounded 150-second snapshot refresh (reuse at most 15 minutes), then two-minute materialization. Producer and observation timestamps both expire. No runtime model/registry writes, candidate promotion, trade-profitability credit, or execution authority; reused holdouts are diagnostic, not independent edge.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Run or resume a larger research-training cohort",
+                [
+                    "./scripts/ops/opsctl.sh training-research-batch --json",
+                    "./scripts/ops/opsctl.sh training-research-batch --status --json",
+                ],
+                notes=[
+                    "Queues all 13 supported research adapters by default, one isolated bot worker at a time. Optional --include-bot-ids narrows the cohort; --seconds accepts 150-1800 (default 600). Existing resource guards run before each worker and before its fit, with unchanged 2000-sample, 32 MiB retained-row, split, and quality limits. Child process trees have 120-second deadlines and at most two attempts per bot.",
+                    "Repeat to resume pending work without refitting completed bots. --status is read-only. Changed inputs require a fresh verified saved snapshot and --new-run; prior per-run and per-bot receipts are preserved. This command does not force snapshot refresh or change existing daily/weekly schedules. Completion is accounting, not evidence that every bot trained or improved. No deployed weights, registry, promotion, trading, or Codex automation changes.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Historical sleeve-specific labeling",
+                [
+                    "./scripts/ops/opsctl.sh historical-sleeve-labeling --run --seconds 120",
+                    "./scripts/ops/opsctl.sh historical-sleeve-labeling --run --full --seconds 7200",
+                ],
+                notes=[
+                    "The full runner records an unavailable OS priority API and uses a single cooperatively paced worker at a 25%-of-one-core CPU-time budget. This never bypasses admission or implies hard CPU affinity.",
+                    "The bounded batch command preserves legacy runs. --full reads the declared retained JSONL/gzip, compatible SQLite (including committed WAL), and configured Parquet payload exports into verified compressed partitions, with a separate full-run resume pointer. --new-inventory preserves earlier evidence after code/policy changes. Both commands honor preparation, storage, Mac-fluidity and maintenance gates.",
+                    "All 111 sleeves have explicit primary/secondary research horizons in config/historical_sleeve_research_horizons_v1.json, published with the full run. Execution holding periods are unchanged. Primary economic/control/OOS outcomes still require authority-specific materialization. No training, promotion, or trading authority is granted; source-scan completion is not full outcome completion.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Measure and verify selected-file restore capacity",
+                [
+                    "./scripts/ops/opsctl.sh state-snapshot-drill --capacity-only --json",
+                    "./scripts/ops/opsctl.sh state-snapshot-drill --recover-latest-verified --json",
+                    "./scripts/ops/opsctl.sh state-snapshot-drill --json",
+                ],
+                notes=[
+                    "Only after explicit one-time operator approval, --operator-approved-recovery permits one 30-minute paced attempt through the support latch. Fresh hard resource, thermal, memory, operator-hold and disk checks still apply; schedulers never add this flag automatically.",
+                    "The capacity-only command does not copy or publish readiness. The real drill follows config/state_snapshot_drill_v1.json, the shared storage lock, support pause, memory/deadline/CPU pacing, protected routes, and actual volume reserves.",
+                    "Read-only compact SQLite snapshots and APFS restore clones must pass hashes and SQLite checks; retained gzip copies require full decoded-byte verification. No unreserved physical-copy fallback, metadata-only restore credit, independent-media recovery claim, training, promotion, or live execution authority.",
+                    "Failed replacement drills preserve complete prior proof and publish a separate attempt receipt. --recover-latest-verified rechecks retained archive SHA-256 against the original complete unexpired restore manifest within 180 seconds; it never advances the source proof timestamp or claims a new restore. Expired owned maintenance holds no longer block recovery; active and unreadable holds still do.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Operator-approved archive recovery for restore capacity",
+                [
+                    "./scripts/ops/opsctl.sh raw-training-compaction --operator-approved-recovery --apply --scan-root /Volumes/BOT_LOGS/schwab_trading_bot --max-files 128 --max-gb 40 --jumbo-gb 0 --compaction-workers 1 --min-age-hours 24 --write-history --json"
+                ],
+                notes=[
+                    "Requires explicit operator approval for this invocation. One paced worker processes small older archived governance JSONL files first, rejects open files, preserves a 64 GiB reserve, and stops at 84 GiB free or its 30-minute deadline. Full decoded hashes and stable source identity precede release of raw copies; current-day history and live-money controls remain untouched.",
+                    "Uses the shared storage-maintenance lock and per-file recovery progress receipt. This bounded path skips the usual self-model refresh cascade and never launches backfill, training, promotion or execution.",
+                    "If one selected-file archive exceeds its cap after copy/restore hashes pass, explicitly approved state-snapshot-drill --resume-run ABSOLUTE_OWNED_RUN_DIRECTORY revalidates retained proofs and seals a new archive within the 4 GiB reserved budget. Failed partial archives stay preserved and original snapshot time stays unchanged.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Refresh one coherent training evidence epoch",
                 [
                     "./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training --skip-dashboard --json"
                 ],
                 notes=[
+                    "For missing snapshot or feature-store lineage, the native grade repair owner invokes `runtime-artifact-refresh --scope lineage-inputs --max-run-seconds 165 --skip-dashboard --json` once before reassessment. Its five-producer graph shares the generation lock with a five-second wait and bounds snapshot work to 120 seconds. It defers when the outer repair cannot provide its complete 180-second child allowance; it never lowers replay or coverage floors.",
                     "Refreshes the dependency-closed snapshot, point-in-time event, feature, label, lineage, replay, candidate-selection, schema, and training-runtime chain under one epoch ID.",
+                    "Training-only and profitability scopes share the generation lock. Replay reads routed plain/gzip evidence under shared time, row and byte bounds; duplicate rows, incomplete source discovery/reads, and intent-only fallbacks cannot satisfy the unchanged 20-record floor.",
                     "This command does not launch training, promotion, allocation, paper orders, or live orders.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Bootstrap local promotion packet signing",
+                [
+                    ".venv314/bin/python scripts/promotion_packet_builder.py --bootstrap-local-signing-key --json"
+                ],
+                notes=[
+                    "Explicit local setup creates a complete owner-only (0600) signing key with no-clobber publication; existing keys are reused, never rotated or overwritten. Protected routes, symlink keys, nonregular files, and oversized keys fail closed. Secret values do not enter packet output.",
+                    "A signature proves local packet integrity only. Signed idle-scope completeness does not count as successful candidate training, promotion approval, operator attestation, or live-order authority.",
                 ],
             ),
             _command_entry(
                 project_root,
                 "Refresh training and profitability evidence together",
                 [
-                    "./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training-profitability --skip-dashboard --json"
+                    "./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training-profitability --max-run-seconds 1200 --skip-dashboard --json"
                 ],
                 notes=[
                     "Refreshes both evidence graphs in one bounded cycle so cross-artifact consumers cannot combine old and new proof.",
+                    "The shared 20-minute step/retry budget leaves time for a separate progress receipt and unfinished evidence debt; the generation lock adds at most 120 seconds. The production coordinator allows 1500 seconds for this owner and 2100 seconds for selected-file restore, rather than killing either at the generic step timeout.",
                     "A blocked result is evidence debt, not permission to bypass a launch or promotion gate.",
                 ],
             ),
@@ -2507,6 +2811,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/open_report_artifact.sh paper"],
                 notes=[
                     "This refreshes the paper-performance source and opens the report-ready chart PDF.",
+                    "For a lightweight evidence trace, run ./scripts/ops/opsctl.sh paper-performance --json-only --json. The outcome_evidence_diagnostics field separates absent outcomes, candidate/cohort exclusions, unreadable sources, fresh execution holds, and profitability evidence holds. Profitability input freshness uses producer time, not mtime; it cannot release a hold or grant trading authority.",
                 ],
             ),
             _command_entry(

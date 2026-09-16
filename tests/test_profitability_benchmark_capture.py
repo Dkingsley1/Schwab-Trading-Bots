@@ -5,6 +5,39 @@ from pathlib import Path
 from scripts.ops import profitability_benchmark_capture as capture
 
 
+def test_gzip_scan_is_bounded_by_decompressed_bytes(tmp_path):
+    import gzip
+    path = tmp_path / "large.jsonl.gz"
+    with gzip.open(path, "wb") as handle:
+        handle.write(b'{"symbol":"SPY"}\n' * 10000)
+    budget = capture.ScanBudget(max_bytes=1024, max_file_bytes=1024)
+    list(capture._iter_tail_lines(path, tail_bytes=1024, budget=budget))
+    assert budget.bytes_read <= 1024
+    assert budget.reasons
+
+
+def test_incomplete_benchmark_scan_never_appends_partial_candidate_days(tmp_path, monkeypatch):
+    config = {"benchmark_hurdle": {"series": "series.jsonl", "capture": {"symbol": "SPY"}}}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    monkeypatch.setattr(capture, "_candidate_binding", lambda *args: ({"bound": True, "candidate_id": "c1", "cutoff_utc": "2026-08-01T00:00:00Z"}, None))
+    monkeypatch.setattr(capture, "_capture_candidates", lambda *args, **kwargs: ({"2026-08-02": {"candidate_id": "c1"}}, {"incomplete": True}))
+    payload = capture.build_payload(tmp_path, config_path=path, apply=True)
+    assert payload["ok"] is False
+    assert payload["overall_status"] == "blocked"
+    assert payload["appended_days"] == []
+    assert not (tmp_path / "series.jsonl").exists()
+
+
+def test_benchmark_source_globs_reject_protected_directory_before_traversal(tmp_path):
+    directory = tmp_path / "governance"
+    directory.mkdir()
+    (directory / "shadow_protected").symlink_to("/Volumes/VIDEO")
+    budget = capture.ScanBudget()
+    assert capture._source_files(tmp_path, ["governance/shadow*/master_control_*.jsonl"], budget) == []
+    assert "source_route_unavailable" in budget.reasons
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")

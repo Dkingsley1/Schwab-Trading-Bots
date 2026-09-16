@@ -20,10 +20,10 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.long_runtime_common import load_json, write_payload
-    from scripts.ops.production_excellence_control import verify_candidate_event_chain
+    from scripts.ops.production_excellence_control import read_candidate_event_chain, verify_candidate_event_chain
 else:
     from .long_runtime_common import PROJECT_ROOT, load_json, write_payload
-    from .production_excellence_control import verify_candidate_event_chain
+    from .production_excellence_control import read_candidate_event_chain, verify_candidate_event_chain
 
 
 DEFAULT_EVENT_PATH = Path("governance/evidence/production_candidate_events.jsonl")
@@ -95,21 +95,13 @@ def _canonical_hash(value: Any) -> str:
 
 
 def _read_events(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    chain = verify_candidate_event_chain(path)
+    events, chain = read_candidate_event_chain(path)
     if not bool(chain.get("ok", False)):
         return [], chain
     rows: list[dict[str, Any]] = []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
+    if not events:
         return [], {**chain, "ok": False, "errors": ["candidate_event_log_unreadable"]}
-    for line in lines:
-        try:
-            row = json.loads(line)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(row, dict):
-            continue
+    for row in events:
         if str(row.get("event_type") or "") not in ACCEPTED_EVENT_TYPES:
             continue
         if _utc(row.get("timestamp_utc")) is None:

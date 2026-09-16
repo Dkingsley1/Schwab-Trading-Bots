@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
+import fcntl
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import gzip
 import hashlib
@@ -10,6 +12,7 @@ import math
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -477,10 +480,12 @@ def _file_identity(path: Path) -> tuple[int, ...]:
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def _digest_stream(handle: Any, deadline: float) -> tuple[str, int]:
+def _digest_stream(handle: Any, deadline: float, guard=None) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
     while True:
+        if guard is not None:
+            guard.check()
         if time.monotonic() > deadline:
             raise TimeoutError("compaction_verification_deadline")
         chunk = handle.read(1024 * 1024)
@@ -498,20 +503,42 @@ def _sync_directory(path: Path) -> None:
         os.close(fd)
 
 
-def _compaction_reserve_bytes() -> int:
+def _compaction_reserve_bytes(guard=None) -> int:
     reserve = float(os.getenv("BOT_LOCAL_STORAGE_EMERGENCY_FREE_GB", "16"))
     if not math.isfinite(reserve) or reserve < 0:
         raise ValueError("invalid_compaction_reserve")
-    return int(max(reserve, 16.0) * 1024**3)
+    return max(
+        int(max(reserve, 16.0) * 1024**3), guard.reserve if guard is not None else 0
+    )
+
+
+def _require_idle_recovery_source(path, guard):
+    if guard is None:
+        return
+    guard.check()
+    result = subprocess.run(
+        ["/usr/sbin/lsof", "-t", "--", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 1 or result.stdout.strip() or result.stderr.strip():
+        raise RuntimeError("recovery_source_open_or_handle_probe_failed")
 
 
 def _compress_and_clear(
-    path: Path, compressed_path: Path, *, compress_level: int, keep_raw: bool
+    path: Path,
+    compressed_path: Path,
+    *,
+    compress_level: int,
+    keep_raw: bool,
+    guard=None,
 ) -> dict[str, Any]:
     started = datetime.now(timezone.utc)
     tmp_path = None
     try:
         identity = _file_identity(path)
+        _require_idle_recovery_source(path, guard)
         before_bytes = identity[2]
         if _is_under_protected_volume(compressed_path):
             raise ValueError("protected_or_unavailable_route")
@@ -522,15 +549,15 @@ def _compress_and_clear(
                 expected_prefix_sha256="",
                 sample_bytes=0,
                 keep_raw=keep_raw,
+                guard=guard,
             )
         compressed_path.parent.mkdir(parents=True, exist_ok=True)
         # Recovery compaction must retain emergency headroom even for incompressible input.
-        if (
-            shutil.disk_usage(compressed_path.parent).free
-            < before_bytes * 1.01 + _compaction_reserve_bytes()
-        ):
+        if shutil.disk_usage(
+            compressed_path.parent
+        ).free < before_bytes * 1.01 + _compaction_reserve_bytes(guard):
             raise RuntimeError("insufficient_compaction_scratch_reserve")
-        deadline = time.monotonic() + 300
+        deadline = guard.deadline if guard is not None else time.monotonic() + 300
         fd, name = tempfile.mkstemp(
             prefix=".raw_compact_", suffix=".tmp", dir=compressed_path.parent
         )
@@ -542,6 +569,8 @@ def _compress_and_clear(
                 fileobj=raw_out, mode="wb", compresslevel=compress_level, mtime=0
             ) as dst:
                 while True:
+                    if guard is not None:
+                        guard.check()
                     if time.monotonic() > deadline:
                         raise TimeoutError("compaction_deadline")
                     chunk = src.read(1024 * 1024)
@@ -555,7 +584,7 @@ def _compress_and_clear(
             raw_out.flush()
             os.fsync(raw_out.fileno())
         with gzip.open(tmp_path, "rb") as verify:
-            restored_digest, restored_bytes = _digest_stream(verify, deadline)
+            restored_digest, restored_bytes = _digest_stream(verify, deadline, guard)
         if (restored_digest, restored_bytes) != (
             digest.hexdigest(),
             before_bytes,
@@ -569,6 +598,7 @@ def _compress_and_clear(
         target_identity = _file_identity(compressed_path)
         raw_removed = False
         if not keep_raw:
+            _require_idle_recovery_source(path, guard)
             if (
                 _file_identity(path) != identity
                 or _file_identity(compressed_path) != target_identity
@@ -625,16 +655,18 @@ def _remove_duplicate_raw(
     expected_prefix_sha256: str,
     sample_bytes: int,
     keep_raw: bool = False,
+    guard=None,
 ) -> dict[str, Any]:
     try:
         identity = _file_identity(path)
+        _require_idle_recovery_source(path, guard)
         target_identity = _file_identity(compressed_path)
         before_bytes = identity[2]
-        deadline = time.monotonic() + 300
+        deadline = guard.deadline if guard is not None else time.monotonic() + 300
         with path.open("rb") as source:
-            source_digest, source_bytes = _digest_stream(source, deadline)
+            source_digest, source_bytes = _digest_stream(source, deadline, guard)
         with gzip.open(compressed_path, "rb") as restored:
-            restored_digest, restored_bytes = _digest_stream(restored, deadline)
+            restored_digest, restored_bytes = _digest_stream(restored, deadline, guard)
         if (
             _file_identity(path) != identity
             or _file_identity(compressed_path) != target_identity
@@ -655,6 +687,7 @@ def _remove_duplicate_raw(
                 "estimated_raw_bytes_cleared": 0,
             }
         if not keep_raw:
+            _require_idle_recovery_source(path, guard)
             with compressed_path.open("rb") as durable:
                 os.fsync(durable.fileno())
             _sync_directory(compressed_path.parent)
@@ -699,7 +732,42 @@ def _apply_batch(
     compress_level: int,
     keep_raw: bool,
     compaction_workers: int = 1,
+    guard=None,
 ) -> list[dict[str, Any]]:
+    if guard is not None:
+        if compaction_workers != 1:
+            raise ValueError("approved_recovery_requires_one_worker")
+        records = []
+        for row in rows:
+            if shutil.disk_usage(guard.output).free >= 84 * 1024**3:
+                break
+            try:
+                guard.check()
+            except (RuntimeError, TimeoutError) as exc:
+                records.append(
+                    {"status": "deferred", "reason": str(exc), "raw_removed": False}
+                )
+                break
+            result = _compress_and_clear(
+                Path(row["path"]),
+                Path(row["compressed_path"]),
+                compress_level=compress_level,
+                keep_raw=keep_raw,
+                guard=guard,
+            )
+            records.append(result)
+            _write_json(
+                PROJECT_ROOT
+                / "governance/health/raw_training_recovery_progress_latest.json",
+                {
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    "pid": os.getpid(),
+                    "records": records,
+                    "worker_budget": guard.pace.snapshot(),
+                    "free_bytes": shutil.disk_usage(guard.output).free,
+                },
+            )
+        return records
     records_by_index: dict[int, dict[str, Any]] = {}
     compression_jobs: list[tuple[int, Path, Path]] = []
     for index, row in enumerate(rows):
@@ -1132,15 +1200,53 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     selected = _select_batch(
         rows, max_files=args.max_files, max_gb=args.max_gb, jumbo_gb=args.jumbo_gb
     )
+    guard = None
+    approved = bool(getattr(args, "operator_approved_recovery", False))
+    if approved:
+        from scripts.ops.state_snapshot_capacity import CopyGuard, allowed
+
+        if (
+            len(scan_roots) != 1
+            or args.compaction_workers != 1
+            or not 24 <= args.min_age_hours
+        ):
+            raise ValueError(
+                "approved_recovery_requires_one_root_one_worker_and_24h_age"
+            )
+        if not 1 <= args.max_files <= 128 or not 0 < args.max_gb <= 40:
+            raise ValueError("approved_recovery_selection_budget_invalid")
+        output = allowed(scan_roots[0])
+        if output.stat().st_dev == PROJECT_ROOT.stat().st_dev:
+            raise ValueError("approved_archive_recovery_requires_separate_volume")
+        archive = output / "local_fallback_storage/governance"
+        selected, used = [], 0
+        for row in sorted(rows, key=lambda row: row["size_bytes"]):
+            path = Path(row["path"])
+            if not row["compression_candidate"] or not path.is_relative_to(archive):
+                continue
+            size = row["size_bytes"]
+            if len(selected) < args.max_files and used + size <= args.max_gb * 1024**3:
+                selected.append(row)
+                used += size
+        guard = CopyGuard(
+            PROJECT_ROOT, output, 64 * 1024**3, 1800, operator_approved=True
+        )
     compaction_workers = max(_safe_int(getattr(args, "compaction_workers", 1), 1), 1)
     apply_records: list[dict[str, Any]] = []
     if args.apply:
-        apply_records = _apply_batch(
-            selected,
-            compress_level=args.compress_level,
-            keep_raw=args.keep_raw_after_compress,
-            compaction_workers=compaction_workers,
-        )
+        lock = PROJECT_ROOT / "governance/locks/storage_maintenance.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with lock.open("a+") if approved else nullcontext() as lane:
+            if approved:
+                fcntl.flock(lane, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            kwargs = {"guard": guard} if approved else {}
+            apply_records = _apply_batch(
+                selected,
+                compress_level=args.compress_level,
+                keep_raw=args.keep_raw_after_compress,
+                compaction_workers=compaction_workers,
+                **kwargs,
+            )
 
     source_count = _write_jsonl(Path(args.source_queue_path), rows)
     eligible_count = _write_jsonl(Path(args.eligible_queue_path), eligible_rows)
@@ -1248,6 +1354,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         },
         "selected_compaction_batch": selected[: int(args.max_files)],
         "apply_records": apply_records,
+        "operator_approved_recovery": approved,
+        "worker_budget": guard.pace.snapshot() if guard is not None else None,
         "top_training_sources": eligible_rows[:25],
         "top_compaction_candidates": [
             row for row in rows if row.get("compression_candidate")
@@ -1304,6 +1412,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Apply a bounded compaction wave after writing the training queues.",
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+    parser.add_argument(
+        "--operator-approved-recovery",
+        action="store_true",
+        help="Explicit one-time archive recovery: one paced worker, 64 GiB reserve, fresh resource admission, 30 minutes maximum.",
+    )
     parser.add_argument(
         "--bot-logs-root", default="", help="Primary raw bot logs root to scan."
     )

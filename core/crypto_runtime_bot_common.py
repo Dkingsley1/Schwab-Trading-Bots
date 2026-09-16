@@ -7,7 +7,6 @@ from typing import Callable, Sequence
 
 import numpy as np
 
-from indicator_bot_common import train_runtime_indicator_bot
 from runtime_requested_bot_common import (
     base_runtime_gate,
     centered01,
@@ -142,6 +141,8 @@ def _runtime_label(spec: CryptoRuntimeSpec, sequence, idx, horizon):
 
 
 def train_crypto_runtime_bot(spec: CryptoRuntimeSpec):
+    from indicator_bot_common import train_runtime_indicator_bot
+
     return train_runtime_indicator_bot(
         run_tag=spec.bot_id,
         feature_names=list(spec.feature_names),

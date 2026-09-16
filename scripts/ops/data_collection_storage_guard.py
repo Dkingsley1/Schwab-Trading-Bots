@@ -821,16 +821,15 @@ def build_payload(
             "data_collection_capture_mode": profile["capture_mode"],
             "data_collection_sample_rate": profile["sample_rate"],
             "data_collection_max_daily_storage_mb": profile["max_daily_storage_mb"],
-            "data_collection_storage_guard_updated_utc": now,
             "data_collection_runtime_dependency_profile": (
                 "mlx_optional_research_only"
                 if kind == "quant_research"
                 else str(row.get("data_collection_runtime_dependency_profile") or "")
             ),
             "storage_pressure_capture_reason": (
-                f"external_available_gb={available_gb:.2f};mode={mode};{compute_floor['reason']}"
+                f"mode={mode};{compute_floor['reason']}"
                 if compute_floor
-                else f"external_available_gb={available_gb:.2f};mode={mode}"
+                else f"mode={mode}"
             ),
             "freshness_slo_seconds": max(
                 int(row.get("freshness_slo_seconds") or 0),
@@ -841,6 +840,8 @@ def build_payload(
             desired["retention_profile"] = profile["retention_profile"]
         delta = {key: value for key, value in desired.items() if row.get(key) != value}
         if delta:
+            # Observation freshness belongs in the health receipt, not a registry rewrite.
+            delta["data_collection_storage_guard_updated_utc"] = now
             changes.append(
                 {"bot_id": str(row.get("bot_id") or ""), "kind": kind, "updates": delta}
             )

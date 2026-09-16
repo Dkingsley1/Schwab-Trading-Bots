@@ -119,6 +119,7 @@ def evidence_freshness(
                 "created_at",
                 "ended_utc",
                 "generated_utc",
+                "generated_at_utc",
             )
             if key in payload
         ),
@@ -133,18 +134,74 @@ def evidence_freshness(
         status = "timestamp_missing"
     elif timestamp is None:
         status = "timestamp_invalid"
-    elif age < -1.0:
+    elif age < 0.0:
         status = "future_timestamp"
     elif age > max_age_minutes:
         status = "stale"
     else:
         status = "fresh"
+    producer_timestamp = timestamp
+    # Derived and deferred reports cannot renew the observations they copied.
+    if status == "fresh" and "source_timestamp_utc" in payload:
+        source = parse_iso_utc(payload.get("source_timestamp_utc"))
+        if source is None:
+            status = "source_timestamp_invalid"
+        else:
+            source_age = ((now or utc_now()) - source).total_seconds() / 60.0
+            if source_age < 0:
+                status = "future_source_timestamp"
+            elif source_age > max_age_minutes:
+                status = "stale"
+            timestamp = min(timestamp, source)
+            age = max(age, source_age)
+    if status == "fresh" and payload.get("freshness_state") == "no_previous_measurement":
+        status = "measurement_missing"
+    if status == "fresh" and payload.get("input_evidence_ready") is False:
+        status = "input_evidence_unavailable"
+    if status == "fresh" and isinstance(payload.get("input_evidence"), dict):
+        for row in payload["input_evidence"].values():
+            if not isinstance(row, dict) or not row.get("fresh"):
+                status = "input_evidence_unavailable"
+                break
+            try:
+                ttl = min(float(row["max_age_minutes"]), max_age_minutes)
+            except (KeyError, ValueError, TypeError):
+                status = "input_evidence_unavailable"
+                break
+            source_evidence = evidence_freshness(
+                {"timestamp_utc": row.get("source_timestamp_utc")}, max_age_minutes=ttl, now=now
+            )
+            if not source_evidence["fresh"]:
+                status = "input_evidence_unavailable"
+                break
     return {
         "status": status,
         "fresh": status == "fresh",
         "source_timestamp_utc": timestamp.isoformat() if timestamp else None,
+        "producer_timestamp_utc": producer_timestamp.isoformat() if producer_timestamp else None,
         "age_minutes": round(age, 3) if age is not None else None,
         "max_age_minutes": max_age_minutes,
+    }
+
+
+def governor_observation_contract(
+    inputs: dict[str, tuple[dict[str, Any], float]], *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Carry required observation ages through a governor decision, without I/O."""
+    current = now or utc_now()
+    evidence = {
+        name: evidence_freshness(payload, max_age_minutes=ttl / 60.0, now=current)
+        for name, (payload, ttl) in inputs.items()
+    }
+    ready = bool(evidence) and all(row["fresh"] for row in evidence.values())
+    timestamps = [row["source_timestamp_utc"] for row in evidence.values() if row["source_timestamp_utc"]]
+    oldest = min(timestamps) if len(timestamps) == len(evidence) and timestamps else None
+    return {
+        "input_evidence_ready": ready,
+        "input_evidence": evidence,
+        "source_timestamp_utc": oldest,
+        "measurement_refreshed": False,
+        "freshness_state": "derived_from_observations" if ready else "awaiting_fresh_inputs",
     }
 
 
@@ -158,10 +215,56 @@ def standardize_grade_labels(value: Any) -> Any:
     return value
 
 
-def write_payload(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def governor_recovery_observation(
+    previous: dict[str, Any],
+    source_timestamp: Any,
+    *,
+    inputs_ready: bool = True,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Rate-limit healthy-sample credit without delaying adverse decisions."""
+    current = parse_iso_utc(source_timestamp)
+    now = now or utc_now()
+    prior = previous.get("recovery_observation")
+    prior = prior if isinstance(prior, dict) else {}
+    prior_source = parse_iso_utc(prior.get("source_timestamp_utc") if prior else previous.get("source_timestamp_utc", previous.get("timestamp_utc")))
+    prior_credit = parse_iso_utc(prior.get("last_credit_source_timestamp_utc")) if prior else prior_source
+    prior_producer = parse_iso_utc(previous.get("timestamp_utc"))
+    current_valid = bool(inputs_ready and current is not None and current <= now)
+    history_valid = bool(
+        current_valid and prior_source is not None and prior_credit is not None
+        and prior_producer is not None and previous.get("input_evidence_ready") is not False
+        and 0 <= (now - prior_producer).total_seconds() <= 300
+        and 0 <= (current - prior_source).total_seconds() <= 300
+        and prior_credit <= prior_source
+    )
+    credit_due = bool(current_valid and (not history_valid or (current - prior_credit).total_seconds() >= 60))
+    last_credit = current if credit_due else prior_credit if history_valid else None
+    return {
+        "source_timestamp_utc": current.isoformat() if current_valid else None,
+        "last_credit_source_timestamp_utc": last_credit.isoformat() if last_credit else None,
+        "credit_due": credit_due,
+        "reset_history": not history_valid,
+        "minimum_credit_interval_seconds": 60,
+    }
+
+
+def write_payload(
+    path: Path, payload: dict[str, Any], *, compact: bool = False
+) -> None:
     normalized_payload = standardize_grade_labels(payload)
-    serialized = json.dumps(normalized_payload, ensure_ascii=True, indent=2)
+    serialized = json.dumps(
+        normalized_payload,
+        ensure_ascii=True,
+        indent=None if compact else 2,
+        separators=(",", ":") if compact else None,
+    )
+    write_text_atomic(path, serialized)
+
+
+def write_text_atomic(path: Path, serialized: str) -> None:
+    """Replace one complete control artifact while preserving its permissions."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     try:
         mode = path.stat().st_mode & 0o777
     except OSError:

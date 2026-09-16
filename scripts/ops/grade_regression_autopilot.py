@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -13,16 +14,47 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops import grade_regression_guard
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, eastern_off_hours_window, iso_now, ordered_unique, run_bounded_process_group, write_payload
+    from scripts.ops.long_runtime_common import (
+        PROJECT_ROOT,
+        eastern_off_hours_window,
+        iso_now,
+        load_json,
+        ordered_unique,
+        run_bounded_process_group,
+        write_payload,
+    )
 else:
     from . import grade_regression_guard
-    from .long_runtime_common import PROJECT_ROOT, eastern_off_hours_window, iso_now, ordered_unique, run_bounded_process_group, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT,
+        eastern_off_hours_window,
+        iso_now,
+        load_json,
+        ordered_unique,
+        run_bounded_process_group,
+        write_payload,
+    )
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "grade_regression_autopilot_latest.json"
 PYTHON_BIN = Path(sys.executable)
 Runner = Callable[[list[str], Path, int], dict[str, Any]]
 GuardBuilder = Callable[[Path], dict[str, Any]]
+CLEANUP_RESERVE_SECONDS = 10
+
+
+def _restore_receipt_recovery_needed(project_root: Path) -> bool:
+    from core.storage_router import inspect_storage_path
+    from scripts.ops.state_snapshot_capacity import complete_restore_evidence
+
+    path = project_root / "exports/state_snapshot_drills/latest.json"
+    try:
+        if inspect_storage_path(path)["status"] != "present" or path.stat().st_size > 2 * 1024**2:
+            return True
+        payload = json.loads(path.read_text())
+        return not isinstance(payload, dict) or not complete_restore_evidence(payload)
+    except (OSError, ValueError, TypeError):
+        return True
 
 
 def _parse_json_output(text: str) -> dict[str, Any]:
@@ -37,16 +69,23 @@ def _parse_json_output(text: str) -> dict[str, Any]:
 
 
 def _run(cmd: list[str], project_root: Path, timeout_sec: int) -> dict[str, Any]:
-    result = run_bounded_process_group(cmd, cwd=project_root, timeout_seconds=max(int(timeout_sec), 1))
+    result = run_bounded_process_group(
+        cmd, cwd=project_root, timeout_seconds=max(int(timeout_sec), 1)
+    )
     stdout = str(result.get("stdout") or "")
     stderr = str(result.get("stderr") or "")
     return {
         "cmd": list(cmd),
         "rc": int(result.get("rc", 1)),
         "payload": _parse_json_output(stdout),
-        "stdout_tail": "\n".join(stdout.splitlines()[-12:]),
-        "stderr_tail": "\n".join(stderr.splitlines()[-12:]) or ("timeout" if result.get("timed_out") else ""),
-        "timeout_cleanup": result.get("timeout_cleanup") if isinstance(result.get("timeout_cleanup"), dict) else {},
+        "stdout_tail": "\n".join(stdout.splitlines()[-12:])[-4000:],
+        "stderr_tail": "\n".join(stderr.splitlines()[-12:])[-4000:]
+        or ("timeout" if result.get("timed_out") else ""),
+        "timeout_cleanup": (
+            result.get("timeout_cleanup")
+            if isinstance(result.get("timeout_cleanup"), dict)
+            else {}
+        ),
     }
 
 
@@ -90,14 +129,80 @@ def _repair_plan(project_root: Path, guard_payload: dict[str, Any], *, storage_m
                 "surface": surface,
                 "reason": reason,
                 "cmd": list(cmd),
-                "timeout_sec": int(policy.get("timeout_sec", timeout_sec) or timeout_sec),
+                "timeout_sec": min(
+                    int(policy.get("timeout_sec", timeout_sec) or timeout_sec),
+                    timeout_sec,
+                ),
                 "max_attempts_per_run": int(policy.get("max_attempts_per_run", 1) or 1),
                 "cooldown_minutes": int(policy.get("cooldown_minutes", 0) or 0),
-                "quiet_hours_preferred": bool(policy.get("quiet_hours_preferred", False)),
-                "notification_contract": dict(policy.get("notification_contract") or {}),
+                "quiet_hours_preferred": bool(
+                    policy.get("quiet_hours_preferred", False)
+                ),
+                "notification_contract": dict(
+                    policy.get("notification_contract") or {}
+                ),
             }
         )
 
+    def promotion_dependencies(surface: str, state: str) -> None:
+        add(surface, "refresh_schema_assessment", [str(PYTHON_BIN), str(project_root / "scripts" / "retrain_schema_compatibility_guard.py"), "--json"], 30)
+        for owner in ("walk_forward_validate.py", "walk_forward_promotion_gate.py"):
+            add(surface, state, [str(PYTHON_BIN), str(project_root / "scripts" / owner)], 30)
+        add(
+            surface,
+            state,
+            [
+                str(PYTHON_BIN),
+                str(project_root / "scripts" / "promotion_readiness_summary.py"),
+                "--json",
+            ],
+            30,
+        )
+        add(
+            surface,
+            state,
+            [
+                str(PYTHON_BIN),
+                str(project_root / "scripts" / "promotion_packet_builder.py"),
+                "--json",
+            ],
+            180,
+        )
+        add(
+            surface,
+            state,
+            [
+                str(PYTHON_BIN),
+                str(ops_root / "promotion_autopilot_packet.py"),
+                "--json",
+            ],
+            180,
+        )
+
+    lineage = load_json(project_root / "governance/health/training_lineage_manifest_latest.json")
+    missing_lineage = set(lineage.get("missing_contracts") or [])
+    feature_source = load_json(project_root / "governance/feature_store/latest.json")
+
+    def lineage_inputs(surface: str) -> bool:
+        if not missing_lineage.intersection({"feature_store_lineage", "snapshot_coverage"}) and not (
+            feature_source.get("artifact_refresh_failed") is True
+            or (feature_source and feature_source.get("ok") is False)
+        ):
+            return False
+        if str(os.getenv("RUNTIME_ARTIFACT_REFRESH_ACTIVE", "")).strip().lower() in {"1", "true", "yes", "on"}:
+            return False
+        # Share the producer epoch lock and leave time for its bounded lock wait.
+        add(surface, "refresh_missing_lineage_inputs", [
+            str(PYTHON_BIN), str(ops_root / "runtime_artifact_refresh.py"),
+            "--scope", "lineage-inputs", "--max-run-seconds", "165",
+            "--skip-dashboard", "--out-file",
+            str(project_root / "governance/health/lineage_inputs_refresh_latest.json"),
+            "--json",
+        ], 180)
+        return True
+
+    autonomy_state = ""
+    training_quality_state = ""
     for row in guard_payload.get("surfaces") or []:
         if not isinstance(row, dict):
             continue
@@ -106,11 +211,47 @@ def _repair_plan(project_root: Path, guard_payload: dict[str, Any], *, storage_m
         if state == "ready":
             continue
         if surface == "training_quality":
-            add(surface, state, [str(PYTHON_BIN), str(ops_root / "training_quality_control.py"), "--json"], 180)
+            lineage_inputs(surface)
+            training_quality_state = state
         elif surface == "training_lineage":
-            add(surface, state, [str(PYTHON_BIN), str(ops_root / "training_lineage_manifest.py"), "--json"], 180)
-            add(surface, state, [str(PYTHON_BIN), str(ops_root / "promotion_autopilot_packet.py"), "--json"], 180)
+            inputs_planned = lineage_inputs(surface)
+            if not inputs_planned and "paper_replay_drill" in (lineage.get("missing_contracts") or []):
+                add(
+                    surface,
+                    "missing_paper_replay_evidence",
+                    [
+                        str(PYTHON_BIN),
+                        str(project_root / "scripts/paper_replay_drill.py"),
+                        "--hours",
+                        "336",
+                        "--strict-exit",
+                        "--out-file",
+                        str(
+                            project_root
+                            / "governance/health/paper_replay_training_latest.json"
+                        ),
+                        "--json",
+                    ],
+                    60,
+                )
+            promotion_dependencies(surface, state)
+            add(
+                surface,
+                state,
+                [
+                    str(PYTHON_BIN),
+                    str(ops_root / "training_lineage_manifest.py"),
+                    "--json",
+                ],
+                180,
+            )
         elif surface == "storage_control":
+            if (
+                str(os.getenv("RUNTIME_ARTIFACT_REFRESH_ACTIVE", "")).strip().lower() not in {"1", "true", "yes", "on"}
+                and _restore_receipt_recovery_needed(project_root)
+            ):
+                add(surface, "restore_receipt_missing_or_incomplete", [str(ops_root / "opsctl.sh"), "state-snapshot-drill", "--recover-latest-verified", "--json"], 200)
+            add(surface, state, [str(PYTHON_BIN), str(ops_root / "storage_resilience_control.py"), "--fast", "--json"], 180)
             add(surface, state, [str(PYTHON_BIN), str(ops_root / "ingestion_storage_control.py"), "--json"], 180)
             if str(os.getenv("RUNTIME_ARTIFACT_REFRESH_ACTIVE", "")).strip().lower() not in {"1", "true", "yes", "on"}:
                 add(
@@ -130,17 +271,95 @@ def _repair_plan(project_root: Path, guard_payload: dict[str, Any], *, storage_m
             add(surface, state, [str(PYTHON_BIN), str(ops_root / "security_evidence_autofix.py"), "--json"], 300)
             add(surface, state, [str(PYTHON_BIN), str(project_root / "scripts" / "security_hardening_audit.py")], 180)
         elif surface == "incident_closeout":
-            add(surface, state, [str(PYTHON_BIN), str(ops_root / "incident_timeline.py"), "--json"], 180)
-            add(surface, state, [str(PYTHON_BIN), str(ops_root / "incident_review_packet.py"), "--json"], 180)
-            add(surface, state, [str(PYTHON_BIN), str(ops_root / "incident_closeout_autopilot.py"), "--json"], 180)
+            add(
+                surface,
+                state,
+                [str(PYTHON_BIN), str(ops_root / "incident_timeline.py"), "--json"],
+                180,
+            )
+            add(
+                surface,
+                state,
+                [
+                    str(PYTHON_BIN),
+                    str(ops_root / "data_plane_recovery_controller.py"),
+                    "--json",
+                ],
+                30,
+            )
+            add(
+                surface,
+                state,
+                [
+                    str(PYTHON_BIN),
+                    str(ops_root / "incident_review_packet.py"),
+                    "--no-render-pdf",
+                    "--json",
+                ],
+                180,
+            )
+            add(
+                surface,
+                state,
+                [
+                    str(PYTHON_BIN),
+                    str(ops_root / "incident_closeout_autopilot.py"),
+                    "--json",
+                ],
+                180,
+            )
         elif surface == "live_canary":
             add(surface, state, [str(PYTHON_BIN), str(ops_root / "live_canary_control.py"), "--json"], 180)
-            add(surface, state, [str(PYTHON_BIN), str(project_root / "scripts" / "live_readiness_smoke.py"), "--json"], 180)
+            add(
+                surface,
+                state,
+                [
+                    str(PYTHON_BIN),
+                    str(project_root / "scripts" / "live_readiness_smoke.py"),
+                    "--json",
+                ],
+                180,
+            )
         elif surface == "autonomy_control":
-            add(surface, state, [str(PYTHON_BIN), str(ops_root / "runtime_throttle_control.py"), "--json"], 180)
-            add(surface, state, [str(PYTHON_BIN), str(ops_root / "autonomy_control_plane.py"), "--json"], 180)
+            autonomy_state = state
         elif surface == "promotion_autopilot":
-            add(surface, state, [str(PYTHON_BIN), str(ops_root / "promotion_autopilot_packet.py"), "--json"], 180)
+            promotion_dependencies(surface, state)
+
+    if training_quality_state:
+        add("training_quality", training_quality_state,
+            [str(PYTHON_BIN), str(ops_root / "training_quality_control.py"), "--json"], 180)
+
+    if autonomy_state:
+        # Assess current staging without staging candidates or launching training.
+        add(
+            "autonomy_control",
+            autonomy_state,
+            [
+                str(PYTHON_BIN),
+                str(ops_root / "coverage_gap_closer.py"),
+                "--skip-refresh",
+                "--json",
+            ],
+            30,
+        )
+        add(
+            "autonomy_control",
+            autonomy_state,
+            [str(PYTHON_BIN), str(ops_root / "incident_timeline.py"), "--json"],
+            30,
+        )
+        add(
+            "autonomy_control",
+            autonomy_state,
+            [str(PYTHON_BIN), str(ops_root / "runtime_throttle_control.py"), "--json"],
+            180,
+        )
+        add(
+            "autonomy_control",
+            autonomy_state,
+            [str(PYTHON_BIN), str(ops_root / "autonomy_control_plane.py"), "--json"],
+            180,
+        )
 
     return plan
 
@@ -155,16 +374,24 @@ def build_payload(
     runner: Runner | None = None,
     guard_builder: GuardBuilder | None = None,
 ) -> dict[str, Any]:
+    started = time.monotonic()
+    deadline = started + max(int(timeout_sec), 1)
     run_step = runner or _run
     build_guard = guard_builder or grade_regression_guard.build_payload
 
     initial_guard = build_guard(project_root)
-    repair_plan = _repair_plan(project_root, initial_guard, storage_max_cycles=storage_max_cycles)
+    repair_plan = _repair_plan(
+        project_root, initial_guard, storage_max_cycles=storage_max_cycles
+    )
     quiet_hours = eastern_off_hours_window()
     attempts: list[dict[str, Any]] = []
     if apply:
         for step in repair_plan:
-            if respect_quiet_hours and bool(step.get("quiet_hours_preferred", False)) and not bool(quiet_hours.get("active", False)):
+            if (
+                respect_quiet_hours
+                and bool(step.get("quiet_hours_preferred", False))
+                and not bool(quiet_hours.get("active", False))
+            ):
                 attempts.append(
                     {
                         "surface": step["surface"],
@@ -180,20 +407,61 @@ def build_payload(
                     }
                 )
                 continue
-            result = run_step(list(step["cmd"]), project_root, int(step.get("timeout_sec", timeout_sec)))
+            remaining = int(deadline - time.monotonic() - CLEANUP_RESERVE_SECONDS)
+            if remaining < 1:
+                attempts.append(
+                    {
+                        "surface": step["surface"],
+                        "reason": step["reason"],
+                        "cmd": list(step["cmd"]),
+                        "rc": 75,
+                        "deferred": True,
+                        "defer_reason": "repair_cycle_deadline",
+                        "payload_summary": {},
+                        "stdout_tail": "",
+                        "stderr_tail": "shared repair budget reserved for cleanup and final assessment",
+                    }
+                )
+                continue
+            step_timeout = min(int(step.get("timeout_sec", timeout_sec)), remaining)
+            if "lineage-inputs" in step["cmd"] and step_timeout < 180:
+                attempts.append({
+                    "surface": step["surface"], "reason": step["reason"],
+                    "cmd": list(step["cmd"]), "rc": 75, "deferred": True,
+                    "defer_reason": "insufficient_complete_lineage_refresh_window",
+                    "payload_summary": {}, "stdout_tail": "", "stderr_tail": "",
+                })
+                continue
+            result = run_step(list(step["cmd"]), project_root, step_timeout)
+            owner_payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+            owner_deferred = owner_payload.get("overall_status") == "deferred"
             attempts.append(
                 {
                     "surface": step["surface"],
                     "reason": step["reason"],
                     "cmd": list(result.get("cmd") or []),
                     "rc": int(result.get("rc", 1)),
-                    "deferred": False,
-                    "quiet_hours_preferred": bool(step.get("quiet_hours_preferred", False)),
-                    "notification_contract": dict(step.get("notification_contract") or {}),
+                    "timeout_sec": step_timeout,
+                    "timeout_cleanup": dict(result.get("timeout_cleanup") or {}),
+                    "deferred": owner_deferred,
+                    "defer_reason": str(owner_payload.get("reason") or "owner_deferred") if owner_deferred else "",
+                    "quiet_hours_preferred": bool(
+                        step.get("quiet_hours_preferred", False)
+                    ),
+                    "notification_contract": dict(
+                        step.get("notification_contract") or {}
+                    ),
                     "payload_summary": {
                         key: (result.get("payload") or {}).get(key)
-                        for key in ("overall_status", "ok", "training_quality_score", "lineage_score", "autonomy_score")
-                        if isinstance(result.get("payload"), dict) and key in (result.get("payload") or {})
+                        for key in (
+                            "overall_status",
+                            "ok",
+                            "training_quality_score",
+                            "lineage_score",
+                            "autonomy_score",
+                        )
+                        if isinstance(result.get("payload"), dict)
+                        and key in (result.get("payload") or {})
                     },
                     "stdout_tail": str(result.get("stdout_tail") or ""),
                     "stderr_tail": str(result.get("stderr_tail") or ""),
@@ -205,12 +473,16 @@ def build_payload(
     final_status = str(final_guard.get("overall_status") or "")
     recommended_actions = ordered_unique(
         [
-            "keep the grade regression guard running on a short interval so recoverable drift is republished before it becomes a hard blocker"
-            if repair_plan
-            else "",
-            "leave the upgraded regression autopilot in apply mode so storage, training, incident, and canary surfaces keep their repair loop"
-            if apply and repair_plan
-            else "",
+            (
+                "keep the grade regression guard running on a short interval so recoverable drift is republished before it becomes a hard blocker"
+                if repair_plan
+                else ""
+            ),
+            (
+                "leave the upgraded regression autopilot in apply mode so storage, training, incident, and canary surfaces keep their repair loop"
+                if apply and repair_plan
+                else ""
+            ),
         ]
         + [str(item or "") for item in (final_guard.get("recommended_actions") or [])]
     )
@@ -221,6 +493,9 @@ def build_payload(
         "ok": final_status == "ready",
         "overall_status": final_status or initial_status,
         "apply": bool(apply),
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "work_deadline_seconds": max(int(timeout_sec), 1),
+        "cleanup_reserve_seconds": CLEANUP_RESERVE_SECONDS,
         "respect_quiet_hours": bool(respect_quiet_hours),
         "quiet_hours_window": quiet_hours,
         "repair_step_count": len(repair_plan),
@@ -245,6 +520,10 @@ def build_payload(
             "tenant_notification_contract_passthrough": True,
             "healthy_cycle_is_noop": True,
             "full_graph_refresh_forbidden": True,
+            "shared_repair_work_deadline": True,
+            "routine_pdf_rendering": False,
+            "restore_receipt_recovery_preserves_original_producer_time": True,
+            "restore_receipt_recovery_uses_native_admission": True,
             "evidence_accrual_owner": "readiness_evidence_refresh:accrual",
             "heavy_surfaces": [
                 str(step.get("surface") or "")

@@ -94,6 +94,231 @@
     "live_may_not_create_reverse_or_enlarge_intent": true,
     "policy": "The strategy thesis, component model, sleeve family, evidence floors, and stage results are identical across paper and live. Live adds promotion, account, canary, and execution firewalls and never receives looser strategy evidence rules."
   },
+  "research_priority_contract": {
+    "contract_id": "strategy_family_research_priorities_v1",
+    "mode": "research_definition_only",
+    "authority": {
+      "changes_signal": false,
+      "changes_action": false,
+      "changes_position_size": false,
+      "allocates_capital": false,
+      "submits_paper_order": false,
+      "submits_live_order": false,
+      "promotes_strategy": false,
+      "accepts_candidate_change": false,
+      "changes_worker_budget": false
+    },
+    "recommended_concurrent_family_reviews": 3,
+    "bot_mandate": {
+      "one_primary_family": true,
+      "required_fields": [
+        "hypothesis_id",
+        "candidate_id",
+        "primary_family_id",
+        "market_universe",
+        "decision_horizon",
+        "entry_and_exit_specification",
+        "abstention_conditions",
+        "cost_model",
+        "risk_contract_reference",
+        "point_in_time_data_lineage",
+        "untouched_evaluation_window",
+        "benchmark",
+        "experiment_trial_id"
+      ],
+      "shared_context_allowed": true,
+      "variants_count_as_separate_trials": true,
+      "priority_is_profitability_evidence": false,
+      "policy": "A bot owns one testable hypothesis within one family. Shared inputs do not create independent alpha. Existing admission owners decide whether any work runs."
+    },
+    "required_evidence": [
+      "candidate_bound_point_in_time_sources",
+      "preregistered_hypothesis_and_parameter_ranges",
+      "purged_walk_forward_with_embargo_for_overlapping_labels",
+      "untouched_holdout_with_recorded_trial_count",
+      "post_cost_returns_and_uncertainty",
+      "drawdown_turnover_liquidity_and_capacity",
+      "regime_stability_and_correlated_loss_analysis",
+      "incremental_contribution_against_existing_bots",
+      "broker_faithful_forward_paper_evidence"
+    ],
+    "priority_families": [
+      {
+        "family_id": "swing_directional",
+        "rank": 1,
+        "display_name": "Swing Trend",
+        "hypothesis": "Persistent multi-day repricing may survive conservative transaction costs in liquid instruments.",
+        "market_universe": "Existing approved liquid equities, ETFs or spot instruments; no new account capability is inferred.",
+        "signal_specification": "Preregister trend horizon and confirmation rules; compare a simple trend baseline with each additional filter.",
+        "inputs_required": [
+          "point_in_time_adjusted_prices",
+          "corporate_actions",
+          "liquidity_and_spread_observations",
+          "regime_context"
+        ],
+        "exit_and_invalidation": "Preregister trend failure, time horizon and risk exits; invalidate when persistence disappears out of sample.",
+        "abstain_when": [
+          "stale_or_discontinuous_prices",
+          "corporate_action_unresolved",
+          "costs_exceed_conservative_edge",
+          "unsupported_regime"
+        ],
+        "benchmarks": [
+          "matched_universe_buy_and_hold",
+          "simple_volatility_scaled_trend",
+          "existing_directional_sleeves"
+        ],
+        "cost_stress": "Include spreads, slippage, turnover and financing where applicable; stress delayed fills and wider spreads.",
+        "evaluation_metric": "Incremental post-cost risk-adjusted return and drawdown versus matched baselines.",
+        "failure_criteria": [
+          "nonpositive_out_of_sample_net_edge",
+          "concentrated_profit_in_one_period",
+          "no_incremental_value_over_existing_trend_bots"
+        ]
+      },
+      {
+        "family_id": "intraday_momentum",
+        "rank": 2,
+        "display_name": "Intraday Momentum",
+        "hypothesis": "Liquid session breakouts and continuation may persist long enough to overcome realistic execution costs.",
+        "market_universe": "Existing broker-supported liquid instruments during their configured sessions; no latency advantage is assumed.",
+        "signal_specification": "Preregister breakout formation window, volume confirmation and entry timing; separate opening and later-session trials.",
+        "inputs_required": [
+          "timestamped_quotes_and_trades",
+          "exchange_session_calendar",
+          "volume_context",
+          "observed_broker_latency_and_fill_costs"
+        ],
+        "exit_and_invalidation": "Preregister failed breakout, time stop and session exit; reject results dependent on unavailable fill timing.",
+        "abstain_when": [
+          "stale_quotes",
+          "wide_spread_or_low_depth",
+          "auction_or_halt_without_supported_model",
+          "observed_latency_exceeds_strategy_budget"
+        ],
+        "benchmarks": [
+          "simple_session_breakout",
+          "matched_session_passive_exposure",
+          "existing_intraday_sleeves"
+        ],
+        "cost_stress": "Model partial fills, adverse selection, delayed entry, fees and spread widening; do not use midpoint fills as executable truth.",
+        "evaluation_metric": "Post-cost expectancy per independent session with turnover, fill fidelity and tail-loss measurements.",
+        "failure_criteria": [
+          "edge_disappears_under_measured_costs",
+          "profit_depends_on_unavailable_latency",
+          "losses_cluster_with_existing_momentum"
+        ]
+      },
+      {
+        "family_id": "relative_value",
+        "rank": 3,
+        "display_name": "Relative Value",
+        "hypothesis": "Stable, economically related spreads may revert after accounting for both legs and hedge risk.",
+        "market_universe": "Approved liquid pairs or baskets only where every leg, borrow requirement and account capability is supported.",
+        "signal_specification": "Fit hedge relationships on training data only; freeze residual entry and convergence rules before evaluation.",
+        "inputs_required": [
+          "synchronized_leg_prices",
+          "point_in_time_universe_membership",
+          "hedge_and_factor_exposures",
+          "borrow_and_financing_when_required"
+        ],
+        "exit_and_invalidation": "Preregister convergence, time and spread-break exits; invalidate unstable hedge relationships.",
+        "abstain_when": [
+          "unsynchronized_legs",
+          "borrow_or_second_leg_unavailable",
+          "unstable_spread_relationship",
+          "hedge_exposure_outside_existing_limits"
+        ],
+        "benchmarks": [
+          "unhedged_leg_returns",
+          "simple_fixed_spread_baseline",
+          "factor_neutral_existing_sleeves"
+        ],
+        "cost_stress": "Charge both legs, borrowing, financing, partial-leg fills and hedge slippage; stress legging failures.",
+        "evaluation_metric": "Residual post-cost return, hedge neutrality and drawdown after common-factor exposure.",
+        "failure_criteria": [
+          "relationship_breaks_out_of_sample",
+          "apparent_alpha_explained_by_market_beta",
+          "net_edge_nonpositive_after_both_leg_costs"
+        ]
+      },
+      {
+        "family_id": "macro_rates_fx",
+        "rank": 4,
+        "display_name": "Macro And Sector Rotation",
+        "hypothesis": "Point-in-time macro and cross-asset regime information may improve medium-horizon exposure selection.",
+        "market_universe": "Existing approved liquid macro or sector exposures; derivatives and FX remain capability-gated.",
+        "signal_specification": "Preregister release-vintage features and ranking/rebalance rules; isolate macro timing from simple momentum exposure.",
+        "inputs_required": [
+          "original_release_timestamps_and_vintages",
+          "cross_asset_prices",
+          "session_and_release_calendars",
+          "exposure_and_roll_costs"
+        ],
+        "exit_and_invalidation": "Rebalance only on preregistered rules; invalidate stale macro context and unstable regime relationships.",
+        "abstain_when": [
+          "release_vintage_missing",
+          "future_or_revised_data_leakage",
+          "unsupported_exposure_or_instrument",
+          "liquidity_dislocation"
+        ],
+        "benchmarks": [
+          "equal_weight_exposure_basket",
+          "simple_price_only_rotation",
+          "matched_volatility_passive_portfolio"
+        ],
+        "cost_stress": "Include rebalance, roll, FX and financing costs where applicable; stress delayed response to releases.",
+        "evaluation_metric": "Incremental post-cost return beyond price-only timing with regime concentration and drawdown controls.",
+        "failure_criteria": [
+          "performance_requires_revised_data",
+          "no_gain_over_price_only_baseline",
+          "returns_concentrated_in_one_macro_episode"
+        ]
+      },
+      {
+        "family_id": "long_horizon_income",
+        "rank": 5,
+        "display_name": "Quality And Income",
+        "hypothesis": "Point-in-time quality, valuation and durable income selection may improve long-horizon total return.",
+        "market_universe": "Existing approved liquid income or quality exposures; distributions alone are not profitability.",
+        "signal_specification": "Preregister quality and valuation screens, portfolio construction and rebalance cadence before evaluation.",
+        "inputs_required": [
+          "point_in_time_fundamentals",
+          "dividends_and_corporate_actions",
+          "delisted_and_historical_membership_data",
+          "total_return_prices"
+        ],
+        "exit_and_invalidation": "Preregister deterioration, valuation and rebalance exits; test dividend cuts and distressed firms explicitly.",
+        "abstain_when": [
+          "fundamental_publication_time_unknown",
+          "corporate_actions_unresolved",
+          "survivorship_bias_uncontrolled",
+          "insufficient_liquidity"
+        ],
+        "benchmarks": [
+          "matched_total_return_index",
+          "simple_quality_or_income_screen",
+          "equal_weight_eligible_universe"
+        ],
+        "cost_stress": "Include turnover, spreads, taxes only when an applicable account model is available, and distribution adjustments.",
+        "evaluation_metric": "Post-cost total return and drawdown across long independent windows, not dividend yield or short-run accuracy.",
+        "failure_criteria": [
+          "yield_masks_capital_losses",
+          "edge_disappears_with_point_in_time_universe",
+          "insufficient_independent_long_horizon_evidence"
+        ]
+      }
+    ],
+    "deferred_family_ids": [
+      "event_driven",
+      "volatility_derivatives",
+      "commodity_inflation",
+      "digital_asset_basis",
+      "tail_hedge"
+    ],
+    "deferred_policy": "Research catalog only; derivatives and cross-venue work require verified capabilities and data. Tail hedges are judged on portfolio protection net of cost, not standalone return.",
+    "expansion_gate": "Review three families first, expand to at most five concurrent family reviews only with owner admission and independent post-cost evidence. Catalog rank cannot start workers, allocate capital, or grant promotion."
+  },
   "strategy_definition_contract": {
     "required_fields": [
       "decision_horizon",

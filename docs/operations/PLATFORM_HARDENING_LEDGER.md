@@ -33,6 +33,77 @@ or deletion authority. Use the existing source-of-truth owners.
 
 ## Verification
 
+### September 14 Analytical Mirror Integrity
+
+The existing DuckDB mirror previously committed table deletion/insertion
+independently and read its two source tables without a shared SQLite snapshot.
+It now closes a single read-only source transaction and commits both mirror
+tables together. Tests cover source-write interleaving, visibility to another
+reader, failure during the second table load, first-load rollback and retry.
+The prior implementation reproduces the two destination-publication failures.
+An isolated temporary mirror built from the actual operational source verified
+26 stream and 2,073 symbol rows. No primary-history rebuild or authoritative
+database migration was run under the current storage pressure. The existing
+coordinator adopts this code on its next admitted refresh.
+Regression ownership: `tests/test_sql_analytics_mirror.py`.
+
+### September 14 Ingestion Verification Recovery
+
+The historical 09:01 UTC daily run retained an ingestion timeout even while the
+current ingestion owner was healthy. Native daily remediation now maps this
+check, and promotion quality consumes strictly newer, typed healthy hot-lane
+evidence with a five-minute producer-time limit. Atomic publication protects
+both ingestion and remediation readers. Unfinished daily runs, missing fields,
+overload, invalid timestamps, stale observations and failed retries cannot
+clear the failure. Historical daily evidence is not rewritten.
+
+Runtime assessment at 14:11 UTC cleared the idle-scope promotion quality check;
+14:12 UTC lineage retained only the paper-replay contract gap. This is not
+candidate promotion or full-platform completion: zero considered candidates,
+insufficient real replay evidence, storage capacity, production restore,
+off-host monitoring and release acceptance remain separate requirements.
+Regression ownership: `tests/test_ingestion_health_evidence.py`, existing
+ingestion, promotion-quality and storage-resilience tests.
+
+### September 11 Operational Repair Follow-Up
+
+- PH-13: Coverage fallback previously read the entire runtime JSONL with a deque
+  and counted historical rows as fresh evidence. The owner now performs bounded
+  reverse reads, rejects oversized/non-object/future rows and invalid indexes,
+  preserves protected storage routes, reports scan limitations, and publishes
+  atomically. Historical inventory is diagnostic only. Regression owner:
+  `tests/test_snapshot_coverage_sentinel.py`.
+- PH-14: The production coordinator's generic 300-second timeout could kill the
+  57-step coherent evidence graph before its first 360-second child completed.
+  The graph now has a shared 1200-second step/retry budget, separate progress
+  receipts, and explicit unfinished evidence. The coordinator allows 1500 seconds
+  including lock wait/cleanup, and 2100 seconds for the configured bounded restore.
+  Tests cover deadline exhaustion, interrupted progress, and retained dependency
+  ordering. Runtime completion must still be measured, not inferred from tests.
+- PH-15: Blocked auth, blocked blackstart, and degraded storage lacked exact
+  dashboard owner actions. Each now routes to its observational owner without
+  changing severity, starting a browser, applying a repair, or granting readiness.
+- PH-16: Memory-efficiency and host-capability observations were stale or missing
+  without a production refresh owner. Both status-only producers now participate
+  in the production cadence. The host probe queries only boundary-checked project
+  and configured archive filesystems, never every mounted volume. Both observations
+  returned ready on September 11; that does not establish strategy qualification.
+- PH-17: The auth supervisor terminated the operator's five-minute browser flow
+  under its generic two-minute stale-helper cutoff. The explicit operator command
+  now marks a bounded session: the callback window (5-600 seconds), 480-second
+  post-refresh cascade, and 60-second cleanup margin. Supervision defers competing
+  auth repair and does not kill the in-flight callback or truth rebuild merely
+  because the token has just become ready. Unmarked/expired helpers retain normal
+  cleanup policy. Tests cover exact owner/flag admission, budget limits, and no
+  kill or competing refresh during operator authorization. Broker truth remains
+  unavailable until current read-only account evidence verifies.
+- A current Schwab `invalid_grant` is an operator reauthorization requirement,
+  not a repairable grade. Full-platform/independent-media recovery, an off-host
+  alert receipt, accepted release identity, and economic qualification remain
+  separate from these code corrections and selected-file recovery.
+
+### September 7 Verification Record
+
 - Final expanded regression suite: **515 passed**, spanning snapshot/DR, refresh,
   platform health, ingestion/storage, broker adapters, rate limiting, promotion,
   live-execution safety, paper performance/profitability, and runtime refresh.
@@ -491,3 +562,52 @@ no drift. The 22:39 regression guard and non-applying autopilot retained two
 blocked and five degraded surfaces, with zero autopilot repair attempts. These
 operational corrections do not clear storage reserves, training freshness,
 production restore, candidate integrity, or trading qualification gates.
+
+## 2026-09-09 Broad Debugging Follow-Up
+
+Implemented fixes:
+
+- OneNumbers now projects large master-control payloads once into its temporary
+  working table. Source rows are unchanged; all consumed fields, counts, and
+  canary matches are preserved and covered by parity tests.
+- The runtime pause owner can give an overdue, verified OneNumbers process
+  bounded progress at low priority. Fresh resource admission, normal memory,
+  bounded CPU/load, no thermal warning, no foreground pause request, and an
+  elapsed runtime below 900 seconds are required. Maintenance admission and
+  scheduler deadlines are unchanged. This does not authorize competing builders.
+- Failed or timed-out process inspection no longer escapes the repair deadline
+  and leaves its owned child running. Unknown builder ownership fails closed.
+- Unavailable MLX optional-attribute probes no longer break CPU plotting or
+  PyTorch imports. Seasonal and news CPU simulation imports no longer require a
+  working GPU; actual MLX model construction still does.
+- System-needs tests now supply the current static contracts. Missing evidence
+  remains a real production blocker. Native integration tests probe required
+  APFS/process visibility before running instead of misreporting unsupported
+  environments as verified behavior.
+
+Verification: `MPLBACKEND=Agg .venv314/bin/python -m pytest -q --maxfail=20`
+completed with **5,369 passed, 33 skipped, and two passing subtests**, with no
+failures or collection errors. After the final non-finite CPU admission check,
+the focused report/admission/repair suite passed **33 tests with one native
+process-inspection skip**. Skips are not hardware verification. `git diff
+--check` passed. Both grade regression commands ran without applying repairs;
+they retained the training-lineage block.
+
+At 2026-09-10 00:10 UTC, live recovery was **not fully clear**:
+
+- OneNumbers still had producer time `2026-09-09T21:39:32.368463+00:00`.
+  The guarded refresh was deferred for host pressure and foreground support
+  pause. The faster builder has test coverage but no completed live benchmark
+  from this follow-up. A fresh lifecycle deferral is not fresh risk evidence.
+- Plumbing still reported `queue_backpressure_blocked`. Soak readiness briefly
+  reported ready, then returned to blocked with ingestion/soak sentinel holds.
+  One ready sample is not sustained soak proof.
+- The training-lineage failure envelope retained missing current-epoch
+  `feature_store_manifest_verified` and `training_label_audit_verified`.
+  Only a successful ordered upstream refresh can clear that dependency hold.
+
+These changes are consumed by the existing system jobs, not a Codex automation.
+No live execution was enabled, candidate source accepted, credential changed,
+or protected-volume maintenance performed. Closeout requires a completed guarded
+risk refresh, sustained queue/soak recovery, and coherent lineage evidence;
+passing code tests alone cannot satisfy those operational prerequisites.

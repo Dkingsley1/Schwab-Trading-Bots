@@ -6,9 +6,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from core.status_label_contract import evidence_label
 
 SCHEMA_VERSION = 3
 ARTIFACT_SPECS = {
@@ -82,16 +88,9 @@ def _artifact(
     )
     payload = _load_json(path)
     present = bool(payload)
-    timestamp = _parse_timestamp(payload.get("timestamp_utc"))
-    timestamp_source = "payload"
-    if timestamp is None and path.exists():
-        try:
-            timestamp = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-            timestamp_source = "mtime"
-        except OSError:
-            timestamp = None
-    age_seconds = max(0.0, (now - timestamp).total_seconds()) if timestamp else None
-    fresh = bool(present and age_seconds is not None and age_seconds <= max_age_seconds)
+    label = evidence_label(payload, scope=path.stem, source=str(path), max_age_seconds=max_age_seconds, now=now)
+    age_seconds = label["age_seconds"]
+    fresh = label["fresh"]
     return {
         "path": str(path),
         "payload": payload,
@@ -100,7 +99,8 @@ def _artifact(
         "state": "fresh" if fresh else ("stale" if present else "missing"),
         "age_seconds": round(age_seconds, 3) if age_seconds is not None else None,
         "max_age_seconds": max_age_seconds,
-        "timestamp_source": timestamp_source if timestamp else "missing",
+        "timestamp_source": label["timestamp_field"] or "missing",
+        "status_label": label,
     }
 
 
@@ -790,15 +790,14 @@ def _throttle_row(
         or paper_policy.get("paper_execution_consumer_paused")
         or runtime_paper_policy.get("pause_paper_execution")
     )
-    paper_allowed = bool(
-        runtime_paper_policy.get(
+    declared_allowed = runtime_paper_policy.get(
             "paper_execution_allowed",
             paper_policy.get(
                 "paper_execution_allowed",
-                measurements.get("paper_execution_allowed", not paper_paused),
+                measurements.get("paper_execution_allowed"),
             ),
         )
-    )
+    paper_allowed = bool(source["fresh"] and declared_allowed is True and not paper_paused)
     policy_reason = str(
         soft_cap.get("reason") or runtime_paper_policy.get("reason") or "none"
     )
@@ -820,7 +819,9 @@ def _throttle_row(
         and bool(soft_cap.get("active"))
         and policy_reason != "none"
     )
-    if memory not in {"normal", "clear", "green"}:
+    if not source["fresh"]:
+        cause = "runtime_evidence_stale_or_missing"
+    elif memory not in {"normal", "clear", "green"}:
         cause = "memory_pressure"
     elif storage.get("managed_bounded_backlog"):
         cause = "bounded_storage_watch"
@@ -861,6 +862,7 @@ def _throttle_row(
         managed_advisory
         or (
             storage.get("managed_bounded_backlog")
+            and source["fresh"]
             and status in {"ready", "advisory"}
             and not paper_paused
         )
@@ -877,7 +879,11 @@ def _throttle_row(
             _as_float(throttle.get("host_saturation_score")), 2
         ),
         "cause": cause,
-        "paper_state": "paused" if paper_paused else "allowed",
+        "paper_state": (
+            "unknown" if not source["fresh"] else "paused" if paper_paused
+            else "allowed" if paper_allowed else "blocked" if declared_allowed is False else "unknown"
+        ),
+        "paper_state_scope": "runtime_policy_not_observed_execution_or_live_authority",
         "paper_allowed": paper_allowed,
         "impact": (
             "paper_paused"

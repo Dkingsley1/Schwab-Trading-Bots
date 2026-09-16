@@ -23,6 +23,9 @@ PYTHON_BIN="$("$PROJECT_ROOT/scripts/ops/runtime_python.sh")"
 GUARD="$PROJECT_ROOT/scripts/ops/maintenance_slot_guard.py"
 SKIP_RC="${MAINTENANCE_SLOT_SKIP_EXIT_CODE:-75}"
 JITTER_MAX_SECONDS="${MAINTENANCE_SLOT_JITTER_MAX_SECONDS:-90}"
+if [[ "$SLOT" == "infrastructure_observe" ]]; then
+  JITTER_MAX_SECONDS="${MAINTENANCE_SLOT_OBSERVER_JITTER_MAX_SECONDS:-5}"
+fi
 if [[ "$SLOT" == "sql_link_writer" ]]; then
   JITTER_MAX_SECONDS="${MAINTENANCE_SLOT_SQL_LINK_WRITER_JITTER_MAX_SECONDS:-0}"
   NICE_LEVEL="${MAINTENANCE_SLOT_NICE_LEVEL:-${SQL_LINK_WRITER_NICE:-${OPS_SQL_WRITER_NICE:-0}}}"
@@ -47,34 +50,44 @@ case "$SLOT" in
 esac
 MAX_RUNTIME_SECONDS="${MAINTENANCE_SLOT_MAX_RUNTIME_SECONDS:-$DEFAULT_MAX_RUNTIME_SECONDS}"
 TIMEOUT_TERM_GRACE_SECONDS="${MAINTENANCE_SLOT_TIMEOUT_TERM_GRACE_SECONDS:-30}"
+STORAGE_RECOVERY_FAST_MODE=0
+STORAGE_RECOVERY_MIN_INTERVAL_SECONDS=""
+case "$SLOT" in
+  storage_backpressure_autopilot)
+    STORAGE_RECOVERY_FAST_MODE="${MAINTENANCE_SLOT_STORAGE_RECOVERY_FAST_MODE:-0}"
+    STORAGE_RECOVERY_MIN_INTERVAL_SECONDS="${MAINTENANCE_SLOT_STORAGE_BACKPRESSURE_AUTOPILOT_MIN_INTERVAL_SECONDS:-}"
+    ;;
+  storage_pressure_clearance)
+    STORAGE_RECOVERY_FAST_MODE="${MAINTENANCE_SLOT_STORAGE_RECOVERY_FAST_MODE:-0}"
+    STORAGE_RECOVERY_MIN_INTERVAL_SECONDS="${MAINTENANCE_SLOT_STORAGE_PRESSURE_CLEARANCE_MIN_INTERVAL_SECONDS:-}"
+    ;;
+esac
 
 if [[ "${MAINTENANCE_SLOT_DISABLE_JITTER:-0}" != "1" ]] && [[ "$JITTER_MAX_SECONDS" == <-> ]] && (( JITTER_MAX_SECONDS > 0 )); then
   sleep $(( RANDOM % (JITTER_MAX_SECONDS + 1) ))
 fi
 
-set +e
-guard_args=(--slot "$SLOT" --begin)
+guard_args=(--slot "$SLOT" --execute --runtime-limit "$MAX_RUNTIME_SECONDS" --terminate-grace "$TIMEOUT_TERM_GRACE_SECONDS")
+guard_args+=(--lease-wait-seconds "${MAINTENANCE_SLOT_LEASE_WAIT_SECONDS:-0}")
 if [[ "${MAINTENANCE_SLOT_ALLOW_DURING_MACRO_EVENT:-0}" == "1" ]]; then
   guard_args+=(--allow-during-macro-event)
 fi
-if [[ "$SLOT" == "strategy_market_fit_infrabot" ]]; then
+if [[ "$SLOT" == "strategy_market_fit_infrabot" || "$SLOT" == "infrastructure_observe" ]]; then
   guard_args+=(--no-defer-outside-quiet-window --no-defer-while-sql-link-active)
 fi
-"$PYTHON_BIN" "$GUARD" "${guard_args[@]}"
-guard_rc=$?
-set -e
-if [[ "$guard_rc" != "0" ]]; then
-  if [[ "$guard_rc" == "$SKIP_RC" ]]; then
-    exit 0
+if [[ "$STORAGE_RECOVERY_FAST_MODE" == "1" ]]; then
+  if [[ "${MAINTENANCE_SLOT_STORAGE_RECOVERY_DEFER_OUTSIDE_QUIET_WINDOW:-1}" == "0" ]]; then
+    guard_args+=(--no-defer-outside-quiet-window)
   fi
-  exit "$guard_rc"
+  if [[ "${MAINTENANCE_SLOT_STORAGE_RECOVERY_DEFER_WHILE_SQL_LINK_ACTIVE:-1}" == "0" ]]; then
+    guard_args+=(--no-defer-while-sql-link-active)
+  else
+    guard_args+=(--defer-while-sql-link-active)
+  fi
+  if [[ -n "$STORAGE_RECOVERY_MIN_INTERVAL_SECONDS" ]]; then
+    guard_args+=(--min-interval-seconds "$STORAGE_RECOVERY_MIN_INTERVAL_SECONDS")
+  fi
 fi
-
-cleanup() {
-  "$PYTHON_BIN" "$GUARD" --slot "$SLOT" --end >/dev/null 2>&1 || true
-}
-trap cleanup EXIT INT TERM
-
 cmd_prefix=()
 if [[ "$BACKGROUND_POLICY" == "1" ]] && command -v taskpolicy >/dev/null 2>&1; then
   cmd_prefix=(taskpolicy -b nice -n "$NICE_LEVEL")
@@ -82,44 +95,11 @@ else
   cmd_prefix=(nice -n "$NICE_LEVEL")
 fi
 
-if [[ "$MAX_RUNTIME_SECONDS" == <-> ]] && (( MAX_RUNTIME_SECONDS > 0 )); then
-  set +e
-  "${cmd_prefix[@]}" "$@" &
-  child_pid=$!
-  set -e
-  start_seconds=$SECONDS
-  while kill -0 "$child_pid" >/dev/null 2>&1; do
-    if (( SECONDS - start_seconds >= MAX_RUNTIME_SECONDS )); then
-      echo "maintenance_slot_timeout slot=$SLOT pid=$child_pid max_runtime_seconds=$MAX_RUNTIME_SECONDS" >&2
-      kill -TERM "$child_pid" >/dev/null 2>&1 || true
-      grace_start=$SECONDS
-      while kill -0 "$child_pid" >/dev/null 2>&1; do
-        if (( SECONDS - grace_start >= TIMEOUT_TERM_GRACE_SECONDS )); then
-          echo "maintenance_slot_timeout_force_kill slot=$SLOT pid=$child_pid" >&2
-          kill -KILL "$child_pid" >/dev/null 2>&1 || true
-          sleep 1
-          if kill -0 "$child_pid" >/dev/null 2>&1; then
-            echo "maintenance_slot_timeout_uninterruptible slot=$SLOT pid=$child_pid" >&2
-            exit 124
-          fi
-          break
-        fi
-        sleep 1
-      done
-      if ! kill -0 "$child_pid" >/dev/null 2>&1; then
-        set +e
-        wait "$child_pid" >/dev/null 2>&1
-        set -e
-      fi
-      exit 124
-    fi
-    sleep 1
-  done
-  set +e
-  wait "$child_pid"
-  rc=$?
-  set -e
-  exit "$rc"
+set +e
+"$PYTHON_BIN" "$GUARD" "${guard_args[@]}" --command "${cmd_prefix[@]}" "$@"
+rc=$?
+set -e
+if [[ "$rc" == "$SKIP_RC" ]]; then
+  exit 0
 fi
-
-"${cmd_prefix[@]}" "$@"
+exit "$rc"

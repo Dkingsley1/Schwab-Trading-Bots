@@ -50,3 +50,45 @@ def test_disabled_mlx_is_quarantined_without_native_retry() -> None:
         "quant_mx_is_none": True,
         "error_type": "MLXUnavailableError",
     }
+
+
+def test_disabled_mlx_does_not_break_cpu_plotting_or_module_introspection():
+    code = f"""
+import sys
+sys.path.insert(0, {str(PROJECT_ROOT)!r})
+from core.mlx_runtime_guard import require_mlx, MLXUnavailableError
+sys.path.insert(0, {str(PROJECT_ROOT / 'core')!r})
+from core import brain_refinery_v10_seasonal, brain_refinery_v12_news_shocks
+assert brain_refinery_v10_seasonal.simulate_seasonal(0).shape == (0,)
+for bot in (brain_refinery_v10_seasonal, brain_refinery_v12_news_shocks):
+    try:
+        bot.TradingBrain(5)
+    except MLXUnavailableError:
+        pass
+    else:
+        raise AssertionError('GPU model construction was not rejected')
+module = sys.modules['mlx.core']
+assert getattr(module, '__file__', None) is None
+assert not hasattr(module, 'array')
+try:
+    require_mlx()
+except MLXUnavailableError:
+    pass
+else:
+    raise AssertionError('GPU use was not rejected')
+import matplotlib
+matplotlib.use('Agg')
+from matplotlib import pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1], [0, 1])
+fig.canvas.draw()
+plt.close(fig)
+import torch
+assert torch.tensor([1, 2]).sum().item() == 3
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", code], cwd=PROJECT_ROOT,
+        env={**os.environ, "BOT_MLX_DISABLE": "1", "MPLBACKEND": "Agg"},
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr

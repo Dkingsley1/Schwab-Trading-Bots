@@ -97,6 +97,11 @@ if ! guard_output="$(refresh_guard_output)"; then
   fi
 fi
 
+export ONE_NUMBERS_BOUNDED_RISK_REFRESH=1
+if (( RISK_CRITICAL_NICE < 15 )); then
+  RISK_CRITICAL_NICE=15
+fi
+
 set +e
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/maintenance_slot_guard.py" --slot one_numbers_refresh --begin
 guard_rc=$?
@@ -113,11 +118,11 @@ fi
 if (( summary_age_seconds >= ${target_interval:-300} || auth_epoch_refresh_due == 1 )); then
   if ps -axo command | grep -q "[b]uild_one_numbers_report.py"; then
     echo "one_numbers_refresh skip refresh_already_running session_open=$session_open"
-  elif (( critical_refresh == 1 )); then
-    /usr/bin/nice -n "$RISK_CRITICAL_NICE" "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py"
-    report_refreshed=1
   else
-    "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py"
+    "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/run_scheduled_lifecycle_job.py" \
+      --job-id one_numbers_risk_refresh --artifact "$SUMMARY_PATH" \
+      --schedule-interval-seconds "$target_interval" --deadline-seconds 900 -- \
+      /usr/bin/nice -n "$RISK_CRITICAL_NICE" "$PYTHON_BIN" "$PROJECT_ROOT/scripts/build_one_numbers_report.py"
     report_refreshed=1
   fi
 else

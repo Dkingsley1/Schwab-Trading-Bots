@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
 from unittest import mock
+from types import SimpleNamespace
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "sql_hot_retention.py"
@@ -58,7 +59,13 @@ def _run_main(module, argv: list[str]) -> tuple[int, dict]:
     buf = StringIO()
     with tempfile.TemporaryDirectory() as td:
         missing_override = Path(td) / "missing_swap_override.env"
-        with mock.patch.object(module, "SWAP_OVERRIDE_PATH", missing_override):
+        with mock.patch.object(
+            module, "SWAP_OVERRIDE_PATH", missing_override
+        ), mock.patch.object(
+            module.shutil,
+            "disk_usage",
+            return_value=SimpleNamespace(free=512 * 1024**3),
+        ):
             with mock.patch.object(sys, "argv", argv):
                 with redirect_stdout(buf):
                     rc = module.main()
@@ -66,6 +73,60 @@ def _run_main(module, argv: list[str]) -> tuple[int, dict]:
 
 
 class SqlHotRetentionTests(unittest.TestCase):
+
+    def test_conflicting_versions_are_both_retained_with_explicit_opt_in(self):
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            hot, archive = Path(td) / "hot.sqlite3", Path(td) / "archive.sqlite3"
+            for path in (hot, archive):
+                _init_db(path)
+            _insert_rows(hot, [(1, "2000-01-01T00:00:00+00:00", "new", 1)])
+            _insert_rows(archive, [(1, "2000-01-01T00:00:00+00:00", "old", 1)])
+            args = ["retention", "--db", str(hot), "--archive-db", str(archive), "--preserve-conflicting-versions", "--json"]
+            rc, payload = _run_main(module, args)
+            self.assertEqual(rc, 0)
+            partition = Path(payload["preserved_conflict_partitions"][0])
+            self.assertEqual(_count_rows(hot), 0)
+            with sqlite3.connect(archive) as conn:
+                self.assertEqual(conn.execute("SELECT source_rel FROM jsonl_records").fetchone()[0], "old")
+            with sqlite3.connect(partition) as conn:
+                self.assertEqual(conn.execute("SELECT source_rel FROM jsonl_records").fetchone()[0], "new")
+            _insert_rows(hot, [(1, "2000-01-01T00:00:00+00:00", "new", 1)])
+            _, repeated = _run_main(module, args)
+            self.assertEqual(repeated["preserved_conflict_partitions"], [str(partition)])
+            self.assertEqual(_count_rows(partition), 1)
+
+    def test_failed_version_verification_preserves_hot_and_canonical_rows(self):
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            hot, archive = Path(td) / "hot.sqlite3", Path(td) / "archive.sqlite3"
+            for path in (hot, archive):
+                _init_db(path)
+            _insert_rows(hot, [(1, "2000-01-01T00:00:00+00:00", "new", 1)])
+            _insert_rows(archive, [(1, "2000-01-01T00:00:00+00:00", "old", 1)])
+            with mock.patch.object(module, "_preserve_conflicting_archive_version", side_effect=RuntimeError("verification_failed")):
+                with self.assertRaisesRegex(RuntimeError, "verification_failed"):
+                    _run_main(module, ["retention", "--db", str(hot), "--archive-db", str(archive), "--preserve-conflicting-versions", "--json"])
+            self.assertEqual(_count_rows(hot), 1)
+            self.assertEqual(_count_rows(archive), 1)
+
+    def test_conflicting_versions_are_not_generically_age_pruned(self):
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            archive = root / ("jsonl_link_archive_2000_01_01_versions_" + "a" * 64 + ".sqlite3")
+            _init_db(archive)
+            _insert_rows(archive, [(1, "2000-01-01T00:00:00+00:00", "source", 1)])
+            before = archive.read_bytes()
+            with mock.patch.object(module, "_connect", side_effect=AssertionError("must preserve version partition")):
+                result = module._prune_archive_storage(
+                    archive_db=root / "unused.sqlite3", archive_root=root,
+                    archive_retention_days=1, archive_prune_vacuum=True,
+                    cold_export_root=None, cold_export_format="parquet",
+                    cold_export_batch_size=1000, cold_export_compression="zstd",
+                )
+            self.assertEqual(result["protected_version_partitions"], [str(archive)])
+            self.assertEqual(archive.read_bytes(), before)
 
     def test_noop_archive_retention_never_requests_writable_connection(self):
         module = _load_module()

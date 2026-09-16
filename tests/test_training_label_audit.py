@@ -1,5 +1,6 @@
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -12,7 +13,21 @@ import scripts.training_label_audit as audit
 
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent.name == "training_diagnostics":
+        payload = {"timestamp_utc": datetime.now(timezone.utc).isoformat(), **payload}
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def test_rewriting_stale_diagnostic_does_not_refresh_its_evidence(tmp_path):
+    bot_id = "brain_refinery_v1"
+    _write_json(tmp_path / f"{bot_id}_latest.json", {
+        "timestamp_utc": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(),
+        "sample_count": 1000,
+    })
+    row = audit._audit_row({"bot_id": bot_id, "active": True}, tmp_path, max_diagnostic_age_hours=72)
+    assert not row["diagnostic_fresh"]
+    assert row["diagnostic_age_hours"] >= 120
+    assert row["recommendation"] == "refresh_training_diagnostics"
 
 
 def test_build_label_audit_payload_surfaces_filter_and_abstention_actions(tmp_path: Path) -> None:

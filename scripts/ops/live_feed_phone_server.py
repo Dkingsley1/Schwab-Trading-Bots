@@ -18,6 +18,11 @@ from urllib.parse import parse_qs, urlparse
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.ops.crypto_workspace import handle_request as handle_crypto_request
+
 LIVE_FEED_SCRIPT = PROJECT_ROOT / "scripts" / "ops" / "live_feed_tail.sh"
 RUNTIME_DASHBOARD = PROJECT_ROOT / "governance" / "health" / "runtime_gate_dashboard_latest.json"
 HEALTH_GATES = PROJECT_ROOT / "governance" / "health" / "health_gates_latest.json"
@@ -138,6 +143,7 @@ HTML_PAGE = """<!doctype html>
       </div>
       <div class="toolbar">
         <button id="refreshBtn" type="button">Reconnect</button>
+        <a class="reportlink" href="/crypto">Crypto</a>
         <a id="reportLink" class="reportlink" href="/reports/latest-system-update.pdf" target="_blank" rel="noopener">Open PDF</a>
         <input id="tokenInput" type="password" placeholder="feed token" autocomplete="off" autocapitalize="none" spellcheck="false" />
         <button id="tokenBtn" type="button">Use Token</button>
@@ -919,6 +925,8 @@ class _PhoneMirrorHandler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self) -> None:
+        if handle_crypto_request(self, PROJECT_ROOT):
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/healthz":
             self._write_json(HTTPStatus.OK, {"ok": True, "timestamp_utc": _now_utc_iso(), "pid": os.getpid()})
@@ -1099,7 +1107,13 @@ class _PhoneMirrorHandler(BaseHTTPRequestHandler):
 
         self._write_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
 
+    def do_POST(self) -> None:
+        if not handle_crypto_request(self, PROJECT_ROOT, post=True):
+            self._write_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "operation_not_available"})
+
     def log_message(self, fmt: str, *args: Any) -> None:
+        if urlparse(self.path).path.startswith(("/crypto", "/api/crypto/")):
+            return
         sys.stdout.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), fmt % args))
 
 

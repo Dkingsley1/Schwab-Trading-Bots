@@ -1522,7 +1522,9 @@ def _resolved_restart_storms(
                 row.get("runtime_pause_reason") or "runtime_paper_execution_paused"
             )
         elif sql_writer_idle_complete:
-            storm["resolution_reason"] = "sql_writer_on_demand_idle_complete"
+            storm["resolution_reason"] = str(
+                row.get("process_live_reason") or "sql_writer_on_demand_idle_complete"
+            )
         elif sql_writer_recovered:
             storm["resolution_reason"] = "sql_writer_active_progress_recovered"
         recent.append(storm)
@@ -1578,6 +1580,74 @@ def _sql_writer_restart_hold(safety_pause: Dict[str, Any]) -> Dict[str, Any]:
         "writer_ready": False,
         "policy": "respect_writer_owner_admission_without_forgiving_restart_debt_or_certifying_recovery",
     }
+
+
+def _sql_writer_scheduled_wait(progress: Dict[str, Any]) -> Dict[str, Any]:
+    lifecycle = _load_json_payload(HEALTH_DIR / "sql_link_service_latest.json").get(
+        "job_lifecycle"
+    )
+    if not isinstance(lifecycle, dict):
+        return {"ok": False, "reason": "scheduled_writer_receipt_missing"}
+    try:
+        cadence = lifecycle["schedule_interval_seconds"]
+        if type(cadence) not in {int, float} or not 0 < cadence <= 120:
+            raise ValueError("invalid_cadence")
+        now = datetime.now(timezone.utc)
+        stamps = [
+            datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            for value in (
+                progress["timestamp_utc"],
+                lifecycle["started_utc"],
+                lifecycle["completed_utc"],
+            )
+        ]
+        if any(stamp.tzinfo is None for stamp in stamps):
+            raise ValueError("naive_timestamp")
+        progress_stamp, started, completed = stamps
+        grace = 2 * cadence + 30
+        fresh = (
+            0 <= (now - progress_stamp).total_seconds() <= grace
+            and 0 <= (now - completed).total_seconds() <= grace
+        )
+        valid = bool(
+            fresh
+            and started <= completed <= now
+            and lifecycle.get("source") == "scheduled_lifecycle_runner"
+            and lifecycle.get("job_id") == "sql_link_writer"
+            and lifecycle.get("scheduled") is True
+            and lifecycle.get("completed") is True
+            and lifecycle.get("failed") is False
+            and lifecycle.get("timed_out") is False
+            and not lifecycle.get("failure_reason")
+            and type(lifecycle.get("rc")) is int
+            and lifecycle["rc"] == 0
+            and lifecycle.get("terminal_status") in {"completed", "deferred"}
+            and lifecycle.get("command")
+            == [
+                "/bin/zsh",
+                str(PROJECT_ROOT / "scripts/ops/run_sql_link_writer_launchd.sh"),
+            ]
+            and progress.get("ok") is True
+            and progress.get("running") is False
+            and progress.get("current_step") == "complete"
+            and type(progress.get("planned_shard_count")) is int
+            and progress["planned_shard_count"] > 0
+            and type(progress.get("completed_shard_count")) is int
+            and progress["completed_shard_count"] >= progress["planned_shard_count"]
+        )
+        return {
+            "ok": valid,
+            "reason": (
+                "sql_writer_between_scheduled_cycles"
+                if valid
+                else "scheduled_writer_evidence_not_clear"
+            ),
+            "grace_seconds": grace,
+            "progress_age_seconds": round((now - progress_stamp).total_seconds(), 3),
+            "policy": "bounded scheduling grace after actual completed work; never queue clearance or permission to bypass writer admission",
+        }
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return {"ok": False, "reason": "scheduled_writer_evidence_invalid"}
 
 
 def _sql_link_writer_idle_health() -> Dict[str, Any]:
@@ -1696,8 +1766,13 @@ def _sql_link_writer_idle_health() -> Dict[str, Any]:
     process_idle = _fresh(process_path) and _state_idle(process_health)
     progress_idle = _fresh(progress_path) and _state_idle(progress_payload)
     artifact_idle = bool(cycle_idle or process_idle or progress_idle)
-    ok = bool(artifact_idle and queue_idle_clear)
-    if ok:
+    scheduled_wait = (
+        _sql_writer_scheduled_wait(progress_payload) if progress_idle else {"ok": False}
+    )
+    ok = bool(artifact_idle and (queue_idle_clear or scheduled_wait["ok"]))
+    if scheduled_wait["ok"] and not queue_idle_clear:
+        reason = "sql_writer_between_scheduled_cycles"
+    elif ok:
         reason = "sql_writer_on_demand_idle_complete"
     elif artifact_idle and not queue_source:
         reason = "sql_writer_idle_queue_evidence_missing_or_stale"
@@ -1716,6 +1791,7 @@ def _sql_link_writer_idle_health() -> Dict[str, Any]:
         "progress_idle_complete": bool(progress_idle),
         "queue_evidence_source": queue_source,
         "queue_idle_clear": queue_idle_clear,
+        "scheduled_wait": scheduled_wait,
         "core_pending_lines": core_pending,
         "total_pending_lines": total_pending,
         "oldest_pending_age_seconds": round(oldest_pending_age, 3),
@@ -1752,7 +1828,7 @@ def _sql_link_writer_idle_health() -> Dict[str, Any]:
                 "writer_lock_held", process_health.get("writer_lock_held", False)
             )
         ),
-        "policy": "treat fresh complete writer progress as healthy idle only while fresh queue evidence remains below bounded idle ceilings",
+        "policy": "fresh complete work permits bounded scheduled idle; otherwise require fresh queues below idle ceilings",
     }
 
 
@@ -3494,7 +3570,10 @@ def main() -> int:
                 str(PROJECT_ROOT / "scripts" / "ops" / "run_sql_link_writer_launchd.sh")
             ],
             "log": PROJECT_ROOT / "logs" / "watchdog_sql_link_writer.log",
-            "alt_patterns": ["scripts/ops/sql_link_writer_service.py"],
+            "alt_patterns": [
+                "scripts/ops/sql_link_writer_service.py",
+                "scripts/ops/run_sql_link_writer_launchd.sh",
+            ],
             "heartbeat_glob": "",
             "heartbeat_max_age_seconds": 0,
             "restart_storm_impact": "storage_writer",

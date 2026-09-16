@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -15,7 +16,8 @@ if str(PROJECT_ROOT) not in sys.path:
 _PAGE_SIZE_BYTES = 16384
 DEFAULT_CREATIVE_APP_NAMES = "Final Cut Pro,Logic Pro,Music,iTunes"
 
-from scripts.ops.support_maintenance_gate import frozen_health_payload, support_maintenance_freeze_contract
+from scripts.ops.support_maintenance_gate import support_maintenance_freeze_contract
+from scripts.ops.long_runtime_common import write_payload
 
 
 def _csv_env(name: str, default: str) -> list[str]:
@@ -115,7 +117,9 @@ def _scan_named_processes(markers: list[str]) -> tuple[dict[str, float], dict[st
     cpu_by_app: dict[str, float] = {}
     active_commands: dict[str, str] = {}
     try:
-        proc = subprocess.run(["/bin/ps", "-axo", "%cpu,command"], capture_output=True, text=True, check=False)
+        proc = subprocess.run(["/bin/ps", "-axo", "%cpu,command"], capture_output=True, text=True, check=False, timeout=1)
+        if proc.returncode != 0:
+            return {}, {}
         for line in (proc.stdout or "").splitlines():
             raw = line.strip()
             if not raw:
@@ -141,14 +145,20 @@ def _scan_named_processes(markers: list[str]) -> tuple[dict[str, float], dict[st
 def _parse_memory_pressure() -> dict[str, float]:
     out: dict[str, float] = {}
     try:
-        proc = subprocess.run(["/usr/bin/memory_pressure", "-Q"], capture_output=True, text=True, check=False)
+        proc = subprocess.run(["/usr/bin/memory_pressure", "-Q"], capture_output=True, text=True, check=False, timeout=1)
+        if proc.returncode != 0:
+            return out
         for raw in (proc.stdout or "").splitlines():
             line = raw.strip()
             low = line.lower()
             if "free percentage" in low:
-                out["memory_free_pct"] = float(line.split(":", 1)[-1].strip().replace("%", ""))
+                value = float(line.split(":", 1)[-1].strip().replace("%", ""))
+                if math.isfinite(value) and 0 <= value <= 100:
+                    out["memory_free_pct"] = value
             elif "available percentage" in low:
-                out["memory_available_pct"] = float(line.split(":", 1)[-1].strip().replace("%", ""))
+                value = float(line.split(":", 1)[-1].strip().replace("%", ""))
+                if math.isfinite(value) and 0 <= value <= 100:
+                    out["memory_available_pct"] = value
     except Exception:
         pass
     return out
@@ -157,7 +167,9 @@ def _parse_memory_pressure() -> dict[str, float]:
 def _parse_swap_usage() -> dict[str, float]:
     out: dict[str, float] = {}
     try:
-        proc = subprocess.run(["/usr/sbin/sysctl", "vm.swapusage"], capture_output=True, text=True, check=False)
+        proc = subprocess.run(["/usr/sbin/sysctl", "vm.swapusage"], capture_output=True, text=True, check=False, timeout=1)
+        if proc.returncode != 0:
+            return out
         text = (proc.stdout or "").strip()
         if "used =" in text:
             token = text.split("used =", 1)[1].strip().split()[0]
@@ -167,7 +179,8 @@ def _parse_swap_usage() -> dict[str, float]:
                 value /= 1024.0
             elif suffix == "K":
                 value /= (1024.0 * 1024.0)
-            out["swap_used_gb"] = round(value, 3)
+            if math.isfinite(value) and value >= 0:
+                out["swap_used_gb"] = round(value, 3)
     except Exception:
         pass
     return out
@@ -176,7 +189,9 @@ def _parse_swap_usage() -> dict[str, float]:
 def _parse_vm_stat() -> dict[str, float]:
     out: dict[str, float] = {}
     try:
-        proc = subprocess.run(["/usr/bin/vm_stat"], capture_output=True, text=True, check=False)
+        proc = subprocess.run(["/usr/bin/vm_stat"], capture_output=True, text=True, check=False, timeout=1)
+        if proc.returncode != 0:
+            return out
         for raw in (proc.stdout or "").splitlines():
             line = raw.strip()
             if ":" not in line:
@@ -186,6 +201,8 @@ def _parse_vm_stat() -> dict[str, float]:
             try:
                 count = float(digits)
             except Exception:
+                continue
+            if not math.isfinite(count) or count < 0:
                 continue
             key = label.strip().lower()
             if key == "pages throttled":
@@ -361,6 +378,23 @@ def _storage_disk_snapshot(project_root: Path) -> dict[str, Any]:
     }
 
 
+def _measurement_evidence(snapshot: dict[str, Any]) -> dict[str, Any]:
+    def valid(key: str, maximum: float | None = None) -> bool:
+        value = snapshot.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        return math.isfinite(value) and value >= 0 and (maximum is None or value <= maximum)
+
+    missing = [key for key in (
+        "swap_used_gb", "pages_throttled", "compressor_gb", "compressed_store_gb",
+        "local_disk_free_gb", "disk_free_gb", "load1_per_core",
+    ) if not valid(key)]
+    memory_keys = [key for key in ("memory_free_pct", "memory_available_pct") if key in snapshot]
+    if not memory_keys or any(not valid(key, 100) for key in memory_keys):
+        missing.append("memory_pressure")
+    return {"ready": not missing, "missing_or_invalid_measurements": missing, "probe_timeout_seconds": 1}
+
+
 def build_snapshot(project_root: Path) -> dict[str, Any]:
     cpu_count = max(os.cpu_count() or 1, 1)
     l1, l5, l15 = os.getloadavg()
@@ -379,6 +413,8 @@ def build_snapshot(project_root: Path) -> dict[str, Any]:
     payload.update(_parse_vm_stat())
     payload.update(_creative_apps_snapshot())
     payload.update(_co_running_apps_snapshot())
+    payload["measurement_evidence"] = _measurement_evidence(payload)
+    payload["input_evidence_ready"] = payload["measurement_evidence"]["ready"]
     return payload
 
 
@@ -396,6 +432,8 @@ def _memory_pressure_state(snapshot: dict[str, Any]) -> tuple[str, list[str], di
         "red_local_disk_gb": float(os.getenv("RESOURCE_GUARD_MEMORY_RED_LOCAL_DISK_GB", "8")),
     }
 
+    if snapshot.get("input_evidence_ready") is False:
+        return "red", ["resource_observation_unavailable"], thresholds
     avail = snapshot.get("memory_available_pct")
     free = snapshot.get("memory_free_pct")
     swap = float(snapshot.get("swap_used_gb", 0.0) or 0.0)
@@ -442,6 +480,8 @@ def _memory_pressure_state(snapshot: dict[str, Any]) -> tuple[str, list[str], di
 
 
 def _memory_pressure_kind(snapshot: dict[str, Any], state: str, reasons: list[str]) -> str:
+    if snapshot.get("input_evidence_ready") is False:
+        return "observation_unavailable"
     if str(state).strip().lower() == "green":
         return "none"
     if not reasons:
@@ -477,6 +517,8 @@ def evaluate(
     max_editing_cpu: float,
     min_local_disk_gb: float | None = None,
 ) -> tuple[bool, list[str]]:
+    if snapshot.get("input_evidence_ready") is False:
+        return False, ["resource_observation_unavailable"]
     reasons: list[str] = []
     creative_level = str(snapshot.get("creative_session_level") or "none").strip().lower()
     if creative_level in _creative_block_levels("RESOURCE_GUARD_BLOCK_ON_CREATIVE_SESSION_LEVELS", "dual_pro,hot"):
@@ -524,6 +566,11 @@ def evaluate_optional_job(snapshot: dict[str, Any]) -> tuple[bool, list[str], di
     reasons: list[str] = []
     state, state_reasons, state_thresholds = _memory_pressure_state(snapshot)
     pressure_kind = _memory_pressure_kind(snapshot, state, state_reasons)
+    if snapshot.get("input_evidence_ready") is False:
+        return False, ["resource_observation_unavailable"], {
+            "memory_pressure_state": state, "memory_pressure_reasons": state_reasons,
+            "memory_pressure_kind": pressure_kind, "memory_pressure_thresholds": state_thresholds,
+        }
     creative_level = str(snapshot.get("creative_session_level") or "none").strip().lower()
     creative_block_levels = _creative_block_levels(
         "RESOURCE_GUARD_OPTIONAL_BLOCK_ON_CREATIVE_SESSION_LEVELS",
@@ -573,6 +620,8 @@ def evaluate_optional_job(snapshot: dict[str, Any]) -> tuple[bool, list[str], di
 
 def evaluate_refresh_job(snapshot: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
     ok, reasons, details = evaluate_optional_job(snapshot)
+    if snapshot.get("input_evidence_ready") is False:
+        return ok, reasons, details
     creative_level = str(snapshot.get("creative_session_level") or "none").strip().lower()
     refresh_creative_block_levels = _creative_block_levels(
         "RESOURCE_GUARD_REFRESH_BLOCK_ON_CREATIVE_SESSION_LEVELS",
@@ -679,35 +728,12 @@ def main() -> int:
     project_root = Path(args.project_root).resolve()
     emit = Path(args.emit_path).resolve() if args.emit_path else (project_root / "governance" / "health" / "resource_guard_latest.json")
     freeze_contract = support_maintenance_freeze_contract(project_root, "resource_guard")
-    if (
+    support_frozen = bool(
         bool(freeze_contract.get("active", False))
         and _support_freeze_blocks_profile(args.profile)
         and not args.ignore_support_freeze
-    ):
-        payload = frozen_health_payload(emit, freeze_contract, ok=True)
-        payload.update(
-            {
-                "resource_guard_profile": args.profile,
-                "resource_guard_ok": False,
-                "resource_guard_reasons": [str(freeze_contract.get("reason") or "support_maintenance_frozen_for_mac_fluidity")],
-                "memory_pressure_state": "green",
-                "memory_pressure_kind": "normal",
-                "swap_used_gb": float(payload.get("swap_used_gb", 0.0) or 0.0),
-            }
-        )
-        emit.parent.mkdir(parents=True, exist_ok=True)
-        emit.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
-        if args.json:
-            print(json.dumps(payload, ensure_ascii=True))
-        else:
-            print(
-                f"resource_guard_ok=False profile={args.profile} "
-                "memory_pressure_state=green creative_session_level=none "
-                "load1_per_core=0 disk_free_gb=0 editing_app_cpu_sum=0 "
-                f"reasons={payload['resource_guard_reasons'][0]}"
-            )
-        return 2
-
+    )
+    # Admission can pause work, but must not pause the sensor needed for recovery.
     snapshot = build_snapshot(project_root)
     memory_state, memory_state_reasons, memory_thresholds = _memory_pressure_state(snapshot)
 
@@ -733,8 +759,17 @@ def main() -> int:
             max_editing_cpu=args.max_editing_cpu,
         )
 
+    pressure_ok = ok
+    if support_frozen:
+        ok = False
+        reasons = [*reasons, str(freeze_contract.get("reason") or "support_maintenance_frozen_for_mac_fluidity")]
     payload = {
         **snapshot,
+        "measurement_refreshed": True,
+        "source_timestamp_utc": snapshot.get("timestamp_utc"),
+        "resource_pressure_ok": pressure_ok,
+        "support_maintenance_frozen": support_frozen,
+        "support_maintenance_freeze_contract": freeze_contract,
         "resource_guard_profile": args.profile,
         "resource_guard_ok": ok,
         "resource_guard_reasons": reasons,
@@ -754,8 +789,7 @@ def main() -> int:
         },
     }
 
-    emit.parent.mkdir(parents=True, exist_ok=True)
-    emit.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(emit, payload)
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

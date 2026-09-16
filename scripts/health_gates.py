@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -9,6 +10,44 @@ from typing import Any, Dict, List, Tuple
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STORAGE_CONTROL_BACKPRESSURE_OVERRIDE_MAX_AGE_SECONDS = 1800.0
 CURRENT_RAW_STREAM_MAX_AGE_SECONDS = 15 * 60
+RAW_FRESHNESS_TAIL_BYTES = 64 * 1024
+RAW_FRESHNESS_MAX_FILES = 128
+
+
+def _bounded_raw_tail_age(paths: List[Path], *, now_utc: datetime) -> float | None:
+    latest = None
+    deadline = time.monotonic() + 2.0
+    sampled = 0
+    for path in paths:
+        if sampled >= RAW_FRESHNESS_MAX_FILES or time.monotonic() >= deadline:
+            break
+        if path.suffix != '.jsonl':
+            continue
+        sampled += 1
+        try:
+            with path.open('rb') as handle:
+                size = handle.seek(0, 2)
+                start = max(size - RAW_FRESHNESS_TAIL_BYTES, 0)
+                handle.seek(start)
+                data = handle.read(RAW_FRESHNESS_TAIL_BYTES)
+            # Only complete published lines can provide freshness evidence.
+            if start:
+                data = data.partition(b'\n')[2]
+            for line in data.split(b'\n')[:-1]:
+                try:
+                    row = json.loads(line)
+                    if not isinstance(row, dict):
+                        continue
+                    timestamp = datetime.fromisoformat(str(row.get('timestamp_utc') or '').replace('Z', '+00:00'))
+                    if timestamp.tzinfo is None or timestamp > now_utc:
+                        continue
+                    if latest is None or timestamp > latest:
+                        latest = timestamp
+                except (ValueError, TypeError):
+                    continue
+        except OSError:
+            continue
+    return (now_utc - latest).total_seconds() if latest is not None else None
 
 
 def _load_json(path: Path) -> dict:
@@ -54,21 +93,15 @@ def _raw_stream_ages(project_root: Path, *, now_utc: datetime) -> tuple[float | 
         ]
         decision_day = max(decision_days, default=requested_day)
         governance_day = max(governance_days, default=requested_day)
-        decision = one_numbers_report._raw_decision_freshness_snapshot(project_root, decision_day)
-        governance = one_numbers_report._raw_governance_snapshot(project_root, governance_day)
-        decision_age = one_numbers_report._timestamp_age_seconds(
-            decision.get('latest_timestamp'), now_utc=now_utc
-        )
-        governance_age = one_numbers_report._timestamp_age_seconds(
-            governance.get('latest_timestamp'), now_utc=now_utc
+        decision_paths = one_numbers_report._logical_raw_jsonl_paths(project_root, decision_day, 'decision')
+        decision_paths += one_numbers_report._canonical_decision_channel_paths(project_root, requested_day)
+        governance_paths = one_numbers_report._logical_raw_jsonl_paths(project_root, governance_day, 'governance')
+        return (
+            _bounded_raw_tail_age(list(dict.fromkeys(decision_paths)), now_utc=now_utc),
+            _bounded_raw_tail_age(governance_paths, now_utc=now_utc),
         )
     except Exception:
         return None, None
-    missing_age = 10 ** 9
-    return (
-        None if decision_age >= missing_age else float(decision_age),
-        None if governance_age >= missing_age else float(governance_age),
-    )
 
 
 def _path_size_gb(path: Path) -> float:

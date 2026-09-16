@@ -1,6 +1,7 @@
 import json
 import signal
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -11,6 +12,7 @@ from scripts.ops import runtime_throttle_control as src
 
 
 def _write_json(path: Path, payload: dict) -> None:
+    payload = {"timestamp_utc": datetime.now(timezone.utc).isoformat(), **payload}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
@@ -2582,14 +2584,14 @@ def test_heavy_livefeed_is_operator_observability_not_support_trim() -> None:
     assert awk_row["throttle_candidate"] is False
 
 
-def test_runtime_throttle_classifies_swap_governor_as_support() -> None:
+def test_runtime_throttle_keeps_swap_observer_out_of_support_pause() -> None:
     row = src._classify_process(
         "/opt/homebrew/bin/python scripts/ops/swap_pressure_governor.py --apply --json"
     )
 
-    assert row["category"] == "support_maintenance"
-    assert row["priority_tier"] == "throttle_first"
-    assert row["throttle_candidate"] is True
+    assert row["category"] == "operator_observability"
+    assert row["priority_tier"] == "operator_visible"
+    assert row["throttle_candidate"] is False
 
 
 def test_runtime_throttle_classifies_compactors_and_retention_as_support() -> None:
@@ -3564,6 +3566,108 @@ def test_runtime_throttle_reclassifies_external_high_compute_as_capacity_advisor
         == "external_high_compute_pressure_is_capacity_limited_advisory_not_bot_runtime_degradation"
     )
     assert advisory["measurements"]["external_high_compute_guarded"] is True
+
+
+def test_runtime_throttle_reclassifies_unattributed_high_compute_as_capacity_advisory() -> (
+    None
+):
+    advisory = src._soft_cap_low_pressure_advisory(
+        overall_status="degraded",
+        throttle_profile="sustain",
+        saturation_score=51.15,
+        compute_pressure_level="high",
+        memory_pressure_level="normal",
+        storage_pressure_index=0.116,
+        storage_fresh_overflow=False,
+        thermal_warning_active=False,
+        performance_warning_active=False,
+        host_pressure_attribution={
+            "foreground_app_cpu_percent": 0.0,
+            "macos_system_cpu_percent": 0.0,
+            "operator_observability_cpu_percent": 0.0,
+            "protected_live_or_macro_cpu_percent": 0.0,
+            "bot_owned_cpu_percent": 0.0,
+            "throttle_candidate_support_cpu_percent": 0.0,
+            "storage_writer_cpu_percent": 0.0,
+            "paper_execution_cpu_percent": 0.0,
+            "research_training_cpu_percent": 0.0,
+            "external_pressure_dominant": False,
+            "bot_owned_pressure_dominant": False,
+            "support_jobs_hot": False,
+            "paper_execution_hot": False,
+            "research_training_hot": False,
+            "storage_writer_hot": False,
+        },
+        live_read_only=True,
+        storage_severity="stable",
+        storage_core_pending_lines=1736,
+        storage_total_pending_lines=9695,
+        storage_pending_threshold=15000,
+        storage_oldest_pending_age_seconds=5.524,
+        storage_oldest_age_threshold_seconds=240.0,
+        storage_overlay_relief={"active": True, "bounded": True},
+        paper_execution_policy={"paper_execution_allowed": False},
+    )
+
+    assert advisory["active"] is True
+    assert advisory["to_status"] == "advisory"
+    assert (
+        advisory["reason"]
+        == "unattributed_high_compute_with_bounded_storage_overlay_is_capacity_limited_advisory"
+    )
+    assert advisory["measurements"]["unattributed_high_compute_guarded"] is True
+    assert advisory["measurements"]["attributed_cpu_percent"] == 0.0
+
+
+def test_runtime_throttle_reclassifies_unattributed_elevated_compute_as_capacity_advisory() -> (
+    None
+):
+    advisory = src._soft_cap_low_pressure_advisory(
+        overall_status="degraded",
+        throttle_profile="soft_cap",
+        saturation_score=47.81,
+        compute_pressure_level="elevated",
+        memory_pressure_level="normal",
+        storage_pressure_index=0.116,
+        storage_fresh_overflow=False,
+        thermal_warning_active=False,
+        performance_warning_active=False,
+        host_pressure_attribution={
+            "foreground_app_cpu_percent": 0.0,
+            "macos_system_cpu_percent": 0.0,
+            "operator_observability_cpu_percent": 0.0,
+            "protected_live_or_macro_cpu_percent": 0.0,
+            "bot_owned_cpu_percent": 0.0,
+            "throttle_candidate_support_cpu_percent": 0.0,
+            "storage_writer_cpu_percent": 0.0,
+            "paper_execution_cpu_percent": 0.0,
+            "research_training_cpu_percent": 0.0,
+            "external_pressure_dominant": False,
+            "bot_owned_pressure_dominant": False,
+            "support_jobs_hot": False,
+            "paper_execution_hot": False,
+            "research_training_hot": False,
+            "storage_writer_hot": False,
+        },
+        live_read_only=True,
+        storage_severity="stable",
+        storage_core_pending_lines=1736,
+        storage_total_pending_lines=9695,
+        storage_pending_threshold=15000,
+        storage_oldest_pending_age_seconds=5.524,
+        storage_oldest_age_threshold_seconds=240.0,
+        storage_overlay_relief={"active": True, "bounded": True},
+        paper_execution_policy={"paper_execution_allowed": False},
+    )
+
+    assert advisory["active"] is True
+    assert advisory["to_status"] == "advisory"
+    assert (
+        advisory["reason"]
+        == "unattributed_elevated_compute_with_bounded_storage_overlay_is_capacity_limited_advisory"
+    )
+    assert advisory["measurements"]["unattributed_elevated_compute_guarded"] is True
+    assert advisory["measurements"]["attributed_cpu_percent"] == 0.0
 
 
 def test_runtime_throttle_marks_single_green_storage_writer_as_guarded_ready(

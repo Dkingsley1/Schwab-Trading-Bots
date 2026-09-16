@@ -15,6 +15,19 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def test_no_priority_debt_still_maintains_shards_outside_ingestion_request(tmp_path):
+    focus = storage_maintenance_lane._priority_retention_focus(
+        tmp_path, {"SQL_LINK_SERVICE_SHARDS": "runtime"}
+    )
+    assert not focus["enabled"]
+    selected = focus["env_overrides"]["SQL_LINK_SERVICE_SHARDS"].split(",")
+    assert len(selected) == len(set(selected))
+    assert {"trading", "crypto_trading", "governance", "crypto_governance"} <= set(selected)
+    command = storage_maintenance_lane._maintenance_writer_command(tmp_path, focus["env_overrides"])
+    assert "--maintenance-scope" in command
+    assert command[command.index("--shards") + 1].split(",") == selected
+
+
 def test_crypto_attribution_retention_focus_uses_intraday_hot_window(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_json(
@@ -149,6 +162,19 @@ def test_build_storage_maintenance_payload_runs_all_steps(tmp_path, monkeypatch)
 
     assert payload["ok"] is True
     assert payload["heavy_steps_skipped"] is False
+    manager_env = next(
+        env for cmd, env in env_by_cmd.items() if "sql_link_shard_manager.py" in cmd
+    )
+    assert manager_env["SQL_LINK_SERVICE_ONCE_INLINE_RETENTION"] == "1"
+    assert manager_env["SQL_LINK_SERVICE_BOUNDED_STORAGE_RETENTION"] == "1"
+    assert all(
+        "SQL_LINK_SERVICE_ONCE_INLINE_RETENTION" not in env
+        for cmd, env in env_by_cmd.items()
+        if "sql_link_shard_manager.py" not in cmd
+    )
+    retention_cmd = next(cmd for cmd in env_by_cmd if "data_retention_policy.py" in cmd)
+    assert "--skip-sqlite-vacuum" in retention_cmd
+    assert "--no-archive-prune-vacuum" in retention_cmd
     assert payload["summary"]["ingestion_storage_profile"] == "critical_backpressure"
     assert payload["summary"]["governor_route_drift"] is True
     assert payload["summary"]["priority_retention_focus_enabled"] is True
@@ -178,7 +204,11 @@ def test_build_storage_maintenance_payload_runs_all_steps(tmp_path, monkeypatch)
     shard_env = next(env for cmd, env in env_by_cmd.items() if "sql_link_shard_manager.py" in cmd)
     assert shard_env["SQL_LINK_SERVICE_PRIMARY_DB"] == str(project_root / "data" / "jsonl_link.sqlite3")
     assert shard_env["BOT_CHANNEL_QUEUE_DB"] == str(project_root / "data" / "bot_channel_queue.sqlite3")
-    assert shard_env["SQL_LINK_SERVICE_SHARDS"] == "health_fast,crypto_explanations,explanations,crypto_shadow_attribution,shadow_attribution"
+    selected = shard_env["SQL_LINK_SERVICE_SHARDS"].split(",")
+    assert selected[:3] == ["health_fast", "explanations", "crypto_explanations"]
+    assert {"trading", "aggressive_trading", "crypto_trading", "governance"} <= set(selected)
+    manager_cmd = next(cmd for cmd in env_by_cmd if "sql_link_shard_manager.py" in cmd)
+    assert "--maintenance-scope --shards " in manager_cmd
     assert shard_env["SQL_LINK_SERVICE_SHARD_EXPLANATIONS_MAX_FILES"] == "8"
     assert shard_env["SQL_LINK_SERVICE_MAINTENANCE_HOLD_TOKEN"]
 
@@ -381,3 +411,69 @@ def test_build_storage_maintenance_payload_retries_shard_manager_when_priority_f
     assert shard_calls["count"] == 2
     assert payload["summary"]["shard_follow_through_completed"] is True
     assert payload["steps"]["sql_link_shard_manager_follow_through"]["status"] == "ok"
+
+
+def test_stopped_child_is_reaped_and_partial_success_rejected(tmp_path: Path) -> None:
+    receipt = tmp_path / "previous.json"
+    receipt.write_text('{"ok":true,"reason":"previous_success"}')
+    command = [
+        sys.executable,
+        "-c",
+        "import os, signal; print('{\"ok\":true}', flush=True); "
+        "os.kill(os.getpid(), signal.SIGSTOP)",
+    ]
+    result = storage_maintenance_lane._run_json_command(
+        command, cwd=tmp_path, payload_path=receipt, timeout_seconds=1
+    )
+    assert result["rc"] == 124
+    assert result["timed_out"] is True
+    assert result["timeout_cleanup"]["reaped"] is True
+    assert result["payload"]["reason"] == "storage_maintenance_child_timeout"
+    assert storage_maintenance_lane._step_status(result) == "error"
+    assert receipt.read_text() == '{"ok":true,"reason":"previous_success"}'
+
+
+def test_child_does_not_reuse_old_success_receipt(tmp_path: Path, monkeypatch) -> None:
+    import os
+
+    receipt = tmp_path / "previous.json"
+    receipt.write_text('{"ok":true}')
+    os.utime(receipt, (1, 1))
+    monkeypatch.setattr(
+        storage_maintenance_lane,
+        "run_bounded_process_group",
+        lambda *args, **kwargs: {
+            "rc": 0,
+            "stdout": "",
+            "stderr": "",
+            "timed_out": False,
+        },
+    )
+    result = storage_maintenance_lane._run_json_command(
+        ["unused"], cwd=tmp_path, payload_path=receipt
+    )
+    assert result["payload"]["reason"] == "storage_maintenance_child_evidence_missing"
+    assert storage_maintenance_lane._step_status(result) == "error"
+
+
+def test_child_accepts_only_fresh_fallback_receipt(tmp_path: Path, monkeypatch) -> None:
+    receipt = tmp_path / "current.json"
+
+    def run(*args, **kwargs):
+        receipt.write_text('{"ok":true,"reason":"current_success"}')
+        return {"rc": 0, "stdout": "", "stderr": "", "timed_out": False}
+
+    monkeypatch.setattr(storage_maintenance_lane, "run_bounded_process_group", run)
+    result = storage_maintenance_lane._run_json_command(
+        ["unused"], cwd=tmp_path, payload_path=receipt
+    )
+    assert result["payload"]["reason"] == "current_success"
+    assert storage_maintenance_lane._step_status(result) == "ok"
+
+
+def test_timeout_precedes_nonfatal_reason() -> None:
+    result = {"rc": 124, "timed_out": True, "payload": {"reason": "lock_busy"}}
+    assert (
+        storage_maintenance_lane._step_status(result, nonfatal_reasons={"lock_busy"})
+        == "error"
+    )

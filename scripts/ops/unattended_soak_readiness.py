@@ -18,13 +18,27 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+    from scripts.ops.long_runtime_common import (
+        iso_now,
+        load_json,
+        ordered_unique,
+        payload_age_minutes,
+        write_payload,
+    )
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
-    from .long_runtime_common import iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+    from .long_runtime_common import (
+        iso_now,
+        load_json,
+        ordered_unique,
+        payload_age_minutes,
+        write_payload,
+    )
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "unattended_soak_readiness_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "unattended_soak_readiness_latest.json"
+)
 DEFAULT_TARGET_DAYS = 30.0
 DEFAULT_EXTERNAL_ROOT = Path("/Volumes/BOT_LOGS/schwab_trading_bot")
 BOUNDED_TRANSIENT_CORE_MAX_LINES = 10_000
@@ -54,11 +68,23 @@ def _safe_int(raw: Any, default: int = 0) -> int:
 
 
 def _env_truthy(name: str) -> bool:
-    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on", "operator_approved"}
+    return str(os.getenv(name, "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "operator_approved",
+    }
 
 
 def _truthy(value: Any) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "operator_approved"}
+    return str(value or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "operator_approved",
+    }
 
 
 def _battery_override_settings(project_root: Path) -> dict[str, Any]:
@@ -72,7 +98,10 @@ def _battery_override_settings(project_root: Path) -> dict[str, Any]:
         if name in os.environ:
             return str(os.getenv(name, "")), "environment"
         if name in persisted:
-            return str(persisted.get(name) or ""), "config/.env.unattended_soak_override"
+            return (
+                str(persisted.get(name) or ""),
+                "config/.env.unattended_soak_override",
+            )
         return "", "default"
 
     enabled_raw, enabled_source = resolve("BOT_UNATTENDED_SOAK_ALLOW_BATTERY")
@@ -109,7 +138,10 @@ def _battery_override_settings(project_root: Path) -> dict[str, Any]:
 
 def _warning_is_managed_for_soak(warning: Any) -> bool:
     text = str(warning or "")
-    return bool(text in MANAGED_WARNING_NAMES or text.endswith("_overridden_by_caffeinate_guard"))
+    return bool(
+        text in MANAGED_WARNING_NAMES
+        or text.endswith("_overridden_by_caffeinate_guard")
+    )
 
 
 def _dict(raw: Any) -> dict[str, Any]:
@@ -138,7 +170,13 @@ def _disk_snapshot(path: Path) -> dict[str, Any]:
     try:
         usage = shutil.disk_usage(probe)
     except Exception:
-        return {"path": str(path), "probe_path": str(probe), "exists": bool(path.exists()), "free_gb": 0.0, "used_pct": 100.0}
+        return {
+            "path": str(path),
+            "probe_path": str(probe),
+            "exists": bool(path.exists()),
+            "free_gb": 0.0,
+            "used_pct": 100.0,
+        }
     used_pct = 100.0 * float(usage.used) / max(float(usage.total), 1.0)
     return {
         "path": str(path),
@@ -153,7 +191,13 @@ def _disk_snapshot(path: Path) -> dict[str, Any]:
 
 def _run_text(cmd: list[str], *, timeout_sec: int = 5) -> str:
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=max(int(timeout_sec), 1))
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=max(int(timeout_sec), 1),
+        )
     except Exception:
         return ""
     return (proc.stdout or "").strip()
@@ -178,7 +222,11 @@ def _parse_pmset_custom(text: str) -> dict[str, dict[str, str]]:
 
 
 def _process_has_caffeinate(process_text: str | None = None) -> bool:
-    text = process_text if process_text is not None else _run_text(["/bin/ps", "-axo", "command"], timeout_sec=5)
+    text = (
+        process_text
+        if process_text is not None
+        else _run_text(["/bin/ps", "-axo", "command"], timeout_sec=5)
+    )
     lowered = str(text or "").lower()
     return "/usr/bin/caffeinate" in lowered or " caffeinate " in f" {lowered} "
 
@@ -191,12 +239,22 @@ def _host_power_contract(
     process_text: str | None = None,
 ) -> dict[str, Any]:
     system = platform.system()
-    custom_text = pmset_custom_text if pmset_custom_text is not None else _run_text(["/usr/bin/pmset", "-g", "custom"])
-    batt_text = pmset_batt_text if pmset_batt_text is not None else _run_text(["/usr/bin/pmset", "-g", "batt"])
+    custom_text = (
+        pmset_custom_text
+        if pmset_custom_text is not None
+        else _run_text(["/usr/bin/pmset", "-g", "custom"])
+    )
+    batt_text = (
+        pmset_batt_text
+        if pmset_batt_text is not None
+        else _run_text(["/usr/bin/pmset", "-g", "batt"])
+    )
     profiles = _parse_pmset_custom(custom_text)
     ac = profiles.get("AC Power", {})
     caffeinate_active = _process_has_caffeinate(process_text)
-    ac_attached = "AC Power" in str(batt_text or "") or "AC attached" in str(batt_text or "")
+    ac_attached = "AC Power" in str(batt_text or "") or "AC attached" in str(
+        batt_text or ""
+    )
     battery_override = _battery_override_settings(project_root)
     battery_override_allowed = bool(battery_override.get("allowed"))
     battery_override_reason = str(battery_override.get("reason") or "")
@@ -209,12 +267,18 @@ def _host_power_contract(
     if system == "Darwin" and not ac_attached:
         if battery_override_allowed:
             warnings.append("host_not_on_ac_power_operator_approved_battery_override")
-            managed_controls.append("host_not_on_ac_power_operator_approved_battery_override")
+            managed_controls.append(
+                "host_not_on_ac_power_operator_approved_battery_override"
+            )
         else:
             blockers.append("host_not_on_ac_power")
-            if battery_override.get("enabled") and not battery_override.get("reason_present"):
+            if battery_override.get("enabled") and not battery_override.get(
+                "reason_present"
+            ):
                 warnings.append("battery_override_missing_operator_reason")
-            if battery_override.get("enabled") and not battery_override.get("expiry_valid"):
+            if battery_override.get("enabled") and not battery_override.get(
+                "expiry_valid"
+            ):
                 warnings.append("battery_override_expiry_invalid")
             if battery_override.get("expired"):
                 warnings.append("battery_override_expired")
@@ -237,12 +301,16 @@ def _host_power_contract(
             sleep_blockers.append("host_autopoweroff_not_disabled_on_ac")
 
     if sleep_blockers and caffeinate_active:
-        managed_controls.extend(f"{item}_overridden_by_caffeinate_guard" for item in sleep_blockers)
+        managed_controls.extend(
+            f"{item}_overridden_by_caffeinate_guard" for item in sleep_blockers
+        )
     else:
         blockers.extend(sleep_blockers)
 
     status = "ready" if not blockers else "blocked"
-    scored_warnings = [item for item in warnings if not _warning_is_managed_for_soak(item)]
+    scored_warnings = [
+        item for item in warnings if not _warning_is_managed_for_soak(item)
+    ]
     score = max(100.0 - (18.0 * len(blockers)) - (4.0 * len(scored_warnings)), 0.0)
     return {
         "status": status,
@@ -254,7 +322,9 @@ def _host_power_contract(
         "battery_override_allowed": bool(battery_override_allowed),
         "battery_override_reason": battery_override_reason,
         "battery_override_source": str(battery_override.get("source") or "default"),
-        "battery_override_expires_at_utc": str(battery_override.get("expires_at_utc") or ""),
+        "battery_override_expires_at_utc": str(
+            battery_override.get("expires_at_utc") or ""
+        ),
         "battery_override_expired": bool(battery_override.get("expired")),
         "caffeinate_active": bool(caffeinate_active),
         "pmset_profiles": profiles,
@@ -268,7 +338,9 @@ def _host_power_contract(
         },
         "blockers": blockers,
         "warnings": warnings,
-        "managed_warnings": [item for item in warnings if _warning_is_managed_for_soak(item)],
+        "managed_warnings": [
+            item for item in warnings if _warning_is_managed_for_soak(item)
+        ],
         "managed_controls": managed_controls,
         "recommended_command": (
             "scripts/install_caffeinate_launchd.sh or sudo pmset -a sleep 0 disksleep 0 standby 0 autopoweroff 0"
@@ -280,23 +352,38 @@ def _host_power_contract(
 
 def _external_root(project_root: Path, health_root: Path) -> Path:
     mount_guard = load_json(health_root / "storage_mount_guard_latest.json")
-    raw = str(mount_guard.get("external_root") or os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT") or "").strip()
+    raw = str(
+        mount_guard.get("external_root")
+        or os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT")
+        or ""
+    ).strip()
     return Path(raw).expanduser() if raw else DEFAULT_EXTERNAL_ROOT
 
 
-def _managed_ingestion_soak_watch(ingestion: dict[str, Any], ingestion_contract: dict[str, Any]) -> bool:
+def _managed_ingestion_soak_watch(
+    ingestion: dict[str, Any], ingestion_contract: dict[str, Any]
+) -> bool:
     allowed_blockers = {
         "steady_state_targets_not_clear",
         "backlog_relief_contract_active",
         "drain_time_above_target",
     }
-    contract_blockers = {str(item) for item in ingestion_contract.get("blockers", []) if str(item)}
+    contract_blockers = {
+        str(item) for item in ingestion_contract.get("blockers", []) if str(item)
+    }
     if contract_blockers and not contract_blockers.issubset(allowed_blockers):
         return False
 
     status = str(ingestion.get("overall_status") or "").lower()
     severity = str(ingestion.get("severity") or "").lower()
-    if status not in {"ready", "ok"} or severity not in {"stable", "low", "ready", "normal", "watch", "elevated"}:
+    if status not in {"ready", "ok"} or severity not in {
+        "stable",
+        "low",
+        "ready",
+        "normal",
+        "watch",
+        "elevated",
+    }:
         return False
 
     raw_live = _dict(_dict(ingestion.get("backlog_truth")).get("raw_live"))
@@ -304,8 +391,14 @@ def _managed_ingestion_soak_watch(ingestion: dict[str, Any], ingestion_contract:
     if not raw_live:
         raw_live = backpressure
     raw_grade = str(raw_live.get("grade") or "").upper()
-    total_pending = _safe_int(raw_live.get("total_pending_lines"), _safe_int(backpressure.get("total_pending_lines"), 0))
-    core_pending = _safe_int(raw_live.get("core_pending_lines"), _safe_int(backpressure.get("core_pending_lines"), 0))
+    total_pending = _safe_int(
+        raw_live.get("total_pending_lines"),
+        _safe_int(backpressure.get("total_pending_lines"), 0),
+    )
+    core_pending = _safe_int(
+        raw_live.get("core_pending_lines"),
+        _safe_int(backpressure.get("core_pending_lines"), 0),
+    )
     oldest_age = _safe_float(
         raw_live.get("oldest_pending_age_seconds"),
         _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0),
@@ -313,7 +406,11 @@ def _managed_ingestion_soak_watch(ingestion: dict[str, Any], ingestion_contract:
     pressure_index = _safe_float(ingestion.get("pressure_index"), 99.0)
 
     stale_locator = _dict(ingestion.get("stale_pending_locator"))
-    stale_clear = str(stale_locator.get("status") or "clear").lower() in {"clear", "ready", ""}
+    stale_clear = str(stale_locator.get("status") or "clear").lower() in {
+        "clear",
+        "ready",
+        "",
+    }
     route = _dict(ingestion.get("external_route_verification"))
     route_ready = str(route.get("verification_state") or "").lower() in {
         "ready",
@@ -323,16 +420,30 @@ def _managed_ingestion_soak_watch(ingestion: dict[str, Any], ingestion_contract:
         "active_passthrough",
     }
     resilience = _dict(ingestion.get("storage_resilience"))
-    resilience_ready = str(resilience.get("overall_status") or "").lower() in {"ready", "ok", ""}
+    resilience_ready = str(resilience.get("overall_status") or "").lower() in {
+        "ready",
+        "ok",
+        "",
+    }
     data_integrity = _dict(ingestion.get("data_integrity"))
     data_clean = all(
         _safe_int(data_integrity.get(key), 0) == 0
-        for key in ("sql_invalid_lines", "sql_overlay_invalid_lines", "sql_overlay_oversize_payloads", "sql_overlay_ops_write_failures")
+        for key in (
+            "sql_invalid_lines",
+            "sql_overlay_invalid_lines",
+            "sql_overlay_oversize_payloads",
+            "sql_overlay_ops_write_failures",
+        )
     )
     writer_shedding = _dict(ingestion.get("writer_shedding"))
-    no_queue_breaches = not writer_shedding.get("hard_breaches") and not writer_shedding.get("elevated_breaches")
+    no_queue_breaches = not writer_shedding.get(
+        "hard_breaches"
+    ) and not writer_shedding.get("elevated_breaches")
     steady = _dict(_dict(ingestion.get("steady_state")).get("target_status"))
-    backlog_relief_ready = bool(steady.get("backlog_relief_a_plus_ready") or steady.get("backlog_relief_a_plus_plus_ready"))
+    backlog_relief_ready = bool(
+        steady.get("backlog_relief_a_plus_ready")
+        or steady.get("backlog_relief_a_plus_plus_ready")
+    )
     strict_ready = bool(
         raw_grade in {"A+", "A", ""}
         and pressure_index <= 0.6
@@ -349,44 +460,104 @@ def _managed_ingestion_soak_watch(ingestion: dict[str, Any], ingestion_contract:
     if strict_ready:
         return True
 
+    bounded_live_writer = _dict(ingestion.get("bounded_live_writer_lag"))
+    bounded_live_inputs = _dict(bounded_live_writer.get("inputs"))
+    bounded_live_limits = _dict(bounded_live_writer.get("limits"))
+    bounded_live_severity = (
+        str(
+            bounded_live_writer.get("effective_severity")
+            or bounded_live_writer.get("candidate_severity")
+            or severity
+        )
+        .strip()
+        .lower()
+    )
+    bounded_live_ready = bool(
+        bool(bounded_live_writer.get("active", False))
+        and bounded_live_severity
+        in {"stable", "low", "ready", "normal", "watch", "elevated"}
+        and _safe_float(bounded_live_inputs.get("pressure_index"), pressure_index)
+        <= _safe_float(bounded_live_limits.get("max_pressure_index"), 2.25)
+        and _safe_int(bounded_live_inputs.get("core_pending_lines"), core_pending)
+        <= _safe_int(bounded_live_limits.get("core_pending_lines"), 7500)
+        and _safe_int(bounded_live_inputs.get("total_pending_lines"), total_pending)
+        <= _safe_int(bounded_live_limits.get("total_pending_lines"), 40000)
+        and _safe_float(
+            bounded_live_inputs.get("oldest_pending_age_seconds"), oldest_age
+        )
+        <= _safe_float(bounded_live_limits.get("max_oldest_age_seconds"), 900.0)
+        and bool(bounded_live_inputs.get("hard_paths_clear", False))
+        and bool(bounded_live_inputs.get("route_verified", route_ready))
+        and not bool(bounded_live_inputs.get("route_drift", False))
+        and bool(bounded_live_inputs.get("integrity_clear", data_clean))
+        and bool(bounded_live_inputs.get("storage_resilience_ready", resilience_ready))
+        and bool(bounded_live_inputs.get("sql_progress_fresh", False))
+    )
+    if bounded_live_ready:
+        return True
+
     bounded = _dict(ingestion.get("bounded_recovery_contract"))
     storage = _dict(ingestion.get("storage"))
     efficiency = _dict(ingestion.get("storage_efficiency_contract"))
     inputs = _dict(ingestion_contract.get("inputs"))
-    efficiency_status = str(
-        efficiency.get("overall_status")
-        or inputs.get("storage_efficiency_status")
-        or ingestion.get("storage_efficiency_status")
-        or ""
-    ).strip().lower()
-    efficiency_grade = str(
-        efficiency.get("grade")
-        or inputs.get("storage_efficiency_grade")
-        or storage.get("efficiency_grade")
-        or ingestion.get("storage_efficiency_grade")
-        or ""
-    ).strip().upper()
-    plane_phase = str(
-        storage.get("storage_plane_phase")
-        or _dict(efficiency.get("storage_plane_phase_contract")).get("phase")
-        or ""
-    ).strip().lower()
-    collector_status = str(
-        inputs.get("collector_intake_status")
-        or ingestion.get("collector_intake_status")
-        or ""
-    ).strip().lower()
+    efficiency_status = (
+        str(
+            efficiency.get("overall_status")
+            or inputs.get("storage_efficiency_status")
+            or ingestion.get("storage_efficiency_status")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    efficiency_grade = (
+        str(
+            efficiency.get("grade")
+            or inputs.get("storage_efficiency_grade")
+            or storage.get("efficiency_grade")
+            or ingestion.get("storage_efficiency_grade")
+            or ""
+        )
+        .strip()
+        .upper()
+    )
+    plane_phase = (
+        str(
+            storage.get("storage_plane_phase")
+            or _dict(efficiency.get("storage_plane_phase_contract")).get("phase")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    collector_status = (
+        str(
+            inputs.get("collector_intake_status")
+            or ingestion.get("collector_intake_status")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     collector_safe = bool(
         inputs.get("collector_intake_soak_safe")
         or inputs.get("collector_partial_reserve_pressure_soak_safe")
         or ingestion.get("collector_intake_soak_safe")
         or collector_status in {"", "not_required", "ready", "enforced"}
     )
-    bounded_progress = bool(bounded.get("active_drain_progress") or bounded.get("drain_delta_signal_observed"))
-    hard_gate_clear = not bool(bounded.get("hard_gate_active")) and not bool(bounded.get("effective_hard_gate_active"))
+    bounded_progress = bool(
+        bounded.get("active_drain_progress")
+        or bounded.get("drain_delta_signal_observed")
+    )
+    hard_gate_clear = not bool(bounded.get("hard_gate_active")) and not bool(
+        bounded.get("effective_hard_gate_active")
+    )
     efficiency_ready = bool(
         efficiency_status in {"", "ready", "ok"}
-        and (efficiency_grade in {"", "A", "A+"} or plane_phase in {"steady_state", "deep_cold_managed_steady_state"})
+        and (
+            efficiency_grade in {"", "A", "A+"}
+            or plane_phase in {"steady_state", "deep_cold_managed_steady_state"}
+        )
     )
     bounded_ready = bool(
         raw_grade in {"A+", "A", ""}
@@ -424,47 +595,86 @@ def _storage_contract(
     disk = disk_snapshot_fn(external_root)
     local_disk = disk_snapshot_fn(project_root)
 
-    retention_contract = retention.get("continuous_run_contract") if isinstance(retention.get("continuous_run_contract"), dict) else {}
-    ingestion_contract = ingestion.get("continuous_run_soak_contract") if isinstance(ingestion.get("continuous_run_soak_contract"), dict) else {}
+    retention_contract = (
+        retention.get("continuous_run_contract")
+        if isinstance(retention.get("continuous_run_contract"), dict)
+        else {}
+    )
+    ingestion_contract = (
+        ingestion.get("continuous_run_soak_contract")
+        if isinstance(ingestion.get("continuous_run_soak_contract"), dict)
+        else {}
+    )
     effective_daily = max(
         _safe_float(retention_contract.get("effective_daily_growth_gb"), 0.0),
         _safe_float(retention_contract.get("min_daily_growth_gb"), 0.5),
         0.5,
     )
-    pressure_free = max(_safe_float(retention_contract.get("pressure_free_gb"), 64.0), 0.0)
+    pressure_free = max(
+        _safe_float(retention_contract.get("pressure_free_gb"), 64.0), 0.0
+    )
     buffer_gb = max(_safe_float(retention_contract.get("safety_buffer_gb"), 32.0), 0.0)
-    required_free = round(pressure_free + buffer_gb + (effective_daily * max(float(target_days), 1.0)), 3)
-    current_free = _safe_float(disk.get("free_gb"), _safe_float(retention_contract.get("current_external_free_gb"), 0.0))
+    required_free = round(
+        pressure_free + buffer_gb + (effective_daily * max(float(target_days), 1.0)), 3
+    )
+    current_free = _safe_float(
+        disk.get("free_gb"),
+        _safe_float(retention_contract.get("current_external_free_gb"), 0.0),
+    )
     projected_free = _safe_float(cleanup.get("projected_free_gb"), current_free)
     margin = round(current_free - required_free, 3)
     projected_margin = round(projected_free - required_free, 3)
-    cold_archive_spillover_ready = bool(retention_contract.get("cold_archive_spillover_ready", False))
-    cold_archive_spillover_available = bool(retention_contract.get("cold_archive_spillover_available", False))
-    cold_archive_spillover_status = str(retention_contract.get("cold_archive_spillover_status") or "")
-    cold_archive_adjusted_margin = _safe_float(retention_contract.get("cold_archive_adjusted_margin_gb"), margin)
-    cold_archive_capacity = _safe_float(retention_contract.get("cold_archive_spillover_capacity_gb"), 0.0)
-    cold_archive_required = _safe_float(retention_contract.get("cold_archive_required_spillover_gb"), max(-margin, 0.0))
+    cold_archive_spillover_ready = bool(
+        retention_contract.get("cold_archive_spillover_ready", False)
+    )
+    cold_archive_spillover_available = bool(
+        retention_contract.get("cold_archive_spillover_available", False)
+    )
+    cold_archive_spillover_status = str(
+        retention_contract.get("cold_archive_spillover_status") or ""
+    )
+    cold_archive_adjusted_margin = _safe_float(
+        retention_contract.get("cold_archive_adjusted_margin_gb"), margin
+    )
+    cold_archive_capacity = _safe_float(
+        retention_contract.get("cold_archive_spillover_capacity_gb"), 0.0
+    )
+    cold_archive_required = _safe_float(
+        retention_contract.get("cold_archive_required_spillover_gb"), max(-margin, 0.0)
+    )
     cold_archive_shortfall = _safe_float(
         retention_contract.get("cold_archive_capacity_shortfall_gb"),
         max(-cold_archive_adjusted_margin, 0.0),
     )
-    primary_pressure_buffer = _safe_float(retention_contract.get("cold_archive_primary_pressure_buffer_gb"), 16.0)
-    primary_above_pressure_guard = bool(current_free >= pressure_free + primary_pressure_buffer)
+    primary_pressure_buffer = _safe_float(
+        retention_contract.get("cold_archive_primary_pressure_buffer_gb"), 16.0
+    )
+    primary_above_pressure_guard = bool(
+        current_free >= pressure_free + primary_pressure_buffer
+    )
     storage_margin_ready = bool(
         current_free >= required_free
-        or (cold_archive_spillover_ready and cold_archive_adjusted_margin >= 0.0 and primary_above_pressure_guard)
+        or (
+            cold_archive_spillover_ready
+            and cold_archive_adjusted_margin >= 0.0
+            and primary_above_pressure_guard
+        )
     )
 
     blockers: list[str] = []
     warnings: list[str] = []
     managed_controls: list[str] = []
-    local_target_free = max(_safe_float(os.getenv("BOT_LOCAL_STORAGE_TARGET_FREE_GB"), 64.0), 1.0)
+    local_target_free = max(
+        _safe_float(os.getenv("BOT_LOCAL_STORAGE_TARGET_FREE_GB"), 64.0), 1.0
+    )
     local_pressure_free = min(
         max(_safe_float(os.getenv("BOT_LOCAL_STORAGE_PRESSURE_FREE_GB"), 32.0), 1.0),
         local_target_free,
     )
     local_free = _safe_float(local_disk.get("free_gb"), 0.0)
-    local_known = bool(local_free > 0.0 and _safe_float(local_disk.get("used_pct"), 100.0) < 100.0)
+    local_known = bool(
+        local_free > 0.0 and _safe_float(local_disk.get("used_pct"), 100.0) < 100.0
+    )
     if not local_known:
         blockers.append("local_hot_storage_free_space_unknown")
     elif local_free < local_pressure_free:
@@ -475,14 +685,19 @@ def _storage_contract(
         blockers.append("external_free_space_unknown")
     if not storage_margin_ready:
         blockers.append("storage_margin_not_30_day_ready")
-        if projected_margin >= 0.0 and _safe_float(cleanup.get("selected_reclaimable_gb"), 0.0) > 0.0:
+        if (
+            projected_margin >= 0.0
+            and _safe_float(cleanup.get("selected_reclaimable_gb"), 0.0) > 0.0
+        ):
             warnings.append("storage_cleanup_plan_available_not_applied")
     elif current_free < required_free and cold_archive_spillover_ready:
         warnings.append("storage_margin_managed_by_approved_cold_archive_spillover")
         managed_controls.append("approved_cold_archive_spillover")
     if not bool(retention_contract.get("ready", False)):
         blockers.append("storage_retention_contract_not_ready")
-    ingestion_managed_watch = _managed_ingestion_soak_watch(ingestion, ingestion_contract)
+    ingestion_managed_watch = _managed_ingestion_soak_watch(
+        ingestion, ingestion_contract
+    )
     ingestion_soak_ready = bool(
         ingestion_contract.get("ready", False)
         or ingestion_contract.get("soak_ready", False)
@@ -490,17 +705,30 @@ def _storage_contract(
     )
     if not ingestion_soak_ready:
         blockers.append("ingestion_soak_contract_not_ready")
-    elif ingestion_managed_watch and not bool(ingestion_contract.get("ready", False) or ingestion_contract.get("soak_ready", False)):
+    elif ingestion_managed_watch and not bool(
+        ingestion_contract.get("ready", False)
+        or ingestion_contract.get("soak_ready", False)
+    ):
         warnings.append("ingestion_soak_contract_managed_by_bounded_backlog_watch")
-        managed_controls.append("ingestion_soak_contract_managed_by_bounded_backlog_watch")
+        managed_controls.append(
+            "ingestion_soak_contract_managed_by_bounded_backlog_watch"
+        )
     if not bool(resilience.get("ok", False)):
         blockers.append("storage_resilience_not_ready")
     if bool(mount_guard.get("external_low_space", False)):
         warnings.append("storage_mount_guard_low_space")
 
     failed_db_checks = []
-    for row in resilience.get("database_integrity_checks") if isinstance(resilience.get("database_integrity_checks"), list) else []:
-        if isinstance(row, dict) and bool(row.get("present", False)) and not bool(row.get("ok", False)):
+    for row in (
+        resilience.get("database_integrity_checks")
+        if isinstance(resilience.get("database_integrity_checks"), list)
+        else []
+    ):
+        if (
+            isinstance(row, dict)
+            and bool(row.get("present", False))
+            and not bool(row.get("ok", False))
+        ):
             failed_db_checks.append(str(row.get("db_path") or "unknown"))
     if failed_db_checks:
         blockers.append("storage_database_integrity_errors")
@@ -533,7 +761,9 @@ def _storage_contract(
         "cold_archive_required_spillover_gb": round(cold_archive_required, 3),
         "cold_archive_capacity_shortfall_gb": round(cold_archive_shortfall, 3),
         "cold_archive_adjusted_margin_gb": round(cold_archive_adjusted_margin, 3),
-        "cold_archive_capacity_policy": str(retention_contract.get("cold_archive_capacity_policy") or ""),
+        "cold_archive_capacity_policy": str(
+            retention_contract.get("cold_archive_capacity_policy") or ""
+        ),
         "primary_above_pressure_guard": primary_above_pressure_guard,
         "primary_pressure_buffer_gb": round(primary_pressure_buffer, 3),
         "effective_daily_growth_gb": round(effective_daily, 4),
@@ -549,7 +779,9 @@ def _storage_contract(
     }
 
 
-def _paper_soak_auth_ready(auth: dict[str, Any], schwab_auth: dict[str, Any], broker: dict[str, Any]) -> bool:
+def _paper_soak_auth_ready(
+    auth: dict[str, Any], schwab_auth: dict[str, Any], broker: dict[str, Any]
+) -> bool:
     broker_state = _dict(auth.get("broker_state"))
     lease_budget = _dict(auth.get("lease_budget"))
     token = _dict(schwab_auth.get("token"))
@@ -563,10 +795,17 @@ def _paper_soak_auth_ready(auth: dict[str, Any], schwab_auth: dict[str, Any], br
     ready_floor = max(
         _safe_float(schwab_auth.get("min_ready_expires_seconds"), 0.0),
         _safe_float(token.get("min_ready_expires_seconds"), 0.0),
-        _safe_float(_dict(schwab_auth.get("regression_contract")).get("schwab_token_ready_floor_seconds"), 0.0),
+        _safe_float(
+            _dict(schwab_auth.get("regression_contract")).get(
+                "schwab_token_ready_floor_seconds"
+            ),
+            0.0,
+        ),
         900.0,
     )
-    critical_floor = max(_safe_float(lease_budget.get("critical_lease_seconds"), 0.0), 600.0)
+    critical_floor = max(
+        _safe_float(lease_budget.get("critical_lease_seconds"), 0.0), 600.0
+    )
     token_ready = bool(
         bool(schwab_auth.get("token_ready", False))
         or bool(token.get("ready", False))
@@ -583,10 +822,17 @@ def _paper_soak_auth_ready(auth: dict[str, Any], schwab_auth: dict[str, Any], br
         broker.get("network_ok", True) is not False
         and broker_state.get("network_ok", True) is not False
     )
-    broker_operable = bool(bool(broker.get("ready_for_open", False)) or bool(broker_state.get("broker_operable", False)))
+    broker_operable = bool(
+        bool(broker.get("ready_for_open", False))
+        or bool(broker_state.get("broker_operable", False))
+    )
     configured_for_refresh = bool(
         broker_state.get("configured_for_refresh", True) is not False
-        and (token_ready or bool(token) or bool(broker_preflight.get("token_exists", False)))
+        and (
+            token_ready
+            or bool(token)
+            or bool(broker_preflight.get("token_exists", False))
+        )
     )
     return bool(
         token_ready
@@ -601,18 +847,36 @@ def _paper_soak_auth_ready(auth: dict[str, Any], schwab_auth: dict[str, Any], br
 def _runtime_contract(project_root: Path) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     process = load_json(health_root / "process_watchdog_latest.json")
-    live_runtime = load_json(health_root / "live_runtime_separation_control_latest.json")
+    live_runtime = load_json(
+        health_root / "live_runtime_separation_control_latest.json"
+    )
     auth = load_json(health_root / "auth_lease_manager_latest.json")
     schwab_auth = load_json(health_root / "schwab_auth_supervisor_latest.json")
     broker = load_json(health_root / "broker_readiness_latest.json")
     blockers: list[str] = []
     warnings: list[str] = []
     managed_controls: list[str] = []
-    restart_storms = process.get("restart_storms") if isinstance(process.get("restart_storms"), list) else []
-    isolation = process.get("restart_storm_isolation") if isinstance(process.get("restart_storm_isolation"), dict) else {}
+    restart_storms = (
+        process.get("restart_storms")
+        if isinstance(process.get("restart_storms"), list)
+        else []
+    )
+    isolation = (
+        process.get("restart_storm_isolation")
+        if isinstance(process.get("restart_storm_isolation"), dict)
+        else {}
+    )
     if not isolation:
-        intelligence = process.get("watchdog_intelligence") if isinstance(process.get("watchdog_intelligence"), dict) else {}
-        isolation = intelligence.get("restart_storm_isolation") if isinstance(intelligence.get("restart_storm_isolation"), dict) else {}
+        intelligence = (
+            process.get("watchdog_intelligence")
+            if isinstance(process.get("watchdog_intelligence"), dict)
+            else {}
+        )
+        isolation = (
+            intelligence.get("restart_storm_isolation")
+            if isinstance(intelligence.get("restart_storm_isolation"), dict)
+            else {}
+        )
     isolated_read_only_storms = bool(
         restart_storms
         and isolation
@@ -621,7 +885,9 @@ def _runtime_contract(project_root: Path) -> dict[str, Any]:
     )
     if str(process.get("overall_status") or "").lower() != "ready":
         if isolated_read_only_storms:
-            managed_controls.append("process_watchdog_degraded_only_by_isolated_read_only_collection")
+            managed_controls.append(
+                "process_watchdog_degraded_only_by_isolated_read_only_collection"
+            )
         else:
             blockers.append("process_watchdog_not_ready")
     if restart_storms:
@@ -631,13 +897,27 @@ def _runtime_contract(project_root: Path) -> dict[str, Any]:
             blockers.append("restart_storms_present")
     if process.get("alerts"):
         if isolated_read_only_storms:
-            managed_controls.append("process_watchdog_alerts_isolated_read_only_collection")
+            managed_controls.append(
+                "process_watchdog_alerts_isolated_read_only_collection"
+            )
         else:
             warnings.append("process_watchdog_alerts_present")
     live_runtime_status = str(live_runtime.get("overall_status") or "").lower()
-    live_plane = live_runtime.get("live_plane") if isinstance(live_runtime.get("live_plane"), dict) else {}
-    clearance_plan = live_runtime.get("clearance_plan") if isinstance(live_runtime.get("clearance_plan"), dict) else {}
-    release_contract = live_runtime.get("release_contract") if isinstance(live_runtime.get("release_contract"), dict) else {}
+    live_plane = (
+        live_runtime.get("live_plane")
+        if isinstance(live_runtime.get("live_plane"), dict)
+        else {}
+    )
+    clearance_plan = (
+        live_runtime.get("clearance_plan")
+        if isinstance(live_runtime.get("clearance_plan"), dict)
+        else {}
+    )
+    release_contract = (
+        live_runtime.get("release_contract")
+        if isinstance(live_runtime.get("release_contract"), dict)
+        else {}
+    )
     clearance_state = str(clearance_plan.get("clearance_state") or "").strip().lower()
     cold_lane_deferred = bool(
         live_runtime_status == "degraded"
@@ -645,14 +925,27 @@ def _runtime_contract(project_root: Path) -> dict[str, Any]:
         and bool(live_plane.get("broker_ready", False))
         and bool(live_plane.get("session_ready", False))
         and bool(live_plane.get("live_lane_running", False))
-        and clearance_state in {"awaiting_cold_lane", "managed_cold_lane_deferred", "managed_coverage_stage_deferred", "protect_live", "ready"}
+        and clearance_state
+        in {
+            "awaiting_cold_lane",
+            "managed_cold_lane_deferred",
+            "managed_coverage_stage_deferred",
+            "protect_live",
+            "ready",
+        }
     )
     paper_soak_live_release_deferred = bool(
         live_runtime_status == "degraded"
         and bool(release_contract.get("live_lane_should_be_read_only", False))
         and bool(live_plane.get("broker_ready", False))
         and bool(live_plane.get("session_ready", False))
-        and clearance_state in {"awaiting_cold_lane", "managed_cold_lane_deferred", "managed_coverage_stage_deferred", "protect_live"}
+        and clearance_state
+        in {
+            "awaiting_cold_lane",
+            "managed_cold_lane_deferred",
+            "managed_coverage_stage_deferred",
+            "protect_live",
+        }
     )
     if live_runtime_status == "blocked":
         blockers.append("live_runtime_separation_blocked")
@@ -692,10 +985,26 @@ def _runtime_contract(project_root: Path) -> dict[str, Any]:
 def _livefeed_remote_viewer_ready(livefeed_guard: dict[str, Any]) -> bool:
     if not livefeed_guard:
         return False
-    health = livefeed_guard.get("health") if isinstance(livefeed_guard.get("health"), dict) else {}
-    blockers = livefeed_guard.get("blockers") if isinstance(livefeed_guard.get("blockers"), list) else []
-    status = str(livefeed_guard.get("overall_status") or livefeed_guard.get("status") or "").strip().lower()
-    return bool(livefeed_guard.get("ok", health.get("ok", False))) and status in {"ready", "running"} and not blockers
+    health = (
+        livefeed_guard.get("health")
+        if isinstance(livefeed_guard.get("health"), dict)
+        else {}
+    )
+    blockers = (
+        livefeed_guard.get("blockers")
+        if isinstance(livefeed_guard.get("blockers"), list)
+        else []
+    )
+    status = (
+        str(livefeed_guard.get("overall_status") or livefeed_guard.get("status") or "")
+        .strip()
+        .lower()
+    )
+    return (
+        bool(livefeed_guard.get("ok", health.get("ok", False)))
+        and status in {"ready", "running"}
+        and not blockers
+    )
 
 
 def _alerting_contract(project_root: Path) -> dict[str, Any]:
@@ -705,15 +1014,23 @@ def _alerting_contract(project_root: Path) -> dict[str, Any]:
     blockers: list[str] = []
     warnings: list[str] = []
     managed_controls: list[str] = []
-    backlog = ladder.get("critical_backlog") if isinstance(ladder.get("critical_backlog"), dict) else {}
+    backlog = (
+        ladder.get("critical_backlog")
+        if isinstance(ladder.get("critical_backlog"), dict)
+        else {}
+    )
     grouped_unsent = _safe_int(backlog.get("grouped_unsent_count"), 0)
     grouped_unacked = _safe_int(backlog.get("grouped_unacked_count"), 0)
     attended_runtime_ready = bool(ladder.get("attended_runtime_ready", False))
     zero_touch_unattended_ready = bool(ladder.get("unattended_runtime_ready", False))
     phone_bridge_ready = bool(ladder.get("phone_bridge_ready", False))
     remote_pager_ready = bool(ladder.get("remote_pager_ready", False))
-    livefeed_ready = bool(ladder.get("livefeed_remote_viewer_ready", False)) or _livefeed_remote_viewer_ready(livefeed_guard)
-    mobile_operator_coverage_ready = bool(ladder.get("mobile_operator_coverage_ready", False)) or bool(
+    livefeed_ready = bool(
+        ladder.get("livefeed_remote_viewer_ready", False)
+    ) or _livefeed_remote_viewer_ready(livefeed_guard)
+    mobile_operator_coverage_ready = bool(
+        ladder.get("mobile_operator_coverage_ready", False)
+    ) or bool(
         phone_bridge_ready
         and livefeed_ready
         and grouped_unsent == 0
@@ -723,14 +1040,20 @@ def _alerting_contract(project_root: Path) -> dict[str, Any]:
         blockers.append("notification_ladder_missing")
     if ladder and not attended_runtime_ready:
         blockers.append("attended_alert_path_not_ready")
-    if ladder and not zero_touch_unattended_ready and not mobile_operator_coverage_ready:
+    if (
+        ladder
+        and not zero_touch_unattended_ready
+        and not mobile_operator_coverage_ready
+    ):
         blockers.append("unattended_remote_pager_not_ready")
     if grouped_unsent > 0:
         blockers.append("critical_alerts_unsent")
     if grouped_unacked > 0:
         blockers.append("critical_alerts_unacked")
     if ladder and mobile_operator_coverage_ready and not zero_touch_unattended_ready:
-        managed_controls.append("daily_mobile_operator_coverage_active_without_zero_touch_remote_pager")
+        managed_controls.append(
+            "daily_mobile_operator_coverage_active_without_zero_touch_remote_pager"
+        )
     elif ladder and phone_bridge_ready and not remote_pager_ready:
         warnings.append("phone_bridge_ready_but_remote_pager_missing")
     status = "ready" if not blockers else "blocked"
@@ -766,19 +1089,27 @@ def _alerting_contract(project_root: Path) -> dict[str, Any]:
 def _freshness_contract(project_root: Path) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     paths = {
-        "storage_retention_unison": health_root / "storage_retention_unison_latest.json",
-        "ingestion_storage_control": health_root / "ingestion_storage_control_latest.json",
+        "storage_retention_unison": health_root
+        / "storage_retention_unison_latest.json",
+        "ingestion_storage_control": health_root
+        / "ingestion_storage_control_latest.json",
         "process_watchdog": health_root / "process_watchdog_latest.json",
-        "notification_escalation_ladder": health_root / "notification_escalation_ladder_latest.json",
+        "notification_escalation_ladder": health_root
+        / "notification_escalation_ladder_latest.json",
         "livefeed_refresh_guard": health_root / "livefeed_refresh_guard_latest.json",
-        "storage_resilience_control": health_root / "storage_resilience_control_latest.json",
+        "storage_resilience_control": health_root
+        / "storage_resilience_control_latest.json",
     }
     rows: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
     for name, path in paths.items():
         payload = load_json(path)
         age = payload_age_minutes(payload, path)
-        rows[name] = {"path": str(path), "present": bool(payload), "age_minutes": round(float(age), 3) if age is not None else None}
+        rows[name] = {
+            "path": str(path),
+            "present": bool(payload),
+            "age_minutes": round(float(age), 3) if age is not None else None,
+        }
         if not payload:
             warnings.append(f"{name}_missing")
         elif age is not None and age > 180.0:
@@ -796,11 +1127,16 @@ def _freshness_contract(project_root: Path) -> dict[str, Any]:
 
 
 def _self_healing_sentinel_contract(project_root: Path) -> dict[str, Any]:
-    path = project_root / "governance" / "health" / "soak_reliability_sentinel_latest.json"
+    path = (
+        project_root / "governance" / "health" / "soak_reliability_sentinel_latest.json"
+    )
     payload = load_json(path)
     age = payload_age_minutes(payload, path) if payload else None
     fresh = bool(age is not None and float(age) <= 20.0)
-    ready = bool(payload.get("ok", False) and str(payload.get("overall_status") or "") in {"ready", "watch"})
+    ready = bool(
+        payload.get("ok", False)
+        and str(payload.get("overall_status") or "") in {"ready", "watch"}
+    )
     blockers: list[str] = []
     if not payload:
         blockers.append("soak_reliability_sentinel_missing")
@@ -819,7 +1155,11 @@ def _self_healing_sentinel_contract(project_root: Path) -> dict[str, Any]:
         "blockers": blockers,
         "warnings": [],
         "sentinel_blockers": list(payload.get("blockers") or []),
-        "evidence_epoch": payload.get("evidence_epoch") if isinstance(payload.get("evidence_epoch"), dict) else {},
+        "evidence_epoch": (
+            payload.get("evidence_epoch")
+            if isinstance(payload.get("evidence_epoch"), dict)
+            else {}
+        ),
     }
 
 
@@ -838,7 +1178,11 @@ def _system_role_contract(project_root: Path) -> dict[str, Any]:
         blockers.append("system_role_contract_not_ready")
     if payload and str(payload.get("grade") or "").upper() != "A+":
         blockers.append("system_role_contract_grade_below_a_plus")
-    if payload and str(payload.get("operating_mode") or "") != "enforced_responsibility_contracts":
+    if (
+        payload
+        and str(payload.get("operating_mode") or "")
+        != "enforced_responsibility_contracts"
+    ):
         blockers.append("system_role_contract_not_enforced")
     if payload and _safe_float(summary.get("registry_role_coverage_ratio"), 0.0) < 1.0:
         blockers.append("system_role_contract_registry_coverage_incomplete")
@@ -871,8 +1215,12 @@ def _system_role_contract(project_root: Path) -> dict[str, Any]:
         "classified_action_count": _safe_int(summary.get("classified_action_count"), 0),
         "action_lease_count": _safe_int(summary.get("action_lease_count"), 0),
         "escalation_route_count": _safe_int(summary.get("escalation_route_count"), 0),
-        "registry_role_coverage_ratio": _safe_float(summary.get("registry_role_coverage_ratio"), 0.0),
-        "authority_conflict_count": _safe_int(summary.get("authority_conflict_count"), 0),
+        "registry_role_coverage_ratio": _safe_float(
+            summary.get("registry_role_coverage_ratio"), 0.0
+        ),
+        "authority_conflict_count": _safe_int(
+            summary.get("authority_conflict_count"), 0
+        ),
         "blockers": ordered_unique(blockers),
         "warnings": [],
         "managed_controls": ["single_writer_role_authority_enforced"] if ready else [],
@@ -882,7 +1230,12 @@ def _system_role_contract(project_root: Path) -> dict[str, Any]:
 
 def _collector_capability_contract(project_root: Path) -> dict[str, Any]:
     config_path = project_root / "config" / "collector_capability_catalog_v1.json"
-    path = project_root / "governance" / "health" / "collector_capability_control_latest.json"
+    path = (
+        project_root
+        / "governance"
+        / "health"
+        / "collector_capability_control_latest.json"
+    )
     if not config_path.is_file() and not path.is_file():
         return {
             "status": "legacy_not_configured",
@@ -920,7 +1273,9 @@ def _collector_capability_contract(project_root: Path) -> dict[str, Any]:
         blockers.append("collector_capability_paper_soak_not_ready")
     if payload and _safe_int(coverage_debt.get("gap_count"), 0) > 0:
         warnings.append("capability_optional_catalog_debt_advisory")
-        managed_controls.append("optional_capability_gaps_explicit_and_isolated_from_candidate_readiness")
+        managed_controls.append(
+            "optional_capability_gaps_explicit_and_isolated_from_candidate_readiness"
+        )
     ready = not blockers
     return {
         "status": "ready" if ready else "blocked",
@@ -937,10 +1292,16 @@ def _collector_capability_contract(project_root: Path) -> dict[str, Any]:
         "capability_count": _safe_int(summary.get("capability_count"), 0),
         "bot_binding_count": _safe_int(summary.get("bot_binding_count"), 0),
         "assignment_count": _safe_int(summary.get("assignment_count"), 0),
-        "subscription_profile_count": _safe_int(summary.get("subscription_profile_count"), 0),
-        "estimated_fetch_avoidance_ratio": _safe_float(summary.get("estimated_fetch_avoidance_ratio"), 0.0),
+        "subscription_profile_count": _safe_int(
+            summary.get("subscription_profile_count"), 0
+        ),
+        "estimated_fetch_avoidance_ratio": _safe_float(
+            summary.get("estimated_fetch_avoidance_ratio"), 0.0
+        ),
         "coverage_gap_count": _safe_int(coverage_debt.get("gap_count"), 0),
-        "coverage_debt_blocks_paper_soak": bool(coverage_debt.get("blocks_guarded_paper_soak", False)),
+        "coverage_debt_blocks_paper_soak": bool(
+            coverage_debt.get("blocks_guarded_paper_soak", False)
+        ),
         "blockers": ordered_unique(blockers),
         "warnings": ordered_unique(warnings),
         "managed_controls": ordered_unique(managed_controls),
@@ -1009,7 +1370,9 @@ def _capability_materialization_contract(project_root: Path) -> dict[str, Any]:
         "max_age_minutes": 30.0,
         "required_capability_count": len(expected),
         "ready_required_capability_count": len(expected & ready_ids),
-        "direct_proof_coverage_ratio": round(len(expected & ready_ids) / len(expected), 6),
+        "direct_proof_coverage_ratio": round(
+            len(expected & ready_ids) / len(expected), 6
+        ),
         "blockers": ordered_unique(blockers),
         "warnings": [],
         "authority_contract": authority,
@@ -1026,7 +1389,9 @@ def build_payload(
     disk_snapshot_fn: DiskSnapshotFn = _disk_snapshot,
 ) -> dict[str, Any]:
     target = max(float(target_days), 1.0)
-    storage = _storage_contract(project_root=project_root, target_days=target, disk_snapshot_fn=disk_snapshot_fn)
+    storage = _storage_contract(
+        project_root=project_root, target_days=target, disk_snapshot_fn=disk_snapshot_fn
+    )
     host = _host_power_contract(
         project_root=project_root,
         pmset_custom_text=pmset_custom_text,
@@ -1072,7 +1437,9 @@ def build_payload(
         + list(capability_materialization.get("warnings") or [])
         + list(collector_capabilities.get("warnings") or [])
     )
-    scored_warnings = [item for item in warnings if not _warning_is_managed_for_soak(item)]
+    scored_warnings = [
+        item for item in warnings if not _warning_is_managed_for_soak(item)
+    ]
     managed_warnings = [item for item in warnings if _warning_is_managed_for_soak(item)]
     managed_controls = ordered_unique(
         list(storage.get("managed_controls") or [])
@@ -1082,9 +1449,16 @@ def build_payload(
         + list(system_roles.get("managed_controls") or [])
         + list(collector_capabilities.get("managed_controls") or [])
     )
-    section_scores = [_safe_float(row.get("score"), 92.0) for row in sections.values() if isinstance(row, dict)]
+    section_scores = [
+        _safe_float(row.get("score"), 92.0)
+        for row in sections.values()
+        if isinstance(row, dict)
+    ]
     base_score = sum(section_scores) / max(len(section_scores), 1)
-    score = max(min(base_score - (6.0 * len(blockers)) - (1.5 * len(scored_warnings)), 100.0), 0.0)
+    score = max(
+        min(base_score - (6.0 * len(blockers)) - (1.5 * len(scored_warnings)), 100.0),
+        0.0,
+    )
     status = "ready" if not blockers else "blocked"
     return {
         "timestamp_utc": iso_now(),
@@ -1109,12 +1483,38 @@ def build_payload(
             "BOT_LIVE_MONEY_LOCKED_DURING_SOAK": "1",
         },
         "recommended_commands": [
-            ["./scripts/ops/opsctl.sh", "storage-retention-unison", "--apply", "--soak-days", str(round(target, 3)), "--json"],
-            ["./scripts/ops/opsctl.sh", "bot-logs-cleanup-intelligence", "--apply", "--target-free-gb", "125", "--max-tier", "2", "--json"],
+            [
+                "./scripts/ops/opsctl.sh",
+                "storage-retention-unison",
+                "--apply",
+                "--soak-days",
+                str(round(target, 3)),
+                "--json",
+            ],
+            [
+                "./scripts/ops/opsctl.sh",
+                "bot-logs-cleanup-intelligence",
+                "--apply",
+                "--target-free-gb",
+                "125",
+                "--max-tier",
+                "2",
+                "--json",
+            ],
             ["./scripts/install_caffeinate_launchd.sh"],
             ["./scripts/ops/opsctl.sh", "notification-escalation-ladder", "--json"],
-            ["./scripts/ops/opsctl.sh", "storage-resilience-control", "--fast", "--json"],
-            ["./scripts/ops/opsctl.sh", "local-storage-reserve-guard", "--apply", "--json"],
+            [
+                "./scripts/ops/opsctl.sh",
+                "storage-resilience-control",
+                "--fast",
+                "--json",
+            ],
+            [
+                "./scripts/ops/opsctl.sh",
+                "local-storage-reserve-guard",
+                "--apply",
+                "--json",
+            ],
             ["./scripts/ops/opsctl.sh", "capability-materialization", "--json"],
             ["./scripts/ops/opsctl.sh", "collector-capability-control", "--json"],
             ["./scripts/ops/opsctl.sh", "system-role-contract", "--json"],
@@ -1128,14 +1528,24 @@ def build_payload(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Publish a single 30-day unattended soak readiness contract.")
+    parser = argparse.ArgumentParser(
+        description="Publish a single 30-day unattended soak readiness contract."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
-    parser.add_argument("--target-days", type=float, default=float(os.getenv("UNATTENDED_SOAK_TARGET_DAYS", str(DEFAULT_TARGET_DAYS))))
+    parser.add_argument(
+        "--target-days",
+        type=float,
+        default=float(
+            os.getenv("UNATTENDED_SOAK_TARGET_DAYS", str(DEFAULT_TARGET_DAYS))
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    payload = build_payload(Path(args.project_root).resolve(), target_days=float(args.target_days))
+    payload = build_payload(
+        Path(args.project_root).resolve(), target_days=float(args.target_days)
+    )
     out_path = Path(args.out_file).expanduser()
     write_payload(out_path, payload)
     if args.json:

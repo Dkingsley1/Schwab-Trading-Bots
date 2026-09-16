@@ -16,6 +16,36 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def test_database_direction_remains_evaluation_only_in_generated_runbook(tmp_path: Path) -> None:
+    commands_src.build_payload(tmp_path, apply=True)
+    text = (tmp_path / "COMMANDS.md").read_text(encoding="utf-8")
+    assert "keep SQLite and DuckDB/Parquet; evaluate PostgreSQL" in text
+    assert "defer Redis/NoSQL pending a measured cache bottleneck" in text
+    assert "This command does not install a backend or perform that evaluation" in text
+    assert "no unadmitted services, migration copies or history scans" in text
+
+
+def test_storage_recovery_contract_survives_document_regeneration(tmp_path: Path) -> None:
+    commands_src.build_payload(tmp_path, apply=True)
+    text = (tmp_path / "COMMANDS.md").read_text(encoding="utf-8")
+    for marker in (
+        "--filesystem-compressor auto",
+        "--index-only --apply --json",
+        "five seconds/15,000 entries",
+        "MAINTENANCE_SLOT_LEASE_WAIT_SECONDS=120",
+        "row_encoding=msgpack_sqlite_scalars_v1",
+        "index_build_strategy=maintained_during_row_copy",
+        "read-only",
+        "Local staging/copy preserves at least 32 GiB",
+        "explicitly supplied matching-token authority",
+        "Neither command creates a new scheduler or Codex automation",
+        "progress_stalled",
+        "sql_writer_between_scheduled_cycles",
+    ):
+        assert marker in text
+    assert commands_src.build_payload(tmp_path, apply=False)["ok"]
+
+
 def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_text(project_root / "COMMANDS.md", "# old\n")
@@ -90,6 +120,10 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "./scripts/ops/opsctl.sh dashboard --skip-refresh" in commands_text
     assert "### Review Codex project guardrails" in commands_text
     assert "./scripts/ops/opsctl.sh codex-project-guard --staged --json" in commands_text
+    assert "### Review scheduled ops job lifecycle" in commands_text
+    assert "./scripts/ops/opsctl.sh ops-scheduled-jobs --json" in commands_text
+    assert "./scripts/ops/opsctl.sh ops-scheduled-jobs --queue-only --json" in commands_text
+    assert "./scripts/ops/opsctl.sh ops-scheduled-jobs --preflight-only --json" in commands_text
     assert "### Review sleeve-master and grand-master evidence" in commands_text
     assert "./scripts/ops/opsctl.sh master-grandmaster-evidence --json" in commands_text
     assert "### Review collector capabilities and bot subscriptions" in commands_text
@@ -132,7 +166,7 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "### Refresh one coherent training evidence epoch" in commands_text
     assert "./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training --skip-dashboard --json" in commands_text
     assert "### Refresh training and profitability evidence together" in commands_text
-    assert "./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training-profitability --skip-dashboard --json" in commands_text
+    assert "./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training-profitability --max-run-seconds 1200 --skip-dashboard --json" in commands_text
     assert "### Inspect bounded strategy generations" in commands_text
     assert "./scripts/ops/opsctl.sh strategy-generation --json" in commands_text
     assert "### Propose a bounded strategy generation" in commands_text
@@ -393,6 +427,10 @@ def test_render_commands_markdown_places_new_entries_in_expected_sections(tmp_pa
     assert "./scripts/ops/opsctl.sh docs-reporting-intelligence --apply --json" in status_health
     assert "### PyCharm active bot blue highlights" in status_health
     assert "./scripts/ops/opsctl.sh pycharm-active-bot-highlights --apply --json" in status_health
+    assert "### Review scheduled ops job lifecycle" in status_health
+    assert "./scripts/ops/opsctl.sh ops-scheduled-jobs --json" in status_health
+    assert "./scripts/ops/opsctl.sh ops-scheduled-jobs --queue-only --json" in status_health
+    assert "./scripts/ops/opsctl.sh ops-scheduled-jobs --preflight-only --json" in status_health
     assert "### Coinbase API health" in status_health
     assert "./scripts/ops/opsctl.sh coinbase-api-health --json" in status_health
     assert "### Point-in-time event store" in status_health

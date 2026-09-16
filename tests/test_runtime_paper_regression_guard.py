@@ -1528,6 +1528,75 @@ def test_soak_continuity_blocks_eligible_paper_when_runtime_is_degraded(
     assert "runtime_not_ready_or_advisory" in continuity["actual"]["blockers"]
 
 
+def test_soak_continuity_accepts_degraded_runtime_when_paper_lane_is_guarded(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    override = project_root / "config" / ".env.runtime_resource_guard_override"
+    runtime = _runtime_payload(blocked_paper=False)
+    runtime["overall_status"] = "degraded"
+    runtime["ok"] = False
+    runtime["compute_pressure_level"] = "normal"
+    runtime["memory_pressure_level"] = "elevated"
+    soft_cap = runtime["soft_cap_advisory_reclassification"]
+    soft_cap.update(
+        {
+            "active": False,
+            "to_status": "degraded",
+            "reason": "soft_cap_still_requires_degraded_posture",
+        }
+    )
+    soft_cap["thresholds"].update(
+        {
+            "max_guarded_ready_full_force_elevated_host_saturation_score": 62.0,
+            "max_guarded_ready_bounded_bot_owned_cpu_percent": 220.0,
+            "max_guarded_ready_protected_lane_cpu_percent": 125.0,
+            "max_guarded_operator_observability_high_compute_cpu_percent": 100.0,
+        }
+    )
+    soft_cap["measurements"].update(
+        {
+            "compute_pressure_level": "normal",
+            "memory_pressure_level": "elevated",
+            "paper_ramp_memory_guarded": True,
+            "storage_ready_for_runtime_advisory": True,
+            "paper_ramp_armed": True,
+            "paper_execution_allowed": True,
+            "paper_execution_paused": False,
+            "live_read_only": True,
+            "host_saturation_score": 43.0,
+            "bot_owned_cpu_percent": 80.0,
+            "bot_owned_non_operator_cpu_percent": 80.0,
+            "protected_live_or_macro_cpu_percent": 47.0,
+            "operator_observability_cpu_percent": 0.0,
+            "support_jobs_hot": False,
+            "paper_execution_hot": False,
+            "research_training_hot": False,
+            "storage_writer_hot": False,
+        }
+    )
+    _write_json(health / "runtime_throttle_control_latest.json", runtime)
+    _write_json(
+        health / "paper_400_ramp_latest.json", _paper_payload(blockers=[], armed=True)
+    )
+    _write_soak_lane_artifacts(project_root)
+    _ready_override(override)
+
+    payload = src.build_payload(project_root)
+
+    assert payload["overall_status"] == "ready"
+    assert "soak_30_day_continuity_contract" not in payload["failed_guards"]
+    continuity = next(
+        row
+        for row in payload["regression_guards"]
+        if row["name"] == "soak_30_day_continuity_contract"
+    )
+    envelope = continuity["actual"]["runtime_paper_lane_guarded_ready"]
+    assert envelope["ready"] is True
+    assert envelope["reason"] == "degraded_runtime_has_guarded_paper_lane_envelope"
+
+
 def test_soak_continuity_accepts_capacity_limited_armed_paper_ramp(
     tmp_path: Path,
 ) -> None:

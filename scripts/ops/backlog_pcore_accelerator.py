@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,105 @@ DEFAULT_OVERRIDE_PATH = (
     PROJECT_ROOT / "config" / ".env.backlog_pcore_accelerator_override"
 )
 BACKLOG_GREEN_AGE_SECONDS = 900.0
+
+
+def _evidence_age(payload: dict[str, Any], now: datetime) -> float | None:
+    try:
+        stamp = datetime.fromisoformat(
+            str(payload["timestamp_utc"]).replace("Z", "+00:00")
+        )
+        if stamp.tzinfo is None:
+            return None
+        age = (now - stamp).total_seconds()
+        return round(age, 3) if age >= 0 else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _activation_contract(project_root: Path) -> dict[str, Any]:
+    from scripts.ops.backpressure_drainer_fleet import _service_request_consumed
+    from scripts.ops.sql_writer_admission import storage_admission
+
+    now = datetime.now(timezone.utc)
+    health = project_root / "governance/health"
+    fleet = load_json(health / "backpressure_drainer_fleet_latest.json")
+    progress = load_json(health / "sql_link_service_progress_latest.json")
+    request = load_json(health / "sql_link_service_request_latest.json")
+    admission = storage_admission(project_root)
+    plan_age = _evidence_age(fleet, now)
+    progress_age = _evidence_age(progress, now)
+    plan_fresh = plan_age is not None and plan_age <= 90
+    progress_fresh = progress_age is not None and progress_age <= 90
+    try:
+        requested = datetime.fromisoformat(
+            str(request["requested_at"]).replace("Z", "+00:00")
+        )
+        expires = datetime.fromisoformat(
+            str(request["expires_utc"]).replace("Z", "+00:00")
+        )
+        request_current = (
+            request.get("active") is not False
+            and requested <= now < expires
+            and (now - requested).total_seconds() <= 900
+            and not _service_request_consumed(
+                health / "sql_link_service_request_latest.json", request
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        request_current = False
+    env = _as_dict(request.get("env_overrides")) if request_current else {}
+    requested_workers = max(
+        _safe_int(env.get("SQL_LINK_SERVICE_PREPROCESS_WORKERS")), 0
+    )
+    requested_acceleration = str(env.get("BACKLOG_ACCELERATOR_ENABLED", "0")) == "1"
+    observed_running = progress_fresh and progress.get("running") is True
+    lanes = _as_dict(progress.get("shard_writer_lane_contract"))
+    blockers = list(admission.get("blockers") or [])
+    if not plan_fresh:
+        blockers.append("backlog_plan_stale_or_missing")
+    elif fleet.get("overall_status") in {
+        "blocked",
+        "deferred_observation",
+        "already_running",
+    }:
+        blockers.extend(fleet.get("blocked_reasons") or ["backlog_plan_unavailable"])
+    if not request_current and _as_dict(fleet.get("active_drainer")):
+        blockers.append("accelerator_request_expired_or_missing")
+    if observed_running:
+        state = "running_observed"
+    elif not admission["writer_start_allowed"]:
+        state = "held_storage"
+    elif blockers:
+        state = "awaiting_fresh_plan"
+    elif requested_acceleration:
+        state = "handoff_requested"
+    else:
+        state = "idle"
+    return {
+        "timestamp_utc": now.isoformat(),
+        "state": state,
+        "requested": requested_acceleration,
+        "request_current": request_current,
+        "requested_workers": requested_workers,
+        "writer_running_observed": observed_running,
+        "observed_worker_budget": (
+            max(_safe_int(lanes.get("selected_shard_writer_lanes")), 0)
+            if observed_running
+            else 0
+        ),
+        "plan_age_seconds": plan_age,
+        "writer_progress_age_seconds": progress_age,
+        "writer_progress_fresh": progress_fresh,
+        "storage_start_allowed": admission["writer_start_allowed"],
+        "local_free_gb": _as_dict(admission.get("local_storage_reserve")).get(
+            "free_gb"
+        ),
+        "writer_floor_gb": _as_dict(admission.get("local_storage_reserve")).get(
+            "pressure_free_gb"
+        ),
+        "blockers": ordered_unique(blockers),
+        "policy": "requested capacity is not execution; fresh writer telemetry is observational, all runtime admission and single-writer locks remain authoritative",
+    }
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -522,6 +622,7 @@ def _storage_maintenance_pcore_contract(
     *,
     host_lanes: dict[str, Any],
     topology: dict[str, Any],
+    scan_inventory: bool = True,
 ) -> dict[str, Any]:
     health = project_root / "governance" / "health"
     storage_guard = load_json(health / "data_collection_storage_guard_latest.json")
@@ -577,9 +678,18 @@ def _storage_maintenance_pcore_contract(
         and active_local_count == 0
     )
     local_fallback_root = project_root / "local_fallback_storage"
-    local_fallback_size = _bounded_tree_size(local_fallback_root)
-    local_fallback_data_size = _bounded_tree_size(local_fallback_root / "data")
-    local_fallback_shard_size = _bounded_tree_size(
+    inventory = (
+        _bounded_tree_size
+        if scan_inventory
+        else lambda path: {
+            "path": str(path),
+            "size_kind": "not_scanned",
+            "size_bytes": None,
+        }
+    )
+    local_fallback_size = inventory(local_fallback_root)
+    local_fallback_data_size = inventory(local_fallback_root / "data")
+    local_fallback_shard_size = inventory(
         local_fallback_root / "data" / "sql_link_shards"
     )
     p_workers = max(
@@ -1284,11 +1394,21 @@ def write_outputs(
     }
 
 
-def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+def build_payload(
+    project_root: Path = PROJECT_ROOT, *, runtime_only: bool = False
+) -> dict[str, Any]:
     health = project_root / "governance" / "health"
     governor = load_json(health / "autonomic_resource_governor_latest.json")
     storage_payload = load_json(health / "ingestion_storage_control_latest.json")
-    writer = load_json(health / "writer_cycle_coordinator_latest.json")
+    writer = (
+        {
+            "writer_state_before": load_json(
+                health / "sql_link_service_progress_latest.json"
+            )
+        }
+        if runtime_only
+        else load_json(health / "writer_cycle_coordinator_latest.json")
+    )
     writer_intel = load_json(health / "writer_process_intelligence_latest.json")
     runtime = load_json(health / "runtime_throttle_control_latest.json")
     memory = load_json(health / "memory_pressure_intelligence_latest.json")
@@ -1304,6 +1424,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         project_root,
         host_lanes=host_lanes,
         topology=topology,
+        scan_inventory=not runtime_only,
     )
     lanes = _accelerator_lanes(storage, host_lanes, sleeve_pump)
     wave = _wave_policy(storage, host_lanes, runtime, storage_accelerator)
@@ -1329,12 +1450,17 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     grade = _grade(storage, host_lanes, writer_is_active, topology, memory)
     needs = _needs(storage, decision, host_lanes, memory)
     overall = "ready" if grade["score"] >= 90 and not needs else "advisory"
+    activation = _activation_contract(project_root)
+    if activation["blockers"]:
+        overall = "advisory"
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
         "ok": overall == "ready",
         "overall_status": overall,
         "mode": "backlog_pcore_accelerator",
+        "runtime_only": runtime_only,
+        "activation_contract": activation,
         "input_contracts": {
             "autonomic_resource_governor": _status(governor),
             "ingestion_storage_control": _status(storage_payload),
@@ -1358,6 +1484,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "storage backpressure autopilot reports a repair plan",
             ],
             "hold_when": [
+                "live storage admission or owner storage pause blocks writer startup",
                 "another SQL writer already owns the lock",
                 "memory enters hard relief or swap relief",
                 "protected volume denylist would be touched",
@@ -1435,11 +1562,18 @@ def main() -> int:
         description="Coordinate P-core backlog accelerators around the single SQLite writer."
     )
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--runtime-only",
+        action="store_true",
+        help="Refresh activation evidence without tree scans or configuration changes.",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--out", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--override", default=str(DEFAULT_OVERRIDE_PATH))
     args = parser.parse_args()
-    payload = build_payload(PROJECT_ROOT)
+    if args.runtime_only and args.apply:
+        parser.error("--runtime-only cannot be combined with --apply")
+    payload = build_payload(PROJECT_ROOT, runtime_only=args.runtime_only)
     result = write_outputs(
         payload,
         out_path=Path(args.out),

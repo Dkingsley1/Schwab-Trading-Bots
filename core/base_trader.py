@@ -8059,10 +8059,18 @@ class BaseTrader:
         return result
 
     def _record_jsonl(self, path: str, row: Dict[str, Any]) -> Dict[str, Any]:
-        safe_append_jsonl(
+        written = safe_append_jsonl(
             path,
             row,
             project_root=self.project_root,
             source="base_trader.record_jsonl",
         )
+        if (
+            not written
+            and path == getattr(self, "paper_log_path", None)
+            and "post_cost_pnl_delta" in row
+        ):
+            # The book may already reflect the paper fill. Fail visibly and let the
+            # execution owner dead-letter it; never claim durable evidence or retry.
+            raise OSError("paper_trade_evidence_persistence_failed")
         return row

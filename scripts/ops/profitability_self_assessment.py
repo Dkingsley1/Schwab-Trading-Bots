@@ -15,10 +15,10 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.long_runtime_common import load_json, parse_iso_utc, write_payload
-    from scripts.ops.production_excellence_control import verify_candidate_event_chain
+    from scripts.ops.production_excellence_control import read_candidate_event_chain, verify_candidate_event_chain
 else:
     from .long_runtime_common import PROJECT_ROOT, load_json, parse_iso_utc, write_payload
-    from .production_excellence_control import verify_candidate_event_chain
+    from .production_excellence_control import read_candidate_event_chain, verify_candidate_event_chain
 
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "profitability_self_assessment_v1.json"
@@ -256,18 +256,11 @@ def _need(
 
 
 def _read_candidate_events(path: Path) -> list[dict[str, Any]]:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
+    events, chain = read_candidate_event_chain(path)
+    if not chain["ok"]:
         return []
     rows: list[dict[str, Any]] = []
-    for line in lines:
-        try:
-            row = json.loads(line)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(row, dict):
-            continue
+    for row in events:
         if parse_iso_utc(row.get("timestamp_utc")) is None:
             continue
         rows.append(row)

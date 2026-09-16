@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import random
@@ -17,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.sqlite_runtime import connect_sqlite
+from core.storage_router import inspect_storage_path
 from core.runtime_maintenance import (
     maintenance_hold_snapshot,
     maintenance_hold_token_authorized,
@@ -33,6 +35,12 @@ DEFAULT_INCLUDE_GLOBS = [
     "exports/paper_broker_bridge/**/*.jsonl",
     "data/**/*.jsonl",
 ]
+INGESTION_CONTROL_PREFIXES = (
+    "governance/health/write_path_recovery",
+    "governance/health/write_path_receipts/",
+    "governance/health/jsonl_ingest_batch_journal",
+    "governance/events/jsonl_ingest_batches_",
+)
 DEFAULT_EXCLUDE_PARTS = [
     "/.git/",
     "/.venv",
@@ -541,6 +549,9 @@ def _matches_rel_filters(
     path_not_contains: List[str],
 ) -> bool:
     rel = str(source_rel or "")
+    # Checkpoints and their indexes are recovery inputs, never their own payloads.
+    if rel.startswith(INGESTION_CONTROL_PREFIXES):
+        return False
     include_streams_set = set(include_streams)
     exclude_streams_set = set(exclude_streams)
     if include_streams_set and stream not in include_streams_set:
@@ -684,6 +695,8 @@ def _prioritize_jsonl_files_by_pending_bytes(
     filename_anchor_day = (
         max(anchor_days) if anchor_days else datetime.now(timezone.utc).date()
     )
+    observed_at = time.time()
+    overdue: Dict[Path, float] = {}
 
     def _sort_key(
         path: Path,
@@ -693,15 +706,42 @@ def _prioritize_jsonl_files_by_pending_bytes(
         except Exception:
             rel = str(path)
         progress = sqlite_state.get(rel, {}) if isinstance(sqlite_state, dict) else {}
+        stat = None
         try:
+            if inspect_storage_path(path).get("status") != "present":
+                raise OSError("unavailable_source_route")
             stat = path.stat()
             size_bytes = int(stat.st_size)
             mtime = float(stat.st_mtime)
         except Exception:
             size_bytes = 0
             mtime = 0.0
-        last_offset = int(float(progress.get("last_offset_bytes", 0) or 0))
+        try:
+            start_line, last_offset, reset_reason = (
+                _derive_start_cursor(progress, stat)
+                if stat is not None else (0, 0, "")
+            )
+        except (TypeError, ValueError, OverflowError):
+            start_line = 0
+            last_offset = 0
+            reset_reason = "invalid_cursor"
         pending_bytes = max(size_bytes - max(last_offset, 0), 0)
+        last_observed = mtime
+        if stat is not None and not reset_reason and start_line > 0 and last_offset > 0:
+            try:
+                checkpoint_mtime = float(progress.get("mtime", 0) or 0)
+                if (
+                    int(progress.get("file_inode", 0) or 0) == stat.st_ino
+                    and math.isfinite(checkpoint_mtime)
+                    and 0 < checkpoint_mtime <= observed_at
+                ):
+                    last_observed = min(mtime, checkpoint_mtime)
+            except (TypeError, ValueError, OverflowError):
+                pass
+        if pending_bytes > 0 and math.isfinite(mtime) and 0 < mtime <= observed_at:
+            service_age = observed_at - last_observed
+            if service_age >= 1800:
+                overdue[path] = service_age
         has_pending = 0 if pending_bytes > 0 else 1
         lane = _ingestion_lane_label(rel)
         lane_rank = {
@@ -741,7 +781,36 @@ def _prioritize_jsonl_files_by_pending_bytes(
             rel,
         )
 
-    return sorted(files, key=_sort_key)
+    ordered = sorted(files, key=_sort_key)
+    # Spend one existing slot within each lane; never displace its first choice
+    # or promote a deferred/cold file across the limiter's separate quotas.
+    lane_positions: Dict[str, List[int]] = {}
+    for index, path in enumerate(ordered):
+        try:
+            rel = str(path.relative_to(project_root))
+        except ValueError:
+            continue
+        lane = (
+            "cold" if _is_cold_lane_path(rel)
+            else "deferred" if _is_deferred_analytics_path(rel)
+            else "core"
+        )
+        lane_positions.setdefault(lane, []).append(index)
+    for positions in lane_positions.values():
+        if len(positions) < 2:
+            continue
+        lane_files = [ordered[index] for index in positions]
+        candidates = [path for path in lane_files if path in overdue]
+        if not candidates:
+            continue
+        selected = max(candidates, key=lambda path: overdue[path])
+        if selected == lane_files[0]:
+            continue
+        lane_files.remove(selected)
+        lane_files.insert(1, selected)
+        for index, path in zip(positions, lane_files):
+            ordered[index] = path
+    return ordered
 
 
 def _limit_prioritized_jsonl_files(
@@ -840,11 +909,14 @@ def _load_journal_resume_progress(
     journal_path: Path,
     *,
     persist_index: bool = True,
+    index_path: Optional[Path] = None,
+    max_scan_bytes: Optional[int] = None,
 ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
     """Return highest durable SQLite cursors from an append-only ingest journal."""
+    index_path = index_path or _journal_resume_index_path(journal_path)
     detail: Dict[str, Any] = {
         "journal_file": str(journal_path),
-        "index_file": str(_journal_resume_index_path(journal_path)),
+        "index_file": str(index_path),
         "journal_available": False,
         "index_reused": False,
         "scan_start_bytes": 0,
@@ -859,7 +931,6 @@ def _load_journal_resume_progress(
         return {}, detail
 
     detail["journal_available"] = True
-    index_path = _journal_resume_index_path(journal_path)
     entries: Dict[str, Dict[str, Any]] = {}
     start_offset = 0
     index_payload: Dict[str, Any] = {}
@@ -872,14 +943,26 @@ def _load_journal_resume_progress(
         index_payload = {}
 
     indexed_entries = index_payload.get("entries")
-    indexed_offset = int(index_payload.get("journal_offset_bytes", 0) or 0)
-    if (
-        int(index_payload.get("schema_version", 0) or 0)
-        == JOURNAL_RESUME_INDEX_SCHEMA_VERSION
-        and int(index_payload.get("journal_inode", 0) or 0) == int(journal_stat.st_ino)
-        and 0 <= indexed_offset <= int(journal_stat.st_size)
-        and isinstance(indexed_entries, dict)
-    ):
+    try:
+        indexed_offset = int(index_payload.get("journal_offset_bytes", 0) or 0)
+        index_valid = (
+            int(index_payload.get("schema_version", 0) or 0)
+            == JOURNAL_RESUME_INDEX_SCHEMA_VERSION
+            and int(index_payload.get("journal_inode", 0) or 0)
+            == int(journal_stat.st_ino)
+            and 0 <= indexed_offset <= int(journal_stat.st_size)
+            and (
+                int(journal_stat.st_size)
+                != int(index_payload.get("journal_size_bytes", -1))
+                or index_payload.get("journal_mtime_ns") is None
+                or index_payload.get("journal_mtime_ns") == journal_stat.st_mtime_ns
+            )
+            and isinstance(indexed_entries, dict)
+        )
+    except (ValueError, TypeError, OverflowError):
+        indexed_offset = 0
+        index_valid = False
+    if index_valid:
         entries = {
             str(source_rel): dict(progress)
             for source_rel, progress in indexed_entries.items()
@@ -888,12 +971,14 @@ def _load_journal_resume_progress(
         start_offset = indexed_offset
         detail["index_reused"] = True
     else:
-        try:
-            max_scan_bytes = max(
-                int(os.getenv("INGEST_JOURNAL_RESUME_SCAN_MAX_BYTES", "268435456")), 0
-            )
-        except Exception:
-            max_scan_bytes = 268435456
+        if max_scan_bytes is None:
+            try:
+                max_scan_bytes = max(
+                    int(os.getenv("INGEST_JOURNAL_RESUME_SCAN_MAX_BYTES", "268435456")),
+                    0,
+                )
+            except Exception:
+                max_scan_bytes = 268435456
         if max_scan_bytes > 0 and int(journal_stat.st_size) > max_scan_bytes:
             start_offset = int(journal_stat.st_size) - max_scan_bytes
 
@@ -907,7 +992,11 @@ def _load_journal_resume_progress(
 
         while True:
             line_start = int(journal.tell())
-            raw = journal.readline()
+            remaining = int(journal_stat.st_size) - line_start
+            if remaining <= 0:
+                consumed_offset = line_start
+                break
+            raw = journal.readline(remaining)
             if not raw:
                 consumed_offset = line_start
                 break
@@ -954,12 +1043,17 @@ def _load_journal_resume_progress(
                     "last_offset_bytes": last_offset,
                     "timestamp_utc": str(row.get("timestamp_utc") or ""),
                     "event": event,
+                    "file_inode": row.get("file_inode", 0),
+                    "file_size_bytes": row.get("file_size_bytes", 0),
+                    "source_file_identity": str(row.get("source_file_identity") or ""),
                 }
 
     detail["scan_end_bytes"] = int(consumed_offset)
     detail["scanned_bytes"] = max(int(consumed_offset) - int(start_offset), 0)
     detail["entries"] = len(entries)
-    if persist_index:
+    if persist_index and (
+        not detail["index_reused"] or consumed_offset != start_offset
+    ):
         index_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema_version": JOURNAL_RESUME_INDEX_SCHEMA_VERSION,
@@ -967,6 +1061,7 @@ def _load_journal_resume_progress(
             "journal_file": str(journal_path),
             "journal_inode": int(journal_stat.st_ino),
             "journal_size_bytes": int(journal_stat.st_size),
+            "journal_mtime_ns": int(journal_stat.st_mtime_ns),
             "journal_offset_bytes": int(consumed_offset),
             "entries": entries,
         }
@@ -1221,12 +1316,31 @@ def _extract_route_fields(
     )
 
 
-def _count_lines(path: Path) -> int:
-    try:
-        with open(path, "rb") as f:
-            return sum(1 for _ in f)
-    except Exception:
-        return 0
+def _count_lines(
+    path: Path, *, start_line: int = 0, start_offset_bytes: int = 0
+) -> int:
+    """Count the exact tail after a validated cursor with bounded read buffers."""
+    with open(path, "rb") as source:
+        size = os.fstat(source.fileno()).st_size
+        offset = int(start_offset_bytes)
+        count = int(start_line)
+        if count > 0 and 0 < offset <= size:
+            source.seek(offset - 1)
+            if source.read(1) != b"\n":
+                offset = count = 0
+        else:
+            offset = count = 0
+        source.seek(offset)
+        remaining = size - offset
+        last_byte = b""
+        while remaining:
+            chunk = source.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise OSError("source truncated during line count")
+            count += chunk.count(b"\n")
+            remaining -= len(chunk)
+            last_byte = chunk[-1:]
+        return count + int(bool(last_byte) and last_byte != b"\n")
 
 
 def _event_day_utc(event_ts: Optional[datetime], *, fallback_ts: datetime) -> str:
@@ -1799,6 +1913,31 @@ def _sqlite_source_revision_mismatch(
     return hashlib.sha1(payload.encode("utf-8")).hexdigest() != str(row[0])
 
 
+class _OpsReceiptSession:
+    """One checked, lazily opened receipt connection per sequential writer pass."""
+
+    def __init__(self, project_root: Path):
+        self.project_root = project_root
+        self.attempted = False
+        self._conn: Optional[sqlite3.Connection] = None
+
+    def get(self) -> sqlite3.Connection:
+        if not self.attempted:
+            self.attempted = True
+            self._conn = ops_data_plane.connect(self.project_root)
+        if self._conn is None:
+            raise RuntimeError("ops receipt connection unavailable for this pass")
+        return self._conn
+
+    def close(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _sync_file_to_sqlite(
     conn: Optional[sqlite3.Connection],
     table: str,
@@ -1825,6 +1964,7 @@ def _sync_file_to_sqlite(
     host_load_soft_cap: float = 0.0,
     host_load_sleep_seconds: float = 0.0,
     source_file_identity_override: str = "",
+    ops_session: Optional[_OpsReceiptSession] = None,
 ) -> Dict[str, Any]:
     inserted = 0
     invalid = 0
@@ -1851,8 +1991,13 @@ def _sync_file_to_sqlite(
     ops_conn = None
     if not dry_run:
         try:
-            ops_conn = ops_data_plane.connect(project_root)
+            ops_conn = (
+                ops_session.get()
+                if ops_session is not None
+                else ops_data_plane.connect(project_root)
+            )
         except Exception:
+            ops_write_failures += 1
             ops_conn = None
 
     rows: List[Tuple[Any, ...]] = []
@@ -1872,7 +2017,10 @@ def _sync_file_to_sqlite(
             except Exception:
                 pass
             try:
-                ops_conn.close()
+                if ops_session is not None:
+                    ops_session.close()
+                else:
+                    ops_conn.close()
             except Exception:
                 pass
             ops_conn = None
@@ -1890,7 +2038,10 @@ def _sync_file_to_sqlite(
             except Exception:
                 pass
             try:
-                ops_conn.close()
+                if ops_session is not None:
+                    ops_session.close()
+                else:
+                    ops_conn.close()
             except Exception:
                 pass
             ops_conn = None
@@ -2169,7 +2320,8 @@ def _sync_file_to_sqlite(
     finally:
         if ops_conn is not None:
             flush_ops()
-            ops_conn.close()
+            if ops_conn is not None and ops_session is None:
+                ops_conn.close()
 
     return {
         "inserted": int(inserted),
@@ -3096,6 +3248,7 @@ def main() -> int:
         "mysql": {"all": LatencyAccumulator(), "by_stream": {}},
     }
     source_revision_resets: List[Dict[str, Any]] = []
+    ops_session = _OpsReceiptSession(project_root)
 
     try:
         for fp in files:
@@ -3109,7 +3262,6 @@ def main() -> int:
                 continue
 
             print(f"Syncing: {rel}")
-            total_lines = _count_lines(fp)
 
             if args.mode in {"sqlite", "both"}:
                 progress = state["sqlite"].get(rel, {"last_line": 0, "mtime": 0.0})
@@ -3139,6 +3291,9 @@ def main() -> int:
                     start_line = 0
                     start_offset = 0
                     reset_reason = "source_revision_payload_mismatch"
+                total_lines = _count_lines(
+                    fp, start_line=start_line, start_offset_bytes=start_offset
+                )
                 source_file_identity = _source_file_identity_for_cursor(
                     sqlite_conn,
                     args.sqlite_table,
@@ -3250,6 +3405,7 @@ def main() -> int:
                             float(args.ingest_host_load_sleep_seconds), 0.0
                         ),
                         source_file_identity_override=source_file_identity,
+                        ops_session=ops_session,
                     )
                 except FileNotFoundError:
                     _journal_event(
@@ -3389,6 +3545,9 @@ def main() -> int:
                 progress = state["mysql"].get(rel, {"last_line": 0, "mtime": 0.0})
                 start_line, start_offset, reset_reason = _derive_start_cursor(
                     progress, st
+                )
+                total_lines = _count_lines(
+                    fp, start_line=start_line, start_offset_bytes=start_offset
                 )
                 _journal_event(
                     journal_paths,
@@ -3668,6 +3827,11 @@ def main() -> int:
             "state_file": str(state_path),
             "health_file": str(health_file_path),
             "checkpoint_mode": "line_offset_inode_v2",
+            "ops_receipt_connection": {
+                "attempted": ops_session.attempted,
+                "available": ops_session._conn is not None,
+                "policy": "one_checked_connection_per_writer_pass_commit_per_file",
+            },
             "files_discovered": int(len(files)),
             "json_files_discovered": int(len(json_files)),
             "invalid_log_file": str(invalid_log_path),
@@ -3798,6 +3962,7 @@ def main() -> int:
         print(f"Health summary: {health_file_path}")
         return 0
     finally:
+        ops_session.close()
         if sqlite_conn is not None:
             sqlite_conn.close()
 

@@ -23,6 +23,7 @@ from scripts.ops import backpressure_drainer_fleet as drainer_src
 from scripts.ops import external_backlog_drain as drain_src
 from scripts.ops import storage_maintenance_lane as maintenance_src
 from scripts.ops import writer_process_intelligence as writer_intelligence_src
+from scripts.ops.sql_writer_lock_path import configured_sql_writer_lock_path
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
@@ -31,7 +32,7 @@ DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "writer_cycle_coordi
 DEFAULT_WAIT_TIMEOUT_SECONDS = 900.0
 DEFAULT_POLL_SECONDS = 20.0
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 2400
-WRITER_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "jsonl_sql_writer.lock"
+WRITER_LOCK_PATH = configured_sql_writer_lock_path(PROJECT_ROOT)
 RECENT_PROGRESS_MINUTES = 30.0
 DEFAULT_STALE_PROGRESS_MINUTES = 30.0
 UNOWNED_PROGRESS_GRACE_MINUTES = 2.0
@@ -272,8 +273,15 @@ def _release_completed_writer_lock(
         return payload
     command = _pid_command(pid)
     payload["command"] = command
-    if "sql_link_shard_manager.py" not in command and "sql_link_shard_manager" not in owner:
+    if "sql_link_shard_manager.py" not in command:
         payload["reason"] = "pid_not_sql_link_shard_manager"
+        return payload
+    current = writer_state_snapshot(project_root)
+    if (
+        not _completed_writer_lock_handoff_needed(current)
+        or _parse_lock_owner_pid(str(current.get("writer_lock_owner") or "")) != pid
+    ):
+        payload["reason"] = "writer_changed_before_handoff"
         return payload
     try:
         os.kill(pid, signal.SIGTERM)
@@ -289,7 +297,7 @@ def _release_completed_writer_lock(
     while _pid_exists(pid) and time.monotonic() < deadline:
         time.sleep(0.2)
     payload["terminated"] = not _pid_exists(pid)
-    lock_state = _lock_snapshot(project_root / "governance" / "locks" / "jsonl_sql_writer.lock")
+    lock_state = _lock_snapshot(configured_sql_writer_lock_path(project_root))
     payload["lock_released"] = not bool(lock_state.get("held", False))
     payload["reason"] = "completed_writer_handoff_released" if bool(payload["lock_released"]) else "sigterm_sent_pid_still_holding_lock"
     return payload
@@ -338,7 +346,7 @@ def _terminate_stale_writer(
     while _pid_exists(pid) and time.monotonic() < deadline:
         time.sleep(0.2)
     payload["terminated"] = not _pid_exists(pid)
-    lock_state = _lock_snapshot(project_root / "governance" / "locks" / "jsonl_sql_writer.lock")
+    lock_state = _lock_snapshot(configured_sql_writer_lock_path(project_root))
     payload["lock_released"] = not bool(lock_state.get("held", False))
     payload["reason"] = "terminated" if bool(payload["terminated"]) else "sigterm_sent_pid_still_running"
     return payload
@@ -348,7 +356,7 @@ def writer_state_snapshot(project_root: Path = PROJECT_ROOT, *, now_utc: datetim
     now = now_utc or datetime.now(timezone.utc)
     health_root = project_root / "governance" / "health"
     progress = _load_json(health_root / "sql_link_service_progress_latest.json")
-    writer_lock = project_root / "governance" / "locks" / "jsonl_sql_writer.lock"
+    writer_lock = configured_sql_writer_lock_path(project_root)
     lock_state = _lock_snapshot(writer_lock)
     owner = str(lock_state.get("owner") or "")
     lock_held = bool(lock_state.get("held", False))
@@ -513,6 +521,13 @@ def _step_status(result: dict[str, Any], *, nonfatal_reasons: set[str] | None = 
         return "busy"
     if bool(result.get("timed_out", False)):
         return "timed_out"
+    if (
+        result.get("rc") == 75
+        and payload.get("reason") == "local_storage_writer_admission"
+        and payload.get("deferred") is True
+        and payload.get("writer_start_allowed") is False
+    ):
+        return "deferred"
     if int(result.get("rc", 1)) != 0:
         return "error"
     reason = str(payload.get("reason") or "")
@@ -525,9 +540,13 @@ def _step_status(result: dict[str, Any], *, nonfatal_reasons: set[str] | None = 
     return "ok"
 
 
-def _step_record(result: dict[str, Any], *, nonfatal_reasons: set[str] | None = None) -> dict[str, Any]:
+def _step_record(
+    result: dict[str, Any], *, nonfatal_reasons: set[str] | None = None
+) -> dict[str, Any]:
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
     return {
         "status": _step_status(result, nonfatal_reasons=nonfatal_reasons),
+        "reason": str(payload.get("reason") or ""),
         "rc": int(result.get("rc", 1)),
         "duration_ms": float(result.get("duration_ms", 0.0) or 0.0),
         "timed_out": bool(result.get("timed_out", False)),
@@ -1137,7 +1156,6 @@ def build_payload(
                             str(PY),
                             str(project_root / "scripts" / "ops" / "sql_link_shard_manager.py"),
                             "--once",
-                            "--json",
                         ],
                         cwd=project_root,
                         payload_path=project_root / "governance" / "health" / "sql_link_service_latest.json",
@@ -1159,7 +1177,14 @@ def build_payload(
                 catch_up_followup_needed = bool(merge_followup.get("followup_needed", False))
                 catch_up_wave_records.append(_writer_wave_record(1, shard_manager, drain_payload, steps["sql_link_shard_manager"]))
                 for wave_index in range(2, int(catch_up_wave_limit) + 1):
-                    if not _should_run_next_catch_up_wave(project_root, drain_payload, wave_index=wave_index - 1, wave_limit=catch_up_wave_limit):
+                    if not drain_applied:
+                        break
+                    if not _should_run_next_catch_up_wave(
+                        project_root,
+                        drain_payload,
+                        wave_index=wave_index - 1,
+                        wave_limit=catch_up_wave_limit,
+                    ):
                         break
                     if bool(writer_state_snapshot(project_root).get("active", False)):
                         break
@@ -1254,10 +1279,21 @@ def build_payload(
         if steps:
             refresh_steps = _refresh_surface_artifacts(project_root)
 
-    step_statuses = [str((row or {}).get("status") or "") for row in steps.values() if isinstance(row, dict)]
-    has_error = any(status == "error" or status == "timed_out" for status in step_statuses)
+    step_statuses = [
+        str((row or {}).get("status") or "")
+        for row in steps.values()
+        if isinstance(row, dict)
+    ]
+    has_error = any(
+        status == "error" or status == "timed_out" for status in step_statuses
+    )
+    storage_deferred = any(status == "deferred" for status in step_statuses)
+    if storage_deferred:
+        catch_up_followup_needed = False
     partial_progress = any(status == "partial_progress" for status in step_statuses)
-    drain_follow_through_status = str((((drain_payload.get("follow_through") or {}).get("status")) or ""))
+    drain_follow_through_status = str(
+        (((drain_payload.get("follow_through") or {}).get("status")) or "")
+    )
     applied_with_followups = bool(
         apply
         and steps
@@ -1281,6 +1317,9 @@ def build_payload(
         ok = True
     elif apply and steps and has_error:
         overall_status = "apply_failed"
+        ok = False
+    elif apply and steps and storage_deferred:
+        overall_status = "deferred_storage_pressure"
         ok = False
     elif apply and steps and applied_with_followups:
         overall_status = "applied_with_followups"
@@ -1315,10 +1354,19 @@ def build_payload(
         list(drain_preview.get("top_actions") or [])[:3]
         + list(drainer_preview.get("recommended_actions") or [])[:3]
         + list(maintenance_focus.get("top_actions") or [])[:3]
-        + ([f"run live-safe drainer handoff now: {_drainer_active_name(drainer_preview)}"] if live_drainer_ready else [])
         + (
-            ["stale SQL writer was restarted so the next drain handoff can be picked up cleanly"]
-            if bool(stale_writer_remediation.get("terminated", False)) or bool(stale_writer_remediation.get("lock_released", False))
+            [
+                f"run live-safe drainer handoff now: {_drainer_active_name(drainer_preview)}"
+            ]
+            if live_drainer_ready
+            else []
+        )
+        + (
+            [
+                "stale SQL writer was restarted so the next drain handoff can be picked up cleanly"
+            ]
+            if bool(stale_writer_remediation.get("terminated", False))
+            or bool(stale_writer_remediation.get("lock_released", False))
             else []
         )
         + (
@@ -1328,27 +1376,38 @@ def build_payload(
             else []
         )
         + (
-            ["completed SQL writer lock handoff was reconciled so the next writer/drainer cycle can start"]
-            if bool(completed_lock_handoff.get("terminated", False)) or bool(completed_lock_handoff.get("lock_released", False))
+            [
+                "completed SQL writer lock handoff was reconciled so the next writer/drainer cycle can start"
+            ]
+            if bool(completed_lock_handoff.get("terminated", False))
+            or bool(completed_lock_handoff.get("lock_released", False))
             else []
         )
         + (
-            ["let the current SQL writer finish its active merge cycle before forcing drain or retention work; progress is still being made"]
+            [
+                "let the current SQL writer finish its active merge cycle before forcing drain or retention work; progress is still being made"
+            ]
             if bool(writer_progress.get("progress_observed", False))
             else []
         )
         + (
-            ["wait for the current SQL writer cycle to finish before running heavy drain or retention work again"]
+            [
+                "wait for the current SQL writer cycle to finish before running heavy drain or retention work again"
+            ]
             if bool(writer_before.get("active", False))
             else []
         )
         + (
-            ["give the writer cycle coordinator a quieter off-hours window if the handoff keeps timing out"]
+            [
+                "give the writer cycle coordinator a quieter off-hours window if the handoff keeps timing out"
+            ]
             if bool(wait_result.get("timed_out", False))
             else []
         )
         + (
-            ["writer handoff timed out but remained below the stale-writer threshold; keep the timeout visible instead of forcing SQLite"]
+            [
+                "writer handoff timed out but remained below the stale-writer threshold; keep the timeout visible instead of forcing SQLite"
+            ]
             if bool(wait_result.get("timed_out", False))
             and bool(writer_after.get("active", False))
             and not bool(writer_progress.get("progress_observed", False))
@@ -1356,15 +1415,25 @@ def build_payload(
             else []
         )
         + (
-            ["run another focused catch-up wave; the last writer cycle reported merge caps, budget exhaustion, or partial timeout shards"]
+            [
+                "run another focused catch-up wave; the last writer cycle reported merge caps, budget exhaustion, or partial timeout shards"
+            ]
             if catch_up_followup_needed
             else []
         )
     )[:8]
+    if storage_deferred:
+        recommended_actions = [
+            "restore the storage owner's reserve before the next scheduled writer attempt; do not force another catch-up wave"
+        ]
     if not recommended_actions:
-        recommended_actions.append("keep the coordinator idle until off-hours drain or priority retention work becomes actionable again")
+        recommended_actions.append(
+            "keep the coordinator idle until off-hours drain or priority retention work becomes actionable again"
+        )
 
-    storage_after = _load_json(project_root / "governance" / "health" / "ingestion_storage_control_latest.json")
+    storage_after = _load_json(
+        project_root / "governance" / "health" / "ingestion_storage_control_latest.json"
+    )
     total_merged_rows = sum(_safe_int(row.get("merged_rows_this_cycle"), 0) for row in catch_up_wave_records)
     if total_merged_rows <= 0:
         total_merged_rows = _safe_int(drain_payload.get("merged_rows_this_cycle"), 0)
@@ -1388,6 +1457,7 @@ def build_payload(
         "schema_version": 1,
         "ok": ok,
         "overall_status": overall_status,
+        "deferred": overall_status == "deferred_storage_pressure",
         "apply": bool(apply),
         "skip_drain": bool(skip_drain),
         "skip_maintenance": bool(skip_maintenance),

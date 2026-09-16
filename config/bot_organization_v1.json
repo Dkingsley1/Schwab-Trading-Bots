@@ -2,6 +2,55 @@
   "schema_version": 1,
   "policy_id": "hierarchical_bot_organization_v1",
   "operating_mode": "metadata_and_shadow_only",
+  "definition_audit_contract": {
+    "contract_id": "bot_definition_seven_areas_v1",
+    "mode": "definition_audit_only",
+    "authority": {
+      "changes_decisions": false,
+      "changes_registry": false,
+      "changes_risk_limits": false,
+      "starts_workers": false,
+      "submits_orders": false,
+      "promotes_candidates": false,
+      "claims_economic_evidence": false
+    },
+    "areas": ["purpose", "scope", "decision_rules", "abstention", "boundaries", "training", "accountability"],
+    "source_budget": {
+      "maximum_module_bytes": 2000000,
+      "maximum_total_bytes": 64000000,
+      "maximum_files": 2500
+    },
+    "completion_policy": {
+      "all_seven_areas_required": true,
+      "inferred_classification_is_explicit_definition": false,
+      "generic_placeholder_is_complete": false,
+      "collection_wrapper_is_strategy_implementation": false,
+      "missing_source_is_complete": false,
+      "definition_implies_runtime_conformance": false,
+      "definition_implies_economic_evidence": false,
+      "unknown_economics_is_failure": false
+    },
+    "evidence_owners": {
+      "economics": "governance/research/sleeve_strategy_specialization_latest.json",
+      "candidate_evidence": "governance/research/sleeve_alpha_toolbox_latest.json",
+      "training_lineage": "governance/health/training_lineage_manifest_latest.json"
+    },
+    "trace_required_fields": [
+      "bot_id", "definition_sha256", "candidate_id", "experiment_trial_id",
+      "feature_snapshot_id", "input_timestamp_utc", "decision_timestamp_utc",
+      "rule_results", "abstention_reason", "output", "outcome_join_id"
+    ],
+    "review_policy": {
+      "owner": "bot_organization_control",
+      "source_resolution": "Use the bot's owning implementation and versioned contracts; never infer a formula, horizon, venue, or authority from its name.",
+      "decision_rules": "Bind exact input features, callable rules, parameters, add/trim/exit/time-stop ownership and golden test cases. Collection wrappers remain collection-only.",
+      "training": "Define objective-appropriate targets, numerical maturity, point-in-time joins, purged holdout and experiment lineage; operational labels never become market-return evidence.",
+      "economic_acceptance": "Independent candidate-bound, objective-aware, post-cost evidence remains with its existing owners. Definition completion grants no allocation, promotion, or order authority.",
+      "duplicates": "Compare identical normalized mandates and source reuse for review, not automatic deletion, merging, correlation claims, or parking.",
+      "refresh": "Rebuild with the existing bot-organization native refresh; no new scheduler, training run, worker, or registry mutation."
+    },
+    "bot_definitions": {}
+  },
   "hierarchy": {
     "levels": [
       "sleeve_id",
