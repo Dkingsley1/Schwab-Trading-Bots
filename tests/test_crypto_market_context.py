@@ -208,8 +208,8 @@ def test_collect_crypto_market_context_includes_news_features(monkeypatch: Any) 
     assert payload["derived"]["news_symbol_features"]["BTC-USD"]["news_positive_share"] > 0.0
 
 
-def test_schwab_crypto_bridge_is_disabled_until_configured(monkeypatch: Any) -> None:
-    monkeypatch.delenv("SCHWAB_CRYPTO_DATA_ENABLED", raising=False)
+def test_schwab_crypto_context_honors_disable_switch(monkeypatch: Any) -> None:
+    monkeypatch.setenv("SCHWAB_CRYPTO_CONTEXT_ENABLED", "0")
 
     rows, prices, status = crypto_ctx._collect_schwab_crypto_bridge(
         ["BTC", "ETH"],
@@ -221,41 +221,27 @@ def test_schwab_crypto_bridge_is_disabled_until_configured(monkeypatch: Any) -> 
     assert prices == {}
     assert status["optional"] is True
     assert status["linked_provider"] == "coinbase"
-    assert status["state"] == "disabled_until_official_schwab_crypto_data_is_available"
+    assert status["state"] == "disabled"
 
 
-def test_schwab_crypto_bridge_parses_future_official_quote_payload(monkeypatch: Any) -> None:
-    monkeypatch.setenv("SCHWAB_CRYPTO_DATA_ENABLED", "1")
-    monkeypatch.setenv("SCHWAB_CRYPTO_QUOTE_URL_TEMPLATE", "https://api.schwabapi.com/future/crypto/quotes?symbols={symbols}")
-    monkeypatch.setenv("SCHWAB_CRYPTO_SYMBOL_MAP", "BTC-USD:XBT/USD,ETH-USD:ETH/USD")
-
-    def _fake_http_json(**kwargs: Any) -> tuple[dict[str, Any], None]:
-        assert "XBT/USD" in kwargs["url"]
-        return (
-            {
-                "quotes": {
-                    "XBT/USD": {"symbol": "XBT/USD", "lastPrice": 70008.0},
-                    "ETH/USD": {"symbol": "ETH/USD", "markPrice": 3601.0},
-                }
-            },
-            None,
-        )
-
-    monkeypatch.setattr(crypto_ctx, "_safe_http_json", _fake_http_json)
-
-    rows, prices, status = crypto_ctx._collect_schwab_crypto_bridge(
-        ["BTC", "ETH"],
-        user_agent="test/1.0",
-        timeout=1.0,
-    )
-
-    assert status["ok"] is True
-    assert status["resolved_assets"] == 2
-    assert prices == {"BTC": 70008.0, "ETH": 3601.0}
-    assert rows["BTC"]["crypto_schwab_crypto_quote_available_norm"] == 1.0
+def test_native_context_enabled_by_default_and_legacy_spot_settings_ignored(monkeypatch):
+    monkeypatch.delenv("SCHWAB_CRYPTO_CONTEXT_ENABLED", raising=False)
+    monkeypatch.setenv("SCHWAB_CRYPTO_QUOTE_URL_TEMPLATE", "https://untrusted.invalid/{symbols}")
+    monkeypatch.setenv("SCHWAB_CRYPTO_BEARER_TOKEN", "never-used-secret")
+    calls = []
+    def collect(assets, **kwargs):
+        calls.append((assets, kwargs))
+        return {"BTC": {"crypto_schwab_future_available_norm": 1.0}}, {"ok": True, "data_role": "context_only"}
+    monkeypatch.setattr(crypto_ctx, "collect_schwab_context", collect)
+    rows, prices, status = crypto_ctx._collect_schwab_crypto_bridge(["BTC"], user_agent="test", timeout=2)
+    assert len(calls) == 1
+    assert calls[0][1]["token_path"] == crypto_ctx.PROJECT_ROOT / "token.json"
+    assert rows["BTC"]["crypto_schwab_future_available_norm"] == 1.0
+    assert prices == {}
+    assert status["warnings"] == ["legacy_spot_bridge_settings_ignored"]
 
 
-def test_collect_crypto_market_context_links_schwab_crypto_to_coinbase(monkeypatch: Any) -> None:
+def test_collect_crypto_market_context_keeps_schwab_context_out_of_spot_prices(monkeypatch: Any) -> None:
     monkeypatch.setattr(crypto_ctx, "_collect_deribit", lambda *args, **kwargs: ({}, {}, {"ok": False, "error": None}))
     monkeypatch.setattr(crypto_ctx, "_collect_kraken", lambda *args, **kwargs: ({}, {}, {"ok": False, "error": None}))
     monkeypatch.setattr(crypto_ctx, "_collect_hyperliquid", lambda *args, **kwargs: ({}, {}, {"ok": False, "error": None}))
@@ -278,7 +264,7 @@ def test_collect_crypto_market_context_links_schwab_crypto_to_coinbase(monkeypat
         crypto_ctx,
         "_collect_schwab_crypto_bridge",
         lambda *args, **kwargs: (
-            {"BTC": {"crypto_schwab_crypto_quote_available_norm": 1.0}},
+            {"BTC": {"crypto_schwab_future_available_norm": 1.0}},
             {"BTC": 70014.0},
             {"ok": True, "resolved_assets": 1, "optional": True, "error": None, "linked_provider": "coinbase"},
         ),
@@ -295,6 +281,9 @@ def test_collect_crypto_market_context_links_schwab_crypto_to_coinbase(monkeypat
     assert status["sources"]["coinbase"]["ok"] is True
     assert status["sources"]["schwab_crypto"]["linked_provider"] == "coinbase"
     assert payload["sources"]["provider_prices"]["BTC"]["coinbase"] == 70000.0
-    assert payload["sources"]["provider_prices"]["BTC"]["schwab_crypto"] == 70014.0
+    assert "schwab_crypto" not in payload["sources"]["provider_prices"]["BTC"]
+    assert payload["sources"]["schwab_data_role"] == "context_only"
+    assert btc_features["crypto_schwab_future_available_norm"] == 1.0
     assert payload["sources"]["linked_provider_pairs"]["schwab_crypto"] == "coinbase"
-    assert btc_features["crypto_schwab_coinbase_price_agreement_norm"] > 0.99
+    assert btc_features["crypto_schwab_coinbase_price_agreement_norm"] == 0.0
+    assert btc_features["crypto_schwab_crypto_quote_available_norm"] == 0.0

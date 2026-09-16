@@ -66,6 +66,8 @@ PROGRESS_PATH = PROJECT_ROOT / "governance" / "health" / "daily_auto_verify_prog
 STALE_PROGRESS_MAX_AGE_SECONDS = int(os.getenv("DAILY_AUTO_VERIFY_STALE_PROGRESS_MAX_AGE_SECONDS", "7200"))
 NON_OPERATIONAL_EVIDENCE_CHECKS = {
     "snapshot_coverage_sentinel",
+    "snapshot_coverage_training",
+    "paper_replay_training",
     "feature_store_manifest",
     "retrain_schema_compatibility_guard",
     "promotion_packet_builder",
@@ -86,9 +88,11 @@ DEFAULT_FRESHNESS_FILE_GROUPS = [
         PROJECT_ROOT / "governance" / "health" / "sql_link_service_latest.json",
     ],
     [PROJECT_ROOT / "governance" / "health" / "snapshot_coverage_latest.json"],
+    [PROJECT_ROOT / "governance" / "health" / "snapshot_coverage_training_latest.json"],
     [PROJECT_ROOT / "governance" / "health" / "live_reconciliation_slo_latest.json"],
     [PROJECT_ROOT / "governance" / "health" / "promotion_quality_gate_latest.json"],
     [PROJECT_ROOT / "governance" / "health" / "paper_replay_drill_latest.json"],
+    [PROJECT_ROOT / "governance" / "health" / "paper_replay_training_latest.json"],
     [PROJECT_ROOT / "governance" / "health" / "paper_reconciliation_slo_latest.json"],
     [PROJECT_ROOT / "governance" / "health" / "replay_hash_registry_guard_latest.json"],
     [PROJECT_ROOT / "governance" / "health" / "paper_execution_calibration_latest.json"],
@@ -623,7 +627,36 @@ def _promotion_packet_builder_ok(rc: int, stdout: str, stderr: str) -> bool:
     )
 
 
+def _state_snapshot_drill_ok(rc: int, stdout: str, stderr: str) -> bool:
+    from scripts.ops.state_snapshot_capacity import complete_restore_evidence
+
+    if int(rc) == 0:
+        return complete_restore_evidence(_json_from_stdout(stdout))
+    if int(rc) != 2:
+        return False
+    payload = _json_from_stdout(stdout)
+    if payload.get("reason") not in {"storage_maintenance_lock_busy", "support_maintenance_frozen_for_mac_fluidity"}:
+        return False
+    latest = _load_json(PROJECT_ROOT / "exports" / "state_snapshot_drills" / "latest.json")
+    ts = _parse_iso_utc(str(latest.get("timestamp_utc") or ""))
+    if ts is None:
+        return False
+    max_age_minutes = float(
+        os.getenv("DAILY_AUTO_VERIFY_SNAPSHOT_DRILL_DEFER_FRESH_MINUTES", "360")
+    )
+    age_minutes = (datetime.now(timezone.utc) - ts).total_seconds() / 60.0
+    return bool(
+        0 <= age_minutes <= max(max_age_minutes, 1.0)
+        and complete_restore_evidence(latest)
+    )
+
+
 def _timeout_for_check(name: str, slow_timeout_sec: int) -> int:
+    if name == "state_snapshot_drill":
+        from scripts.ops.state_snapshot_capacity import load_policy
+        policy = load_policy(PROJECT_ROOT)
+        if policy:
+            return policy["command_timeout_seconds"]
     if name == "replay_preopen_sanity":
         return min(
             int(slow_timeout_sec),
@@ -632,6 +665,7 @@ def _timeout_for_check(name: str, slow_timeout_sec: int) -> int:
     slow_names = {
         "daily_runtime_summary",
         "snapshot_coverage_sentinel",
+        "snapshot_coverage_training",
         "guardrail_triprate_sentinel",
         "execution_queue_stress_bot",
         "state_snapshot_drill",
@@ -648,6 +682,35 @@ def _timeout_for_check(name: str, slow_timeout_sec: int) -> int:
 def _resource_guard_check_cmd() -> list[str]:
     profile = str(os.getenv("DAILY_AUTO_VERIFY_RESOURCE_GUARD_PROFILE", "collection") or "collection").strip()
     return [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "resource_guard.py"), "--profile", profile]
+
+
+def _state_snapshot_drill_cmd() -> list[str]:
+    from scripts.ops.state_snapshot_capacity import load_policy
+    policy = load_policy(PROJECT_ROOT)
+    if policy:
+        command = [str(VENV_PY), str(PROJECT_ROOT / "scripts/daily_state_snapshot_drill.py"), "--json"]
+        for variable, flag in (("SNAPSHOT_DRILL_OUT_ROOT", "--out-root"), ("SNAPSHOT_DRILL_PUBLISH_LATEST", "--publish-latest")):
+            if os.environ.get(variable):
+                command.extend([flag, os.environ[variable]])
+        return command
+    out_root = os.getenv(
+        "SNAPSHOT_DRILL_OUT_ROOT",
+        str(PROJECT_ROOT / "local_fallback_storage" / "exports" / "state_snapshot_drills"),
+    )
+    publish_latest = os.getenv(
+        "SNAPSHOT_DRILL_PUBLISH_LATEST",
+        str(PROJECT_ROOT / "exports" / "state_snapshot_drills" / "latest.json"),
+    )
+    return [
+        str(VENV_PY),
+        str(PROJECT_ROOT / "scripts" / "daily_state_snapshot_drill.py"),
+        "--out-root",
+        out_root,
+        "--publish-latest",
+        publish_latest,
+        "--allow-large-metadata-only",
+        "--json",
+    ]
 
 
 def main() -> int:
@@ -750,6 +813,19 @@ def main() -> int:
             ("daily_runtime_summary", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "daily_runtime_summary.py"), "--day", day, "--json"], 5000),
             ("replay_preopen_sanity", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "replay_preopen_sanity_check.py"), "--hours", "24", "--json"], 5000),
             ("snapshot_coverage_sentinel", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "snapshot_coverage_sentinel.py"), "--json"], 5000),
+            (
+                "snapshot_coverage_training",
+                [
+                    str(VENV_PY),
+                    str(PROJECT_ROOT / "scripts" / "snapshot_coverage_sentinel.py"),
+                    "--hours",
+                    "24",
+                    "--out-file",
+                    str(PROJECT_ROOT / "governance" / "health" / "snapshot_coverage_training_latest.json"),
+                    "--json",
+                ],
+                5000,
+            ),
             ("schema_migration_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "schema_migration_guard.py"), "--json"], 5000),
             ("bot_support_owner_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "bot_support_owner_guard.py"), "--json"], 5000),
             ("feature_store_manifest", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "feature_store_manifest.py"), "--json"], 5000),
@@ -770,6 +846,19 @@ def main() -> int:
             ("weekly_gate_blocker_report", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "weekly_gate_blocker_report.py"), "--json"], 5000),
             ("replay_end_to_end_deterministic", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "replay_end_to_end_deterministic.py"), "--json"], 5000),
             ("paper_replay_drill", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "paper_replay_drill.py"), "--hours", "24", "--json"], 5000),
+            (
+                "paper_replay_training",
+                [
+                    str(VENV_PY),
+                    str(PROJECT_ROOT / "scripts" / "paper_replay_drill.py"),
+                    "--hours",
+                    "336",
+                    "--out-file",
+                    str(PROJECT_ROOT / "governance" / "health" / "paper_replay_training_latest.json"),
+                    "--json",
+                ],
+                5000,
+            ),
             ("replay_hash_registry_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "replay_hash_registry_guard.py"), "--json"], 5000),
             ("cohort_drift_baseline_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "cohort_drift_baseline_guard.py"), "--json"], 5000),
             ("live_reconciliation_slo_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "live_reconciliation_slo_guard.py"), "--json"], 5000),
@@ -784,20 +873,25 @@ def main() -> int:
             ("teacher_quality_guard", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "teacher_quality_guard.py"), "--json"], 5000),
             ("distillation_plan", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "distill_new_bots.py"), "--json"], 5000),
             ("strategy_generation_control", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "strategy_generation_control.py"), "--reconcile-stale", "--json"], 5000),
-            ("state_snapshot_drill", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "daily_state_snapshot_drill.py"), "--json"], 5000),
+            ("state_snapshot_drill", _state_snapshot_drill_cmd(), 5000),
             ("storage_resilience_control", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "storage_resilience_control.py"), "--fast", "--json"], 5000),
             ("ingestion_storage_control", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "ingestion_storage_control.py"), "--json"], 5000),
             ("blackstart_recovery", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "blackstart_recovery.py"), "--json"], 5000),
+            ("system_role_contract", [str(VENV_PY), str(PROJECT_ROOT / "scripts" / "ops" / "system_role_contract_control.py"), "--json"], 5000),
         ]
         for name, cmd, stdout_limit in common_zero_checks:
             ok_predicate = (lambda rc: rc == 0)
+            result_ok_predicate = None
             if name in {"new_bot_graduation_gate", "new_bot_admission_guard", "teacher_quality_guard"}:
                 ok_predicate = lambda rc: rc in {0, 2}
+            if name == "state_snapshot_drill":
+                result_ok_predicate = _state_snapshot_drill_ok
             _run_check(
                 checks,
                 name,
                 cmd,
                 ok_predicate=ok_predicate,
+                result_ok_predicate=result_ok_predicate,
                 cwd=PROJECT_ROOT,
                 started_at_utc=started_at_utc,
                 day=day,

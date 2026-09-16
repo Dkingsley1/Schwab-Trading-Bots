@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "policy_id": "market_pattern_observation_v1",
+  "purpose": "Define what market patterns bots can report back to the platform and how those patterns route paper-only evidence collection by sleeve.",
+  "paper_only": true,
+  "live_execution_allowed": false,
+  "profitability_claim_allowed": false,
+  "source_artifacts": {
+    "regime_control": "governance/health/regime_control_plane_latest.json",
+    "market_cycle": "governance/health/market_cycle_state_latest.json",
+    "market_move": "governance/health/market_move_explainer_latest.json",
+    "decision_context_mesh": "governance/health/decision_context_mesh_latest.json",
+    "market_micro": "governance/health/market_micro_sync_latest.json",
+    "official_macro": "governance/health/official_macro_context_sync_latest.json",
+    "cross_asset_breadth": "governance/health/cross_asset_breadth_context_latest.json",
+    "tape_liquidity": "governance/health/tape_liquidity_context_latest.json",
+    "options_flow": "governance/health/options_flow_context_sync_latest.json",
+    "fx_market": "governance/health/fx_market_context_sync_latest.json",
+    "crypto_market": "governance/health/crypto_market_context_sync_latest.json",
+    "crypto_correlation": "governance/health/market_crypto_correlation_sync_latest.json",
+    "sleeve_profitability": "governance/health/sleeve_profitability_dashboard_latest.json",
+    "paper_profitability": "governance/health/paper_profitability_control_latest.json",
+    "independent_fills": "governance/health/independent_fill_evidence_acquisition_latest.json",
+    "bot_profitability": "governance/health/bot_profitability_scalability_latest.json"
+  },
+  "observable_dimensions": [
+    {
+      "dimension": "risk_appetite",
+      "feature_keys": ["risk_on_norm", "risk_off_norm", "defensive_rotation_norm", "hold_ratio"],
+      "source_ids": ["market_cycle", "regime_control", "cross_asset_breadth"],
+      "sleeve_uses": ["equity_core", "swing_aggressive", "conservative", "cash_rotation_tactical", "short_bias_hedge"]
+    },
+    {
+      "dimension": "trend_and_chop",
+      "feature_keys": ["trend_confirmation_norm", "market_regime", "cycle_phase", "day_regime_chop_norm"],
+      "source_ids": ["market_cycle", "regime_control", "market_move"],
+      "sleeve_uses": ["intraday_aggressive", "day_trading", "swing_aggressive", "pairs_correlation", "stat_arb_market_neutral"]
+    },
+    {
+      "dimension": "volatility_and_tail_pressure",
+      "feature_keys": ["stress_norm", "tail_pressure", "volatility_regime", "quant_cvar_tail_risk_norm"],
+      "source_ids": ["market_cycle", "market_move", "options_flow"],
+      "sleeve_uses": ["volatility", "single_name_options_event", "options_on_futures_aggressive", "short_bias_hedge", "conservative"]
+    },
+    {
+      "dimension": "liquidity_and_tradeability",
+      "feature_keys": ["market_micro_tradeability_score_norm", "tradeability", "spread_bps", "quote_age_ms", "liquidity_quality_norm"],
+      "source_ids": ["market_micro", "tape_liquidity", "market_move"],
+      "sleeve_uses": ["day_trading", "intraday_aggressive", "market_making_liquidity", "futures_index_intraday", "stat_arb_market_neutral"]
+    },
+    {
+      "dimension": "order_flow_and_pressure",
+      "feature_keys": ["flow_direction_signed", "market_micro_order_flow_imbalance_norm", "sell_pressure", "buy_pressure"],
+      "source_ids": ["market_micro", "market_move", "tape_liquidity"],
+      "sleeve_uses": ["day_trading", "intraday_aggressive", "market_making_liquidity", "futures_event_reaction"]
+    },
+    {
+      "dimension": "macro_rates_fx_context",
+      "feature_keys": ["official_macro_ok_ratio", "fx_context_ok_ratio", "stance_score", "policy_surprise"],
+      "source_ids": ["official_macro", "fx_market", "regime_control"],
+      "sleeve_uses": ["bond_rates", "fx_macro", "rates_credit_macro", "international_macro", "futures_rates_curve"]
+    },
+    {
+      "dimension": "crypto_and_basis_context",
+      "feature_keys": ["crypto_context_ok_ratio", "crypto_basis_context", "market_crypto_correlation_ok"],
+      "source_ids": ["crypto_market", "crypto_correlation", "market_move"],
+      "sleeve_uses": ["crypto_spot", "crypto_futures", "crypto_futures_basis"]
+    },
+    {
+      "dimension": "event_and_calendar_pressure",
+      "feature_keys": ["calendar_event_proximity_norm", "event_catalyst_confirmation_norm", "event_clock_accuracy"],
+      "source_ids": ["official_macro", "market_move", "options_flow"],
+      "sleeve_uses": ["earnings_event", "single_name_options_event", "futures_event_reaction", "dividend_capture"]
+    },
+    {
+      "dimension": "source_quality_and_freshness",
+      "feature_keys": ["source_quality_norm", "source_age_seconds", "source_freshness_norm", "source_coverage"],
+      "source_ids": ["decision_context_mesh", "market_micro", "official_macro", "fx_market", "crypto_market"],
+      "sleeve_uses": ["all_trading_sleeves"]
+    },
+    {
+      "dimension": "post_cost_evidence_feedback",
+      "feature_keys": ["candidate_post_cost_sample_count", "candidate_independent_fill_sample_count", "positive_post_cost_lower_confidence_bound_95"],
+      "source_ids": ["paper_profitability", "independent_fills", "bot_profitability", "sleeve_profitability"],
+      "sleeve_uses": ["all_trading_sleeves"]
+    }
+  ],
+  "pattern_response": {
+    "defensive_high_vol_chop": {
+      "boost": ["volatility", "conservative", "cash_rotation_tactical", "short_bias_hedge", "pairs_correlation", "stat_arb_market_neutral", "rates_credit_macro"],
+      "downshift": ["intraday_aggressive", "swing_aggressive", "crypto_spot", "crypto_futures", "market_making_liquidity"],
+      "collection_focus": ["volatility_regime_fit", "drawdown_reduction", "mean_reversion_vs_breakout", "spread_and_slippage"]
+    },
+    "mixed_transition": {
+      "boost": ["conservative", "cash_rotation_tactical", "pairs_correlation", "stat_arb_market_neutral", "volatility", "macro"],
+      "downshift": ["intraday_aggressive", "swing_aggressive"],
+      "collection_focus": ["regime_transition_label", "false_breakout_rate", "cross_asset_confirmation"]
+    },
+    "system_hold_consensus": {
+      "boost": ["market_making_liquidity", "pairs_correlation", "stat_arb_market_neutral", "cash_rotation_tactical"],
+      "downshift": ["swing_aggressive"],
+      "collection_focus": ["why_hold", "threshold_distance", "missed_trade_opportunity_cost"]
+    },
+    "risk_on_trend": {
+      "boost": ["equity_core", "swing_aggressive", "intraday_aggressive", "day_trading", "crypto_spot", "schwab_futures", "futures_index_intraday"],
+      "downshift": ["short_bias_hedge", "cash_rotation_tactical"],
+      "collection_focus": ["trend_persistence", "pullback_quality", "breadth_confirmation"]
+    },
+    "risk_off_pressure": {
+      "boost": ["conservative", "cash_rotation_tactical", "bond_rates", "rates_credit_macro", "short_bias_hedge", "volatility"],
+      "downshift": ["intraday_aggressive", "swing_aggressive", "crypto_spot"],
+      "collection_focus": ["defensive_rotation", "credit_duration_context", "tail_pressure"]
+    },
+    "source_context_available": {
+      "boost": [],
+      "downshift": [],
+      "context": ["all_trading_sleeves"],
+      "collection_focus": ["source_receipt", "feature_backfill", "context_alignment"]
+    },
+    "symbol_specific_evidence_gap": {
+      "boost": [],
+      "downshift": [],
+      "context": ["all_trading_sleeves"],
+      "collection_focus": ["symbol_level_attribution_rows", "driver_features", "post_cost_outcome_label"]
+    }
+  },
+  "platform_contract": {
+    "can_route_paper_collection_priority": true,
+    "can_change_live_execution": false,
+    "can_claim_profitability": false,
+    "can_force_trade": false,
+    "can_increase_size_after_loss": false,
+    "can_relax_promotion_gates": false
+  }
+}

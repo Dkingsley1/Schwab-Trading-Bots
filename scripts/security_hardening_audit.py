@@ -1,10 +1,59 @@
 import argparse
 import json
+import os
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.storage_router import inspect_storage_path
+from scripts.ops.long_runtime_common import evidence_freshness, write_payload
+
+
+def _hook_contract(project_root: Path) -> dict[str, Any]:
+    declared = project_root / ".githooks/pre-commit"
+    payload = {
+        "declared_path": str(declared),
+        "active_path": "",
+        "active": False,
+        "secret_scan_declared": False,
+    }
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                "hooks/pre-commit",
+            ],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        active = Path(result.stdout.strip())
+        route = inspect_storage_path(active)
+        payload["active_path"] = str(active)
+        if route["status"] != "present" or route.get("size_bytes") is None:
+            return payload
+        declared_route = inspect_storage_path(declared)
+        same_source = route["resolved_path"] == declared_route["resolved_path"]
+        payload["active"] = same_source and os.access(active, os.X_OK)
+        text = active.read_text(encoding="utf-8")
+        payload["secret_scan_declared"] = any(
+            "secret_scan.py --staged" in line and not line.lstrip().startswith("#")
+            for line in text.splitlines()
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        payload["error"] = "active_hook_unavailable"
+    return payload
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -41,6 +90,7 @@ def main() -> int:
     parser.add_argument("--out", default=str(PROJECT_ROOT / "governance" / "health" / "security_audit_latest.json"))
     parser.add_argument("--secret-scan-max-age-hours", type=float, default=36.0)
     parser.add_argument("--audit-journal-max-age-hours", type=float, default=168.0)
+    parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     now = datetime.now(timezone.utc)
@@ -49,8 +99,14 @@ def main() -> int:
     pre_commit = PROJECT_ROOT / ".githooks" / "pre-commit"
     checks.append({"name": "pre_commit_hook_exists", "ok": pre_commit.exists()})
 
-    hook_text = pre_commit.read_text(encoding="utf-8") if pre_commit.exists() else ""
-    checks.append({"name": "pre_commit_secret_scan_enabled", "ok": "secret_scan.py --staged" in hook_text})
+    hook = _hook_contract(PROJECT_ROOT)
+    checks.append({"name": "pre_commit_hook_active", "ok": hook["active"]})
+    checks.append(
+        {
+            "name": "pre_commit_secret_scan_enabled",
+            "ok": hook["active"] and hook["secret_scan_declared"],
+        }
+    )
 
     gitignore_text = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8") if (PROJECT_ROOT / ".gitignore").exists() else ""
     checks.append({"name": "token_json_ignored", "ok": "token.json" in gitignore_text})
@@ -114,36 +170,42 @@ def main() -> int:
 
     secret_scan_path = PROJECT_ROOT / "governance" / "health" / "secret_scan_latest.json"
     secret_scan = _load_json(secret_scan_path)
-    secret_scan_ts = _parse_iso_utc(secret_scan.get("timestamp_utc"))
+    scan_freshness = evidence_freshness(
+        secret_scan, now=now, max_age_minutes=args.secret_scan_max_age_hours * 60
+    )
     secret_scan_age_hours = (
-        max((now - secret_scan_ts).total_seconds() / 3600.0, 0.0)
-        if secret_scan_ts is not None
+        scan_freshness["age_minutes"] / 60
+        if scan_freshness["age_minutes"] is not None
         else None
     )
+    findings_count = secret_scan.get("findings_count")
+    findings_valid = type(findings_count) is int and findings_count >= 0
     checks.append({"name": "secret_scan_artifact_present", "ok": bool(secret_scan)})
     checks.append(
         {
             "name": "secret_scan_artifact_fresh",
-            "ok": secret_scan_age_hours is not None and secret_scan_age_hours <= float(args.secret_scan_max_age_hours),
+            "ok": scan_freshness["fresh"],
         }
     )
-    checks.append({"name": "secret_scan_clear", "ok": int(secret_scan.get("findings_count", 0) or 0) == 0})
+    checks.append(
+        {"name": "secret_scan_clear", "ok": findings_valid and findings_count == 0}
+    )
 
     mutation_latest_path = PROJECT_ROOT / "governance" / "audits" / "registry_mutation_latest.json"
     mutation_latest = _load_json(mutation_latest_path)
-    mutation_latest_ts = _parse_iso_utc(mutation_latest.get("timestamp_utc"))
-    if mutation_latest_ts is None and mutation_latest_path.exists():
-        mutation_latest_ts = datetime.fromtimestamp(mutation_latest_path.stat().st_mtime, tz=timezone.utc)
+    mutation_freshness = evidence_freshness(
+        mutation_latest, now=now, max_age_minutes=args.audit_journal_max_age_hours * 60
+    )
     mutation_latest_age_hours = (
-        max((now - mutation_latest_ts).total_seconds() / 3600.0, 0.0)
-        if mutation_latest_ts is not None
+        mutation_freshness["age_minutes"] / 60
+        if mutation_freshness["age_minutes"] is not None
         else None
     )
-    checks.append({"name": "mutation_latest_present", "ok": bool(mutation_latest) or mutation_latest_path.exists()})
+    checks.append({"name": "mutation_latest_present", "ok": bool(mutation_latest)})
     checks.append(
         {
             "name": "mutation_latest_fresh",
-            "ok": mutation_latest_age_hours is not None and mutation_latest_age_hours <= float(args.audit_journal_max_age_hours),
+            "ok": mutation_freshness["fresh"],
         }
     )
     mutation_journal_matches = sorted(PROJECT_ROOT.glob("governance/audits/registry_mutation_journal_*.jsonl*"))
@@ -158,16 +220,28 @@ def main() -> int:
         "overall_status": "ready" if all(c["ok"] for c in checks) else "needs_work",
         "ok": all(c["ok"] for c in checks),
         "checks": checks,
+        "hook_activation": hook,
+        "evidence_scope": "local_configuration_and_producer_receipts_not_security_certification",
         "summary": {
             "passed_checks": sum(1 for row in checks if row["ok"]),
             "failed_checks": sum(1 for row in checks if not row["ok"]),
-            "secret_scan_age_hours": round(secret_scan_age_hours, 3) if secret_scan_age_hours is not None else None,
-            "secret_scan_findings_count": int(secret_scan.get("findings_count", 0) or 0),
+            "secret_scan_age_hours": (
+                round(secret_scan_age_hours, 3)
+                if secret_scan_age_hours is not None
+                else None
+            ),
+            "secret_scan_findings_count": findings_count if findings_valid else None,
+            "secret_scan_freshness": scan_freshness,
+            "mutation_latest_freshness": mutation_freshness,
             "rbac_role_count": len(role_names),
             "rbac_manifest_path": str(rbac_path),
             "key_rotation_policy_path": str(key_rotation_path),
             "key_rotation_schedule_defined": key_rotation_ok,
-            "mutation_latest_age_hours": round(mutation_latest_age_hours, 3) if mutation_latest_age_hours is not None else None,
+            "mutation_latest_age_hours": (
+                round(mutation_latest_age_hours, 3)
+                if mutation_latest_age_hours is not None
+                else None
+            ),
             "mutation_journal_files": len(mutation_journal_matches),
         },
         "recommendations": [
@@ -178,8 +252,7 @@ def main() -> int:
     }
 
     out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(out_path, out)
     print(json.dumps(out, ensure_ascii=True))
     return 0 if out["ok"] else 2
 

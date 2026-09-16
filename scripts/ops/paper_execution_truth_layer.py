@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1028,7 +1029,10 @@ def _build_throttle_gate(paper_performance: dict[str, Any], scorecards: list[dic
 
 def _build_haircut_ledger(paper_performance: dict[str, Any], scorecards: list[dict[str, Any]]) -> dict[str, Any]:
     week = paper_performance.get("week") if isinstance(paper_performance.get("week"), dict) else {}
-    raw_week_pnl = _safe_float(week.get("rolling_change"), _safe_float(week.get("week_to_date_change"), 0.0))
+    raw_value = week.get("rolling_change", week.get("week_to_date_change"))
+    measured_pnl = _safe_float(raw_value, float("nan"))
+    week_available = week.get("available") is not False and math.isfinite(measured_pnl)
+    raw_week_pnl = measured_pnl if week_available else None
     rows: list[dict[str, Any]] = []
     total_drag = 0.0
     for row in scorecards:
@@ -1048,11 +1052,15 @@ def _build_haircut_ledger(paper_performance: dict[str, Any], scorecards: list[di
                 "realism_adjusted_net_pnl_total": round(_safe_float(row.get("ending_net_pnl_total"), 0.0) - drag, 6),
             }
         )
-    adjusted = raw_week_pnl - total_drag
+    adjusted = raw_week_pnl - total_drag if raw_week_pnl is not None else None
     return {
-        "raw_week_pnl": round(raw_week_pnl, 6),
+        "available": week_available,
+        "unavailable_reason": "" if week_available else "paper_week_pnl_unavailable",
+        "raw_week_pnl": round(raw_week_pnl, 6) if raw_week_pnl is not None else None,
         "estimated_realism_drag": round(total_drag, 6),
-        "realism_adjusted_week_pnl": round(adjusted, 6),
+        "realism_adjusted_week_pnl": (
+            round(adjusted, 6) if adjusted is not None else None
+        ),
         "drag_model": "executions * (expected_slippage_bps + abs(slippage_gap_bps)) * 0.001 + partial_fill_drag",
         "by_sleeve": rows,
     }

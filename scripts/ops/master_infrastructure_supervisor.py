@@ -15,16 +15,40 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops import one_numbers_regression_guard
-    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+    from scripts.ops.long_runtime_common import (
+        iso_now,
+        load_json,
+        ordered_unique,
+        payload_age_minutes,
+        write_payload,
+    )
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     from . import one_numbers_regression_guard
-    from .long_runtime_common import iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
+    from .long_runtime_common import (
+        iso_now,
+        load_json,
+        ordered_unique,
+        payload_age_minutes,
+        write_payload,
+    )
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "master_infrastructure_supervisor_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "health"
+    / "master_infrastructure_supervisor_latest.json"
+)
 REPAIR_CALL_STACK_ENV = "INFRA_REPAIR_CALL_STACK"
-READY_STATUSES = {"ready", "ok", "stable", "applied", "applied_with_followups", "cleared"}
+READY_STATUSES = {
+    "ready",
+    "ok",
+    "stable",
+    "applied",
+    "applied_with_followups",
+    "cleared",
+}
 DEGRADED_STATUSES = {
     "active",
     "already_running",
@@ -39,6 +63,11 @@ DEGRADED_STATUSES = {
     "thin",
     "warn",
     "warning",
+}
+PAPER_SOAK_EVIDENCE_ONLY_DASHBOARD_ATTENTION = {
+    "retrain_artifact_freshness_not_ok",
+    "training_quality_control_blocked",
+    "teacher_quality_guard_blocked",
 }
 
 
@@ -58,18 +87,57 @@ def _child_env(component: str) -> dict[str, str]:
         stack.append(name)
     env[REPAIR_CALL_STACK_ENV] = ",".join(stack)
     return env
-BLOCKED_STATUSES = {"blocked", "critical", "failed", "apply_failed", "missing", "unknown"}
+
+
+BLOCKED_STATUSES = {
+    "blocked",
+    "critical",
+    "failed",
+    "apply_failed",
+    "missing",
+    "unknown",
+}
 LAUNCHD_JOB_SPECS = (
-    ("com.dankingsley.ops.command_validity", "scripts/ops/run_command_validity_launchd.sh"),
-    ("com.dankingsley.ops.process_fanout_guard", "scripts/install_process_fanout_guard_launchd.sh"),
-    ("com.dankingsley.ops.system_drift_guard", "scripts/ops/run_system_drift_guard_launchd.sh"),
-    ("com.dankingsley.ops.system_drift_autopilot", "scripts/ops/run_system_drift_autopilot_launchd.sh"),
-    ("com.dankingsley.ops.infrastructure_autofix", "scripts/ops/run_infrastructure_autofix_launchd.sh"),
-    ("com.dankingsley.ops.master_infrastructure_supervisor", "scripts/ops/run_master_infrastructure_supervisor_launchd.sh"),
-    ("com.dankingsley.ops.one_numbers_regression_guard", "scripts/ops/run_one_numbers_regression_guard_launchd.sh"),
-    ("com.dankingsley.ops.storage_backpressure_autopilot", "scripts/ops/run_storage_backpressure_autopilot_launchd.sh"),
-    ("com.dankingsley.ops.storage_pressure_clearance", "scripts/ops/run_storage_pressure_clearance_launchd.sh"),
-    ("com.dankingsley.ops.chrome_headless_guard", "scripts/ops/run_chrome_headless_guard_launchd.sh"),
+    (
+        "com.dankingsley.ops.command_validity",
+        "scripts/ops/run_command_validity_launchd.sh",
+    ),
+    (
+        "com.dankingsley.ops.process_fanout_guard",
+        "scripts/install_process_fanout_guard_launchd.sh",
+    ),
+    (
+        "com.dankingsley.ops.system_drift_guard",
+        "scripts/ops/run_system_drift_guard_launchd.sh",
+    ),
+    (
+        "com.dankingsley.ops.system_drift_autopilot",
+        "scripts/ops/run_system_drift_autopilot_launchd.sh",
+    ),
+    (
+        "com.dankingsley.ops.infrastructure_autofix",
+        "scripts/ops/run_infrastructure_autofix_launchd.sh",
+    ),
+    (
+        "com.dankingsley.ops.master_infrastructure_supervisor",
+        "scripts/ops/run_master_infrastructure_supervisor_launchd.sh",
+    ),
+    (
+        "com.dankingsley.ops.one_numbers_regression_guard",
+        "scripts/ops/run_one_numbers_regression_guard_launchd.sh",
+    ),
+    (
+        "com.dankingsley.ops.storage_backpressure_autopilot",
+        "scripts/ops/run_storage_backpressure_autopilot_launchd.sh",
+    ),
+    (
+        "com.dankingsley.ops.storage_pressure_clearance",
+        "scripts/ops/run_storage_pressure_clearance_launchd.sh",
+    ),
+    (
+        "com.dankingsley.ops.chrome_headless_guard",
+        "scripts/ops/run_chrome_headless_guard_launchd.sh",
+    ),
 )
 ENVELOPE_LANES = (
     ("1", "historical_truth_layer", "one_numbers_original_coverage"),
@@ -124,9 +192,13 @@ def _status(raw: Any, *, missing: str = "blocked") -> str:
 def _artifact_status(payload: dict[str, Any], *, missing: str = "blocked") -> str:
     if not payload:
         return missing
-    nested_overall = payload.get("overall") if isinstance(payload.get("overall"), dict) else {}
+    nested_overall = (
+        payload.get("overall") if isinstance(payload.get("overall"), dict) else {}
+    )
     if nested_overall and not (payload.get("overall_status") or payload.get("status")):
-        nested_status = nested_overall.get("overall_status") or nested_overall.get("status")
+        nested_status = nested_overall.get("overall_status") or nested_overall.get(
+            "status"
+        )
         if nested_overall.get("ok") is True:
             normalized = _status(nested_status or "ready", missing=missing)
             return "blocked" if normalized == "blocked" else "ready"
@@ -135,11 +207,16 @@ def _artifact_status(payload: dict[str, Any], *, missing: str = "blocked") -> st
         if nested_status:
             return _status(nested_status, missing=missing)
     if payload.get("ok") is True:
-        normalized = _status(payload.get("overall_status") or payload.get("status") or "ready", missing=missing)
+        normalized = _status(
+            payload.get("overall_status") or payload.get("status") or "ready",
+            missing=missing,
+        )
         return "blocked" if normalized == "blocked" else "ready"
     if payload.get("ok") is False and not payload.get("overall_status"):
         return "blocked"
-    return _status(payload.get("overall_status") or payload.get("status"), missing=missing)
+    return _status(
+        payload.get("overall_status") or payload.get("status"), missing=missing
+    )
 
 
 def _as_dict(raw: Any) -> dict[str, Any]:
@@ -151,7 +228,9 @@ def _guarded_paper_strict_clear(project_root: Path) -> bool:
     operational = _as_dict(health_fast.get("operational_readiness"))
     guarded_paper = _as_dict(operational.get("guarded_paper"))
     live_execution = _as_dict(operational.get("live_execution"))
-    guarded_ready = bool(guarded_paper.get("ok", False)) and str(guarded_paper.get("status") or "").strip().lower() in {
+    guarded_ready = bool(guarded_paper.get("ok", False)) and str(
+        guarded_paper.get("status") or ""
+    ).strip().lower() in {
         "ready",
         "armed",
         "guarded_ready",
@@ -166,10 +245,52 @@ def _guarded_paper_strict_clear(project_root: Path) -> bool:
         health_fast.get("strict_all_clear", False)
         or (
             bool(health_fast.get("ok", False))
-            and str(health_fast.get("overall_status") or "").strip().lower() in {"ready", "guarded_ready"}
+            and str(health_fast.get("overall_status") or "").strip().lower()
+            in {"ready", "guarded_ready"}
         )
     )
     return bool(operational_health_ready and guarded_ready and live_locked)
+
+
+def _dashboard_evidence_only_advisory(
+    project_root: Path,
+) -> tuple[bool, dict[str, Any]]:
+    _path, dashboard = _load_artifact(
+        project_root, "governance/health/runtime_gate_dashboard_latest.json"
+    )
+    overall = _as_dict(dashboard.get("overall"))
+    attention = {
+        str(item or "").strip()
+        for item in overall.get("attention", [])
+        if str(item or "").strip()
+    }
+    attention_tiers = _as_dict(overall.get("attention_tiers"))
+    critical_attention = [
+        str(item or "").strip()
+        for item in attention_tiers.get("critical", [])
+        if str(item or "").strip()
+    ]
+    context = _as_dict(overall.get("soak_management_context"))
+    context_ready = bool(
+        context.get("enabled", False)
+        and context.get("soak_ready", False)
+        and context.get("paper_guard_clean", False)
+        and context.get("paper_armed", False)
+        and context.get("guarded_health_ready", False)
+    )
+    managed = bool(
+        _guarded_paper_strict_clear(project_root)
+        and attention
+        and attention <= PAPER_SOAK_EVIDENCE_ONLY_DASHBOARD_ATTENTION
+        and not critical_attention
+        and context_ready
+    )
+    return managed, {
+        "attention": sorted(attention),
+        "critical_attention": critical_attention,
+        "soak_management_context": context,
+        "policy": "only_exact_training_evidence_attention_is_advisory_while_authoritative_guarded_paper_controls_are_green",
+    }
 
 
 def _command_key(cmd: list[str]) -> str:
@@ -219,7 +340,10 @@ def _check(
 def _has_timed_out(payload: Any) -> bool:
     if isinstance(payload, dict):
         for key, value in payload.items():
-            if key in {"timed_out", "timeout", "timed_out_before_finish"} and value is True:
+            if (
+                key in {"timed_out", "timeout", "timed_out_before_finish"}
+                and value is True
+            ):
                 return True
             if _has_timed_out(value):
                 return True
@@ -233,7 +357,8 @@ def _blocked_surface_names(payload: dict[str, Any]) -> set[str]:
     return {
         str(row.get("name") or "")
         for row in rows
-        if isinstance(row, dict) and str(row.get("status") or "").strip().lower() == "blocked"
+        if isinstance(row, dict)
+        and str(row.get("status") or "").strip().lower() == "blocked"
     }
 
 
@@ -260,10 +385,24 @@ def _attempt_has_active_recovery(project_root: Path, attempt: dict[str, Any]) ->
         if not any(marker in cmd_text for marker in markers):
             continue
         _path, payload = _load_artifact(project_root, raw_path)
-        status_text = str(payload.get("overall_status") or payload.get("status") or "").strip().lower()
-        if payload.get("ok") is True and (payload.get("busy") is True or status_text in DEGRADED_STATUSES | READY_STATUSES):
+        status_text = (
+            str(payload.get("overall_status") or payload.get("status") or "")
+            .strip()
+            .lower()
+        )
+        if payload.get("ok") is True and (
+            payload.get("busy") is True
+            or status_text in DEGRADED_STATUSES | READY_STATUSES
+        ):
             return True
-        if status_text in {"already_running", "busy", "running", "active", "recovering", "recovering_under_guard"}:
+        if status_text in {
+            "already_running",
+            "busy",
+            "running",
+            "active",
+            "recovering",
+            "recovering_under_guard",
+        }:
             return True
     return False
 
@@ -272,7 +411,11 @@ def _bounded_drift_timeout_attempts(attempts: list[dict[str, Any]]) -> bool:
     failed = [
         row
         for row in attempts
-        if isinstance(row, dict) and (bool(row.get("timed_out", False)) or _safe_int(row.get("rc"), 1) not in {0, 2})
+        if isinstance(row, dict)
+        and (
+            bool(row.get("timed_out", False))
+            or _safe_int(row.get("rc"), 1) not in {0, 2}
+        )
     ]
     if not failed:
         return False
@@ -286,11 +429,17 @@ def _bounded_drift_timeout_attempts(attempts: list[dict[str, Any]]) -> bool:
 
 
 def _bounded_drift_safe_repairs(payload: dict[str, Any]) -> bool:
-    attempts = payload.get("attempts") if isinstance(payload.get("attempts"), list) else []
+    attempts = (
+        payload.get("attempts") if isinstance(payload.get("attempts"), list) else []
+    )
     if not attempts:
         return False
     if any(
-        isinstance(row, dict) and (bool(row.get("timed_out", False)) or _safe_int(row.get("rc"), 1) not in {0, 2})
+        isinstance(row, dict)
+        and (
+            bool(row.get("timed_out", False))
+            or _safe_int(row.get("rc"), 1) not in {0, 2}
+        )
         for row in attempts
     ):
         return False
@@ -300,7 +449,10 @@ def _bounded_drift_safe_repairs(payload: dict[str, Any]) -> bool:
 
 def _storage_clearance_active_recovery(payload: dict[str, Any]) -> bool:
     metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
-    return bool(metrics.get("active_storage_pressure", False) or metrics.get("autopilot_active", False))
+    return bool(
+        metrics.get("active_storage_pressure", False)
+        or metrics.get("autopilot_active", False)
+    )
 
 
 def _artifact_path_candidates(project_root: Path, raw_path: str | Path) -> list[Path]:
@@ -310,9 +462,21 @@ def _artifact_path_candidates(project_root: Path, raw_path: str | Path) -> list[
 
     candidates = [project_root / path]
     parts = path.parts
-    if parts and parts[0] in {"data", "decisions", "decision_explanations", "exports", "governance", "logs", "models"}:
+    if parts and parts[0] in {
+        "data",
+        "decisions",
+        "decision_explanations",
+        "exports",
+        "governance",
+        "logs",
+        "models",
+    }:
         candidates.append(project_root / "local_fallback_storage" / path)
-        external_root = Path(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "/Volumes/BOT_LOGS/schwab_trading_bot")).expanduser()
+        external_root = Path(
+            os.getenv(
+                "BOT_LOGS_EXTERNAL_PROJECT_ROOT", "/Volumes/BOT_LOGS/schwab_trading_bot"
+            )
+        ).expanduser()
         candidates.append(external_root / path)
 
     out: list[Path] = []
@@ -326,7 +490,9 @@ def _artifact_path_candidates(project_root: Path, raw_path: str | Path) -> list[
     return out
 
 
-def _select_freshest_json(project_root: Path, raw_path: str | Path) -> tuple[Path, dict[str, Any]]:
+def _select_freshest_json(
+    project_root: Path, raw_path: str | Path
+) -> tuple[Path, dict[str, Any]]:
     best_path: Path | None = None
     best_payload: dict[str, Any] = {}
     best_mtime = -1.0
@@ -347,7 +513,9 @@ def _select_freshest_json(project_root: Path, raw_path: str | Path) -> tuple[Pat
 
 
 def _health_path(project_root: Path, name: str) -> Path:
-    path, _payload = _select_freshest_json(project_root, Path("governance") / "health" / name)
+    path, _payload = _select_freshest_json(
+        project_root, Path("governance") / "health" / name
+    )
     return path
 
 
@@ -369,7 +537,9 @@ def _artifact_group_check(
     for label, raw_path in specs:
         path, payload = _load_artifact(project_root, raw_path)
         artifact_status = _artifact_status(payload, missing=missing_status)
-        if _has_timed_out(payload) and not (payload.get("ok") is True and artifact_status == "ready"):
+        if _has_timed_out(payload) and not (
+            payload.get("ok") is True and artifact_status == "ready"
+        ):
             artifact_status = "blocked"
         if artifact_status == "blocked":
             status = "blocked"
@@ -471,7 +641,10 @@ def _lane_from_process(command: str) -> str:
         return ""
     if _has_script_token(tokens, "scripts/run_all_sleeves.py"):
         return "schwab_all_sleeves"
-    if _has_script_token(tokens, "scripts/run_parallel_shadows.py") and "--simulate" in tokens:
+    if (
+        _has_script_token(tokens, "scripts/run_parallel_shadows.py")
+        and "--simulate" in tokens
+    ):
         return "parallel_shadows_simulate"
     if _has_script_token(tokens, "scripts/run_dividend_capture_shadow.py"):
         return "dividend_capture_shadow"
@@ -562,12 +735,14 @@ def _process_lane_ownership_check(project_root: Path) -> dict[str, Any]:
             "excess_process_count": excess_processes,
             "ignored_embedded_children": ignored_embedded_children,
         },
-        repair_commands=[
-            ["./scripts/ops/opsctl.sh", "livefeed-refresh"],
-            ["./scripts/ops/opsctl.sh", "start", "--force-restart"],
-        ]
-        if duplicate_lanes
-        else [],
+        repair_commands=(
+            [
+                ["./scripts/ops/opsctl.sh", "livefeed-refresh"],
+                ["./scripts/ops/opsctl.sh", "start", "--force-restart"],
+            ]
+            if duplicate_lanes
+            else []
+        ),
     )
 
 
@@ -580,22 +755,44 @@ def _one_numbers_check(project_root: Path) -> dict[str, Any]:
             family="analytics_surface",
             status="blocked",
             summary=f"One Numbers guard could not run: {exc}",
-            repair_commands=[["./scripts/ops/opsctl.sh", "one-numbers-regression-guard", "--json"]],
+            repair_commands=[
+                ["./scripts/ops/opsctl.sh", "one-numbers-regression-guard", "--json"]
+            ],
         )
-    weaknesses = guard_payload.get("weaknesses") if isinstance(guard_payload.get("weaknesses"), list) else []
-    weakness_names = {str(row.get("name") or "") for row in weaknesses if isinstance(row, dict)}
+    weaknesses = (
+        guard_payload.get("weaknesses")
+        if isinstance(guard_payload.get("weaknesses"), list)
+        else []
+    )
+    weakness_names = {
+        str(row.get("name") or "") for row in weaknesses if isinstance(row, dict)
+    }
     status = _artifact_status(guard_payload, missing="blocked")
-    if weakness_names.intersection({"summary_missing", "latest_csv_alias_missing", "latest_metrics_alias_missing"}):
+    if weakness_names.intersection(
+        {"summary_missing", "latest_csv_alias_missing", "latest_metrics_alias_missing"}
+    ):
         status = "blocked"
     elif weakness_names:
         status = "degraded"
-    contract = guard_payload.get("original_coverage_contract") if isinstance(guard_payload.get("original_coverage_contract"), dict) else {}
-    repair_plan = guard_payload.get("repair_plan") if isinstance(guard_payload.get("repair_plan"), dict) else {}
-    repair_commands: list[list[str]] = [["./scripts/ops/opsctl.sh", "one-numbers-regression-guard", "--apply", "--json"]]
+    contract = (
+        guard_payload.get("original_coverage_contract")
+        if isinstance(guard_payload.get("original_coverage_contract"), dict)
+        else {}
+    )
+    repair_plan = (
+        guard_payload.get("repair_plan")
+        if isinstance(guard_payload.get("repair_plan"), dict)
+        else {}
+    )
+    repair_commands: list[list[str]] = [
+        ["./scripts/ops/opsctl.sh", "one-numbers-regression-guard", "--apply", "--json"]
+    ]
     for cmd in repair_plan.get("backfill_commands") or []:
         if isinstance(cmd, list):
             repair_commands.append([str(part) for part in cmd])
-    summary = "One Numbers original coverage is pinned and rollup source days are represented"
+    summary = (
+        "One Numbers original coverage is pinned and rollup source days are represented"
+    )
     if weakness_names:
         summary = ", ".join(sorted(weakness_names))
     return _check(
@@ -611,7 +808,9 @@ def _one_numbers_check(project_root: Path) -> dict[str, Any]:
             "expected_start_source": contract.get("expected_start_source"),
             "earliest_history_day": contract.get("earliest_history_day"),
             "earliest_source_day": contract.get("earliest_source_day"),
-            "source_days_missing_from_history_count": contract.get("source_days_missing_from_history_count"),
+            "source_days_missing_from_history_count": contract.get(
+                "source_days_missing_from_history_count"
+            ),
             "weaknesses": sorted(weakness_names),
         },
         repair_commands=repair_commands,
@@ -619,22 +818,46 @@ def _one_numbers_check(project_root: Path) -> dict[str, Any]:
 
 
 def _sql_ingestion_check(project_root: Path) -> dict[str, Any]:
-    _path, payload = _load_artifact(project_root, "governance/health/ingestion_storage_control_latest.json")
+    _path, payload = _load_artifact(
+        project_root, "governance/health/ingestion_storage_control_latest.json"
+    )
     if not payload:
         return _check(
             "sql_ingestion_lag_and_backlog",
             family="storage_surface",
             status="blocked",
             summary="ingestion_storage_control_latest.json is missing",
-            repair_commands=[["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]],
+            repair_commands=[
+                ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"]
+            ],
         )
-    backpressure = payload.get("backpressure") if isinstance(payload.get("backpressure"), dict) else {}
+    backpressure = (
+        payload.get("backpressure")
+        if isinstance(payload.get("backpressure"), dict)
+        else {}
+    )
     storage = payload.get("storage") if isinstance(payload.get("storage"), dict) else {}
-    steady_state = payload.get("steady_state") if isinstance(payload.get("steady_state"), dict) else {}
-    target_status = steady_state.get("target_status") if isinstance(steady_state.get("target_status"), dict) else {}
+    steady_state = (
+        payload.get("steady_state")
+        if isinstance(payload.get("steady_state"), dict)
+        else {}
+    )
+    target_status = (
+        steady_state.get("target_status")
+        if isinstance(steady_state.get("target_status"), dict)
+        else {}
+    )
     steady_state_ready = bool(target_status.get("steady_state_ready", False))
-    backlog_truth = payload.get("backlog_truth") if isinstance(payload.get("backlog_truth"), dict) else {}
-    raw_live_truth = backlog_truth.get("raw_live") if isinstance(backlog_truth.get("raw_live"), dict) else {}
+    backlog_truth = (
+        payload.get("backlog_truth")
+        if isinstance(payload.get("backlog_truth"), dict)
+        else {}
+    )
+    raw_live_truth = (
+        backlog_truth.get("raw_live")
+        if isinstance(backlog_truth.get("raw_live"), dict)
+        else {}
+    )
     raw_live_expansion = (
         payload.get("raw_live_expansion_contract")
         if isinstance(payload.get("raw_live_expansion_contract"), dict)
@@ -650,24 +873,34 @@ def _sql_ingestion_check(project_root: Path) -> dict[str, Any]:
         if isinstance(soak_contract.get("inputs"), dict)
         else {}
     )
-    soak_contract_blockers = soak_contract.get("blockers") if isinstance(soak_contract.get("blockers"), list) else []
+    soak_contract_blockers = (
+        soak_contract.get("blockers")
+        if isinstance(soak_contract.get("blockers"), list)
+        else []
+    )
     bounded_soak_backlog_ready = bool(
         str(payload.get("overall_status") or "").strip().lower() == "ready"
         and str(payload.get("severity") or "").strip().lower() in {"stable", "low"}
-        and str(payload.get("recovery_state") or "").strip().lower() in {"steady_state", "stabilized_recovery", ""}
+        and str(payload.get("recovery_state") or "").strip().lower()
+        in {"steady_state", "stabilized_recovery", ""}
         and bool(soak_contract.get("active", False))
         and bool(soak_contract.get("soak_ready", False))
         and not soak_contract_blockers
         and bool(
             soak_contract_inputs.get("bounded_sparse_reserve_soak_watch", False)
             or "bounded_sparse_and_raw_reserve_backlog_allowed_for_soak"
-            in {str(item) for item in soak_contract.get("non_blocking_conditions", []) if str(item).strip()}
+            in {
+                str(item)
+                for item in soak_contract.get("non_blocking_conditions", [])
+                if str(item).strip()
+            }
         )
     )
     raw_live_soak_backlog_ready = bool(
         str(payload.get("overall_status") or "").strip().lower() == "ready"
         and str(payload.get("severity") or "").strip().lower() in {"stable", "low"}
-        and str(payload.get("recovery_state") or "").strip().lower() in {"steady_state", "stabilized_recovery", ""}
+        and str(payload.get("recovery_state") or "").strip().lower()
+        in {"steady_state", "stabilized_recovery", ""}
         and str(raw_live_truth.get("grade") or "").strip().upper() in {"A", "A+"}
         and bool(raw_live_expansion.get("expansion_ready", False))
         and not bool(raw_live_expansion.get("hard_block", False))
@@ -675,15 +908,25 @@ def _sql_ingestion_check(project_root: Path) -> dict[str, Any]:
         and _safe_int(raw_live_truth.get("total_pending_lines"), 0) <= 15000
         and _safe_float(raw_live_truth.get("oldest_pending_age_seconds"), 0.0) <= 900.0
     )
-    bounded_soak_backlog_ready = bool(bounded_soak_backlog_ready or raw_live_soak_backlog_ready)
+    bounded_soak_backlog_ready = bool(
+        bounded_soak_backlog_ready or raw_live_soak_backlog_ready
+    )
     status = _artifact_status(payload)
     pending_lines = _safe_int(backpressure.get("total_pending_lines"), 0)
     drain_status = str(storage.get("backlog_drain_status") or "").strip()
     severity = str(payload.get("severity") or "").strip().lower()
     recovery_state = str(payload.get("recovery_state") or "").strip()
-    if pending_lines > 0 and status == "ready" and not steady_state_ready and not bounded_soak_backlog_ready:
+    if (
+        pending_lines > 0
+        and status == "ready"
+        and not steady_state_ready
+        and not bounded_soak_backlog_ready
+    ):
         status = "degraded"
-    if severity == "critical" and recovery_state not in {"stabilized_recovery", "recovering_under_guard"}:
+    if severity == "critical" and recovery_state not in {
+        "stabilized_recovery",
+        "recovering_under_guard",
+    }:
         status = "blocked"
     summary = f"pending_lines={pending_lines} drain_status={drain_status or 'unknown'} storage_status={payload.get('overall_status') or 'unknown'}"
     if bounded_soak_backlog_ready:
@@ -698,44 +941,83 @@ def _sql_ingestion_check(project_root: Path) -> dict[str, Any]:
             "severity": payload.get("severity"),
             "recovery_state": recovery_state,
             "pending_lines": pending_lines,
-            "estimated_total_drain_minutes": _safe_float(backpressure.get("estimated_total_drain_minutes"), 0.0),
+            "estimated_total_drain_minutes": _safe_float(
+                backpressure.get("estimated_total_drain_minutes"), 0.0
+            ),
             "backlog_drain_status": drain_status,
             "bounded_soak_backlog_ready": bounded_soak_backlog_ready,
             "raw_live_soak_backlog_ready": raw_live_soak_backlog_ready,
             "raw_live_grade": raw_live_truth.get("grade"),
-            "raw_live_core_pending_lines": _safe_int(raw_live_truth.get("core_pending_lines"), 0),
-            "raw_live_total_pending_lines": _safe_int(raw_live_truth.get("total_pending_lines"), 0),
-            "raw_live_oldest_pending_age_seconds": _safe_float(raw_live_truth.get("oldest_pending_age_seconds"), 0.0),
+            "raw_live_core_pending_lines": _safe_int(
+                raw_live_truth.get("core_pending_lines"), 0
+            ),
+            "raw_live_total_pending_lines": _safe_int(
+                raw_live_truth.get("total_pending_lines"), 0
+            ),
+            "raw_live_oldest_pending_age_seconds": _safe_float(
+                raw_live_truth.get("oldest_pending_age_seconds"), 0.0
+            ),
             "soak_contract_status": soak_contract.get("status"),
             "soak_contract_grade": soak_contract.get("grade"),
         },
         repair_commands=[
-            ["./scripts/ops/opsctl.sh", "storage-pressure-clearance", "--apply", "--force-clear-stale-gate", "--json"],
-            ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--json"],
+            [
+                "./scripts/ops/opsctl.sh",
+                "storage-pressure-clearance",
+                "--apply",
+                "--force-clear-stale-gate",
+                "--json",
+            ],
+            [
+                "./scripts/ops/opsctl.sh",
+                "storage-backpressure-autopilot",
+                "--apply",
+                "--json",
+            ],
         ],
     )
 
 
 def _storage_route_check(project_root: Path) -> dict[str, Any]:
-    _path, payload = _load_artifact(project_root, "governance/health/storage_route_status_latest.json")
+    _path, payload = _load_artifact(
+        project_root, "governance/health/storage_route_status_latest.json"
+    )
     if not payload:
         return _check(
             "external_drive_route_health",
             family="storage_surface",
             status="blocked",
             summary="storage_route_status_latest.json is missing",
-            repair_commands=[["./scripts/ops/opsctl.sh", "storage-resilience", "--json"]],
+            repair_commands=[
+                ["./scripts/ops/opsctl.sh", "storage-resilience", "--json"]
+            ],
         )
-    route_verification = payload.get("route_verification") if isinstance(payload.get("route_verification"), dict) else {}
+    route_verification = (
+        payload.get("route_verification")
+        if isinstance(payload.get("route_verification"), dict)
+        else {}
+    )
     verification_state = str(route_verification.get("verification_state") or "").strip()
     conflicts = _safe_int(payload.get("split_brain_conflicts"), 0)
-    resilience = load_json(_health_path(project_root, "storage_resilience_control_latest.json"))
-    reconciler = load_json(_health_path(project_root, "storage_split_brain_reconciler_latest.json"))
+    resilience = load_json(
+        _health_path(project_root, "storage_resilience_control_latest.json")
+    )
+    reconciler = load_json(
+        _health_path(project_root, "storage_split_brain_reconciler_latest.json")
+    )
     reconciler_summary = _as_dict(reconciler.get("summary"))
-    unresolved_resilience = _safe_int(resilience.get("unresolved_split_brain_conflicts"), conflicts)
-    unresolved_reconciler = _safe_int(reconciler_summary.get("unresolved_conflicts"), conflicts)
-    mount_guard = load_json(_health_path(project_root, "storage_mount_guard_latest.json"))
-    mode = str(payload.get("certified_mode") or payload.get("mode") or "").strip().lower()
+    unresolved_resilience = _safe_int(
+        resilience.get("unresolved_split_brain_conflicts"), conflicts
+    )
+    unresolved_reconciler = _safe_int(
+        reconciler_summary.get("unresolved_conflicts"), conflicts
+    )
+    mount_guard = load_json(
+        _health_path(project_root, "storage_mount_guard_latest.json")
+    )
+    mode = (
+        str(payload.get("certified_mode") or payload.get("mode") or "").strip().lower()
+    )
     intentional_local_hot_route = bool(
         mode.startswith("local_fallback")
         and verification_state == "active_local_ready"
@@ -754,9 +1036,15 @@ def _storage_route_check(project_root: Path) -> dict[str, Any]:
         and unresolved_reconciler == 0
         and _guarded_paper_strict_clear(project_root)
     )
-    status = "ready" if (
-        verification_state in {"ready", "verified", "curated_ready"} and conflicts == 0
-    ) or intentional_local_hot_route else "degraded"
+    status = (
+        "ready"
+        if (
+            verification_state in {"ready", "verified", "curated_ready"}
+            and conflicts == 0
+        )
+        or intentional_local_hot_route
+        else "degraded"
+    )
     if verification_state in {"blocked", "missing_external_copy"} or conflicts > 0:
         status = "blocked"
     if reconciled_legacy_split_brain:
@@ -779,22 +1067,35 @@ def _storage_route_check(project_root: Path) -> dict[str, Any]:
             "reconciler_unresolved_conflicts": unresolved_reconciler,
             "reconciled_legacy_split_brain": reconciled_legacy_split_brain,
             "intentional_local_hot_route": intentional_local_hot_route,
-            "external_required_for_hot_path": bool(mount_guard.get("external_required_for_hot_path", True)),
-            "hot_storage_available": bool(mount_guard.get("hot_storage_available", False)),
+            "external_required_for_hot_path": bool(
+                mount_guard.get("external_required_for_hot_path", True)
+            ),
+            "hot_storage_available": bool(
+                mount_guard.get("hot_storage_available", False)
+            ),
         },
         repair_commands=[["./scripts/ops/opsctl.sh", "storage-resilience", "--json"]],
     )
 
 
 def _stateful_storage_regression_check(project_root: Path) -> dict[str, Any]:
-    path, payload = _load_artifact(project_root, "governance/health/stateful_storage_regression_guard_latest.json")
+    path, payload = _load_artifact(
+        project_root, "governance/health/stateful_storage_regression_guard_latest.json"
+    )
     if not payload:
         return _check(
             "stateful_storage_regression",
             family="storage_surface",
             status="degraded",
             summary="stateful_storage_regression_guard_latest.json is missing",
-            repair_commands=[["./scripts/ops/opsctl.sh", "stateful-storage-regression-guard", "--apply", "--json"]],
+            repair_commands=[
+                [
+                    "./scripts/ops/opsctl.sh",
+                    "stateful-storage-regression-guard",
+                    "--apply",
+                    "--json",
+                ]
+            ],
         )
     status = _artifact_status(payload, missing="degraded")
     metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
@@ -815,15 +1116,34 @@ def _stateful_storage_regression_check(project_root: Path) -> dict[str, Any]:
         status=status,
         summary=summary,
         evidence={"path": str(path), "metrics": metrics, "checks": checks},
-        repair_commands=[["./scripts/ops/opsctl.sh", "stateful-storage-regression-guard", "--apply", "--json"]],
+        repair_commands=[
+            [
+                "./scripts/ops/opsctl.sh",
+                "stateful-storage-regression-guard",
+                "--apply",
+                "--json",
+            ]
+        ],
     )
 
 
 def _report_browser_jobs_check(project_root: Path) -> dict[str, Any]:
     specs = [
-        ("chrome_headless_guard", "governance/health/chrome_headless_guard_latest.json", ["./scripts/ops/opsctl.sh", "chrome-headless-guard", "--apply", "--json"]),
-        ("report_pdf_bundle", "governance/health/report_pdf_bundle_latest.json", ["./scripts/ops/opsctl.sh", "report-pdfs", "--json"]),
-        ("system_summary_autopilot", "governance/health/system_summary_autopilot_latest.json", ["./scripts/ops/opsctl.sh", "system-summary-autopilot", "--json"]),
+        (
+            "chrome_headless_guard",
+            "governance/health/chrome_headless_guard_latest.json",
+            ["./scripts/ops/opsctl.sh", "chrome-headless-guard", "--apply", "--json"],
+        ),
+        (
+            "report_pdf_bundle",
+            "governance/health/report_pdf_bundle_latest.json",
+            ["./scripts/ops/opsctl.sh", "report-pdfs", "--json"],
+        ),
+        (
+            "system_summary_autopilot",
+            "governance/health/system_summary_autopilot_latest.json",
+            ["./scripts/ops/opsctl.sh", "system-summary-autopilot", "--json"],
+        ),
     ]
     rows: list[dict[str, Any]] = []
     repair_commands: list[list[str]] = []
@@ -833,13 +1153,22 @@ def _report_browser_jobs_check(project_root: Path) -> dict[str, Any]:
         artifact_status = _artifact_status(payload, missing="degraded")
         if not payload:
             artifact_status = "degraded"
-        if _has_timed_out(payload) and not (payload.get("ok") is True and artifact_status == "ready"):
+        if _has_timed_out(payload) and not (
+            payload.get("ok") is True and artifact_status == "ready"
+        ):
             artifact_status = "blocked"
         if artifact_status == "blocked":
             status = "blocked"
         elif artifact_status == "degraded" and status != "blocked":
             status = "degraded"
-        rows.append({"name": name, "status": artifact_status, "path": str(path), "present": bool(payload)})
+        rows.append(
+            {
+                "name": name,
+                "status": artifact_status,
+                "path": str(path),
+                "present": bool(payload),
+            }
+        )
         if artifact_status != "ready":
             repair_commands.append(command)
     summary = ", ".join(f"{row['name']}={row['status']}" for row in rows)
@@ -854,35 +1183,46 @@ def _report_browser_jobs_check(project_root: Path) -> dict[str, Any]:
 
 
 def _governance_freshness_check(project_root: Path) -> dict[str, Any]:
-    _path, payload = _load_artifact(project_root, "governance/health/system_drift_guard_latest.json")
+    _path, payload = _load_artifact(
+        project_root, "governance/health/system_drift_guard_latest.json"
+    )
     if not payload:
         return _check(
             "governance_artifact_freshness",
             family="governance_surface",
             status="blocked",
             summary="system_drift_guard_latest.json is missing",
-            repair_commands=[["./scripts/ops/opsctl.sh", "system-drift-guard", "--json"]],
+            repair_commands=[
+                ["./scripts/ops/opsctl.sh", "system-drift-guard", "--json"]
+            ],
         )
     metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
     blocked = _safe_int(metrics.get("blocked_surface_count"), 0)
     degraded = _safe_int(metrics.get("degraded_surface_count"), 0)
     stale = _safe_int(metrics.get("stale_surface_count"), 0)
     missing = _safe_int(metrics.get("missing_surface_count"), 0)
-    surfaces = payload.get("surfaces") if isinstance(payload.get("surfaces"), list) else []
+    surfaces = (
+        payload.get("surfaces") if isinstance(payload.get("surfaces"), list) else []
+    )
     managed_stale = sum(
         1
         for row in surfaces
-        if isinstance(row, dict) and bool(row.get("stale", False)) and bool(row.get("managed_stale", False))
+        if isinstance(row, dict)
+        and bool(row.get("stale", False))
+        and bool(row.get("managed_stale", False))
     )
     unmanaged_stale = max(stale - managed_stale, 0)
     status = _artifact_status(payload)
     blocked_names = _blocked_surface_names(payload)
-    self_referential_blocked = bool(blocked_names) and blocked_names <= {"master_infrastructure_supervisor"}
+    self_referential_blocked = bool(blocked_names) and blocked_names <= {
+        "master_infrastructure_supervisor"
+    }
     degraded_names = {
         str(row.get("name") or "").strip()
         for row in surfaces
         if isinstance(row, dict)
-        and str(row.get("status") or "").strip().lower() in {"degraded", "warn", "warning", "needs_work"}
+        and str(row.get("status") or "").strip().lower()
+        in {"degraded", "warn", "warning", "needs_work"}
         and str(row.get("name") or "").strip()
     }
     self_referential_degraded = bool(
@@ -896,7 +1236,11 @@ def _governance_freshness_check(project_root: Path) -> dict[str, Any]:
     )
     if (blocked and not self_referential_blocked) or missing:
         status = "blocked"
-    elif (degraded and not self_referential_degraded) or unmanaged_stale or self_referential_blocked:
+    elif (
+        (degraded and not self_referential_degraded)
+        or unmanaged_stale
+        or self_referential_blocked
+    ):
         status = "degraded"
     elif self_referential_degraded:
         status = "ready"
@@ -916,21 +1260,43 @@ def _governance_freshness_check(project_root: Path) -> dict[str, Any]:
             "self_referential_degraded_reconciled": self_referential_degraded,
             "degraded_surface_names": sorted(degraded_names),
         },
-        repair_commands=[["./scripts/ops/opsctl.sh", "system-drift-autopilot", "--apply", "--json"]],
+        repair_commands=[
+            ["./scripts/ops/opsctl.sh", "system-drift-autopilot", "--apply", "--json"]
+        ],
     )
 
 
 def _command_surface_check(project_root: Path) -> dict[str, Any]:
-    command_validity_path, command_validity = _load_artifact(project_root, "governance/health/command_validity_latest.json")
-    commands_hygiene_path, commands_hygiene = _load_artifact(project_root, "governance/health/commands_hygiene_latest.json")
-    validity_metrics = command_validity.get("metrics") if isinstance(command_validity.get("metrics"), dict) else {}
-    hygiene_metrics = commands_hygiene.get("metrics") if isinstance(commands_hygiene.get("metrics"), dict) else {}
+    command_validity_path, command_validity = _load_artifact(
+        project_root, "governance/health/command_validity_latest.json"
+    )
+    commands_hygiene_path, commands_hygiene = _load_artifact(
+        project_root, "governance/health/commands_hygiene_latest.json"
+    )
+    validity_metrics = (
+        command_validity.get("metrics")
+        if isinstance(command_validity.get("metrics"), dict)
+        else {}
+    )
+    hygiene_metrics = (
+        commands_hygiene.get("metrics")
+        if isinstance(commands_hygiene.get("metrics"), dict)
+        else {}
+    )
     blocked_entries = _safe_int(validity_metrics.get("blocked_entry_count"), 0)
     smoke_failures = _safe_int(validity_metrics.get("smoke_failure_count"), 0)
-    runtime_smoke_failures = _safe_int(validity_metrics.get("runtime_smoke_failure_count"), 0)
-    contract_probe_failures = _safe_int(validity_metrics.get("contract_dispatch_smoke_failure_count"), 0)
-    contract_hash_mismatches = _safe_int(validity_metrics.get("contract_hash_mismatch_count"), 0)
-    unprobed_operator_gated = _safe_int(validity_metrics.get("unprobed_operator_gated_count"), 0)
+    runtime_smoke_failures = _safe_int(
+        validity_metrics.get("runtime_smoke_failure_count"), 0
+    )
+    contract_probe_failures = _safe_int(
+        validity_metrics.get("contract_dispatch_smoke_failure_count"), 0
+    )
+    contract_hash_mismatches = _safe_int(
+        validity_metrics.get("contract_hash_mismatch_count"), 0
+    )
+    unprobed_operator_gated = _safe_int(
+        validity_metrics.get("unprobed_operator_gated_count"), 0
+    )
     commands_changed = bool(commands_hygiene.get("commands_changed", False))
     runbook_changed = bool(commands_hygiene.get("runbook_changed", False))
     status = "ready"
@@ -944,7 +1310,12 @@ def _command_surface_check(project_root: Path) -> dict[str, Any]:
         or contract_hash_mismatches
     ):
         status = "blocked"
-    elif commands_changed or runbook_changed or unprobed_operator_gated or _artifact_status(commands_hygiene, missing="degraded") != "ready":
+    elif (
+        commands_changed
+        or runbook_changed
+        or unprobed_operator_gated
+        or _artifact_status(commands_hygiene, missing="degraded") != "ready"
+    ):
         status = "degraded"
     summary = (
         f"blocked_entries={blocked_entries} smoke_failures={smoke_failures} "
@@ -973,26 +1344,54 @@ def _command_surface_check(project_root: Path) -> dict[str, Any]:
 
 
 def _child_bot_outcomes_check(project_root: Path) -> dict[str, Any]:
-    _path, payload = _load_artifact(project_root, "governance/health/infrastructure_autofix_bot_latest.json")
+    _path, payload = _load_artifact(
+        project_root, "governance/health/infrastructure_autofix_bot_latest.json"
+    )
     if not payload:
         return _check(
             "child_repair_bot_outcomes",
             family="infrastructure_surface",
             status="blocked",
             summary="infrastructure_autofix_bot_latest.json is missing",
-            repair_commands=[["./scripts/ops/opsctl.sh", "infrastructure-autofix", "--json"]],
+            repair_commands=[
+                ["./scripts/ops/opsctl.sh", "infrastructure-autofix", "--json"]
+            ],
         )
-    repair_plan = payload.get("repair_plan") if isinstance(payload.get("repair_plan"), list) else []
-    attempts = payload.get("attempts") if isinstance(payload.get("attempts"), list) else []
-    operator_followups = payload.get("operator_followups") if isinstance(payload.get("operator_followups"), list) else []
+    repair_plan = (
+        payload.get("repair_plan")
+        if isinstance(payload.get("repair_plan"), list)
+        else []
+    )
+    attempts = (
+        payload.get("attempts") if isinstance(payload.get("attempts"), list) else []
+    )
+    operator_followups = (
+        payload.get("operator_followups")
+        if isinstance(payload.get("operator_followups"), list)
+        else []
+    )
     failed_attempts_all = [
         row
         for row in attempts
-        if isinstance(row, dict) and (bool(row.get("timed_out", False)) or _safe_int(row.get("rc"), 1) not in {0, 2})
+        if isinstance(row, dict)
+        and (
+            bool(row.get("timed_out", False))
+            or _safe_int(row.get("rc"), 1) not in {0, 2}
+        )
     ]
-    mitigated_attempts = [row for row in failed_attempts_all if _attempt_has_active_recovery(project_root, row)]
-    failed_attempts = [row for row in failed_attempts_all if row not in mitigated_attempts]
-    timed_out = any(bool(row.get("timed_out", False)) for row in failed_attempts if isinstance(row, dict))
+    mitigated_attempts = [
+        row
+        for row in failed_attempts_all
+        if _attempt_has_active_recovery(project_root, row)
+    ]
+    failed_attempts = [
+        row for row in failed_attempts_all if row not in mitigated_attempts
+    ]
+    timed_out = any(
+        bool(row.get("timed_out", False))
+        for row in failed_attempts
+        if isinstance(row, dict)
+    )
     status = _artifact_status(payload)
     if operator_followups or timed_out or failed_attempts:
         status = "blocked"
@@ -1028,7 +1427,9 @@ def _child_bot_outcomes_check(project_root: Path) -> dict[str, Any]:
             "mitigated_active_recovery_attempt_count": len(mitigated_attempts),
             "paper_soak_advisory_only": paper_soak_advisory_only,
         },
-        repair_commands=[["./scripts/ops/opsctl.sh", "infrastructure-autofix", "--apply", "--json"]],
+        repair_commands=[
+            ["./scripts/ops/opsctl.sh", "infrastructure-autofix", "--apply", "--json"]
+        ],
     )
 
 
@@ -1085,9 +1486,18 @@ def _autonomous_recovery_drills_check(project_root: Path) -> dict[str, Any]:
         name="autonomous_recovery_drills",
         family="resilience_surface",
         specs=[
-            ("storage_disaster_recovery", "governance/health/storage_disaster_recovery_latest.json"),
-            ("chaos_drill_coordinator", "governance/health/chaos_drill_coordinator_latest.json"),
-            ("storage_resilience", "governance/health/storage_resilience_control_latest.json"),
+            (
+                "storage_disaster_recovery",
+                "governance/health/storage_disaster_recovery_latest.json",
+            ),
+            (
+                "chaos_drill_coordinator",
+                "governance/health/chaos_drill_coordinator_latest.json",
+            ),
+            (
+                "storage_resilience",
+                "governance/health/storage_resilience_control_latest.json",
+            ),
         ],
         repair_commands=[
             ["./scripts/ops/opsctl.sh", "storage-disaster-recovery", "--json"],
@@ -1098,14 +1508,20 @@ def _autonomous_recovery_drills_check(project_root: Path) -> dict[str, Any]:
 
 
 def _operator_cockpit_check(project_root: Path) -> dict[str, Any]:
-    return _artifact_group_check(
+    check = _artifact_group_check(
         project_root,
         name="operator_cockpit_readiness",
         family="operator_surface",
         specs=[
             ("operator_cockpit", "governance/health/operator_cockpit_latest.json"),
-            ("runtime_gate_dashboard", "governance/health/runtime_gate_dashboard_latest.json"),
-            ("platform_control_plane", "governance/health/platform_control_plane_latest.json"),
+            (
+                "runtime_gate_dashboard",
+                "governance/health/runtime_gate_dashboard_latest.json",
+            ),
+            (
+                "platform_control_plane",
+                "governance/health/platform_control_plane_latest.json",
+            ),
         ],
         repair_commands=[
             ["./scripts/ops/opsctl.sh", "operator-cockpit", "--json"],
@@ -1113,6 +1529,28 @@ def _operator_cockpit_check(project_root: Path) -> dict[str, Any]:
             ["./scripts/ops/opsctl.sh", "platform-control-plane", "--json"],
         ],
     )
+    artifacts = _as_dict(check.get("evidence")).get("artifacts", [])
+    degraded_names = {
+        str(row.get("name") or "").strip()
+        for row in artifacts
+        if isinstance(row, dict)
+        and str(row.get("status") or "").strip().lower() == "degraded"
+    }
+    evidence_only_advisory, dashboard_context = _dashboard_evidence_only_advisory(
+        project_root
+    )
+    if (
+        check["status"] == "degraded"
+        and degraded_names == {"runtime_gate_dashboard"}
+        and evidence_only_advisory
+    ):
+        check["status"] = "ready"
+        check["ok"] = True
+        check["summary"] += ", paper_soak_training_evidence_advisory_only=true"
+        check["evidence"]["paper_soak_advisory_only"] = True
+        check["evidence"]["managed_degraded_artifacts"] = ["runtime_gate_dashboard"]
+        check["evidence"]["dashboard_evidence_contract"] = dashboard_context
+    return check
 
 
 def _cold_lane_research_factory_check(project_root: Path) -> dict[str, Any]:
@@ -1122,26 +1560,50 @@ def _cold_lane_research_factory_check(project_root: Path) -> dict[str, Any]:
         family="research_surface",
         specs=[
             ("cold_lane_refresh", "governance/health/cold_lane_refresh_latest.json"),
-            ("coverage_gap_closer", "governance/walk_forward/coverage_gap_closer_latest.json"),
-            ("immutable_experiment_ledger", "governance/experiments/immutable_experiment_ledger_latest.json"),
-            ("promotion_autopilot", "governance/champion_challenger/promotion_autopilot_packet_latest.json"),
+            (
+                "coverage_gap_closer",
+                "governance/walk_forward/coverage_gap_closer_latest.json",
+            ),
+            (
+                "immutable_experiment_ledger",
+                "governance/experiments/immutable_experiment_ledger_latest.json",
+            ),
+            (
+                "promotion_autopilot",
+                "governance/champion_challenger/promotion_autopilot_packet_latest.json",
+            ),
         ],
         repair_commands=[
             ["./scripts/ops/opsctl.sh", "cold-lane-refresh", "--json"],
             ["./scripts/ops/opsctl.sh", "coverage-gap-closer", "--json"],
-            ["./scripts/ops/opsctl.sh", "experiment-ledger", "--event-type", "control_plane_probe", "--name", "cold_lane_factory_probe"],
+            [
+                "./scripts/ops/opsctl.sh",
+                "experiment-ledger",
+                "--event-type",
+                "control_plane_probe",
+                "--name",
+                "cold_lane_factory_probe",
+            ],
             ["./scripts/ops/opsctl.sh", "promotion-autopilot", "--json"],
         ],
     )
     if check["status"] == "degraded" and _guarded_paper_strict_clear(project_root):
-        artifacts = check.get("evidence", {}).get("artifacts") if isinstance(check.get("evidence"), dict) else []
+        artifacts = (
+            check.get("evidence", {}).get("artifacts")
+            if isinstance(check.get("evidence"), dict)
+            else []
+        )
         degraded_names = [
             str(row.get("name") or "")
             for row in artifacts
             if isinstance(row, dict) and str(row.get("status") or "") == "degraded"
         ]
         if degraded_names and set(degraded_names).issubset(
-            {"coverage_gap_closer", "immutable_experiment_ledger", "promotion_autopilot"}
+            {
+                "coverage_gap_closer",
+                "immutable_experiment_ledger",
+                "promotion_autopilot",
+            }
         ):
             check["status"] = "ready"
             check["ok"] = True
@@ -1157,9 +1619,18 @@ def _point_in_time_replay_check(project_root: Path) -> dict[str, Any]:
         name="point_in_time_replay",
         family="replay_surface",
         specs=[
-            ("point_in_time_event_store", "governance/health/point_in_time_event_store_latest.json"),
-            ("replay_hash_registry", "governance/health/replay_hash_registry_guard_latest.json"),
-            ("golden_replay_regression", "governance/health/golden_replay_regression_latest.json"),
+            (
+                "point_in_time_event_store",
+                "governance/health/point_in_time_event_store_latest.json",
+            ),
+            (
+                "replay_hash_registry",
+                "governance/health/replay_hash_registry_guard_latest.json",
+            ),
+            (
+                "golden_replay_regression",
+                "governance/health/golden_replay_regression_latest.json",
+            ),
             ("replay_end_to_end", "governance/health/replay_end_to_end_latest.json"),
         ],
         repair_commands=[
@@ -1168,7 +1639,9 @@ def _point_in_time_replay_check(project_root: Path) -> dict[str, Any]:
             ["./scripts/ops/opsctl.sh", "golden-replay-regression", "--json"],
         ],
     )
-    point_store = load_json(_health_path(project_root, "point_in_time_event_store_latest.json"))
+    point_store = load_json(
+        _health_path(project_root, "point_in_time_event_store_latest.json")
+    )
     event_count = _safe_int(point_store.get("event_count"), 0)
     if point_store and event_count <= 0 and check["status"] == "ready":
         check["status"] = "degraded"
@@ -1186,38 +1659,83 @@ def _backlog_organizer_paper_soak_advisory(payload: dict[str, Any]) -> bool:
     hard_blocked = [
         row
         for row in lanes
-        if str(row.get("status") or "").strip().lower() in {"blocked", "critical", "failed"}
+        if str(row.get("status") or "").strip().lower()
+        in {"blocked", "critical", "failed"}
     ]
     managed_hard_lane_ids = {"admission_contracts", "promotion_training_quality"}
-    if any(str(row.get("lane_id") or "").strip() not in managed_hard_lane_ids for row in hard_blocked):
+    if any(
+        str(row.get("lane_id") or "").strip() not in managed_hard_lane_ids
+        for row in hard_blocked
+    ):
         return False
-    operational_lane_ids = {"runtime_pressure", "health_visibility", "auth_runtime_separation", "admission_contracts"}
+    operational_lane_ids = {
+        "runtime_pressure",
+        "health_visibility",
+        "auth_runtime_separation",
+        "admission_contracts",
+    }
     operational_rows = {
-        str(row.get("lane_id") or "").strip(): str(row.get("status") or "").strip().lower()
+        str(row.get("lane_id") or "")
+        .strip(): str(row.get("status") or "")
+        .strip()
+        .lower()
         for row in lanes
         if str(row.get("lane_id") or "").strip() in operational_lane_ids
     }
     required_runtime_lanes = {"runtime_pressure", "auth_runtime_separation"}
     if not required_runtime_lanes <= set(operational_rows):
         return False
-    if any(operational_rows[lane_id] not in {"ready", "advisory"} for lane_id in required_runtime_lanes):
+    if any(
+        operational_rows[lane_id] not in {"ready", "advisory"}
+        for lane_id in required_runtime_lanes
+    ):
         return False
-    if "health_visibility" in operational_rows and operational_rows["health_visibility"] not in {"ready", "advisory"}:
+    if "health_visibility" in operational_rows and operational_rows[
+        "health_visibility"
+    ] not in {"ready", "advisory"}:
         return False
-    return operational_rows.get("admission_contracts", "ready") in {"ready", "advisory", "blocked"}
+    return operational_rows.get("admission_contracts", "ready") in {
+        "ready",
+        "advisory",
+        "blocked",
+    }
 
 
 def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
     expected = [
-        ("one_numbers_regression_guard", "governance/health/one_numbers_regression_guard_latest.json"),
-        ("infrastructure_autofix", "governance/health/infrastructure_autofix_bot_latest.json"),
-        ("system_drift_autopilot", "governance/health/system_drift_autopilot_latest.json"),
-        ("storage_backpressure_autopilot", "governance/health/storage_backpressure_autopilot_latest.json"),
-        ("storage_pressure_clearance", "governance/health/storage_pressure_clearance_latest.json"),
-        ("stateful_storage_regression_guard", "governance/health/stateful_storage_regression_guard_latest.json"),
-        ("schwab_auth_supervisor", "governance/health/schwab_auth_supervisor_latest.json"),
+        (
+            "one_numbers_regression_guard",
+            "governance/health/one_numbers_regression_guard_latest.json",
+        ),
+        (
+            "infrastructure_autofix",
+            "governance/health/infrastructure_autofix_bot_latest.json",
+        ),
+        (
+            "system_drift_autopilot",
+            "governance/health/system_drift_autopilot_latest.json",
+        ),
+        (
+            "storage_backpressure_autopilot",
+            "governance/health/storage_backpressure_autopilot_latest.json",
+        ),
+        (
+            "storage_pressure_clearance",
+            "governance/health/storage_pressure_clearance_latest.json",
+        ),
+        (
+            "stateful_storage_regression_guard",
+            "governance/health/stateful_storage_regression_guard_latest.json",
+        ),
+        (
+            "schwab_auth_supervisor",
+            "governance/health/schwab_auth_supervisor_latest.json",
+        ),
         ("command_validity", "governance/health/command_validity_latest.json"),
-        ("chrome_headless_guard", "governance/health/chrome_headless_guard_latest.json"),
+        (
+            "chrome_headless_guard",
+            "governance/health/chrome_headless_guard_latest.json",
+        ),
         ("backlog_organizer", "governance/health/backlog_organizer_latest.json"),
     ]
     rows: list[dict[str, Any]] = []
@@ -1237,38 +1755,92 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
         initial_artifact_status = artifact_status
         managed_bounded_drift_repair = False
         if label == "command_validity" and payload:
-            metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+            metrics = (
+                payload.get("metrics")
+                if isinstance(payload.get("metrics"), dict)
+                else {}
+            )
             if (
                 _safe_int(metrics.get("blocked_entry_count"), 0) == 0
                 and _safe_int(metrics.get("smoke_failure_count"), 0) == 0
                 and _safe_int(metrics.get("runtime_smoke_failure_count"), 0) == 0
-                and _safe_int(metrics.get("contract_dispatch_smoke_failure_count"), 0) == 0
+                and _safe_int(metrics.get("contract_dispatch_smoke_failure_count"), 0)
+                == 0
                 and _safe_int(metrics.get("contract_hash_mismatch_count"), 0) == 0
             ):
                 artifact_status = "ready"
-        has_status = bool(str(payload.get("overall_status") or payload.get("status") or "").strip()) if payload else False
-        has_timestamp = bool(str(payload.get("timestamp_utc") or payload.get("updated_at_utc") or "").strip()) if payload else False
-        repair_plan = payload.get("repair_plan") if isinstance(payload.get("repair_plan"), list) else []
-        attempts = payload.get("attempts") if isinstance(payload.get("attempts"), list) else []
-        operator_followups = payload.get("operator_followups") if isinstance(payload.get("operator_followups"), list) else []
+        has_status = (
+            bool(
+                str(
+                    payload.get("overall_status") or payload.get("status") or ""
+                ).strip()
+            )
+            if payload
+            else False
+        )
+        has_timestamp = (
+            bool(
+                str(
+                    payload.get("timestamp_utc") or payload.get("updated_at_utc") or ""
+                ).strip()
+            )
+            if payload
+            else False
+        )
+        repair_plan = (
+            payload.get("repair_plan")
+            if isinstance(payload.get("repair_plan"), list)
+            else []
+        )
+        attempts = (
+            payload.get("attempts") if isinstance(payload.get("attempts"), list) else []
+        )
+        operator_followups = (
+            payload.get("operator_followups")
+            if isinstance(payload.get("operator_followups"), list)
+            else []
+        )
         failed_attempts = [
             row
             for row in attempts
-            if isinstance(row, dict) and (bool(row.get("timed_out", False)) or _safe_int(row.get("rc"), 1) not in {0, 2})
+            if isinstance(row, dict)
+            and (
+                bool(row.get("timed_out", False))
+                or _safe_int(row.get("rc"), 1) not in {0, 2}
+            )
         ]
-        mitigated_attempts = [row for row in failed_attempts if _attempt_has_active_recovery(project_root, row)]
-        unmitigated_failed_attempts = [row for row in failed_attempts if row not in mitigated_attempts]
+        mitigated_attempts = [
+            row
+            for row in failed_attempts
+            if _attempt_has_active_recovery(project_root, row)
+        ]
+        unmitigated_failed_attempts = [
+            row for row in failed_attempts if row not in mitigated_attempts
+        ]
         advisory_followups = bool(operator_followups) and {
-            str(item)
-            for item in operator_followups
-            if str(item).strip()
+            str(item) for item in operator_followups if str(item).strip()
         } <= {"infrastructure_autofix", "master_infrastructure_supervisor"}
-        if label == "infrastructure_autofix" and artifact_status == "blocked" and mitigated_attempts and not unmitigated_failed_attempts and not operator_followups:
+        if (
+            label == "infrastructure_autofix"
+            and artifact_status == "blocked"
+            and mitigated_attempts
+            and not unmitigated_failed_attempts
+            and not operator_followups
+        ):
             artifact_status = "degraded"
-        if label == "storage_pressure_clearance" and artifact_status == "blocked" and _storage_clearance_active_recovery(payload):
+        if (
+            label == "storage_pressure_clearance"
+            and artifact_status == "blocked"
+            and _storage_clearance_active_recovery(payload)
+        ):
             artifact_status = "degraded"
             unmitigated_failed_attempts = []
-        if label == "system_drift_autopilot" and artifact_status == "blocked" and not unmitigated_failed_attempts and advisory_followups:
+        if (
+            label == "system_drift_autopilot"
+            and artifact_status == "blocked"
+            and not unmitigated_failed_attempts
+            and advisory_followups
+        ):
             artifact_status = "degraded"
         if (
             label == "system_drift_autopilot"
@@ -1296,7 +1868,14 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
         if managed_blocking_backlog:
             artifact_status = "degraded"
             unmitigated_failed_attempts = []
-        no_action_with_plan = bool(repair_plan and not attempts and str(payload.get("apply") or payload.get("apply_requested") or "").lower() in {"true", "1"})
+        no_action_with_plan = bool(
+            repair_plan
+            and not attempts
+            and str(
+                payload.get("apply") or payload.get("apply_requested") or ""
+            ).lower()
+            in {"true", "1"}
+        )
         row_status = artifact_status
         if payload and (not has_status or not has_timestamp):
             row_status = "blocked"
@@ -1309,15 +1888,25 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
         paper_soak_advisory_only = bool(
             guarded_paper_clear
             and row_status == "degraded"
-            and (initial_artifact_status != "blocked" or managed_blocking_backlog or managed_bounded_drift_repair)
+            and (
+                initial_artifact_status != "blocked"
+                or managed_blocking_backlog
+                or managed_bounded_drift_repair
+            )
             and label in paper_soak_advisory_bots
             and not unmitigated_failed_attempts
         )
         authoritative_recovery = False
         authoritative_recovery_source = ""
-        if guarded_paper_clear and isinstance(artifact_age_minutes, (int, float)) and artifact_age_minutes > 30:
+        if (
+            guarded_paper_clear
+            and isinstance(artifact_age_minutes, (int, float))
+            and artifact_age_minutes > 30
+        ):
             if label == "system_drift_autopilot":
-                current_guard = load_json(_health_path(project_root, "system_drift_guard_latest.json"))
+                current_guard = load_json(
+                    _health_path(project_root, "system_drift_guard_latest.json")
+                )
                 guard_metrics = _as_dict(current_guard.get("metrics"))
                 authoritative_recovery = bool(
                     _artifact_status(current_guard, missing="degraded") == "ready"
@@ -1325,17 +1914,26 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
                     and _safe_int(guard_metrics.get("degraded_surface_count"), 0) == 0
                 )
                 authoritative_recovery_source = "system_drift_guard"
-            elif label in {"storage_backpressure_autopilot", "storage_pressure_clearance"}:
-                current_storage = load_json(_health_path(project_root, "ingestion_storage_control_latest.json"))
+            elif label in {
+                "storage_backpressure_autopilot",
+                "storage_pressure_clearance",
+            }:
+                current_storage = load_json(
+                    _health_path(project_root, "ingestion_storage_control_latest.json")
+                )
                 storage_backpressure = _as_dict(current_storage.get("backpressure"))
                 authoritative_recovery = bool(
                     _artifact_status(current_storage, missing="degraded") == "ready"
-                    and str(current_storage.get("severity") or "stable").strip().lower() == "stable"
+                    and str(current_storage.get("severity") or "stable").strip().lower()
+                    == "stable"
                     and _safe_float(current_storage.get("pressure_index"), 1.0) < 0.5
-                    and _safe_int(storage_backpressure.get("total_pending_lines"), 0) <= 15000
+                    and _safe_int(storage_backpressure.get("total_pending_lines"), 0)
+                    <= 15000
                 )
                 authoritative_recovery_source = "ingestion_storage_control"
-        stale_snapshot_superseded = bool(authoritative_recovery and not unmitigated_failed_attempts)
+        stale_snapshot_superseded = bool(
+            authoritative_recovery and not unmitigated_failed_attempts
+        )
         if stale_snapshot_superseded:
             paper_soak_advisory_only = True
         if paper_soak_advisory_only:
@@ -1355,7 +1953,9 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
                 "paper_soak_advisory_only": paper_soak_advisory_only,
                 "artifact_age_minutes": artifact_age_minutes,
                 "stale_snapshot_superseded": stale_snapshot_superseded,
-                "authoritative_recovery_source": authoritative_recovery_source if stale_snapshot_superseded else "",
+                "authoritative_recovery_source": (
+                    authoritative_recovery_source if stale_snapshot_superseded else ""
+                ),
             }
         )
     # Rows can be downgraded to advisory after their source status is read, for
@@ -1385,21 +1985,37 @@ def _self_auditing_infra_bots_check(project_root: Path) -> dict[str, Any]:
 
 
 def _schwab_auth_supervisor_check(project_root: Path) -> dict[str, Any]:
-    payload = load_json(_health_path(project_root, "schwab_auth_supervisor_latest.json"))
+    payload = load_json(
+        _health_path(project_root, "schwab_auth_supervisor_latest.json")
+    )
     if not payload:
         return _check(
             "schwab_auth_supervisor",
             family="broker_surface",
             status="degraded",
             summary="schwab_auth_supervisor_latest.json is missing",
-            repair_commands=[["./scripts/ops/opsctl.sh", "schwab-auth-supervisor", "--json"]],
+            repair_commands=[
+                ["./scripts/ops/opsctl.sh", "schwab-auth-supervisor", "--json"]
+            ],
         )
     status = _artifact_status(payload, missing="degraded")
-    findings = payload.get("findings") if isinstance(payload.get("findings"), list) else []
+    findings = (
+        payload.get("findings") if isinstance(payload.get("findings"), list) else []
+    )
     token = payload.get("token") if isinstance(payload.get("token"), dict) else {}
-    callback = payload.get("callback") if isinstance(payload.get("callback"), dict) else {}
-    auth_processes = payload.get("auth_processes") if isinstance(payload.get("auth_processes"), list) else []
-    stale_count = sum(1 for row in auth_processes if isinstance(row, dict) and row.get("stale") is True)
+    callback = (
+        payload.get("callback") if isinstance(payload.get("callback"), dict) else {}
+    )
+    auth_processes = (
+        payload.get("auth_processes")
+        if isinstance(payload.get("auth_processes"), list)
+        else []
+    )
+    stale_count = sum(
+        1
+        for row in auth_processes
+        if isinstance(row, dict) and row.get("stale") is True
+    )
     if not bool(token.get("ready", False)):
         status = "blocked"
     elif stale_count and status == "ready":
@@ -1422,9 +2038,15 @@ def _schwab_auth_supervisor_check(project_root: Path) -> dict[str, Any]:
             "callback": callback,
             "auth_process_count": len(auth_processes),
             "stale_auth_process_count": stale_count,
-            "recent_auth_signals": payload.get("recent_auth_signals") if isinstance(payload.get("recent_auth_signals"), dict) else {},
+            "recent_auth_signals": (
+                payload.get("recent_auth_signals")
+                if isinstance(payload.get("recent_auth_signals"), dict)
+                else {}
+            ),
         },
-        repair_commands=[["./scripts/ops/opsctl.sh", "schwab-auth-supervisor", "--apply", "--json"]],
+        repair_commands=[
+            ["./scripts/ops/opsctl.sh", "schwab-auth-supervisor", "--apply", "--json"]
+        ],
     )
 
 
@@ -1436,10 +2058,16 @@ def _coinbase_api_health_check(project_root: Path) -> dict[str, Any]:
             family="broker_surface",
             status="degraded",
             summary="coinbase_api_health_latest.json is missing",
-            repair_commands=[["./scripts/ops/opsctl.sh", "coinbase-api-health", "--json"]],
+            repair_commands=[
+                ["./scripts/ops/opsctl.sh", "coinbase-api-health", "--json"]
+            ],
         )
     status = _artifact_status(payload, missing="degraded")
-    public_market_data = payload.get("public_market_data") if isinstance(payload.get("public_market_data"), dict) else {}
+    public_market_data = (
+        payload.get("public_market_data")
+        if isinstance(payload.get("public_market_data"), dict)
+        else {}
+    )
     if not bool(public_market_data.get("ok", False)):
         status = "blocked"
     summary = f"public_market_data_ok={int(bool(public_market_data.get('ok', False)))} symbol={public_market_data.get('symbol') or ''}"
@@ -1451,32 +2079,69 @@ def _coinbase_api_health_check(project_root: Path) -> dict[str, Any]:
         evidence={
             "overall_status": payload.get("overall_status"),
             "public_market_data": public_market_data,
-            "credentials": payload.get("credentials") if isinstance(payload.get("credentials"), dict) else {},
+            "credentials": (
+                payload.get("credentials")
+                if isinstance(payload.get("credentials"), dict)
+                else {}
+            ),
         },
         repair_commands=[["./scripts/ops/opsctl.sh", "coinbase-api-health", "--json"]],
     )
 
 
-def _maturity_scores(checks: list[dict[str, Any]], envelope_lanes: list[dict[str, Any]]) -> dict[str, Any]:
+def _maturity_scores(
+    checks: list[dict[str, Any]], envelope_lanes: list[dict[str, Any]]
+) -> dict[str, Any]:
     blocked_count = sum(1 for row in checks if row.get("status") == "blocked")
     degraded_count = sum(1 for row in checks if row.get("status") == "degraded")
     ready_count = sum(1 for row in checks if row.get("status") == "ready")
     check_count = max(len(checks), 1)
     ready_ratio = ready_count / check_count
-    envelope_ready_ratio = sum(1 for row in envelope_lanes if row.get("status") == "ready") / max(len(envelope_lanes), 1)
-    process = next((row for row in checks if row.get("name") == "process_lane_ownership"), {})
-    process_excess = _safe_int(((process.get("evidence") or {}).get("excess_process_count")), 0) if isinstance(process.get("evidence"), dict) else 0
-    command = next((row for row in checks if row.get("name") == "command_docs_vs_opsctl_routes"), {})
+    envelope_ready_ratio = sum(
+        1 for row in envelope_lanes if row.get("status") == "ready"
+    ) / max(len(envelope_lanes), 1)
+    process = next(
+        (row for row in checks if row.get("name") == "process_lane_ownership"), {}
+    )
+    process_excess = (
+        _safe_int(((process.get("evidence") or {}).get("excess_process_count")), 0)
+        if isinstance(process.get("evidence"), dict)
+        else 0
+    )
+    command = next(
+        (row for row in checks if row.get("name") == "command_docs_vs_opsctl_routes"),
+        {},
+    )
     command_ready = 1.0 if command.get("status") == "ready" else 0.0
-    one_numbers = next((row for row in checks if row.get("name") == "one_numbers_original_coverage"), {})
+    one_numbers = next(
+        (row for row in checks if row.get("name") == "one_numbers_original_coverage"),
+        {},
+    )
     one_numbers_ready = 1.0 if one_numbers.get("status") == "ready" else 0.0
-    storage = next((row for row in checks if row.get("name") == "external_drive_route_health"), {})
+    storage = next(
+        (row for row in checks if row.get("name") == "external_drive_route_health"), {}
+    )
     storage_ready = 1.0 if storage.get("status") == "ready" else 0.0
-    operational = 9.0 - (blocked_count * 0.38) - (degraded_count * 0.16) - min(process_excess * 0.10, 1.2)
+    operational = (
+        9.0
+        - (blocked_count * 0.38)
+        - (degraded_count * 0.16)
+        - min(process_excess * 0.10, 1.2)
+    )
     infra = 8.5 + (ready_ratio * 1.0) - (blocked_count * 0.25) - (degraded_count * 0.10)
     feature = 8.4 + (envelope_ready_ratio * 0.6) + (command_ready * 0.2)
-    data = 7.8 + (one_numbers_ready * 0.6) + (storage_ready * 0.4) - min(process_excess * 0.04, 0.5)
-    autonomy = 6.0 + (ready_ratio * 2.0) + (envelope_ready_ratio * 1.0) - (blocked_count * 0.25)
+    data = (
+        7.8
+        + (one_numbers_ready * 0.6)
+        + (storage_ready * 0.4)
+        - min(process_excess * 0.04, 0.5)
+    )
+    autonomy = (
+        6.0
+        + (ready_ratio * 2.0)
+        + (envelope_ready_ratio * 1.0)
+        - (blocked_count * 0.25)
+    )
     scores = {
         "feature_sophistication": round(_clamp(feature, 1.0, 9.4), 2),
         "data_collection_breadth": round(_clamp(data, 1.0, 9.2), 2),
@@ -1496,6 +2161,86 @@ def _maturity_scores(checks: list[dict[str, Any]], envelope_lanes: list[dict[str
     return scores
 
 
+def _degradation_containment_contract(checks: list[dict[str, Any]]) -> dict[str, Any]:
+    hot_path_checks = {
+        "sql_ingestion_lag_and_backlog",
+        "external_drive_route_health",
+        "stateful_storage_regression",
+        "process_lane_ownership",
+        "command_docs_vs_opsctl_routes",
+        "schwab_auth_supervisor",
+        "coinbase_api_health",
+    }
+    contained_debt_checks = {
+        "autonomous_recovery_drills",
+        "governance_artifact_freshness",
+        "operator_cockpit_readiness",
+        "cold_lane_research_factory",
+        "point_in_time_replay",
+        "child_repair_bot_outcomes",
+        "self_auditing_infra_bots",
+    }
+    domain_by_check = {
+        "one_numbers_original_coverage": "truth_layer",
+        "launchd_job_health": "automation",
+        "stuck_report_pdf_browser_jobs": "reporting",
+        "autonomous_recovery_drills": "recovery_drills",
+        "governance_artifact_freshness": "governance_freshness",
+        "operator_cockpit_readiness": "operator_visibility",
+        "cold_lane_research_factory": "research_factory",
+        "point_in_time_replay": "training_evidence",
+        "child_repair_bot_outcomes": "self_healing",
+        "self_auditing_infra_bots": "self_auditing",
+    }
+    rows: list[dict[str, Any]] = []
+    for check in checks:
+        name = str(check.get("name") or "").strip()
+        status = str(check.get("status") or "").strip()
+        if not name or status == "ready":
+            continue
+        contained = bool(
+            status == "degraded"
+            or (status == "blocked" and name in contained_debt_checks)
+        )
+        if name in hot_path_checks and status == "blocked":
+            contained = False
+        rows.append(
+            {
+                "name": name,
+                "status": status,
+                "contained": contained,
+                "domain": domain_by_check.get(name, "infrastructure"),
+                "blast_radius": (
+                    "hot_path" if name in hot_path_checks else "ops_or_evidence_lane"
+                ),
+                "repair_commands": check.get("repair_commands") or [],
+                "summary": str(check.get("summary") or ""),
+            }
+        )
+    uncontained = [row for row in rows if not bool(row.get("contained", False))]
+    contained = [row for row in rows if bool(row.get("contained", False))]
+    return {
+        "status": (
+            "clear"
+            if not rows
+            else (
+                "contained_degradation"
+                if not uncontained
+                else "uncontained_degradation"
+            )
+        ),
+        "contained_count": len(contained),
+        "uncontained_count": len(uncontained),
+        "contained_lanes": [str(row.get("name") or "") for row in contained],
+        "uncontained_lanes": [str(row.get("name") or "") for row in uncontained],
+        "hot_path_blocked": any(
+            str(row.get("blast_radius") or "") == "hot_path" for row in uncontained
+        ),
+        "rows": rows,
+        "policy": "infrastructure_degradation_is_classified_by_blast_radius_before_it_is_allowed_to_block_unrelated_lanes",
+    }
+
+
 def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
     try:
         proc = subprocess.run(
@@ -1512,8 +2257,16 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
         rc = int(proc.returncode)
         timed_out = False
     except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        stdout = (
+            exc.stdout.decode("utf-8", errors="ignore")
+            if isinstance(exc.stdout, bytes)
+            else str(exc.stdout or "")
+        )
+        stderr = (
+            exc.stderr.decode("utf-8", errors="ignore")
+            if isinstance(exc.stderr, bytes)
+            else str(exc.stderr or "")
+        )
         rc = 124
         timed_out = True
     payload: dict[str, Any] = {}
@@ -1581,9 +2334,14 @@ def build_payload(
     hard_failed_attempts = [
         row
         for row in attempts
-        if bool(row.get("timed_out", False)) or _safe_int(row.get("rc"), 1) not in {0, 2}
+        if bool(row.get("timed_out", False))
+        or _safe_int(row.get("rc"), 1) not in {0, 2}
     ]
-    degraded_attempts = [row for row in attempts if _safe_int(row.get("rc"), 1) == 2 and not bool(row.get("timed_out", False))]
+    degraded_attempts = [
+        row
+        for row in attempts
+        if _safe_int(row.get("rc"), 1) == 2 and not bool(row.get("timed_out", False))
+    ]
     if hard_failed_attempts:
         overall_status = "blocked"
     elif degraded_attempts and overall_status == "ready":
@@ -1593,19 +2351,33 @@ def build_payload(
             "number": number,
             "name": lane_name,
             "check": check_name,
-            "status": next((str(row.get("status") or "") for row in checks if row.get("name") == check_name), "missing"),
+            "status": next(
+                (
+                    str(row.get("status") or "")
+                    for row in checks
+                    if row.get("name") == check_name
+                ),
+                "missing",
+            ),
         }
         for number, lane_name, check_name in ENVELOPE_LANES
     ]
-    blocked_lanes = [row["name"] for row in envelope_lanes if row.get("status") == "blocked"]
-    degraded_lanes = [row["name"] for row in envelope_lanes if row.get("status") == "degraded"]
-    ready_lanes = [row["name"] for row in envelope_lanes if row.get("status") == "ready"]
+    blocked_lanes = [
+        row["name"] for row in envelope_lanes if row.get("status") == "blocked"
+    ]
+    degraded_lanes = [
+        row["name"] for row in envelope_lanes if row.get("status") == "degraded"
+    ]
+    ready_lanes = [
+        row["name"] for row in envelope_lanes if row.get("status") == "ready"
+    ]
     operating_posture = "coherent"
     if blocked_lanes:
         operating_posture = "recovery"
     elif degraded_lanes:
         operating_posture = "guarded_collection"
     maturity_scores = _maturity_scores(checks, envelope_lanes)
+    degradation_containment = _degradation_containment_contract(checks)
 
     return {
         "timestamp_utc": iso_now(),
@@ -1614,7 +2386,10 @@ def build_payload(
         "overall_status": overall_status,
         "apply": bool(apply),
         "checks": checks,
-        "repair_plan": [{"name": f"repair_{idx + 1}", "cmd": cmd} for idx, cmd in enumerate(repair_commands)],
+        "repair_plan": [
+            {"name": f"repair_{idx + 1}", "cmd": cmd}
+            for idx, cmd in enumerate(repair_commands)
+        ],
         "attempts": [
             {
                 "cmd": list(row.get("cmd") or []),
@@ -1634,68 +2409,178 @@ def build_payload(
         "envelope_lanes": envelope_lanes,
         "platform_posture": {
             "operating_posture": operating_posture,
+            "degradation_containment_status": degradation_containment["status"],
             "ready_lanes": ready_lanes,
             "degraded_lanes": degraded_lanes,
             "blocked_lanes": blocked_lanes,
-            "collection_bias": "protect_live_collection_and_drain_backlog" if operating_posture == "recovery" else "normal",
+            "collection_bias": (
+                "protect_live_collection_and_drain_backlog"
+                if operating_posture == "recovery"
+                else "normal"
+            ),
         },
+        "degradation_containment": degradation_containment,
         "maturity_scores": maturity_scores,
         "hardening_scorecard": {
-            "truth_layer_ready": next((row.get("status") for row in checks if row.get("name") == "one_numbers_original_coverage"), "missing") == "ready",
-            "storage_route_certified": next((row.get("status") for row in checks if row.get("name") == "external_drive_route_health"), "missing") == "ready",
-            "process_ownership_canonical": next((row.get("status") for row in checks if row.get("name") == "process_lane_ownership"), "missing") == "ready",
-            "command_surface_clean": next((row.get("status") for row in checks if row.get("name") == "command_docs_vs_opsctl_routes"), "missing") == "ready",
-            "self_auditing_bots_current": next((row.get("status") for row in checks if row.get("name") == "self_auditing_infra_bots"), "missing") == "ready",
-            "launchd_jobs_installed": next((row.get("status") for row in checks if row.get("name") == "launchd_job_health"), "missing") == "ready",
+            "truth_layer_ready": next(
+                (
+                    row.get("status")
+                    for row in checks
+                    if row.get("name") == "one_numbers_original_coverage"
+                ),
+                "missing",
+            )
+            == "ready",
+            "storage_route_certified": next(
+                (
+                    row.get("status")
+                    for row in checks
+                    if row.get("name") == "external_drive_route_health"
+                ),
+                "missing",
+            )
+            == "ready",
+            "process_ownership_canonical": next(
+                (
+                    row.get("status")
+                    for row in checks
+                    if row.get("name") == "process_lane_ownership"
+                ),
+                "missing",
+            )
+            == "ready",
+            "command_surface_clean": next(
+                (
+                    row.get("status")
+                    for row in checks
+                    if row.get("name") == "command_docs_vs_opsctl_routes"
+                ),
+                "missing",
+            )
+            == "ready",
+            "self_auditing_bots_current": next(
+                (
+                    row.get("status")
+                    for row in checks
+                    if row.get("name") == "self_auditing_infra_bots"
+                ),
+                "missing",
+            )
+            == "ready",
+            "launchd_jobs_installed": next(
+                (
+                    row.get("status")
+                    for row in checks
+                    if row.get("name") == "launchd_job_health"
+                ),
+                "missing",
+            )
+            == "ready",
         },
         "regression_control_map": [
             {
                 "surface": "commands_and_runbook",
                 "guard": "command_validity_bot",
                 "autofix": "commands_hygiene_bot",
-                "status": next((str(row.get("status") or "") for row in checks if row.get("name") == "command_docs_vs_opsctl_routes"), "missing"),
+                "status": next(
+                    (
+                        str(row.get("status") or "")
+                        for row in checks
+                        if row.get("name") == "command_docs_vs_opsctl_routes"
+                    ),
+                    "missing",
+                ),
             },
             {
                 "surface": "one_numbers_original_coverage",
                 "guard": "one_numbers_regression_guard",
                 "autofix": "system_drift_autopilot",
-                "status": next((str(row.get("status") or "") for row in checks if row.get("name") == "one_numbers_original_coverage"), "missing"),
+                "status": next(
+                    (
+                        str(row.get("status") or "")
+                        for row in checks
+                        if row.get("name") == "one_numbers_original_coverage"
+                    ),
+                    "missing",
+                ),
             },
             {
                 "surface": "storage_and_backpressure",
                 "guard": "ingestion_storage_control",
                 "autofix": "storage_pressure_clearance_bot",
-                "status": next((str(row.get("status") or "") for row in checks if row.get("name") == "sql_ingestion_lag_and_backlog"), "missing"),
+                "status": next(
+                    (
+                        str(row.get("status") or "")
+                        for row in checks
+                        if row.get("name") == "sql_ingestion_lag_and_backlog"
+                    ),
+                    "missing",
+                ),
             },
             {
                 "surface": "stateful_storage_routes",
                 "guard": "stateful_storage_regression_guard",
                 "autofix": "infrastructure_autofix_bot",
-                "status": next((str(row.get("status") or "") for row in checks if row.get("name") == "stateful_storage_regression"), "missing"),
+                "status": next(
+                    (
+                        str(row.get("status") or "")
+                        for row in checks
+                        if row.get("name") == "stateful_storage_regression"
+                    ),
+                    "missing",
+                ),
             },
             {
                 "surface": "process_lane_ownership",
                 "guard": "master_infrastructure_supervisor",
                 "autofix": "livefeed-refresh/start --force-restart",
-                "status": next((str(row.get("status") or "") for row in checks if row.get("name") == "process_lane_ownership"), "missing"),
+                "status": next(
+                    (
+                        str(row.get("status") or "")
+                        for row in checks
+                        if row.get("name") == "process_lane_ownership"
+                    ),
+                    "missing",
+                ),
             },
             {
                 "surface": "governance_artifact_freshness",
                 "guard": "system_drift_guard",
                 "autofix": "system_drift_autopilot",
-                "status": next((str(row.get("status") or "") for row in checks if row.get("name") == "governance_artifact_freshness"), "missing"),
+                "status": next(
+                    (
+                        str(row.get("status") or "")
+                        for row in checks
+                        if row.get("name") == "governance_artifact_freshness"
+                    ),
+                    "missing",
+                ),
             },
             {
                 "surface": "schwab_auth",
                 "guard": "schwab_auth_supervisor",
                 "autofix": "schwab_auth_supervisor",
-                "status": next((str(row.get("status") or "") for row in checks if row.get("name") == "schwab_auth_supervisor"), "missing"),
+                "status": next(
+                    (
+                        str(row.get("status") or "")
+                        for row in checks
+                        if row.get("name") == "schwab_auth_supervisor"
+                    ),
+                    "missing",
+                ),
             },
             {
                 "surface": "child_bot_outcomes",
                 "guard": "master_infrastructure_supervisor",
                 "autofix": "infrastructure_autofix_bot",
-                "status": next((str(row.get("status") or "") for row in checks if row.get("name") == "child_repair_bot_outcomes"), "missing"),
+                "status": next(
+                    (
+                        str(row.get("status") or "")
+                        for row in checks
+                        if row.get("name") == "child_repair_bot_outcomes"
+                    ),
+                    "missing",
+                ),
             },
         ],
         "next_capability_paths": [
@@ -1750,19 +2635,34 @@ def build_payload(
         },
         "operator_followups": ordered_unique(
             [
-                "pin the One Numbers original start day in config/one_numbers_start_day.txt or ONE_NUMBERS_ORIGINAL_START_DAY"
-                if any(row.get("name") == "one_numbers_original_coverage" and "one_numbers_original_start_unpinned" in str(row.get("summary") or "") for row in checks)
-                else "",
-                "review child infrastructure bot followups because at least one child repair path cannot complete automatically"
-                if any(row.get("name") == "child_repair_bot_outcomes" and row.get("status") == "blocked" for row in checks)
-                else "",
+                (
+                    "pin the One Numbers original start day in config/one_numbers_start_day.txt or ONE_NUMBERS_ORIGINAL_START_DAY"
+                    if any(
+                        row.get("name") == "one_numbers_original_coverage"
+                        and "one_numbers_original_start_unpinned"
+                        in str(row.get("summary") or "")
+                        for row in checks
+                    )
+                    else ""
+                ),
+                (
+                    "review child infrastructure bot followups because at least one child repair path cannot complete automatically"
+                    if any(
+                        row.get("name") == "child_repair_bot_outcomes"
+                        and row.get("status") == "blocked"
+                        for row in checks
+                    )
+                    else ""
+                ),
             ]
         ),
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Parent supervisor for infrastructure bot coherence and One Numbers historical coverage.")
+    parser = argparse.ArgumentParser(
+        description="Parent supervisor for infrastructure bot coherence and One Numbers historical coverage."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--apply", action="store_true")
@@ -1771,7 +2671,9 @@ def main() -> int:
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
-    payload = build_payload(project_root, apply=bool(args.apply), timeout_sec=int(args.timeout_sec))
+    payload = build_payload(
+        project_root, apply=bool(args.apply), timeout_sec=int(args.timeout_sec)
+    )
     write_payload(Path(args.out_file).expanduser(), payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

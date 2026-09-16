@@ -1682,10 +1682,8 @@ def _fetch_schwab_calendar_correlation(args: argparse.Namespace, target: Dict[st
             "calendar_correlation_reason": f"import_error:{type(exc).__name__}",
         }
 
-    api_key = os.getenv("SCHWAB_API_KEY", "").strip()
-    secret = os.getenv("SCHWAB_SECRET", "").strip()
-    redirect = os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8182").strip()
-    if not api_key or not secret or api_key == "YOUR_KEY_HERE" or secret == "YOUR_SECRET_HERE":
+    trader = BaseTrader.from_env(mode="shadow", broker="schwab")
+    if trader.credentials_are_placeholder():
         fallback = _fetch_federal_reserve_calendar_correlation(args, target)
         if str(fallback.get("calendar_correlation_reason") or "") != "not_applicable":
             return fallback
@@ -1695,7 +1693,6 @@ def _fetch_schwab_calendar_correlation(args: argparse.Namespace, target: Dict[st
             "calendar_correlation_reason": "missing_credentials",
         }
 
-    trader = BaseTrader(api_key, secret, redirect, mode="shadow")
     trader.token_path = str(PROJECT_ROOT / "token.json")
     try:
         client = trader.authenticate()

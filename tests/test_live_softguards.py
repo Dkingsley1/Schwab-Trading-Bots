@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,14 +35,26 @@ def _reset_paper_profitability_guard_cache() -> None:
 
 
 def _allow_production_order_firewall(monkeypatch) -> None:
+    monkeypatch.setenv("SCHWAB_ACCOUNT_HASH", "redacted-test-account-hash")
+    monkeypatch.setenv("SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER", "0")
+    unscoped_from_env = base_src.LiveRiskConfig.from_env
+    monkeypatch.setattr(
+        base_src.LiveRiskConfig,
+        "from_env",
+        classmethod(lambda _cls, *_args, **_kwargs: unscoped_from_env(None)),
+    )
     monkeypatch.setattr(
         base_src,
         "production_order_firewall_check",
-        lambda **_kwargs: SimpleNamespace(ok=True, gate="production_order_firewall", reason="ok", details={}),
+        lambda **_kwargs: SimpleNamespace(
+            ok=True, gate="production_order_firewall", reason="ok", details={}
+        ),
     )
 
 
-def _write_paper_profitability_control(tmp_path: Path, *, weak_profile: str = "default") -> None:
+def _write_paper_profitability_control(
+    tmp_path: Path, *, weak_profile: str = "default"
+) -> None:
     health = tmp_path / "governance" / "health"
     health.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -78,7 +91,92 @@ def _write_paper_profitability_control(tmp_path: Path, *, weak_profile: str = "d
     _reset_paper_profitability_guard_cache()
 
 
-def test_execute_decision_can_skip_explanations_via_storage_override(tmp_path: Path, monkeypatch) -> None:
+def _write_paper_evidence_collection_controls(tmp_path: Path) -> None:
+    config = tmp_path / "config"
+    config.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "policy_id": "paper_evidence_collection_controls_v1",
+        "enabled": True,
+        "paper_only": True,
+        "live_execution_allowed": False,
+        "defaults": {
+            "enabled": True,
+            "mode": "paper_evidence_collection",
+            "allowed_guard_reasons": [
+                "paper_profitability_entry_policy_block",
+                "paper_profitability_clean_profile_evidence_block",
+            ],
+            "allowed_entry_policy_blockers": [
+                "predicted_edge_lower_bound_unknown",
+                "liquidity_unknown",
+                "session_quality_unknown",
+            ],
+            "allowed_clean_gate_failures": [
+                "event_catalyst_confirmation_unknown",
+                "portfolio_conflict_clearance_unknown",
+                "session_quality_unknown",
+                "independent_evidence_channel_floor_not_met",
+            ],
+            "minimum_model_score_edge_over_threshold": 0.02,
+            "minimum_known_core_channels": 4,
+            "hard_min_tradeability_norm": 0.5,
+            "hard_min_execution_fitness_norm": 0.5,
+            "hard_min_source_quality_norm": 0.4,
+            "hard_min_liquidity_norm": 0.4,
+            "hard_max_spread_bps": 35.0,
+            "hard_max_quote_age_ms": 5000.0,
+            "hard_max_overlap_pressure_norm": 0.74,
+            "hard_max_conflict_pressure_norm": 0.8,
+            "max_entries_per_symbol_day": 8,
+            "new_entry_cooldown_seconds": 180,
+            "force_trade_allowed": False,
+            "loss_recovery_size_increase_allowed": False,
+            "profitability_claim_allowed": False,
+        },
+        "profiles": {
+            "day_trading": {
+                "max_entries_per_symbol_day": 10,
+                "new_entry_cooldown_seconds": 120,
+            }
+        },
+    }
+    (config / "paper_evidence_collection_controls_v1.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+
+def _write_staged_promotion_cohort(tmp_path: Path) -> None:
+    policy = {
+        "promotion_cohort": {
+            "enabled": True,
+            "cohort_id": "dividend_liquid_etf_candidate_v1",
+            "profile": "dividend",
+            "sleeve_id": "dividend_income",
+            "direction_policy": "long_only",
+            "active_stage": 1,
+            "maximum_active_stages": 1,
+            "maximum_active_strategies": 1,
+            "maximum_symbols_per_stage": 1,
+            "stages": [
+                {
+                    "stage": 1,
+                    "symbol": "SCHD",
+                    "strategy_id": ("sleeve::dividend_income::portfolio_consensus::v1"),
+                }
+            ],
+            "live_execution_allowed": False,
+            "automatic_stage_advancement_allowed": False,
+        }
+    }
+    path = tmp_path / "config" / "profitability_self_assessment_v1.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(policy), encoding="utf-8")
+
+
+def test_execute_decision_can_skip_explanations_via_storage_override(
+    tmp_path: Path, monkeypatch
+) -> None:
     pressure = tmp_path / "config" / ".env.storage_pressure_override"
     pressure.parent.mkdir(parents=True, exist_ok=True)
     pressure.write_text("LOG_DECISION_EXPLANATIONS=0\n", encoding="utf-8")
@@ -188,9 +286,9 @@ def test_operator_stop_flag_path_triggers_softguard(monkeypatch, tmp_path: Path)
     assert trader._operator_stop_enabled() is True
 
 
-def test_discover_live_account_hash_populates_hash_from_account_numbers(monkeypatch):
+def test_shadow_discovers_account_hash_for_read_only_snapshot(monkeypatch):
     monkeypatch.delenv("SCHWAB_ACCOUNT_HASH", raising=False)
-    trader = _mk_trader("live")
+    trader = _mk_trader("shadow")
     trader.client = _AccountNumbersClient()
 
     discovered = trader._discover_live_account_hash(force=True)
@@ -200,11 +298,13 @@ def test_discover_live_account_hash_populates_hash_from_account_numbers(monkeypa
     assert trader.client.get_account_numbers_calls == 1
 
 
-def test_live_fetch_accounts_payload_prefers_account_hash_endpoint_when_discovered(monkeypatch):
+def test_shadow_fetch_accounts_payload_prefers_account_hash_endpoint_when_discovered(
+    monkeypatch,
+):
     monkeypatch.delenv("SCHWAB_ACCOUNT_HASH", raising=False)
     monkeypatch.delenv("LIVE_ACCOUNTS_SNAPSHOT_ALLOW_GLOBAL_FALLBACK", raising=False)
     monkeypatch.delenv("LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED", raising=False)
-    trader = _mk_trader("live")
+    trader = _mk_trader("shadow")
     trader.client = _AccountNumbersClient()
 
     out = trader._live_fetch_accounts_payload()
@@ -239,6 +339,40 @@ def test_live_fetch_accounts_payload_can_aggregate_connected_accounts(monkeypatc
     assert by_symbol["AAPL"]["quantity"] == 5.0
     assert by_symbol["MSFT"]["quantity"] == 3.0
 
+
+def test_connected_account_discovery_preserves_external_provider_failure(monkeypatch):
+    monkeypatch.delenv("SCHWAB_ACCOUNT_HASH", raising=False)
+    monkeypatch.setenv("LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED", "1")
+    trader = _mk_trader("paper")
+    trader.client = _UnavailableAccountNumbersClient()
+
+    out = trader._live_fetch_accounts_payload()
+
+    assert out["ok"] is False
+    assert out["error"] == "account_discovery_provider_unavailable"
+    assert out["status_code"] == 500
+    assert out["provider_failure"] is True
+    assert out["provider_failure_class"] == "provider_unavailable"
+    assert out["retryable"] is True
+    assert out["account_discovery"]["request_ok"] is False
+
+
+def test_connected_account_discovery_distinguishes_successful_empty_response(
+    monkeypatch,
+):
+    monkeypatch.delenv("SCHWAB_ACCOUNT_HASH", raising=False)
+    monkeypatch.setenv("LIVE_ACCOUNTS_SNAPSHOT_AGGREGATE_CONNECTED", "1")
+    trader = _mk_trader("paper")
+    trader.client = _EmptyAccountNumbersClient()
+
+    out = trader._live_fetch_accounts_payload()
+
+    assert out["ok"] is False
+    assert out["error"] == "no_connected_accounts_discovered"
+    assert out["status_code"] == 200
+    assert out["provider_failure"] is False
+    assert out["provider_failure_class"] == "no_connected_accounts"
+    assert out["account_discovery"]["request_ok"] is True
 
 
 class _DummyResponse:
@@ -320,7 +454,9 @@ class _AccountNumbersClient:
     def get_accounts(self, *args, **kwargs):
         _ = (args, kwargs)
         self.get_accounts_calls += 1
-        raise AssertionError("global get_accounts fallback should not be used when account hash is discovered")
+        raise AssertionError(
+            "global get_accounts fallback should not be used when account hash is discovered"
+        )
 
 
 class _MultiAccountNumbersClient:
@@ -358,6 +494,16 @@ class _MultiAccountNumbersClient:
                 }
             },
         )
+
+
+class _UnavailableAccountNumbersClient:
+    def get_account_numbers(self):
+        return _DummyResponse(500, {"fault": {"faultstring": "provider unavailable"}})
+
+
+class _EmptyAccountNumbersClient:
+    def get_account_numbers(self):
+        return _DummyListResponse(200, [])
 
 
 def _sample_option_chain_payload():
@@ -410,7 +556,7 @@ def _sample_option_chain_payload():
                         "mark": 2.57,
                     }
                 ],
-            }
+            },
         }
     }
 
@@ -466,13 +612,18 @@ class _FuturesPlaceOrderClient:
         return _DummyResponse(201, {})
 
 
-def test_live_place_order_retries_transient_failure(monkeypatch, tmp_path: Path):
+def test_live_place_order_does_not_retry_ambiguous_mutation(
+    monkeypatch, tmp_path: Path
+):
     _allow_production_order_firewall(monkeypatch)
     monkeypatch.setenv("LIVE_API_RETRY_ATTEMPTS", "4")
     monkeypatch.setenv("LIVE_API_RETRY_BACKOFF_SECONDS", "0")
     monkeypatch.setenv("LIVE_API_RETRY_JITTER_SECONDS", "0")
     trader = _mk_trader("live")
     trader.project_root = str(tmp_path)
+    trader.global_halt_flag_path = str(
+        tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
+    )
     trader.client = _FlakyPlaceOrderClient()
 
     order_spec = trader._build_live_order_spec(
@@ -490,13 +641,49 @@ def test_live_place_order_retries_transient_failure(monkeypatch, tmp_path: Path)
         intent_id="decision-retry-success",
     )
 
-    assert out.get("ok") is True
-    assert out.get("order_id") == "retry-success"
-    assert out.get("attempts_made") == 3
-    assert trader.client.calls == 3
+    assert out.get("ok") is False
+    assert out.get("error") == "broker_submit_outcome_unknown"
+    assert out.get("attempts_made") == 1
+    assert out["retry_contract"]["retry_after_dispatch_allowed"] is False
+    assert out["durable_order_intent"]["state"] == "submit_unknown"
+    assert trader.client.calls == 1
 
 
-def test_live_place_order_does_not_retry_non_retryable_http(monkeypatch, tmp_path: Path):
+def test_live_mutation_does_not_fall_through_to_alternate_sdk_signature(
+    monkeypatch, tmp_path: Path
+):
+    _allow_production_order_firewall(monkeypatch)
+    trader = _mk_trader("live")
+    trader.project_root = str(tmp_path)
+    trader.live_account_hash = "pinned-account-hash"
+    trader.global_halt_flag_path = str(
+        tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
+    )
+    trader.client = _FlakyPlaceOrderClient()
+
+    order_spec = trader._build_live_order_spec(
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        limit_price=0.0,
+        asset_type="EQUITY",
+    )
+    out = trader._live_place_order(
+        symbol="AAPL",
+        action="BUY",
+        quantity=1.0,
+        order_spec=order_spec,
+        intent_id="decision-alternate-signature",
+    )
+
+    assert out.get("error") == "broker_submit_outcome_unknown"
+    assert out.get("attempts_made") == 1
+    assert trader.client.calls == 1
+
+
+def test_live_place_order_does_not_retry_non_retryable_http(
+    monkeypatch, tmp_path: Path
+):
     _allow_production_order_firewall(monkeypatch)
     monkeypatch.setenv("LIVE_API_RETRY_ATTEMPTS", "4")
     monkeypatch.setenv("LIVE_API_RETRY_BACKOFF_SECONDS", "0")
@@ -527,11 +714,15 @@ def test_live_place_order_does_not_retry_non_retryable_http(monkeypatch, tmp_pat
     assert out["durable_order_intent"]["state"] == "rejected"
 
 
-def test_unknown_broker_submit_halts_and_blocks_unrelated_intents(monkeypatch, tmp_path: Path):
+def test_unknown_broker_submit_halts_and_blocks_unrelated_intents(
+    monkeypatch, tmp_path: Path
+):
     _allow_production_order_firewall(monkeypatch)
     trader = _mk_trader("live")
     trader.project_root = str(tmp_path)
-    trader.global_halt_flag_path = str(tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag")
+    trader.global_halt_flag_path = str(
+        tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
+    )
     trader.client = _OptionsPlaceOrderClient()
     order_spec = trader._build_live_order_spec(
         symbol="AAPL",
@@ -567,7 +758,130 @@ def test_unknown_broker_submit_halts_and_blocks_unrelated_intents(monkeypatch, t
     assert len(trader.client.placed_specs) == 1
 
 
-def test_account_snapshot_api_circuit_is_debounced_before_global_halt(monkeypatch, tmp_path: Path):
+def test_live_lane_startup_rebuilds_known_open_order_state(monkeypatch, tmp_path: Path):
+    trader = _mk_trader("live")
+    trader.project_root = str(tmp_path)
+    ledger = trader._durable_live_order_ledger()
+    ledger.reserve(
+        intent_id="decision-open-1",
+        payload={"symbol": "AAPL", "action": "BUY", "quantity": 1.0},
+        requested_quantity=1.0,
+    )
+    ledger.mark_submitting("decision-open-1")
+    ledger.mark_submit_result(
+        intent_id="decision-open-1",
+        acknowledged=True,
+        broker_order_id="broker-open-1",
+    )
+    monkeypatch.setattr(
+        trader,
+        "_live_fetch_order",
+        lambda _order_id: {
+            "ok": True,
+            "order_payload": {
+                "orderId": "broker-open-1",
+                "status": "WORKING",
+                "quantity": 1.0,
+                "filledQuantity": 0.0,
+                "orderLegCollection": [
+                    {
+                        "instruction": "BUY",
+                        "instrument": {"symbol": "AAPL", "assetType": "EQUITY"},
+                    }
+                ],
+            },
+        },
+    )
+
+    result = trader.reconcile_durable_live_orders(interrupted_stale_seconds=0.0)
+
+    assert result["ok"] is True
+    assert result["reconciled_count"] == 1
+    assert ledger.get("decision-open-1")["state"] == "open"
+    assert trader.live_guard.open_order_ids() == ["broker-open-1"]
+
+
+def test_live_lane_startup_halts_on_unknown_submit_without_broker_id(tmp_path: Path):
+    trader = _mk_trader("live")
+    trader.project_root = str(tmp_path)
+    trader.global_halt_flag_path = str(
+        tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
+    )
+    ledger = trader._durable_live_order_ledger()
+    ledger.reserve(
+        intent_id="decision-unknown-startup",
+        payload={"symbol": "AAPL", "action": "BUY", "quantity": 1.0},
+        requested_quantity=1.0,
+    )
+    ledger.mark_submitting("decision-unknown-startup")
+
+    result = trader.reconcile_durable_live_orders(interrupted_stale_seconds=0.0)
+
+    assert result["ok"] is False
+    assert result["remaining_ambiguous_count"] == 1
+    assert ledger.get("decision-unknown-startup")["state"] == "submit_unknown"
+    assert Path(trader.global_halt_flag_path).exists()
+
+
+def test_live_schwab_account_hash_is_never_auto_discovered(monkeypatch) -> None:
+    monkeypatch.delenv("SCHWAB_ACCOUNT_HASH", raising=False)
+    monkeypatch.setenv("SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER", "1")
+    trader = _mk_trader("live")
+
+    class DiscoveryClient:
+        calls = 0
+
+        def get_account_numbers(self):
+            self.calls += 1
+            return _DummyResponse(
+                200,
+                [{"accountNumber": "1234", "hashValue": "provider-hash-value"}],
+            )
+
+    trader.client = DiscoveryClient()
+
+    assert trader.live_account_hash_auto_discover is False
+    assert trader._discover_live_account_hash(force=True) == ""
+    assert trader.client.calls == 0
+
+
+def test_full_order_inventory_blocks_untracked_active_broker_order(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SCHWAB_ACCOUNT_HASH", "redacted-test-account-hash")
+    monkeypatch.setenv("SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER", "0")
+    trader = _mk_trader("live")
+    trader.project_root = str(tmp_path)
+    trader.global_halt_flag_path = str(
+        tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
+    )
+    monkeypatch.setattr(
+        trader,
+        "_live_fetch_orders_snapshot",
+        lambda: {
+            "ok": True,
+            "orders_payload": [{"orderId": "manual-broker-order", "status": "WORKING"}],
+        },
+    )
+
+    result = trader.reconcile_durable_live_orders(
+        interrupted_stale_seconds=0.0,
+        full_account_scan=True,
+    )
+
+    assert result["ok"] is False
+    assert result["full_account_scan"]["untracked_active_order_count"] == 1
+    assert any(
+        item == "untracked_active_broker_order:manual-broker-order"
+        for item in result["blockers"]
+    )
+    assert Path(trader.global_halt_flag_path).exists()
+
+
+def test_account_snapshot_api_circuit_is_debounced_before_global_halt(
+    monkeypatch, tmp_path: Path
+):
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
     monkeypatch.setenv("LIVE_API_FAIL_LIMIT", "1")
@@ -580,7 +894,9 @@ def test_account_snapshot_api_circuit_is_debounced_before_global_halt(monkeypatc
 
     trader = _mk_trader("live")
     trader.project_root = str(tmp_path)
-    trader.global_halt_flag_path = str(tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag")
+    trader.global_halt_flag_path = str(
+        tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
+    )
     trader.live_account_hash = "hash-123"
     trader.client = _UnauthorizedAccountSnapshotClient()
 
@@ -597,7 +913,9 @@ def test_account_snapshot_api_circuit_is_debounced_before_global_halt(monkeypatc
     assert Path(trader.global_halt_flag_path).exists()
 
 
-def test_account_snapshot_api_circuit_suppresses_global_halt_in_collection_mode(monkeypatch, tmp_path: Path):
+def test_account_snapshot_api_circuit_suppresses_global_halt_in_collection_mode(
+    monkeypatch, tmp_path: Path
+):
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
     monkeypatch.setenv("MARKET_DATA_ONLY", "1")
     monkeypatch.setenv("LIVE_API_FAIL_LIMIT", "1")
@@ -610,7 +928,9 @@ def test_account_snapshot_api_circuit_suppresses_global_halt_in_collection_mode(
 
     trader = _mk_trader("paper")
     trader.project_root = str(tmp_path)
-    trader.global_halt_flag_path = str(tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag")
+    trader.global_halt_flag_path = str(
+        tmp_path / "governance" / "health" / "GLOBAL_TRADING_HALT.flag"
+    )
     trader.live_account_hash = ""
     trader.client = _UnauthorizedAccountSnapshotClient()
 
@@ -640,8 +960,20 @@ def test_build_live_order_spec_supports_multi_leg_options_plan():
                 "strategy_family": "debit_spread",
                 "contracts": 1,
                 "legs": [
-                    {"side": "BUY_TO_OPEN", "type": "CALL", "strike": 100.0, "expiry_days": 28, "quantity": 1},
-                    {"side": "SELL_TO_OPEN", "type": "CALL", "strike": 105.0, "expiry_days": 28, "quantity": 1},
+                    {
+                        "side": "BUY_TO_OPEN",
+                        "type": "CALL",
+                        "strike": 100.0,
+                        "expiry_days": 28,
+                        "quantity": 1,
+                    },
+                    {
+                        "side": "SELL_TO_OPEN",
+                        "type": "CALL",
+                        "strike": 105.0,
+                        "expiry_days": 28,
+                        "quantity": 1,
+                    },
                 ],
             }
         },
@@ -685,8 +1017,20 @@ def test_live_execute_uses_options_plan_order_spec(monkeypatch, tmp_path: Path):
                 "strategy_family": "debit_spread",
                 "contracts": 1,
                 "legs": [
-                    {"side": "BUY_TO_OPEN", "type": "CALL", "strike": 100.0, "expiry_days": 28, "quantity": 1},
-                    {"side": "SELL_TO_OPEN", "type": "CALL", "strike": 105.0, "expiry_days": 28, "quantity": 1},
+                    {
+                        "side": "BUY_TO_OPEN",
+                        "type": "CALL",
+                        "strike": 100.0,
+                        "expiry_days": 28,
+                        "quantity": 1,
+                    },
+                    {
+                        "side": "SELL_TO_OPEN",
+                        "type": "CALL",
+                        "strike": 105.0,
+                        "expiry_days": 28,
+                        "quantity": 1,
+                    },
                 ],
             },
         },
@@ -718,8 +1062,20 @@ def test_build_live_order_spec_supports_options_roll_plan():
                 "dte_days": 28,
                 "roll_target_dte_days": 56,
                 "legs": [
-                    {"side": "BUY_TO_OPEN", "type": "CALL", "strike": 100.0, "expiry_days": 28, "quantity": 1},
-                    {"side": "SELL_TO_OPEN", "type": "CALL", "strike": 105.0, "expiry_days": 28, "quantity": 1},
+                    {
+                        "side": "BUY_TO_OPEN",
+                        "type": "CALL",
+                        "strike": 100.0,
+                        "expiry_days": 28,
+                        "quantity": 1,
+                    },
+                    {
+                        "side": "SELL_TO_OPEN",
+                        "type": "CALL",
+                        "strike": 105.0,
+                        "expiry_days": 28,
+                        "quantity": 1,
+                    },
                 ],
             }
         },
@@ -766,7 +1122,12 @@ def test_live_execute_uses_futures_plan_order_spec(monkeypatch, tmp_path: Path):
                 "contracts": 1,
                 "legs": [
                     {"side": "BUY", "contract": "M1", "quantity": 1, "month_offset": 0},
-                    {"side": "SELL", "contract": "M2", "quantity": 1, "month_offset": 1},
+                    {
+                        "side": "SELL",
+                        "contract": "M2",
+                        "quantity": 1,
+                        "month_offset": 1,
+                    },
                 ],
             },
         },
@@ -812,10 +1173,20 @@ def test_live_execute_uses_futures_roll_legs(monkeypatch, tmp_path: Path):
                 "front_month": "M2",
                 "legs": [
                     {"side": "BUY", "contract": "M2", "quantity": 1, "month_offset": 1},
-                    {"side": "SELL", "contract": "M1", "quantity": 1, "month_offset": 0},
+                    {
+                        "side": "SELL",
+                        "contract": "M1",
+                        "quantity": 1,
+                        "month_offset": 0,
+                    },
                 ],
                 "roll_legs": [
-                    {"side": "SELL", "contract": "M1", "quantity": 1, "month_offset": 0},
+                    {
+                        "side": "SELL",
+                        "contract": "M1",
+                        "quantity": 1,
+                        "month_offset": 0,
+                    },
                     {"side": "BUY", "contract": "M2", "quantity": 1, "month_offset": 1},
                 ],
             },
@@ -871,7 +1242,106 @@ def test_paper_execute_uses_guard_and_fill_modeling(tmp_path: Path, monkeypatch)
     assert paper["regime_source"] == "derived_feature_axes"
 
 
-def test_paper_profitability_guard_blocks_weak_profile_new_buy_entries(tmp_path: Path, monkeypatch) -> None:
+def test_paper_execution_staged_cohort_blocks_entries_but_keeps_exits_open(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "0")
+    monkeypatch.setenv("LIVE_TRADE_GLOBAL_MIN_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("LIVE_TRADE_MIN_INTERVAL_SECONDS", "0")
+    _write_staged_promotion_cohort(tmp_path)
+
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+    trader.set_mode("paper")
+    trader.execution_enabled = True
+    trader.market_data_only = False
+    features = {
+        "last_price": 100.0,
+        "spread_bps": 2.0,
+        "market_micro_tradeability_score_norm": 0.95,
+        "execution_fitness_norm": 0.95,
+        "core_cross_asset_confirmation_norm": 0.90,
+        "day_regime_trend_norm": 0.80,
+        "day_regime_chop_norm": 0.10,
+        "core_portfolio_overlap_pressure_norm": 0.10,
+        "news_source_quality_norm": 0.95,
+    }
+    active = trader.execute_decision(
+        symbol="SCHD",
+        action="BUY",
+        quantity=1.0,
+        model_score=0.65,
+        threshold=0.55,
+        features=features,
+        gates={"model_gate": True, "market_data_ok": True},
+        reasons=["unit_test_active_stage"],
+        strategy="paper_portfolio_consensus",
+        metadata={
+            "source_profile": "dividend",
+            "staged_promotion_cohort_enforced": True,
+        },
+    )
+    assert active["status"] == "PAPER_EXECUTED"
+    assert (
+        active["decision"]["metadata"]["strategy_specialization"][
+            "selected_strategy_id"
+        ]
+        == "sleeve::dividend_income::portfolio_consensus::v1"
+    )
+
+    blocked = trader.execute_decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=1.0,
+        model_score=0.65,
+        threshold=0.55,
+        features=features,
+        gates={"model_gate": True, "market_data_ok": True},
+        reasons=["unit_test"],
+        strategy="paper_portfolio_consensus",
+        metadata={
+            "source_profile": "equity_core",
+        },
+    )
+    assert blocked["status"] == "PAPER_PROMOTION_COHORT_BLOCKED"
+    assert blocked["promotion_cohort_guard"]["required"] is True
+
+    trader._paper_positions["SPY"] = {
+        "qty": 1.0,
+        "avg_price": 99.0,
+        "mark_price": 100.0,
+        "contract_multiplier": 1.0,
+    }
+    trader._paper_profile_positions["equity_core"] = {
+        "SPY": dict(trader._paper_positions["SPY"])
+    }
+    trader.live_guard.set_local_position(symbol="SPY", quantity=1.0, avg_price=99.0)
+    reduced = trader.execute_decision(
+        symbol="SPY",
+        action="SELL",
+        quantity=1.0,
+        model_score=0.65,
+        threshold=0.55,
+        features=features,
+        gates={"model_gate": True, "market_data_ok": True},
+        reasons=["unit_test_reduce_only"],
+        strategy="paper_portfolio_consensus",
+        metadata={
+            "source_profile": "equity_core",
+            "staged_promotion_cohort_enforced": True,
+        },
+    )
+    assert reduced["status"] == "PAPER_EXECUTED", reduced
+    assert (
+        reduced["decision"]["metadata"]["staged_promotion_cohort"]["disposition"]
+        == "historical_position_reduce_only_exit"
+    )
+
+
+def test_paper_profitability_guard_blocks_weak_profile_new_buy_entries(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
     _write_paper_profitability_control(tmp_path, weak_profile="default")
@@ -902,12 +1372,18 @@ def test_paper_profitability_guard_blocks_weak_profile_new_buy_entries(tmp_path:
     assert decision.get("details", {}).get("source_profile") == "default"
     paper_log = Path(trader.paper_log_path)
     assert not paper_log.exists() or paper_log.read_text(encoding="utf-8").strip() == ""
-    event_files = sorted((tmp_path / "governance" / "events").glob("paper_execution_guard_*.jsonl"))
+    event_files = sorted(
+        (tmp_path / "governance" / "events").glob("paper_execution_guard_*.jsonl")
+    )
     assert event_files
-    assert "paper_profitability_weak_profile_new_entry_block" in event_files[-1].read_text(encoding="utf-8")
+    assert "paper_profitability_weak_profile_new_entry_block" in event_files[
+        -1
+    ].read_text(encoding="utf-8")
 
 
-def test_paper_profitability_guard_allows_weak_profile_sell_reduction(tmp_path: Path, monkeypatch) -> None:
+def test_paper_profitability_guard_allows_weak_profile_sell_reduction(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
     _write_paper_profitability_control(tmp_path, weak_profile="default")
@@ -919,10 +1395,12 @@ def test_paper_profitability_guard_allows_weak_profile_sell_reduction(tmp_path: 
     trader.market_data_only = False
     seeded_position = {"qty": 100.0, "avg_price": 0.00001, "mark_price": 0.00001}
     trader._paper_positions["PEPE-USD"] = dict(seeded_position)
-    trader._paper_profile_positions.setdefault("default", {})["PEPE-USD"] = dict(seeded_position)
-    trader._paper_strategy_positions.setdefault("paper_profitability_guard_test", {})["PEPE-USD"] = dict(
+    trader._paper_profile_positions.setdefault("default", {})["PEPE-USD"] = dict(
         seeded_position
     )
+    trader._paper_strategy_positions.setdefault("paper_profitability_guard_test", {})[
+        "PEPE-USD"
+    ] = dict(seeded_position)
 
     out = trader.execute_decision(
         symbol="PEPE-USD",
@@ -942,6 +1420,83 @@ def test_paper_profitability_guard_allows_weak_profile_sell_reduction(tmp_path: 
     assert out["paper_order"]["position_qty"] == 0.0
 
 
+def test_paper_evidence_collection_override_preserves_weak_profile_quarantine(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "0")
+    _write_paper_profitability_control(tmp_path, weak_profile="day_trading")
+    _write_paper_evidence_collection_controls(tmp_path)
+
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+    trader.set_mode("paper")
+    trader.execution_enabled = True
+    trader.market_data_only = False
+
+    out = trader.execute_decision(
+        symbol="SPY",
+        action="BUY",
+        quantity=1.0,
+        model_score=0.68,
+        threshold=0.62,
+        features={
+            "last_price": 500.0,
+            "market_micro_tradeability_score_norm": 0.90,
+            "execution_fitness_norm": 0.90,
+            "source_quality_norm": 0.90,
+            "liquidity_quality_norm": 0.90,
+            "session_quality_norm": 0.90,
+            "spread_bps": 5.0,
+            "quote_age_ms": 250.0,
+        },
+        gates={"model_gate": True, "market_data_ok": True},
+        reasons=["unit_test"],
+        strategy="alpha",
+        metadata={"source_profile": "day_trading"},
+    )
+
+    assert out.get("status") == "PAPER_PROFITABILITY_GUARD_BLOCKED"
+    assert (
+        out["live_guard_decision"]["reason"]
+        == "paper_profitability_weak_profile_new_entry_block"
+    )
+
+
+def test_paper_evidence_collection_controls_relax_turnover_for_sampling(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("PAPER_MAX_NEW_ENTRIES_PER_SYMBOL_DAY", "2")
+    monkeypatch.setenv("PAPER_NEW_ENTRY_COOLDOWN_SECONDS", "300")
+    _write_paper_evidence_collection_controls(tmp_path)
+    trader = object.__new__(BaseTrader)
+    trader.mode = "paper"
+    trader.project_root = str(tmp_path)
+    trader.profile = "day_trading"
+    trader._paper_trade_activity = {
+        "day_trading|spy": {
+            "day_utc": "2026-09-04",
+            "entries_today": 3,
+            "last_entry_utc": "2026-09-04T14:00:00+00:00",
+            "last_entry_action": "BUY",
+        }
+    }
+
+    blocked, reason, details = trader._paper_turnover_new_entry_blocked(
+        exposure={"increases_exposure": True, "crosses_through_flat": False},
+        profile="day_trading",
+        symbol="SPY",
+        action="BUY",
+        now_utc=datetime(2026, 9, 4, 14, 2, 1, tzinfo=timezone.utc),
+    )
+
+    assert blocked is False
+    assert reason == "paper_turnover_guard_clear"
+    assert details["max_entries_per_symbol_day"] == 10
+    assert details["new_entry_cooldown_seconds"] == 120
+    assert details["paper_evidence_collection_controls"]["active"] is True
+
+
 def test_paper_profitability_guard_blocks_declared_policy_failure_without_recovery_control(
     tmp_path: Path,
 ) -> None:
@@ -955,7 +1510,10 @@ def test_paper_profitability_guard_blocks_declared_policy_failure_without_recove
         quantity=1.0,
         metadata={
             "source_profile": "default",
-            "entry_policy": {"allowed": False, "blockers": ["execution_fitness=0.000<0.200"]},
+            "entry_policy": {
+                "allowed": False,
+                "blockers": ["execution_fitness=0.000<0.200"],
+            },
         },
         features={"last_price": 100.0, "execution_fitness_norm": 0.0},
         strategy="alpha",
@@ -967,7 +1525,9 @@ def test_paper_profitability_guard_blocks_declared_policy_failure_without_recove
     assert details["declared_entry_policy_valid"] is True
 
 
-def test_paper_profitability_guard_allows_reduction_despite_declared_policy_failure(tmp_path: Path) -> None:
+def test_paper_profitability_guard_allows_reduction_despite_declared_policy_failure(
+    tmp_path: Path,
+) -> None:
     _reset_paper_profitability_guard_cache()
     trader = _mk_trader("paper")
     trader.project_root = str(tmp_path)
@@ -991,7 +1551,9 @@ def test_paper_profitability_guard_allows_reduction_despite_declared_policy_fail
     assert details["reduces_or_closes"] is True
 
 
-def test_paper_profitability_guard_blocks_new_short_on_declared_policy_failure(tmp_path: Path) -> None:
+def test_paper_profitability_guard_blocks_new_short_on_declared_policy_failure(
+    tmp_path: Path,
+) -> None:
     _reset_paper_profitability_guard_cache()
     trader = _mk_trader("paper")
     trader.project_root = str(tmp_path)
@@ -1010,7 +1572,9 @@ def test_paper_profitability_guard_blocks_new_short_on_declared_policy_failure(t
     assert details["exposure_change"]["projected_qty"] == -1.0
 
 
-def test_paper_profitability_guard_enforces_declared_clean_sleeve_evidence(tmp_path: Path) -> None:
+def test_paper_profitability_guard_enforces_declared_clean_sleeve_evidence(
+    tmp_path: Path,
+) -> None:
     health = tmp_path / "governance" / "health"
     health.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -1035,7 +1599,9 @@ def test_paper_profitability_guard_enforces_declared_clean_sleeve_evidence(tmp_p
             },
         },
     }
-    (health / "paper_runtime_profitability_controls_latest.json").write_text(json.dumps(payload), encoding="utf-8")
+    (health / "paper_runtime_profitability_controls_latest.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
     _reset_paper_profitability_guard_cache()
     trader = _mk_trader("paper")
     trader.project_root = str(tmp_path)
@@ -1048,24 +1614,26 @@ def test_paper_profitability_guard_enforces_declared_clean_sleeve_evidence(tmp_p
         features={"last_price": 100.0},
         strategy="alpha",
     )
-    allowed, allowed_reason, _allowed_details = trader._paper_profitability_new_entry_blocked(
-        symbol="AAPL",
-        action="BUY",
-        quantity=1.0,
-        metadata={"source_profile": "clean", "session": "regular"},
-        features={
-            "last_price": 100.0,
-            "source_quality_norm": 0.90,
-            "tradeability_norm": 0.90,
-            "execution_fitness_norm": 0.90,
-            "cross_asset_confirmation_norm": 0.90,
-            "overlap_pressure_norm": 0.10,
-            "spread_bps": 5.0,
-            "event_catalyst_confirmation_norm": 0.90,
-            "portfolio_conflict_clearance_norm": 0.90,
-            "session_quality_norm": 0.90,
-        },
-        strategy="alpha",
+    allowed, allowed_reason, _allowed_details = (
+        trader._paper_profitability_new_entry_blocked(
+            symbol="AAPL",
+            action="BUY",
+            quantity=1.0,
+            metadata={"source_profile": "clean", "session": "regular"},
+            features={
+                "last_price": 100.0,
+                "source_quality_norm": 0.90,
+                "tradeability_norm": 0.90,
+                "execution_fitness_norm": 0.90,
+                "cross_asset_confirmation_norm": 0.90,
+                "overlap_pressure_norm": 0.10,
+                "spread_bps": 5.0,
+                "event_catalyst_confirmation_norm": 0.90,
+                "portfolio_conflict_clearance_norm": 0.90,
+                "session_quality_norm": 0.90,
+            },
+            strategy="alpha",
+        )
     )
 
     assert blocked is True
@@ -1075,7 +1643,114 @@ def test_paper_profitability_guard_enforces_declared_clean_sleeve_evidence(tmp_p
     assert allowed_reason == "clean_profile_evidence_gate_passed"
 
 
-def test_paper_profitability_guard_enforces_profile_strategy_quarantine(tmp_path: Path) -> None:
+def test_paper_evidence_collection_override_allows_auxiliary_clean_gate_gaps(
+    tmp_path: Path,
+) -> None:
+    health = tmp_path / "governance" / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "raw_profitability_a_recovery_contract": {
+            "active": True,
+            "weak_profiles": [],
+            "runtime_enforcement": {"block_new_entries_on_weak_profiles": True},
+        },
+        "raw_profitability_improvement_contract": {
+            "active": True,
+            "runtime_enforcement": {"block_new_entries_on_weak_profiles": True},
+            "clean_sleeve_strict_buy_gate_contract": {
+                "active": True,
+                "enforced": True,
+                "min_quality_gate_norm": 0.72,
+                "min_tradeability_norm": 0.58,
+                "min_execution_fitness_norm": 0.58,
+                "min_cross_asset_confirmation_norm": 0.56,
+                "max_overlap_pressure_norm": 0.58,
+                "min_independent_evidence_channels": 7,
+                "block_when_spread_regime_unknown": True,
+            },
+        },
+    }
+    (health / "paper_runtime_profitability_controls_latest.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    _write_paper_evidence_collection_controls(tmp_path)
+    _reset_paper_profitability_guard_cache()
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+
+    blocked, reason, details = trader._paper_profitability_new_entry_blocked(
+        symbol="SPY",
+        action="BUY",
+        quantity=1.0,
+        metadata={
+            "source_profile": "day_trading",
+            "session": "regular",
+            "model_score": 0.68,
+            "decision_threshold": 0.62,
+        },
+        features={
+            "last_price": 500.0,
+            "source_quality_norm": 0.90,
+            "tradeability_norm": 0.90,
+            "execution_fitness_norm": 0.90,
+            "cross_asset_confirmation_norm": 0.90,
+            "overlap_pressure_norm": 0.10,
+            "spread_bps": 5.0,
+            "quote_age_ms": 250.0,
+            "liquidity_quality_norm": 0.90,
+        },
+        strategy="alpha",
+    )
+
+    assert blocked is False
+    assert reason == "paper_evidence_collection_override_allowed"
+    collection = details["paper_evidence_collection"]
+    assert collection["paper_only"] is True
+    assert collection["live_execution_allowed"] is False
+    assert "event_catalyst_confirmation_unknown" in collection["relaxed_failures"]
+
+
+def test_paper_evidence_collection_override_does_not_allow_stale_quotes(
+    tmp_path: Path,
+) -> None:
+    _write_paper_evidence_collection_controls(tmp_path)
+    _reset_paper_profitability_guard_cache()
+    trader = _mk_trader("paper")
+    trader.project_root = str(tmp_path)
+
+    blocked, reason, details = trader._paper_profitability_new_entry_blocked(
+        symbol="SPY",
+        action="BUY",
+        quantity=1.0,
+        metadata={
+            "source_profile": "day_trading",
+            "model_score": 0.68,
+            "decision_threshold": 0.62,
+        },
+        features={
+            "profitability_strict_evidence_required": True,
+            "last_price": 500.0,
+            "market_micro_tradeability_score_norm": 0.90,
+            "execution_fitness_norm": 0.90,
+            "source_quality_norm": 0.90,
+            "liquidity_quality_norm": 0.90,
+            "session_quality_norm": 0.90,
+            "spread_bps": 5.0,
+            "quote_age_ms": 9000.0,
+        },
+        strategy="alpha",
+    )
+
+    assert blocked is True
+    assert reason == "paper_profitability_entry_policy_block"
+    collection = details["paper_evidence_collection"]
+    assert collection["status"] == "hard_or_unapproved_failure"
+    assert any("quote_age_ms" in item for item in collection["hard_failures"])
+
+
+def test_paper_profitability_guard_enforces_profile_strategy_quarantine(
+    tmp_path: Path,
+) -> None:
     health = tmp_path / "governance" / "health"
     health.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -1100,7 +1775,9 @@ def test_paper_profitability_guard_enforces_profile_strategy_quarantine(tmp_path
             },
         },
     }
-    (health / "paper_runtime_profitability_controls_latest.json").write_text(json.dumps(payload), encoding="utf-8")
+    (health / "paper_runtime_profitability_controls_latest.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
     _reset_paper_profitability_guard_cache()
     trader = _mk_trader("paper")
     trader.project_root = str(tmp_path)
@@ -1119,7 +1796,9 @@ def test_paper_profitability_guard_enforces_profile_strategy_quarantine(tmp_path
     assert details["strategy"] == "alpha"
 
 
-def test_paper_book_state_survives_restart_and_preserves_reduction_semantics(tmp_path: Path, monkeypatch) -> None:
+def test_paper_book_state_survives_restart_and_preserves_reduction_semantics(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
     monkeypatch.setenv("SHADOW_PROFILE", "restart_persistence")
@@ -1154,7 +1833,9 @@ def test_paper_book_state_survives_restart_and_preserves_reduction_semantics(tmp
     restarted.market_data_only = False
 
     assert restarted._paper_book_id == first_book_id
-    assert restarted._paper_profile_positions["restart_persistence"]["AAPL"]["qty"] == 2.0
+    assert (
+        restarted._paper_profile_positions["restart_persistence"]["AAPL"]["qty"] == 2.0
+    )
 
     closed = restarted.execute_decision(
         symbol="AAPL",
@@ -1172,7 +1853,9 @@ def test_paper_book_state_survives_restart_and_preserves_reduction_semantics(tmp
     assert closed["status"] == "PAPER_EXECUTED"
     assert closed["paper_order"]["paper_book_id"] == first_book_id
     assert closed["paper_order"]["paper_profile_net_pnl_delta"] > 0.0
-    assert restarted._paper_profile_positions["restart_persistence"]["AAPL"]["qty"] == 0.0
+    assert (
+        restarted._paper_profile_positions["restart_persistence"]["AAPL"]["qty"] == 0.0
+    )
 
 
 def test_paper_execute_can_block_on_guard(tmp_path: Path, monkeypatch):
@@ -1199,8 +1882,10 @@ def test_paper_execute_can_block_on_guard(tmp_path: Path, monkeypatch):
     )
 
     assert out.get("status") == "PAPER_GUARD_BLOCKED"
-    assert out.get("live_guard_decision", {}).get("gate") in {"position_limit", "order_notional_limit"}
-
+    assert out.get("live_guard_decision", {}).get("gate") in {
+        "position_limit",
+        "order_notional_limit",
+    }
 
 
 def test_pretrade_reconcile_allows_manual_adjustment_and_syncs_local(monkeypatch):
@@ -1227,7 +1912,9 @@ def test_pretrade_reconcile_allows_manual_adjustment_and_syncs_local(monkeypatch
     assert float(details.get("local_qty_after_sync", 0.0)) == 1.0
 
 
-def test_pretrade_reconcile_blocks_true_mismatch_when_manual_awareness_disabled(monkeypatch):
+def test_pretrade_reconcile_blocks_true_mismatch_when_manual_awareness_disabled(
+    monkeypatch,
+):
     monkeypatch.setenv("LIVE_PRETRADE_RECONCILE_BLOCK_ON_MISMATCH", "1")
     monkeypatch.setenv("LIVE_MANUAL_TRADE_AWARE_ENABLED", "0")
     monkeypatch.setenv("LIVE_MANUAL_TRADE_QTY_TOLERANCE", "2.0")

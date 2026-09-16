@@ -4,7 +4,6 @@ from pathlib import Path
 
 from scripts.ops import production_excellence_control as control
 
-
 NOW = datetime(2026, 8, 4, 16, 0, tzinfo=timezone.utc)
 
 
@@ -22,14 +21,37 @@ def _write_config(project_root: Path) -> Path:
             "soak_scopes": ["operations", "strategy"],
             "profitability_scopes": ["strategy"],
         },
-        "soak": {"artifact": "governance/health/soak.json", "required_hours": 720, "checkpoint_hours": 168},
-        "recovery": {"artifact": "governance/health/recovery.json", "required_drills": []},
-        "live_execution": {"required_source_paths": [], "allowed_asset_types": ["EQUITY"], "allowed_instructions": ["BUY", "SELL"]},
+        "soak": {
+            "artifact": "governance/health/soak.json",
+            "required_hours": 720,
+            "checkpoint_hours": 168,
+        },
+        "recovery": {
+            "artifact": "governance/health/recovery.json",
+            "required_drills": [],
+        },
+        "live_execution": {
+            "required_source_paths": [],
+            "allowed_asset_types": ["EQUITY"],
+            "allowed_instructions": ["BUY", "SELL"],
+        },
         "fill_evidence": {"artifact": "governance/health/fills.json"},
-        "promotion": {"artifact": "governance/health/promotion.json", "packet_artifact": "governance/health/packet.json"},
-        "profitability": {"performance_artifact": "governance/health/performance.json", "control_artifact": "governance/health/profitability.json"},
-        "canary": {"control_artifact": "governance/health/canary.json", "rollout_artifact": "governance/health/rollout.json"},
-        "grading_integrity": {"a_plus_requires_all_checks": True, "missing_evidence_score": 0},
+        "promotion": {
+            "artifact": "governance/health/promotion.json",
+            "packet_artifact": "governance/health/packet.json",
+        },
+        "profitability": {
+            "performance_artifact": "governance/health/performance.json",
+            "control_artifact": "governance/health/profitability.json",
+        },
+        "canary": {
+            "control_artifact": "governance/health/canary.json",
+            "rollout_artifact": "governance/health/rollout.json",
+        },
+        "grading_integrity": {
+            "a_plus_requires_all_checks": True,
+            "missing_evidence_score": 0,
+        },
         "institutional_operations": {},
     }
     path = project_root / "config" / "production_excellence_v1.json"
@@ -58,7 +80,9 @@ def test_missing_candidate_and_evidence_can_never_report_a_plus(tmp_path: Path) 
     assert "p01_frozen_candidate" in payload["blocked_pillars"]
 
 
-def test_candidate_drift_requires_reasoned_acceptance_and_resets_only_affected_scope(tmp_path: Path) -> None:
+def test_candidate_drift_requires_reasoned_acceptance_and_resets_only_affected_scope(
+    tmp_path: Path,
+) -> None:
     config_path = _write_config(tmp_path)
     _seed_sources(tmp_path)
     initialized = control.build_payload(
@@ -73,9 +97,18 @@ def test_candidate_drift_requires_reasoned_acceptance_and_resets_only_affected_s
     initial_windows = dict(state["scope_windows_started_utc"])
 
     (tmp_path / "strategy" / "model.py").write_text("VALUE = 2\n", encoding="utf-8")
-    drifted = control.build_payload(tmp_path, config_path=config_path, now=NOW + timedelta(hours=1))
+    drifted = control.build_payload(
+        tmp_path, config_path=config_path, now=NOW + timedelta(hours=1)
+    )
     assert drifted["candidate"]["candidate_drift"] is True
     assert drifted["candidate"]["changed_scopes"] == ["strategy"]
+    assert drifted["candidate"]["drift_details"]["manifest_comparison_complete"] is True
+    assert drifted["candidate"]["drift_details"]["changed_files"] == [
+        "strategy/model.py"
+    ]
+    assert drifted["candidate"]["drift_details"]["scope_changes"]["strategy"][
+        "modified_files"
+    ] == ["strategy/model.py"]
 
     refused = control.build_payload(
         tmp_path,
@@ -98,12 +131,218 @@ def test_candidate_drift_requires_reasoned_acceptance_and_resets_only_affected_s
     assert accepted_candidate["candidate_ready"] is True
     assert accepted_candidate["generation"] == 2
     assert accepted_candidate["candidate_drift"] is False
-    assert accepted_candidate["scope_windows_started_utc"]["operations"] == initial_windows["operations"]
-    assert accepted_candidate["scope_windows_started_utc"]["strategy"] == (NOW + timedelta(hours=2)).isoformat()
+    assert (
+        accepted_candidate["scope_windows_started_utc"]["operations"]
+        == initial_windows["operations"]
+    )
+    assert (
+        accepted_candidate["scope_windows_started_utc"]["strategy"]
+        == (NOW + timedelta(hours=2)).isoformat()
+    )
     assert accepted_candidate["event_chain"]["event_count"] == 2
+    accepted_state = json.loads(
+        Path(accepted_candidate["state_path"]).read_text(encoding="utf-8")
+    )
+    assert accepted_state["scope_fingerprints"]["strategy"]["file_manifest"]
+    event = json.loads(
+        Path(accepted_candidate["event_path"])
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert event["change_evidence"]["changed_files"] == ["strategy/model.py"]
 
 
-def test_registry_observation_counters_do_not_reset_candidate_but_strategy_thresholds_do(tmp_path: Path) -> None:
+def test_scope_aware_pillar_accepts_operations_after_three_sessions(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["candidate"]["soak_scopes"] = ["operations"]
+    config["candidate"]["scope_validation_policy_path"] = (
+        "config/candidate_scope_validation_v1.json"
+    )
+    config["candidate"]["require_scope_validation_policy"] = True
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    policy_path = tmp_path / "config" / "candidate_scope_validation_v1.json"
+    policy_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "policy_id": "test-scope-aware",
+                "calendar": {
+                    "calendar_id": "XNYS",
+                    "minimum_version": "4.13.2",
+                },
+                "tiers": {
+                    "operations": {
+                        "required_hours": 72,
+                        "required_completed_sessions": 3,
+                        "blocks_promotion": True,
+                    }
+                },
+                "scope_tiers": {"operations": "operations"},
+                "unknown_scope_tier": "operations",
+                "authority": {"live_execution_authority": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    _seed_sources(tmp_path)
+    started = datetime(2026, 8, 5, 21, 0, tzinfo=timezone.utc)
+    current = datetime(2026, 8, 10, 21, 0, tzinfo=timezone.utc)
+    soak_path = tmp_path / "governance" / "health" / "soak.json"
+    soak_path.parent.mkdir(parents=True, exist_ok=True)
+    soak_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": current.isoformat(),
+                "ok": True,
+                "overall_status": "ready",
+                "overall_grade": "A+",
+                "safe_to_leave_unattended": True,
+                "blockers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    control.build_payload(
+        tmp_path,
+        config_path=config_path,
+        initialize_candidate=True,
+        now=started,
+    )
+
+    payload = control.build_payload(tmp_path, config_path=config_path, now=current)
+    pillar = next(
+        row
+        for row in payload["pillars"]
+        if row["pillar_id"] == "p02_clean_30_day_soak"
+    )
+
+    assert pillar["ready"] is True
+    assert "seven_day_checkpoint" not in {
+        row["check_id"] for row in pillar["checks"]
+    }
+    assert payload["scope_validation"]["scope_aware_validation_complete"] is True
+    assert payload["scope_validation"]["authority"]["live_execution_authority"] is False
+
+
+def test_candidate_acceptance_fails_closed_on_uncovered_runtime_source(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(tmp_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["candidate"]["require_full_source_coverage"] = True
+    config["candidate"]["source_inventory_globs"] = ["ops/**/*.py", "runtime/**/*.py"]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    _seed_sources(tmp_path)
+    uncovered = tmp_path / "runtime" / "worker.py"
+    uncovered.parent.mkdir(parents=True, exist_ok=True)
+    uncovered.write_text("VALUE = 1\n", encoding="utf-8")
+
+    initialized = control.build_payload(
+        tmp_path,
+        config_path=config_path,
+        initialize_candidate=True,
+        now=NOW,
+    )
+
+    assert initialized["candidate"]["candidate_ready"] is False
+    assert initialized["candidate"]["source_coverage"]["ready"] is False
+    assert initialized["candidate"]["source_coverage"]["uncovered_files"] == [
+        "runtime/worker.py"
+    ]
+
+
+def test_generated_runtime_docs_are_excluded_by_exact_policy_path_only(
+    tmp_path: Path,
+) -> None:
+    generated = tmp_path / "docs" / "pycharm" / "intelligence_layers_latest.md"
+    canonical = tmp_path / "docs" / "pycharm" / "operator_contract.md"
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    generated.write_text("generated at t1\n", encoding="utf-8")
+    canonical.write_text("canonical v1\n", encoding="utf-8")
+    policy_path = tmp_path / "config" / "generated_artifact_policy.json"
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_text(
+        json.dumps(
+            {
+                "tracked_runtime_outputs": [
+                    "docs/pycharm/intelligence_layers_latest.md"
+                ],
+                "candidate_fingerprint_contract": {
+                    "exclude_exact_tracked_runtime_outputs": True,
+                    "broad_path_exclusions_allowed": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = {
+        "candidate": {
+            "generated_artifact_policy_path": ("config/generated_artifact_policy.json"),
+            "require_generated_artifact_policy": True,
+            "require_full_source_coverage": True,
+            "source_inventory_globs": ["docs/**/*.md"],
+            "scope_globs": {"operations": ["docs/**/*.md"]},
+        }
+    }
+
+    initial = control.candidate_fingerprints(tmp_path, config)
+    manifest = initial["scopes"]["operations"]["file_manifest"]
+    assert "docs/pycharm/intelligence_layers_latest.md" not in manifest
+    assert "docs/pycharm/operator_contract.md" in manifest
+    assert initial["source_coverage"]["ready"] is True
+    assert initial["source_coverage"]["excluded_generated_files"] == [
+        "docs/pycharm/intelligence_layers_latest.md"
+    ]
+
+    generated.write_text("generated at t2\n", encoding="utf-8")
+    generated_refresh = control.candidate_fingerprints(tmp_path, config)
+    assert generated_refresh["overall_sha256"] == initial["overall_sha256"]
+
+    canonical.write_text("canonical v2\n", encoding="utf-8")
+    canonical_change = control.candidate_fingerprints(tmp_path, config)
+    assert canonical_change["overall_sha256"] != initial["overall_sha256"]
+
+
+def test_generated_artifact_policy_rejects_broad_exclusion_patterns(
+    tmp_path: Path,
+) -> None:
+    policy_path = tmp_path / "config" / "generated_artifact_policy.json"
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_text(
+        json.dumps(
+            {
+                "tracked_runtime_outputs": ["docs/**/*.md"],
+                "candidate_fingerprint_contract": {
+                    "exclude_exact_tracked_runtime_outputs": True
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = {
+        "candidate": {
+            "generated_artifact_policy_path": ("config/generated_artifact_policy.json"),
+            "require_generated_artifact_policy": True,
+            "require_full_source_coverage": True,
+            "source_inventory_globs": ["docs/**/*.md"],
+            "scope_globs": {"operations": ["docs/**/*.md"]},
+        }
+    }
+
+    coverage = control.candidate_source_coverage(tmp_path, config)
+
+    assert coverage["ready"] is False
+    assert coverage["generated_artifact_policy"]["ready"] is False
+    assert coverage["generated_artifact_policy"]["invalid_entries"] == ["docs/**/*.md"]
+    assert coverage["excluded_generated_files"] == []
+
+
+def test_registry_observation_counters_do_not_reset_candidate_but_strategy_thresholds_do(
+    tmp_path: Path,
+) -> None:
     registry_path = tmp_path / "master_bot_registry.json"
     registry = {
         "updated_at_utc": "2026-08-10T20:00:00+00:00",
@@ -115,7 +354,10 @@ def test_registry_observation_counters_do_not_reset_candidate_but_strategy_thres
                 "minimum_training_observations": 200,
                 "data_collection_observations": 10,
                 "data_collection_last_counted_utc": "2026-08-10T20:00:00+00:00",
-                "data_collection_threshold_progress": {"observations": 10, "training_ready": False},
+                "data_collection_threshold_progress": {
+                    "observations": 10,
+                    "training_ready": False,
+                },
                 "training_excluded": True,
             }
         ],
@@ -127,7 +369,9 @@ def test_registry_observation_counters_do_not_reset_candidate_but_strategy_thres
     registry["updated_at_utc"] = "2026-08-10T21:00:00+00:00"
     registry["summary"]["training_excluded_bots"] = 0
     registry["sub_bots"][0]["data_collection_observations"] = 250
-    registry["sub_bots"][0]["data_collection_last_counted_utc"] = "2026-08-10T21:00:00+00:00"
+    registry["sub_bots"][0][
+        "data_collection_last_counted_utc"
+    ] = "2026-08-10T21:00:00+00:00"
     registry["sub_bots"][0]["data_collection_threshold_progress"] = {
         "observations": 250,
         "training_ready": True,
@@ -137,7 +381,12 @@ def test_registry_observation_counters_do_not_reset_candidate_but_strategy_thres
 
     observation_update = control.candidate_fingerprints(tmp_path, config)
     assert observation_update["overall_sha256"] == initial["overall_sha256"]
-    assert observation_update["normalization_contract"]["strategy_definitions_and_thresholds_remain_hashed"] is True
+    assert (
+        observation_update["normalization_contract"][
+            "strategy_definitions_and_thresholds_remain_hashed"
+        ]
+        is True
+    )
 
     registry["sub_bots"][0]["minimum_training_observations"] = 300
     registry_path.write_text(json.dumps(registry), encoding="utf-8")
@@ -160,11 +409,17 @@ def test_candidate_event_log_tampering_blocks_candidate(tmp_path: Path) -> None:
     row["change_reason"] = "tampered"
     event_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
 
-    payload = control.build_payload(tmp_path, config_path=config_path, now=NOW + timedelta(minutes=5))
+    payload = control.build_payload(
+        tmp_path, config_path=config_path, now=NOW + timedelta(minutes=5)
+    )
 
     assert payload["candidate"]["candidate_ready"] is False
     assert payload["candidate"]["event_chain"]["ok"] is False
-    pillar = next(item for item in payload["pillars"] if item["pillar_id"] == "p01_frozen_candidate")
+    pillar = next(
+        item
+        for item in payload["pillars"]
+        if item["pillar_id"] == "p01_frozen_candidate"
+    )
     assert "candidate_event_chain_valid" in pillar["failed_checks"]
 
 
@@ -189,7 +444,10 @@ def test_missing_event_log_cannot_be_accepted_as_ordinary_drift(tmp_path: Path) 
     )
 
     assert refused["candidate"]["candidate_ready"] is False
-    assert refused["candidate"]["operation_error"] == "candidate_state_event_chain_head_mismatch"
+    assert (
+        refused["candidate"]["operation_error"]
+        == "candidate_state_event_chain_head_mismatch"
+    )
 
 
 def test_explicit_event_chain_recovery_resets_every_window(tmp_path: Path) -> None:
@@ -216,35 +474,48 @@ def test_explicit_event_chain_recovery_resets_every_window(tmp_path: Path) -> No
     assert candidate["candidate_ready"] is True
     assert candidate["generation"] == 2
     assert candidate["event_chain"]["event_count"] == 1
-    assert set(candidate["scope_windows_started_utc"].values()) == {recovery_time.isoformat()}
-    event = json.loads(Path(candidate["event_path"]).read_text(encoding="utf-8").splitlines()[0])
+    assert set(candidate["scope_windows_started_utc"].values()) == {
+        recovery_time.isoformat()
+    }
+    event = json.loads(
+        Path(candidate["event_path"]).read_text(encoding="utf-8").splitlines()[0]
+    )
     assert event["event_type"] == "candidate_chain_recovery_anchor"
     assert event["recovery_evidence"]["all_evidence_windows_reset"] is True
     assert event["recovery_evidence"]["prior_state_event_chain_head"]
 
 
 def test_profitability_grade_integrity_allows_honest_equal_grades() -> None:
-    assert control._profitability_grade_labels_honest(
-        {
-            "raw_profitability_grade": "A",
-            "controlled_profitability_grade": "A",
-            "profitability_display_grade": "A",
-        }
-    ) is True
-    assert control._profitability_grade_labels_honest(
-        {
-            "raw_profitability_grade": "C",
-            "controlled_profitability_grade": "A+",
-            "profitability_display_grade": "A+ controlled / C raw",
-        }
-    ) is True
-    assert control._profitability_grade_labels_honest(
-        {
-            "raw_profitability_grade": "C",
-            "controlled_profitability_grade": "A+",
-            "profitability_display_grade": "A+",
-        }
-    ) is False
+    assert (
+        control._profitability_grade_labels_honest(
+            {
+                "raw_profitability_grade": "A",
+                "controlled_profitability_grade": "A",
+                "profitability_display_grade": "A",
+            }
+        )
+        is True
+    )
+    assert (
+        control._profitability_grade_labels_honest(
+            {
+                "raw_profitability_grade": "C",
+                "controlled_profitability_grade": "A+",
+                "profitability_display_grade": "A+ controlled / C raw",
+            }
+        )
+        is True
+    )
+    assert (
+        control._profitability_grade_labels_honest(
+            {
+                "raw_profitability_grade": "C",
+                "controlled_profitability_grade": "A+",
+                "profitability_display_grade": "A+",
+            }
+        )
+        is False
+    )
 
 
 def test_profitability_source_match_requires_exact_hash(tmp_path: Path) -> None:
@@ -263,25 +534,87 @@ def test_profitability_source_match_requires_exact_hash(tmp_path: Path) -> None:
     assert control._profitability_source_matches(artifact, payload) is False
 
 
-def test_repository_candidate_scopes_cover_collectors_and_profitability_evidence() -> None:
+def test_repository_candidate_scopes_cover_collectors_and_profitability_evidence() -> (
+    None
+):
     project_root = Path(__file__).resolve().parents[1]
-    config = json.loads((project_root / "config" / "production_excellence_v1.json").read_text(encoding="utf-8"))
+    config = json.loads(
+        (project_root / "config" / "production_excellence_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
     scope_globs = config["candidate"]["scope_globs"]
+    source_coverage = control.candidate_source_coverage(project_root, config)
+
+    assert source_coverage["required"] is True
+    assert source_coverage["ready"] is True
+    assert source_coverage["uncovered_files"] == []
 
     data_files = set(control._scope_files(project_root, scope_globs["data"]))
     execution_files = set(control._scope_files(project_root, scope_globs["execution"]))
+    research_advisory_files = set(
+        control._scope_files(project_root, scope_globs["research_advisory"])
+    )
+    operations_files = set(
+        control._scope_files(project_root, scope_globs["operations"])
+    )
     promotion_files = set(control._scope_files(project_root, scope_globs["promotion"]))
 
     assert project_root / "scripts" / "collect_public_policy_context.py" in data_files
     assert project_root / "scripts" / "paper_performance_report.py" in promotion_files
     assert project_root / "scripts" / "canary_rollout_guard.py" in promotion_files
-    assert project_root / "scripts" / "ops" / "independent_fill_evidence_acquisition.py" in execution_files
-    assert project_root / "scripts" / "ops" / "independent_fill_evidence_acquisition.py" in promotion_files
+    assert (
+        project_root / "scripts" / "ops" / "independent_fill_evidence_acquisition.py"
+        in execution_files
+    )
+    assert (
+        project_root / "scripts" / "ops" / "independent_fill_evidence_acquisition.py"
+        in promotion_files
+    )
     assert project_root / "scripts" / "multiple_testing_guard.py" in promotion_files
     assert project_root / "scripts" / "decay_monitor.py" in promotion_files
-    assert project_root / "scripts" / "ops" / "profitability_independent_validator.py" in promotion_files
-    assert project_root / "scripts" / "ops" / "profitability_holdout_vault.py" in promotion_files
-    assert project_root / "scripts" / "ops" / "profitability_benchmark_capture.py" in promotion_files
-    assert project_root / "scripts" / "ops" / "profitability_benchmark_hurdle.py" in promotion_files
+    assert (
+        project_root / "scripts" / "ops" / "profitability_independent_validator.py"
+        in promotion_files
+    )
+    assert (
+        project_root / "scripts" / "ops" / "profitability_holdout_vault.py"
+        in promotion_files
+    )
+    assert (
+        project_root / "scripts" / "ops" / "profitability_benchmark_capture.py"
+        in promotion_files
+    )
+    assert (
+        project_root / "scripts" / "ops" / "profitability_benchmark_hurdle.py"
+        in promotion_files
+    )
     assert project_root / "core" / "profitability_statistics.py" in promotion_files
-    assert project_root / "config" / "profitability_evidence_firewall_v1.json" in promotion_files
+    assert (
+        project_root / "config" / "profitability_evidence_firewall_v1.json"
+        in promotion_files
+    )
+    assert project_root / "scripts" / "shadow_watchdog.py" in operations_files
+    assert project_root / "scripts" / "failover_hot_standby.py" in operations_files
+    assert project_root / "scripts" / "resource_guard.py" in operations_files
+    assert project_root / "scripts" / "nightly_resilience_check.py" in operations_files
+    assert project_root / "scripts" / "session_ready_check.py" in operations_files
+    assert project_root / "scripts" / "pager_alert_router.py" in operations_files
+    assert project_root / "main.py" in operations_files
+    assert project_root / "pytest.ini" in operations_files
+    assert project_root / "DATA_INGESTION_SOURCES.md" in operations_files
+    assert project_root / "formal" / "OrderSafety.tla" in operations_files
+    assert (
+        project_root / "scripts" / "ops" / "storage_eject_guard.swift"
+        in operations_files
+    )
+    assert (
+        project_root / "tests" / "test_production_excellence_control.py"
+        in operations_files
+    )
+    assert (
+        project_root / "shadow_research" / "institutional_decision_flow" / "runner.py"
+        in research_advisory_files
+    )
+    assert "research_advisory" not in config["candidate"]["soak_scopes"]
+    assert "research_advisory" not in config["candidate"]["profitability_scopes"]

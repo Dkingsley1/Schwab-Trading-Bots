@@ -24,6 +24,7 @@ class BrokerCapabilities:
     supports_order_replace: bool = True
     supports_order_cancel: bool = True
     supports_order_fetch: bool = True
+    supports_order_list: bool = True
     supports_options: bool = True
     supports_futures: bool = True
     supports_exotic_derivatives_direct: bool = False

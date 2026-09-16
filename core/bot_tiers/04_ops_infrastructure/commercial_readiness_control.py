@@ -1,0 +1,1 @@
+../../../scripts/ops/commercial_readiness_control.py

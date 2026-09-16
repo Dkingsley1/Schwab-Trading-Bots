@@ -55,9 +55,10 @@ def test_creative_cotenant_guard_applies_override_and_dedupes(tmp_path: Path, mo
         {"overall_status": "blocked", "throttle_profile": "protect_live", "host_saturation_score": 91.0},
     )
 
-    pid_snapshots = iter([[101, 202, 303], [101]])
+    pid_snapshots = iter([[101, 202, 303], [303]])
     monkeypatch.setattr(src, "_refresh_resource_guard_snapshot", _fixture_resource_snapshot)
     monkeypatch.setattr(src, "_pgrep_matching_pids", lambda _pattern: next(pid_snapshots))
+    monkeypatch.setattr(src, "_parent_pid_for_pid", lambda _pid: 0)
     monkeypatch.setattr(src, "_terminate_pids", lambda pids: [{"pid": pid, "ok": True} for pid in pids])
 
     override_path = tmp_path / "config" / ".env.memory_efficiency_override"
@@ -67,11 +68,31 @@ def test_creative_cotenant_guard_applies_override_and_dedupes(tmp_path: Path, mo
     assert payload["memory_efficiency"]["recommended_profile"] == "pro_balanced"
     assert payload["paper_execution_lane"]["count_before"] == 3
     assert payload["paper_execution_lane"]["count_after"] == 1
-    assert payload["paper_execution_lane"]["keep_pid"] == 101
-    assert payload["paper_execution_lane"]["extra_pids"] == [202, 303]
+    assert payload["paper_execution_lane"]["keep_pid"] == 303
+    assert payload["paper_execution_lane"]["extra_pids"] == [101, 202]
     assert "memory_efficiency_override_updated" in payload["actions"]
     assert "paper_execution_lane_deduped" in payload["actions"]
     assert override_path.exists() is True
+
+
+def test_paper_lane_singleton_prefers_current_launcher_child(tmp_path: Path, monkeypatch) -> None:
+    pid_snapshots = iter([[101, 202, 303], [202]])
+    monkeypatch.setattr(src, "_pgrep_matching_pids", lambda _pattern: next(pid_snapshots))
+    monkeypatch.setattr(src, "_parent_pid_for_pid", lambda pid: {101: 11, 202: 22, 303: 33}.get(pid, 0))
+    monkeypatch.setattr(
+        src,
+        "_command_for_pid",
+        lambda pid: f"python {tmp_path}/scripts/run_all_sleeves.py" if pid == 22 else "python stale_parent.py",
+    )
+    monkeypatch.setattr(src, "_terminate_pids", lambda pids: [{"pid": pid, "ok": True} for pid in pids])
+
+    payload = src.build_paper_lane_singleton(tmp_path, apply=True)
+
+    assert payload["ok"] is True
+    assert payload["paper_execution_lane"]["keep_pid"] == 202
+    assert payload["paper_execution_lane"]["extra_pids"] == [101, 303]
+    assert payload["paper_execution_lane"]["parent_owned_pids"] == [202]
+    assert payload["live_execution_allowed"] is False
 
 
 def test_creative_cotenant_guard_protects_music_playback(tmp_path: Path, monkeypatch) -> None:

@@ -8,7 +8,8 @@ PLIST_PATH="$HOME/Library/LaunchAgents/com.dankingsley.ops.soak_reliability_sent
 LABEL="com.dankingsley.ops.soak_reliability_sentinel"
 UID_NUM="$(id -u)"
 LOG_DIR="${BOT_OPS_LAUNCHD_LOG_DIR:-/tmp/schwab_trading_bot/launchd_ops}"
-INTERVAL_SECONDS="${SOAK_RELIABILITY_SENTINEL_INTERVAL_SECONDS:-300}"
+INTERVAL_SECONDS="${SOAK_RELIABILITY_SENTINEL_INTERVAL_SECONDS:-180}"
+MAX_ACTIONS="${SOAK_RELIABILITY_SENTINEL_MAX_ACTIONS:-6}"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
 
@@ -21,6 +22,8 @@ cat > "$PLIST_PATH" <<PLIST
     <string>$PYTHON_BIN</string>
     <string>$PROJECT_ROOT/scripts/ops/soak_reliability_sentinel.py</string>
     <string>--apply</string>
+    <string>--max-actions</string>
+    <string>$MAX_ACTIONS</string>
     <string>--json</string>
   </array>
   <key>EnvironmentVariables</key><dict>

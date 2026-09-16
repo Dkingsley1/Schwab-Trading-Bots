@@ -14,14 +14,23 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, write_payload
+    from scripts.ops.long_runtime_common import (
+        iso_now,
+        load_json,
+        ordered_unique,
+        write_payload,
+    )
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     from .long_runtime_common import iso_now, load_json, ordered_unique, write_payload
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_pressure_clearance_latest.json"
-DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "storage_pressure_clearance.lock"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "storage_pressure_clearance_latest.json"
+)
+DEFAULT_LOCK_PATH = (
+    PROJECT_ROOT / "governance" / "locks" / "storage_pressure_clearance.lock"
+)
 PYTHON_BIN = Path(sys.executable)
 RECOVERABLE_STORAGE_GATES = {
     "ingestion_backpressure_overload",
@@ -78,8 +87,16 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
         rc = int(proc.returncode)
         timed_out = False
     except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        stdout = (
+            exc.stdout.decode("utf-8", errors="ignore")
+            if isinstance(exc.stdout, bytes)
+            else str(exc.stdout or "")
+        )
+        stderr = (
+            exc.stderr.decode("utf-8", errors="ignore")
+            if isinstance(exc.stderr, bytes)
+            else str(exc.stderr or "")
+        )
         rc = 124
         timed_out = True
     payload: dict[str, Any] = {}
@@ -101,7 +118,9 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
     }
 
 
-def _attempt_record(name: str, result: dict[str, Any], *, accepted_rcs: set[int] | None = None) -> dict[str, Any]:
+def _attempt_record(
+    name: str, result: dict[str, Any], *, accepted_rcs: set[int] | None = None
+) -> dict[str, Any]:
     accepted = accepted_rcs or {0}
     rc = _safe_int(result.get("rc"), 1)
     status = "ok"
@@ -117,15 +136,39 @@ def _attempt_record(name: str, result: dict[str, Any], *, accepted_rcs: set[int]
         "cmd": list(result.get("cmd") or []),
         "stdout_tail": str(result.get("stdout_tail") or ""),
         "stderr_tail": str(result.get("stderr_tail") or ""),
-        "payload": result.get("payload") if isinstance(result.get("payload"), dict) else {},
+        "payload": (
+            result.get("payload") if isinstance(result.get("payload"), dict) else {}
+        ),
     }
+
+
+def _preflight_refresh_accepted_rcs(result: dict[str, Any]) -> set[int]:
+    """Accept a health-script rc=2 only when it carries a parsed non-ready snapshot."""
+    accepted = {0}
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    status = (
+        str(payload.get("overall_status") or payload.get("status") or "")
+        .strip()
+        .lower()
+    )
+    if (
+        _safe_int(result.get("rc"), 1) == 2
+        and not bool(result.get("timed_out", False))
+        and status in {"blocked", "critical", "degraded", "needs_work"}
+    ):
+        accepted.add(2)
+    return accepted
 
 
 def _load_artifacts(project_root: Path) -> dict[str, dict[str, Any]]:
     health_root = project_root / "governance" / "health"
     candidate_roots: list[Path] = [health_root]
     external_env = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT")
-    external_root = Path(external_env or "/Volumes/BOT_LOGS/schwab_trading_bot") / "governance" / "health"
+    external_root = (
+        Path(external_env or "/Volumes/BOT_LOGS/schwab_trading_bot")
+        / "governance"
+        / "health"
+    )
     fallback_root = project_root / "local_fallback_storage" / "governance" / "health"
     optional_roots: list[Path] = []
     if external_env or project_root == PROJECT_ROOT:
@@ -157,25 +200,50 @@ def _load_artifacts(project_root: Path) -> dict[str, dict[str, Any]]:
 
 
 def _active_hard_gate_names(health_gates: dict[str, Any]) -> list[str]:
-    hard_gates = health_gates.get("hard_gates") if isinstance(health_gates.get("hard_gates"), dict) else {}
+    hard_gates = (
+        health_gates.get("hard_gates")
+        if isinstance(health_gates.get("hard_gates"), dict)
+        else {}
+    )
     return sorted(str(name) for name, active in hard_gates.items() if bool(active))
 
 
 def _autopilot_active(autopilot: dict[str, Any]) -> bool:
-    status = str(autopilot.get("overall_status") or autopilot.get("status") or "").strip().lower()
+    status = (
+        str(autopilot.get("overall_status") or autopilot.get("status") or "")
+        .strip()
+        .lower()
+    )
     return bool(autopilot.get("busy", False)) or status in ACTIVE_AUTOPILOT_STATUSES
 
 
 def _effective_storage_backpressure(storage_control: dict[str, Any]) -> dict[str, Any]:
-    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
-    effective = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
-    data_integrity = storage_control.get("data_integrity") if isinstance(storage_control.get("data_integrity"), dict) else {}
-    source = str(backpressure.get("effective_raw_live_source") or effective.get("source") or "").strip()
+    backpressure = (
+        storage_control.get("backpressure")
+        if isinstance(storage_control.get("backpressure"), dict)
+        else {}
+    )
+    effective = (
+        backpressure.get("effective_raw_live")
+        if isinstance(backpressure.get("effective_raw_live"), dict)
+        else {}
+    )
+    data_integrity = (
+        storage_control.get("data_integrity")
+        if isinstance(storage_control.get("data_integrity"), dict)
+        else {}
+    )
+    source = str(
+        backpressure.get("effective_raw_live_source") or effective.get("source") or ""
+    ).strip()
     storage_ready = bool(
         str(storage_control.get("overall_status") or "").strip().lower() == "ready"
         and str(storage_control.get("severity") or "").strip().lower() == "stable"
     )
-    overlay_clear = bool(backpressure.get("overlay_pressure_clear", False) or source == "fresh_empty_sql_ingestion_overlay")
+    overlay_clear = bool(
+        backpressure.get("overlay_pressure_clear", False)
+        or source == "fresh_empty_sql_ingestion_overlay"
+    )
     data_clean = bool(
         _safe_int(data_integrity.get("sql_overlay_invalid_lines"), 0) <= 0
         and _safe_int(data_integrity.get("sql_overlay_oversize_payloads"), 0) <= 0
@@ -187,9 +255,18 @@ def _effective_storage_backpressure(storage_control: dict[str, Any]) -> dict[str
         and overlay_clear
         and data_clean
     )
-    total = _safe_int(effective.get("total_pending_lines"), _safe_int(backpressure.get("total_pending_lines"), 0))
-    core = _safe_int(effective.get("core_pending_lines"), _safe_int(backpressure.get("core_pending_lines"), total))
-    oldest = _safe_float(effective.get("oldest_pending_age_seconds"), _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0))
+    total = _safe_int(
+        effective.get("total_pending_lines"),
+        _safe_int(backpressure.get("total_pending_lines"), 0),
+    )
+    core = _safe_int(
+        effective.get("core_pending_lines"),
+        _safe_int(backpressure.get("core_pending_lines"), total),
+    )
+    oldest = _safe_float(
+        effective.get("oldest_pending_age_seconds"),
+        _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0),
+    )
     return {
         "authoritative": authoritative,
         "source": source or "ingestion_storage_control_effective_raw_live",
@@ -211,33 +288,76 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
     storage_failback_sync = artifacts.get("storage_failback_sync") or {}
     storage_route_status = artifacts.get("storage_route_status") or {}
 
-    backpressure = storage_control.get("backpressure") if isinstance(storage_control.get("backpressure"), dict) else {}
-    storage = storage_control.get("storage") if isinstance(storage_control.get("storage"), dict) else {}
-    bounded = storage_control.get("bounded_recovery_contract") if isinstance(storage_control.get("bounded_recovery_contract"), dict) else {}
-    steady_state = storage_control.get("steady_state") if isinstance(storage_control.get("steady_state"), dict) else {}
-    steady_targets = steady_state.get("targets") if isinstance(steady_state.get("targets"), dict) else {}
-    steady_status = steady_state.get("target_status") if isinstance(steady_state.get("target_status"), dict) else {}
-    thresholds = health_gates.get("thresholds") if isinstance(health_gates.get("thresholds"), dict) else {}
-    inputs = health_gates.get("inputs") if isinstance(health_gates.get("inputs"), dict) else {}
+    backpressure = (
+        storage_control.get("backpressure")
+        if isinstance(storage_control.get("backpressure"), dict)
+        else {}
+    )
+    storage = (
+        storage_control.get("storage")
+        if isinstance(storage_control.get("storage"), dict)
+        else {}
+    )
+    bounded = (
+        storage_control.get("bounded_recovery_contract")
+        if isinstance(storage_control.get("bounded_recovery_contract"), dict)
+        else {}
+    )
+    steady_state = (
+        storage_control.get("steady_state")
+        if isinstance(storage_control.get("steady_state"), dict)
+        else {}
+    )
+    steady_targets = (
+        steady_state.get("targets")
+        if isinstance(steady_state.get("targets"), dict)
+        else {}
+    )
+    steady_status = (
+        steady_state.get("target_status")
+        if isinstance(steady_state.get("target_status"), dict)
+        else {}
+    )
+    thresholds = (
+        health_gates.get("thresholds")
+        if isinstance(health_gates.get("thresholds"), dict)
+        else {}
+    )
+    inputs = (
+        health_gates.get("inputs")
+        if isinstance(health_gates.get("inputs"), dict)
+        else {}
+    )
 
     effective_backpressure = _effective_storage_backpressure(storage_control)
-    authoritative_backpressure = bool(effective_backpressure.get("authoritative", False))
+    authoritative_backpressure = bool(
+        effective_backpressure.get("authoritative", False)
+    )
     core_pending_lines = max(
-        _safe_int(effective_backpressure.get("core_pending_lines"), 0)
-        if authoritative_backpressure
-        else _safe_int(backpressure.get("core_pending_lines"), 0),
+        (
+            _safe_int(effective_backpressure.get("core_pending_lines"), 0)
+            if authoritative_backpressure
+            else _safe_int(backpressure.get("core_pending_lines"), 0)
+        ),
         0,
     )
     total_pending_lines = max(
-        _safe_int(effective_backpressure.get("total_pending_lines"), 0)
-        if authoritative_backpressure
-        else max(_safe_int(backpressure.get("total_pending_lines"), 0), _safe_int(inputs.get("backpressure_pending_lines"), 0)),
+        (
+            _safe_int(effective_backpressure.get("total_pending_lines"), 0)
+            if authoritative_backpressure
+            else max(
+                _safe_int(backpressure.get("total_pending_lines"), 0),
+                _safe_int(inputs.get("backpressure_pending_lines"), 0),
+            )
+        ),
         0,
     )
     pressure_index = max(_safe_float(storage_control.get("pressure_index"), 0.0), 0.0)
     pressure_target = max(_safe_float(steady_targets.get("pressure_index"), 0.25), 0.01)
     core_target = max(_safe_int(steady_targets.get("core_pending_lines"), 5000), 0)
-    pending_limit = max(_safe_int(thresholds.get("ingestion_pending_lines_limit"), 20000), 1)
+    pending_limit = max(
+        _safe_int(thresholds.get("ingestion_pending_lines_limit"), 20000), 1
+    )
     wal_limit_gb = max(
         _safe_float(
             thresholds.get("sql_wal_size_gb_limit"),
@@ -255,7 +375,9 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
             _safe_float(sqlite_maintenance.get("wal_size_gb_after"), 0.0),
             _safe_float(sqlite_maintenance.get("wal_size_gb_before"), 0.0),
         )
-    estimated_total_drain_minutes_raw = backpressure.get("estimated_total_drain_minutes")
+    estimated_total_drain_minutes_raw = backpressure.get(
+        "estimated_total_drain_minutes"
+    )
     estimated_total_drain_minutes = (
         None
         if estimated_total_drain_minutes_raw in {None, "", "n/a"}
@@ -264,24 +386,51 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
 
     hard_gate_names = _active_hard_gate_names(health_gates)
     stale_hard_gate_suppressed: list[str] = []
-    if authoritative_backpressure and "ingestion_backpressure_overload" in hard_gate_names:
-        hard_gate_names = [name for name in hard_gate_names if name != "ingestion_backpressure_overload"]
+    if (
+        authoritative_backpressure
+        and "ingestion_backpressure_overload" in hard_gate_names
+    ):
+        hard_gate_names = [
+            name
+            for name in hard_gate_names
+            if name != "ingestion_backpressure_overload"
+        ]
         stale_hard_gate_suppressed.append("ingestion_backpressure_overload")
     active_reasons = ordered_unique(
         [
             "sql_wal_pressure" if sqlite_wal_size_gb > wal_limit_gb else "",
             "core_pending_above_target" if core_pending_lines > core_target else "",
-            "total_pending_above_gate_limit" if total_pending_lines > pending_limit else "",
+            (
+                "total_pending_above_gate_limit"
+                if total_pending_lines > pending_limit
+                else ""
+            ),
             "pressure_index_above_target" if pressure_index > pressure_target else "",
-            "backpressure_overload_severe"
-            if _safe_bool(inputs.get("backpressure_overload_severe"), False) and not authoritative_backpressure
-            else "",
-            "storage_control_blocked" if str(storage_control.get("overall_status") or "").strip().lower() == "blocked" else "",
+            (
+                "backpressure_overload_severe"
+                if _safe_bool(inputs.get("backpressure_overload_severe"), False)
+                and not authoritative_backpressure
+                else ""
+            ),
+            (
+                "storage_control_blocked"
+                if str(storage_control.get("overall_status") or "").strip().lower()
+                == "blocked"
+                else ""
+            ),
         ]
     )
     route_verified = _safe_bool(bounded.get("route_verified"), False)
-    route_verification = storage.get("route_verification") if isinstance(storage.get("route_verification"), dict) else {}
-    if str(route_verification.get("verification_state") or "").strip().lower() in {"ready", "verified", "curated_ready"}:
+    route_verification = (
+        storage.get("route_verification")
+        if isinstance(storage.get("route_verification"), dict)
+        else {}
+    )
+    if str(route_verification.get("verification_state") or "").strip().lower() in {
+        "ready",
+        "verified",
+        "curated_ready",
+    }:
         route_verified = True
     storage_mode_values = {
         str(storage_mount_guard.get("storage_mode") or "").strip().lower(),
@@ -293,11 +442,21 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
         _safe_int(storage_failback_sync.get("split_brain_conflicts"), 0),
         _safe_int(storage_route_status.get("split_brain_conflicts"), 0),
     )
-    external_unavailable_reason = str(storage_mount_guard.get("external_unavailable_reason") or "").strip().lower()
-    external_required_for_hot_path = _safe_bool(storage_mount_guard.get("external_required_for_hot_path"), True)
-    hot_storage_available = _safe_bool(storage_mount_guard.get("hot_storage_available"), False)
+    external_unavailable_reason = (
+        str(storage_mount_guard.get("external_unavailable_reason") or "")
+        .strip()
+        .lower()
+    )
+    external_required_for_hot_path = _safe_bool(
+        storage_mount_guard.get("external_required_for_hot_path"), True
+    )
+    hot_storage_available = _safe_bool(
+        storage_mount_guard.get("hot_storage_available"), False
+    )
     intentional_local_hot_route = bool(
-        any(value.startswith("local_fallback") for value in storage_mode_values if value)
+        any(
+            value.startswith("local_fallback") for value in storage_mode_values if value
+        )
         and route_verified
         and hot_storage_available
         and not external_required_for_hot_path
@@ -305,10 +464,15 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
     route_blocked = bool(
         split_brain_conflicts > 0
         or any("split_brain" in value for value in storage_mode_values if value)
-        or (external_unavailable_reason not in {"", "ok"} and not intentional_local_hot_route)
+        or (
+            external_unavailable_reason not in {"", "ok"}
+            and not intentional_local_hot_route
+        )
     )
     hard_gate_set = set(hard_gate_names)
-    recoverable_hard_gate_only = bool(hard_gate_set and hard_gate_set.issubset(RECOVERABLE_STORAGE_GATES))
+    recoverable_hard_gate_only = bool(
+        hard_gate_set and hard_gate_set.issubset(RECOVERABLE_STORAGE_GATES)
+    )
     bounded_soft_target_pressure = bool(
         active_reasons == ["pressure_index_above_target"]
         and str(storage_control.get("overall_status") or "").strip().lower() == "ready"
@@ -333,16 +497,30 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
             }
         )
     )
-    soft_pressure_advisory_reasons = ["pressure_index_above_target"] if bounded_soft_target_pressure else []
+    soft_pressure_advisory_reasons = (
+        ["pressure_index_above_target"] if bounded_soft_target_pressure else []
+    )
     if bounded_soft_target_pressure:
-        active_reasons = [reason for reason in active_reasons if reason != "pressure_index_above_target"]
+        active_reasons = [
+            reason
+            for reason in active_reasons
+            if reason != "pressure_index_above_target"
+        ]
     active_storage_pressure = bool(active_reasons)
-    stale_gate_candidate = bool(recoverable_hard_gate_only and not active_storage_pressure and route_verified and not route_blocked)
+    stale_gate_candidate = bool(
+        recoverable_hard_gate_only
+        and not active_storage_pressure
+        and route_verified
+        and not route_blocked
+    )
     clearance_ready = bool(
         not hard_gate_names
         and not active_storage_pressure
         and not route_blocked
-        and (bool(steady_status.get("steady_state_ready", False)) or bounded_soft_target_pressure)
+        and (
+            bool(steady_status.get("steady_state_ready", False))
+            or bounded_soft_target_pressure
+        )
     )
     if not hard_gate_names and not active_storage_pressure and not storage_control:
         clearance_ready = False
@@ -371,7 +549,9 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "storage_modes": sorted(value for value in storage_mode_values if value),
         "split_brain_conflicts": split_brain_conflicts,
         "autopilot_active": _autopilot_active(autopilot),
-        "autopilot_status": str(autopilot.get("overall_status") or autopilot.get("status") or ""),
+        "autopilot_status": str(
+            autopilot.get("overall_status") or autopilot.get("status") or ""
+        ),
         "sqlite_wal_size_gb": round(sqlite_wal_size_gb, 3),
         "sqlite_wal_limit_gb": round(wal_limit_gb, 3),
         "core_pending_lines": core_pending_lines,
@@ -383,7 +563,9 @@ def _storage_metrics(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "estimated_total_drain_minutes": estimated_total_drain_minutes,
         "steady_state_ready": bool(steady_status.get("steady_state_ready", False)),
         "backlog_drain_status": str(storage.get("backlog_drain_status") or ""),
-        "backlog_drain_recommended_now": bool(storage.get("backlog_drain_recommended_now", False)),
+        "backlog_drain_recommended_now": bool(
+            storage.get("backlog_drain_recommended_now", False)
+        ),
         "bounded_recovery_active": bool(bounded.get("active", False)),
         "bounded_recovery_quality_ready": bool(bounded.get("quality_ready", False)),
         "active_drain_progress": bool(bounded.get("active_drain_progress", False)),
@@ -401,7 +583,11 @@ def _cmds(
 ) -> dict[str, list[str]]:
     ops_root = project_root / "scripts" / "ops"
     return {
-        "refresh_storage_control": [str(PYTHON_BIN), str(ops_root / "ingestion_storage_control.py"), "--json"],
+        "refresh_storage_control": [
+            str(PYTHON_BIN),
+            str(ops_root / "ingestion_storage_control.py"),
+            "--json",
+        ],
         "sqlite_passive_checkpoint": [
             str(PYTHON_BIN),
             str(project_root / "scripts" / "sqlite_performance_maintenance.py"),
@@ -424,7 +610,10 @@ def _cmds(
             str(max(int(command_timeout_seconds), 1)),
             "--json",
         ],
-        "refresh_health_gates": [str(PYTHON_BIN), str(project_root / "scripts" / "health_gates.py")],
+        "refresh_health_gates": [
+            str(PYTHON_BIN),
+            str(project_root / "scripts" / "health_gates.py"),
+        ],
         "global_halt_auto_clear": [
             str(PYTHON_BIN),
             str(project_root / "scripts" / "global_risk_killswitch.py"),
@@ -451,7 +640,10 @@ def _planned_steps(
         }
     ]
     if bool(metrics.get("active_storage_pressure", False)):
-        if "sql_wal_pressure" in list(metrics.get("active_pressure_reasons") or []) and not skip_checkpoint:
+        if (
+            "sql_wal_pressure" in list(metrics.get("active_pressure_reasons") or [])
+            and not skip_checkpoint
+        ):
             plan.append(
                 {
                     "name": "sqlite_passive_checkpoint",
@@ -473,7 +665,10 @@ def _planned_steps(
             plan.append(
                 {
                     "name": "storage_backpressure_autopilot",
-                    "reason": ",".join(list(metrics.get("active_pressure_reasons") or [])) or "active_storage_pressure",
+                    "reason": ",".join(
+                        list(metrics.get("active_pressure_reasons") or [])
+                    )
+                    or "active_storage_pressure",
                     "cmd": commands["storage_backpressure_autopilot"],
                     "accepted_rcs": [0],
                 }
@@ -533,8 +728,16 @@ def build_payload(
 
     metrics_for_plan = metrics_before
     if apply:
-        refresh_result = _run_json(command_map["refresh_storage_control"], cwd=project_root, timeout_sec=180)
-        attempts.append(_attempt_record("refresh_storage_control", refresh_result, accepted_rcs={0}))
+        refresh_result = _run_json(
+            command_map["refresh_storage_control"], cwd=project_root, timeout_sec=180
+        )
+        attempts.append(
+            _attempt_record(
+                "refresh_storage_control",
+                refresh_result,
+                accepted_rcs=_preflight_refresh_accepted_rcs(refresh_result),
+            )
+        )
         metrics_for_plan = _storage_metrics(_load_artifacts(project_root))
 
     plan = _planned_steps(
@@ -547,7 +750,9 @@ def build_payload(
         plan = [row for row in plan if row.get("name") != "refresh_storage_control"]
         for row in plan:
             name = str(row.get("name") or "")
-            cmd = [str(part) for part in list(row.get("cmd") or []) if str(part).strip()]
+            cmd = [
+                str(part) for part in list(row.get("cmd") or []) if str(part).strip()
+            ]
             if not cmd:
                 attempts.append(
                     {
@@ -564,7 +769,9 @@ def build_payload(
                 continue
             timeout_sec = int(command_timeout_seconds)
             if name == "storage_backpressure_autopilot":
-                timeout_sec = max(int(command_timeout_seconds), int(wait_timeout_seconds) + 120)
+                timeout_sec = max(
+                    int(command_timeout_seconds), int(wait_timeout_seconds) + 120
+                )
             elif name in {"refresh_storage_control", "refresh_health_gates"}:
                 timeout_sec = 180
             elif name == "global_halt_auto_clear":
@@ -574,12 +781,20 @@ def build_payload(
                 _attempt_record(
                     name,
                     result,
-                    accepted_rcs={_safe_int(raw) for raw in list(row.get("accepted_rcs") or [0])},
+                    accepted_rcs={
+                        _safe_int(raw) for raw in list(row.get("accepted_rcs") or [0])
+                    },
                 )
             )
 
-        post_refresh = _run_json(command_map["refresh_storage_control"], cwd=project_root, timeout_sec=180)
-        attempts.append(_attempt_record("post_refresh_storage_control", post_refresh, accepted_rcs={0}))
+        post_refresh = _run_json(
+            command_map["refresh_storage_control"], cwd=project_root, timeout_sec=180
+        )
+        attempts.append(
+            _attempt_record(
+                "post_refresh_storage_control", post_refresh, accepted_rcs={0}
+            )
+        )
 
         metrics_after_actions = _storage_metrics(_load_artifacts(project_root))
         if (
@@ -587,28 +802,53 @@ def build_payload(
             and not bool(metrics_after_actions.get("active_storage_pressure", False))
             and not bool(metrics_after_actions.get("route_blocked", False))
         ):
-            health_result = _run_json(command_map["refresh_health_gates"], cwd=project_root, timeout_sec=180)
-            attempts.append(_attempt_record("post_refresh_health_gates", health_result, accepted_rcs={0, 2}))
+            health_result = _run_json(
+                command_map["refresh_health_gates"], cwd=project_root, timeout_sec=180
+            )
+            attempts.append(
+                _attempt_record(
+                    "post_refresh_health_gates", health_result, accepted_rcs={0, 2}
+                )
+            )
             metrics_after_actions = _storage_metrics(_load_artifacts(project_root))
-            if (
-                not bool(metrics_after_actions.get("active_storage_pressure", False))
-                and not bool(metrics_after_actions.get("route_blocked", False))
-            ):
-                halt_result = _run_json(command_map["global_halt_auto_clear"], cwd=project_root, timeout_sec=120)
-                attempts.append(_attempt_record("global_halt_auto_clear", halt_result, accepted_rcs={0}))
+            if not bool(
+                metrics_after_actions.get("active_storage_pressure", False)
+            ) and not bool(metrics_after_actions.get("route_blocked", False)):
+                halt_result = _run_json(
+                    command_map["global_halt_auto_clear"],
+                    cwd=project_root,
+                    timeout_sec=120,
+                )
+                attempts.append(
+                    _attempt_record(
+                        "global_halt_auto_clear", halt_result, accepted_rcs={0}
+                    )
+                )
 
     artifacts_after = _load_artifacts(project_root)
     metrics_after = _storage_metrics(artifacts_after)
-    attempted_errors = [row for row in attempts if str(row.get("status") or "") in {"error", "timed_out"}]
+    attempted_errors = [
+        row
+        for row in attempts
+        if str(row.get("status") or "") in {"error", "timed_out"}
+    ]
 
     if bool(metrics_after.get("clearance_ready", False)):
         overall_status = "ready"
-    elif bool(metrics_after.get("active_storage_pressure", False)) or bool(metrics_after.get("route_blocked", False)):
-        overall_status = "degraded" if bool(metrics_after.get("autopilot_active", False)) or apply else "blocked"
+    elif bool(metrics_after.get("active_storage_pressure", False)) or bool(
+        metrics_after.get("route_blocked", False)
+    ):
+        overall_status = (
+            "degraded"
+            if bool(metrics_after.get("autopilot_active", False)) or apply
+            else "blocked"
+        )
     elif bool(metrics_after.get("stale_gate_candidate", False)):
         overall_status = "degraded"
     else:
-        overall_status = "degraded" if metrics_after.get("storage_control_present") else "blocked"
+        overall_status = (
+            "degraded" if metrics_after.get("storage_control_present") else "blocked"
+        )
     if attempted_errors:
         overall_status = "blocked"
 
@@ -618,28 +858,42 @@ def build_payload(
         and not metrics_after.get("route_blocked", False)
     )
     force_clear_refused_reason = ""
-    if force_clear_stale_gate and bool(metrics_after.get("active_storage_pressure", False)):
+    if force_clear_stale_gate and bool(
+        metrics_after.get("active_storage_pressure", False)
+    ):
         force_clear_refused_reason = "active_storage_pressure"
     elif force_clear_stale_gate and bool(metrics_after.get("route_blocked", False)):
         force_clear_refused_reason = "storage_route_blocked"
 
     operator_followups = ordered_unique(
         [
-            "storage pressure is still active, so this bot refused to fake-clear the storage gate"
-            if force_clear_refused_reason
-            else "",
-            "storage route is blocked or split-brain; resolve failback/split-brain before clearing storage pressure"
-            if bool(metrics_after.get("route_blocked", False))
-            else "",
-            "storage backpressure autopilot is already active; do not launch duplicate drain jobs"
-            if bool(metrics_after.get("autopilot_active", False))
-            else "",
-            "WAL pressure remains above the hard-gate limit; keep passive checkpoints and writer drain running"
-            if _safe_float(metrics_after.get("sqlite_wal_size_gb"), 0.0) > _safe_float(metrics_after.get("sqlite_wal_limit_gb"), 24.0)
-            else "",
-            "pending backlog remains above target; keep collection protected while the storage lane drains"
-            if _safe_int(metrics_after.get("core_pending_lines"), 0) > _safe_int(metrics_after.get("core_pending_target"), 5000)
-            else "",
+            (
+                "storage pressure is still active, so this bot refused to fake-clear the storage gate"
+                if force_clear_refused_reason
+                else ""
+            ),
+            (
+                "storage route is blocked or split-brain; resolve failback/split-brain before clearing storage pressure"
+                if bool(metrics_after.get("route_blocked", False))
+                else ""
+            ),
+            (
+                "storage backpressure autopilot is already active; do not launch duplicate drain jobs"
+                if bool(metrics_after.get("autopilot_active", False))
+                else ""
+            ),
+            (
+                "WAL pressure remains above the hard-gate limit; keep passive checkpoints and writer drain running"
+                if _safe_float(metrics_after.get("sqlite_wal_size_gb"), 0.0)
+                > _safe_float(metrics_after.get("sqlite_wal_limit_gb"), 24.0)
+                else ""
+            ),
+            (
+                "pending backlog remains above target; keep collection protected while the storage lane drains"
+                if _safe_int(metrics_after.get("core_pending_lines"), 0)
+                > _safe_int(metrics_after.get("core_pending_target"), 5000)
+                else ""
+            ),
         ]
     )
 
@@ -652,16 +906,36 @@ def build_payload(
         "force_clear_stale_gate_requested": bool(force_clear_stale_gate),
         "force_clear_allowed": force_clear_allowed,
         "force_clear_refused_reason": force_clear_refused_reason,
-        "repair_plan": plan if not apply else _planned_steps(metrics_after, commands=command_map, skip_checkpoint=skip_checkpoint, force_clear_stale_gate=force_clear_stale_gate),
+        "repair_plan": (
+            plan
+            if not apply
+            else _planned_steps(
+                metrics_after,
+                commands=command_map,
+                skip_checkpoint=skip_checkpoint,
+                force_clear_stale_gate=force_clear_stale_gate,
+            )
+        ),
         "attempts": attempts,
         "storage_pressure": {
             "before": metrics_before,
             "after": metrics_after,
         },
         "recommended_commands": [
-            ["./scripts/ops/opsctl.sh", "storage-pressure-clearance", "--apply", "--force-clear-stale-gate", "--json"],
+            [
+                "./scripts/ops/opsctl.sh",
+                "storage-pressure-clearance",
+                "--apply",
+                "--force-clear-stale-gate",
+                "--json",
+            ],
             ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"],
-            ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--json"],
+            [
+                "./scripts/ops/opsctl.sh",
+                "storage-backpressure-autopilot",
+                "--apply",
+                "--json",
+            ],
             ["./scripts/ops/opsctl.sh", "global-halt-auto-clear", "--json"],
         ],
         "operator_followups": operator_followups,
@@ -674,17 +948,27 @@ def build_payload(
             + operator_followups
         )[:8],
         "metrics": {
-            "active_storage_pressure": bool(metrics_after.get("active_storage_pressure", False)),
-            "stale_gate_candidate": bool(metrics_after.get("stale_gate_candidate", False)),
+            "active_storage_pressure": bool(
+                metrics_after.get("active_storage_pressure", False)
+            ),
+            "stale_gate_candidate": bool(
+                metrics_after.get("stale_gate_candidate", False)
+            ),
             "clearance_ready": bool(metrics_after.get("clearance_ready", False)),
             "autopilot_active": bool(metrics_after.get("autopilot_active", False)),
             "route_blocked": bool(metrics_after.get("route_blocked", False)),
             "attempt_count": len(attempts),
             "attempt_error_count": len(attempted_errors),
-            "sqlite_wal_size_gb": _safe_float(metrics_after.get("sqlite_wal_size_gb"), 0.0),
-            "sqlite_wal_limit_gb": _safe_float(metrics_after.get("sqlite_wal_limit_gb"), 24.0),
+            "sqlite_wal_size_gb": _safe_float(
+                metrics_after.get("sqlite_wal_size_gb"), 0.0
+            ),
+            "sqlite_wal_limit_gb": _safe_float(
+                metrics_after.get("sqlite_wal_limit_gb"), 24.0
+            ),
             "core_pending_lines": _safe_int(metrics_after.get("core_pending_lines"), 0),
-            "total_pending_lines": _safe_int(metrics_after.get("total_pending_lines"), 0),
+            "total_pending_lines": _safe_int(
+                metrics_after.get("total_pending_lines"), 0
+            ),
         },
     }
 
@@ -703,11 +987,33 @@ def main() -> int:
         help="Refresh gates and attempt global auto-clear only when live storage metrics prove the gate is stale.",
     )
     parser.add_argument("--skip-checkpoint", action="store_true")
-    parser.add_argument("--checkpoint-mode", choices=("passive", "restart", "truncate"), default=os.getenv("STORAGE_PRESSURE_CLEARANCE_CHECKPOINT_MODE", "passive"))
-    parser.add_argument("--max-cycles", type=int, default=int(os.getenv("STORAGE_PRESSURE_CLEARANCE_MAX_CYCLES", "1")))
-    parser.add_argument("--poll-seconds", type=float, default=float(os.getenv("STORAGE_PRESSURE_CLEARANCE_POLL_SECONDS", "10")))
-    parser.add_argument("--wait-timeout-seconds", type=float, default=float(os.getenv("STORAGE_PRESSURE_CLEARANCE_WAIT_TIMEOUT_SECONDS", "180")))
-    parser.add_argument("--command-timeout-seconds", type=int, default=int(os.getenv("STORAGE_PRESSURE_CLEARANCE_TIMEOUT_SECONDS", "900")))
+    parser.add_argument(
+        "--checkpoint-mode",
+        choices=("passive", "restart", "truncate"),
+        default=os.getenv("STORAGE_PRESSURE_CLEARANCE_CHECKPOINT_MODE", "passive"),
+    )
+    parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=int(os.getenv("STORAGE_PRESSURE_CLEARANCE_MAX_CYCLES", "1")),
+    )
+    parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=float(os.getenv("STORAGE_PRESSURE_CLEARANCE_POLL_SECONDS", "10")),
+    )
+    parser.add_argument(
+        "--wait-timeout-seconds",
+        type=float,
+        default=float(
+            os.getenv("STORAGE_PRESSURE_CLEARANCE_WAIT_TIMEOUT_SECONDS", "180")
+        ),
+    )
+    parser.add_argument(
+        "--command-timeout-seconds",
+        type=int,
+        default=int(os.getenv("STORAGE_PRESSURE_CLEARANCE_TIMEOUT_SECONDS", "900")),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -756,7 +1062,12 @@ def main() -> int:
             f"active_pressure={int(bool((payload.get('metrics') or {}).get('active_storage_pressure', False)))} "
             f"force_refused={payload.get('force_clear_refused_reason', '') or 'none'}"
         )
-    return 0 if str(payload.get("overall_status") or "") in {"ready", "degraded", "already_running"} else 2
+    return (
+        0
+        if str(payload.get("overall_status") or "")
+        in {"ready", "degraded", "already_running"}
+        else 2
+    )
 
 
 if __name__ == "__main__":

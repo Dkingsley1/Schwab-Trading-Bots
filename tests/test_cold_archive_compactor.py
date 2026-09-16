@@ -4,10 +4,72 @@ import gzip
 import json
 import shutil
 import sqlite3
+import sys
 from pathlib import Path
+
+import pytest
 
 import scripts.ops.cold_archive_compactor as compactor
 from scripts.ops.cold_archive_compactor import archive_root_available, build_payload, writer_blocks_compaction
+
+
+@pytest.mark.parametrize("requested", ["auto", "afsctool"])
+def test_missing_filesystem_backend_is_reported_before_writer_hold(
+    tmp_path, monkeypatch, requested
+):
+    archive = tmp_path / "cold"
+    archive.mkdir()
+    monkeypatch.setattr(compactor.cold_sqlite_filesystem_compaction.streaming,
+                        "installed", lambda: False)
+    out = tmp_path / "health.json"
+    monkeypatch.setattr(
+        compactor.cold_sqlite_filesystem_compaction,
+        "select_inactive_archives",
+        lambda *a, **kw: [],
+    )
+
+    monkeypatch.setattr(
+        compactor.cold_sqlite_filesystem_compaction.shutil,
+        "which",
+        lambda _: "/tool/afsctool",
+    )
+
+    def missing(_compressor):
+        assert _compressor == "afsctool"
+        raise RuntimeError("afsctool_not_installed")
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("writer must not be disturbed after failed preflight")
+
+    monkeypatch.setattr(
+        compactor.cold_sqlite_filesystem_compaction, "require_compressor", missing
+    )
+    monkeypatch.setattr(compactor, "engage_maintenance_hold", unexpected)
+    monkeypatch.setattr(compactor, "writer_state_snapshot", unexpected)
+    monkeypatch.setattr(compactor, "_acquire_lock", unexpected)
+    monkeypatch.setattr(compactor.os, "nice", lambda value: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cold_archive_compactor.py",
+            "--apply",
+            "--archive-root",
+            str(archive),
+            "--filesystem-select-inactive",
+            "--filesystem-compressor",
+            requested,
+            "--coordinate-writer-handoff",
+            "--out-file",
+            str(out),
+            "--json",
+        ],
+    )
+    assert compactor.main() == 2
+    payload = json.loads(out.read_text())
+    assert payload["overall_status"] == "blocked_compressor_unavailable"
+    assert payload["blockers"] == ["afsctool_not_installed"]
+    assert not payload["source_records_deleted"]
 
 
 def test_compactor_defers_heavy_work_while_single_writer_is_active() -> None:
@@ -16,7 +78,9 @@ def test_compactor_defers_heavy_work_while_single_writer_is_active() -> None:
     assert writer_blocks_compaction({"active": False}) is False
 
 
-def test_compactor_requires_existing_archive_root_before_unattended_apply(tmp_path: Path) -> None:
+def test_compactor_requires_existing_archive_root_before_unattended_apply(
+    tmp_path: Path,
+) -> None:
     assert archive_root_available(tmp_path / "missing") is False
     assert archive_root_available(tmp_path) is True
 
@@ -32,7 +96,9 @@ def test_compactor_rejects_protected_archive_root_before_scanning() -> None:
     assert payload["blockers"] == ["protected_archive_volume_rejected"]
 
 
-def test_stable_file_work_preflight_ignores_quarantine_and_finds_pending(tmp_path: Path) -> None:
+def test_stable_file_work_preflight_ignores_quarantine_and_finds_pending(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "cold"
     pending = root / "evidence.jsonl.gz.tmp"
     pending.parent.mkdir(parents=True)

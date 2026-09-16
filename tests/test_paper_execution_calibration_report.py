@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
@@ -137,3 +137,70 @@ def test_paper_execution_calibration_report_respects_reset_cutoff(tmp_path, monk
     assert payload["ok"] is True
     assert payload["calibration_window"]["reset_active"] is True
     assert payload["calibration_window"]["skipped_before_cutoff"] == 1
+
+
+def test_candidate_identity_is_required_for_independent_promotion_calibration(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    log_dir = project_root / "exports" / "trade_logs" / "paper"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    out_file = project_root / "governance" / "health" / "paper_execution_calibration_latest.json"
+    now = datetime.now(timezone.utc)
+    candidate_id = "pc-test-g4"
+    candidate_path = project_root / "governance" / "runtime" / "production_candidate_state.json"
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path.write_text(
+        json.dumps(
+            {
+                "candidate_id": candidate_id,
+                "generation": 4,
+                "scope_windows_started_utc": {
+                    "execution": (now - timedelta(hours=4)).isoformat(),
+                    "data": (now - timedelta(hours=4)).isoformat(),
+                    "dependencies": (now - timedelta(hours=4)).isoformat(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    base = {
+        "timestamp_utc": (now - timedelta(hours=1)).isoformat(),
+        "symbol": "SPY",
+        "action": "BUY",
+        "reference_price": 100.0,
+        "fill_price": 100.2,
+        "expected_fill_price": 100.1,
+        "expected_slippage_bps": 10.0,
+        "paper_fill_source": "broker_paper_fill",
+        "metadata": {"source_profile": "default"},
+    }
+    current = {**base, "candidate_id": candidate_id}
+    mismatched = {**base, "candidate_id": "pc-old-g3", "symbol": "QQQ"}
+    missing = {**base, "symbol": "IWM"}
+    (log_dir / "paper_trades_candidate.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in (current, mismatched, missing)) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "paper_execution_calibration_report.py",
+            "--hours",
+            "24",
+            "--min-independent-samples",
+            "1",
+            "--out-file",
+            str(out_file),
+        ],
+    )
+
+    assert report.main() == 0
+    payload = json.loads(out_file.read_text(encoding="utf-8"))
+    assert payload["independent_samples"] == 1
+    assert payload["candidate_binding"]["candidate_id"] == candidate_id
+    assert payload["candidate_binding"]["bound"] is True
+    assert payload["candidate_binding"]["eligible_rows_identity_clean"] is False
+    assert payload["candidate_binding"]["identity_mismatch_rows_excluded"] == 1
+    assert payload["candidate_binding"]["identity_missing_rows_excluded"] == 1

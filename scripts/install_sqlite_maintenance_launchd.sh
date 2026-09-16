@@ -38,6 +38,9 @@ cat > "$PLIST_PATH" <<PLIST
   <key>RunAtLoad</key>
   <false/>
 
+  <key>StartInterval</key>
+  <integer>3600</integer>
+
   <key>StandardOutPath</key>
   <string>$OUT_LOG</string>
   <key>StandardErrorPath</key>
@@ -50,5 +53,5 @@ launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
 launchctl load "$PLIST_PATH"
 
 echo "Installed and loaded: $PLIST_PATH"
-echo "Schedule: daily at 03:40 local time"
+echo "Schedule: daily at 03:40 local time, with hourly retries through the quiet-window guard"
 echo "Logs: $OUT_LOG and $ERR_LOG"

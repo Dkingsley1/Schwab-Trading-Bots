@@ -1,7 +1,11 @@
 import json
+import os
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -9,6 +13,87 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import scripts.promotion_packet_builder as src
+
+
+def test_signing_key_bootstrap_is_private_and_idempotent(tmp_path, monkeypatch):
+    monkeypatch.delenv("PROMOTION_PACKET_SIGNING_KEY", raising=False)
+    path = tmp_path / "keys/signing.txt"
+    key, source = src._bootstrap_signing_key(path)
+    assert len(key) == 64
+    assert bytes.fromhex(key)
+    assert source == str(path)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    before = path.stat()
+    assert src._bootstrap_signing_key(path) == (key, source)
+    assert path.stat().st_ino == before.st_ino
+    assert path.stat().st_mtime_ns == before.st_mtime_ns
+    assert not list(path.parent.glob(".promotion_signing_key_*"))
+
+
+def test_signing_key_bootstrap_preserves_concurrent_creator(tmp_path, monkeypatch):
+    monkeypatch.delenv("PROMOTION_PACKET_SIGNING_KEY", raising=False)
+    path = tmp_path / "signing.txt"
+    original = os.link
+
+    def race(source, target, **kwargs):
+        path.write_text("concurrent-key\n")
+        return original(source, target, **kwargs)
+
+    monkeypatch.setattr(src.os, "link", race)
+    assert src._bootstrap_signing_key(path) == ("concurrent-key", str(path))
+    assert path.read_text() == "concurrent-key\n"
+    assert not list(tmp_path.glob(".promotion_signing_key_*"))
+
+
+def test_signing_key_bootstrap_preserves_empty_existing_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("PROMOTION_PACKET_SIGNING_KEY", raising=False)
+    path = tmp_path / "signing.txt"
+    path.touch()
+    with pytest.raises(ValueError, match="empty_preserved"):
+        src._bootstrap_signing_key(path)
+    assert path.read_bytes() == b""
+    assert not list(tmp_path.glob(".promotion_signing_key_*"))
+
+
+def test_signing_key_paths_reject_symlinks_and_protected_aliases(tmp_path, monkeypatch):
+    monkeypatch.delenv("PROMOTION_PACKET_SIGNING_KEY", raising=False)
+    source = tmp_path / "existing.txt"
+    source.write_text("existing-key")
+    link = tmp_path / "link.txt"
+    link.symlink_to(source)
+    with pytest.raises(ValueError, match="symlink_refused"):
+        src._bootstrap_signing_key(link)
+    reserved = tmp_path / "reserved"
+    reserved.symlink_to("/Volumes/VIDEO")
+    with pytest.raises(ValueError, match="route_unavailable"):
+        src._bootstrap_signing_key(reserved / "signing.txt")
+    assert source.read_text() == "existing-key"
+
+
+def test_signing_key_rejects_nonregular_and_oversized_files(tmp_path, monkeypatch):
+    monkeypatch.delenv("PROMOTION_PACKET_SIGNING_KEY", raising=False)
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(ValueError, match="not_regular_file"):
+        src._load_signing_key(fifo)
+    path = tmp_path / "large.txt"
+    path.write_bytes(b"x" * 4097)
+    with pytest.raises(ValueError, match="oversized"):
+        src._load_signing_key(path)
+
+
+def test_signing_key_failed_publication_cleans_temporary_only(tmp_path, monkeypatch):
+    monkeypatch.delenv("PROMOTION_PACKET_SIGNING_KEY", raising=False)
+    path = tmp_path / "signing.txt"
+
+    def fail(*args, **kwargs):
+        raise OSError("publication_failed")
+
+    monkeypatch.setattr(src.os, "link", fail)
+    with pytest.raises(OSError, match="publication_failed"):
+        src._bootstrap_signing_key(path)
+    assert not path.exists()
+    assert not list(tmp_path.glob(".promotion_signing_key_*"))
 
 
 def test_promotion_packet_builder_captures_dataset_code_model_and_rollback_bundle(tmp_path: Path) -> None:

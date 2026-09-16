@@ -34,6 +34,7 @@
       "signal_key": "context_fiscal_liquidity_signal_norm",
       "required_feature_count": 3,
       "source_ids": ["official_macro_context", "public_policy_context", "market_micro_context"],
+      "optional_source_ids": ["public_financial_context"],
       "target_domains": ["global_macro", "rates", "credit", "equity", "fx"],
       "target_symbols": ["SPY", "QQQ", "IWM", "DIA", "TLT", "IEF", "LQD", "HYG", "UUP"]
     },
@@ -44,6 +45,7 @@
       "signal_key": "context_funding_stress_signal_norm",
       "required_feature_count": 3,
       "source_ids": ["official_macro_context", "extended_quant_context", "bond_reference_context"],
+      "optional_source_ids": ["public_financial_context"],
       "target_domains": ["global_macro", "rates", "credit", "market_making", "risk"],
       "target_symbols": ["SPY", "TLT", "IEF", "LQD", "HYG", "UUP"]
     },
@@ -54,6 +56,7 @@
       "signal_key": "context_cross_border_capital_signal_norm",
       "required_feature_count": 3,
       "source_ids": ["treasury_tic", "fx_market_context", "public_policy_context", "central_bank_cross_source_context"],
+      "optional_source_ids": ["public_financial_context"],
       "target_domains": ["global_macro", "fx", "rates", "equity", "commodities"],
       "target_symbols": ["SPY", "TLT", "UUP", "FXE", "FXY", "GLD", "EFA", "EEM"]
     },
@@ -64,6 +67,7 @@
       "signal_key": "context_positioning_crowding_signal_norm",
       "required_feature_count": 3,
       "source_ids": ["extended_quant_context", "market_micro_context", "options_flow_context"],
+      "optional_source_ids": ["public_financial_context"],
       "target_domains": ["equity", "rates", "fx", "commodities", "volatility", "crypto"],
       "target_symbols": ["SPY", "QQQ", "IWM", "TLT", "UUP", "GLD", "VIXY", "BTC-USD", "ETH-USD"]
     },
@@ -74,6 +78,7 @@
       "signal_key": "context_securities_lending_signal_norm",
       "required_feature_count": 3,
       "source_ids": ["options_flow_context", "extended_quant_context", "market_micro_context"],
+      "optional_source_ids": ["public_financial_context"],
       "target_domains": ["equity", "market_making", "short_bias", "event", "risk"],
       "target_symbols": ["*"]
     },
@@ -84,6 +89,7 @@
       "signal_key": "context_credit_curve_signal_norm",
       "required_feature_count": 3,
       "source_ids": ["bond_reference_context", "official_macro_context", "market_micro_context"],
+      "optional_source_ids": ["public_financial_context"],
       "target_domains": ["rates", "credit", "global_macro", "equity", "risk"],
       "target_symbols": ["TLT", "IEF", "SHY", "LQD", "HYG", "JNK", "SPY"]
     },
@@ -94,6 +100,7 @@
       "signal_key": "context_volatility_surface_signal_norm",
       "required_feature_count": 3,
       "source_ids": ["options_flow_context", "extended_quant_context", "market_micro_context"],
+      "optional_source_ids": ["public_financial_context"],
       "target_domains": ["options", "volatility", "equity", "market_making", "risk"],
       "target_symbols": ["SPY", "QQQ", "IWM", "DIA", "VIXY"]
     },
@@ -114,6 +121,7 @@
       "signal_key": "context_market_calendar_signal_norm",
       "required_feature_count": 3,
       "source_ids": ["official_macro_context", "extended_quant_context", "market_micro_context"],
+      "optional_source_ids": ["public_financial_context"],
       "target_domains": ["global_macro", "equity", "rates", "options", "futures", "event"],
       "target_symbols": ["*"]
     },

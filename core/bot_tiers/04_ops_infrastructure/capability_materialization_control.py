@@ -1,0 +1,1 @@
+../../../scripts/ops/capability_materialization_control.py

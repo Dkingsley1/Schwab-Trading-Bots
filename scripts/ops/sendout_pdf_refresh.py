@@ -249,8 +249,8 @@ def _int(raw: object, default: int = 0) -> int:
 
 
 def _fmt_amount(raw: object, digits: int = 2) -> str:
-    value = _num(raw)
-    return f"{value:+,.{digits}f}"
+    value = _num(raw, float("nan"))
+    return f"{value:+,.{digits}f}" if math.isfinite(value) else "n/a"
 
 
 def _fmt_plain(raw: object, digits: int = 2) -> str:
@@ -545,10 +545,15 @@ def render_paper_performance_ready_pdf(source_path: Path, pdf_path: Path) -> dic
         )
         _plot_line(axes[1][0], weekly_rows, label_key="week_end_day_utc", value_key="ending_net_pnl_total", title="Weekly Ending Net PnL", color="#0f766e")
         if period_rows:
+            measured_periods = [
+                row
+                for row in period_rows
+                if row.get("available") is not False and row.get("change") is not None
+            ]
             _plot_bars(
                 axes[1][1],
-                [str(row.get("label") or "") for row in period_rows],
-                [_num(row.get("change")) for row in period_rows],
+                [str(row.get("label") or "") for row in measured_periods],
+                [_num(row.get("change")) for row in measured_periods],
                 title="Window Change Comparison",
             )
         else:

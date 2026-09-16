@@ -257,8 +257,15 @@ def _stress_contract(expectancy: dict[str, Any], scenarios: list[dict[str, Any]]
     return {"ready": bool(rows and all(row["passes"] for row in rows)), "scenarios": rows}
 
 
-def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None = None) -> dict[str, Any]:
-    config = load_json(config_path or project_root / "config" / DEFAULT_CONFIG_PATH.name)
+def build_payload(
+    project_root: Path = PROJECT_ROOT, *, config_path: Path | None = None
+) -> dict[str, Any]:
+    config = load_json(
+        config_path or project_root / "config" / DEFAULT_CONFIG_PATH.name
+    )
+    self_assessment = load_json(
+        project_root / "config" / "profitability_self_assessment_v1.json"
+    )
     health = project_root / "governance" / "health"
     source = load_json(health / "source_verification_latest.json")
     fill = load_json(health / "paper_execution_calibration_latest.json")
@@ -307,6 +314,17 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
     )
     expectancy = _as_dict(performance.get("post_cost_expectancy"))
     robust = _as_dict(expectancy.get("robust_statistics"))
+    promotion_policy = _as_dict(self_assessment.get("promotion_cohort"))
+    promotion_cohort = _as_dict(performance.get("promotion_cohort"))
+    promotion_cohort_ready = bool(
+        not promotion_policy.get("enabled", False)
+        or (
+            promotion_cohort.get("configured", False)
+            and promotion_cohort.get("valid", False)
+            and not promotion_cohort.get("automatic_stage_advancement_allowed", True)
+            and not promotion_cohort.get("live_execution_allowed", True)
+        )
+    )
     source_policy = _as_dict(config.get("source_verification"))
     source_overall = _as_dict(source.get("overall"))
     source_ready = bool(
@@ -378,13 +396,18 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
     stress["ready"] = bool(stress.get("ready", False) and queue_stress_ready)
     cluster_ready = bool(robust.get("promotion_evidence_sufficient", False))
     statistical_ready = bool(multiple_testing.get("statistical_evidence_ready", False))
+    purged_walk_forward = _as_dict(multiple_testing.get("purged_walk_forward"))
     stat_policy = _as_dict(config.get("statistical_evidence"))
     dsr = _as_dict(robust.get("deflated_sharpe"))
     oos_ready = bool(
         robust.get("positive_clustered_lower_confidence_bound_95", False)
-        and int(robust.get("unique_day_count", 0) or 0) >= int(stat_policy.get("minimum_independent_days", 7) or 7)
-        and int(robust.get("unique_regime_count", 0) or 0) >= int(stat_policy.get("minimum_regimes", 2) or 2)
-        and _safe_float(dsr.get("probability"), 0.0) >= _safe_float(stat_policy.get("minimum_deflated_sharpe_probability"), 0.95)
+        and int(robust.get("unique_day_count", 0) or 0)
+        >= int(stat_policy.get("minimum_independent_days", 7) or 7)
+        and int(robust.get("unique_regime_count", 0) or 0)
+        >= int(stat_policy.get("minimum_regimes", 2) or 2)
+        and _safe_float(dsr.get("probability"), 0.0)
+        >= _safe_float(stat_policy.get("minimum_deflated_sharpe_probability"), 0.95)
+        and purged_walk_forward.get("evidence_ready", False)
     )
     allocation = _allocation_contract(performance, _as_dict(config.get("allocation")))
 
@@ -402,7 +425,10 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
         >= int(strict_policy.get("minimum_regimes", 3) or 3),
         "profitable_sleeves": len(allocation.get("qualified_sleeves", []))
         >= int(strict_policy.get("minimum_profitable_sleeves", 4) or 4),
-        "positive_conservative_lcb": bool(robust.get("positive_clustered_lower_confidence_bound_95", False)),
+        "positive_conservative_lcb": bool(
+            robust.get("positive_clustered_lower_confidence_bound_95", False)
+        ),
+        "single_staged_promotion_cohort": promotion_cohort_ready,
     }
     strict_graduation_ready = bool(strict_policy and all(strict_graduation_checks.values()))
     acquisition_binding = _as_dict(fill_acquisition.get("candidate_binding"))
@@ -454,6 +480,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
                 "minimum_deflated_sharpe_probability",
             )
         )
+        and purged_walk_forward.get("implementation_ready", False)
     )
     source_code = (project_root / "core" / "base_trader.py").read_text(encoding="utf-8") if (project_root / "core" / "base_trader.py").is_file() else ""
     shadow_source = (
@@ -498,18 +525,97 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
         and all(name in accounting_views for name in required_accounting_views)
         and str(candidate_view.get("candidate_id") or "").strip()
         and int(candidate_view.get("row_count", 0) or 0) > 0
+        and promotion_cohort_ready
     )
     baseline_controls = [
-        _control("01_source_verification", "Verified and confidence-scored point-in-time sources", bool(config and source_policy), source_ready, source_overall),
-        _control("02_independent_fills", "Independent fills and explicit cost calibration", bool(config and fill_policy), fill_ready, fill),
-        _control("03_fail_closed_entry_quality", "Unknown spread, source, fill, session, event, or tradeability evidence blocks entries", "paper_profitability_clean_profile_evidence_block" in source_code, entry_ready, clean_gate),
-        _control("04_weak_sleeve_quarantine", "Known weak event and aggressive futures sleeves remain collect-only", bool(mandatory_quarantine), quarantine_ready, {"required": mandatory_quarantine, "profiles": {key: profile_rows.get(key, {}) for key in mandatory_quarantine}}),
-        _control("05_counterfactual_path_labels", "No-trade, MAE, MFE, exit timing, and post-entry regime labels feed training", bool(configured_labels), counterfactual_ready, {"required": sorted(configured_labels), "present": sorted(required_labels), "counterfactual_candidate_count": counterfactual.get("candidate_count", 0)}),
-        _control("06_stressed_post_cost_expectancy", "Expectancy remains positive after explicit cost stress", bool(config.get("stress_cost_bps")), bool(stress.get("ready", False)), stress),
-        _control("07_cluster_effective_samples", "Effective samples are clustered by independent evidence units", bool(implementation_self_test.get("available") and not implementation_self_test.get("promotion_evidence_sufficient")), cluster_ready, robust),
-        _control("08_multiple_testing_firewall", "Actual FDR, deflated Sharpe, and PBO control selection bias", bool(fdr_self_test.get("hypothesis_count") == 2), statistical_ready, multiple_testing),
-        _control("09_oos_regime_lcb", "Positive lower bound persists across independent days and regimes", oos_control_implemented, oos_ready, {"robust_statistics": robust, "thresholds": stat_policy}),
-        _control("10_conservative_allocation", "Only low-correlation independently profitable sleeves receive proposed weight", True, bool(allocation.get("ready", False)), allocation),
+        _control(
+            "01_source_verification",
+            "Verified and confidence-scored point-in-time sources",
+            bool(config and source_policy),
+            source_ready,
+            source_overall,
+        ),
+        _control(
+            "02_independent_fills",
+            "Independent fills and explicit cost calibration",
+            bool(config and fill_policy),
+            fill_ready,
+            fill,
+        ),
+        _control(
+            "03_fail_closed_entry_quality",
+            "Unknown spread, source, fill, session, event, or tradeability evidence blocks entries",
+            "paper_profitability_clean_profile_evidence_block" in source_code,
+            entry_ready,
+            clean_gate,
+        ),
+        _control(
+            "04_weak_sleeve_quarantine",
+            "Known weak event and aggressive futures sleeves remain collect-only",
+            bool(mandatory_quarantine),
+            quarantine_ready,
+            {
+                "required": mandatory_quarantine,
+                "profiles": {
+                    key: profile_rows.get(key, {}) for key in mandatory_quarantine
+                },
+            },
+        ),
+        _control(
+            "05_counterfactual_path_labels",
+            "No-trade, MAE, MFE, exit timing, and post-entry regime labels feed training",
+            bool(configured_labels),
+            counterfactual_ready,
+            {
+                "required": sorted(configured_labels),
+                "present": sorted(required_labels),
+                "counterfactual_candidate_count": counterfactual.get(
+                    "candidate_count", 0
+                ),
+            },
+        ),
+        _control(
+            "06_stressed_post_cost_expectancy",
+            "Expectancy remains positive after explicit cost stress",
+            bool(config.get("stress_cost_bps")),
+            bool(stress.get("ready", False)),
+            stress,
+        ),
+        _control(
+            "07_cluster_effective_samples",
+            "Effective samples are clustered by independent evidence units",
+            bool(
+                implementation_self_test.get("available")
+                and not implementation_self_test.get("promotion_evidence_sufficient")
+            ),
+            cluster_ready,
+            robust,
+        ),
+        _control(
+            "08_multiple_testing_firewall",
+            "Actual FDR, deflated Sharpe, and PBO control selection bias",
+            bool(fdr_self_test.get("hypothesis_count") == 2),
+            statistical_ready,
+            multiple_testing,
+        ),
+        _control(
+            "09_oos_regime_lcb",
+            "Positive lower bound persists across purged out-of-sample folds, independent days, and regimes",
+            oos_control_implemented,
+            oos_ready,
+            {
+                "robust_statistics": robust,
+                "purged_walk_forward": purged_walk_forward,
+                "thresholds": stat_policy,
+            },
+        ),
+        _control(
+            "10_conservative_allocation",
+            "Only low-correlation independently profitable sleeves receive proposed weight",
+            True,
+            bool(allocation.get("ready", False)),
+            allocation,
+        ),
         _control(
             "11_explicit_paper_execution_authority",
             "Only bounded, hierarchy-mapped market-signal cohorts may create candidate-scoped paper fills",
@@ -519,7 +625,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
         ),
         _control(
             "12_candidate_accounting_scope",
-            "Lifetime, current-day, candidate-forward, and active-book accounting remain distinct",
+            "Lifetime, current-day, candidate-research, active-stage, and active-book accounting remain distinct",
             accounting_implemented,
             accounting_evidence_ready,
             {"policy": accounting_policy, "views": accounting_views},
@@ -550,7 +656,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
         _control(
             "h02_strict_profitability_graduation",
             "Candidate graduation requires deep independent post-cost breadth",
-            bool(strict_policy and len(strict_graduation_checks) == 7),
+            bool(strict_policy and len(strict_graduation_checks) == 8),
             strict_graduation_ready,
             {"checks": strict_graduation_checks, "thresholds": strict_policy, "robust_statistics": robust},
         ),
@@ -577,7 +683,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
         ),
         _control(
             "h06_cash_and_passive_benchmark",
-            "Active paper returns beat cash and a point-in-time passive benchmark without worse drawdown",
+            "Active paper returns beat modeled cash, SGOV, and a point-in-time passive benchmark without worse drawdown",
             bool(
                 benchmark_policy
                 and (project_root / "scripts" / "ops" / "profitability_benchmark_capture.py").is_file()

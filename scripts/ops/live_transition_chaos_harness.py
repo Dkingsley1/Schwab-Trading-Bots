@@ -15,10 +15,18 @@ if __package__ in {None, ""}:
     from core.live_order_ledger import LiveOrderLedger
     from core.live_transition_safety import evaluate_release_interlock
     from scripts.ops.long_runtime_common import iso_now, write_payload
+    from scripts.ops.schwab_broker_boundary_control import (
+        compare_boundary_signatures,
+        snapshot_complete,
+    )
 else:
     from core.live_order_ledger import LiveOrderLedger
     from core.live_transition_safety import evaluate_release_interlock
     from .long_runtime_common import PROJECT_ROOT, iso_now, write_payload
+    from .schwab_broker_boundary_control import (
+        compare_boundary_signatures,
+        snapshot_complete,
+    )
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "live_transition_chaos_harness_latest.json"
@@ -96,6 +104,100 @@ def _network_loss() -> tuple[bool, dict[str, Any]]:
     }
 
 
+def _provider_outage_with_valid_auth() -> tuple[bool, dict[str, Any]]:
+    result = evaluate_release_interlock(
+        _signals(auth_ready=True, broker_reachable=False)
+    )
+    return bool(
+        not result.get("entry_allowed")
+        and result.get("auto_relocked")
+        and "broker_unreachable" in result.get("entry_lock_reasons", [])
+    ), result
+
+
+def _partial_connected_account_response() -> tuple[bool, dict[str, Any]]:
+    response = {
+        "ok": True,
+        "account_count": 2,
+        "discovered_account_count": 3,
+        "failed_account_count": 1,
+        "account_snapshot_partial": True,
+    }
+    complete = snapshot_complete(response)
+    return not complete, {
+        "snapshot_complete": complete,
+        "failed_account_count": 1,
+        "canonical_publish_allowed": False,
+    }
+
+
+def _duplicate_identical_intent(path: Path) -> tuple[bool, dict[str, Any]]:
+    ledger = LiveOrderLedger(path)
+    payload = {"symbol": "SPY", "action": "BUY", "quantity": 1.0}
+    first = ledger.reserve(
+        intent_id="duplicate-identical",
+        payload=payload,
+        requested_quantity=1.0,
+    )
+    duplicate = ledger.reserve(
+        intent_id="duplicate-identical",
+        payload=payload,
+        requested_quantity=1.0,
+    )
+    return bool(
+        first.get("reserved")
+        and duplicate.get("duplicate")
+        and not duplicate.get("reserved")
+    ), {"first": first, "duplicate": duplicate}
+
+
+def _duplicate_conflicting_intent(path: Path) -> tuple[bool, dict[str, Any]]:
+    ledger = LiveOrderLedger(path)
+    first = ledger.reserve(
+        intent_id="duplicate-conflict",
+        payload={"symbol": "SPY", "action": "BUY", "quantity": 1.0},
+        requested_quantity=1.0,
+    )
+    conflict = ledger.reserve(
+        intent_id="duplicate-conflict",
+        payload={"symbol": "SPY", "action": "BUY", "quantity": 2.0},
+        requested_quantity=2.0,
+    )
+    return bool(
+        first.get("reserved")
+        and conflict.get("conflict")
+        and conflict.get("reason") == "intent_payload_conflict"
+    ), {"first": first, "conflict": conflict}
+
+
+def _schwab_capability_drift() -> tuple[bool, dict[str, Any]]:
+    baseline = {
+        "accounts": [
+            {
+                "account_policy_key": "schwab_cash_account_1",
+                "trading_access": "limited_margin",
+                "option_access": "covered_only",
+            }
+        ]
+    }
+    current = {
+        "accounts": [
+            {
+                "account_policy_key": "schwab_cash_account_1",
+                "trading_access": "full_margin",
+                "option_access": "uncovered",
+            }
+        ]
+    }
+    changes = compare_boundary_signatures(baseline, current)
+    quarantine_active = bool(changes)
+    return quarantine_active, {
+        "change_count": len(changes),
+        "quarantine_active": quarantine_active,
+        "live_execution_authority": False,
+    }
+
+
 def _cancel_replace_race(path: Path) -> tuple[bool, dict[str, Any]]:
     ledger = LiveOrderLedger(path)
     ledger.reserve(intent_id="cancel-race", payload={"symbol": "IWM"}, requested_quantity=1.0)
@@ -145,6 +247,17 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             _scenario("delayed_broker_response", lambda: _delayed_response(root / "delayed.sqlite3")),
             _scenario("token_expiry", _token_expiry),
             _scenario("network_loss", _network_loss),
+            _scenario("provider_outage_with_valid_auth", _provider_outage_with_valid_auth),
+            _scenario("partial_connected_account_response", _partial_connected_account_response),
+            _scenario(
+                "duplicate_identical_order_intent",
+                lambda: _duplicate_identical_intent(root / "duplicate-identical.sqlite3"),
+            ),
+            _scenario(
+                "duplicate_conflicting_order_intent",
+                lambda: _duplicate_conflicting_intent(root / "duplicate-conflict.sqlite3"),
+            ),
+            _scenario("schwab_capability_drift", _schwab_capability_drift),
             _scenario("cancel_replace_race", lambda: _cancel_replace_race(root / "cancel.sqlite3")),
             _scenario("restart_with_open_orders", lambda: _restart_with_open_order(root / "restart.sqlite3")),
             _scenario("durable_storage_loss", _storage_loss),

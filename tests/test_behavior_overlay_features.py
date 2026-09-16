@@ -36,6 +36,31 @@ def test_behavior_feature_schema_appends_lane_overlay_features() -> None:
     assert behavior_ds.BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES == loop._BEHAVIOR_CAPITAL_FLOW_FEATURE_NAMES
 
 
+def test_schwab_context_runtime_ignores_unproven_cached_aggregates(monkeypatch):
+    from core import schwab_crypto_data
+
+    now = datetime.now(timezone.utc).timestamp()
+    key = "crypto_schwab_future_available_norm"
+    assert key in loop._EXTERNAL_CONTEXT_FEATURE_KEYS
+    snapshot = {
+        "provider": "crypto_market_context", "timestamp_utc": schwab_crypto_data.iso(now),
+        "derived": {"symbol_features": {"BTC-USD": {key: 1.0}}},
+        "sources": {"schwab_data_role": "context_only", "schwab_instruments": []},
+    }
+    assert key not in loop._external_context_feature_set(snapshot, symbol="BTC-USD")
+    snapshot["sources"]["schwab_instruments"] = [{
+        "provider": "schwab", "asset": "BTC", "requested_symbol": "/BTC", "instrument_type": "future",
+        "data_role": "context_only", "currency": "USD", "realtime": True,
+        "usable": True, "spot_price_eligible": False, "spread_bps": 2, "return_pct": -1,
+        "quote_timestamp_utc": schwab_crypto_data.iso(now), "observed_at": schwab_crypto_data.iso(now),
+        "bid_timestamp_utc": schwab_crypto_data.iso(now), "ask_timestamp_utc": schwab_crypto_data.iso(now),
+    }]
+    monkeypatch.setattr(schwab_crypto_data.time, "time", lambda: now)
+    assert loop._external_context_feature_set(snapshot, symbol="BTC-USD")[key] == 1.0
+    monkeypatch.setattr(schwab_crypto_data.time, "time", lambda: now + 121)
+    assert key not in loop._external_context_feature_set(snapshot, symbol="BTC-USD")
+
+
 def test_behavior_dataset_vector_matches_declared_feature_schema() -> None:
     features = {
         "dividend_compounding_quality_norm": 0.81,
@@ -95,6 +120,34 @@ def test_path_dependent_labels_capture_excursions_and_no_trade_baseline() -> Non
     assert trade["maximum_adverse_excursion"] == -0.005
     assert trade["no_trade_counterfactual_outcome"] == "trade_outperformed_cash"
     assert hold["no_trade_counterfactual_outcome"] == "hold_missed_large_move"
+
+
+def test_multi_horizon_counterfactuals_compare_buy_sell_and_hold_after_costs() -> None:
+    outcomes = behavior_ds._counterfactual_action_outcomes(
+        raw_returns={300: 0.002, 3600: -0.003, 86400: 0.01},
+        observed_action="HOLD",
+        round_trip_cost_bps=10.0,
+    )
+
+    assert list(outcomes) == ["5m", "1h", "1d"]
+    assert outcomes["5m"]["best_action_post_cost"] == "BUY"
+    assert outcomes["5m"]["buy_post_cost_return"] == 0.001
+    assert outcomes["1h"]["best_action_post_cost"] == "SELL"
+    assert outcomes["1h"]["sell_post_cost_return"] == 0.002
+    assert outcomes["1d"]["observed_action_post_cost_return"] == 0.0
+    assert outcomes["1d"]["observed_action_regret"] == 0.009
+
+
+def test_counterfactual_horizon_parser_ignores_bad_values_and_falls_back() -> None:
+    assert behavior_ds._parse_counterfactual_horizons("300,bad,3600,-2,inf") == [
+        300,
+        3600,
+    ]
+    assert behavior_ds._parse_counterfactual_horizons("bad,inf") == [
+        300,
+        3600,
+        86400,
+    ]
 
 
 def test_external_context_sparse_merge_preserves_central_bank_features() -> None:

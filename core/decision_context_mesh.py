@@ -37,6 +37,46 @@ DECISION_CONTEXT_MESH_FEATURE_KEYS = PLANE_SIGNAL_FEATURE_KEYS + (
     "context_mesh_cross_verification_norm",
 )
 
+PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS = (
+    "public_financial_context_available_norm",
+    "public_financial_source_coverage_norm",
+    "public_financial_supplemental_coverage_norm",
+    "ofr_financial_stress_norm",
+    "ofr_credit_stress_norm",
+    "ofr_funding_stress_norm",
+    "ofr_safe_asset_stress_norm",
+    "ofr_volatility_stress_norm",
+    "ofr_equity_valuation_stress_norm",
+    "fdic_failure_12m_norm",
+    "fdic_failure_assets_12m_norm",
+    "federal_register_financial_activity_norm",
+    "federal_register_high_impact_norm",
+    "ecb_estr_funding_pressure_norm",
+    "ecb_estr_rate_norm",
+    "ecb_estr_change_5d_norm",
+    "companyfacts_coverage_norm",
+    "companyfacts_operating_profitability_norm",
+    "companyfacts_cash_flow_quality_norm",
+    "companyfacts_distress_norm",
+    "nyfed_dealer_repo_imbalance_norm",
+    "nyfed_dealer_financing_fails_pressure_norm",
+    "nyfed_dealer_treasury_inventory_pressure_norm",
+    "nyfed_dealer_corporate_inventory_pressure_norm",
+    "fdic_bank_noncurrent_loan_pressure_norm",
+    "fdic_bank_deposit_funding_norm",
+    "fdic_bank_lending_intensity_norm",
+    "fdic_bank_asset_growth_yoy_norm",
+    "fundamental_financial_statement_coverage_norm",
+    "fundamental_quality_norm",
+    "fundamental_operating_profitability_norm",
+    "fundamental_cash_flow_quality_norm",
+    "fundamental_leverage_norm",
+    "fundamental_distress_norm",
+    "fundamental_current_ratio_norm",
+    "fundamental_cash_to_assets_norm",
+    "fundamental_free_cash_flow_positive_norm",
+)
+
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}

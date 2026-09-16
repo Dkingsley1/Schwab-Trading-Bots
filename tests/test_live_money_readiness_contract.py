@@ -48,7 +48,49 @@ def _write_ready_sources(project_root: Path) -> None:
     )
     _write_json(
         health / "paper_profitability_control_latest.json",
-        {"overall_status": "ready", "profitability_grade": "A+", "raw_profitability_grade": "A+"},
+        {
+            "overall_status": "ready",
+            "profitability_grade": "A+",
+            "raw_profitability_grade": "A+",
+            "paper_debt_recovery_contract": {
+                "state": "cleared_and_proven",
+                "debt_cleared": True,
+                "live_promotion_ready": True,
+                "baseline_debt_amount": 100.0,
+                "remaining_debt_amount": 0.0,
+                "recovery_progress_norm": 1.0,
+                "promotion_blockers": [],
+            },
+            "sleeve_strategy_profitability_scaling_contract": {
+                "active": True,
+                "mode": "candidate_bound_sleeve_strategy_scaling_v1",
+                "paper_only": True,
+                "live_execution_allowed": False,
+                "source_ready": True,
+                "entry_only": True,
+                "keep_sells_and_reduce_only_paths_open": True,
+                "fail_closed_on_missing_or_mismatched_candidate_evidence": True,
+                "global_entry_size_cap_norm": 1.0,
+                "maximum_above_baseline_entry_size_multiplier_norm": 1.10,
+                "candidate_binding": {
+                    "candidate_id": "candidate-ready",
+                    "candidate_binding_valid": True,
+                },
+                "profile_controls": {
+                    "default": {
+                        "tier": "validated_baseline",
+                        "block_new_entries": False,
+                    }
+                },
+                "hard_limits": {
+                    "never_scale_from_loss_recovery_pressure": True,
+                    "never_use_martingale": True,
+                    "never_average_down_for_recovery": True,
+                    "never_scale_above_1_10x_from_profitability_evidence": True,
+                    "portfolio_and_execution_risk_caps_remain_authoritative": True,
+                },
+            },
+        },
     )
     _write_json(
         health / "profitability_evidence_firewall_latest.json",
@@ -181,6 +223,60 @@ def test_live_money_contract_clears_after_target_only_when_all_sections_are_a_or
     assert payload["blocking_reasons"] == []
 
 
+def test_live_money_contract_blocks_until_paper_recovery_is_cleared_and_proven(tmp_path: Path) -> None:
+    _write_ready_sources(tmp_path)
+    health = tmp_path / "governance" / "health"
+    paper_profit = json.loads(
+        (health / "paper_profitability_control_latest.json").read_text(encoding="utf-8")
+    )
+    paper_profit["paper_debt_recovery_contract"] = {
+        "state": "recovering",
+        "debt_cleared": False,
+        "live_promotion_ready": False,
+        "remaining_debt_amount": 12_000.0,
+        "recovery_progress_norm": 0.4,
+        "promotion_blockers": ["paper_recovery_balance_not_cleared"],
+    }
+    _write_json(health / "paper_profitability_control_latest.json", paper_profit)
+
+    payload = src.build_payload(tmp_path, as_of_date="2026-08-26")
+    sections = {row["section_id"]: row for row in payload["sections"]}
+    profitability = sections["paper_profitability_control"]
+
+    assert payload["faithful_live_money_ready"] is False
+    assert profitability["ready"] is False
+    assert profitability["grade"] == "F"
+    assert profitability["evidence"]["paper_debt_recovery_state"] == "recovering"
+    assert profitability["evidence"]["paper_debt_recovery_remaining_amount"] == 12_000.0
+    assert "paper_recovery_balance_not_cleared" in profitability["evidence"]["paper_debt_recovery_promotion_blockers"]
+
+
+def test_live_money_contract_rejects_incomplete_scaling_hard_limits(tmp_path: Path) -> None:
+    _write_ready_sources(tmp_path)
+    health = tmp_path / "governance" / "health"
+    paper_profit = json.loads(
+        (health / "paper_profitability_control_latest.json").read_text(encoding="utf-8")
+    )
+    scaling = paper_profit["sleeve_strategy_profitability_scaling_contract"]
+    scaling["hard_limits"]["never_use_martingale"] = False
+    scaling["global_entry_size_cap_norm"] = 1.25
+    _write_json(health / "paper_profitability_control_latest.json", paper_profit)
+
+    payload = src.build_payload(tmp_path, as_of_date="2026-08-26")
+    sections = {row["section_id"]: row for row in payload["sections"]}
+    profitability = sections["paper_profitability_control"]
+
+    assert payload["faithful_live_money_ready"] is False
+    assert profitability["ready"] is False
+    assert profitability["grade"] == "F"
+    assert "sleeve_strategy_scaling_global_cap_invalid" in profitability["evidence"][
+        "sleeve_strategy_scaling_blockers"
+    ]
+    assert "sleeve_strategy_scaling_hard_limits_incomplete" in profitability["evidence"][
+        "sleeve_strategy_scaling_blockers"
+    ]
+
+
 def test_live_money_contract_reports_separate_all_a_plus_target(tmp_path: Path) -> None:
     _write_ready_sources(tmp_path)
 
@@ -303,9 +399,21 @@ def test_live_money_contract_never_treats_capacity_as_completed_soak_evidence(tm
             "control_grade": "A+",
             "operational_capacity_ready": True,
             "operational_capacity_grade": "A+",
+            "main_soak_elapsed_hours": 318.0,
+            "main_soak_elapsed_days": 13.25,
+            "main_soak_progress_percent": 44.167,
+            "main_soak_includes_pre_reset_time": True,
+            "main_soak_count_is_promotion_credit": False,
             "clean_window_elapsed_hours": 12.0,
+            "observed_window_elapsed_hours": 14.5,
             "clean_720_hours_complete": False,
             "elapsed_evidence_grade": "F",
+            "historical_soak_evidence": {
+                "historical_segmented_wall_clock_hours": 318.0,
+                "historical_segmented_wall_clock_days": 13.25,
+                "segment_count": 53,
+                "counts_toward_current_clean_720_hours": False,
+            },
         },
     )
 
@@ -315,7 +423,15 @@ def test_live_money_contract_never_treats_capacity_as_completed_soak_evidence(tm
     assert soak["ready"] is False
     assert soak["grade"] == "F"
     assert soak["evidence"]["operational_capacity_grade"] == "A+"
+    assert soak["evidence"]["main_soak_elapsed_hours"] == 318.0
+    assert soak["evidence"]["main_soak_progress_percent"] == 44.167
+    assert soak["evidence"]["main_soak_includes_pre_reset_time"] is True
+    assert soak["evidence"]["main_soak_count_is_promotion_credit"] is False
     assert soak["evidence"]["clean_720_hours_complete"] is False
+    assert soak["evidence"]["observed_window_elapsed_hours"] == 14.5
+    assert soak["evidence"]["historical_segmented_wall_clock_hours"] == 318.0
+    assert soak["evidence"]["historical_segment_count"] == 53
+    assert soak["evidence"]["historical_counts_toward_clean_720_hours"] is False
     assert "continuous_soak_below_A" in payload["blocking_reasons"]
 
 

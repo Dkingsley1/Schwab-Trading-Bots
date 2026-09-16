@@ -16,6 +16,36 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def test_database_direction_remains_evaluation_only_in_generated_runbook(tmp_path: Path) -> None:
+    commands_src.build_payload(tmp_path, apply=True)
+    text = (tmp_path / "COMMANDS.md").read_text(encoding="utf-8")
+    assert "keep SQLite and DuckDB/Parquet; evaluate PostgreSQL" in text
+    assert "defer Redis/NoSQL pending a measured cache bottleneck" in text
+    assert "This command does not install a backend or perform that evaluation" in text
+    assert "no unadmitted services, migration copies or history scans" in text
+
+
+def test_storage_recovery_contract_survives_document_regeneration(tmp_path: Path) -> None:
+    commands_src.build_payload(tmp_path, apply=True)
+    text = (tmp_path / "COMMANDS.md").read_text(encoding="utf-8")
+    for marker in (
+        "--filesystem-compressor auto",
+        "--index-only --apply --json",
+        "five seconds/15,000 entries",
+        "MAINTENANCE_SLOT_LEASE_WAIT_SECONDS=120",
+        "row_encoding=msgpack_sqlite_scalars_v1",
+        "index_build_strategy=maintained_during_row_copy",
+        "read-only",
+        "Local staging/copy preserves at least 32 GiB",
+        "explicitly supplied matching-token authority",
+        "Neither command creates a new scheduler or Codex automation",
+        "progress_stalled",
+        "sql_writer_between_scheduled_cycles",
+    ):
+        assert marker in text
+    assert commands_src.build_payload(tmp_path, apply=False)["ok"]
+
+
 def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_text(project_root / "COMMANDS.md", "# old\n")
@@ -90,6 +120,10 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "./scripts/ops/opsctl.sh dashboard --skip-refresh" in commands_text
     assert "### Review Codex project guardrails" in commands_text
     assert "./scripts/ops/opsctl.sh codex-project-guard --staged --json" in commands_text
+    assert "### Review scheduled ops job lifecycle" in commands_text
+    assert "./scripts/ops/opsctl.sh ops-scheduled-jobs --json" in commands_text
+    assert "./scripts/ops/opsctl.sh ops-scheduled-jobs --queue-only --json" in commands_text
+    assert "./scripts/ops/opsctl.sh ops-scheduled-jobs --preflight-only --json" in commands_text
     assert "### Review sleeve-master and grand-master evidence" in commands_text
     assert "./scripts/ops/opsctl.sh master-grandmaster-evidence --json" in commands_text
     assert "### Review collector capabilities and bot subscriptions" in commands_text
@@ -98,6 +132,9 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "./scripts/ops/opsctl.sh capability-materialization --json" in commands_text
     assert "### Review or prune eligible local standby SQLite copies after BOT_LOGS soak" in commands_text
     assert "./scripts/ops/opsctl.sh storage-prune-standby --json" in commands_text
+    assert "### Inspect storage routes and ingestion definitions" in commands_text
+    assert "./scripts/ops/opsctl.sh ingestion-storage-control --definitions-only --json" in commands_text
+    assert any(entry["title"] == "Inspect storage routes and ingestion definitions" for entry in contract_payload["entries"])
     assert "### Safe force-clear storage pressure supervisor" in commands_text
     assert "./scripts/ops/opsctl.sh storage-pressure-clearance --apply --force-clear-stale-gate --json" in commands_text
     assert "### Archive and compact legacy ops database drift evidence" in commands_text
@@ -117,7 +154,7 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "### Data quality refresh bundle" in commands_text
     assert '"$PY" scripts/build_one_numbers_report.py' in commands_text
     assert "### Full retrain preflight" in commands_text
-    assert "./scripts/ops/opsctl.sh runtime-training-snapshot --json" in commands_text
+    assert "./scripts/ops/opsctl.sh runtime-training-snapshot --max-runtime-seconds 150 --json" in commands_text
     assert "./scripts/ops/opsctl.sh coverage-seed --write-queue --json" in commands_text
     assert "./scripts/ops/opsctl.sh coverage-gap-closer --apply-stage --launch --json" in commands_text
     assert '"$PY" scripts/retrain_schema_compatibility_guard.py --json' in commands_text
@@ -129,7 +166,7 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "### Refresh one coherent training evidence epoch" in commands_text
     assert "./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training --skip-dashboard --json" in commands_text
     assert "### Refresh training and profitability evidence together" in commands_text
-    assert "./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training-profitability --skip-dashboard --json" in commands_text
+    assert "./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training-profitability --max-run-seconds 1200 --skip-dashboard --json" in commands_text
     assert "### Inspect bounded strategy generations" in commands_text
     assert "./scripts/ops/opsctl.sh strategy-generation --json" in commands_text
     assert "### Propose a bounded strategy generation" in commands_text
@@ -217,6 +254,8 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "## Accounts And Positions" in commands_text
     assert "./scripts/ops/opsctl.sh schwab-account-snapshot-refresh --json" in commands_text
     assert "./scripts/ops/opsctl.sh account-position-study --json" in commands_text
+    assert "### Run the connected read-only canary dress rehearsal" in commands_text
+    assert "./scripts/ops/opsctl.sh live-canary-dress-rehearsal --symbol SCHD --json" in commands_text
     assert "./scripts/ops/opsctl.sh covered-call-roll-watch --json" in commands_text
     assert "## Event Watches" in commands_text
     assert "./scripts/ops/opsctl.sh spacex-ipo-watch --json" in commands_text
@@ -237,11 +276,14 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert "./scripts/ops/opsctl.sh paper-profitability-control --apply --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-hardening --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-evidence-firewall --json" in commands_text
+    assert "./scripts/ops/opsctl.sh profitability-self-assessment --json" in commands_text
+    assert "./scripts/ops/opsctl.sh counterfactual-replay --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-independent-validator --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-holdout-vault --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-benchmark-capture --apply --json" in commands_text
     assert "./scripts/ops/opsctl.sh profitability-benchmark-hurdle --json" in commands_text
     assert "./scripts/ops/opsctl.sh multiple-testing --json" in commands_text
+    assert "./scripts/ops/opsctl.sh quantitative-challengers --json" in commands_text
     assert "./scripts/ops/opsctl.sh decay-monitor --json" in commands_text
     assert "./scripts/ops/opsctl.sh system-plumbing-control --json" in commands_text
     assert "./scripts/ops/opsctl.sh system-architecture-hardening --apply --json" in commands_text
@@ -253,9 +295,19 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert 'refresh) print -r -- "Most Used" ;;' in runbook_text
     assert 'refresh) print -r -- "Live Feed Refreshes" ;;' not in runbook_text
     assert contract_payload["schema_version"] == commands_src.COMMAND_CONTRACT_SCHEMA_VERSION
-    assert contract_payload["entry_count"] == 195
+    assert contract_payload["entry_count"] == len(contract_payload["entries"])
+    assert "### Review system responsibility and runtime authority" in commands_text
+    assert "./scripts/ops/opsctl.sh system-role-contract --json" in commands_text
     assert "### Review ten-pillar production excellence" in commands_text
     assert "./scripts/ops/opsctl.sh production-excellence --json" in commands_text
+    assert "### Build the twenty-control investor readiness packet" in commands_text
+    assert "./scripts/ops/opsctl.sh investor-readiness --json" in commands_text
+    assert "### Review institutional capability and evidence gaps" in commands_text
+    assert "### Review the canonical research data platform" in commands_text
+    assert "./scripts/ops/opsctl.sh research-data-platform --json" in commands_text
+    assert "./scripts/ops/opsctl.sh institutional-research-extensions --json" in commands_text
+    assert "### Validate the 39 authoritative production references and 18 controls" in commands_text
+    assert "./scripts/ops/opsctl.sh institutional-capability-control --json" in commands_text
     assert "### Freeze or accept a production candidate" in commands_text
     assert "### Verify the durable live-order ledger" in commands_text
     assert contract_payload["contract_hash"] in commands_text
@@ -269,6 +321,21 @@ def test_infrastructure_autofix_bot_surfaces_commands_hygiene_plan_for_missing_r
 
     names = [row["name"] for row in payload["repair_plan"]]
     assert "commands_hygiene" in names
+
+
+def test_commands_hygiene_cli_defaults_output_to_requested_project_root(tmp_path: Path, capsys) -> None:
+    project_root = tmp_path / "isolated-project"
+    _write_text(project_root / "COMMANDS.md", "# old\n")
+    _write_text(project_root / "scripts" / "runbook.sh", "#!/bin/zsh\nold\n")
+
+    rc = commands_src.main(["--project-root", str(project_root), "--json"])
+
+    out_path = project_root / "governance" / "health" / "commands_hygiene_latest.json"
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    stdout_payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload["commands_path"] == str(project_root / "COMMANDS.md")
+    assert stdout_payload["commands_path"] == payload["commands_path"]
 
 
 def test_render_commands_markdown_places_new_entries_in_expected_sections(tmp_path: Path) -> None:
@@ -360,6 +427,10 @@ def test_render_commands_markdown_places_new_entries_in_expected_sections(tmp_pa
     assert "./scripts/ops/opsctl.sh docs-reporting-intelligence --apply --json" in status_health
     assert "### PyCharm active bot blue highlights" in status_health
     assert "./scripts/ops/opsctl.sh pycharm-active-bot-highlights --apply --json" in status_health
+    assert "### Review scheduled ops job lifecycle" in status_health
+    assert "./scripts/ops/opsctl.sh ops-scheduled-jobs --json" in status_health
+    assert "./scripts/ops/opsctl.sh ops-scheduled-jobs --queue-only --json" in status_health
+    assert "./scripts/ops/opsctl.sh ops-scheduled-jobs --preflight-only --json" in status_health
     assert "### Coinbase API health" in status_health
     assert "./scripts/ops/opsctl.sh coinbase-api-health --json" in status_health
     assert "### Point-in-time event store" in status_health

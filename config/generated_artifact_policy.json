@@ -3,6 +3,20 @@
   "auto_commit_generated_changes": false,
   "large_report_storage": "ci_or_release_artifact",
   "tracked_source_only": true,
+  "tracked_runtime_outputs": [
+    "docs/pycharm/deeper_intelligence_layers_latest.md",
+    "docs/pycharm/distributed_cell_architecture_latest.md",
+    "docs/pycharm/intelligence_layers_latest.md",
+    "docs/showcase/generated/highlights_latest.json",
+    "docs/showcase/generated/highlights_latest.md",
+    "docs/showcase/generated/special_features_latest.html"
+  ],
+  "candidate_fingerprint_contract": {
+    "exclude_exact_tracked_runtime_outputs": true,
+    "broad_path_exclusions_allowed": false,
+    "canonical_neighbors_remain_hashed": true,
+    "runtime_outputs_remain_subject_to_freshness_and_quality_controls": true
+  },
   "tracked_summaries": ["README.md", "docs/showcase/projects", "docs/runbooks"],
   "ignored_large_outputs": ["output/pdf/*.pdf", "output/pdf/*.html", "output/pdf/*.png", "output/pdf/*.json", "output/pdf/*.zip"],
   "workflow_contract": {

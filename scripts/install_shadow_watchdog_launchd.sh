@@ -71,6 +71,9 @@ paper_watchdog_args() {
 }
 
 credentials_ready_for_watchdog() {
+  if [[ "${SCHWAB_KEYCHAIN_CREDENTIALS_READY:-0}" == "1" ]]; then
+    return 0
+  fi
   local key="${SCHWAB_API_KEY:-}"
   local secret="${SCHWAB_SECRET:-}"
   case "$key" in
@@ -198,12 +201,15 @@ cat > "$PLIST_PATH" <<PLIST
     <key>SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_MIN_AGE_SECONDS</key><string>${SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_MIN_AGE_SECONDS:-60}</string>
     <key>SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_ALLOWED_REASONS</key><string>${SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_ALLOWED_REASONS:-incident_auto_halt,global_risk_killswitch,repeated_hard_gates,softguard_api_circuit_opened}</string>
     <key>SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_REQUIRE_PAPER_ONLY</key><string>${SHADOW_WATCHDOG_AUTO_CLEAR_GLOBAL_HALT_REQUIRE_PAPER_ONLY:-1}</string>
-    <key>SHADOW_WATCHDOG_ALLOW_SCHWAB_STANDBY_HEARTBEATS</key><string>${SHADOW_WATCHDOG_ALLOW_SCHWAB_STANDBY_HEARTBEATS:-1}</string>
+    <key>SHADOW_WATCHDOG_ALLOW_SCHWAB_STANDBY_HEARTBEATS</key><string>${SHADOW_WATCHDOG_ALLOW_SCHWAB_STANDBY_HEARTBEATS:-0}</string>
     <key>SHADOW_WATCHDOG_BOOT_LOG</key><string>$BOOT_LOG</string>
   </dict>
 
   <key>WorkingDirectory</key>
   <string>$PROJECT_ROOT</string>
+
+  <key>Nice</key>
+  <integer>0</integer>
 
   <key>RunAtLoad</key>
   <true/>

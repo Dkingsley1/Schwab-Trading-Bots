@@ -100,3 +100,82 @@ def test_decay_monitor_requires_automatic_containment_for_decayed_edge(tmp_path:
 
     assert contained["automatic_demotion_ready"] is True
     assert contained["uncontained_decayed_profiles"] == []
+
+
+def test_decay_monitor_uses_candidate_forward_post_cost_series_when_bound(
+    tmp_path: Path,
+) -> None:
+    _write_json(
+        tmp_path / "config" / "profitability_evidence_firewall_v1.json",
+        {
+            "edge_decay": {
+                "minimum_history_days": 10,
+                "recent_window_days": 3,
+                "maximum_mean_decay_fraction": 0.5,
+                "maximum_decayed_position_multiplier": 0.1,
+            }
+        },
+    )
+    candidate_daily = [
+        {
+            "day_utc": f"202608{index + 1:02d}",
+            "post_cost_pnl_delta_total": value,
+        }
+        for index, value in enumerate([2.0] * 7 + [-2.0] * 3)
+    ]
+    lifetime_daily = [
+        {
+            "day_utc": f"202608{index + 1:02d}",
+            "change_vs_previous_day": 5.0,
+        }
+        for index in range(10)
+    ]
+    _write_json(
+        tmp_path / "governance" / "health" / "paper_performance_latest.json",
+        {
+            "ok": True,
+            "history_daily_series": lifetime_daily,
+            "sleeve_daily_series": {"default": lifetime_daily},
+            "candidate_post_cost_daily_series": {"default": candidate_daily},
+            "profitability_evidence_window": {
+                "candidate_id": "pc-current-g8",
+                "candidate_generation": 8,
+                "candidate_cutoff_utc": "2026-08-01T00:00:00+00:00",
+                "evidence_through_utc": "2026-08-11T00:00:00+00:00",
+                "candidate_filter_active": True,
+                "candidate_binding_required": True,
+                "candidate_binding_mismatch_rows_excluded": 0,
+            },
+            "sleeve_latest": [
+                {
+                    "profile": "default",
+                    "data_status": "current",
+                    "ending_net_pnl_total": 8.0,
+                    "win_rate": 0.7,
+                }
+            ],
+        },
+    )
+    _write_json(
+        tmp_path
+        / "governance"
+        / "health"
+        / "paper_profitability_control_latest.json",
+        {
+            "active_profile_controls": {
+                "default": {
+                    "block_new_entries": True,
+                    "position_size_multiplier": 0.0,
+                }
+            }
+        },
+    )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["candidate_binding"]["bound"] is True
+    assert payload["candidate_binding"]["candidate_id"] == "pc-current-g8"
+    assert payload["edge_decay_contract"]["evidence_scope"] == (
+        "candidate_forward_profile_daily_post_cost_pnl"
+    )
+    assert payload["edge_decay_contract"]["decayed_profiles"] == ["default"]

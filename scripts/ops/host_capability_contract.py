@@ -235,8 +235,18 @@ def _mount_rows() -> list[dict[str, Any]]:
 
 
 def _df_rows() -> list[dict[str, Any]]:
+    from core.storage_router import inspect_storage_path
+
     rows: list[dict[str, Any]] = []
-    text = _run_capture(["df", "-kP"])
+    paths = []
+    for path in (PROJECT_ROOT, Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS"))):
+        route = inspect_storage_path(path)
+        if route.get("status") == "present":
+            paths.append(str(route["resolved_path"]))
+    if not paths:
+        return rows
+    # Never enumerate every mounted filesystem, including operator-owned media.
+    text = _run_capture(["df", "-kP", *ordered_unique(paths)])
     for raw in text.splitlines()[1:]:
         parts = raw.split()
         if len(parts) < 6:
@@ -248,16 +258,14 @@ def _df_rows() -> list[dict[str, Any]]:
                 "used_gb": round(_safe_float(parts[2]) / 1024.0 / 1024.0, 3),
                 "free_gb": round(_safe_float(parts[3]) / 1024.0 / 1024.0, 3),
                 "capacity": parts[4],
-                "mountpoint": parts[5],
+                "mountpoint": " ".join(parts[5:]),
             }
         )
     return rows
 
 
 def _storage_layout() -> dict[str, Any]:
-    mounts = _mount_rows()
     df = _df_rows()
-    fs_by_mount = {str(row.get("mountpoint")): str(row.get("filesystem") or "") for row in mounts}
     protected = [*PROTECTED_VOLUME_DEFAULTS, *os.getenv("BOT_PROTECTED_VOLUMES", "").split(",")]
     protected = ordered_unique(protected)
     project_realpath = str(PROJECT_ROOT.resolve())
@@ -268,7 +276,7 @@ def _storage_layout() -> dict[str, Any]:
         storage_rows.append(
             {
                 **row,
-                "filesystem_type": fs_by_mount.get(mountpoint, ""),
+                "filesystem_type": "unmeasured",
                 "protected": any(mountpoint == volume or mountpoint.startswith(f"{volume}/") for volume in protected),
                 "is_project_mount": project_realpath.startswith(mountpoint.rstrip("/") + "/") or project_realpath == mountpoint,
                 "is_bot_logs_mount": mountpoint == bot_logs_mount,
@@ -279,6 +287,7 @@ def _storage_layout() -> dict[str, Any]:
         "project_realpath": project_realpath,
         "bot_logs_external_mount": bot_logs_mount,
         "storage_rows": storage_rows,
+        "inventory_scope": "project_and_configured_archive_routes_only",
         "protected_volumes": protected,
         "denylist_rules": [{"path": volume, "policy": "never_write_or_prune"} for volume in protected],
     }

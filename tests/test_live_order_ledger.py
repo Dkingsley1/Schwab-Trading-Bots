@@ -1,11 +1,16 @@
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 from core.live_order_ledger import LiveOrderLedger
 from scripts.ops import live_order_ledger_control as control
 
 
-def _reserve(ledger: LiveOrderLedger, intent_id: str = "decision-1", quantity: float = 10.0) -> dict:
+def _reserve(
+    ledger: LiveOrderLedger, intent_id: str = "decision-1", quantity: float = 10.0
+) -> dict:
     return ledger.reserve(
         intent_id=intent_id,
         payload={"symbol": "AAPL", "action": "BUY", "quantity": quantity},
@@ -13,7 +18,9 @@ def _reserve(ledger: LiveOrderLedger, intent_id: str = "decision-1", quantity: f
     )
 
 
-def test_reservation_is_transactionally_idempotent_and_detects_conflicts(tmp_path: Path) -> None:
+def test_reservation_is_transactionally_idempotent_and_detects_conflicts(
+    tmp_path: Path,
+) -> None:
     ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
 
     assert _reserve(ledger)["reserved"] is True
@@ -35,7 +42,9 @@ def test_unknown_submit_cannot_be_reserved_or_submitted_again(tmp_path: Path) ->
     ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
     _reserve(ledger)
     ledger.mark_submitting("decision-1")
-    unknown = ledger.mark_submit_result(intent_id="decision-1", acknowledged=False, error="timeout")
+    unknown = ledger.mark_submit_result(
+        intent_id="decision-1", acknowledged=False, error="timeout"
+    )
 
     assert unknown["state"] == "submit_unknown"
     assert _reserve(ledger)["reason"] == "intent_already_reserved"
@@ -45,7 +54,9 @@ def test_unknown_submit_cannot_be_reserved_or_submitted_again(tmp_path: Path) ->
     assert "broker_submit_outcome_unknown" in payload["blockers"]
 
 
-def test_deterministic_client_rejection_is_terminal_not_ambiguous(tmp_path: Path) -> None:
+def test_deterministic_client_rejection_is_terminal_not_ambiguous(
+    tmp_path: Path,
+) -> None:
     ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
     _reserve(ledger)
     ledger.mark_submitting("decision-1")
@@ -61,11 +72,45 @@ def test_deterministic_client_rejection_is_terminal_not_ambiguous(tmp_path: Path
     assert ledger.unresolved() == []
 
 
+def test_startup_recovery_separates_never_dispatched_from_ambiguous_submit(
+    tmp_path: Path,
+) -> None:
+    ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
+    _reserve(ledger, intent_id="reserved-only")
+    _reserve(ledger, intent_id="interrupted-submit")
+    ledger.mark_submitting("interrupted-submit")
+
+    recovery = ledger.recover_interrupted(
+        stale_after_seconds=5.0,
+        now_utc=datetime.now(timezone.utc) + timedelta(seconds=10),
+    )
+
+    assert recovery["ok"] is True
+    assert recovery["recovered_count"] == 2
+    assert ledger.get("reserved-only")["state"] == "rejected"
+    assert ledger.get("interrupted-submit")["state"] == "submit_unknown"
+    assert ledger.verify_event_chain()["ok"] is True
+
+
+def test_startup_recovery_respects_active_dispatch_grace(tmp_path: Path) -> None:
+    ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
+    _reserve(ledger)
+    ledger.mark_submitting("decision-1")
+
+    recovery = ledger.recover_interrupted(stale_after_seconds=60.0)
+
+    assert recovery["recovered_count"] == 0
+    assert recovery["skipped_count"] == 1
+    assert ledger.get("decision-1")["state"] == "submitting"
+
+
 def test_ambiguous_submit_reconciliation_requires_evidence(tmp_path: Path) -> None:
     ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
     _reserve(ledger)
     ledger.mark_submitting("decision-1")
-    ledger.mark_submit_result(intent_id="decision-1", acknowledged=False, error="timeout")
+    ledger.mark_submit_result(
+        intent_id="decision-1", acknowledged=False, error="timeout"
+    )
 
     try:
         ledger.reconcile_ambiguous(
@@ -87,7 +132,9 @@ def test_ambiguous_submit_reconciliation_requires_evidence(tmp_path: Path) -> No
     assert ledger.verify_event_chain()["ok"] is True
 
 
-def test_broker_updates_reconcile_partial_fill_and_terminal_fill(tmp_path: Path) -> None:
+def test_broker_updates_reconcile_partial_fill_and_terminal_fill(
+    tmp_path: Path,
+) -> None:
     ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
     _reserve(ledger)
     ledger.mark_submitting("decision-1")
@@ -118,11 +165,70 @@ def test_broker_updates_reconcile_partial_fill_and_terminal_fill(tmp_path: Path)
     assert ledger.verify_event_chain()["ok"] is True
 
 
+def test_repeated_partial_fill_is_a_monotonic_material_update(tmp_path: Path) -> None:
+    ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
+    _reserve(ledger)
+    ledger.mark_submitting("decision-1")
+    ledger.mark_submit_result(
+        intent_id="decision-1", acknowledged=True, broker_order_id="broker-1"
+    )
+    ledger.record_broker_update(
+        broker_order_id="broker-1",
+        broker_status="PARTIALLY_FILLED",
+        filled_quantity=2.0,
+        average_fill_price=100.0,
+    )
+    updated = ledger.record_broker_update(
+        broker_order_id="broker-1",
+        broker_status="PARTIALLY_FILLED",
+        filled_quantity=7.0,
+        average_fill_price=100.1,
+    )
+
+    assert updated["state"] == "partially_filled"
+    assert updated["filled_quantity"] == 7.0
+    assert ledger.verify_integrity()["ok"] is True
+
+
+def test_fill_regression_overfill_and_broker_identity_mutation_fail_immediately(
+    tmp_path: Path,
+) -> None:
+    ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
+    _reserve(ledger)
+    ledger.mark_submitting("decision-1")
+    ledger.mark_submit_result(
+        intent_id="decision-1", acknowledged=True, broker_order_id="broker-1"
+    )
+    ledger.record_broker_update(
+        broker_order_id="broker-1",
+        broker_status="PARTIALLY_FILLED",
+        filled_quantity=4.0,
+        average_fill_price=100.0,
+    )
+
+    with pytest.raises(ValueError, match="cannot_decrease"):
+        ledger.transition(
+            intent_id="decision-1", to_state="partially_filled", filled_quantity=3.0
+        )
+    with pytest.raises(ValueError, match="cannot_exceed"):
+        ledger.transition(
+            intent_id="decision-1", to_state="filled", filled_quantity=11.0
+        )
+    with pytest.raises(ValueError, match="immutable"):
+        ledger.transition(
+            intent_id="decision-1",
+            to_state="partially_filled",
+            broker_order_id="different-broker-id",
+        )
+
+
 def test_ambiguous_cancel_requires_broker_reconciliation(tmp_path: Path) -> None:
     ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
     _reserve(ledger)
     ledger.mark_submitting("decision-1")
-    ledger.mark_submit_result(intent_id="decision-1", acknowledged=True, broker_order_id="broker-1")
+    ledger.mark_submit_result(
+        intent_id="decision-1", acknowledged=True, broker_order_id="broker-1"
+    )
     ledger.record_broker_update(broker_order_id="broker-1", broker_status="WORKING")
     ledger.mark_cancel_pending("broker-1")
     pending_payload = control.build_payload(tmp_path, ledger_path=ledger.path)
@@ -136,7 +242,9 @@ def test_ambiguous_cancel_requires_broker_reconciliation(tmp_path: Path) -> None
     assert payload["cancel_unknown_count"] == 1
     assert "broker_cancel_outcome_unknown" in payload["blockers"]
 
-    reconciled = ledger.record_broker_update(broker_order_id="broker-1", broker_status="WORKING")
+    reconciled = ledger.record_broker_update(
+        broker_order_id="broker-1", broker_status="WORKING"
+    )
     assert reconciled["state"] == "open"
 
 
@@ -146,7 +254,10 @@ def test_event_chain_tampering_is_detected(tmp_path: Path) -> None:
     ledger.mark_submitting("decision-1")
 
     with sqlite3.connect(str(ledger.path)) as conn:
-        conn.execute("UPDATE order_events SET details_json = ? WHERE event_id = 1", ('{"tampered":true}',))
+        conn.execute(
+            "UPDATE order_events SET details_json = ? WHERE event_id = 1",
+            ('{"tampered":true}',),
+        )
 
     integrity = ledger.verify_event_chain()
     assert integrity["ok"] is False
@@ -159,7 +270,9 @@ def test_materialized_intent_state_tampering_is_detected(tmp_path: Path) -> None
     ledger.mark_submitting("decision-1")
 
     with sqlite3.connect(str(ledger.path)) as conn:
-        conn.execute("UPDATE order_intents SET state = 'filled' WHERE intent_id = 'decision-1'")
+        conn.execute(
+            "UPDATE order_intents SET state = 'filled' WHERE intent_id = 'decision-1'"
+        )
 
     integrity = ledger.verify_integrity()
     assert integrity["ok"] is False
@@ -167,12 +280,16 @@ def test_materialized_intent_state_tampering_is_detected(tmp_path: Path) -> None
     assert "intent_materialized_state_mismatch:decision-1" in integrity["errors"]
 
 
-def test_payload_hash_tampering_is_detected_by_full_integrity_probe(tmp_path: Path) -> None:
+def test_payload_hash_tampering_is_detected_by_full_integrity_probe(
+    tmp_path: Path,
+) -> None:
     ledger = LiveOrderLedger(tmp_path / "orders.sqlite3")
     _reserve(ledger)
 
     with sqlite3.connect(str(ledger.path)) as conn:
-        conn.execute("UPDATE order_intents SET payload_json = '{\"tampered\":true}' WHERE intent_id = 'decision-1'")
+        conn.execute(
+            "UPDATE order_intents SET payload_json = '{\"tampered\":true}' WHERE intent_id = 'decision-1'"
+        )
 
     integrity = ledger.verify_integrity()
     payload = control.build_payload(tmp_path, ledger_path=ledger.path)

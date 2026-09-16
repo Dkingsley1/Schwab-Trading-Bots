@@ -451,6 +451,8 @@ def test_ingestion_storage_governor_applies_backlog_relief_contract_env(tmp_path
     assert env["INGEST_MAX_BYTES_PER_FILE"] == str(128 * 1024 * 1024)
     assert env["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.16"
     assert env["BOT_COLLECTION_DUTY_CYCLE_A_PLUS_PLUS_TARGET"] == "1"
+    assert env["LOG_DECISION_EXPLANATIONS"] == "0"
+    assert env["LOG_SHADOW_PNL_ATTRIBUTION"] == "0"
     assert env["RAW_LIVE_EXPANSION_GUARD_ACTIVE"] == "1"
     assert env["RAW_LIVE_EXPANSION_TIER"] == "blocked_until_raw_live_cools"
     assert env["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST"] == "1"
@@ -460,11 +462,28 @@ def test_ingestion_storage_governor_applies_backlog_relief_contract_env(tmp_path
     assert env["BACKLOG_DRAIN_SINGLE_WRITER_ONLY"] == "1"
     assert env["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "4"
     assert env["TRAINING_PCORE_ALLOWED_WHEN_BACKLOG_GREEN"] == "1"
+    assert env["SHADOW_LOOP_SELF_REFRESH_BACKPRESSURE_ENABLED"] == "1"
+    assert env["SHADOW_LOOP_BACKLOG_REFRESH_MAX_AGE_SECONDS"] == "60"
+    assert env["SHADOW_LOOP_FRESH_BACKLOG_MAX_AGE_SECONDS"] == "180"
+    assert int(env["SHADOW_LOOP_BACKLOG_REFRESH_MAX_AGE_SECONDS"]) < int(
+        env["SHADOW_LOOP_FRESH_BACKLOG_MAX_AGE_SECONDS"]
+    )
     assert payload["throttle_controls"]["backlog_relief_contract_active"] == "1"
     assert payload["throttle_controls"]["raw_live_expansion_guard_active"] == "1"
     assert payload["throttle_controls"]["raw_live_core_reserve_target"] == 4000
     assert payload["throttle_controls"]["p_core_backlog_allocation_active"] == "1"
     assert payload["throttle_controls"]["p_core_preprocess_workers"] == 4
+
+
+def test_raw_live_headroom_guard_pauses_regenerable_high_volume_logs() -> None:
+    env = src._apply_backlog_relief_env(
+        {"LOG_DECISION_EXPLANATIONS": "1", "LOG_SHADOW_PNL_ATTRIBUTION": "1"},
+        {"active_issue_ids": ["raw_live_expansion_headroom"]},
+    )
+
+    assert env["BACKLOG_RELIEF_CONTRACT_ACTIVE"] == "1"
+    assert env["LOG_DECISION_EXPLANATIONS"] == "0"
+    assert env["LOG_SHADOW_PNL_ATTRIBUTION"] == "0"
 
 
 def test_ingestion_storage_governor_keeps_healthy_raw_live_duty_cap_authoritative(tmp_path: Path) -> None:
@@ -492,15 +511,15 @@ def test_ingestion_storage_governor_keeps_healthy_raw_live_duty_cap_authoritativ
                     "RAW_LIVE_EXPANSION_TIER": "ready_for_bigger_expansion",
                     "RAW_LIVE_CORE_RESERVE_TARGET": "4000",
                     "RAW_LIVE_TOTAL_RESERVE_TARGET": "5500",
-                    "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES": "4000",
-                    "SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES": "2000",
+                    "SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES": "5500",
+                    "SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES": "1500",
                     "SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS": "2",
                     "SHADOW_LOOP_BOOTSTRAP_BACKLOG_STAGGER_ENABLED": "1",
                     "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
                     "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.24",
                     "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST": "0",
                     "SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED": "1",
-                    "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES": "2000",
+                    "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES": "2500",
                     "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_AGED_SOURCE_SECONDS": "180.0",
                 },
             },
@@ -536,13 +555,16 @@ def test_ingestion_storage_governor_keeps_healthy_raw_live_duty_cap_authoritativ
     assert payload["env_overrides"]["BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO"] == "0.24"
     assert payload["throttle_controls"]["collection_duty_cycle_max_active_ratio"] == "0.24"
     assert payload["throttle_controls"]["raw_live_expansion_ready"] == "1"
-    assert payload["env_overrides"]["SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES"] == "4000"
-    assert payload["env_overrides"]["SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES"] == "2000"
+    assert payload["env_overrides"]["SHADOW_LOOP_FRESH_BACKLOG_PAUSE_LINES"] == "5500"
+    assert payload["env_overrides"]["SHADOW_LOOP_FRESH_BACKLOG_INFLIGHT_RESERVE_LINES"] == "1500"
     assert payload["env_overrides"]["SIGNAL_GENERATION_SUB_BOT_SAMPLE_MODULUS"] == "2"
     assert payload["env_overrides"]["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_AGED_SOURCE_SECONDS"] == "180.0"
     assert payload["env_overrides"]["SHADOW_LOOP_BOOTSTRAP_BACKLOG_STAGGER_ENABLED"] == "1"
+    assert payload["env_overrides"]["SHADOW_LOOP_SELF_REFRESH_BACKPRESSURE_ENABLED"] == "1"
+    assert payload["env_overrides"]["SHADOW_LOOP_BACKLOG_REFRESH_MAX_AGE_SECONDS"] == "60"
+    assert payload["env_overrides"]["SHADOW_LOOP_FRESH_BACKLOG_MAX_AGE_SECONDS"] == "180"
     assert payload["env_overrides"]["SQL_LINK_SERVICE_RAW_LIVE_AUTO_FOCUS_ENABLED"] == "1"
-    assert payload["env_overrides"]["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES"] == "2000"
+    assert payload["env_overrides"]["SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_MIN_PENDING_LINES"] == "2500"
 
 
 def test_ingestion_storage_governor_applies_storage_efficiency_contract_env(tmp_path: Path) -> None:

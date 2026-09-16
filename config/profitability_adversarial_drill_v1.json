@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "policy_id": "profitability_adversarial_drill_v1",
+  "operating_mode": "deterministic_candidate_bound_paper_diagnostic",
+  "scenario_contract": {
+    "required_scenario_ids": [
+      "regime_transition_whipsaw",
+      "net_alpha_break_even_ladder",
+      "capital_capacity_scaling",
+      "liquidity_evaporation_partial_fill",
+      "correlation_crowding_collapse",
+      "gradual_strategy_decay",
+      "point_in_time_contamination",
+      "recovery_reentry_timing",
+      "benchmark_opportunity_cost",
+      "signal_horizon_conflict",
+      "corporate_action_calendar",
+      "volatility_dependent_data_loss",
+      "false_model_consensus",
+      "portfolio_path_dependency"
+    ],
+    "deterministic": true,
+    "seed": 10414,
+    "maximum_work_units": 12000,
+    "maximum_artifact_bytes": 8000000
+  },
+  "scenarios": [
+    {
+      "scenario_id": "regime_transition_whipsaw",
+      "aliases": ["whipsaw", "regime_transition"],
+      "title": "Regime transition and whipsaw",
+      "purpose": "Verify that low-quality transition signals are suppressed without preventing confirmed recovery re-entry."
+    },
+    {
+      "scenario_id": "net_alpha_break_even_ladder",
+      "aliases": ["break_even", "cost_ladder"],
+      "title": "Net-alpha break-even ladder",
+      "purpose": "Locate the modeled cost boundary where a positive gross signal is no longer eligible after costs."
+    },
+    {
+      "scenario_id": "capital_capacity_scaling",
+      "aliases": ["capacity", "capital_scaling"],
+      "title": "Capital and capacity scaling",
+      "purpose": "Measure sleeve-aware diagnostic capacity from a 200-dollar canary through one billion dollars under six market states."
+    },
+    {
+      "scenario_id": "liquidity_evaporation_partial_fill",
+      "aliases": ["liquidity_evaporation", "partial_fill_inventory"],
+      "title": "Liquidity evaporation after a partial fill",
+      "purpose": "Verify that disappearing depth blocks additional exposure while preserving a reduce-only inventory exit."
+    },
+    {
+      "scenario_id": "correlation_crowding_collapse",
+      "aliases": ["crowding", "correlation_collapse"],
+      "title": "Correlation and crowding collapse",
+      "purpose": "Verify that sleeves which become one factor are not treated as independent portfolio bets."
+    },
+    {
+      "scenario_id": "gradual_strategy_decay",
+      "aliases": ["strategy_decay", "concept_drift"],
+      "title": "Gradual strategy decay",
+      "purpose": "Detect a slowly eroding edge while preserving a stable control series."
+    },
+    {
+      "scenario_id": "point_in_time_contamination",
+      "aliases": ["point_in_time", "revision_leakage"],
+      "title": "Point-in-time contamination and revisions",
+      "purpose": "Prove that future revisions and not-yet-known observations cannot enter an earlier decision replay."
+    },
+    {
+      "scenario_id": "recovery_reentry_timing",
+      "aliases": ["reentry", "recovery_timing"],
+      "title": "Recovery re-entry timing",
+      "purpose": "Compare immediate, staged, and delayed recovery paths after costs and drawdown penalties."
+    },
+    {
+      "scenario_id": "benchmark_opportunity_cost",
+      "aliases": ["opportunity_cost", "benchmark_hold"],
+      "title": "Benchmark-relative opportunity cost",
+      "purpose": "Separate prudent abstention from costly inactivity against cash, SGOV, and passive exposure."
+    },
+    {
+      "scenario_id": "signal_horizon_conflict",
+      "aliases": ["horizon_conflict", "sleeve_ownership"],
+      "title": "Signal horizon conflict",
+      "purpose": "Keep intraday, swing, and long-horizon evidence inside the sleeve that owns that horizon."
+    },
+    {
+      "scenario_id": "corporate_action_calendar",
+      "aliases": ["corporate_actions", "calendar_boundaries"],
+      "title": "Corporate actions and market-calendar boundaries",
+      "purpose": "Preserve security identity and accounting across splits, dividends, symbol changes, delistings, options adjustments, DST, half-days, and futures rolls."
+    },
+    {
+      "scenario_id": "volatility_dependent_data_loss",
+      "aliases": ["mnar", "volatile_data_loss"],
+      "title": "Volatility-dependent missing data",
+      "purpose": "Detect data that disappears specifically in turbulent periods and prevent stale last-good evidence from masquerading as current."
+    },
+    {
+      "scenario_id": "false_model_consensus",
+      "aliases": ["false_consensus", "model_redundancy"],
+      "title": "False model consensus",
+      "purpose": "Collapse correlated model votes into independent evidence components before counting consensus."
+    },
+    {
+      "scenario_id": "portfolio_path_dependency",
+      "aliases": ["path_dependency", "same_endpoint"],
+      "title": "Portfolio path dependency",
+      "purpose": "Prove that equal endpoint returns can carry materially different drawdown and stop behavior."
+    }
+  ],
+  "capital_capacity_contract": {
+    "capital_tiers_usd": [200, 400, 800, 1600, 3200, 6400, 12800, 25000, 50000, 100000, 250000, 500000, 1000000, 2500000, 5000000, 10000000, 25000000, 50000000, 100000000, 250000000, 500000000, 1000000000],
+    "allocation_fraction_sensitivity": [0.05, 0.1, 0.25],
+    "primary_allocation_fraction": 0.1,
+    "canary_capital_usd": 200,
+    "target_scale_capital_usd": 1000000000,
+    "maximum_participation_ratio": 0.02,
+    "minimum_market_state_count": 6,
+    "minimum_capital_tier_count": 22,
+    "minimum_sleeve_coverage_ratio": 1.0,
+    "market_states": {
+      "normal": {"spread_multiplier": 1.0, "slippage_multiplier": 1.0, "daily_volume_multiplier": 1.0, "volatility_multiplier": 1.0, "impact_multiplier": 1.0},
+      "wide_spread": {"spread_multiplier": 4.0, "slippage_multiplier": 1.75, "daily_volume_multiplier": 0.75, "volatility_multiplier": 1.5, "impact_multiplier": 1.25},
+      "thin_liquidity": {"spread_multiplier": 2.5, "slippage_multiplier": 2.25, "daily_volume_multiplier": 0.2, "volatility_multiplier": 1.75, "impact_multiplier": 2.0},
+      "high_volatility_latency": {"spread_multiplier": 3.0, "slippage_multiplier": 3.0, "daily_volume_multiplier": 0.5, "volatility_multiplier": 3.0, "impact_multiplier": 2.5},
+      "flash_crash_dislocation": {"spread_multiplier": 8.0, "slippage_multiplier": 5.0, "daily_volume_multiplier": 0.1, "volatility_multiplier": 5.0, "impact_multiplier": 4.0},
+      "crowded_exit": {"spread_multiplier": 5.0, "slippage_multiplier": 4.0, "daily_volume_multiplier": 0.15, "volatility_multiplier": 4.0, "impact_multiplier": 5.0}
+    },
+    "objective_profiles": {
+      "control_only": {"applicable": false, "default_asset_class": "none"},
+      "directional_alpha": {"applicable": true, "default_asset_class": "equity", "expected_gross_alpha_bps": 32.0, "half_spread_bps": 1.0, "fees_bps": 0.15, "baseline_slippage_bps": 2.0, "daily_dollar_volume": 80000000, "volatility_bps": 30.0, "impact_coefficient": 0.45, "risk_budget_fraction": 0.01, "assumed_loss_fraction": 0.05},
+      "capital_preservation": {"applicable": true, "default_asset_class": "equity", "expected_gross_alpha_bps": 12.0, "half_spread_bps": 0.75, "fees_bps": 0.15, "baseline_slippage_bps": 1.25, "daily_dollar_volume": 200000000, "volatility_bps": 12.0, "impact_coefficient": 0.2, "risk_budget_fraction": 0.005, "assumed_loss_fraction": 0.025},
+      "hedge_utility": {"applicable": true, "default_asset_class": "options", "expected_gross_alpha_bps": 48.0, "half_spread_bps": 8.0, "fees_bps": 0.75, "baseline_slippage_bps": 5.0, "daily_dollar_volume": 12000000, "volatility_bps": 65.0, "impact_coefficient": 0.8, "risk_budget_fraction": 0.005, "assumed_loss_fraction": 0.25},
+      "volatility_relative_value": {"applicable": true, "default_asset_class": "options", "expected_gross_alpha_bps": 75.0, "half_spread_bps": 10.0, "fees_bps": 0.75, "baseline_slippage_bps": 6.0, "daily_dollar_volume": 10000000, "volatility_bps": 75.0, "impact_coefficient": 0.9, "risk_budget_fraction": 0.0075, "assumed_loss_fraction": 0.2},
+      "execution_alpha": {"applicable": true, "default_asset_class": "equity", "expected_gross_alpha_bps": 15.0, "half_spread_bps": 0.5, "fees_bps": 0.1, "baseline_slippage_bps": 1.0, "daily_dollar_volume": 250000000, "volatility_bps": 20.0, "impact_coefficient": 0.2, "risk_budget_fraction": 0.005, "assumed_loss_fraction": 0.02},
+      "event_alpha": {"applicable": true, "default_asset_class": "equity", "expected_gross_alpha_bps": 45.0, "half_spread_bps": 2.0, "fees_bps": 0.15, "baseline_slippage_bps": 4.0, "daily_dollar_volume": 40000000, "volatility_bps": 50.0, "impact_coefficient": 0.7, "risk_budget_fraction": 0.0075, "assumed_loss_fraction": 0.075},
+      "basis_relative_value": {"applicable": true, "default_asset_class": "futures", "expected_gross_alpha_bps": 28.0, "half_spread_bps": 1.5, "fees_bps": 0.25, "baseline_slippage_bps": 2.5, "daily_dollar_volume": 300000000, "volatility_bps": 28.0, "impact_coefficient": 0.4, "risk_budget_fraction": 0.005, "assumed_loss_fraction": 0.03},
+      "market_neutral_relative_value": {"applicable": true, "default_asset_class": "equity_pair", "expected_gross_alpha_bps": 22.0, "half_spread_bps": 2.0, "fees_bps": 0.3, "baseline_slippage_bps": 3.0, "daily_dollar_volume": 50000000, "volatility_bps": 18.0, "impact_coefficient": 0.6, "risk_budget_fraction": 0.005, "assumed_loss_fraction": 0.03},
+      "digital_asset_alpha": {"applicable": true, "default_asset_class": "crypto", "expected_gross_alpha_bps": 55.0, "half_spread_bps": 4.0, "fees_bps": 5.0, "baseline_slippage_bps": 4.0, "daily_dollar_volume": 500000000, "volatility_bps": 80.0, "impact_coefficient": 0.5, "risk_budget_fraction": 0.0075, "assumed_loss_fraction": 0.08},
+      "income_total_return": {"applicable": true, "default_asset_class": "equity", "expected_gross_alpha_bps": 18.0, "half_spread_bps": 1.0, "fees_bps": 0.15, "baseline_slippage_bps": 1.5, "daily_dollar_volume": 80000000, "volatility_bps": 15.0, "impact_coefficient": 0.35, "risk_budget_fraction": 0.005, "assumed_loss_fraction": 0.04},
+      "macro_carry_relative_value": {"applicable": true, "default_asset_class": "futures", "expected_gross_alpha_bps": 35.0, "half_spread_bps": 1.5, "fees_bps": 0.25, "baseline_slippage_bps": 2.5, "daily_dollar_volume": 300000000, "volatility_bps": 35.0, "impact_coefficient": 0.4, "risk_budget_fraction": 0.005, "assumed_loss_fraction": 0.04}
+    },
+    "asset_class_adjustments": {
+      "equity": {"volume_multiplier": 1.0, "fixed_cost_multiplier": 1.0, "reference_price": 100.0, "contract_multiplier": 1.0, "margin_requirement_fraction": 1.0, "fractional_units_allowed": true, "minimum_unit": 0.001},
+      "equity_pair": {"volume_multiplier": 0.7, "fixed_cost_multiplier": 1.5, "reference_price": 100.0, "contract_multiplier": 2.0, "margin_requirement_fraction": 1.0, "fractional_units_allowed": true, "minimum_unit": 0.001},
+      "fixed_income": {"volume_multiplier": 0.6, "fixed_cost_multiplier": 1.2, "reference_price": 1000.0, "contract_multiplier": 1.0, "margin_requirement_fraction": 1.0, "fractional_units_allowed": false, "minimum_unit": 1.0},
+      "options": {"volume_multiplier": 0.2, "fixed_cost_multiplier": 1.25, "reference_price": 5.0, "contract_multiplier": 100.0, "margin_requirement_fraction": 1.0, "fractional_units_allowed": false, "minimum_unit": 1.0},
+      "futures": {"volume_multiplier": 3.0, "fixed_cost_multiplier": 0.9, "reference_price": 5000.0, "contract_multiplier": 5.0, "margin_requirement_fraction": 0.1, "fractional_units_allowed": false, "minimum_unit": 1.0},
+      "crypto": {"volume_multiplier": 2.0, "fixed_cost_multiplier": 1.0, "reference_price": 50000.0, "contract_multiplier": 1.0, "margin_requirement_fraction": 1.0, "fractional_units_allowed": true, "minimum_unit": 0.00000001},
+      "fx": {"volume_multiplier": 5.0, "fixed_cost_multiplier": 0.8, "reference_price": 1.0, "contract_multiplier": 1000.0, "margin_requirement_fraction": 1.0, "fractional_units_allowed": false, "minimum_unit": 1.0},
+      "structured_derivative": {"volume_multiplier": 0.05, "fixed_cost_multiplier": 2.0, "reference_price": 1000.0, "contract_multiplier": 1.0, "margin_requirement_fraction": 1.0, "fractional_units_allowed": false, "minimum_unit": 1.0}
+    }
+  },
+  "evidence_contract": {
+    "candidate_binding_required": true,
+    "candidate_state_must_remain_unchanged": true,
+    "diagnostic_parameters_are_organic_market_evidence": false,
+    "results_are_promotion_evidence": false,
+    "results_are_profitability_proof": false,
+    "missing_organic_calibration_must_remain_visible": true,
+    "automatic_threshold_tuning_allowed": false
+  },
+  "authority_contract": {
+    "network_access": false,
+    "broker_access": false,
+    "market_data_access": false,
+    "paper_order_authority": false,
+    "live_order_authority": false,
+    "automatic_promotion_authority": false,
+    "candidate_mutation_authority": false,
+    "historical_outcome_rewrite_authority": false,
+    "training_label_authority": false,
+    "allocation_authority": false,
+    "risk_limit_mutation_authority": false,
+    "automatic_threshold_tuning_authority": false,
+    "profitability_guaranteed": false
+  }
+}

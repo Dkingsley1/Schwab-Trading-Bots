@@ -3,7 +3,6 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -81,12 +80,20 @@ def test_main_reports_failure_category_buckets(tmp_path: Path, monkeypatch) -> N
     payload = json.loads(out_file.read_text(encoding="utf-8"))
 
     assert rc == 2
+    assert payload["overall_status"] == "blocked"
     assert payload["sample_sufficiency_failed_checks"] == ["paper_replay"]
     assert payload["freshness_failed_checks"] == ["paper_reconciliation"]
     assert payload["failure_categories"]["sample_sufficiency"] == ["paper_replay"]
     assert payload["failure_categories"]["freshness"] == ["paper_reconciliation"]
+    assert payload["stale_retrain_artifacts"] == ["paper_reconciliation"]
+    assert payload["recommended_actions"]
+    contract = payload["operating_contract"]
+    assert contract["complete"] is True
+    assert "automatic_model_promotion" in contract["blocked_authority"]
 
 
-def test_paper_replay_refresh_hours_plan_adds_fallback_window_without_duplicates() -> None:
+def test_paper_replay_refresh_hours_plan_adds_fallback_window_without_duplicates() -> (
+    None
+):
     assert src._paper_replay_refresh_hours_plan(24, 72) == [24, 72]
     assert src._paper_replay_refresh_hours_plan(72, 72) == [72]

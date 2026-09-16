@@ -24,6 +24,11 @@ if __package__ in {None, ""}:
         _safe_float,
     )
     from scripts.ops.long_runtime_common import iso_now, load_json, write_payload
+    from scripts.ops.schwab_account_capability_truth import (
+        build_account_capability_truth,
+        normalize_operator_classification,
+        provider_position_fields,
+    )
 else:
     from .covered_call_roll_watch import (
         DEFAULT_ACCOUNT_ALIAS_PATH,
@@ -36,11 +41,25 @@ else:
         _safe_float,
     )
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, write_payload
+    from .schwab_account_capability_truth import (
+        build_account_capability_truth,
+        normalize_operator_classification,
+        provider_position_fields,
+    )
 
 
-DEFAULT_SNAPSHOT_PATH = PROJECT_ROOT / "governance" / "health" / "broker_truth_shared_snapshot_schwab_latest.json"
-DEFAULT_ROLL_WATCH_PATH = PROJECT_ROOT / "governance" / "health" / "covered_call_roll_watch_latest.json"
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "account_position_study_latest.json"
+DEFAULT_SNAPSHOT_PATH = (
+    PROJECT_ROOT
+    / "governance"
+    / "health"
+    / "broker_truth_shared_snapshot_schwab_latest.json"
+)
+DEFAULT_ROLL_WATCH_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "covered_call_roll_watch_latest.json"
+)
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "account_position_study_latest.json"
+)
 DEFAULT_PROFILES = (
     "aggressive_equities_schwab",
     "conservative_equities_schwab",
@@ -60,7 +79,9 @@ def _position_qty(row: dict[str, Any]) -> float:
         return _safe_float(row.get("netQuantity"), 0.0)
     if "quantity" in row:
         return _safe_float(row.get("quantity"), 0.0)
-    return _safe_float(row.get("longQuantity"), 0.0) - _safe_float(row.get("shortQuantity"), 0.0)
+    return _safe_float(row.get("longQuantity"), 0.0) - _safe_float(
+        row.get("shortQuantity"), 0.0
+    )
 
 
 def _position_underlying(row: dict[str, Any]) -> str:
@@ -77,7 +98,9 @@ def _position_underlying(row: dict[str, Any]) -> str:
     return symbol
 
 
-def _positions(snapshot: dict[str, Any], account_aliases: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def _positions(
+    snapshot: dict[str, Any], account_aliases: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in _position_rows(snapshot):
         inst = _instrument(row)
@@ -88,14 +111,24 @@ def _positions(snapshot: dict[str, Any], account_aliases: dict[str, Any] | None 
         if abs(qty) <= 0.0:
             continue
         alias = _account_alias_for(row, account_aliases)
+        classification = normalize_operator_classification(alias)
         asset_type = str(inst.get("assetType") or "EQUITY").strip().upper()
         out.append(
             {
                 "account_label": str(row.get("_account_label") or "account_1"),
                 "account_index": int(row.get("_account_index", 0) or 0),
-                "operator_account_label": _alias_text(alias, "operator_account_label", "label", "name"),
-                "operator_account_kind": _alias_text(alias, "operator_account_kind", "account_kind", "kind"),
-                "operator_trading_type": _alias_text(alias, "trading_type", "operator_trading_type"),
+                "account_policy_key": classification.get("account_policy_key", ""),
+                "operator_account_label": classification.get(
+                    "operator_account_label", ""
+                ),
+                "operator_account_kind": classification.get("account_kind", "unknown"),
+                "operator_trading_type": classification.get(
+                    "trading_access", "unknown"
+                ),
+                "tax_wrapper": classification.get("tax_wrapper", "unknown"),
+                "borrowing_allowed": bool(
+                    classification.get("borrowing_allowed", False)
+                ),
                 "symbol": symbol,
                 "underlying": _position_underlying(row),
                 "asset_type": asset_type,
@@ -104,6 +137,7 @@ def _positions(snapshot: dict[str, Any], account_aliases: dict[str, Any] | None 
                 "short_quantity": round(_safe_float(row.get("shortQuantity"), 0.0), 6),
                 "market_value": round(_safe_float(row.get("marketValue"), 0.0), 4),
                 "average_price": round(_safe_float(row.get("averagePrice"), 0.0), 4),
+                "provider_position_truth": provider_position_fields(row),
             }
         )
     return out
@@ -120,17 +154,37 @@ def _first_number(*values: Any, default: float = 0.0) -> float:
     return float(default)
 
 
-def _account_nodes(snapshot: dict[str, Any]) -> list[tuple[dict[str, Any], dict[str, Any], int]]:
-    fetched = snapshot.get("fetched") if isinstance(snapshot.get("fetched"), dict) else {}
+def _account_nodes(
+    snapshot: dict[str, Any],
+) -> list[tuple[dict[str, Any], dict[str, Any], int]]:
+    fetched = (
+        snapshot.get("fetched") if isinstance(snapshot.get("fetched"), dict) else {}
+    )
     payload = fetched.get("payload") if isinstance(fetched.get("payload"), dict) else {}
     raw_accounts = payload.get("accounts")
-    nodes = [node for node in raw_accounts if isinstance(node, dict)] if isinstance(raw_accounts, list) else []
-    if not nodes and any(key in payload for key in ("securitiesAccount", "positions", "currentBalances", "_broker_account")):
+    nodes = (
+        [node for node in raw_accounts if isinstance(node, dict)]
+        if isinstance(raw_accounts, list)
+        else []
+    )
+    if not nodes and any(
+        key in payload
+        for key in (
+            "securitiesAccount",
+            "positions",
+            "currentBalances",
+            "_broker_account",
+        )
+    ):
         nodes = [payload]
 
     out: list[tuple[dict[str, Any], dict[str, Any], int]] = []
     for index, node in enumerate(nodes):
-        securities = node.get("securitiesAccount") if isinstance(node.get("securitiesAccount"), dict) else node
+        securities = (
+            node.get("securitiesAccount")
+            if isinstance(node.get("securitiesAccount"), dict)
+            else node
+        )
         if isinstance(securities, dict):
             out.append((node, securities, index))
     return out
@@ -143,11 +197,15 @@ def _account_summaries(
 ) -> list[dict[str, Any]]:
     position_groups: dict[str, list[dict[str, Any]]] = {}
     for row in positions:
-        position_groups.setdefault(str(row.get("account_label") or "account_1"), []).append(row)
+        position_groups.setdefault(
+            str(row.get("account_label") or "account_1"), []
+        ).append(row)
 
     summaries: list[dict[str, Any]] = []
     for node, securities, index in _account_nodes(snapshot):
-        meta_source = securities if isinstance(securities.get("_broker_account"), dict) else node
+        meta_source = (
+            securities if isinstance(securities.get("_broker_account"), dict) else node
+        )
         meta = _account_meta(meta_source, index=index)
         account_label = str(meta.get("account_label") or f"account_{index + 1}")
         alias = _account_alias_for(
@@ -159,8 +217,16 @@ def _account_summaries(
             },
             account_aliases,
         )
-        current = securities.get("currentBalances") if isinstance(securities.get("currentBalances"), dict) else {}
-        initial = securities.get("initialBalances") if isinstance(securities.get("initialBalances"), dict) else {}
+        current = (
+            securities.get("currentBalances")
+            if isinstance(securities.get("currentBalances"), dict)
+            else {}
+        )
+        initial = (
+            securities.get("initialBalances")
+            if isinstance(securities.get("initialBalances"), dict)
+            else {}
+        )
         rows = position_groups.get(account_label, [])
         liquidation_value = _first_number(
             current.get("liquidationValue"),
@@ -169,26 +235,65 @@ def _account_summaries(
             initial.get("accountValue"),
             initial.get("equity"),
         )
-        equity = _first_number(current.get("equity"), current.get("liquidationValue"), initial.get("equity"))
+        equity = _first_number(
+            current.get("equity"),
+            current.get("liquidationValue"),
+            initial.get("equity"),
+        )
+        capability_truth = build_account_capability_truth(
+            securities, alias=alias, positions=rows
+        )
+        classification = capability_truth["operator_classification"]
+        balance_truth = capability_truth["balance_truth"]
+        debit_truth = capability_truth["debit_truth"]
+        collateral_truth = capability_truth["position_collateral_truth"]
+        canary_preflight = capability_truth["canary_preflight"]
         summaries.append(
             {
                 "account_label": account_label,
                 "account_index": int(meta.get("account_index", index) or index),
-                "operator_account_label": _alias_text(alias, "operator_account_label", "label", "name"),
-                "operator_account_kind": _alias_text(alias, "operator_account_kind", "account_kind", "kind"),
-                "operator_trading_type": _alias_text(alias, "trading_type", "operator_trading_type"),
+                "account_policy_key": classification.get("account_policy_key", ""),
+                "operator_account_label": classification.get(
+                    "operator_account_label", ""
+                ),
+                "operator_account_kind": classification.get("account_kind", "unknown"),
+                "operator_trading_type": classification.get(
+                    "trading_access", "unknown"
+                ),
+                "tax_wrapper": classification.get("tax_wrapper", "unknown"),
+                "tax_treatment": classification.get("tax_treatment", "unknown"),
+                "borrowing_allowed": bool(
+                    classification.get("borrowing_allowed", False)
+                ),
                 "account_type": str(securities.get("type") or "").strip().upper(),
                 "flags": {
-                    "closing_only": bool(securities.get("isClosingOnlyRestricted", False)),
+                    "closing_only": bool(
+                        securities.get("isClosingOnlyRestricted", False)
+                    ),
                     "day_trader": bool(securities.get("isDayTrader", False)),
-                    "portfolio_margin": bool(securities.get("isPortfolioMargin", False)),
-                    "in_margin_call": bool(current.get("maintenanceCall", 0.0) or initial.get("isInCall", False)),
+                    "intraday_margin": bool(securities.get("isIntradayMargin", False)),
+                    "portfolio_margin": bool(
+                        securities.get("isPortfolioMargin", False)
+                    ),
+                    "in_margin_call": bool(
+                        current.get("maintenanceCall", 0.0)
+                        or initial.get("isInCall", False)
+                    ),
                 },
                 "liquidation_value": round(liquidation_value, 4),
                 "equity": round(equity, 4),
-                "cash_balance": round(_first_number(current.get("cashBalance"), initial.get("cashBalance")), 4),
+                "cash_balance": round(
+                    _first_number(
+                        current.get("cashBalance"), initial.get("cashBalance")
+                    ),
+                    4,
+                ),
                 "available_funds": round(
-                    _first_number(current.get("availableFunds"), initial.get("availableFundsNonMarginableTrade")), 4
+                    _first_number(
+                        current.get("availableFunds"),
+                        initial.get("availableFundsNonMarginableTrade"),
+                    ),
+                    4,
                 ),
                 "available_funds_nonmarginable": round(
                     _first_number(
@@ -197,37 +302,83 @@ def _account_summaries(
                     ),
                     4,
                 ),
-                "buying_power": round(_first_number(current.get("buyingPower"), initial.get("buyingPower")), 4),
+                "buying_power": round(
+                    _first_number(
+                        current.get("buyingPower"), initial.get("buyingPower")
+                    ),
+                    4,
+                ),
                 "buying_power_nonmarginable": round(
-                    _first_number(current.get("buyingPowerNonMarginableTrade"), initial.get("availableFundsNonMarginableTrade")),
+                    _first_number(
+                        current.get("buyingPowerNonMarginableTrade"),
+                        initial.get("availableFundsNonMarginableTrade"),
+                    ),
                     4,
                 ),
                 "day_trading_buying_power": round(
-                    _first_number(current.get("dayTradingBuyingPower"), initial.get("dayTradingBuyingPower")), 4
+                    _first_number(
+                        current.get("dayTradingBuyingPower"),
+                        initial.get("dayTradingBuyingPower"),
+                    ),
+                    4,
                 ),
-                "margin_balance": round(_first_number(current.get("marginBalance"), initial.get("marginBalance")), 4),
+                "margin_balance": round(
+                    _first_number(
+                        current.get("marginBalance"), initial.get("marginBalance")
+                    ),
+                    4,
+                ),
                 "long_market_value": round(
-                    _first_number(current.get("longMarketValue"), current.get("longMarginValue"), initial.get("longStockValue")),
+                    _first_number(
+                        current.get("longMarketValue"),
+                        current.get("longMarginValue"),
+                        initial.get("longStockValue"),
+                    ),
                     4,
                 ),
                 "short_market_value": round(
-                    _first_number(current.get("shortMarketValue"), initial.get("shortStockValue")), 4
+                    _first_number(
+                        current.get("shortMarketValue"), initial.get("shortStockValue")
+                    ),
+                    4,
                 ),
                 "long_option_market_value": round(
-                    _first_number(current.get("longOptionMarketValue"), initial.get("longOptionMarketValue")), 4
+                    _first_number(
+                        current.get("longOptionMarketValue"),
+                        initial.get("longOptionMarketValue"),
+                    ),
+                    4,
                 ),
                 "short_option_market_value": round(
-                    _first_number(current.get("shortOptionMarketValue"), initial.get("shortOptionMarketValue")), 4
+                    _first_number(
+                        current.get("shortOptionMarketValue"),
+                        initial.get("shortOptionMarketValue"),
+                    ),
+                    4,
                 ),
-                "gross_position_market_value": round(sum(abs(_safe_float(row.get("market_value"), 0.0)) for row in rows), 4),
-                "net_position_market_value": round(sum(_safe_float(row.get("market_value"), 0.0) for row in rows), 4),
+                "gross_position_market_value": round(
+                    sum(abs(_safe_float(row.get("market_value"), 0.0)) for row in rows),
+                    4,
+                ),
+                "net_position_market_value": round(
+                    sum(_safe_float(row.get("market_value"), 0.0) for row in rows), 4
+                ),
                 "position_count": len(rows),
+                "accrued_interest": debit_truth.get("accrued_interest", 0.0),
+                "debit_status": debit_truth.get("status", "unknown"),
+                "short_option_close_mark_estimate": collateral_truth.get(
+                    "short_option_close_mark_estimate", 0.0
+                ),
+                "canary_preflight": canary_preflight,
+                "account_capability_truth": capability_truth,
             }
         )
     return summaries
 
 
-def _portfolio_summary(accounts: list[dict[str, Any]], positions: list[dict[str, Any]]) -> dict[str, Any]:
+def _portfolio_summary(
+    accounts: list[dict[str, Any]], positions: list[dict[str, Any]]
+) -> dict[str, Any]:
     def total(key: str) -> float:
         return round(sum(_safe_float(row.get(key), 0.0) for row in accounts), 4)
 
@@ -239,8 +390,177 @@ def _portfolio_summary(accounts: list[dict[str, Any]], positions: list[dict[str,
         "cash_balance": total("cash_balance"),
         "available_funds": total("available_funds"),
         "buying_power": total("buying_power"),
-        "gross_position_market_value": round(sum(abs(_safe_float(row.get("market_value"), 0.0)) for row in positions), 4),
-        "net_position_market_value": round(sum(_safe_float(row.get("market_value"), 0.0) for row in positions), 4),
+        "accrued_interest": total("accrued_interest"),
+        "short_option_close_mark_estimate": total("short_option_close_mark_estimate"),
+        "confirmed_interest_bearing_borrowing_account_count": sum(
+            1
+            for row in accounts
+            if bool(
+                (row.get("account_capability_truth") or {})
+                .get("debit_truth", {})
+                .get("interest_bearing_borrowing_confirmed", False)
+            )
+        ),
+        "unresolved_debit_interpretation_account_count": sum(
+            1
+            for row in accounts
+            if str(row.get("debit_status") or "") != "no_debit_indicated"
+        ),
+        "canary_candidate_count": sum(
+            1
+            for row in accounts
+            if bool(
+                (row.get("canary_preflight") or {}).get("designated_candidate", False)
+            )
+        ),
+        "canary_account_preflight_ready_count": sum(
+            1
+            for row in accounts
+            if bool(
+                (row.get("canary_preflight") or {}).get(
+                    "account_preflight_ready", False
+                )
+            )
+        ),
+        "gross_position_market_value": round(
+            sum(abs(_safe_float(row.get("market_value"), 0.0)) for row in positions), 4
+        ),
+        "net_position_market_value": round(
+            sum(_safe_float(row.get("market_value"), 0.0) for row in positions), 4
+        ),
+    }
+
+
+def build_account_capability_context(
+    payload: dict[str, Any] | list[Any],
+    *,
+    account_aliases: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build compact, redacted account semantics for the decision runtime."""
+    normalized_payload: dict[str, Any]
+    if isinstance(payload, list):
+        normalized_payload = {"accounts": payload}
+    elif isinstance(payload, dict):
+        normalized_payload = payload
+    else:
+        normalized_payload = {}
+
+    snapshot = {"fetched": {"payload": normalized_payload}}
+    positions = _positions(snapshot, account_aliases=account_aliases)
+    accounts = _account_summaries(snapshot, positions, account_aliases)
+    rows: list[dict[str, Any]] = []
+    for index, account in enumerate(accounts):
+        truth = (
+            account.get("account_capability_truth")
+            if isinstance(account.get("account_capability_truth"), dict)
+            else {}
+        )
+        classification = (
+            truth.get("operator_classification")
+            if isinstance(truth.get("operator_classification"), dict)
+            else {}
+        )
+        provider = (
+            truth.get("provider_account")
+            if isinstance(truth.get("provider_account"), dict)
+            else {}
+        )
+        debit = (
+            truth.get("debit_truth")
+            if isinstance(truth.get("debit_truth"), dict)
+            else {}
+        )
+        calls = (
+            truth.get("broker_call_truth")
+            if isinstance(truth.get("broker_call_truth"), dict)
+            else {}
+        )
+        collateral = (
+            truth.get("position_collateral_truth")
+            if isinstance(truth.get("position_collateral_truth"), dict)
+            else {}
+        )
+        canary = (
+            truth.get("canary_preflight")
+            if isinstance(truth.get("canary_preflight"), dict)
+            else {}
+        )
+        rows.append(
+            {
+                "runtime_account_key": str(
+                    classification.get("account_policy_key")
+                    or f"unclassified_account_{index + 1}"
+                ),
+                "account_policy_key": str(
+                    classification.get("account_policy_key") or ""
+                ),
+                "account_kind": str(classification.get("account_kind") or "unknown"),
+                "tax_wrapper": str(classification.get("tax_wrapper") or "unknown"),
+                "trading_access": str(
+                    classification.get("trading_access") or "unknown"
+                ),
+                "provider_account_type": str(
+                    provider.get("provider_account_type") or ""
+                ),
+                "classification_complete": bool(
+                    classification.get("classification_complete", False)
+                ),
+                "borrowing_allowed": bool(
+                    classification.get("borrowing_allowed", False)
+                ),
+                "cash_only_live_budget": bool(
+                    classification.get("cash_only_live_budget", False)
+                ),
+                "debit_status": str(debit.get("status") or "unknown"),
+                "interest_bearing_borrowing_confirmed": bool(
+                    debit.get("interest_bearing_borrowing_confirmed", False)
+                ),
+                "broker_call_present": bool(calls.get("in_call", False)),
+                "uncovered_short_option_count": int(
+                    collateral.get("uncovered_short_option_count", 0) or 0
+                ),
+                "canary_candidate": bool(canary.get("designated_candidate", False)),
+                "canary_account_preflight_ready": bool(
+                    canary.get("account_preflight_ready", False)
+                ),
+                "canary_cap_usd": float(canary.get("configured_cap_usd", 0.0) or 0.0),
+                "allowed_live_routes": list(canary.get("allowed_live_routes") or []),
+                "live_execution_authority": False,
+            }
+        )
+
+    complete = sum(1 for row in rows if row["classification_complete"])
+    borrowing = sum(1 for row in rows if row["borrowing_allowed"])
+    unknown = len(rows) - complete
+    return {
+        "schema_version": 1,
+        "ok": bool(accounts),
+        "status": (
+            "ready"
+            if accounts and unknown == 0
+            else "classification_incomplete" if accounts else "unavailable"
+        ),
+        "account_count": len(rows),
+        "classified_account_count": complete,
+        "unclassified_account_count": unknown,
+        "limited_margin_account_count": sum(
+            1 for row in rows if row["trading_access"] == "limited_margin"
+        ),
+        "borrowing_enabled_account_count": borrowing,
+        "interest_bearing_borrowing_confirmed_account_count": sum(
+            1 for row in rows if row["interest_bearing_borrowing_confirmed"]
+        ),
+        "canary_candidate_account_count": sum(
+            1 for row in rows if row["canary_candidate"]
+        ),
+        "canary_preflight_ready_account_count": sum(
+            1 for row in rows if row["canary_account_preflight_ready"]
+        ),
+        "accounts": rows,
+        "provider_type_is_not_borrowing_authority": True,
+        "limited_margin_is_not_borrowing_authority": True,
+        "account_truth_can_block_but_never_grant_live_execution": True,
+        "live_execution_authority": False,
     }
 
 
@@ -249,7 +569,9 @@ def _decision_paths(profiles: list[str], day: str) -> list[Path]:
     return [root / profile / f"decision_{day}.jsonl" for profile in profiles]
 
 
-def _recent_lines(path: Path, *, max_bytes: int = DEFAULT_DECISION_TAIL_BYTES) -> list[str]:
+def _recent_lines(
+    path: Path, *, max_bytes: int = DEFAULT_DECISION_TAIL_BYTES
+) -> list[str]:
     try:
         size = path.stat().st_size
         with path.open("rb") as handle:
@@ -265,7 +587,9 @@ def _recent_lines(path: Path, *, max_bytes: int = DEFAULT_DECISION_TAIL_BYTES) -
     return lines
 
 
-def _latest_decision_context(symbols: set[str], profiles: list[str], day: str) -> dict[str, dict[str, Any]]:
+def _latest_decision_context(
+    symbols: set[str], profiles: list[str], day: str
+) -> dict[str, dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
     if not symbols:
         return latest
@@ -293,7 +617,11 @@ def _latest_decision_context(symbols: set[str], profiles: list[str], day: str) -
                 remaining.remove(symbol)
                 continue
             market = row.get("market") if isinstance(row.get("market"), dict) else {}
-            grand = row.get("grand_master_meta") if isinstance(row.get("grand_master_meta"), dict) else {}
+            grand = (
+                row.get("grand_master_meta")
+                if isinstance(row.get("grand_master_meta"), dict)
+                else {}
+            )
             latest[symbol] = {
                 "timestamp_utc": ts,
                 "profile": profile,
@@ -326,7 +654,9 @@ def _latest_decision_context(symbols: set[str], profiles: list[str], day: str) -
     return latest
 
 
-def _fallback_position_context(positions: list[dict[str, Any]], roll_watch: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _fallback_position_context(
+    positions: list[dict[str, Any]], roll_watch: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
     fallback: dict[str, dict[str, Any]] = {}
     for pos in positions:
         if str(pos.get("asset_type") or "").upper() != "EQUITY":
@@ -345,7 +675,11 @@ def _fallback_position_context(positions: list[dict[str, Any]], roll_watch: dict
                     "stance": {},
                 },
             )
-    roll_rows = roll_watch.get("covered_calls") if isinstance(roll_watch.get("covered_calls"), list) else []
+    roll_rows = (
+        roll_watch.get("covered_calls")
+        if isinstance(roll_watch.get("covered_calls"), list)
+        else []
+    )
     roll_counts: dict[str, int] = {}
     for row in roll_rows:
         if isinstance(row, dict):
@@ -354,7 +688,9 @@ def _fallback_position_context(positions: list[dict[str, Any]], roll_watch: dict
                 roll_counts[underlying] = roll_counts.get(underlying, 0) + 1
 
     def _roll_rank(context: dict[str, Any]) -> tuple[int, float]:
-        stance = context.get("stance") if isinstance(context.get("stance"), dict) else {}
+        stance = (
+            context.get("stance") if isinstance(context.get("stance"), dict) else {}
+        )
         severity = str(stance.get("roll_watch_severity") or "").strip().lower()
         dte = _safe_float(stance.get("dte"), 999999.0)
         return SEVERITY_RANK.get(severity, 0), -dte
@@ -379,18 +715,28 @@ def _fallback_position_context(positions: list[dict[str, Any]], roll_watch: dict
                 "strike": row.get("strike"),
                 "expiration": row.get("expiration"),
                 "dte": row.get("dte"),
-                "roll_trigger": (row.get("operator_roll_preference") or {}).get("wait_for_underlying_price")
-                if isinstance(row.get("operator_roll_preference"), dict)
-                else None,
+                "roll_trigger": (
+                    (row.get("operator_roll_preference") or {}).get(
+                        "wait_for_underlying_price"
+                    )
+                    if isinstance(row.get("operator_roll_preference"), dict)
+                    else None
+                ),
             },
         }
         prior = fallback.get(underlying)
-        if not prior or str(prior.get("profile") or "") != "covered_call_roll_watch" or _roll_rank(candidate) > _roll_rank(prior):
+        if (
+            not prior
+            or str(prior.get("profile") or "") != "covered_call_roll_watch"
+            or _roll_rank(candidate) > _roll_rank(prior)
+        ):
             fallback[underlying] = candidate
     return fallback
 
 
-def _underlying_summary(positions: list[dict[str, Any]], decisions: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _underlying_summary(
+    positions: list[dict[str, Any]], decisions: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
     rows: dict[str, dict[str, Any]] = {}
     for pos in positions:
         underlying = str(pos.get("underlying") or "").strip().upper()
@@ -428,8 +774,12 @@ def _underlying_summary(positions: list[dict[str, Any]], decisions: dict[str, di
         if str(pos.get("asset_type") or "").upper() == "EQUITY":
             item["equity_quantity"] = round(float(item["equity_quantity"]) + qty, 6)
         elif str(pos.get("asset_type") or "").upper() == "OPTION":
-            item["option_contract_net"] = round(float(item["option_contract_net"]) + qty, 6)
-        item["market_value"] = round(float(item["market_value"]) + _safe_float(pos.get("market_value"), 0.0), 4)
+            item["option_contract_net"] = round(
+                float(item["option_contract_net"]) + qty, 6
+            )
+        item["market_value"] = round(
+            float(item["market_value"]) + _safe_float(pos.get("market_value"), 0.0), 4
+        )
 
     for underlying, item in rows.items():
         item["chart_context"] = decisions.get(underlying, {})
@@ -437,7 +787,11 @@ def _underlying_summary(positions: list[dict[str, Any]], decisions: dict[str, di
         item["operator_accounts"] = sorted(item.get("operator_accounts", []))
         item["account_kinds"] = sorted(item.get("account_kinds", []))
         item["position_symbols"] = sorted(item["position_symbols"])
-    return sorted(rows.values(), key=lambda item: abs(_safe_float(item.get("market_value"), 0.0)), reverse=True)
+    return sorted(
+        rows.values(),
+        key=lambda item: abs(_safe_float(item.get("market_value"), 0.0)),
+        reverse=True,
+    )
 
 
 def evaluate(
@@ -450,13 +804,22 @@ def evaluate(
 ) -> dict[str, Any]:
     positions = _positions(snapshot, account_aliases=account_aliases)
     accounts = _account_summaries(snapshot, positions, account_aliases)
-    underlyings = {str(pos.get("underlying") or "").strip().upper() for pos in positions if pos.get("underlying")}
+    underlyings = {
+        str(pos.get("underlying") or "").strip().upper()
+        for pos in positions
+        if pos.get("underlying")
+    }
     fallback = _fallback_position_context(positions, roll_watch)
     decisions = {**fallback, **_latest_decision_context(underlyings, profiles, day)}
-    roll_rows = roll_watch.get("covered_calls") if isinstance(roll_watch.get("covered_calls"), list) else []
+    roll_rows = (
+        roll_watch.get("covered_calls")
+        if isinstance(roll_watch.get("covered_calls"), list)
+        else []
+    )
     return {
         "timestamp_utc": iso_now(),
-        "schema_version": 2,
+        "schema_version": 3,
+        "account_truth_schema_version": 1,
         "ok": True,
         "source": str(DEFAULT_SNAPSHOT_PATH),
         "account_aliases_source": str(DEFAULT_ACCOUNT_ALIAS_PATH),
@@ -477,6 +840,9 @@ def evaluate(
         "notes": [
             "Account labels are redacted; raw account numbers are not emitted.",
             "Operator account labels come from the local redacted account alias map.",
+            "Schwab provider account type is preserved separately from operator-verified cash, limited-margin, and tax-wrapper semantics.",
+            "Negative provider margin balances are not relabeled as debt or option close cost without supporting interest and access evidence.",
+            "Unknown safe Schwab balance fields remain visible but cannot grant execution authority.",
             "Balance and exposure summaries include accounts with no open positions.",
             "Chart context uses latest local decision market features and does not place orders.",
         ],
@@ -484,7 +850,9 @@ def evaluate(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build an all-visible-account position and chart-context study artifact.")
+    parser = argparse.ArgumentParser(
+        description="Build an all-visible-account position and chart-context study artifact."
+    )
     parser.add_argument("--snapshot-path", default=str(DEFAULT_SNAPSHOT_PATH))
     parser.add_argument("--roll-watch-path", default=str(DEFAULT_ROLL_WATCH_PATH))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
@@ -497,7 +865,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    profiles = [item.strip() for item in str(args.profiles or "").split(",") if item.strip()]
+    profiles = [
+        item.strip() for item in str(args.profiles or "").split(",") if item.strip()
+    ]
     payload = evaluate(
         snapshot=load_json(Path(args.snapshot_path)),
         roll_watch=load_json(Path(args.roll_watch_path)),

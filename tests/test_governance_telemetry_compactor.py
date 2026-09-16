@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import gzip
 import json
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
+import pytest
 
 from scripts.ops import governance_telemetry_compactor as src
+
+
+@pytest.fixture(autouse=True)
+def idle_probe(monkeypatch):
+    monkeypatch.setattr(src, "_require_rotated_idle", lambda path: None)
 
 
 def _write_channel_file(project_root: Path, *, channel: str = "decision", profile: str = "default_crypto_schwab") -> Path:
@@ -219,3 +226,81 @@ def test_compactor_applies_to_master_control_without_losing_active_path(tmp_path
     assert source.read_text(encoding="utf-8") == ""
     archive_path = tmp_path / payload["records"][0]["archive_path"]
     assert archive_path.exists()
+
+
+def test_rotation_emits_full_restore_proof(tmp_path):
+    source = _write_master_control_file(tmp_path)
+    expected = hashlib.sha256(source.read_bytes()).hexdigest()
+    payload = src.build_payload(project_root=tmp_path, apply=True, min_file_mb=0.000001)
+    proof = payload["records"][0]["verification"]
+    assert proof["sha256_uncompressed"] == expected
+    assert proof["raw_removed"] is True
+    assert (
+        proof["verification_basis"]
+        == "full_gzip_restore_sha256_and_stable_source_identity"
+    )
+
+
+@pytest.mark.parametrize("failure", ["verification", "open_file"])
+def test_rotation_failure_preserves_pending_contents(tmp_path, monkeypatch, failure):
+    source = _write_master_control_file(tmp_path)
+    original = source.read_bytes()
+    if failure == "verification":
+        monkeypatch.setattr(
+            src,
+            "_compress_and_clear",
+            lambda *a, **kw: {"status": "failed", "reason": "restore_mismatch"},
+        )
+    else:
+
+        def busy(path):
+            raise RuntimeError("rotated_file_still_open")
+
+        monkeypatch.setattr(src, "_require_rotated_idle", busy)
+    payload = src.build_payload(project_root=tmp_path, apply=True, min_file_mb=0.000001)
+    assert payload["overall_status"] == "degraded"
+    assert payload["summary"]["archived_count"] == 0
+    assert source.read_bytes() == b""
+    pending = list(source.parent.glob("*.compact_pending_*"))
+    assert len(pending) == 1 and pending[0].read_bytes() == original
+
+
+def test_protected_alias_is_rejected_before_metadata(tmp_path, monkeypatch):
+    root = tmp_path / "governance" / "shadow_alias"
+    root.parent.mkdir()
+    root.symlink_to("/Volumes/VIDEO")
+    original = Path.stat
+
+    def guarded(path, *args, **kwargs):
+        assert not str(path).startswith("/Volumes/VIDEO")
+        assert not (path == root and kwargs.get("follow_symlinks", True))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", guarded)
+    assert src._iter_master_control_files(tmp_path) == []
+    record = src._archive_one(
+        project_root=tmp_path,
+        source_rel="governance/shadow_alias/example.jsonl",
+        archive_root=tmp_path / "archive",
+        compression_level=1,
+        stamp="test",
+    )
+    assert record["status"] == "error"
+
+
+def test_idle_probe_rejects_open_files_and_probe_errors(tmp_path, monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(src.shutil, "which", lambda name: "/usr/sbin/lsof")
+    for result in (
+        {"rc": 0, "stdout": "123", "stderr": ""},
+        {"rc": 1, "stdout": "", "stderr": "error"},
+    ):
+        monkeypatch.setattr(src, "run_bounded_process_group", lambda *a, **kw: result)
+        with pytest.raises(RuntimeError, match="idle_probe_failed"):
+            src._require_rotated_idle(tmp_path / "rotated.jsonl")
+    monkeypatch.setattr(
+        src,
+        "run_bounded_process_group",
+        lambda *a, **kw: {"rc": 1, "stdout": "", "stderr": ""},
+    )
+    src._require_rotated_idle(tmp_path / "rotated.jsonl")

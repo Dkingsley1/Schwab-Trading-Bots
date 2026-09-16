@@ -142,6 +142,42 @@ def test_storage_transition_coordinator_keeps_external_handoff_ready_with_ops_ad
     assert ops_row["ok"] is True
 
 
+def test_storage_transition_coordinator_apply_keeps_managed_ops_failure_advisory(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_json(health / "storage_mount_guard_latest.json", {"storage_mode": "external", "external_available": True})
+    _write_json(health / "storage_failback_sync_latest.json", {"mode": "external"})
+    _write_json(health / "storage_split_brain_reconciler_latest.json", {"summary": {"unresolved_conflicts": 0}})
+    _write_json(health / "storage_resilience_control_latest.json", {"overall_status": "ready", "ok": True})
+    _write_json(health / "ops_coordinator_latest.json", {"overall_status": "blocked", "ok": False})
+    payload = coordinator_src.build_payload(project_root, transition_mode="external", apply=True)
+
+    result = coordinator_src._apply_attempt_outcomes(
+        payload,
+        [
+            {"name": "process_watchdog", "rc": 0},
+            {"name": "storage_split_brain_reconciler", "rc": 0},
+            {"name": "storage_resilience_control", "rc": 0},
+            {"name": "ops_coordinator", "rc": 1},
+        ],
+    )
+
+    assert result["overall_status"] == "ready"
+    assert result["ok"] is True
+    assert result["metrics"]["managed_failed_step_count"] == 1
+    assert result["metrics"]["unmanaged_failed_step_count"] == 0
+
+
+def test_storage_transition_coordinator_apply_degrades_unmanaged_failure() -> None:
+    payload = {"overall_status": "ready", "ok": True, "assigned_bots": [], "metrics": {}}
+    result = coordinator_src._apply_attempt_outcomes(payload, [{"name": "process_watchdog", "rc": 1}])
+
+    assert result["overall_status"] == "degraded"
+    assert result["ok"] is False
+    assert result["metrics"]["managed_failed_step_count"] == 0
+    assert result["metrics"]["unmanaged_failed_step_count"] == 1
+
+
 def test_storage_transition_coordinator_records_child_timeout(tmp_path: Path, monkeypatch) -> None:
     def _timeout(cmd: list[str], **_kwargs):
         raise coordinator_src.subprocess.TimeoutExpired(cmd=cmd, timeout=3, output='{"ok": false}\n', stderr="slow child")

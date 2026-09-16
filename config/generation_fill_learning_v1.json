@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "contract_id": "generation_fill_learning_v1",
+  "learning_target_mode": "current_candidate",
+  "source_generation_policy": {
+    "include_verified_prior_generations": true,
+    "include_current_target_generation": true,
+    "exact_candidate_or_receipt_binding_required": true,
+    "timestamp_only_generation_inference_allowed": false,
+    "legacy_unbound_rows_are_quarantined": true,
+    "source_generation_is_grouping_context_not_predictive_feature": true
+  },
+  "fill_source_quality_multipliers": {
+    "broker_paper_fill": 1.0,
+    "observed_touch": 1.0,
+    "paper_broker_fill": 1.0,
+    "schwab_paper": 1.0,
+    "market_replay_fill": 0.65,
+    "expected_fill_model": 0.35,
+    "unknown": 0.0
+  },
+  "outcome_weight_policy": {
+    "negative": 2.85,
+    "positive": 1.0,
+    "neutral": 0.5,
+    "neutral_pnl_epsilon": 1e-09,
+    "maximum_row_weight": 3.5,
+    "receipt_recovered_provenance_multiplier": 0.9
+  },
+  "recency_policy": {
+    "half_life_days": 30.0,
+    "minimum_multiplier": 0.15
+  },
+  "generation_balance_policy": {
+    "maximum_generation_weight_share": 0.35,
+    "budget_basis": "sqrt_sample_count_times_mean_recency"
+  },
+  "validation_policy": {
+    "train_fraction": 0.6,
+    "validation_fraction": 0.2,
+    "test_fraction": 0.2,
+    "embargo_hours": 6.0,
+    "minimum_rows_per_partition": 5,
+    "minimum_rows_per_generation_fold": 5,
+    "minimum_generation_folds": 2
+  },
+  "challenger_policy": {
+    "training_lineage_contract_required": true,
+    "training_quality_ready_required": true,
+    "offline_challenger_only": true,
+    "automatic_runtime_swap_allowed": false,
+    "automatic_threshold_change_allowed": false,
+    "automatic_strategy_promotion_allowed": false,
+    "paper_order_authority": false,
+    "live_execution_authority": false
+  }
+}

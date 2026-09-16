@@ -92,6 +92,12 @@ def _top_named(rows: list[Any], *, name_key: str = "name", value_key: str = "exe
     return out
 
 
+def _paper_amount(section: dict[str, Any], key: str) -> float | None:
+    if not section.get("available", False) or section.get(key) is None:
+        return None
+    return round(_safe_float(section[key], 0.0), 6)
+
+
 def _paper_trade_snapshot(paper: dict[str, Any]) -> dict[str, Any]:
     day = paper.get("day") if isinstance(paper.get("day"), dict) else {}
     week = paper.get("week") if isinstance(paper.get("week"), dict) else {}
@@ -107,7 +113,11 @@ def _paper_trade_snapshot(paper: dict[str, Any]) -> dict[str, Any]:
         reverse=True,
     )[:6]
     return {
-        "status": "ready" if bool(day.get("available", False) or week.get("available", False)) else "missing",
+        "status": (
+            "ready"
+            if bool(day.get("available", False) or week.get("available", False))
+            else "missing"
+        ),
         "day": {
             "day_utc": str(day.get("day_utc") or ""),
             "available": bool(day.get("available", False)),
@@ -115,8 +125,8 @@ def _paper_trade_snapshot(paper: dict[str, Any]) -> dict[str, Any]:
             "buy_count": _safe_int(day.get("buy_count"), 0),
             "sell_count": _safe_int(day.get("sell_count"), 0),
             "unique_symbols": _safe_int(day.get("unique_symbols"), 0),
-            "ending_net_pnl_total": round(_safe_float(day.get("ending_net_pnl_total"), 0.0), 6),
-            "change_vs_previous_day": round(_safe_float(day.get("change_vs_previous_day"), 0.0), 6),
+            "ending_net_pnl_total": _paper_amount(day, "ending_net_pnl_total"),
+            "change_vs_previous_day": _paper_amount(day, "change_vs_previous_day"),
             "top_profiles": _top_named(_as_list(day.get("top_profiles")), limit=5),
             "top_symbols": _top_named(_as_list(day.get("top_symbols")), limit=5),
             "top_strategies": _top_named(_as_list(day.get("top_strategies")), limit=5),
@@ -126,9 +136,9 @@ def _paper_trade_snapshot(paper: dict[str, Any]) -> dict[str, Any]:
             "week_end_day_utc": str(week.get("week_end_day_utc") or ""),
             "available": bool(week.get("available", False)),
             "executions": _safe_int(week.get("executions"), 0),
-            "ending_net_pnl_total": round(_safe_float(week.get("ending_net_pnl_total"), 0.0), 6),
-            "week_to_date_change": round(_safe_float(week.get("week_to_date_change"), 0.0), 6),
-            "rolling_change": round(_safe_float(week.get("rolling_change"), 0.0), 6),
+            "ending_net_pnl_total": _paper_amount(week, "ending_net_pnl_total"),
+            "week_to_date_change": _paper_amount(week, "week_to_date_change"),
+            "rolling_change": _paper_amount(week, "rolling_change"),
             "top_profiles": _top_named(_as_list(week.get("top_profiles")), limit=5),
             "top_symbols": _top_named(_as_list(week.get("top_symbols")), limit=5),
             "top_strategies": _top_named(_as_list(week.get("top_strategies")), limit=5),
@@ -141,7 +151,9 @@ def _paper_trade_snapshot(paper: dict[str, Any]) -> dict[str, Any]:
                     "profile": str(row.get("profile") or ""),
                     "day_utc": str(row.get("day_utc") or ""),
                     "executions": _safe_int(row.get("executions"), 0),
-                    "ending_net_pnl_total": round(_safe_float(row.get("ending_net_pnl_total"), 0.0), 6),
+                    "ending_net_pnl_total": round(
+                        _safe_float(row.get("ending_net_pnl_total"), 0.0), 6
+                    ),
                     "win_rate": row.get("win_rate"),
                     "data_status": str(row.get("data_status") or ""),
                 }
@@ -152,10 +164,17 @@ def _paper_trade_snapshot(paper: dict[str, Any]) -> dict[str, Any]:
                     "profile": str(row.get("profile") or ""),
                     "day_utc": str(row.get("day_utc") or ""),
                     "executions": _safe_int(row.get("executions"), 0),
-                    "ending_net_pnl_total": round(_safe_float(row.get("ending_net_pnl_total"), 0.0), 6),
+                    "ending_net_pnl_total": round(
+                        _safe_float(row.get("ending_net_pnl_total"), 0.0), 6
+                    ),
                     "win_rate": row.get("win_rate"),
                     "data_status": str(row.get("data_status") or ""),
-                    "top_loss_causes": _top_named(_as_list(row.get("top_loss_causes")), name_key="cause", value_key="loss_total", limit=3),
+                    "top_loss_causes": _top_named(
+                        _as_list(row.get("top_loss_causes")),
+                        name_key="cause",
+                        value_key="loss_total",
+                        limit=3,
+                    ),
                 }
                 for row in weakest
             ],

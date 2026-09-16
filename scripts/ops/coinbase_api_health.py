@@ -37,6 +37,12 @@ def _credential_state() -> dict[str, Any]:
     }
 
 
+def _account_link_state() -> dict[str, Any]:
+    from scripts.ops.coinbase_account_link import status
+
+    return status()
+
+
 def _error_dict(exc: BaseException) -> dict[str, Any]:
     if isinstance(exc, MarketDataAPIError):
         return {
@@ -119,6 +125,7 @@ def build_payload(
             "product_status": str(product.get("status") or "").strip(),
         },
         "credentials": credentials,
+        "personal_account": _account_link_state(),
         "errors": errors,
         "recommended_actions": [action for action in recommended_actions if action],
     }

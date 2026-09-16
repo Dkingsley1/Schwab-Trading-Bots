@@ -68,6 +68,8 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, ledger_path: Path | None
             "transactional_reservation_before_submit": True,
             "ambiguous_submit_never_auto_retried": True,
             "broker_reconciliation_required_for_unknown_submit_or_cancel": True,
+            "full_active_order_inventory_reconciliation_required": True,
+            "untracked_active_broker_orders_block_new_intents": True,
             "hash_chained_order_events": True,
             "sqlite_quick_check_required": True,
             "foreign_key_integrity_required": True,

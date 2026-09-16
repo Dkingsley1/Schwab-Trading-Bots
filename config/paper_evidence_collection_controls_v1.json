@@ -1,0 +1,282 @@
+{
+  "schema_version": 1,
+  "policy_id": "paper_evidence_collection_controls_v1",
+  "enabled": true,
+  "paper_only": true,
+  "live_execution_allowed": false,
+  "purpose": "Allow bounded paper-only sampling for current-candidate evidence collection when sleeves have enough point-in-time context to make a trade reasonable, while preserving all profitability, promotion, and live-money gates.",
+  "non_relaxed_controls": [
+    "market_data_only_lock",
+    "live_execution_lock",
+    "staged_promotion_cohort_hard_blocks",
+    "contract_valuation_guard",
+    "weak_profile_new_entry_quarantine",
+    "losing_strategy_pair_quarantine",
+    "stale_quote_or_extended_session_blocks",
+    "hard_liquidity_tradeability_spread_conflict_floors",
+    "same_order_reversal_block",
+    "paper_risk_guard",
+    "profitability_claim_firewall"
+  ],
+  "forbidden_shortcuts": [
+    "force_trades_to_create_samples",
+    "martingale_or_averaging_down_for_recovery",
+    "loss_based_size_increase",
+    "direct_threshold_loosen_without_positive_counterfactual_post_cost_evidence",
+    "live_execution_before_operator_release",
+    "rewriting_or_offsetting_historical_paper_losses"
+  ],
+  "defaults": {
+    "enabled": true,
+    "mode": "paper_evidence_collection",
+    "allowed_guard_reasons": [
+      "paper_profitability_entry_policy_block",
+      "paper_profitability_clean_profile_evidence_block"
+    ],
+    "allowed_entry_policy_blockers": [
+      "predicted_edge_lower_bound_unknown",
+      "liquidity_unknown",
+      "session_quality_unknown"
+    ],
+    "allowed_clean_gate_failures": [
+      "event_catalyst_confirmation_unknown",
+      "portfolio_conflict_clearance_unknown",
+      "session_quality_unknown",
+      "independent_evidence_channel_floor_not_met"
+    ],
+    "minimum_model_score_edge_over_threshold": 0.02,
+    "minimum_known_core_channels": 4,
+    "hard_min_tradeability_norm": 0.5,
+    "hard_min_execution_fitness_norm": 0.5,
+    "hard_min_source_quality_norm": 0.4,
+    "hard_min_liquidity_norm": 0.4,
+    "hard_max_spread_bps": 35.0,
+    "hard_max_quote_age_ms": 5000.0,
+    "hard_max_overlap_pressure_norm": 0.74,
+    "hard_max_conflict_pressure_norm": 0.8,
+    "max_entries_per_symbol_day": 8,
+    "new_entry_cooldown_seconds": 180,
+    "force_trade_allowed": false,
+    "loss_recovery_size_increase_allowed": false,
+    "profitability_claim_allowed": false
+  },
+  "profiles": {
+    "default": {
+      "max_entries_per_symbol_day": 8,
+      "new_entry_cooldown_seconds": 180
+    },
+    "equity_core": {
+      "minimum_model_score_edge_over_threshold": 0.015,
+      "hard_max_spread_bps": 25.0,
+      "max_entries_per_symbol_day": 8,
+      "new_entry_cooldown_seconds": 180
+    },
+    "intraday_aggressive": {
+      "minimum_model_score_edge_over_threshold": 0.025,
+      "hard_min_tradeability_norm": 0.54,
+      "hard_min_execution_fitness_norm": 0.54,
+      "hard_max_spread_bps": 16.0,
+      "hard_max_quote_age_ms": 2500.0,
+      "max_entries_per_symbol_day": 12,
+      "new_entry_cooldown_seconds": 90
+    },
+    "day_trading": {
+      "minimum_model_score_edge_over_threshold": 0.02,
+      "hard_min_tradeability_norm": 0.52,
+      "hard_min_execution_fitness_norm": 0.52,
+      "hard_max_spread_bps": 18.0,
+      "hard_max_quote_age_ms": 3000.0,
+      "max_entries_per_symbol_day": 10,
+      "new_entry_cooldown_seconds": 120
+    },
+    "swing_aggressive": {
+      "minimum_model_score_edge_over_threshold": 0.02,
+      "hard_max_spread_bps": 35.0,
+      "max_entries_per_symbol_day": 7,
+      "new_entry_cooldown_seconds": 240
+    },
+    "dividend_income": {
+      "minimum_model_score_edge_over_threshold": 0.01,
+      "hard_max_spread_bps": 30.0,
+      "max_entries_per_symbol_day": 5,
+      "new_entry_cooldown_seconds": 600
+    },
+    "dividend_capture": {
+      "minimum_model_score_edge_over_threshold": 0.02,
+      "hard_max_spread_bps": 24.0,
+      "max_entries_per_symbol_day": 7,
+      "new_entry_cooldown_seconds": 300
+    },
+    "bond_rates": {
+      "minimum_model_score_edge_over_threshold": 0.012,
+      "hard_max_spread_bps": 28.0,
+      "max_entries_per_symbol_day": 5,
+      "new_entry_cooldown_seconds": 600
+    },
+    "fx_macro": {
+      "minimum_model_score_edge_over_threshold": 0.015,
+      "hard_max_spread_bps": 25.0,
+      "max_entries_per_symbol_day": 8,
+      "new_entry_cooldown_seconds": 240
+    },
+    "crypto_spot": {
+      "minimum_model_score_edge_over_threshold": 0.025,
+      "hard_min_tradeability_norm": 0.54,
+      "hard_max_spread_bps": 55.0,
+      "hard_max_quote_age_ms": 3500.0,
+      "max_entries_per_symbol_day": 10,
+      "new_entry_cooldown_seconds": 150
+    },
+    "crypto_futures": {
+      "minimum_model_score_edge_over_threshold": 0.03,
+      "hard_min_tradeability_norm": 0.56,
+      "hard_max_spread_bps": 60.0,
+      "hard_max_quote_age_ms": 2500.0,
+      "max_entries_per_symbol_day": 10,
+      "new_entry_cooldown_seconds": 150
+    },
+    "schwab_futures": {
+      "minimum_model_score_edge_over_threshold": 0.025,
+      "hard_min_tradeability_norm": 0.54,
+      "hard_max_spread_bps": 35.0,
+      "hard_max_quote_age_ms": 2500.0,
+      "max_entries_per_symbol_day": 9,
+      "new_entry_cooldown_seconds": 180
+    },
+    "volatility": {
+      "minimum_model_score_edge_over_threshold": 0.03,
+      "hard_min_tradeability_norm": 0.55,
+      "hard_min_execution_fitness_norm": 0.55,
+      "hard_max_spread_bps": 70.0,
+      "hard_max_quote_age_ms": 2500.0,
+      "max_entries_per_symbol_day": 8,
+      "new_entry_cooldown_seconds": 240
+    },
+    "pairs_correlation": {
+      "minimum_model_score_edge_over_threshold": 0.015,
+      "hard_max_spread_bps": 30.0,
+      "hard_max_overlap_pressure_norm": 0.68,
+      "max_entries_per_symbol_day": 8,
+      "new_entry_cooldown_seconds": 180
+    },
+    "stat_arb_market_neutral": {
+      "minimum_model_score_edge_over_threshold": 0.015,
+      "hard_max_spread_bps": 25.0,
+      "hard_max_overlap_pressure_norm": 0.65,
+      "max_entries_per_symbol_day": 10,
+      "new_entry_cooldown_seconds": 120
+    },
+    "earnings_event": {
+      "minimum_model_score_edge_over_threshold": 0.03,
+      "hard_min_source_quality_norm": 0.5,
+      "hard_max_spread_bps": 45.0,
+      "hard_max_quote_age_ms": 2500.0,
+      "max_entries_per_symbol_day": 8,
+      "new_entry_cooldown_seconds": 240
+    },
+    "commodity_inflation": {
+      "minimum_model_score_edge_over_threshold": 0.02,
+      "hard_max_spread_bps": 45.0,
+      "max_entries_per_symbol_day": 7,
+      "new_entry_cooldown_seconds": 300
+    },
+    "international_macro": {
+      "minimum_model_score_edge_over_threshold": 0.018,
+      "hard_max_spread_bps": 45.0,
+      "max_entries_per_symbol_day": 7,
+      "new_entry_cooldown_seconds": 300
+    },
+    "market_making_liquidity": {
+      "minimum_model_score_edge_over_threshold": 0.035,
+      "hard_min_tradeability_norm": 0.58,
+      "hard_min_execution_fitness_norm": 0.58,
+      "hard_min_liquidity_norm": 0.55,
+      "hard_max_spread_bps": 8.0,
+      "hard_max_quote_age_ms": 1000.0,
+      "max_entries_per_symbol_day": 16,
+      "new_entry_cooldown_seconds": 45
+    },
+    "short_bias_hedge": {
+      "minimum_model_score_edge_over_threshold": 0.02,
+      "hard_max_spread_bps": 35.0,
+      "hard_max_conflict_pressure_norm": 0.72,
+      "max_entries_per_symbol_day": 7,
+      "new_entry_cooldown_seconds": 240
+    },
+    "single_name_options_event": {
+      "minimum_model_score_edge_over_threshold": 0.035,
+      "hard_min_tradeability_norm": 0.56,
+      "hard_min_execution_fitness_norm": 0.56,
+      "hard_max_spread_bps": 90.0,
+      "hard_max_quote_age_ms": 2500.0,
+      "max_entries_per_symbol_day": 7,
+      "new_entry_cooldown_seconds": 300
+    },
+    "rates_credit_macro": {
+      "minimum_model_score_edge_over_threshold": 0.018,
+      "hard_max_spread_bps": 32.0,
+      "max_entries_per_symbol_day": 6,
+      "new_entry_cooldown_seconds": 360
+    },
+    "cash_rotation_tactical": {
+      "minimum_model_score_edge_over_threshold": 0.01,
+      "hard_max_spread_bps": 12.0,
+      "max_entries_per_symbol_day": 4,
+      "new_entry_cooldown_seconds": 900
+    },
+    "conservative": {
+      "minimum_model_score_edge_over_threshold": 0.01,
+      "hard_max_spread_bps": 18.0,
+      "max_entries_per_symbol_day": 4,
+      "new_entry_cooldown_seconds": 900
+    },
+    "futures_index_intraday": {
+      "minimum_model_score_edge_over_threshold": 0.025,
+      "hard_min_tradeability_norm": 0.55,
+      "hard_max_spread_bps": 16.0,
+      "hard_max_quote_age_ms": 2000.0,
+      "max_entries_per_symbol_day": 12,
+      "new_entry_cooldown_seconds": 90
+    },
+    "futures_rates_curve": {
+      "minimum_model_score_edge_over_threshold": 0.02,
+      "hard_max_spread_bps": 28.0,
+      "hard_max_quote_age_ms": 2500.0,
+      "max_entries_per_symbol_day": 8,
+      "new_entry_cooldown_seconds": 240
+    },
+    "futures_commodity_macro": {
+      "minimum_model_score_edge_over_threshold": 0.022,
+      "hard_max_spread_bps": 45.0,
+      "hard_max_quote_age_ms": 2500.0,
+      "max_entries_per_symbol_day": 8,
+      "new_entry_cooldown_seconds": 240
+    },
+    "crypto_futures_basis": {
+      "minimum_model_score_edge_over_threshold": 0.03,
+      "hard_min_tradeability_norm": 0.56,
+      "hard_min_execution_fitness_norm": 0.56,
+      "hard_max_spread_bps": 45.0,
+      "hard_max_quote_age_ms": 2000.0,
+      "max_entries_per_symbol_day": 8,
+      "new_entry_cooldown_seconds": 180
+    },
+    "futures_event_reaction": {
+      "minimum_model_score_edge_over_threshold": 0.035,
+      "hard_min_source_quality_norm": 0.5,
+      "hard_max_spread_bps": 32.0,
+      "hard_max_quote_age_ms": 1500.0,
+      "max_entries_per_symbol_day": 10,
+      "new_entry_cooldown_seconds": 120
+    },
+    "options_on_futures_aggressive": {
+      "minimum_model_score_edge_over_threshold": 0.04,
+      "hard_min_tradeability_norm": 0.58,
+      "hard_min_execution_fitness_norm": 0.58,
+      "hard_max_spread_bps": 95.0,
+      "hard_max_quote_age_ms": 2000.0,
+      "max_entries_per_symbol_day": 6,
+      "new_entry_cooldown_seconds": 360
+    }
+  }
+}

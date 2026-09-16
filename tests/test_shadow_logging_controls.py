@@ -98,6 +98,15 @@ def test_shadow_loop_connects_duty_cycle_to_sleep_and_telemetry() -> None:
     assert 'sleep_s = float(duty_cycle["sleep_seconds"])' in source
 
 
+def test_shadow_loop_resumes_at_interrupted_symbol_after_backpressure() -> None:
+    source = inspect.getsource(loop.run_loop)
+
+    assert "symbol_resume_index = 0" in source
+    assert "range(symbol_resume_index, len(symbols))" in source
+    assert "symbol_resume_index = min(max(symbol_index, 0), max(len(symbols) - 1, 0))" in source
+    assert "resume_from_symbol_index={symbol_resume_index}" in source
+
+
 def test_runtime_research_self_nice_reads_runtime_override(tmp_path, monkeypatch) -> None:
     runtime_override = tmp_path / ".env.runtime_resource_guard_override"
     monkeypatch.setattr(loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (runtime_override,))
@@ -369,6 +378,52 @@ def test_runtime_training_pause_contract_hard_pauses_for_backlog_override(tmp_pa
     assert contract["backlog_paused"] is True
     assert contract["training_paused_for_backlog"] is True
     assert contract["heavy_collectors_paused_for_backlog"] is True
+
+
+def test_training_backlog_pause_does_not_stop_market_collection(
+    tmp_path, monkeypatch
+) -> None:
+    storage_override = tmp_path / ".env.storage_pressure_override"
+    storage_override.write_text(
+        "TRAINING_RUNTIME_PAUSED_FOR_BACKLOG=1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (storage_override,))
+    _reset_dynamic_override_cache()
+
+    contract = loop._runtime_training_pause_contract(str(tmp_path))
+
+    assert contract["paused"] is False
+    assert contract["backlog_paused"] is False
+    assert contract["training_only_paused"] is True
+    assert contract["training_paused_for_backlog"] is True
+
+
+def test_heavy_backlog_pause_preserves_protected_market_decision_lane(
+    tmp_path, monkeypatch
+) -> None:
+    storage_override = tmp_path / ".env.storage_pressure_override"
+    storage_override.write_text(
+        "\n".join(
+            [
+                "TRAINING_RUNTIME_PAUSED_FOR_BACKLOG=1",
+                "HEAVY_COLLECTORS_PAUSED_FOR_BACKLOG=1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (storage_override,))
+    monkeypatch.setenv("BOT_RUNTIME_CPU_CLASS", "market_decision")
+    _reset_dynamic_override_cache()
+
+    contract = loop._runtime_training_pause_contract(str(tmp_path))
+
+    assert contract["paused"] is False
+    assert contract["training_only_paused"] is True
+    assert contract["backlog_paused"] is False
+    assert contract["heavy_collector_pause_applies"] is False
+    assert contract["protected_market_decision_lane"] is True
 
 
 def test_runtime_pause_catches_new_raw_backlog_before_storage_refresh(tmp_path, monkeypatch) -> None:
@@ -781,6 +836,41 @@ def test_collector_fails_closed_while_backlog_refresh_is_in_progress(tmp_path, m
     assert contract["paused"] is True
     assert contract["reason"] == "backlog_evidence_refresh_pending"
     assert contract["fresh_backlog_pause"]["refresh_pending"] is True
+
+
+def test_collector_accepts_recent_shared_backlog_truth_while_peer_refreshes(
+    tmp_path, monkeypatch
+) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    (scripts / "ingestion_backpressure_guard.py").write_text("# test guard\n", encoding="utf-8")
+    override = tmp_path / "storage.env"
+    override.write_text(
+        "SHADOW_LOOP_BACKLOG_REFRESH_MAX_AGE_SECONDS=30\n"
+        "SHADOW_LOOP_FRESH_BACKLOG_MAX_AGE_SECONDS=180\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loop, "DYNAMIC_STORAGE_OVERRIDE_PATHS", (override,))
+    _reset_dynamic_override_cache()
+    now = datetime.now(timezone.utc)
+    raw = {
+        "timestamp_utc": (now - timedelta(seconds=90)).isoformat(),
+        "pending_lines": 0,
+        "pending_lines_total": 0,
+    }
+
+    def _busy_refresh_lease(*_args, **_kwargs):
+        raise BlockingIOError
+
+    monkeypatch.setattr(loop.fcntl, "flock", _busy_refresh_lease)
+
+    contract = loop._refresh_backlog_evidence_if_due(str(tmp_path), raw, now=now)
+
+    assert contract["refresh_due"] is True
+    assert contract["in_progress"] is True
+    assert contract["evidence_fresh"] is True
+    assert contract["shared_snapshot_accepted_while_refresh_in_progress"] is True
+    assert contract["admission_max_age_seconds"] == 180.0
 
 
 def test_collector_resume_stagger_is_bounded_and_stable() -> None:

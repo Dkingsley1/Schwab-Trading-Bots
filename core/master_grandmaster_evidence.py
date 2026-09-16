@@ -10,12 +10,12 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
+from core.operating_contracts import build_operating_contract
 from core.regime_taxonomy import (
     build_regime_metadata_access,
     classify_regime_profile,
     evaluate_regime_compatibility,
 )
-
 
 EXPECTED_SOURCE_IDS = {
     "bot_organization_health",
@@ -37,7 +37,14 @@ EXPECTED_SCORE_WEIGHTS = {
     "source_evidence",
     "economic_evidence",
 }
-FORBIDDEN_STATUS_VALUES = {"blocked", "critical", "degraded", "error", "failed", "missing"}
+FORBIDDEN_STATUS_VALUES = {
+    "blocked",
+    "critical",
+    "degraded",
+    "error",
+    "failed",
+    "missing",
+}
 SAFETY_FALSE_FIELDS = (
     "direct_paper_order_authority",
     "direct_live_order_authority",
@@ -50,6 +57,21 @@ SAFETY_FALSE_FIELDS = (
     "automatic_allocation_authority",
     "automatic_promotion_authority",
     "profitability_guaranteed",
+)
+SUCCESS_AUTHORITY_FALSE_FIELDS = (
+    "can_submit_order",
+    "can_change_trade_logic",
+    "can_change_sizing",
+    "can_allocate_capital",
+    "can_promote_candidate",
+    "can_claim_profitability",
+    "can_override_halt",
+)
+SUCCESS_NEED_REQUIRED_FIELDS = (
+    "need_id",
+    "why",
+    "evidence_artifacts",
+    "success_signal",
 )
 
 
@@ -98,7 +120,9 @@ def _ordered_unique(values: Iterable[Any]) -> list[str]:
 
 
 def _canonical_hash(value: Any) -> str:
-    raw = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    raw = json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -144,7 +168,9 @@ def _grade(score: float, *, structurally_ready: bool = True) -> str:
 
 def _grade_at_least(grade: str, floor: str) -> bool:
     ranks = {"A+": 6, "A": 5, "B": 4, "C": 3, "D": 2, "F": 1}
-    return ranks.get(str(grade or "").upper(), 0) >= ranks.get(str(floor or "").upper(), 0)
+    return ranks.get(str(grade or "").upper(), 0) >= ranks.get(
+        str(floor or "").upper(), 0
+    )
 
 
 def validate_policy(policy: Mapping[str, Any]) -> list[str]:
@@ -164,14 +190,22 @@ def validate_policy(policy: Mapping[str, Any]) -> list[str]:
         if _safe_float(row.get("max_age_minutes"), 0.0) <= 0.0:
             errors.append(f"master_grandmaster_{source_id}_max_age_invalid")
         if not isinstance(row.get("synthesis_required"), bool):
-            errors.append(f"master_grandmaster_{source_id}_synthesis_requirement_invalid")
+            errors.append(
+                f"master_grandmaster_{source_id}_synthesis_requirement_invalid"
+            )
         if not isinstance(row.get("promotion_required"), bool):
-            errors.append(f"master_grandmaster_{source_id}_promotion_requirement_invalid")
+            errors.append(
+                f"master_grandmaster_{source_id}_promotion_requirement_invalid"
+            )
 
     thresholds = _as_dict(policy.get("thresholds"))
     if not 1 <= _safe_int(thresholds.get("maximum_sleeve_master_packets"), 0) <= 512:
         errors.append("master_grandmaster_packet_cap_invalid")
-    if not 1 <= _safe_int(thresholds.get("maximum_review_examples_per_sleeve"), 0) <= 25:
+    if (
+        not 1
+        <= _safe_int(thresholds.get("maximum_review_examples_per_sleeve"), 0)
+        <= 25
+    ):
         errors.append("master_grandmaster_review_example_cap_invalid")
     for key in (
         "minimum_hierarchy_coverage_ratio",
@@ -198,7 +232,9 @@ def validate_policy(policy: Mapping[str, Any]) -> list[str]:
     if not 0.0 <= future_skew <= 60.0:
         errors.append("master_grandmaster_maximum_future_clock_skew_invalid")
     if _safe_int(thresholds.get("minimum_independent_execution_samples"), -1) < 0:
-        errors.append("master_grandmaster_minimum_independent_execution_samples_invalid")
+        errors.append(
+            "master_grandmaster_minimum_independent_execution_samples_invalid"
+        )
     if str(thresholds.get("minimum_human_review_master_grade") or "") not in {
         "A+",
         "A",
@@ -217,9 +253,63 @@ def validate_policy(policy: Mapping[str, Any]) -> list[str]:
     if abs(sum(_safe_float(value) for value in weights.values()) - 1.0) > 1e-9:
         errors.append("master_grandmaster_score_weights_do_not_sum_to_one")
 
+    success_needs = _as_dict(policy.get("coordination_success_needs"))
+    if not success_needs:
+        errors.append("master_grandmaster_coordination_success_needs_missing")
+    else:
+        authority = _as_dict(success_needs.get("authority"))
+        if authority.get("metadata_only") is not True:
+            errors.append("master_grandmaster_success_authority_metadata_only_required")
+        for key in SUCCESS_AUTHORITY_FALSE_FIELDS:
+            if authority.get(key) is not False:
+                errors.append(
+                    f"master_grandmaster_success_authority_{key}_must_be_false"
+                )
+        invariants = _as_dict(success_needs.get("hardening_invariants"))
+        required_need_fields = (
+            tuple(_ordered_unique(_as_list(invariants.get("required_need_fields"))))
+            or SUCCESS_NEED_REQUIRED_FIELDS
+        )
+        minimum_need_count = _safe_int(invariants.get("minimum_need_count_per_tier"), 6)
+        for tier_id in ("master_bot", "grandmaster_bot"):
+            tier = _as_dict(success_needs.get(tier_id))
+            if not str(tier.get("view") or "").strip():
+                errors.append(f"master_grandmaster_{tier_id}_success_view_missing")
+            needs = [
+                _as_dict(row)
+                for row in _as_list(tier.get("needs"))
+                if isinstance(row, Mapping)
+            ]
+            if len(needs) < minimum_need_count:
+                errors.append(f"master_grandmaster_{tier_id}_success_need_count_low")
+            missing_fields: list[str] = []
+            for need in needs:
+                need_id = str(need.get("need_id") or "").strip()
+                for field in required_need_fields:
+                    value = need.get(field)
+                    present = (
+                        bool(_ordered_unique(_as_list(value)))
+                        if isinstance(value, list)
+                        else bool(str(value or "").strip())
+                    )
+                    if not present:
+                        missing_fields.append(
+                            f"{tier_id}.{need_id or '<missing>'}.{field}"
+                        )
+            if missing_fields:
+                errors.append(
+                    f"master_grandmaster_{tier_id}_success_need_fields_missing"
+                )
+            if not _ordered_unique(_as_list(tier.get("must_not"))):
+                errors.append(f"master_grandmaster_{tier_id}_success_must_not_missing")
+
     recommendations = _as_dict(policy.get("recommendation_contract"))
-    allowed = set(_ordered_unique(_as_list(recommendations.get("allowed_recommendations"))))
-    forbidden = set(_ordered_unique(_as_list(recommendations.get("forbidden_recommendations"))))
+    allowed = set(
+        _ordered_unique(_as_list(recommendations.get("allowed_recommendations")))
+    )
+    forbidden = set(
+        _ordered_unique(_as_list(recommendations.get("forbidden_recommendations")))
+    )
     if not allowed or not forbidden or allowed.intersection(forbidden):
         errors.append("master_grandmaster_recommendation_contract_invalid")
 
@@ -230,6 +320,52 @@ def validate_policy(policy: Mapping[str, Any]) -> list[str]:
     if safety.get("human_authorization_required_for_live") is not True:
         errors.append("master_grandmaster_human_live_authorization_must_be_true")
     return _ordered_unique(errors)
+
+
+def _success_need_rows(value: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in _as_list(value):
+        item = _as_dict(row)
+        need_id = str(item.get("need_id") or "").strip()
+        if not need_id:
+            continue
+        rows.append(
+            {
+                "need_id": need_id,
+                "why": str(item.get("why") or "").strip(),
+                "evidence_artifacts": _ordered_unique(
+                    _as_list(item.get("evidence_artifacts"))
+                ),
+                "success_signal": str(item.get("success_signal") or "").strip(),
+            }
+        )
+    return rows
+
+
+def _coordination_success_needs(policy: Mapping[str, Any]) -> dict[str, Any]:
+    success = _as_dict(policy.get("coordination_success_needs"))
+    master = _as_dict(success.get("master_bot"))
+    grandmaster = _as_dict(success.get("grandmaster_bot"))
+    master_needs = _success_need_rows(master.get("needs"))
+    grandmaster_needs = _success_need_rows(grandmaster.get("needs"))
+    return {
+        "purpose": str(success.get("purpose") or ""),
+        "authority": _as_dict(success.get("authority")),
+        "master_bot": {
+            "view": str(master.get("view") or ""),
+            "need_count": len(master_needs),
+            "need_ids": [row["need_id"] for row in master_needs],
+            "needs": master_needs,
+            "must_not": _ordered_unique(_as_list(master.get("must_not"))),
+        },
+        "grandmaster_bot": {
+            "view": str(grandmaster.get("view") or ""),
+            "need_count": len(grandmaster_needs),
+            "need_ids": [row["need_id"] for row in grandmaster_needs],
+            "needs": grandmaster_needs,
+            "must_not": _ordered_unique(_as_list(grandmaster.get("must_not"))),
+        },
+    }
 
 
 def build_observed_regime_context(
@@ -262,7 +398,9 @@ def build_observed_regime_context(
         axis = _as_dict(raw_axis)
         if bool(axis.get("not_applicable", False)):
             continue
-        values = [str(item) for item in _as_list(axis.get("values")) if str(item).strip()]
+        values = [
+            str(item) for item in _as_list(axis.get("values")) if str(item).strip()
+        ]
         if not values:
             continue
         axes[axis_id] = values
@@ -325,8 +463,12 @@ def assess_sources(
         timestamp = _payload_timestamp(payload)
         parsed = _parse_timestamp(timestamp)
         signed_age_minutes = (now - parsed).total_seconds() / 60.0 if parsed else None
-        age_minutes = max(signed_age_minutes, 0.0) if signed_age_minutes is not None else None
-        future_skew_minutes = max(-signed_age_minutes, 0.0) if signed_age_minutes is not None else None
+        age_minutes = (
+            max(signed_age_minutes, 0.0) if signed_age_minutes is not None else None
+        )
+        future_skew_minutes = (
+            max(-signed_age_minutes, 0.0) if signed_age_minutes is not None else None
+        )
         timestamp_valid = bool(
             parsed is not None
             and future_skew_minutes is not None
@@ -339,7 +481,11 @@ def assess_sources(
             and age_minutes is not None
             and age_minutes <= _safe_float(contract.get("max_age_minutes"), 0.0)
         )
-        status = str(payload.get("overall_status") or payload.get("status") or "").strip().lower()
+        status = (
+            str(payload.get("overall_status") or payload.get("status") or "")
+            .strip()
+            .lower()
+        )
         explicit_ok = payload.get("ok")
         semantic_ready = bool(
             available
@@ -350,7 +496,9 @@ def assess_sources(
             "timestamp_utc": timestamp,
             "age_minutes": round(age_minutes, 6) if age_minutes is not None else None,
             "future_skew_minutes": (
-                round(future_skew_minutes, 6) if future_skew_minutes is not None else None
+                round(future_skew_minutes, 6)
+                if future_skew_minutes is not None
+                else None
             ),
             "timestamp_valid": timestamp_valid,
             "max_age_minutes": _safe_float(contract.get("max_age_minutes")),
@@ -366,7 +514,9 @@ def assess_sources(
     return checks
 
 
-def _profile_axis_counts(assignments: Iterable[Mapping[str, Any]]) -> tuple[int, int, int]:
+def _profile_axis_counts(
+    assignments: Iterable[Mapping[str, Any]],
+) -> tuple[int, int, int]:
     quality = 0
     known = 0
     specific = 0
@@ -387,7 +537,9 @@ def _profile_axis_counts(assignments: Iterable[Mapping[str, Any]]) -> tuple[int,
     return quality, known, specific
 
 
-def _axis_value_counts(assignments: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
+def _axis_value_counts(
+    assignments: Iterable[Mapping[str, Any]],
+) -> dict[str, dict[str, int]]:
     counts: dict[str, Counter[str]] = defaultdict(Counter)
     for row in assignments:
         axes = _as_dict(_as_dict(row.get("regime_profile")).get("axes"))
@@ -480,7 +632,9 @@ def _master_packet(
         for row in assignments
         if str(row.get("regime_scope") or "") in {"market_signal", "hybrid"}
     ]
-    shadow = [row for row in assignments if bool(row.get("shadow_vote_eligible", False))]
+    shadow = [
+        row for row in assignments if bool(row.get("shadow_vote_eligible", False))
+    ]
     review = [row for row in assignments if bool(row.get("needs_review", False))]
     unknown_profiles = [
         row
@@ -512,7 +666,9 @@ def _master_packet(
 
     compatibility_rows: list[dict[str, Any]] = []
     minimum_context_axes = _safe_int(thresholds.get("minimum_known_context_axes"), 2)
-    context_ready = _safe_int(regime_context.get("known_axis_count"), 0) >= minimum_context_axes
+    context_ready = (
+        _safe_int(regime_context.get("known_axis_count"), 0) >= minimum_context_axes
+    )
     if context_ready:
         for row in signal:
             profile = _as_dict(row.get("regime_profile"))
@@ -529,11 +685,15 @@ def _master_packet(
                     "compatible": bool(result.get("compatible", False)),
                     "score": _safe_float(result.get("score")),
                     "reason": str(result.get("reason") or ""),
-                    "hard_mismatch_axis_ids": _as_list(result.get("hard_mismatch_axis_ids")),
+                    "hard_mismatch_axis_ids": _as_list(
+                        result.get("hard_mismatch_axis_ids")
+                    ),
                     "scenario_partition_applied": bool(
                         result.get("scenario_partition_applied", False)
                     ),
-                    "selected_scenario_id": str(result.get("selected_scenario_id") or ""),
+                    "selected_scenario_id": str(
+                        result.get("selected_scenario_id") or ""
+                    ),
                 }
             )
     compatible_count = sum(1 for row in compatibility_rows if row["compatible"])
@@ -544,7 +704,9 @@ def _master_packet(
         if compatibility_rows
         else 1.0 if not signal else 0.5
     )
-    reason_counts = Counter(str(row.get("reason") or "unknown") for row in compatibility_rows)
+    reason_counts = Counter(
+        str(row.get("reason") or "unknown") for row in compatibility_rows
+    )
 
     cluster_counts = Counter(
         str(row.get("correlation_cluster_id") or "")
@@ -561,15 +723,22 @@ def _master_packet(
         "source_evidence": _clamp(global_components.get("source_evidence", 0.0)),
         "economic_evidence": _clamp(global_components.get("economic_evidence", 0.0)),
     }
-    score = sum(components[key] * _safe_float(weights.get(key)) for key in EXPECTED_SCORE_WEIGHTS)
+    score = sum(
+        components[key] * _safe_float(weights.get(key))
+        for key in EXPECTED_SCORE_WEIGHTS
+    )
     grade = _grade(score)
     if not active:
         status = "blocked_no_active_members"
     elif signal and not context_ready:
         status = "context_thin"
-    elif review_ratio > _safe_float(thresholds.get("maximum_master_review_ratio_ready"), 0.25):
+    elif review_ratio > _safe_float(
+        thresholds.get("maximum_master_review_ratio_ready"), 0.25
+    ):
         status = "needs_metadata_evidence"
-    elif unknown_ratio > _safe_float(thresholds.get("maximum_unknown_profile_ratio_ready"), 0.35):
+    elif unknown_ratio > _safe_float(
+        thresholds.get("maximum_unknown_profile_ratio_ready"), 0.35
+    ):
         status = "needs_regime_evidence"
     elif compatibility_rows and (
         mean_compatibility
@@ -595,10 +764,16 @@ def _master_packet(
         recommendations.append("prioritize_guarded_retraining")
     allowed = set(
         _ordered_unique(
-            _as_list(_as_dict(policy.get("recommendation_contract")).get("allowed_recommendations"))
+            _as_list(
+                _as_dict(policy.get("recommendation_contract")).get(
+                    "allowed_recommendations"
+                )
+            )
         )
     )
-    recommendations = [item for item in _ordered_unique(recommendations) if item in allowed]
+    recommendations = [
+        item for item in _ordered_unique(recommendations) if item in allowed
+    ]
     review_limit = _safe_int(thresholds.get("maximum_review_examples_per_sleeve"), 8)
     return {
         "schema_version": 1,
@@ -612,7 +787,9 @@ def _master_packet(
         "active_bot_count": len(active),
         "signal_profile_count": len(signal),
         "shadow_vote_eligible_count": len(shadow),
-        "sub_sleeve_count": len({str(row.get("sub_sleeve_id") or "") for row in assignments}),
+        "sub_sleeve_count": len(
+            {str(row.get("sub_sleeve_id") or "") for row in assignments}
+        ),
         "cohort_count": len({str(row.get("cohort_id") or "") for row in assignments}),
         "correlation_cluster_count": len(cluster_counts),
         "largest_correlation_cluster_share": round(largest_cluster_share, 6),
@@ -633,19 +810,25 @@ def _master_packet(
             "mean_score": round(mean_compatibility, 6),
             "reason_counts": dict(sorted(reason_counts.items())),
             "hard_mismatch_examples": [
-                row
-                for row in compatibility_rows
-                if row.get("hard_mismatch_axis_ids")
+                row for row in compatibility_rows if row.get("hard_mismatch_axis_ids")
             ][:review_limit],
         },
         "regime_axis_value_counts": _axis_value_counts(assignments),
         "scope_counts": dict(
-            sorted(Counter(str(row.get("regime_scope") or "") for row in assignments).items())
+            sorted(
+                Counter(
+                    str(row.get("regime_scope") or "") for row in assignments
+                ).items()
+            )
         ),
         "role_counts": dict(
-            sorted(Counter(str(row.get("role_id") or "") for row in assignments).items())
+            sorted(
+                Counter(str(row.get("role_id") or "") for row in assignments).items()
+            )
         ),
-        "score_components": {key: round(value, 6) for key, value in sorted(components.items())},
+        "score_components": {
+            key: round(value, 6) for key, value in sorted(components.items())
+        },
         "paper_truth": paper_summary,
         "profitability": profit_summary,
         "review_examples": [
@@ -706,12 +889,16 @@ def synthesize_master_grandmaster_evidence(
     policy_errors = validate_policy(policy)
     source_checks = assess_sources(inputs, policy, now=evaluated_at)
     assignments = [
-        row for row in _as_list(bot_hierarchy.get("assignments")) if isinstance(row, dict)
+        row
+        for row in _as_list(bot_hierarchy.get("assignments"))
+        if isinstance(row, dict)
     ]
     expected_count = _safe_int(bot_hierarchy.get("assignment_count"), len(assignments))
     organization_count = _safe_int(bot_organization_health.get("registry_bot_count"), 0)
     hierarchy_receipt = str(bot_hierarchy.get("assignment_receipt_sha256") or "")
-    organization_receipt = str(bot_organization_health.get("assignment_receipt_sha256") or "")
+    organization_receipt = str(
+        bot_organization_health.get("assignment_receipt_sha256") or ""
+    )
     required_model_id = str(policy.get("required_regime_model_id") or "")
     hierarchy_model_id = str(bot_hierarchy.get("regime_model_id") or "")
     regime_context = build_observed_regime_context(regime_payload, regime_model)
@@ -723,9 +910,14 @@ def synthesize_master_grandmaster_evidence(
         blockers.append("master_grandmaster_hierarchy_assignment_count_mismatch")
     if not hierarchy_receipt or hierarchy_receipt != organization_receipt:
         blockers.append("master_grandmaster_hierarchy_receipt_mismatch")
-    if hierarchy_model_id != required_model_id or str(regime_model.get("model_id") or "") != required_model_id:
+    if (
+        hierarchy_model_id != required_model_id
+        or str(regime_model.get("model_id") or "") != required_model_id
+    ):
         blockers.append("master_grandmaster_regime_model_mismatch")
-    hierarchy_coverage = _safe_float(bot_organization_health.get("organization_coverage_ratio"))
+    hierarchy_coverage = _safe_float(
+        bot_organization_health.get("organization_coverage_ratio")
+    )
     if hierarchy_coverage < _safe_float(
         _as_dict(policy.get("thresholds")).get("minimum_hierarchy_coverage_ratio"),
         1.0,
@@ -743,11 +935,14 @@ def synthesize_master_grandmaster_evidence(
         paper_truth.get("ok") is True
         and str(paper_truth.get("overall_status") or "") == "ready"
         and paper_truth_score
-        >= _safe_float(_as_dict(policy.get("thresholds")).get("minimum_paper_truth_score"), 95.0)
+        >= _safe_float(
+            _as_dict(policy.get("thresholds")).get("minimum_paper_truth_score"), 95.0
+        )
     )
     throttle_ready = bool(
         runtime_throttle.get("ok") is True
-        and str(runtime_throttle.get("overall_status") or "") not in FORBIDDEN_STATUS_VALUES
+        and str(runtime_throttle.get("overall_status") or "")
+        not in FORBIDDEN_STATUS_VALUES
     )
     blockers = _ordered_unique(blockers)
     operational_holds = _ordered_unique(
@@ -784,7 +979,9 @@ def synthesize_master_grandmaster_evidence(
         256,
     )
     if len(grouped) > packet_cap:
-        blockers = _ordered_unique([*blockers, "master_grandmaster_sleeve_packet_cap_exceeded"])
+        blockers = _ordered_unique(
+            [*blockers, "master_grandmaster_sleeve_packet_cap_exceeded"]
+        )
     sleeve_masters = [
         _master_packet(
             sleeve_id,
@@ -816,7 +1013,9 @@ def synthesize_master_grandmaster_evidence(
         bool(_as_dict(source_checks.get("profitability_evidence")).get("fresh"))
         and profitability_evidence.get("live_promotion_ready") is True
         and _safe_float(profitability_evidence.get("economic_evidence_score"))
-        >= _safe_float(thresholds.get("minimum_profitability_economic_evidence_score"), 90.0)
+        >= _safe_float(
+            thresholds.get("minimum_profitability_economic_evidence_score"), 90.0
+        )
     )
     independent_samples = _safe_int(execution_calibration.get("independent_samples"), 0)
     execution_evidence_ready = bool(
@@ -827,9 +1026,13 @@ def synthesize_master_grandmaster_evidence(
     )
     metadata_ready = bool(
         _safe_float(bot_organization_health.get("regime_axis_coverage_ratio"))
-        >= _safe_float(thresholds.get("minimum_regime_axis_coverage_for_promotion"), 0.9)
+        >= _safe_float(
+            thresholds.get("minimum_regime_axis_coverage_for_promotion"), 0.9
+        )
         and _safe_float(bot_organization_health.get("regime_axis_specificity_ratio"))
-        >= _safe_float(thresholds.get("minimum_regime_axis_specificity_for_promotion"), 0.8)
+        >= _safe_float(
+            thresholds.get("minimum_regime_axis_specificity_for_promotion"), 0.8
+        )
     )
     account_awareness_ready = bool(
         bool(_as_dict(source_checks.get("account_positions")).get("fresh"))
@@ -845,7 +1048,10 @@ def synthesize_master_grandmaster_evidence(
     master_grade_floor = str(thresholds.get("minimum_human_review_master_grade") or "B")
     master_quality_ready = bool(
         sleeve_masters
-        and all(_grade_at_least(str(row.get("grade") or "F"), master_grade_floor) for row in sleeve_masters)
+        and all(
+            _grade_at_least(str(row.get("grade") or "F"), master_grade_floor)
+            for row in sleeve_masters
+        )
     )
     promotion_gates = {
         "fresh_promotion_sources": fresh_promotion_sources,
@@ -865,26 +1071,38 @@ def synthesize_master_grandmaster_evidence(
         paper_coordination_ready and not promotion_blockers
     )
     weighted_master_score = (
-        sum(_safe_float(row.get("evidence_score")) * max(_safe_int(row.get("bot_count")), 1) for row in sleeve_masters)
+        sum(
+            _safe_float(row.get("evidence_score"))
+            * max(_safe_int(row.get("bot_count")), 1)
+            for row in sleeve_masters
+        )
         / sum(max(_safe_int(row.get("bot_count")), 1) for row in sleeve_masters)
         if sleeve_masters
         else 0.0
     )
-    status_counts = Counter(str(row.get("status") or "unknown") for row in sleeve_masters)
+    status_counts = Counter(
+        str(row.get("status") or "unknown") for row in sleeve_masters
+    )
     grade_counts = Counter(str(row.get("grade") or "F") for row in sleeve_masters)
     recommended_posture = (
         "abstain_until_broker_truth_recovers"
         if not paper_truth_ready
-        else "abstain_until_runtime_capacity_recovers"
-        if not throttle_ready
-        else "hold_for_human_promotion_review"
-        if human_live_review_evidence_ready
-        else "continue_paper_collection"
+        else (
+            "abstain_until_runtime_capacity_recovers"
+            if not throttle_ready
+            else (
+                "hold_for_human_promotion_review"
+                if human_live_review_evidence_ready
+                else "continue_paper_collection"
+            )
+        )
     )
     allowed_recommendations = set(
         _ordered_unique(
             _as_list(
-                _as_dict(policy.get("recommendation_contract")).get("allowed_recommendations")
+                _as_dict(policy.get("recommendation_contract")).get(
+                    "allowed_recommendations"
+                )
             )
         )
     )
@@ -896,7 +1114,9 @@ def synthesize_master_grandmaster_evidence(
     if not profitability_ready:
         grand_recommendations.append("investigate_negative_post_cost_results")
     grand_recommendations = [
-        item for item in _ordered_unique(grand_recommendations) if item in allowed_recommendations
+        item
+        for item in _ordered_unique(grand_recommendations)
+        if item in allowed_recommendations
     ]
     authority = {
         "mode": "advisory_shadow_only",
@@ -912,14 +1132,104 @@ def synthesize_master_grandmaster_evidence(
         "automatic_promotion_authority": False,
         "human_authorization_required_for_live": True,
     }
+    coordination_success_needs = _coordination_success_needs(policy)
     grand_status = (
         "blocked_integrity"
         if blockers
-        else "operational_hold"
-        if operational_holds
-        else "ready_with_evidence_debt"
-        if promotion_blockers
-        else "ready_for_human_review"
+        else (
+            "operational_hold"
+            if operational_holds
+            else (
+                "ready_with_evidence_debt"
+                if promotion_blockers
+                else "ready_for_human_review"
+            )
+        )
+    )
+    master_grandmaster_operating_contract = build_operating_contract(
+        contract_id="master_grandmaster_operating_contract_v1",
+        owner="master_grandmaster_evidence_v2",
+        domain="master_grandmaster_coordination",
+        status=grand_status,
+        why=(
+            blockers[0]
+            if blockers
+            else (
+                operational_holds[0]
+                if operational_holds
+                else (
+                    promotion_blockers[0]
+                    if promotion_blockers
+                    else "ready_for_human_review"
+                )
+            )
+        ),
+        safe_authority=[
+            "synthesize_sleeve_master_packets",
+            "rank_coordination_needs",
+            "publish_advisory_posture",
+            "verify_promotion_gate_readiness",
+        ],
+        blocked_authority=[
+            "paper_order_submission",
+            "live_order_submission",
+            "automatic_live_promotion",
+            "automatic_allocation",
+            "global_halt_override",
+            "broker_truth_override",
+        ],
+        evidence_missing=[
+            *blockers,
+            *operational_holds,
+            *promotion_blockers,
+        ],
+        release_conditions=[
+            "integrity_blockers_empty",
+            "operational_holds_empty",
+            "promotion_blockers_empty",
+            "all_required_promotion_sources_fresh",
+            "sleeve_master_quality_floor_met",
+            "operator_human_review_before_live_promotion",
+        ],
+        next_commands=[
+            ["./scripts/ops/opsctl.sh", "master-grandmaster-evidence", "--json"],
+            ["./scripts/ops/opsctl.sh", "promotion-quality-gate", "--json"],
+            ["./scripts/ops/opsctl.sh", "sleeve-scalability-selector", "--json"],
+        ],
+        definition_gaps=[
+            ("sleeve_master_quality_floor_not_met" if not master_quality_ready else ""),
+            ("runtime_capacity_blocks_coordination" if not throttle_ready else ""),
+            (
+                "source_or_profitability_evidence_blocks_promotion"
+                if any(
+                    key in promotion_blockers
+                    for key in (
+                        "source_evidence_ready",
+                        "profitability_evidence_ready",
+                    )
+                )
+                else ""
+            ),
+        ],
+        measurement={
+            "sleeve_master_count": len(sleeve_masters),
+            "sleeve_master_status_counts": dict(sorted(status_counts.items())),
+            "sleeve_master_grade_counts": dict(sorted(grade_counts.items())),
+            "paper_coordination_ready": paper_coordination_ready,
+            "human_live_review_evidence_ready": human_live_review_evidence_ready,
+            "promotion_blocker_count": len(promotion_blockers),
+        },
+        hardening={
+            "advisory_shadow_only": True,
+            "automatic_live_promotion_allowed": False,
+            "human_authorization_required_for_live": True,
+            "master_needs": _as_list(
+                _as_dict(coordination_success_needs.get("master_bot")).get("needs")
+            ),
+            "grandmaster_needs": _as_list(
+                _as_dict(coordination_success_needs.get("grandmaster_bot")).get("needs")
+            ),
+        },
     )
     grand_master = {
         "schema_version": 1,
@@ -957,7 +1267,9 @@ def synthesize_master_grandmaster_evidence(
             )[:20]
         ],
         "recommendations": grand_recommendations,
+        "coordination_success_needs": coordination_success_needs,
         "authority": authority,
+        "operating_contract": master_grandmaster_operating_contract,
     }
     evidence_epoch_input = {
         "policy_id": str(policy.get("policy_id") or ""),
@@ -986,8 +1298,11 @@ def synthesize_master_grandmaster_evidence(
         "operational_holds": operational_holds,
         "promotion_blockers": promotion_blockers,
         "grand_master": grand_master,
+        "coordination_success_needs": coordination_success_needs,
         "sleeve_masters": sleeve_masters,
         "authority": authority,
+        "operating_contract": master_grandmaster_operating_contract,
+        "master_grandmaster_operating_contract": master_grandmaster_operating_contract,
         "evidence_epoch": {
             "id": f"master-grandmaster-v2:{_canonical_hash(evidence_epoch_input)[:16]}",
             "receipt_sha256": _canonical_hash(evidence_epoch_input),

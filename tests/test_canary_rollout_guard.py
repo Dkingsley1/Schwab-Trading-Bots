@@ -252,7 +252,9 @@ def test_live_jsonl_is_cached_incrementally_without_duplicate_rows(tmp_path: Pat
     assert first["canary_samples"] == 1
     assert first["baseline_samples"] == 1
     assert first["scan"]["primary"]["new_rows"] == 2
+    assert first["scan"]["primary"]["cache_write_mode"] == "atomic_window_compaction"
     assert first["scan"]["fallback"]["skipped"] is True
+    cache_inode = evidence_path.stat().st_ino
 
     with canary_file.open("a", encoding="utf-8") as handle:
         handle.write(
@@ -276,6 +278,8 @@ def test_live_jsonl_is_cached_incrementally_without_duplicate_rows(tmp_path: Pat
     assert second["baseline_samples"] == 1
     assert second["scan"]["primary"]["cached_rows_before"] == 2
     assert second["scan"]["primary"]["new_rows"] == 1
+    assert second["scan"]["primary"]["cache_write_mode"] == "append_only_increment"
+    assert evidence_path.stat().st_ino == cache_inode
     assert len(evidence_path.read_text(encoding="utf-8").splitlines()) == 3
 
     candidate = json.loads(state_path.read_text(encoding="utf-8"))
@@ -305,6 +309,7 @@ def test_live_jsonl_is_cached_incrementally_without_duplicate_rows(tmp_path: Pat
     assert moving_lookback["scan"]["primary"]["evidence_window_changed"] is False
     assert moving_lookback["scan"]["primary"]["cached_rows_loaded"] == 3
     assert moving_lookback["scan"]["primary"]["cached_rows_pruned"] == 3
+    assert moving_lookback["scan"]["primary"]["cache_write_mode"] == "atomic_window_compaction"
     assert moving_lookback["scan"]["primary"]["bytes_read"] == 0
     assert moving_lookback["scan"]["fallback"]["skipped"] is True
     assert moving_lookback["scan"]["filesystem_source_profiles"] == ["conservative", "intraday_aggressive"]

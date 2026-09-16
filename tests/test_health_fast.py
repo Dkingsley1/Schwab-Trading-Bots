@@ -152,6 +152,65 @@ def test_health_fast_accepts_clean_bounded_storage_steady_state_without_drain() 
     assert blockers == []
 
 
+def test_health_fast_uses_managed_support_pressure_contract_for_paper() -> None:
+    storage = {
+        "overall_status": "ready",
+        "severity": "stable",
+        "pressure_index": 0.034,
+        "backpressure": {
+            "core_pending_lines": 509,
+            "deferred_pending_lines": 425392,
+            "support_pending_lines": 424465,
+            "total_pending_lines": 425901,
+            "pending_lines_threshold": 15000,
+            "effective_pressure_clear": True,
+            "managed_support_pressure_clear": True,
+            "effective_raw_live_source": "raw_live_backpressure+managed_support_overlay_pressure",
+            "effective_raw_live": {
+                "core_pending_lines": 509,
+                "deferred_pending_lines": 927,
+                "support_pending_lines": 5000,
+                "total_pending_lines": 6436,
+                "oldest_pending_age_seconds": 0.0,
+            },
+            "raw_live": {
+                "core_pending_lines": 509,
+                "support_pending_lines": 424465,
+                "total_pending_lines": 425901,
+                "oldest_pending_age_seconds": 0.0,
+            },
+        },
+        "storage": {"backlog_drain_status": "drain_active"},
+        "bounded_recovery_contract": {
+            "hard_gate_active": False,
+            "effective_hard_gate_active": False,
+        },
+        "external_route_verification": {"verification_state": "ready"},
+        "storage_resilience": {"overall_status": "ready"},
+        "storage_efficiency_contract": {"overall_status": "needs_work", "grade": "C"},
+        "data_integrity": {
+            "sql_invalid_lines": 0,
+            "sql_overlay_invalid_lines": 0,
+            "sql_overlay_oversize_payloads": 0,
+            "sql_overlay_ops_write_failures": 0,
+        },
+        "writer_shedding": {
+            "hard_breaches": ["deferred", "support_telemetry"],
+            "elevated_breaches": ["deferred", "support_telemetry"],
+        },
+    }
+
+    ok, blockers = src._storage_ready(storage)
+    relief = src._paper_hot_path_storage_relief(storage)
+
+    assert ok is True
+    assert blockers == []
+    assert relief["active"] is True
+    assert relief["effective_pressure_contract"] is True
+    assert relief["total_pending_lines"] == 6436
+    assert relief["raw_total_pending_lines"] == 425901
+
+
 def test_health_fast_accepts_raw_collection_debt_only_when_operational_projection_is_ready() -> None:
     rollup = {
         "overall_status": "degraded",

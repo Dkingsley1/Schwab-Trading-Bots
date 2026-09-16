@@ -1,12 +1,15 @@
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-
-SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "ingestion_backpressure_guard.py"
+SCRIPT_PATH = (
+    Path(__file__).resolve().parents[1] / "scripts" / "ingestion_backpressure_guard.py"
+)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -16,7 +19,9 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("ingestion_backpressure_guard", SCRIPT_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "ingestion_backpressure_guard", SCRIPT_PATH
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError("failed to load ingestion_backpressure_guard module")
     module = importlib.util.module_from_spec(spec)
@@ -25,6 +30,16 @@ def _load_module():
 
 
 class IngestionBackpressureGuardTests(unittest.TestCase):
+    def test_top_pending_file_budget_honors_bounded_runtime_override(self) -> None:
+        module = _load_module()
+
+        with patch.dict(module.os.environ, {"INGEST_TOP_PENDING_FILES": "32"}):
+            self.assertEqual(module._env_int("INGEST_TOP_PENDING_FILES", 24), 32)
+        with patch.dict(module.os.environ, {"INGEST_TOP_PENDING_FILES": "1000"}):
+            self.assertEqual(module._env_int("INGEST_TOP_PENDING_FILES", 24), 100)
+        with patch.dict(module.os.environ, {"INGEST_TOP_PENDING_FILES": "invalid"}):
+            self.assertEqual(module._env_int("INGEST_TOP_PENDING_FILES", 24), 24)
+
     def test_should_ignore_internal_ingest_journals(self) -> None:
         module = _load_module()
 
@@ -53,6 +68,11 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
                 "governance/shadow_aggressive_equities/runtime_telemetry.jsonl"
             )
         )
+        self.assertTrue(
+            module._should_ignore_backpressure_file(
+                "governance/evidence/canary_rollout_observations.jsonl"
+            )
+        )
         self.assertFalse(
             module._should_ignore_backpressure_file(
                 "governance/events/auth_events_20260327.jsonl"
@@ -70,6 +90,16 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
         self.assertTrue(
             module._is_deferred_backpressure_file(
                 "governance/watchdog/pager_alerts.jsonl"
+            )
+        )
+        self.assertFalse(
+            module._is_support_backpressure_file(
+                "governance/evidence/canary_rollout_observations.jsonl"
+            )
+        )
+        self.assertFalse(
+            module._is_deferred_backpressure_file(
+                "governance/evidence/canary_rollout_observations.jsonl"
             )
         )
         self.assertFalse(
@@ -201,10 +231,17 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            sqlite_state, state_files, state_mode = module._resolve_sqlite_state(project_root, None)
+            sqlite_state, state_files, state_mode = module._resolve_sqlite_state(
+                project_root, None
+            )
 
             self.assertEqual(state_mode, "sharded_merged")
-            self.assertTrue(any(path.endswith("jsonl_sql_link_state_trading.json") for path in state_files))
+            self.assertTrue(
+                any(
+                    path.endswith("jsonl_sql_link_state_trading.json")
+                    for path in state_files
+                )
+            )
             self.assertEqual(sqlite_state[rel]["last_line"], 120)
 
     def test_large_file_uses_progress_density_estimate(self) -> None:
@@ -223,6 +260,50 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
             )
 
             self.assertEqual(total, 100)
+
+    def test_large_file_prefers_consumed_offset_density(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "large.jsonl"
+            path.write_bytes(b"x" * 200)
+            st = path.stat()
+
+            detail = module._estimated_total_lines_detail(
+                path,
+                st,
+                {
+                    "last_line": 20,
+                    "last_offset_bytes": 40,
+                    "file_size_bytes": 200,
+                },
+                max_exact_bytes=16,
+                sample_bytes=32,
+            )
+
+            self.assertEqual(detail["total_lines"], 100)
+            self.assertEqual(detail["line_estimate_method"], "cursor_offset_density")
+
+    def test_backpressure_scan_reserves_priority_and_largest_pending_file(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            priority = root / "decisions" / "today.jsonl"
+            middle = root / "governance" / "events" / "middle.jsonl"
+            largest = root / "governance" / "evidence" / "large.jsonl"
+            for path, size in ((priority, 10), (middle, 100), (largest, 1000)):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"x" * size)
+
+            selected, detail = module._select_backpressure_scan_files(
+                [priority, middle, largest],
+                project_root=root,
+                sqlite_state={},
+                max_files=2,
+            )
+
+            self.assertEqual(selected, [priority, largest])
+            self.assertEqual(detail["discovered_relevant_files"], 3)
+            self.assertEqual(detail["selected_files"], 2)
 
     def test_large_file_sampling_estimate_without_progress(self) -> None:
         module = _load_module()
@@ -309,6 +390,142 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
             self.assertEqual(progress[rel]["last_offset_bytes"], 200000)
             self.assertEqual(len(sources), 1)
 
+    def test_observer_journal_cache_is_incremental_and_separate_from_writer(
+        self,
+    ) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            health = root / "governance/health"
+            health.mkdir(parents=True)
+            journal = health / "jsonl_ingest_batch_journal_runtime_latest.jsonl"
+            row = {
+                "event": "file_checkpoint",
+                "source_rel": "source.jsonl",
+                "last_line": 1,
+                "last_offset_bytes": 10,
+                "file_inode": 42,
+                "file_size_bytes": 100,
+                "source_file_identity": "/source.jsonl",
+            }
+            journal.write_text(json.dumps(row) + "\n")
+            writer_index = journal.with_name(journal.name + ".resume_index.json")
+            writer_index.write_text("writer-owned sentinel")
+            first = {}
+            module._load_journal_progress(root, scan_detail=first)
+            observer_index = journal.with_name(
+                journal.name + ".backpressure_index.json"
+            )
+            old_mtime = observer_index.stat().st_mtime_ns
+            warm = {}
+            progress, _ = module._load_journal_progress(root, scan_detail=warm)
+            self.assertEqual(warm["scanned_bytes"], 0)
+            self.assertEqual(warm["reused_indexes"], 1)
+            self.assertEqual(observer_index.stat().st_mtime_ns, old_mtime)
+            self.assertEqual(progress["source.jsonl"]["file_inode"], 42)
+            self.assertEqual(
+                progress["source.jsonl"]["source_file_identity"], "/source.jsonl"
+            )
+            append = json.dumps({**row, "last_line": 2, "last_offset_bytes": 20}) + "\n"
+            with journal.open("a") as handle:
+                handle.write(append)
+            detail = {}
+            progress, _ = module._load_journal_progress(root, scan_detail=detail)
+            self.assertEqual(detail["scanned_bytes"], len(append.encode()))
+            self.assertEqual(progress["source.jsonl"]["last_line"], 2)
+            self.assertEqual(writer_index.read_text(), "writer-owned sentinel")
+
+    def test_observer_cache_rejects_partial_lines_and_honors_resets(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            health = root / "governance/health"
+            health.mkdir(parents=True)
+            journal = health / "jsonl_ingest_batch_journal_runtime_latest.jsonl"
+            row = {
+                "event": "file_checkpoint",
+                "source_rel": "source.jsonl",
+                "last_line": 9,
+                "last_offset_bytes": 90,
+            }
+            journal.write_text(json.dumps(row))
+            self.assertEqual(module._load_journal_progress(root)[0], {})
+            with journal.open("a") as handle:
+                handle.write("\n")
+            self.assertEqual(
+                module._load_journal_progress(root)[0]["source.jsonl"]["last_line"], 9
+            )
+            with journal.open("a") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "event": "file_start",
+                            "source_rel": "source.jsonl",
+                            "reset_reason": "source_changed",
+                        }
+                    )
+                    + "\n"
+                )
+                handle.write(
+                    json.dumps({**row, "last_line": 2, "last_offset_bytes": 20}) + "\n"
+                )
+            self.assertEqual(
+                module._load_journal_progress(root)[0]["source.jsonl"]["last_line"], 2
+            )
+
+    def test_observer_cache_invalidates_same_size_rewrite_and_corrupt_index(
+        self,
+    ) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            health = root / "governance/health"
+            health.mkdir(parents=True)
+            journal = health / "jsonl_ingest_batch_journal_runtime_latest.jsonl"
+            row = {
+                "event": "file_checkpoint",
+                "source_rel": "source.jsonl",
+                "last_line": 9,
+                "last_offset_bytes": 90,
+            }
+            journal.write_text(json.dumps(row) + "\n")
+            module._load_journal_progress(root)
+            st = journal.stat()
+            journal.write_text(
+                json.dumps({**row, "last_line": 2, "last_offset_bytes": 20}) + "\n"
+            )
+            os.utime(journal, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+            detail = {}
+            progress, _ = module._load_journal_progress(root, scan_detail=detail)
+            self.assertEqual(detail["reused_indexes"], 0)
+            self.assertEqual(progress["source.jsonl"]["last_line"], 2)
+            journal.with_name(journal.name + ".backpressure_index.json").write_text(
+                json.dumps({"journal_offset_bytes": "invalid"})
+            )
+            self.assertEqual(
+                module._load_journal_progress(root)[0]["source.jsonl"]["last_line"], 2
+            )
+
+    def test_observer_initial_cache_does_not_inherit_writer_tail_limit(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            health = root / "governance/health"
+            health.mkdir(parents=True)
+            journal = health / "jsonl_ingest_batch_journal_runtime_latest.jsonl"
+            row = {
+                "event": "file_checkpoint",
+                "source_rel": "source.jsonl",
+                "last_line": 9,
+                "last_offset_bytes": 90,
+            }
+            journal.write_text(json.dumps(row) + "\n" + "{}\n" * 100)
+            with patch.dict(os.environ, {"INGEST_JOURNAL_RESUME_SCAN_MAX_BYTES": "32"}):
+                self.assertEqual(
+                    module._load_journal_progress(root)[0]["source.jsonl"]["last_line"],
+                    9,
+                )
+
     def test_journal_reconciliation_recovers_missing_state_progress(self) -> None:
         module = _load_module()
         with tempfile.TemporaryDirectory() as td:
@@ -324,10 +541,35 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
                     "last_offset_bytes": 6400,
                     "journal_timestamp_epoch": float(st.st_mtime) - 30.0,
                 },
+                source_path=path,
             )
 
             self.assertTrue(used)
             self.assertEqual(reconciled_last_line, 3200)
+
+    def test_journal_reconciliation_rejects_checkpoint_from_recreated_source(
+        self,
+    ) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "canary_rollout_observations.jsonl"
+            path.write_text("short\nlonger-current-record\n", encoding="utf-8")
+            st = path.stat()
+            birth_ts = float(getattr(st, "st_birthtime", st.st_mtime))
+
+            reconciled_last_line, used = module._journal_reconciled_last_line(
+                stat=st,
+                state_last_line=1,
+                journal_progress={
+                    "last_line": 8,
+                    "last_offset_bytes": 10,
+                    "journal_timestamp_epoch": birth_ts - 3600.0,
+                },
+                source_path=path,
+            )
+
+            self.assertFalse(used)
+            self.assertEqual(reconciled_last_line, 1)
 
     def test_last_line_for_state_tolerates_subsecond_mtime_rounding(self) -> None:
         module = _load_module()
@@ -350,7 +592,9 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
 
             self.assertEqual(last_line, 10)
 
-    def test_resolve_sqlite_state_prefers_newer_inode_progress_over_stale_higher_line_count(self) -> None:
+    def test_resolve_sqlite_state_prefers_newer_inode_progress_over_stale_higher_line_count(
+        self,
+    ) -> None:
         module = _load_module()
         with tempfile.TemporaryDirectory() as td:
             project_root = Path(td)
@@ -394,7 +638,9 @@ class IngestionBackpressureGuardTests(unittest.TestCase):
             self.assertEqual(sqlite_state[rel]["last_line"], 1590)
             self.assertEqual(sqlite_state[rel]["file_inode"], 265434204)
 
-    def test_resolve_sqlite_state_prefers_current_file_inode_over_stale_newer_inode(self) -> None:
+    def test_resolve_sqlite_state_prefers_current_file_inode_over_stale_newer_inode(
+        self,
+    ) -> None:
         module = _load_module()
         with tempfile.TemporaryDirectory() as td:
             project_root = Path(td)

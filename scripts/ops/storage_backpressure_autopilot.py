@@ -23,6 +23,7 @@ if __package__ in {None, ""}:
     from scripts.ops import retention_debt_sheriff as sheriff_src
     from scripts.ops import writer_cycle_coordinator as coordinator_src
     from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from scripts.ops.scheduled_lifecycle_common import command_tail
 else:
     from . import backpressure_drainer_fleet as drainer_src
     from . import backlog_drain_uniform_process as uniform_src
@@ -31,6 +32,7 @@ else:
     from . import retention_debt_sheriff as sheriff_src
     from . import writer_cycle_coordinator as coordinator_src
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from .scheduled_lifecycle_common import command_tail
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_backpressure_autopilot_latest.json"
@@ -223,8 +225,10 @@ def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
         "cmd": list(cmd),
         "rc": rc,
         "timed_out": timed_out,
-        "stdout_tail": "\n".join(stdout.splitlines()[-10:]),
-        "stderr_tail": "\n".join(stderr.splitlines()[-10:]),
+        "stdout_tail": command_tail(stdout, lines=10),
+        "stderr_tail": command_tail(stderr, lines=10),
+        "stdout_truncated": len(stdout) > 4000 or len(stdout.splitlines()) > 10,
+        "stderr_truncated": len(stderr) > 4000 or len(stderr.splitlines()) > 10,
         "payload": payload,
         "payload_source": payload_source,
         "payload_current_attempt": payload_current_attempt,
@@ -971,6 +975,7 @@ def _high_backlog_control(
             "BACKLOG_DRAIN_SINGLE_WRITER_ONLY": "1",
             "SQL_LINK_SERVICE_SINGLE_WRITER_ONLY": "1",
             "SQL_LINK_SERVICE_RAW_LIVE_PRIORITY_BOOST": "1",
+            "SQL_LINK_SERVICE_RAW_LIVE_OVERRIDE_EXPLICIT_SCOPE": "1",
             "SQL_LINK_SERVICE_COLD_STAGE_YIELDS_TO_RAW_LIVE": "1",
             "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1" if high_backlog else "0",
             "HEAVY_COLLECTORS_PAUSED_FOR_BACKLOG": "1" if high_backlog else "0",
@@ -1578,8 +1583,10 @@ def _attempt_record(result: dict[str, Any]) -> dict[str, Any]:
         "payload_source": str(result.get("payload_source") or ""),
         "payload_current_attempt": bool(result.get("payload_current_attempt", False)),
         "overall_status": overall_status,
-        "stdout_tail": str(result.get("stdout_tail") or ""),
-        "stderr_tail": str(result.get("stderr_tail") or ""),
+        "stdout_tail": command_tail(result.get("stdout_tail") or "", lines=10),
+        "stderr_tail": command_tail(result.get("stderr_tail") or "", lines=10),
+        "stdout_truncated": bool(result.get("stdout_truncated")) or len(str(result.get("stdout_tail") or "")) > 4000,
+        "stderr_truncated": bool(result.get("stderr_truncated")) or len(str(result.get("stderr_tail") or "")) > 4000,
     }
 
 

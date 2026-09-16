@@ -10,6 +10,7 @@ import os
 import sqlite3
 import sys
 import time
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,9 +21,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.ops.long_runtime_common import iso_now, write_payload  # noqa: E402
 from scripts.ops.writer_cycle_coordinator import writer_state_snapshot  # noqa: E402
+from scripts.ops.sql_writer_lock_path import configured_sql_writer_lock_path  # noqa: E402
+from scripts.ops import cold_sqlite_filesystem_compaction  # noqa: E402
+from core.storage_router import inspect_storage_path  # noqa: E402
 from core.runtime_maintenance import (  # noqa: E402
     engage_maintenance_hold,
     maintenance_hold_snapshot,
+    maintenance_hold_token_authorized,
     release_maintenance_hold,
 )
 
@@ -40,8 +45,7 @@ def writer_blocks_compaction(writer_state: dict[str, Any], *, allow_active_write
 
 
 def _is_protected(path: Path) -> bool:
-    raw = str(path.expanduser())
-    return any(raw == prefix or raw.startswith(f"{prefix}/") for prefix in PROTECTED_VOLUME_PREFIXES)
+    return inspect_storage_path(path).get("status") not in {"present", "missing"}
 
 
 def _default_archive_root() -> Path:
@@ -85,7 +89,9 @@ def wait_for_writer_handoff(
                 "poll_count": polls,
                 "writer_state": state,
             }
-        time.sleep(max(min(float(poll_seconds), max(deadline - time.monotonic(), 0.0)), 0.1))
+        time.sleep(
+            max(min(float(poll_seconds), max(deadline - time.monotonic(), 0.0)), 0.1)
+        )
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -93,6 +99,60 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(raw)
     except Exception:
         return int(default)
+
+
+@contextmanager
+def _filesystem_publication_guard(
+    project_root: Path, *, deadline: float, timeout_seconds: float, poll_seconds: float
+):
+    """Quiesce SQL only for publishing an already verified isolated archive copy."""
+    timeout = max(min(float(timeout_seconds), 60.0), 0.0)
+    publication_deadline = min(deadline, time.monotonic() + timeout + 30.0)
+    if publication_deadline - time.monotonic() < 1:
+        raise TimeoutError("filesystem_publication_deadline")
+    if maintenance_hold_snapshot(project_root).get("active"):
+        raise RuntimeError("filesystem_publication_existing_maintenance_hold")
+    token = ""
+    sql_lock = None
+    contract = {"scope": "verified_copy_publication_only", "released": False}
+    try:
+        engaged = engage_maintenance_hold(
+            project_root,
+            reason="cold_archive_verified_publication",
+            owner="cold_archive_compactor",
+            ttl_seconds=int(publication_deadline - time.monotonic()) + 60,
+        )
+        token = str(engaged.get("token") or "")
+        if not token:
+            raise RuntimeError("filesystem_publication_hold_token_missing")
+        handoff = wait_for_writer_handoff(
+            project_root,
+            timeout_seconds=min(
+                timeout, max(publication_deadline - time.monotonic(), 0)
+            ),
+            poll_seconds=poll_seconds,
+        )
+        contract.update(
+            ready=bool(handoff.get("ready")),
+            waited_seconds=handoff.get("waited_seconds", 0),
+        )
+        if not contract["ready"]:
+            raise RuntimeError("filesystem_publication_writer_handoff_timeout")
+        sql_lock, _ = _acquire_lock(configured_sql_writer_lock_path(project_root))
+        if sql_lock is None:
+            raise RuntimeError("filesystem_publication_writer_lock_busy")
+        if not maintenance_hold_token_authorized(
+            maintenance_hold_snapshot(project_root), token=token
+        ):
+            raise RuntimeError("filesystem_publication_hold_ownership_lost")
+        yield publication_deadline, contract
+    finally:
+        if sql_lock is not None:
+            fcntl.flock(sql_lock.fileno(), fcntl.LOCK_UN)
+            sql_lock.close()
+        if token:
+            released = release_maintenance_hold(project_root, expected_token=token)
+            contract["released"] = bool(released.get("released"))
 
 
 def _gb(raw_bytes: int) -> float:
@@ -300,6 +360,13 @@ def _iter_files(root: Path) -> list[Path]:
     for path in root.rglob("*"):
         if not path.is_file() or path.is_symlink() or path.name.startswith("._"):
             continue
+        if path.parent == root and path.name in {
+            "ARCHIVE_INDEX.md",
+            "ARCHIVE_CATALOG.csv",
+            "ARCHIVE_CATALOG.json",
+            ".archive_catalog.flock",
+        }:
+            continue
         rows.append(path)
     return rows
 
@@ -345,8 +412,8 @@ def _sqlite_inventory(path: Path, *, check_integrity: bool = False) -> dict[str,
         "error": "",
     }
     try:
-        uri = f"file:{path.resolve()}?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=5.0) as conn:
+        uri = path.resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=5.0)) as conn:
             if check_integrity:
                 quick_check_row = conn.execute("PRAGMA quick_check(1)").fetchone()
                 quick_check = str(quick_check_row[0] if quick_check_row else "")
@@ -663,7 +730,7 @@ def _vacuum_sqlite(path: Path, inventory: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError(
                 f"pre_vacuum_integrity_failed:{before_check.get('quick_check') or before_check.get('error')}"
             )
-        with sqlite3.connect(str(path), timeout=60.0) as conn:
+        with closing(sqlite3.connect(str(path), timeout=60.0)) as conn:
             conn.execute("PRAGMA busy_timeout=60000")
             conn.execute("VACUUM")
         after = _sqlite_inventory(path, check_integrity=True)
@@ -1023,12 +1090,29 @@ def main() -> int:
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--lock-path", default=str(DEFAULT_LOCK_PATH))
     parser.add_argument("--manifest-path", default="")
+    parser.add_argument(
+        "--index-only",
+        action="store_true",
+        help="Refresh bounded dataset/date metadata indexes without changing archive data.",
+    )
     parser.add_argument("--min-age-hours", type=float, default=24.0)
     parser.add_argument("--max-files", type=int, default=8)
     parser.add_argument("--max-raw-gb", type=float, default=16.0)
     parser.add_argument("--compression-level", type=int, default=3)
     parser.add_argument("--include-plain-jsonl", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--vacuum-sqlite", action="store_true")
+    parser.add_argument(
+        "--filesystem-compress-sqlite", action="append", default=[], metavar="PATH"
+    )
+    parser.add_argument(
+        "--filesystem-select-inactive",
+        action="store_true",
+        help="Select a bounded wave of old 100 MiB to 2 GiB SQLite archives without following directory links.",
+    )
+    parser.add_argument(
+        "--filesystem-compressor", choices=("auto", "ditto", "afsctool", "applesauce"), default="auto"
+    )
+    parser.add_argument("--filesystem-timeout-seconds", type=int, default=900)
     parser.add_argument("--allow-active-writer", action="store_true")
     parser.add_argument("--coordinate-writer-handoff", action="store_true")
     parser.add_argument(
@@ -1045,6 +1129,7 @@ def main() -> int:
         "--maintenance-hold-ttl-seconds",
         type=int,
         default=int(os.getenv("BOT_COLD_ARCHIVE_MAINTENANCE_HOLD_TTL_SECONDS", "7200")),
+        help="Full-batch non-filesystem hold TTL; filesystem publication derives a shorter bounded TTL.",
     )
     parser.add_argument("--sqlite-min-reclaim-mb", type=float, default=256.0)
     parser.add_argument("--sqlite-min-reclaim-ratio", type=float, default=0.08)
@@ -1052,6 +1137,62 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    if args.index_only:
+        if (
+            args.filesystem_compress_sqlite
+            or args.filesystem_select_inactive
+            or args.vacuum_sqlite
+        ):
+            parser.error("index-only cannot be combined with archive mutation modes")
+        from scripts.ops.cold_archive_catalog import build_catalog
+
+        catalog = build_catalog(Path(args.archive_root), apply=bool(args.apply))
+        summary = {
+            key: value
+            for key, value in catalog.items()
+            if key not in {"files", "groups"}
+        }
+        summary["group_count"] = len(catalog.get("groups", []))
+        out = Path(args.out_file).expanduser()
+        if out == DEFAULT_OUT_PATH:
+            out = DEFAULT_OUT_PATH.with_name("cold_archive_catalog_latest.json")
+        write_payload(out, summary)
+        print(json.dumps(summary, ensure_ascii=True))
+        return 0 if catalog.get("ok") else 2
+    filesystem_mode = bool(
+        args.filesystem_compress_sqlite or args.filesystem_select_inactive
+    )
+    requested_compressor = args.filesystem_compressor
+    if filesystem_mode:
+        args.filesystem_compressor = cold_sqlite_filesystem_compaction.select_compressor(
+            requested_compressor
+        )
+    if args.filesystem_select_inactive:
+        if args.filesystem_compress_sqlite:
+            parser.error(
+                "choose explicit SQLite paths or bounded inactive selection, not both"
+            )
+        args.filesystem_compress_sqlite = [
+            str(path)
+            for path in cold_sqlite_filesystem_compaction.select_inactive_archives(
+                Path(args.archive_root).expanduser(),
+                max_files=args.max_files,
+                max_raw_gb=args.max_raw_gb,
+                min_age_hours=args.min_age_hours,
+                compressor=args.filesystem_compressor,
+            )
+        ]
+    if (
+        filesystem_mode
+        and args.apply
+        and (
+            not args.coordinate_writer_handoff
+            or args.allow_active_writer
+        )
+    ):
+        parser.error(
+            "filesystem compression requires coordinated writer publication without active-writer bypass"
+        )
 
     try:
         os.nice(max(15 - os.nice(0), 0))
@@ -1094,7 +1235,27 @@ def main() -> int:
             write_payload(Path(args.out_file).expanduser(), payload)
             print(json.dumps(payload, ensure_ascii=True))
             return 0
-        if coordinate_writer_handoff and not args.vacuum_sqlite:
+        if filesystem_mode:
+            try:
+                cold_sqlite_filesystem_compaction.require_compressor(
+                    args.filesystem_compressor
+                )
+            except (RuntimeError, ValueError) as exc:
+                payload = {
+                    "timestamp_utc": iso_now(),
+                    "schema_version": 1,
+                    "ok": False,
+                    "overall_status": "blocked_compressor_unavailable",
+                    "apply": True,
+                    "compressor": args.filesystem_compressor,
+                    "blockers": [str(exc)],
+                    "writer_handoff": {"status": "not_requested_preflight_failed"},
+                    "source_records_deleted": False,
+                }
+                write_payload(Path(args.out_file).expanduser(), payload)
+                print(json.dumps(payload, ensure_ascii=True))
+                return 2
+        if coordinate_writer_handoff and not args.vacuum_sqlite and not filesystem_mode:
             configured_manifest = (
                 Path(args.manifest_path).expanduser()
                 if args.manifest_path
@@ -1183,7 +1344,7 @@ def main() -> int:
                     },
                     "next_action": "retry after the existing runtime maintenance hold is released",
                 }
-            else:
+            elif not filesystem_mode:
                 engaged = engage_maintenance_hold(
                     PROJECT_ROOT,
                     reason="cold_archive_compaction",
@@ -1207,6 +1368,32 @@ def main() -> int:
                         "next_action": "retry the bounded maintenance handoff on the next storage cadence",
                     }
 
+        if payload is None and filesystem_mode:
+            if payload is None:
+                payload = cold_sqlite_filesystem_compaction.build_payload(
+                    paths=[
+                        Path(path).expanduser()
+                        for path in args.filesystem_compress_sqlite
+                    ],
+                    archive_root=Path(args.archive_root).expanduser(),
+                    manifest=(
+                        Path(args.manifest_path).expanduser()
+                        if args.manifest_path
+                        else Path(args.archive_root) / DEFAULT_MANIFEST_NAME
+                    ),
+                    apply=bool(args.apply),
+                    max_files=args.max_files,
+                    max_raw_gb=args.max_raw_gb,
+                    timeout_seconds=args.filesystem_timeout_seconds,
+                    min_age_hours=args.min_age_hours,
+                    compressor=args.filesystem_compressor,
+                    publication_guard=lambda deadline: _filesystem_publication_guard(
+                        PROJECT_ROOT,
+                        deadline=deadline,
+                        timeout_seconds=args.writer_handoff_timeout_seconds,
+                        poll_seconds=args.writer_handoff_poll_seconds,
+                    ),
+                )
         if payload is None:
             payload = build_payload(
                 archive_root=Path(args.archive_root),
@@ -1220,10 +1407,14 @@ def main() -> int:
                 sqlite_min_reclaim_mb=float(args.sqlite_min_reclaim_mb),
                 sqlite_min_reclaim_ratio=float(args.sqlite_min_reclaim_ratio),
                 sqlite_inventory_limit=int(args.sqlite_inventory_limit),
-                manifest_path=Path(args.manifest_path).expanduser() if args.manifest_path else None,
+                manifest_path=(
+                    Path(args.manifest_path).expanduser()
+                    if args.manifest_path
+                    else None
+                ),
             )
-            if writer_handoff:
-                payload["writer_handoff"] = writer_handoff
+        if writer_handoff:
+            payload["writer_handoff"] = writer_handoff
     finally:
         if maintenance_hold_token:
             released = release_maintenance_hold(PROJECT_ROOT, expected_token=maintenance_hold_token)
@@ -1241,6 +1432,30 @@ def main() -> int:
             lock_handle.close()
 
     assert payload is not None
+    if args.apply and payload.get("ok"):
+        from scripts.ops.cold_archive_catalog import build_catalog
+
+        try:
+            catalog = build_catalog(
+                Path(args.archive_root), apply=True, max_seconds=5, max_entries=15000
+            )
+            payload["archive_catalog"] = {
+                key: value
+                for key, value in catalog.items()
+                if key not in {"files", "groups"}
+            }
+        except (OSError, ValueError) as exc:
+            payload["archive_catalog"] = {
+                "ok": False,
+                "overall_status": "index_failed",
+                "error": str(exc),
+            }
+    if filesystem_mode:
+        payload["compressor_requested"] = requested_compressor
+    if args.filesystem_select_inactive:
+        payload["selection_scope"] = (
+            "bounded_recovery_wave_not_complete_archive_inventory"
+        )
     if maintenance_hold_result:
         payload["maintenance_hold"] = maintenance_hold_result
         if not bool(maintenance_hold_result.get("released", False)):

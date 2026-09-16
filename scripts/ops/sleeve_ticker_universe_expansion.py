@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shlex
 import sys
@@ -146,7 +147,7 @@ DATA_INTAKE_ROUTES: dict[str, dict[str, Any]] = {
 
 UNIVERSES: dict[str, list[str]] = {
     "SHADOW_SYMBOLS_CORE": [
-        "SPY", "QQQ", "DIA", "IWM", "MDY", "VOO", "VTI", "IVV", "SPLG", "RSP",
+        "SPY", "QQQ", "DIA", "IWM", "MDY", "VOO", "VTI", "IVV", "SPYM", "RSP",
         *FACTOR_STYLE_SYMBOLS,
         "AAPL", "MSFT", "NVDA", "AMD", "AVGO", "TSM", "ASML", "MU", "ARM", "SMH", "SOXX", "QCOM", "TXN", "AMAT", "LRCX", "KLAC", "INTC",
         "AMZN", "GOOG", "GOOGL", "META", "NFLX", "DIS", "WBD", "ORCL", "CRM", "ADBE", "NOW", "PLTR", "SNOW", "SHOP", "UBER", "ABNB",
@@ -297,6 +298,44 @@ def _target_tiers(env: dict[str, str]) -> dict[str, list[str]]:
     }
 
 
+def _tier_truth(tiers: dict[str, list[str]]) -> dict[str, Any]:
+    all_symbols = tiers["TICKER_UNIVERSE_ALL_SYMBOLS"]
+    hot_symbols = tiers["TICKER_UNIVERSE_HOT_SYMBOLS"]
+    standard_symbols = tiers["TICKER_UNIVERSE_STANDARD_SYMBOLS"]
+    slow_symbols = tiers["TICKER_UNIVERSE_SLOW_SYMBOLS"]
+    all_set = set(all_symbols)
+    standard_set = set(standard_symbols)
+    slow_set = set(slow_symbols)
+    canonical_manifest = "\n".join(all_symbols).encode("utf-8")
+    invariants = {
+        "target_count_met": len(all_symbols) == TICKER_UNIVERSE_TARGET_COUNT,
+        "canonical_symbols_unique": len(all_symbols) == len(all_set),
+        "hot_is_canonical_subset": set(hot_symbols).issubset(all_set),
+        "standard_and_slow_disjoint": standard_set.isdisjoint(slow_set),
+        "standard_and_slow_partition_canonical": standard_set | slow_set == all_set,
+    }
+    if not all(invariants.values()):
+        failed = ",".join(name for name, passed in invariants.items() if not passed)
+        raise ValueError(f"ticker universe invariant failure: {failed}")
+    return {
+        "canonical_unique_symbol_count": len(all_set),
+        "canonical_duplicate_symbol_count": len(all_symbols) - len(all_set),
+        "canonical_manifest_sha256": hashlib.sha256(canonical_manifest).hexdigest(),
+        "hot_fast_context_symbol_count": len(hot_symbols),
+        "standard_bounded_context_symbol_count": len(standard_symbols),
+        "slow_deferred_symbol_count": len(slow_symbols),
+        "all_symbols_scheduled_simultaneously": False,
+        "count_semantics": {
+            "canonical_unique_symbols": "actual distinct symbols available to the tiered data platform",
+            "group_membership_slots": "overlapping symbol assignments across sleeve and context groups",
+            "hot_fast_context": "highest-priority symbols eligible for fast context collection",
+            "standard_bounded_context": "symbols collected within provider and runtime budgets",
+            "slow_deferred": "remaining canonical symbols collected by deferred breadth and training jobs",
+        },
+        "invariants": invariants,
+    }
+
+
 def _override_lines(payload: dict[str, Any]) -> list[str]:
     env = payload.get("env_overrides") if isinstance(payload.get("env_overrides"), dict) else {}
     lines = [
@@ -311,7 +350,9 @@ def _override_lines(payload: dict[str, Any]) -> list[str]:
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     del project_root
     base_env = {key: _csv(values) for key, values in UNIVERSES.items()}
-    tiered_env = {key: _csv(values) for key, values in _target_tiers(base_env).items()}
+    target_tiers = _target_tiers(base_env)
+    tier_truth = _tier_truth(target_tiers)
+    tiered_env = {key: _csv(values) for key, values in target_tiers.items()}
     symbol_env = {**base_env, **tiered_env}
     counts = {key: len(value.split(",")) if value else 0 for key, value in symbol_env.items()}
     unique_symbols = _unique_symbols(symbol_env)
@@ -346,7 +387,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         },
         "symbol_counts": counts,
         "unique_symbol_count": len(unique_symbols),
+        "canonical_symbol_count": tier_truth["canonical_unique_symbol_count"],
+        "canonical_duplicate_symbol_count": tier_truth["canonical_duplicate_symbol_count"],
+        "canonical_manifest_sha256": tier_truth["canonical_manifest_sha256"],
         "group_slot_count": group_slot_count,
+        "universe_truth": tier_truth,
         "sleeve_groups": sleeve_groups,
         "data_intake_routes": DATA_INTAKE_ROUTES,
         "data_intake_runtime_env": dict(RUNTIME_INTAKE_ENV),
@@ -362,6 +407,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         },
         "tier_contract": {
             "target_symbol_count": TICKER_UNIVERSE_TARGET_COUNT,
+            "canonical_unique_symbol_count": tier_truth["canonical_unique_symbol_count"],
+            "canonical_duplicate_symbol_count": tier_truth["canonical_duplicate_symbol_count"],
             "hot_symbol_count": len(tiered_env["TICKER_UNIVERSE_HOT_SYMBOLS"].split(",")),
             "standard_symbol_count": len(tiered_env["TICKER_UNIVERSE_STANDARD_SYMBOLS"].split(",")),
             "slow_symbol_count": len(tiered_env["TICKER_UNIVERSE_SLOW_SYMBOLS"].split(",")),
@@ -405,13 +452,18 @@ def apply_payload(
 
 def _print_human(payload: dict[str, Any]) -> None:
     counts = payload.get("symbol_counts") if isinstance(payload.get("symbol_counts"), dict) else {}
+    truth = payload.get("universe_truth") if isinstance(payload.get("universe_truth"), dict) else {}
     print(
         "sleeve_ticker_universe "
         f"status={payload.get('overall_status')} "
-        f"unique={payload.get('unique_symbol_count')} "
-        f"core={counts.get('SHADOW_SYMBOLS_CORE')} "
-        f"defensive={counts.get('SHADOW_SYMBOLS_DEFENSIVE')} "
-        f"crypto={counts.get('COINBASE_WATCH_SYMBOLS')}"
+        f"canonical_unique={payload.get('canonical_symbol_count')} "
+        f"canonical_duplicates={payload.get('canonical_duplicate_symbol_count')} "
+        f"hot={truth.get('hot_fast_context_symbol_count')} "
+        f"standard={truth.get('standard_bounded_context_symbol_count')} "
+        f"slow={truth.get('slow_deferred_symbol_count')} "
+        f"group_slots={payload.get('group_slot_count')} "
+        f"all_at_once={int(bool(truth.get('all_symbols_scheduled_simultaneously')))} "
+        f"core={counts.get('SHADOW_SYMBOLS_CORE')}"
     )
 
 

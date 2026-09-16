@@ -50,28 +50,37 @@
       "lane": "statistical_ml",
       "priority": "medium",
       "reason": "Change-point detection for regime shifts, raw profitability drift, and data-quality step changes.",
-      "install_window": "off_hours"
+      "install_window": "off_hours",
+      "admission_status": "blocked_python_3_14",
+      "compatibility_notes": ["Latest verified release 1.1.10 requires Python <3.14; retain the existing native regime-change controls on Python 3.14."]
     },
     {
       "package": "hmmlearn",
       "lane": "statistical_ml",
       "priority": "medium",
       "reason": "Hidden-state regime modeling for market posture and sleeve activation research.",
-      "install_window": "off_hours"
+      "install_window": "off_hours",
+      "admission_status": "deferred_no_python_3_14_wheel",
+      "compatibility_notes": ["The latest verified release is limited-maintenance and publishes wheels only through CPython 3.13."]
     },
     {
       "package": "filterpy",
       "lane": "statistical_ml",
       "priority": "medium",
       "reason": "Kalman and Bayesian filters for smoother microstructure, spread, and rate-curve state estimates.",
-      "install_window": "off_hours"
+      "install_window": "off_hours",
+      "admission_status": "deferred_existing_state_space_overlap",
+      "compatibility_notes": ["Reconsider only after an evidence gap remains beyond the existing state-space and Kalman implementations."]
     },
     {
       "package": "river",
       "lane": "statistical_ml",
       "priority": "medium",
       "reason": "Online-learning and drift-aware models for incremental paper-trading feedback loops.",
-      "install_window": "off_hours"
+      "install_window": "off_hours",
+      "admission_status": "staged_validated",
+      "validated_version": "0.26.1",
+      "activation_mode": "research_off_hours_feature_gated"
     },
     {
       "package": "shap",
@@ -85,7 +94,10 @@
       "lane": "quant_derivatives_risk",
       "priority": "medium",
       "reason": "Convex optimization for portfolio constraints, capital allocation, and risk-budget experiments.",
-      "install_window": "maintenance"
+      "install_window": "maintenance",
+      "admission_status": "staged_validated",
+      "validated_version": "1.9.2",
+      "activation_mode": "research_off_hours_feature_gated"
     },
     {
       "package": "PyPortfolioOpt",
@@ -204,7 +216,10 @@
       "install_window": "off_hours",
       "target_surfaces": ["strategy_research", "risk_service"],
       "target_functions": ["panel_factor_models", "cross_sectional_diagnostics"],
-      "compatibility_notes": ["Use in research lanes before promotion gates consume outputs."]
+      "compatibility_notes": ["Use in research lanes before promotion gates consume outputs."],
+      "admission_status": "staged_validated",
+      "validated_version": "7.0",
+      "activation_mode": "research_off_hours_feature_gated"
     },
     {
       "package": "pyod",

@@ -1,0 +1,1 @@
+../../../scripts/ops/strategy_generation_control.py

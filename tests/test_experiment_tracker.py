@@ -1,3 +1,4 @@
+import gzip
 import json
 from pathlib import Path
 import sys
@@ -99,3 +100,37 @@ def test_build_experiment_row_tracks_replayability_bundle(tmp_path: Path) -> Non
     assert summary["latest_exact_replay_ready"] is True
     assert summary["latest_signature_ready"] is True
     assert summary["latest_attestation_ready"] is True
+
+
+def test_write_experiment_artifacts_preserves_compressed_ledger_history(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    ledger = project_root / "governance" / "experiments" / "immutable_experiment_ledger.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(ledger.with_name(f"{ledger.name}.gz"), "wt", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp_utc": "2026-08-01T00:00:00+00:00",
+                    "experiment_id": "exp_archived",
+                    "event_type": "training_run",
+                    "replayability": {"exact_replay_ready": True},
+                    "ledger_contract": {"signature_ready": True},
+                    "attestations": {"attestation_ready": False},
+                }
+            )
+            + "\n"
+        )
+    row = {
+        "timestamp_utc": "2026-08-23T00:00:00+00:00",
+        "experiment_id": "exp_current",
+        "event_type": "lineage_baseline",
+        "replayability": {"exact_replay_ready": True},
+        "ledger_contract": {"signature_ready": True},
+        "attestations": {"attestation_ready": False},
+    }
+
+    summary = tracker.write_experiment_artifacts(project_root, row)
+
+    assert summary["ledger_row_count"] == 2
+    assert summary["signed_row_count"] == 2
+    assert summary["latest_experiment_id"] == "exp_current"

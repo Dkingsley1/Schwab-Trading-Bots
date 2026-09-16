@@ -55,6 +55,7 @@
     "required_views": [
       "lifetime_flow",
       "current_day_flow",
+      "candidate_research_forward_flow",
       "candidate_forward_flow",
       "active_book_snapshot"
     ],
@@ -71,7 +72,11 @@
     "mae_bucket",
     "mfe_bucket",
     "exit_timing_bucket",
-    "post_entry_regime_bucket"
+    "post_entry_regime_bucket",
+    "counterfactual_action_outcomes",
+    "counterfactual_5m_outcome",
+    "counterfactual_1h_outcome",
+    "counterfactual_1d_outcome"
   ],
   "stress_cost_bps": [25.0, 50.0, 100.0],
   "execution_stress": {
@@ -91,8 +96,11 @@
     "minimum_excess_return_bps": 0.0,
     "maximum_drawdown_ratio_to_passive": 1.0,
     "cash_annual_rate": 0.04,
+    "require_cash_proxy": true,
     "capture": {
       "symbol": "SPY",
+      "cash_proxy_symbol": "SGOV",
+      "require_cash_proxy": true,
       "local_timezone": "America/New_York",
       "session_open_local_time": "09:30",
       "capture_after_local_time": "16:05",

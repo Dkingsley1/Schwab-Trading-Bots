@@ -1,8 +1,8 @@
 import json
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -16,25 +16,118 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
-def test_global_risk_killswitch_blocks_auto_clear_when_runtime_is_stressed(tmp_path: Path, monkeypatch) -> None:
+def test_snapshot_relative_age_preserves_zero_age() -> None:
+    age = kill_src._snapshot_relative_age_seconds(
+        {
+            "generated_utc": datetime.now(timezone.utc).isoformat(),
+            "decision_last_age_sec": 0,
+        },
+        "decision_last_age_sec",
+    )
+
+    assert age is not None
+    assert 0.0 <= age < 5.0
+
+
+def test_effective_storage_backpressure_accepts_managed_support_contract() -> None:
+    payload = kill_src._effective_storage_backpressure(
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "backpressure": {
+                "effective_pressure_clear": True,
+                "managed_support_pressure_clear": True,
+                "effective_raw_live_source": "raw_live_backpressure+managed_support_overlay_pressure",
+                "effective_raw_live": {
+                    "core_pending_lines": 509,
+                    "total_pending_lines": 6436,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+                "core_pending_lines": 509,
+                "total_pending_lines": 425901,
+            },
+            "data_integrity": {
+                "sql_overlay_invalid_lines": 0,
+                "sql_overlay_oversize_payloads": 0,
+                "sql_overlay_ops_write_failures": 0,
+            },
+        }
+    )
+
+    assert payload["authoritative"] is True
+    assert payload["total_pending_lines"] == 6436
+    assert payload["managed_support_pressure_clear"] is True
+
+
+def test_raw_stream_ages_crosses_utc_midnight(tmp_path: Path) -> None:
+    now = datetime(2026, 8, 25, 0, 1, tzinfo=timezone.utc)
+    prior = now - timedelta(seconds=90)
+    prior_day = prior.strftime("%Y%m%d")
+    decision = (
+        tmp_path
+        / "decision_explanations"
+        / "shadow_default"
+        / f"decision_explanations_{prior_day}.jsonl"
+    )
+    governance = (
+        tmp_path / "governance" / "shadow_default" / f"master_control_{prior_day}.jsonl"
+    )
+    decision.parent.mkdir(parents=True, exist_ok=True)
+    governance.parent.mkdir(parents=True, exist_ok=True)
+    decision.write_text(
+        json.dumps({"timestamp_utc": prior.isoformat()}) + "\n", encoding="utf-8"
+    )
+    governance.write_text(
+        json.dumps({"timestamp_utc": prior.isoformat()}) + "\n", encoding="utf-8"
+    )
+
+    decision_age, governance_age = kill_src._raw_stream_ages(tmp_path, now_utc=now)
+
+    assert decision_age == 90.0
+    assert governance_age == 90.0
+
+
+def test_global_risk_killswitch_blocks_auto_clear_when_runtime_is_stressed(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     halt_flag = health / "GLOBAL_TRADING_HALT.flag"
     halt_flag.parent.mkdir(parents=True, exist_ok=True)
     halt_flag.write_text("halted", encoding="utf-8")
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
     _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 1, "account_snapshot_failure_count": 0, "queue_depth": 500})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 1,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 500,
+        },
+    )
     _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "coverage_cycles_ready"}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"clearance_plan": {"clearance_state": "coverage_cycles_ready"}},
+    )
 
     monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 1
     assert payload["action"] == "clear_blocked"
@@ -43,7 +136,64 @@ def test_global_risk_killswitch_blocks_auto_clear_when_runtime_is_stressed(tmp_p
     assert halt_flag.exists()
 
 
-def test_global_risk_killswitch_reports_operator_stop_as_clear_blocker(tmp_path: Path, monkeypatch) -> None:
+def test_global_risk_killswitch_describes_unlatched_write_recovery_as_read_only(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
+    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
+    _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 1,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 500,
+        },
+    )
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"clearance_plan": {"clearance_state": "ready"}},
+    )
+
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "1")
+    monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
+
+    rc = kill_src.main()
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
+
+    assert rc == 1
+    assert payload["halt"] is False
+    assert payload["halt_required"] is False
+    assert "write_path_recovery_pending" in payload["clear_blockers"]
+    assert (
+        "keep live lane read-only while write-path recovery pressure clears"
+        in payload["recommended_actions"]
+    )
+    assert not any(
+        action.startswith("keep GLOBAL_TRADING_HALT engaged")
+        for action in payload["recommended_actions"]
+    )
+
+
+def test_global_risk_killswitch_reports_operator_stop_as_clear_blocker(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     halt_flag = health / "GLOBAL_TRADING_HALT.flag"
@@ -51,50 +201,104 @@ def test_global_risk_killswitch_reports_operator_stop_as_clear_blocker(tmp_path:
     halt_flag.write_text("halted", encoding="utf-8")
     (health / "OPERATOR_STOP.flag").write_text("stopped", encoding="utf-8")
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
     _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 0})
-    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}})
-
-    monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
-    monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
-
-    rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
-
-    assert rc == 1
-    assert "operator_stop_active" in payload["clear_blockers"]
-    assert payload["metrics"]["operator_stop_active"] is True
-    assert payload["operator_stop"] is True
-    assert payload["control_commands"]["safe_auto_clear"] == ["./scripts/ops/opsctl.sh", "global-halt-auto-clear", "--json"]
-    assert payload["control_commands"]["manual_clear_all_halts"] == ["./scripts/ops/opsctl.sh", "clear-all-halts", "--json"]
-    assert ["./scripts/ops/opsctl.sh", "operator-release", "--json"] in payload["recommended_commands"]
-
-
-def test_global_risk_killswitch_accepts_guarded_live_read_only_runtime_state(tmp_path: Path, monkeypatch) -> None:
-    project_root = tmp_path / "project"
-    health = project_root / "governance" / "health"
-    halt_flag = health / "GLOBAL_TRADING_HALT.flag"
-    halt_flag.parent.mkdir(parents=True, exist_ok=True)
-    halt_flag.write_text(json.dumps({"reason": "prior_storage_recovery"}), encoding="utf-8")
-
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
-    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
-    _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 0})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 0,
+        },
+    )
     _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
     _write_json(
         health / "live_runtime_separation_control_latest.json",
-        {"clearance_plan": {"clearance_state": "guarded_live_read_only"}, "live_plane": {"live_lane_running": True}},
+        {"clearance_plan": {"clearance_state": "ready"}},
     )
 
     monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
+
+    assert rc == 1
+    assert "operator_stop_active" in payload["clear_blockers"]
+    assert payload["metrics"]["operator_stop_active"] is True
+    assert payload["operator_stop"] is True
+    assert payload["control_commands"]["safe_auto_clear"] == [
+        "./scripts/ops/opsctl.sh",
+        "global-halt-auto-clear",
+        "--json",
+    ]
+    assert payload["control_commands"]["manual_clear_all_halts"] == [
+        "./scripts/ops/opsctl.sh",
+        "clear-all-halts",
+        "--json",
+    ]
+    assert ["./scripts/ops/opsctl.sh", "operator-release", "--json"] in payload[
+        "recommended_commands"
+    ]
+
+
+def test_global_risk_killswitch_accepts_guarded_live_read_only_runtime_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    halt_flag = health / "GLOBAL_TRADING_HALT.flag"
+    halt_flag.parent.mkdir(parents=True, exist_ok=True)
+    halt_flag.write_text(
+        json.dumps({"reason": "prior_storage_recovery"}), encoding="utf-8"
+    )
+
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
+    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
+    _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 0,
+        },
+    )
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "clearance_plan": {"clearance_state": "guarded_live_read_only"},
+            "live_plane": {"live_lane_running": True},
+        },
+    )
+
+    monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
+
+    rc = kill_src.main()
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["action"] == "halt_cleared"
@@ -103,31 +307,65 @@ def test_global_risk_killswitch_accepts_guarded_live_read_only_runtime_state(tmp
     assert not halt_flag.exists()
 
 
-def test_global_risk_killswitch_exposes_active_hard_gates_and_exit_zero(tmp_path: Path, monkeypatch) -> None:
+def test_global_risk_killswitch_exposes_active_hard_gates_and_exit_zero(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     halt_flag = health / "GLOBAL_TRADING_HALT.flag"
     halt_flag.parent.mkdir(parents=True, exist_ok=True)
     halt_flag.write_text(json.dumps({"reason": "test_halt"}), encoding="utf-8")
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
-    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": True, "hard_gates": {"sql_wal_pressure": True, "blocked_rate": False}})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gate_triggered": True,
+            "hard_gates": {"sql_wal_pressure": True, "blocked_rate": False},
+        },
+    )
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 0})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 0,
+        },
+    )
     _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"clearance_plan": {"clearance_state": "ready"}},
+    )
 
     monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
-    monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--status-only", "--exit-zero"])
+    monkeypatch.setattr(
+        sys, "argv", ["global_risk_killswitch.py", "--status-only", "--exit-zero"]
+    )
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["action"] == "halt_would_set"
     assert payload["hard_gate_names"] == ["sql_wal_pressure"]
     assert payload["global_halt_payload"] == {"reason": "test_halt"}
-    assert ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"] in payload["recommended_commands"]
+    assert [
+        "./scripts/ops/opsctl.sh",
+        "ingestion-storage-control",
+        "--json",
+    ] in payload["recommended_commands"]
 
 
 def test_global_risk_killswitch_auto_clear_does_not_rewrite_active_halt_when_gates_still_fail(
@@ -137,22 +375,48 @@ def test_global_risk_killswitch_auto_clear_does_not_rewrite_active_halt_when_gat
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     halt_flag = health / "GLOBAL_TRADING_HALT.flag"
-    original_payload = {"reason": "softguard_api_circuit_opened", "timestamp_utc": "2026-04-30T21:01:17+00:00"}
+    original_payload = {
+        "reason": "softguard_api_circuit_opened",
+        "timestamp_utc": "2026-04-30T21:01:17+00:00",
+    }
     halt_flag.parent.mkdir(parents=True, exist_ok=True)
     halt_flag.write_text(json.dumps(original_payload), encoding="utf-8")
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
-    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": True, "hard_gates": {"sql_wal_pressure": True}})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {"hard_gate_triggered": True, "hard_gates": {"sql_wal_pressure": True}},
+    )
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 0})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 0,
+        },
+    )
     _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"clearance_plan": {"clearance_state": "ready"}},
+    )
 
     monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 2
     assert payload["action"] == "clear_blocked"
@@ -167,18 +431,41 @@ def test_global_risk_killswitch_auto_clear_is_clear_only_when_halt_is_unlatched(
     health = project_root / "governance" / "health"
     halt_flag = health / "GLOBAL_TRADING_HALT.flag"
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
-    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": True, "hard_gates": {"sql_wal_pressure": True}})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {"hard_gate_triggered": True, "hard_gates": {"sql_wal_pressure": True}},
+    )
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 0})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 0,
+        },
+    )
     _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"clearance_plan": {"clearance_state": "ready"}},
+    )
 
     monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 2
     assert payload["action"] == "halt_required_unlatched"
@@ -192,26 +479,72 @@ def test_global_risk_killswitch_auto_clear_is_clear_only_when_halt_is_unlatched(
     assert not halt_flag.exists()
 
 
-def test_global_risk_killswitch_downgrades_recovered_expansion_pressure(tmp_path: Path, monkeypatch) -> None:
+def test_global_risk_killswitch_downgrades_recovered_expansion_pressure(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     halt_flag = health / "GLOBAL_TRADING_HALT.flag"
     halt_flag.parent.mkdir(parents=True, exist_ok=True)
-    halt_flag.write_text(json.dumps({"reason": "prior_expansion_pressure"}), encoding="utf-8")
+    halt_flag.write_text(
+        json.dumps({"reason": "prior_expansion_pressure"}), encoding="utf-8"
+    )
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
-    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": True, "hard_gates": {"collector_contracts": True, "ingestion_backpressure_overload": True}})
-    _write_json(health / "ingestion_backpressure_latest.json", {"overload": False, "pending_lines_total": 77, "pending_lines_threshold": 15000, "line_pressure": False, "file_pressure": False, "age_pressure": False})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gate_triggered": True,
+            "hard_gates": {
+                "collector_contracts": True,
+                "ingestion_backpressure_overload": True,
+            },
+        },
+    )
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "overload": False,
+            "pending_lines_total": 77,
+            "pending_lines_threshold": 15000,
+            "line_pressure": False,
+            "file_pressure": False,
+            "age_pressure": False,
+        },
+    )
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 77})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 77,
+        },
+    )
     _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}, "live_plane": {"live_lane_running": False}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "clearance_plan": {"clearance_state": "ready"},
+            "live_plane": {"live_lane_running": False},
+        },
+    )
 
     monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["action"] == "halt_cleared"
@@ -231,9 +564,19 @@ def test_global_risk_killswitch_softens_stale_queue_depth_when_backpressure_reco
     health = project_root / "governance" / "health"
     halt_flag = health / "GLOBAL_TRADING_HALT.flag"
     halt_flag.parent.mkdir(parents=True, exist_ok=True)
-    halt_flag.write_text(json.dumps({"reason": "prior_queue_backpressure"}), encoding="utf-8")
+    halt_flag.write_text(
+        json.dumps({"reason": "prior_queue_backpressure"}), encoding="utf-8"
+    )
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
     _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
     _write_json(
         health / "ingestion_backpressure_latest.json",
@@ -247,9 +590,22 @@ def test_global_risk_killswitch_softens_stale_queue_depth_when_backpressure_reco
         },
     )
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 13322})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 13322,
+        },
+    )
     _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}, "live_plane": {"live_lane_running": True}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "clearance_plan": {"clearance_state": "ready"},
+            "live_plane": {"live_lane_running": True},
+        },
+    )
 
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
     monkeypatch.setenv("MARKET_DATA_ONLY", "1")
@@ -257,29 +613,56 @@ def test_global_risk_killswitch_softens_stale_queue_depth_when_backpressure_reco
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["action"] == "halt_cleared"
     assert payload["clear_blockers"] == []
-    assert payload["degraded_clear_blockers"] == ["queue_depth_recovered_waiting_backlog_drain"]
+    assert payload["degraded_clear_blockers"] == [
+        "queue_depth_recovered_waiting_backlog_drain"
+    ]
     assert payload["metrics"]["current_backpressure_clear"] is True
     assert not halt_flag.exists()
 
 
-def test_global_risk_killswitch_softens_snapshot_and_runtime_when_not_executing(tmp_path: Path, monkeypatch) -> None:
+def test_global_risk_killswitch_softens_snapshot_and_runtime_when_not_executing(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     halt_flag = health / "GLOBAL_TRADING_HALT.flag"
     halt_flag.parent.mkdir(parents=True, exist_ok=True)
     halt_flag.write_text(json.dumps({"reason": "snapshot_probe"}), encoding="utf-8")
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
     _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 3, "queue_depth": 100})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 3,
+            "queue_depth": 100,
+        },
+    )
     _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "awaiting_cold_lane"}, "live_plane": {"live_lane_running": False}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "clearance_plan": {"clearance_state": "awaiting_cold_lane"},
+            "live_plane": {"live_lane_running": False},
+        },
+    )
 
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
     monkeypatch.setenv("MARKET_DATA_ONLY", "1")
@@ -287,7 +670,9 @@ def test_global_risk_killswitch_softens_snapshot_and_runtime_when_not_executing(
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["action"] == "halt_cleared"
@@ -299,20 +684,42 @@ def test_global_risk_killswitch_softens_snapshot_and_runtime_when_not_executing(
     assert payload["operating_mode"] == "degraded_collection"
 
 
-
-def test_global_risk_killswitch_softens_runtime_coverage_debt_for_live_data_only_lane(tmp_path: Path, monkeypatch) -> None:
+def test_global_risk_killswitch_softens_runtime_coverage_debt_for_live_data_only_lane(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     halt_flag = health / "GLOBAL_TRADING_HALT.flag"
     halt_flag.parent.mkdir(parents=True, exist_ok=True)
     halt_flag.write_text(json.dumps({"reason": "coverage_debt"}), encoding="utf-8")
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
     _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 245})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 245,
+        },
+    )
     _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "awaiting_coverage_cycles"}, "live_plane": {"live_lane_running": True}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "clearance_plan": {"clearance_state": "awaiting_coverage_cycles"},
+            "live_plane": {"live_lane_running": True},
+        },
+    )
 
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
     monkeypatch.setenv("MARKET_DATA_ONLY", "1")
@@ -320,35 +727,72 @@ def test_global_risk_killswitch_softens_runtime_coverage_debt_for_live_data_only
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["action"] == "halt_cleared"
     assert payload["clear_blockers"] == []
-    assert payload["degraded_clear_blockers"] == ["runtime_clearance=awaiting_coverage_cycles"]
+    assert payload["degraded_clear_blockers"] == [
+        "runtime_clearance=awaiting_coverage_cycles"
+    ]
     assert payload["metrics"]["live_lane_running"] is True
     assert payload["metrics"]["execution_expected"] is False
 
 
-def test_global_risk_killswitch_softens_recovered_restart_storm(tmp_path: Path, monkeypatch) -> None:
+def test_global_risk_killswitch_softens_recovered_restart_storm(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     halt_flag = health / "GLOBAL_TRADING_HALT.flag"
     halt_flag.parent.mkdir(parents=True, exist_ok=True)
-    halt_flag.write_text(json.dumps({"reason": "planned_livefeed_refresh"}), encoding="utf-8")
+    halt_flag.write_text(
+        json.dumps({"reason": "planned_livefeed_refresh"}), encoding="utf-8"
+    )
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
     _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 0})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 0,
+        },
+    )
     _write_json(
         health / "process_watchdog_latest.json",
         {
             "restart_storms": [{"name": "all_sleeves", "count": 4, "resolved": False}],
-            "status": [{"name": "all_sleeves", "running": 1, "alt_running": 3, "heartbeat_ok": True, "process_live": True}],
+            "status": [
+                {
+                    "name": "all_sleeves",
+                    "running": 1,
+                    "alt_running": 3,
+                    "heartbeat_ok": True,
+                    "process_live": True,
+                }
+            ],
         },
     )
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}, "live_plane": {"live_lane_running": True}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "clearance_plan": {"clearance_state": "ready"},
+            "live_plane": {"live_lane_running": True},
+        },
+    )
 
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
     monkeypatch.setenv("MARKET_DATA_ONLY", "1")
@@ -356,12 +800,16 @@ def test_global_risk_killswitch_softens_recovered_restart_storm(tmp_path: Path, 
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["action"] == "halt_cleared"
     assert payload["clear_blockers"] == []
-    assert payload["degraded_clear_blockers"] == ["restart_storm_recovered_waiting_settle"]
+    assert payload["degraded_clear_blockers"] == [
+        "restart_storm_recovered_waiting_settle"
+    ]
     assert payload["metrics"]["restart_storm_recovered"] is True
     assert not halt_flag.exists()
 
@@ -374,13 +822,33 @@ def test_global_risk_killswitch_softens_isolated_read_only_restart_storm(
     health = project_root / "governance" / "health"
     halt_flag = health / "GLOBAL_TRADING_HALT.flag"
     halt_flag.parent.mkdir(parents=True, exist_ok=True)
-    halt_flag.write_text(json.dumps({"reason": "collector_restart_storm"}), encoding="utf-8")
+    halt_flag.write_text(
+        json.dumps({"reason": "collector_restart_storm"}), encoding="utf-8"
+    )
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
     _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
-    _write_json(health / "ingestion_backpressure_latest.json", {"overload": False, "pending_lines_total": 0, "pending_lines_threshold": 15000})
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {"overload": False, "pending_lines_total": 0, "pending_lines_threshold": 15000},
+    )
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 0})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 0,
+        },
+    )
     _write_json(
         health / "process_watchdog_latest.json",
         {
@@ -394,10 +862,23 @@ def test_global_risk_killswitch_softens_isolated_read_only_restart_storm(
                     "blocks_execution_clear": False,
                 }
             ],
-            "status": [{"name": "all_sleeves", "running": 0, "heartbeat_ok": False, "process_live": False}],
+            "status": [
+                {
+                    "name": "all_sleeves",
+                    "running": 0,
+                    "heartbeat_ok": False,
+                    "process_live": False,
+                }
+            ],
         },
     )
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}, "live_plane": {"live_lane_running": True}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "clearance_plan": {"clearance_state": "ready"},
+            "live_plane": {"live_lane_running": True},
+        },
+    )
 
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
     monkeypatch.setenv("MARKET_DATA_ONLY", "1")
@@ -405,14 +886,22 @@ def test_global_risk_killswitch_softens_isolated_read_only_restart_storm(
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["action"] == "halt_cleared"
     assert payload["clear_blockers"] == []
-    assert payload["degraded_clear_blockers"] == ["restart_storm_isolated_read_only_collection"]
-    assert payload["metrics"]["restart_storm_isolation"]["execution_blocking_count"] == 0
-    assert payload["metrics"]["restart_storm_isolation"]["isolated_targets"] == ["all_sleeves"]
+    assert payload["degraded_clear_blockers"] == [
+        "restart_storm_isolated_read_only_collection"
+    ]
+    assert (
+        payload["metrics"]["restart_storm_isolation"]["execution_blocking_count"] == 0
+    )
+    assert payload["metrics"]["restart_storm_isolation"]["isolated_targets"] == [
+        "all_sleeves"
+    ]
     assert not halt_flag.exists()
 
 
@@ -424,13 +913,33 @@ def test_global_risk_killswitch_keeps_execution_restart_storm_hard_blocked(
     health = project_root / "governance" / "health"
     halt_flag = health / "GLOBAL_TRADING_HALT.flag"
     halt_flag.parent.mkdir(parents=True, exist_ok=True)
-    halt_flag.write_text(json.dumps({"reason": "execution_restart_storm"}), encoding="utf-8")
+    halt_flag.write_text(
+        json.dumps({"reason": "execution_restart_storm"}), encoding="utf-8"
+    )
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
     _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
-    _write_json(health / "ingestion_backpressure_latest.json", {"overload": False, "pending_lines_total": 0, "pending_lines_threshold": 15000})
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {"overload": False, "pending_lines_total": 0, "pending_lines_threshold": 15000},
+    )
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 0})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 0,
+        },
+    )
     _write_json(
         health / "process_watchdog_latest.json",
         {
@@ -444,10 +953,23 @@ def test_global_risk_killswitch_keeps_execution_restart_storm_hard_blocked(
                     "blocks_execution_clear": True,
                 }
             ],
-            "status": [{"name": "execution_lane_live", "running": 0, "heartbeat_ok": False, "process_live": False}],
+            "status": [
+                {
+                    "name": "execution_lane_live",
+                    "running": 0,
+                    "heartbeat_ok": False,
+                    "process_live": False,
+                }
+            ],
         },
     )
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}, "live_plane": {"live_lane_running": True}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "clearance_plan": {"clearance_state": "ready"},
+            "live_plane": {"live_lane_running": True},
+        },
+    )
 
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
     monkeypatch.setenv("MARKET_DATA_ONLY", "1")
@@ -455,12 +977,16 @@ def test_global_risk_killswitch_keeps_execution_restart_storm_hard_blocked(
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 1
     assert payload["action"] == "clear_blocked"
     assert payload["clear_blockers"] == ["restart_storm_active"]
-    assert payload["metrics"]["restart_storm_isolation"]["execution_blocking_targets"] == ["execution_lane_live"]
+    assert payload["metrics"]["restart_storm_isolation"][
+        "execution_blocking_targets"
+    ] == ["execution_lane_live"]
     assert halt_flag.exists()
 
 
@@ -471,13 +997,40 @@ def test_global_risk_killswitch_escalates_recoverable_gates_when_live_execution_
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
-    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": True, "hard_gates": {"collector_contracts": True}})
-    _write_json(health / "ingestion_backpressure_latest.json", {"overload": False, "pending_lines_total": 0, "pending_lines_threshold": 15000})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {"hard_gate_triggered": True, "hard_gates": {"collector_contracts": True}},
+    )
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {"overload": False, "pending_lines_total": 0, "pending_lines_threshold": 15000},
+    )
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 0})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 0,
+        },
+    )
     _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}, "live_plane": {"live_lane_running": True}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "clearance_plan": {"clearance_state": "ready"},
+            "live_plane": {"live_lane_running": True},
+        },
+    )
 
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
@@ -485,42 +1038,85 @@ def test_global_risk_killswitch_escalates_recoverable_gates_when_live_execution_
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--status-only"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 2
     assert payload["action"] == "halt_would_set"
     assert payload["operating_mode"] == "global_halt_required"
 
 
-def test_global_risk_killswitch_surfaces_quant_expansion_pressure(tmp_path: Path, monkeypatch) -> None:
+def test_global_risk_killswitch_surfaces_quant_expansion_pressure(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
     halt_flag = health / "GLOBAL_TRADING_HALT.flag"
     halt_flag.parent.mkdir(parents=True, exist_ok=True)
     halt_flag.write_text(json.dumps({"reason": "quant_pressure"}), encoding="utf-8")
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
     _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": False})
-    _write_json(health / "ingestion_backpressure_latest.json", {"overload": False, "pending_lines_total": 0, "pending_lines_threshold": 15000})
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {"overload": False, "pending_lines_total": 0, "pending_lines_threshold": 15000},
+    )
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 0})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 0,
+        },
+    )
     _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}, "live_plane": {"live_lane_running": False}})
-    _write_json(health / "quant_model_control_latest.json", {"overall_status": "degraded", "features": {"quant_model_resource_pressure_norm": 0.86}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "clearance_plan": {"clearance_state": "ready"},
+            "live_plane": {"live_lane_running": False},
+        },
+    )
+    _write_json(
+        health / "quant_model_control_latest.json",
+        {
+            "overall_status": "degraded",
+            "features": {"quant_model_resource_pressure_norm": 0.86},
+        },
+    )
 
     monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 0
     assert payload["action"] == "halt_cleared"
     assert "quant_model_resource_pressure" in payload["degraded_clear_blockers"]
     assert payload["metrics"]["quant_model_status"] == "degraded"
     assert payload["metrics"]["quant_model_resource_pressure"] == 0.86
-    assert ["./scripts/ops/opsctl.sh", "quant-model-control", "--json"] in payload["recommended_commands"]
-    assert ["./scripts/ops/opsctl.sh", "memory-efficiency", "--apply", "--json"] in payload["recommended_commands"]
+    assert ["./scripts/ops/opsctl.sh", "quant-model-control", "--json"] in payload[
+        "recommended_commands"
+    ]
+    assert [
+        "./scripts/ops/opsctl.sh",
+        "memory-efficiency",
+        "--apply",
+        "--json",
+    ] in payload["recommended_commands"]
     assert payload["critical_hard_gate_names"] == []
     assert payload["degraded_hard_gate_names"] == []
 
@@ -532,19 +1128,56 @@ def test_global_risk_killswitch_escalates_severe_backpressure_even_in_collection
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"
 
-    _write_json(health / "one_numbers_latest.json", {"combined_blocked_rate": 0.0, "combined_pnl_proxy": 0.0, "decision_stale_windows_4h": 0, "watchdog_restarts": 0})
-    _write_json(health / "health_gates_latest.json", {"hard_gate_triggered": True, "hard_gates": {"ingestion_backpressure_overload": True}})
-    _write_json(health / "ingestion_backpressure_latest.json", {"overload": True, "pending_lines_total": 40000, "pending_lines_threshold": 15000, "line_pressure": True})
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 0,
+            "watchdog_restarts": 0,
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {
+            "hard_gate_triggered": True,
+            "hard_gates": {"ingestion_backpressure_overload": True},
+        },
+    )
+    _write_json(
+        health / "ingestion_backpressure_latest.json",
+        {
+            "overload": True,
+            "pending_lines_total": 40000,
+            "pending_lines_threshold": 15000,
+            "line_pressure": True,
+        },
+    )
     _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
-    _write_json(health / "data_plane_recovery_controller_latest.json", {"write_failure_count": 0, "account_snapshot_failure_count": 0, "queue_depth": 40000})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 40000,
+        },
+    )
     _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
-    _write_json(health / "live_runtime_separation_control_latest.json", {"clearance_plan": {"clearance_state": "ready"}, "live_plane": {"live_lane_running": False}})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {
+            "clearance_plan": {"clearance_state": "ready"},
+            "live_plane": {"live_lane_running": False},
+        },
+    )
 
     monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
     monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--status-only"])
 
     rc = kill_src.main()
-    payload = json.loads((health / "global_killswitch_latest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
 
     assert rc == 2
     assert payload["action"] == "halt_would_set"
@@ -552,12 +1185,18 @@ def test_global_risk_killswitch_escalates_severe_backpressure_even_in_collection
     assert payload["metrics"]["backpressure_pressure_ratio"] > 2.0
 
 
-def test_global_risk_killswitch_bounds_clear_blocker_refresh(monkeypatch, tmp_path: Path) -> None:
+def test_global_risk_killswitch_bounds_clear_blocker_refresh(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(kill_src, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(kill_src, "_clear_blocker_steps", lambda: [("slow_step", ["slow-command"])])
+    monkeypatch.setattr(
+        kill_src, "_clear_blocker_steps", lambda: [("slow_step", ["slow-command"])]
+    )
 
     def slow_run(cmd, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout", 1), output="partial", stderr="")
+        raise subprocess.TimeoutExpired(
+            cmd=cmd, timeout=kwargs.get("timeout", 1), output="partial", stderr=""
+        )
 
     monkeypatch.setattr(kill_src.subprocess, "run", slow_run)
 
@@ -574,3 +1213,144 @@ def test_global_risk_killswitch_bounds_clear_blocker_refresh(monkeypatch, tmp_pa
             "stderr_tail": "timeout",
         }
     ]
+
+
+def _write_fresh_stale_window_fixture(health: Path, *, decision_age: int = 15) -> None:
+    _write_json(
+        health / "one_numbers_latest.json",
+        {
+            "generated_utc": datetime.now(timezone.utc).isoformat(),
+            "combined_blocked_rate": 0.0,
+            "combined_pnl_proxy": 0.0,
+            "decision_stale_windows_4h": 9,
+            "decision_last_age_sec": decision_age,
+            "governance_last_age_sec": 20,
+            "data_quality_decision_stale_grace_seconds": 120,
+            "data_quality_governance_stale_grace_seconds": 180,
+            "watchdog_restarts": 0,
+        },
+    )
+    _write_json(
+        health / "health_gates_latest.json",
+        {"hard_gate_triggered": True, "hard_gates": {"stale_windows": True}},
+    )
+    _write_json(health / "auth_lease_manager_latest.json", {"lease_state": "healthy"})
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "write_failure_count": 0,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 0,
+        },
+    )
+    _write_json(health / "process_watchdog_latest.json", {"restart_storms": []})
+    _write_json(
+        health / "live_runtime_separation_control_latest.json",
+        {"clearance_plan": {"clearance_state": "ready"}},
+    )
+
+
+def test_global_risk_killswitch_keeps_recovered_historical_stale_windows_advisory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    halt_flag = health / "GLOBAL_TRADING_HALT.flag"
+    halt_flag.parent.mkdir(parents=True, exist_ok=True)
+    halt_flag.write_text(
+        json.dumps({"reason": "historical_stale_windows"}), encoding="utf-8"
+    )
+    _write_fresh_stale_window_fixture(health)
+    one_numbers = json.loads(
+        (health / "one_numbers_latest.json").read_text(encoding="utf-8")
+    )
+    one_numbers["generated_utc"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=20)
+    ).isoformat()
+    _write_json(health / "one_numbers_latest.json", one_numbers)
+    now = datetime.now(timezone.utc)
+    day = now.strftime("%Y%m%d")
+    decision_dir = project_root / "decision_explanations" / "shadow_default"
+    governance_dir = project_root / "governance" / "shadow_default"
+    decision_dir.mkdir(parents=True, exist_ok=True)
+    governance_dir.mkdir(parents=True, exist_ok=True)
+    (decision_dir / f"decision_explanations_{day}.jsonl").write_text(
+        json.dumps({"timestamp_utc": now.isoformat(), "action": "HOLD"}) + "\n",
+        encoding="utf-8",
+    )
+    (governance_dir / f"master_control_{day}.jsonl").write_text(
+        json.dumps({"timestamp_utc": now.isoformat(), "master_action": "HOLD"}) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "1")
+    monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--auto-clear"])
+
+    rc = kill_src.main()
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
+
+    assert rc == 0
+    assert payload["action"] == "halt_cleared"
+    assert payload["halt_required"] is False
+    assert payload["critical_hard_gate_names"] == []
+    assert payload["stale_hard_gate_names"] == []
+    assert payload["metrics"]["recovered_historical_stale_windows"] is True
+    assert payload["metrics"]["decision_freshness_source"] == "raw_jsonl_tail"
+    assert payload["metrics"]["governance_freshness_source"] == "raw_jsonl_tail"
+    assert payload["advisory_evidence"] == ["recovered_historical_stale_windows"]
+    assert payload["sleeve_throttle_recommended"] is False
+    assert not halt_flag.exists()
+
+
+def test_global_risk_killswitch_keeps_stale_windows_hard_for_live_execution(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_fresh_stale_window_fixture(health)
+
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "0")
+    monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--status-only"])
+
+    rc = kill_src.main()
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
+
+    assert rc == 2
+    assert payload["action"] == "halt_would_set"
+    assert payload["halt_required"] is True
+    assert payload["critical_hard_gate_names"] == ["stale_windows"]
+    assert payload["metrics"]["recovered_historical_stale_windows"] is False
+
+
+def test_global_risk_killswitch_keeps_current_staleness_hard_in_paper_mode(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    _write_fresh_stale_window_fixture(health, decision_age=901)
+
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
+    monkeypatch.setenv("MARKET_DATA_ONLY", "1")
+    monkeypatch.setattr(kill_src, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(sys, "argv", ["global_risk_killswitch.py", "--status-only"])
+
+    rc = kill_src.main()
+    payload = json.loads(
+        (health / "global_killswitch_latest.json").read_text(encoding="utf-8")
+    )
+
+    assert rc == 2
+    assert payload["action"] == "halt_would_set"
+    assert payload["halt_required"] is True
+    assert payload["metrics"]["recovered_historical_stale_windows"] is False

@@ -25,6 +25,11 @@ fi
 
 "$PY_BIN" /Users/dankingsley/PycharmProjects/schwab_trading_bot/scripts/secret_scan.py --staged >/dev/null || status=1
 "$PY_BIN" /Users/dankingsley/PycharmProjects/schwab_trading_bot/scripts/ops/codex_project_guard.py --staged >/dev/null || status=1
+if ! "$PY_BIN" /Users/dankingsley/PycharmProjects/schwab_trading_bot/scripts/ops/source_mutation_guard.py --check-clean >/dev/null; then
+  echo "ERROR: runtime source differs from the accepted production candidate." >&2
+  echo "Run focused regressions, inspect production-excellence drift evidence, then explicitly accept the reviewed change." >&2
+  status=1
+fi
 
 if (( status != 0 )); then
   exit 1

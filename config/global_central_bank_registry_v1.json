@@ -60,7 +60,7 @@
       "policy_framework": "lending_benchmark_proxy",
       "policy_rate_required": true,
       "balance_sheet_required": true,
-      "official_policy_url": "http://www.pbc.gov.cn/en/3688110/index.html",
+      "official_policy_url": "https://www.pbc.gov.cn/en/3688229/3688335/3730276/index.html",
       "bot_domains": ["rates", "equity", "fx", "commodities", "global_macro"]
     },
     {

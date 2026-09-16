@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -368,6 +370,38 @@ def test_one_numbers_repair_command_timeout_returns_clean_failure(tmp_path: Path
     assert stderr == "timeout"
 
 
+def test_process_inspection_denial_keeps_timeout_cleanup(tmp_path, monkeypatch) -> None:
+    children = []
+    real_popen = guard.subprocess.Popen
+
+    def spawn(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    def denied(*args, **kwargs):
+        raise PermissionError("process inspection unavailable")
+
+    monkeypatch.setattr(guard.subprocess, "Popen", spawn)
+    monkeypatch.setattr(guard.subprocess, "run", denied)
+    assert guard._builder_running() is True
+    rc, timed_out, _, _ = guard._run_repair_command(
+        [sys.executable, "-c", "import time; time.sleep(10)"], tmp_path, 1
+    )
+    assert (rc, timed_out) == (124, True)
+    assert children and all(child.poll() is not None for child in children)
+
+
+def test_process_inspection_is_bounded(monkeypatch) -> None:
+    def stalled(*args, **kwargs):
+        assert kwargs["timeout"] == 2
+        raise subprocess.TimeoutExpired(args[0], 2)
+
+    monkeypatch.setattr(guard.subprocess, "run", stalled)
+    assert guard._process_stat(123) == ""
+    assert guard._builder_running() is True
+
+
 def test_apply_repairs_restores_missing_bundle_from_recovery_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -438,6 +472,8 @@ def test_apply_repairs_restores_missing_bundle_from_recovery_snapshot(
 
 
 def test_one_numbers_repair_command_resumes_stopped_builder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if not guard._process_stat(os.getpid()):
+        pytest.skip("native ps inspection unavailable in this execution environment")
     monkeypatch.setenv("ONE_NUMBERS_REPAIR_POLL_SECONDS", "1")
     rc, timed_out, stdout, stderr = guard._run_repair_command(
         [

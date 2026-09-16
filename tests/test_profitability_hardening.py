@@ -10,6 +10,7 @@ from core.profitability_hardening import (
     evaluate_paper_execution_authority,
     evaluate_profitability_entry,
     evaluate_retirement_evidence,
+    evaluate_staged_promotion_cohort,
     position_valuation_compatible,
     post_cost_adjusted_forward_return,
     resolve_contract_valuation,
@@ -22,7 +23,86 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_contract_valuation_resolves_known_derivatives_and_rejects_unknown_future() -> None:
+def _write_staged_cohort_policy(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "config" / "profitability_self_assessment_v1.json",
+        {
+            "promotion_cohort": {
+                "enabled": True,
+                "cohort_id": "dividend_liquid_etf_candidate_v1",
+                "profile": "dividend",
+                "sleeve_id": "dividend_income",
+                "direction_policy": "long_only",
+                "active_stage": 1,
+                "maximum_active_stages": 1,
+                "maximum_active_strategies": 1,
+                "maximum_symbols_per_stage": 1,
+                "stages": [
+                    {
+                        "stage": 1,
+                        "symbol": "SCHD",
+                        "strategy_id": (
+                            "sleeve::dividend_income::portfolio_consensus::v1"
+                        ),
+                    }
+                ],
+                "live_execution_allowed": False,
+                "automatic_stage_advancement_allowed": False,
+            }
+        },
+    )
+
+
+def test_staged_promotion_cohort_allows_only_active_entry_and_reduce_only_exits(
+    tmp_path: Path,
+) -> None:
+    _write_staged_cohort_policy(tmp_path)
+    matching = evaluate_staged_promotion_cohort(
+        project_root=tmp_path,
+        enforcement_required=True,
+        profile="dividend",
+        sleeve_id="dividend_income",
+        symbol="SCHD",
+        strategy_id="sleeve::dividend_income::portfolio_consensus::v1",
+        action="BUY",
+        exposure_change={"increases_exposure": True},
+    )
+    unrelated = evaluate_staged_promotion_cohort(
+        project_root=tmp_path,
+        enforcement_required=True,
+        profile="equity_core",
+        sleeve_id="equity_core",
+        symbol="SPY",
+        strategy_id="sleeve::equity_core::portfolio_consensus::v1",
+        action="BUY",
+        exposure_change={"increases_exposure": True},
+    )
+    historical_exit = evaluate_staged_promotion_cohort(
+        project_root=tmp_path,
+        enforcement_required=True,
+        profile="equity_core",
+        sleeve_id="equity_core",
+        symbol="SPY",
+        strategy_id="sleeve::equity_core::portfolio_consensus::v1",
+        action="SELL",
+        exposure_change={
+            "increases_exposure": False,
+            "reduces_or_closes": True,
+            "crosses_through_flat": False,
+        },
+    )
+
+    assert matching["allowed"] is True
+    assert matching["disposition"] == "active_promotion_stage_entry"
+    assert unrelated["allowed"] is False
+    assert "outside_active_promotion_profile" in unrelated["reasons"]
+    assert historical_exit["allowed"] is True
+    assert historical_exit["disposition"] == "historical_position_reduce_only_exit"
+
+
+def test_contract_valuation_resolves_known_derivatives_and_rejects_unknown_future() -> (
+    None
+):
     future = resolve_contract_valuation("/ES")
     option = resolve_contract_valuation("AAPL260918C00200000")
     unknown = resolve_contract_valuation("/UNKNOWN")
@@ -231,6 +311,66 @@ def test_runtime_consensus_fails_closed_without_hierarchy_identity() -> None:
     assert result["action"] == "HOLD"
     assert result["skipped_reasons"]["hierarchy_identity_missing"] == 1
     assert result["hierarchy_identity_required"] is True
+
+
+def test_consensus_allows_capped_candidate_bound_buy_scale() -> None:
+    result = coalesce_paper_intents(
+        [
+            {
+                "bot_id": bot_id,
+                "action": "BUY",
+                "score": 0.75,
+                "threshold": 0.55,
+                "weight": 0.5,
+                "test_accuracy": 0.80,
+                "correlation_cluster_id": cluster,
+                "sub_sleeve_id": cluster,
+                "sleeve_id": "default",
+                "features": {
+                    "paper_profitability_strategy_size_multiplier_norm": 1.10,
+                    "profitability_regime_fit_norm": 1.0,
+                    "execution_fitness_norm": 1.0,
+                },
+            }
+            for bot_id, cluster in (("winner_a", "trend"), ("winner_b", "breadth"))
+        ],
+        max_bot_weight=1.0,
+        minimum_distinct_clusters=2,
+        require_hierarchy_identity=True,
+    )
+
+    assert result["action"] == "BUY"
+    assert result["quantity_multiplier"] == 1.10
+
+
+def test_consensus_never_shrinks_sell_exit_from_entry_scaling() -> None:
+    result = coalesce_paper_intents(
+        [
+            {
+                "bot_id": bot_id,
+                "action": "SELL",
+                "score": 0.25,
+                "threshold": 0.55,
+                "weight": 0.5,
+                "test_accuracy": 0.80,
+                "correlation_cluster_id": cluster,
+                "sub_sleeve_id": cluster,
+                "sleeve_id": "default",
+                "features": {
+                    "paper_profitability_strategy_size_multiplier_norm": 0.0,
+                    "profitability_regime_fit_norm": 1.0,
+                    "execution_fitness_norm": 1.0,
+                },
+            }
+            for bot_id, cluster in (("exit_a", "trend"), ("exit_b", "breadth"))
+        ],
+        max_bot_weight=1.0,
+        minimum_distinct_clusters=2,
+        require_hierarchy_identity=True,
+    )
+
+    assert result["action"] == "SELL"
+    assert result["quantity_multiplier"] == 1.0
 
 
 def test_strict_entry_economics_block_stale_quotes_and_edge_below_costs() -> None:

@@ -18,6 +18,8 @@ else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     from core.sqlite_runtime import sqlite_integrity_summary
 
+from scripts.ops.state_snapshot_capacity import complete_restore_evidence
+
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_resilience_control_latest.json"
 CHECKSUM_PATH = PROJECT_ROOT / "governance" / "storage" / "checksum_scrub_latest.json"
 
@@ -172,7 +174,7 @@ def build_payload(
     ]
 
     snapshot_ts = _parse_iso(state_snapshot.get("timestamp_utc") or state_snapshot.get("generated_utc"))
-    snapshot_age_hours = max((datetime.now(timezone.utc) - snapshot_ts).total_seconds() / 3600.0, 0.0) if snapshot_ts else None
+    snapshot_age_hours = (datetime.now(timezone.utc) - snapshot_ts).total_seconds() / 3600.0 if snapshot_ts else None
     warm_standby_ready = (project_root / "local_fallback_storage").exists()
     retention_contract = retention.get("continuous_run_contract") if isinstance(retention.get("continuous_run_contract"), dict) else {}
     retention_disk = retention.get("disk") if isinstance(retention.get("disk"), dict) else {}
@@ -201,9 +203,9 @@ def build_payload(
         and (mount_guard.get("external_available", False) or archive_standby_ready)
     )
     restore_drill_fresh = bool(
-        state_snapshot.get("ok", False)
+        complete_restore_evidence(state_snapshot)
         and snapshot_age_hours is not None
-        and snapshot_age_hours <= 168.0
+        and 0 <= snapshot_age_hours <= 168.0
     )
     unresolved_split_brain = int(((split_brain.get("summary") or {}).get("unresolved_conflicts", 0) or 0))
     reliability_score = sum(
