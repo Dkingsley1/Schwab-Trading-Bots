@@ -98,6 +98,8 @@ The connected read-only canary rehearsal now refreshes tax, release, and order-l
 
 The separate read-only buy-and-hold test scope includes `SCHD` and `O`. Rehearsal reports identify test membership without changing live stage eligibility: `O` can be inspected with `--symbol O` but remains blocked for live-canary admission. This adds no orders, ex-dividend trading, strategy activation, or limit changes.
 
+The separate operator-only broker-function test defaults to O buy-and-hold in the designated Roth, with a $300 budget, at most five whole shares, and a hard $58.08 buy-limit ceiling. Its passive proposal uses the lower of the fresh Schwab bid and that ceiling; it is not a valuation claim. `./scripts/ops/opsctl.sh supervised-broker-test status --json` is offline, `preview` is broker-read-only, and `observe` reconciles existing test evidence. Only an interactive, exact-order operator confirmation can enter its submit workflow. Production soak/profitability promotion remains separate and unchanged; cash, identity, risk, storage, release, duplicate prevention, and reconciliation checks remain required. No test order, standing authority, automatic sell/rebuy, or autonomous bot activation is inferred. See [SUPERVISED_BROKER_TEST.md](docs/operations/SUPERVISED_BROKER_TEST.md).
+
 The transition contract is:
 
 `collect -> signal or no-trade -> paper execution and replay -> out-of-sample evidence -> broker/risk/promotion gates -> operator-approved microscopic live canary -> broker/position/cash closeout -> reconciled round trips and economic gates -> operator-reviewed stage or capital proposal, or rollback`

@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `7cd753334f7511e773892702cffc26707e06244faa731331a80907fa62234f02`.
+Command contract hash: `eba8374772afbe71435c16579a8f1a37bdc4b844e699afa96283c848216930be`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `256` generated command entries from the current command contract.
+Search coverage: `257` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Keep the Mac awake (Most Used)"></option>
@@ -75,6 +75,7 @@ Search coverage: `256` generated command entries from the current command contra
   <option value="Watch P-core/E-core load with low overhead (Most Used)"></option>
   <option value="Bind verified Schwab accounts to Keychain (Accounts And Positions)"></option>
   <option value="Check the supervised live-canary preflight (Accounts And Positions)"></option>
+  <option value="Inspect the separate operator-only broker function test (Accounts And Positions)"></option>
   <option value="Refresh Schwab account positions (Accounts And Positions)"></option>
   <option value="Review account policy context (Accounts And Positions)"></option>
   <option value="Review post-canary graduation milestones (Accounts And Positions)"></option>
@@ -285,7 +286,7 @@ Search coverage: `256` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (256 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (257 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -338,6 +339,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:a26b7afb0898ca84d745f44776c0eb60b5f27a7d1573c738e7aae59362bea2ae section:`Most Used` section_key:`most-used` title:Watch P-core/E-core load with low overhead title_key:`watch-p-core-e-core-load-with-low-overhead` opsctl:`none` scripts:`none` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:47c63125b8223f153be0225be0900b6575ded2e7d860ea4c8d1fa0b1e29a7fc3 section:`Accounts And Positions` section_key:`accounts-and-positions` title:Bind verified Schwab accounts to Keychain title_key:`bind-verified-schwab-accounts-to-keychain` opsctl:`schwab-account-hash-sync` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e04377a2e5e7f9a89c016004ef776fcebd1de5012ad54b0c0377525e2e368b41 section:`Accounts And Positions` section_key:`accounts-and-positions` title:Check the supervised live-canary preflight title_key:`check-the-supervised-live-canary-preflight` opsctl:`live-canary-preflight` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:500d325f1600bc5e7b14fc82ccff4a33afd02e517282e834d8242bc0fa76554f section:`Accounts And Positions` section_key:`accounts-and-positions` title:Inspect the separate operator-only broker function test title_key:`inspect-the-separate-operator-only-broker-function-test` opsctl:`supervised-broker-test` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:34fca037f53ae7e652c9e7f2f8ef85c8459c5a2ca3a9170078a75d488d76467c section:`Accounts And Positions` section_key:`accounts-and-positions` title:Refresh Schwab account positions title_key:`refresh-schwab-account-positions` opsctl:`schwab-account-snapshot-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:3329a9f27ebab407f10027cd5e2319b45f8e164f7514bbeb04c957dfc8adda25 section:`Accounts And Positions` section_key:`accounts-and-positions` title:Review account policy context title_key:`review-account-policy-context` opsctl:`account-policy-context` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:c136414c593d8e5c9b7bf1ce70d8ea753b1cc946e29039af55dc09699ffed4a0 section:`Accounts And Positions` section_key:`accounts-and-positions` title:Review post-canary graduation milestones title_key:`review-post-canary-graduation-milestones` opsctl:`live-canary-graduation` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -992,6 +994,18 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 
 Fail-closed check for the exact candidate/account binding, settled-cash attestation, broker restrictions, risk boundary, live-order ledger, immutable release, tax review, and exchange session.
 The Roth canary additionally requires explicit retirement loss-capacity, contribution-capacity, and cross-account wash-sale confirmation. The command cannot arm live execution.
+
+### Inspect the separate operator-only broker function test
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh supervised-broker-test status --json
+./scripts/ops/opsctl.sh supervised-broker-test preview --json
+./scripts/ops/opsctl.sh supervised-broker-test observe --json
+```
+
+Status is offline. Preview and observe are broker-read-only; no attestation or order is issued. O buy-and-hold is bounded to $300, five whole shares, and a $58.08 maximum buy limit; a lower fresh bid may be proposed without claiming undervaluation.
+The separate submit command requires an interactive operator, current personal review, and exact order confirmation. It retains technical safety gates and durable single-attempt accounting; production soak/profitability promotion is not waived or credited. No automatic sell, rebuy, repricing, or reinvestment.
+See docs/operations/SUPERVISED_BROKER_TEST.md before any operator-controlled test. Cash/fee, position, dividend, and profitability evidence remain distinct.
 
 ### Refresh Schwab account positions
 ```bash

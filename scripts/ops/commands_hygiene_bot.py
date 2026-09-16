@@ -1272,6 +1272,20 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Inspect the separate operator-only broker function test",
+                [
+                    "./scripts/ops/opsctl.sh supervised-broker-test status --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test preview --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test observe --json",
+                ],
+                notes=[
+                    "Status is offline. Preview and observe are broker-read-only; no attestation or order is issued. O buy-and-hold is bounded to $300, five whole shares, and a $58.08 maximum buy limit; a lower fresh bid may be proposed without claiming undervaluation.",
+                    "The separate submit command requires an interactive operator, current personal review, and exact order confirmation. It retains technical safety gates and durable single-attempt accounting; production soak/profitability promotion is not waived or credited. No automatic sell, rebuy, repricing, or reinvestment.",
+                    "See docs/operations/SUPERVISED_BROKER_TEST.md before any operator-controlled test. Cash/fee, position, dividend, and profitability evidence remain distinct.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Run the connected read-only canary dress rehearsal",
                 [
                     "./scripts/ops/opsctl.sh live-canary-dress-rehearsal --symbol SCHD --json"

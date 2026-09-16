@@ -79,6 +79,8 @@ jobs:
             scripts/ops/live_order_ledger_control.py \
             scripts/ops/live_canary_control.py \
             core/live_order_ledger.py \
+            core/supervised_broker_test.py \
+            scripts/ops/supervised_broker_test.py \
             core/live_canary_allowlist.py \
             core/live_execution_controls.py \
             core/execution_lane_pipeline.py \
@@ -141,6 +143,7 @@ jobs:
           python scripts/ops/production_quality_slo_guard.py --help >/dev/null
           python scripts/ops/production_excellence_control.py --help >/dev/null
           python scripts/ops/live_order_ledger_control.py --help >/dev/null
+          python scripts/ops/supervised_broker_test.py --help >/dev/null
           python scripts/ops/production_recovery_drill_harness.py --help >/dev/null
           python scripts/ops/production_resilience_control.py --help >/dev/null
           python scripts/ops/profitability_evidence_firewall.py --help >/dev/null
@@ -167,6 +170,7 @@ jobs:
           python -m py_compile core/master_grandmaster_evidence.py
           python -m json.tool config/production_resilience_v1.json >/dev/null
           python -m json.tool config/live_canary_micro_policy_v1.json >/dev/null
+          python -m json.tool config/supervised_broker_test_v1.json >/dev/null
           python -m json.tool config/symbol_lifecycle_v1.json >/dev/null
           python -m json.tool config/sleeve_strategy_expansion.json >/dev/null
           python -m json.tool config/authoritative_systems_v1.json >/dev/null
@@ -286,6 +290,9 @@ jobs:
         run: |
           python -m pytest -q \
             tests/test_live_canary_allowlist.py \
+            tests/test_supervised_broker_test.py \
+            tests/test_supervised_broker_test_cli.py \
+            tests/test_live_canary_preflight.py \
             tests/test_live_execution_controls.py \
             tests/test_system_role_contracts.py \
             tests/test_live_canary_control.py \

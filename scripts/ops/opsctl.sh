@@ -1671,6 +1671,9 @@ case "$cmd" in
   live-canary-control|canary-control|supervised-canary)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_control.py" "$@"
     ;;
+  supervised-broker-test)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/supervised_broker_test.py" "$@"
+    ;;
   live-canary-graduation|canary-graduation|post-canary-graduation)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_graduation.py" "$@"
     ;;
@@ -3460,6 +3463,7 @@ opsctl commands:
   promotion-quality-gate|promotion-gate [--json]
   autonomy-control [--json]
   live-canary-readiness|canary-readiness-contract|production-hardening-bar [--apply] [--json]
+  supervised-broker-test [status|preview|submit|observe] [--action BUY|SELL] [--quantity N --limit-price PRICE] [--json]
   live-canary-graduation|post-canary-graduation [--policy PATH] [--plan PATH] [--ledger PATH] [--receipts PATH] [--json]
   live-canary-closeout|post-canary-closeout [--intent-id ID] [--capture] [--policy PATH] [--plan PATH] [--ledger PATH] [--receipts PATH] [--account-study PATH] [--json]
   use-mode-compliance|commercial-compliance|personal-use-readiness [--json]

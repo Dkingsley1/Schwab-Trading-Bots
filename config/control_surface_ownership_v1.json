@@ -444,6 +444,24 @@
       "coordination": "atomic_replace"
     },
     {
+      "control_id": "supervised_broker_test_attestation",
+      "resource_path": "governance/runtime/supervised_broker_test_attestation.json",
+      "owner_source": "scripts/ops/live_canary_preflight.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "supervised-broker-test", "status", "--json"],
+      "owner_marker": "supervised_broker_test_attestation.json",
+      "mutation_mode": "explicit_operator_atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
+      "control_id": "supervised_broker_test_health",
+      "resource_path": "governance/health/supervised_broker_test_latest.json",
+      "owner_source": "scripts/ops/supervised_broker_test.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "supervised-broker-test", "preview", "--json"],
+      "owner_marker": "supervised_broker_test_latest.json",
+      "mutation_mode": "redacted_atomic_snapshot",
+      "coordination": "atomic_replace"
+    },
+    {
       "control_id": "live_canary_candidate_allowlist",
       "resource_path": "governance/runtime/live_canary_allowlist.json",
       "owner_source": "scripts/ops/live_canary_preflight.py",

@@ -229,7 +229,11 @@ def evaluate_live_canary_preflight(
     account_reference: str = "",
     env: Mapping[str, str] | None = None,
     now: datetime | None = None,
+    purpose: str = "production_canary",
 ) -> dict[str, Any]:
+    if purpose not in {"production_canary", "supervised_broker_test"}:
+        raise ValueError("unsupported preflight purpose")
+    supervised_test = purpose == "supervised_broker_test"
     root = Path(project_root)
     current = (now or _utc_now()).astimezone(timezone.utc)
     env_map = dict(env) if isinstance(env, Mapping) else dict(os.environ)
@@ -242,6 +246,8 @@ def evaluate_live_canary_preflight(
         policy.get("canary_plan_path"),
         "config/live_canary_micro_policy_v1.json",
     )
+    if supervised_test:
+        plan_path = root / "config" / "supervised_broker_test_v1.json"
     plan, plan_valid = _load_json(plan_path)
     candidate_path = _project_path(
         root,
@@ -266,6 +272,10 @@ def evaluate_live_canary_preflight(
         policy.get("live_canary_operator_attestation_path"),
         "governance/runtime/live_canary_operator_attestation.json",
     )
+    if supervised_test:
+        attestation_path = (
+            root / "governance/runtime/supervised_broker_test_attestation.json"
+        )
     attestation, attestation_valid = _load_json(attestation_path)
     risk_path = _project_path(
         root,
@@ -307,6 +317,8 @@ def evaluate_live_canary_preflight(
         blockers.append("production_candidate_state_invalid")
     if not registry_valid:
         blockers.append("account_policy_registry_invalid")
+    if supervised_test and plan.get("purpose") != purpose:
+        blockers.append("supervised_test_policy_purpose_invalid")
 
     candidate_id = str(candidate.get("candidate_id") or "").strip()
     account_policy_key = str(plan.get("account_policy_key") or "").strip()
@@ -542,6 +554,11 @@ def evaluate_live_canary_preflight(
     attestation_blockers: list[str] = []
     attestation_tax_ledger_matches = False
     required_confirmations = required_operator_confirmations(tax_wrapper)
+    if supervised_test:
+        required_confirmations += (
+            "broker_open_orders_reviewed",
+            "no_concurrent_manual_orders_confirmed",
+        )
     missing_confirmations = list(required_confirmations)
     attestation_issued = _parse_timestamp(attestation.get("issued_at_utc"))
     attestation_expires = _parse_timestamp(attestation.get("expires_at_utc"))
@@ -569,6 +586,16 @@ def evaluate_live_canary_preflight(
             "live_canary_operator_attestation_permissions_unsafe"
         )
     else:
+        if not supervised_test and attestation.get("purpose") not in {
+            None,
+            "production_canary",
+        }:
+            attestation_blockers.append("operator_attestation_purpose_mismatch")
+        if supervised_test and (
+            attestation.get("purpose") != purpose
+            or attestation.get("test_policy_sha256") != _file_sha256(plan_path)
+        ):
+            attestation_blockers.append("operator_attestation_test_policy_mismatch")
         if (
             attestation_issued is None
             or attestation_expires is None
@@ -770,7 +797,26 @@ def evaluate_live_canary_preflight(
         )
 
     entry_action = str(action or "").strip().upper() in LIVE_ENTRY_ACTIONS
-    unique_blockers = _ordered_unique(blockers if entry_action else [])
+    if supervised_test:
+        for label, payload in (
+            ("account", account_study),
+            ("risk", risk_boundary),
+            ("ledger", order_ledger),
+            ("release", release_guard),
+            ("tax", tax_ledger),
+        ):
+            observed = _parse_timestamp(
+                payload.get("timestamp_utc")
+                or payload.get("generated_at_utc")
+                or payload.get("updated_at_utc")
+            )
+            if observed is None or observed > current + timedelta(seconds=2):
+                blockers.append(f"test_evidence_timestamp_invalid:{label}")
+        if attestation_issued and attestation_issued > current + timedelta(seconds=2):
+            blockers.append("test_attestation_timestamp_in_future")
+    unique_blockers = _ordered_unique(
+        blockers if entry_action or supervised_test else []
+    )
     evidence = {
         "account_study_sha256": _file_sha256(account_study_path),
         "operator_attestation_sha256": _file_sha256(attestation_path),
@@ -799,6 +845,7 @@ def evaluate_live_canary_preflight(
     )
     receipt = {
         "schema_version": 1,
+        "purpose": purpose,
         "evaluated_at_utc": current.isoformat(),
         "ready": not unique_blockers,
         "candidate_id": candidate_id,

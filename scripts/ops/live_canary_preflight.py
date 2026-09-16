@@ -69,7 +69,10 @@ def _issue_attestation(
     confirmation: str,
     confirm_all: bool,
     confirm_retirement_account_risk: bool = False,
+    purpose: str = "production_canary",
 ) -> dict[str, Any]:
+    if purpose not in {"production_canary", "supervised_broker_test"}:
+        raise ValueError("unsupported attestation purpose")
     if confirmation.strip() != CONFIRMATION_PHRASE or not confirm_all:
         return {
             "ok": False,
@@ -85,6 +88,8 @@ def _issue_attestation(
     plan_path = project_root / str(
         policy.get("canary_plan_path") or "config/live_canary_micro_policy_v1.json"
     )
+    if purpose == "supervised_broker_test":
+        plan_path = project_root / "config/supervised_broker_test_v1.json"
     plan = _load_json(plan_path)
     registry_path = project_root / str(
         policy.get("account_policy_registry_path")
@@ -105,6 +110,10 @@ def _issue_attestation(
         policy.get("live_canary_operator_attestation_path")
         or "governance/runtime/live_canary_operator_attestation.json"
     )
+    if purpose == "supervised_broker_test":
+        attestation_path = (
+            project_root / "governance/runtime/supervised_broker_test_attestation.json"
+        )
     tax_path = project_root / str(
         policy.get("trading_tax_ledger_path")
         or "governance/tax/trading_tax_ledger_{year}_latest.json"
@@ -228,6 +237,7 @@ def _issue_attestation(
     issued = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
         "schema_version": 1,
+        "purpose": purpose,
         "candidate_id": candidate_id,
         "account_policy_key": account_policy_key,
         "execution_route_id": route_id,
@@ -247,6 +257,10 @@ def _issue_attestation(
         "operator_release_still_required": True,
         "policy": "short-lived human attestation can only satisfy preflight evidence; it cannot arm live execution",
     }
+    if purpose == "supervised_broker_test":
+        payload["test_policy_sha256"] = _file_sha256(plan_path)
+        payload["broker_open_orders_reviewed"] = True
+        payload["no_concurrent_manual_orders_confirmed"] = True
     for field in required_operator_confirmations(tax_wrapper):
         payload[field] = True
     _atomic_private_json(attestation_path, payload)

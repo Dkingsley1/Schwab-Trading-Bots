@@ -1,6 +1,6 @@
 # Supervised Live Canary Runbook
 
-This runbook governs the first microscopic live-money order. It does not grant live execution authority. The default remains `MARKET_DATA_ONLY=1`, `ALLOW_ORDER_EXECUTION=0`, and the paper-trade lock present.
+This runbook governs the production-promotion live canary. The separately reviewed, operator-only [broker function test](SUPERVISED_BROKER_TEST.md) validates execution and buy-and-hold observation without satisfying production promotion. Neither runbook grants live execution authority. The default remains `MARKET_DATA_ONLY=1`, `ALLOW_ORDER_EXECUTION=0`, and the paper-trade lock present.
 
 ## Scope
 

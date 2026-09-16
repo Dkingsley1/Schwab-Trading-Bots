@@ -64,6 +64,9 @@
         "shadow_research/**/*.py"
       ],
       "execution": [
+        "core/supervised_broker_test.py",
+        "scripts/ops/supervised_broker_test.py",
+        "config/supervised_broker_test_v1.json",
         "core/brokers/**/*.py",
         "core/base_trader.py",
         "core/execution*.py",
@@ -80,6 +83,9 @@
         "config/system_role_contracts_v1.json"
       ],
       "risk": [
+        "core/supervised_broker_test.py",
+        "scripts/ops/supervised_broker_test.py",
+        "config/supervised_broker_test_v1.json",
         "core/risk*.py",
         "scripts/*risk*.py",
         "scripts/ops/*risk*.py",
