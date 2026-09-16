@@ -62,10 +62,16 @@ output/pdf/*.zip
 
 # Generated registry backups / datasets
 backups/master_bot_registry_before_*.json
+backups/master_bot_registry_before_*.json.gz
 master_bot_registry.backup_*.json
 data/trade_history/import_summary_*.json
 data/trade_history/trade_learning_dataset.json
 paper_trades_*.jsonl
+
+# Local operator reports; hash/disposition snapshots live in docs/releases.
+/work/*.json
+/work/*.log
+/work/last_issues_writer_sample.txt
 
 # Legacy root duplicates
 Brain Refinery 2

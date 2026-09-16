@@ -678,4 +678,5 @@ python3 scripts/ops/update_showcase_highlights.py
 - Use `docs/architecture/SOURCE_OF_TRUTH.md` to find the owning source for commands, reports, broker truth, signal logs, and storage.
 - Run `./scripts/ops/opsctl.sh codex-project-guard --staged --json` before Codex-authored commits or GitHub updates.
 - Use `COMMANDS.md` as the generated command surface; edit `scripts/ops/commands_hygiene_bot.py` when command truth changes.
+- Generated operator reports and registry backups remain local; reviewed hash/disposition inventories track them without publishing raw payloads or archive destinations. See [Runtime Artifact Tracking](docs/operations/RUNTIME_ARTIFACT_TRACKING.md).
 - The showcase highlight section is generated from repo artifacts, not hand-maintained.
