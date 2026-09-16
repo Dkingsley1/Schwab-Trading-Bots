@@ -5,6 +5,14 @@
   "account_capital_usd": 200.0,
   "account_policy_key": "schwab_roth_ira_primary",
   "execution_route_id": "dividend_liquid_etf_candidate_v1",
+  "read_only_test_scope": {
+    "mode": "read_only",
+    "investment_style": "buy_and_hold",
+    "symbols": ["SCHD", "O"],
+    "ex_dividend_trading_enabled": false,
+    "paper_order_authority": false,
+    "live_execution_authority": false
+  },
   "account_constraints": {
     "required_account_kind": "roth_ira",
     "required_tax_wrapper": "roth_ira",

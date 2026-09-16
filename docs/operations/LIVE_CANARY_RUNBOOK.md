@@ -15,6 +15,20 @@ This runbook governs the first microscopic live-money order. It does not grant l
 - Supervision: Schwab web or mobile must remain available to the operator for independent cancel or emergency control.
 - Retirement wrapper: existing Roth cash only. The plan assumes no new IRA contribution and cannot infer contribution eligibility or replaceable contribution capacity.
 
+## Read-Only Buy-and-Hold Tests
+
+The plan's separate `read_only_test_scope` includes `SCHD` and `O` for
+buy-and-hold evaluation. Use the existing connected rehearsal with `--symbol O`
+to inspect a quote, account safety, cash projection, and order-format preview.
+The report labels membership in that test scope independently of live readiness.
+No paper or live order is submitted. Ex-dividend trading is not enabled.
+
+`O` is not added to any executable canary stage or allowlist. Its rehearsal must
+retain `symbol_not_in_canary_stage_plan` and `canary_ready=false`, even when the
+read-only inspection succeeds. Buy-and-hold is research intent, not a new runtime
+strategy or a rule that can disable protective exits. The stage-one live policy,
+cash/order/loss limits, operator review, and all evidence gates remain unchanged.
+
 ## Hard Prerequisites
 
 1. Complete the required organic soak and candidate validation. Runtime, profitability, independent-fill, and promotion evidence must remain earned evidence; grades cannot substitute for observations.

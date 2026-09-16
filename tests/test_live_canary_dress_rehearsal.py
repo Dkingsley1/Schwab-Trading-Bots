@@ -155,10 +155,12 @@ def _build(
     cash: float = 200.0,
     quote: dict | None = None,
     preflight: dict | None = None,
+    plan: dict | None = None,
+    symbol: str = "SCHD",
 ) -> dict:
     return build_dress_rehearsal_payload(
         now=now,
-        plan=_plan(),
+        plan=plan if plan is not None else _plan(),
         firewall=_firewall(),
         candidate={"candidate_id": "pc-connected-rehearsal-test"},
         account_study=_study(now, cash=cash),
@@ -169,8 +171,113 @@ def _build(
         preflight_receipt=preflight or _preflight(ready=True),
         account_refresh_summary={"ok": True, "account_count": 3, "position_rows": 7},
         policy_sha256="c" * 64,
-        symbol="SCHD",
+        symbol=symbol,
     )
+
+
+def _test_scope() -> dict:
+    return {
+        "mode": "read_only",
+        "investment_style": "buy_and_hold",
+        "symbols": ["SCHD", "O"],
+        "ex_dividend_trading_enabled": False,
+        "paper_order_authority": False,
+        "live_execution_authority": False,
+    }
+
+
+def test_realty_income_is_a_read_only_test_not_live_stage_admission() -> None:
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    plan = _plan()
+    plan["read_only_test_scope"] = _test_scope()
+    quote = _quote(now)
+    raw = quote["quote_snapshot"]["raw_payload"]
+    raw["O"] = raw.pop("SCHD")
+    payload = _build(now=now, plan=plan, symbol="O", quote=quote)
+
+    assert payload["ok"] is True
+    assert payload["read_only_test_scope"]["valid"] is True
+    assert payload["read_only_test_scope"]["symbol_in_scope"] is True
+    assert payload["read_only_test_scope"]["investment_style"] == "buy_and_hold"
+    assert payload["canary_ready"] is False
+    assert "symbol_not_in_canary_stage_plan" in payload["blockers"]
+    assert payload["exact_order_preview"]["symbol"] == "O"
+    assert rehearsal._candidate_symbols(plan) == {"SCHD"}
+    for key in (
+        "live_execution_authority",
+        "live_order_attempted",
+        "paper_order_attempted",
+        "broker_mutation_attempted",
+    ):
+        assert payload[key] is False
+
+
+def test_read_only_scope_does_not_change_existing_schd_readiness_or_envelope() -> None:
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    legacy = _build(now=now)
+    plan = _plan()
+    plan["read_only_test_scope"] = _test_scope()
+    scoped = _build(now=now, plan=plan)
+
+    assert scoped["read_only_test_scope"]["symbol_in_scope"] is True
+    assert legacy["read_only_test_scope"]["configured"] is False
+    scoped.pop("read_only_test_scope")
+    legacy.pop("read_only_test_scope")
+    assert scoped == legacy
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("mode", "live"),
+        ("investment_style", "ex_dividend"),
+        ("symbols", "SCHD,O"),
+        ("symbols", []),
+        ("symbols", ["O", "O"]),
+        ("symbols", ["O", {}]),
+        ("symbols", ["../O"]),
+        ("ex_dividend_trading_enabled", True),
+        ("paper_order_authority", True),
+        ("live_execution_authority", True),
+        ("live_execution_authority", "false"),
+        ("live_execution_authority", 0),
+    ],
+)
+def test_invalid_or_authority_seeking_scope_cannot_claim_test_membership(
+    field: str, value: object
+) -> None:
+    scope = _test_scope()
+    scope[field] = value
+    result = rehearsal._read_only_test_scope({"read_only_test_scope": scope}, "O")
+    assert result["valid"] is False
+    assert result["symbol_in_scope"] is False
+    assert result["symbols"] == []
+    assert result["live_execution_authority"] is False
+    assert result["paper_order_authority"] is False
+    assert result["changes_canary_stage_eligibility"] is False
+
+
+def test_unlisted_symbol_has_no_read_only_test_membership() -> None:
+    result = rehearsal._read_only_test_scope(
+        {"read_only_test_scope": _test_scope()}, "UNLISTED"
+    )
+    assert result["valid"] is True
+    assert result["symbol_in_scope"] is False
+
+
+def test_repository_policy_keeps_o_research_separate_from_live_stages() -> None:
+    plan = json.loads(
+        (rehearsal.PROJECT_ROOT / "config/live_canary_micro_policy_v1.json").read_text()
+    )
+    scope = rehearsal._read_only_test_scope(plan, "O")
+    assert scope["symbols"] == ["SCHD", "O"]
+    assert scope["valid"] is True
+    assert plan["stages"][0]["symbols"] == ["SCHD"]
+    assert "O" not in rehearsal._candidate_symbols(plan)
+    assert plan["status"] == "advisory_only"
+    assert plan["activation_contract"]["live_execution_authority"] is False
+    assert plan["hard_limits"]["max_order_notional_usd"] == 100.0
+    assert plan["hard_limits"]["max_order_quantity"] == 1.0
 
 
 def test_funded_connected_rehearsal_builds_exact_cash_only_projection() -> None:

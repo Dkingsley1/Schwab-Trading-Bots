@@ -1025,6 +1025,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 First refreshes tax history through its existing six-hour cache, rechecks release integrity, and verifies the order ledger. Failed or stale owner publications block readiness; no freeze, release manifest, commit, attestation, or allowlist is created.
+Use --symbol O for the separate read-only buy-and-hold test scope. SCHD and O are test candidates only; O remains outside executable canary stages and must retain canary_ready=false. No paper/live order, ex-dividend trading, or limit change is authorized.
 Refreshes designated Schwab account truth, fetches a real provider quote, and builds the exact redacted one-share LIMIT/NORMAL/DAY payload plus cash, position, collateral, and reconciliation projections.
 Every live switch is forced off. The control never submits, cancels, replaces, or grants live authority; `ready_locked` is expected while funding, release, attestation, session, or earned-evidence gates remain.
 

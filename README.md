@@ -96,6 +96,8 @@ The headline main-soak counter includes cumulative segmented wall-clock history 
 
 The connected read-only canary rehearsal now refreshes tax, release, and order-ledger observations before fetching the time-sensitive account and quote evidence. Owner refresh failures remain explicit blockers; a fresh report cannot certify an unreleased worktree. Existing evidence expiry, operator approval, trading locks, and release requirements are unchanged. See [LIVE_CANARY_RUNBOOK.md](docs/operations/LIVE_CANARY_RUNBOOK.md).
 
+The separate read-only buy-and-hold test scope includes `SCHD` and `O`. Rehearsal reports identify test membership without changing live stage eligibility: `O` can be inspected with `--symbol O` but remains blocked for live-canary admission. This adds no orders, ex-dividend trading, strategy activation, or limit changes.
+
 The transition contract is:
 
 `collect -> signal or no-trade -> paper execution and replay -> out-of-sample evidence -> broker/risk/promotion gates -> operator-approved microscopic live canary -> broker/position/cash closeout -> reconciled round trips and economic gates -> operator-reviewed stage or capital proposal, or rollback`

@@ -8,6 +8,7 @@ import hmac
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -457,6 +458,46 @@ def _candidate_symbols(plan: Mapping[str, Any]) -> set[str]:
     return symbols
 
 
+def _read_only_test_scope(plan: Mapping[str, Any], symbol: str) -> dict[str, Any]:
+    raw = plan.get("read_only_test_scope")
+    scope = raw if isinstance(raw, Mapping) else {}
+    symbols = scope.get("symbols")
+    symbols_valid = bool(
+        isinstance(symbols, list)
+        and symbols
+        and all(
+            isinstance(item, str) and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,14}", item)
+            for item in symbols
+        )
+        and len(symbols) == len(set(symbols))
+    )
+    valid = bool(
+        scope.get("mode") == "read_only"
+        and scope.get("investment_style") == "buy_and_hold"
+        and symbols_valid
+        and all(
+            scope.get(field) is False
+            for field in (
+                "ex_dividend_trading_enabled",
+                "paper_order_authority",
+                "live_execution_authority",
+            )
+        )
+    )
+    return {
+        "configured": "read_only_test_scope" in plan,
+        "valid": valid,
+        "symbol_in_scope": bool(valid and symbol in symbols),
+        "symbols": list(symbols) if valid else [],
+        "investment_style": "buy_and_hold" if valid else "unconfigured",
+        "mode": "read_only",
+        "ex_dividend_trading_enabled": False,
+        "paper_order_authority": False,
+        "live_execution_authority": False,
+        "changes_canary_stage_eligibility": False,
+    }
+
+
 def build_dress_rehearsal_payload(
     *,
     now: datetime,
@@ -874,6 +915,7 @@ def build_dress_rehearsal_payload(
         "execution_route_id": route_id,
         "symbol": symbol_key,
         "canary_ready": canary_ready,
+        "read_only_test_scope": _read_only_test_scope(plan, symbol_key),
         "broker_network_read_only": connected_read_only,
         "connected_account_snapshot_this_run": bool(
             account_refresh_summary.get("ok", False)
