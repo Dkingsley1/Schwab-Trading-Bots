@@ -114,7 +114,10 @@ def propose_entry(
 ) -> dict[str, Any]:
     validate_policy(plan)
     blockers: list[str] = []
-    if quote.get("source_provider") != "schwab" or quote.get("realtime") is not True:
+    if (
+        quote.get("source_provider") != "schwab_api"
+        or quote.get("realtime") is not True
+    ):
         blockers.append("realtime_schwab_quote_required")
     if not fresh(quote.get("provider_timestamp_utc"), now, 15):
         blockers.append("fresh_quote_required")

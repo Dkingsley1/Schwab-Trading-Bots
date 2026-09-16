@@ -156,7 +156,7 @@ def setup(tmp_path, monkeypatch):
     ledger = LiveOrderLedger(tmp_path / cli.LEDGER_PATH)
     request = build_request(plan, action="BUY", quantity=5, limit_price="58.08")
     quote = {
-        "source_provider": "schwab",
+        "source_provider": "schwab_api",
         "realtime": True,
         "transport": {"ok": True},
         "provider_timestamp_utc": now.isoformat(),
@@ -192,6 +192,36 @@ def test_technical_test_is_separate_from_production_soak_and_profitability(setup
         )["ten_out_of_ten_ready"]
         is False
     )
+
+
+@pytest.mark.parametrize("realtime", [True, False])
+def test_native_quote_adapter_output_is_consumed_without_relabeling(setup, realtime):
+    root, kwargs = setup
+    now = kwargs["now"]
+    raw = {
+        "ok": True,
+        "status_code": 200,
+        "quote_snapshot": {
+            "bid_price": 58.08,
+            "ask_price": 58.09,
+            "raw_payload": {
+                "O": {
+                    "realtime": realtime,
+                    "quote": {
+                        "bidTime": int(now.timestamp() * 1000),
+                        "askTime": int(now.timestamp() * 1000),
+                        "askMICId": "XNYS",
+                    },
+                }
+            },
+        },
+    }
+    kwargs["quote"] = cli._quote_summary(raw, symbol="O", now=now)
+    assert kwargs["quote"]["source_provider"] == "schwab_api"
+    proposal = cli.propose_entry(kwargs["plan"], kwargs["quote"], now=now)
+    assert (proposal["state"] == "proposed") is realtime
+    result = cli.assessment(root, **kwargs)
+    assert result["operator_submit_ready"] is realtime
 
 
 @pytest.mark.parametrize(

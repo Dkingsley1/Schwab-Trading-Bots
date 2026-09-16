@@ -37,7 +37,7 @@ def ledger(tmp_path):
 
 def quote(now, bid=58.07, ask=58.08):
     return {
-        "source_provider": "schwab",
+        "source_provider": "schwab_api",
         "realtime": True,
         "provider_timestamp_utc": now.isoformat(),
         "bid_price": bid,

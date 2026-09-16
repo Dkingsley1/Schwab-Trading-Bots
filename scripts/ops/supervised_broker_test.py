@@ -269,7 +269,7 @@ def assessment(
         )
     )
     if (
-        quote.get("source_provider") != "schwab"
+        quote.get("source_provider") != "schwab_api"
         or quote.get("realtime") is not True
         or quote.get("transport", {}).get("ok") is not True
     ):
@@ -316,7 +316,7 @@ def assessment(
         "timestamp_utc": quote.get("provider_timestamp_utc"),
         "bid_price": float(bid),
         "ask_price": float(ask),
-        "source_provider": "schwab",
+        "source_provider": quote.get("source_provider"),
         "source_venue": quote.get("source_venue"),
         "snapshot_id": quote.get("snapshot_id"),
     }
@@ -359,7 +359,7 @@ def assessment(
         now_utc=now,
         require_affirmative_risk_decision=True,
         require_quote_provenance=True,
-        allowed_quote_providers=("schwab",),
+        allowed_quote_providers=("schwab_api",),
         require_canary_preflight_receipt=True,
         expected_account_policy_key=plan["account_policy_key"],
     )
