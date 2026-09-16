@@ -10,6 +10,96 @@ from scripts.ops import ingestion_storage_control as control
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_declared_catalog_joins_sources_without_payload_io(
+    configured_root, monkeypatch
+):
+    root, _ = configured_root
+    original = Path.open
+
+    def policy_only(path, *args, **kwargs):
+        assert path == root / "config/collector_capability_catalog_v1.json"
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", policy_only)
+    result = src.declared_intake_catalog(root)
+    assert result["definition_status"] == "defined"
+    assert result["collector_count"] == 34
+    assert result["artifact_producer_count"] == 23
+    assert result["payloads_inspected"] is False
+    assert result["live_execution_authority"] is False
+    for row in result["collectors"]:
+        assert row["payload"]["logical_path"].startswith(str(root) + "/")
+        assert not row["payload"]["observed"]
+        assert row["raw_response_preservation"] == "not_established_by_declaration"
+        assert not row["ingestion_lane_inferred"]
+    replay = next(
+        row
+        for row in result["artifact_producers"]
+        if row["source_kind"] == "internal_replay"
+    )
+    assert replay["data_class"] == "derived_artifact"
+    assert replay["owner_command_status"] == "not_declared_in_catalog"
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing",
+        "malformed",
+        "duplicate",
+        "unmatched",
+        "unknown_capability",
+        "path",
+        "freshness",
+        "protected",
+    ],
+)
+def test_catalog_errors_are_explicit_without_real_root_fallback(
+    configured_root, damage
+):
+    root, _ = configured_root
+    path = root / "config/collector_capability_catalog_v1.json"
+    catalog = json.loads(path.read_text())
+    if damage == "missing":
+        path.unlink()
+    elif damage == "malformed":
+        path.write_text("[]")
+    elif damage == "protected":
+        path.unlink()
+        path.symlink_to("/Volumes/VIDEO/never-access")
+    else:
+        if damage == "duplicate":
+            catalog["producers"].append(catalog["producers"][0])
+        elif damage == "unmatched":
+            catalog["producers"][0]["collector_name"] = "missing_collector"
+        elif damage == "unknown_capability":
+            catalog["producers"][0]["capabilities"] = ["not_declared"]
+        elif damage == "freshness":
+            catalog["producers"][0]["max_age_minutes"] = True
+        elif damage == "path":
+            next(
+                row
+                for row in catalog["producers"]
+                if row["producer_kind"] == "artifact"
+            )["artifact_path"] = "../outside.json"
+        path.write_text(json.dumps(catalog))
+    result = src.declared_intake_catalog(root)
+    assert result["definition_status"] == "needs_attention"
+    assert result["definition_errors"]
+    assert not result["live_execution_authority"]
+
+
+def test_collector_declarations_are_independent_copies():
+    from scripts import collector_contracts
+
+    first = collector_contracts.declared_collector_definitions()
+    first[0]["owner_command"].append("invalid")
+    assert (
+        "invalid"
+        not in collector_contracts.declared_collector_definitions()[0]["owner_command"]
+    )
+
+
 @pytest.fixture
 def configured_root(tmp_path, monkeypatch):
     root = tmp_path / "repo"
@@ -17,6 +107,7 @@ def configured_root(tmp_path, monkeypatch):
     for name in (
         "sleeve_ingestion_routing_v2.json",
         "tiered_ingestion_lifecycle_v1.json",
+        "collector_capability_catalog_v1.json",
     ):
         (root / "config" / name).write_bytes(
             (PROJECT_ROOT / "config" / name).read_bytes()

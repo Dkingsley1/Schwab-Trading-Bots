@@ -500,6 +500,7 @@ def _storage_recovery_progress(name: str, result: dict[str, Any]) -> dict[str, A
     """Owner receipts measure recovery; a successful exit alone does not."""
     fields = {
         "local_disk_snapshot_scratch_cleanup": ("removed_allocated_bytes",),
+        "local_disk_verified_duplicate_cleanup": ("apply_result", "deleted_bytes"),
         "local_disk_cold_evidence_compaction": ("saved_bytes",),
         "local_disk_lifecycle_backup_compaction": ("summary", "estimated_reduction_bytes"),
         "local_disk_governance_telemetry_compaction": ("summary", "estimated_hot_reduction_bytes"),
@@ -572,6 +573,11 @@ def _run_step(
         steps.append(row)
         return row
     result = _run_command(cmd, project_root=project_root, timeout_sec=timeout_sec, env=env)
+    if name == "local_disk_verified_duplicate_cleanup":
+        parsed = _as_dict(result.get("parsed"))
+        result["capacity_assessment_ok"] = result.get("ok", False)
+        result["ok"] = bool(result.get("rc") == 0 and parsed.get("assessment_complete") is True
+                            and parsed.get("cleanup_pass_complete") is True)
     row = {"name": name, "executed": True, **result}
     progress = _storage_recovery_progress(name, result)
     if progress is not None:
@@ -1100,6 +1106,17 @@ def build_storage_recovery_payload(
                     ),
                 ]
             )
+        if not adaptive_compression_only and not quick_bounded:
+            commands.insert(0, (
+                "local_disk_verified_duplicate_cleanup",
+                _cmd(opsctl, "bot-logs-cleanup-intelligence", "--apply", "--max-tier", "1",
+                     "--bot-logs-root", project_root / "local_fallback_storage",
+                     "--target-free-gb", str(threshold), "--max-delete-gb", "0.5",
+                     "--max-files", "4", "--seconds", "45", "--max-verify-gb", "1",
+                     "--out-file", project_root / "governance/health/verified_duplicate_cleanup_local_latest.json",
+                     "--json"),
+                60,
+            ))
         commands.insert(0, (
             "local_disk_snapshot_scratch_cleanup",
             _cmd(opsctl, "runtime-training-snapshot", "--cleanup-abandoned-builds",
@@ -1143,6 +1160,7 @@ def build_storage_recovery_payload(
                     if name
                     in {
                         "local_disk_snapshot_scratch_cleanup",
+                        "local_disk_verified_duplicate_cleanup",
                         "local_disk_cold_evidence_compaction",
                         "local_disk_lifecycle_backup_compaction",
                     }

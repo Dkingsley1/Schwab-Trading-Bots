@@ -9,7 +9,7 @@
   "account_capital_usd": 300.0,
   "investment_style": "buy_and_hold",
   "entry_price_policy": "passive_bid_no_chase",
-  "entry_limit_ceiling_usd": 58.08,
+  "entry_limit_ceiling_usd": 57.09,
   "account_constraints": {
     "required_account_kind": "roth_ira",
     "required_tax_wrapper": "roth_ira",

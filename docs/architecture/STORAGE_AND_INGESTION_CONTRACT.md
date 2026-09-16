@@ -52,6 +52,26 @@ This document connects the existing owners. It is not a new storage policy,
 scheduler, collector, or permission to delete data. Definitions, observed state,
 verified durability, and trading readiness are separate claims.
 
+The existing hourly retention job also assesses inactive raw/gzip duplicates on
+local fallback and configured external storage. Normal 15-minute reserve
+recovery offers the same local lane; quick and compression-only admission do not.
+Each target is bounded to four files, 0.5 GiB removal, 1 GiB verification input
+and 45 seconds, subject to maintenance ownership, fresh resource admission and
+cooldown. Verification charges compressed, raw and restored bytes, including gzip
+padding. Assessment and verification share the deadline.
+
+Metadata previews cannot authorize release. Full SHA-256, exact restored length,
+gzip integrity, idle handles, unchanged single-link identities and durable
+pre-release proof are required. Only ordinary `logs/` pairs qualify here.
+SQL payload domains and unknown roots are always excluded, regardless of any
+checkpoint that happens to report EOF; their writer-aware compaction owners keep
+retirement responsibility. This lane cannot strand a pending SQL source or
+misinterpret another shard's checkpoint. A failed
+post-release fsync or receipt is reported as removal with incomplete persistence,
+never mislabeled as an untouched file. Stage expiry stays with the manifest
+retention owner; conflict/quarantine moves stay with verified offload owners.
+An empty successful cleanup pass does not establish reserve or trading readiness.
+
 The walk-forward seed queue is replaced atomically only when its serialized
 contents differ. A full-byte comparison uses fixed-size buffers and checks the
 source identity before and after reading; unchanged contents retain the inode
@@ -112,6 +132,25 @@ The normal `ingestion-storage-control --json` report includes the same
 `data_plane_definition` section, so existing report refreshes also refresh this
 view. No additional scheduled process is required. Policy fingerprints identify
 the definitions used; they are not cryptographic attestations of runtime health.
+
+## Declared Intake Catalog
+
+The definition view joins the collector declarations in
+`scripts/collector_contracts.py` with
+`config/collector_capability_catalog_v1.json`. Each declared source lists its
+logical payload and health landing paths, owner command, freshness and coverage
+requirements, failure policy, and declared capability handoff. Missing artifact
+owner commands are explicitly labeled, not invented. Collector intake
+and derived artifact producers remain distinct; cached or replayed transport is
+not relabeled as a new source observation.
+
+This is a source-contract inventory, not a payload census. It reads no source
+payloads, opens no databases, invokes no collectors and moves no files. Missing,
+duplicate or malformed mappings remain explicit definition errors. A declared
+landing path does not prove raw provider responses are retained, and a declared
+resource class does not assign an ingestion lane. Event qualification, SQL
+commit/checkpoint, primary merge and verified retention remain separate stages
+with their existing owners and evidence requirements.
 
 ## Verify New Ingestion
 

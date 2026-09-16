@@ -717,7 +717,14 @@ def test_storage_recovery_only_is_bounded_and_does_not_claim_complete(
     assert not payload["heavy_maintenance_allowed"]
     assert calls[1][1] == "runtime-training-snapshot"
     assert "--cleanup-abandoned-builds" in calls[1] and "--apply-cleanup" in calls[1]
-    calls = [cmd for cmd in calls if "runtime-training-snapshot" not in cmd]
+    duplicate = calls[2]
+    assert duplicate[1] == "bot-logs-cleanup-intelligence"
+    assert duplicate[duplicate.index("--max-tier") + 1] == "1"
+    assert duplicate[duplicate.index("--max-files") + 1] == "4"
+    assert duplicate[duplicate.index("--max-delete-gb") + 1] == "0.5"
+    assert duplicate[duplicate.index("--max-verify-gb") + 1] == "1"
+    assert duplicate[duplicate.index("--seconds") + 1] == "45"
+    calls = [cmd for cmd in calls if "runtime-training-snapshot" not in cmd and "bot-logs-cleanup-intelligence" not in cmd]
     assert len(calls) == 7
     assert "memory_efficiency_control.py" in calls[0][1]
     assert [cmd[1] for cmd in calls[1:]] == [
@@ -741,6 +748,31 @@ def test_storage_recovery_only_is_bounded_and_does_not_claim_complete(
     assert "--closed-history-min-age-hours" not in calls[5]
     assert "--reserve-only" in calls[6]
     assert "--skip-governor-reconcile" in calls[6]
+
+
+def test_duplicate_cleanup_empty_pass_is_not_capacity_or_failure_credit(tmp_path, monkeypatch):
+    _storage_recovery_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(src, "_run_command", lambda *args, **kwargs: {
+        "rc": 0, "ok": False,
+        "parsed": {"overall_status": "blocked", "ok": False, "assessment_complete": True,
+                   "cleanup_pass_complete": True, "apply_result": {"deleted_bytes": 0}},
+    })
+    steps, state = [], {}
+    result = src._run_step(steps, name="local_disk_verified_duplicate_cleanup", cmd=["cleanup"],
+                           project_root=tmp_path, timeout_sec=60, env={}, state=state, cooldown_seconds=900)
+    assert result["ok"] and not result["capacity_assessment_ok"]
+    assert result["storage_recovery_progress"]["made_progress"] is False
+    assert result["storage_recovery_progress"]["proves_local_reserve_recovered"] is False
+
+
+def test_hourly_retention_uses_guarded_bounded_duplicate_owner():
+    source = (Path(__file__).resolve().parents[1] / "scripts/ops/run_data_retention_launchd.sh").read_text()
+    assert source.index("resource_guard.py") < source.index("bot_logs_cleanup_intelligence.py")
+    assert source.index("maintenance_slot_guard.py") < source.index("bot_logs_cleanup_intelligence.py")
+    assert "for cleanup_scope in local external" in source
+    assert "--apply --max-tier 1 --target-free-gb 125" in source
+    assert "--max-delete-gb 0.5 --max-files 4 --seconds 45 --max-verify-gb 1" in source
+    assert 'verified_duplicate_cleanup_${cleanup_scope}_latest.json' in source
 
 
 def _disk_only_memory_result():
@@ -796,7 +828,7 @@ def test_disk_only_pressure_admits_only_bounded_storage_recovery(tmp_path, monke
     assert not payload["ok"]
     assert not payload["heavy_maintenance_allowed"]
     assert not payload["live_execution_authority"]
-    assert len(calls) == 8
+    assert len(calls) == 9
     assert "--cleanup-abandoned-builds" in calls[1]
     assert (
         payload["steps"][0]["observation_reason"]
@@ -1032,7 +1064,7 @@ def test_storage_recovery_shared_deadline_reserves_final_assessment(tmp_path, mo
         return result
     monkeypatch.setattr(src, "_run_command", slow)
     payload = src.build_storage_recovery_payload(tmp_path, apply=True)
-    assert [cmd[1] for cmd in calls[1:]] == ["runtime-training-snapshot", "cold-evidence-compactor", "local-storage-reserve-guard"]
+    assert [cmd[1] for cmd in calls[1:]] == ["runtime-training-snapshot", "bot-logs-cleanup-intelligence", "cold-evidence-compactor", "local-storage-reserve-guard"]
     assert payload["reason"] == "storage_recovery_deadline"
     assert not payload["ok"]
 
@@ -1048,7 +1080,7 @@ def test_storage_target_stops_more_compression_but_reconciles_reserve(tmp_path, 
     monkeypatch.setattr(src, "_run_command", recovered)
     payload = src.build_storage_recovery_payload(tmp_path, apply=True)
     assert payload["ok"]
-    assert [cmd[1] for cmd in calls[1:]] == ["runtime-training-snapshot", "cold-evidence-compactor", "local-storage-reserve-guard"]
+    assert [cmd[1] for cmd in calls[1:]] == ["runtime-training-snapshot", "bot-logs-cleanup-intelligence", "cold-evidence-compactor", "local-storage-reserve-guard"]
 
 
 def test_sqlite_compression_requires_its_complete_verification_window(tmp_path, monkeypatch):

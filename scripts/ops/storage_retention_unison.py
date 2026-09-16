@@ -2198,7 +2198,7 @@ def build_payload(
     cleanup_next_action = (
         "BOT_LOGS is below the unattended target but above the pressure floor; continue verified offload and compaction without deleting unbacked duplicates"
         if cleanup_soft_target_miss_managed
-        else "BOT_LOGS cleanup stays tiered and value-aware; pressure automatically unlocks bounded stale-stage cleanup while current-day files remain protected"
+        else "Verified duplicate cleanup preserves current-day files; tier-2 findings remain advisory for manifest-retention and verified-offload owners"
     )
 
     sections = {

@@ -294,6 +294,9 @@ jobs:
             tests/test_supervised_broker_test_cli.py \
             tests/test_live_canary_preflight.py \
             tests/test_snapshot_scratch_cleanup.py \
+            tests/test_bot_logs_cleanup_intelligence.py \
+            tests/test_verified_duplicate_cleanup_sql.py \
+            tests/test_ingestion_data_contract.py \
             tests/test_live_execution_controls.py \
             tests/test_system_role_contracts.py \
             tests/test_live_canary_control.py \

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import argparse
-import gzip
+import fcntl
 import json
+import math
 import os
+import re
 import shutil
 import sys
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,12 +19,33 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from core.storage_mounts import resolve_external_storage
+    from core.storage_mounts import configured_external_project_root, external_mount_candidates, external_project_dir
     from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, write_payload
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
-    from core.storage_mounts import resolve_external_storage
+    from core.storage_mounts import configured_external_project_root, external_mount_candidates, external_project_dir
     from .long_runtime_common import iso_now, load_json, ordered_unique, write_payload
+
+from scripts.ops import verified_duplicate_cleanup as verified
+
+
+def _verified_external_root():
+    configured = configured_external_project_root()
+    candidates = ([configured] if configured is not None else []) + [
+        mount / external_project_dir() for mount in external_mount_candidates()
+    ]
+    for candidate in candidates:
+        route = verified.safety.inspect_storage_path(candidate)
+        if route.get("status") not in {"present", "missing"} or route.get("symlinks"):
+            raise RuntimeError("protected_or_unavailable_external_route")
+        if route["status"] == "present":
+            return candidate
+    raise verified.safety.Deferred("external_root_unavailable")
+
+
+def _safe_present(path):
+    route = verified.safety.inspect_storage_path(path)
+    return route.get("status") == "present" and not route.get("symlinks")
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "bot_logs_cleanup_intelligence_latest.json"
@@ -119,11 +143,15 @@ def _file_allocated_size(path: Path) -> int:
 
 def _file_identity(path: Path) -> dict[str, int]:
     try:
-        stat = path.stat()
+        verified.identity(path)
+        stat = path.lstat()
     except Exception:
         return {}
     return {
         "inode": int(stat.st_ino),
+        "device": int(stat.st_dev),
+        "ctime_ns": int(stat.st_ctime_ns),
+        "nlink": int(stat.st_nlink),
         "size_bytes": int(stat.st_size),
         "allocated_bytes": _file_allocated_size(path),
         "mtime_ns": int(stat.st_mtime_ns),
@@ -155,42 +183,12 @@ def _protects_current_day(path: Path, *, now: datetime | None = None) -> bool:
     return any(token in name for token in _today_tokens(now))
 
 
-def _read_prefix(path: Path, limit: int) -> bytes:
-    try:
-        with path.open("rb") as handle:
-            return handle.read(max(int(limit), 1))
-    except Exception:
-        return b""
-
-
-def _gzip_prefix(path: Path, limit: int) -> tuple[bytes, str]:
-    try:
-        with gzip.open(path, "rb") as handle:
-            return handle.read(max(int(limit), 1)), ""
-    except Exception as exc:
-        return b"", str(exc)
-
-
 def _gzip_duplicate_verification(raw_path: Path, gz_path: Path, *, prefix_bytes: int) -> dict[str, Any]:
-    raw_size = _file_size(raw_path)
-    gz_size = _file_size(gz_path)
-    if not raw_path.exists() or not gz_path.exists():
-        return {"ok": False, "state": "missing_pair", "reason": "raw or gzip path is missing"}
-    if raw_size <= 0 or gz_size <= 0:
-        return {"ok": False, "state": "empty_file", "reason": "raw or gzip path is empty"}
-    raw_prefix = _read_prefix(raw_path, prefix_bytes)
-    gz_prefix, error = _gzip_prefix(gz_path, prefix_bytes)
-    if error:
-        return {"ok": False, "state": "gzip_unreadable", "reason": error[:240]}
-    if not raw_prefix or not gz_prefix:
-        return {"ok": False, "state": "prefix_unreadable", "reason": "could not read comparable prefixes"}
-    if raw_prefix != gz_prefix[: len(raw_prefix)]:
-        return {"ok": False, "state": "prefix_mismatch", "reason": "raw and gzip prefixes do not match"}
-    return {
-        "ok": True,
-        "state": "prefix_match",
-        "reason": f"first {len(raw_prefix)} bytes match compressed sibling",
-    }
+    # The legacy argument remains accepted but can no longer weaken verification.
+    try:
+        return verified.verify_pair(raw_path, gz_path)
+    except (OSError, RuntimeError, EOFError, zlib.error) as exc:
+        return {"ok": False, "state": "verification_failed", "reason": str(exc)}
 
 
 def _candidate_family(path: Path, root: Path) -> str:
@@ -242,31 +240,53 @@ def _scan_duplicate_jsonl_gzip(
     protect_current_day: bool,
     prefix_verify_bytes: int,
     now: datetime | None = None,
+    paths: list[Path] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not root.exists():
         return rows
     current = now or datetime.now(timezone.utc)
-    for raw_path in sorted(root.rglob("*.jsonl")):
-        if not raw_path.is_file():
+    for raw_path in (paths if paths is not None else verified.inventory(root)):
+        if raw_path.suffix != ".jsonl":
             continue
         gz_path = raw_path.with_suffix(raw_path.suffix + ".gz")
-        if not gz_path.is_file():
+        try:
+            verified.identity(raw_path)
+            verified.identity(gz_path)
+        except (OSError, RuntimeError):
             continue
-        age_hours = _file_age_hours(raw_path, now=current)
+        age_hours = min(_file_age_hours(raw_path, now=current), _file_age_hours(gz_path, now=current))
         current_day = _protects_current_day(raw_path, now=current)
         family = _candidate_family(raw_path, root)
-        verification = _gzip_duplicate_verification(raw_path, gz_path, prefix_bytes=prefix_verify_bytes)
-        eligible = bool(verification.get("ok", False))
+        verification = {"ok": False, "state": "full_verification_required_at_apply"}
+        eligible = True
         blocked_reasons = []
+        try:
+            verified.require_log_source(root, raw_path)
+        except RuntimeError as exc:
+            eligible = False
+            blocked_reasons.append(str(exc))
         if age_hours < float(min_age_hours):
             eligible = False
             blocked_reasons.append("too_recent")
-        if protect_current_day and current_day:
+        if current_day:
             eligible = False
             blocked_reasons.append("current_day_protected")
-        if not bool(verification.get("ok", False)):
-            blocked_reasons.append(str(verification.get("state") or "verification_failed"))
+        dated = re.search(r"(?:^|_)(\d{8})(?:\.|_)", raw_path.name)
+        try:
+            closed_date = datetime.strptime(dated.group(1), "%Y%m%d").date() if dated else None
+        except ValueError:
+            closed_date = None
+        if not current_day and (closed_date is None or closed_date >= current.date()):
+            eligible = False
+            blocked_reasons.append("closed_date_required")
+        if family == "stale_stage":
+            eligible = False
+            blocked_reasons.append("manifest_retention_owner_required")
+        if (any(part in {"cold_archive", "cold_archives", "deep_cold", "quarantine", "training"}
+                for part in raw_path.relative_to(root).parts) or "_latest" in raw_path.name):
+            eligible = False
+            blocked_reasons.append("retained_artifact_owner_required")
         raw_size = _file_size(raw_path)
         gz_size = _file_size(gz_path)
         raw_allocated_size = _file_allocated_size(raw_path)
@@ -278,6 +298,7 @@ def _scan_duplicate_jsonl_gzip(
                 "relative_path": _relative(raw_path, root),
                 "path": str(raw_path),
                 "compressed_path": str(gz_path),
+                "compressed_identity": _file_identity(gz_path),
                 "size_bytes": int(raw_size),
                 "allocated_bytes": int(raw_allocated_size),
                 "compressed_size_bytes": int(gz_size),
@@ -317,20 +338,25 @@ def _value_window_hours(value: str) -> float:
     }.get(str(value or "").strip().lower(), 14.0 * 24.0)
 
 
-def _scan_stale_stage(root: Path, *, now: datetime | None = None) -> list[dict[str, Any]]:
+def _scan_stale_stage(root: Path, *, now: datetime | None = None, paths: list[Path] | None = None) -> list[dict[str, Any]]:
     stale_root = root / "data" / "stale_stage"
     rows: list[dict[str, Any]] = []
-    if not stale_root.exists():
+    if paths is None and not verified.safety.allowed(stale_root, missing=True).exists():
         return rows
     current = now or datetime.now(timezone.utc)
-    for path in sorted(stale_root.rglob("*")):
-        if not path.is_file() or path.name == "stale_manifest.jsonl":
+    for path in (paths if paths is not None else verified.inventory(stale_root)):
+        if not path.is_relative_to(stale_root):
+            continue
+        if not _file_identity(path) or path.name == "stale_manifest.jsonl":
             continue
         value = _stale_stage_value(path, root)
         age_hours = _file_age_hours(path, now=current)
         min_age = _value_window_hours(value)
-        eligible = age_hours >= min_age
-        blocked = [] if eligible else [f"value_window_not_met:{value}"]
+        age_eligible = age_hours >= min_age
+        eligible = False
+        blocked = ["manifest_retention_owner_required"]
+        if not age_eligible:
+            blocked.append(f"value_window_not_met:{value}")
         size_bytes = _file_size(path)
         allocated_bytes = _file_allocated_size(path)
         rows.append(
@@ -347,7 +373,8 @@ def _scan_stale_stage(root: Path, *, now: datetime | None = None) -> list[dict[s
                 "age_hours": round(age_hours, 3),
                 "min_age_hours": min_age,
                 "eligible": bool(eligible),
-                "verification": {"ok": bool(eligible), "state": "age_policy", "reason": "stale-stage value window passed" if eligible else "stale-stage value window not met"},
+                "age_eligible": age_eligible,
+                "verification": {"ok": False, "state": "manifest_retention_owner_required", "reason": "Age is advisory; data-retention owns manifest, hash, protected-evidence and expiry checks"},
                 "blocked_reasons": blocked,
                 "risk_score": _risk_score(tier=2, family="stale_stage", current_day=False, age_hours=age_hours),
             }
@@ -369,6 +396,7 @@ def _scan_external_local_fallback_copies(
     fallback_quarantine_root: Path,
     min_quarantine_free_gb: float = DEFAULT_INTERNAL_QUARANTINE_MIN_FREE_GB,
     now: datetime | None = None,
+    paths: list[Path] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not root.exists():
@@ -385,8 +413,8 @@ def _scan_external_local_fallback_copies(
     quarantine_free_bytes = _safe_int(quarantine_disk.get("free_bytes"), 0)
     min_quarantine_free_bytes = int(max(float(min_quarantine_free_gb), 0.0) * (1024**3))
 
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or ".local_fallback" not in path.name:
+    for path in (paths if paths is not None else verified.inventory(root)):
+        if ".local_fallback" not in path.name or not _file_identity(path):
             continue
         size_bytes = _file_size(path)
         allocated_bytes = _file_allocated_size(path)
@@ -429,8 +457,8 @@ def _scan_external_local_fallback_copies(
                 "destination_path": str(destination_path),
                 "canonical_relative_path": canonical_rel,
                 "local_preservation_path": str(local_preservation_path),
-                "local_preservation_exists": bool(local_preservation_path.exists()),
-                "external_canonical_exists": bool(external_canonical_path.exists()),
+                "local_preservation_exists": bool(_safe_present(local_preservation_path)),
+                "external_canonical_exists": bool(_safe_present(external_canonical_path)),
                 "size_bytes": int(size_bytes),
                 "allocated_bytes": int(allocated_bytes),
                 "reclaimable_bytes": int(allocated_bytes),
@@ -458,10 +486,11 @@ def _scan_stateful_corrupt_quarantine(
     min_age_hours: float = DEFAULT_CORRUPT_SQLITE_QUARANTINE_MIN_AGE_HOURS,
     min_quarantine_free_gb: float = DEFAULT_INTERNAL_QUARANTINE_MIN_FREE_GB,
     now: datetime | None = None,
+    paths: list[Path] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     data_root = root / "data"
-    if not data_root.exists():
+    if paths is None and not verified.safety.allowed(data_root, missing=True).exists():
         return rows
 
     current = now or datetime.now(timezone.utc)
@@ -475,8 +504,10 @@ def _scan_stateful_corrupt_quarantine(
     quarantine_free_bytes = _safe_int(quarantine_disk.get("free_bytes"), 0)
     min_quarantine_free_bytes = int(max(float(min_quarantine_free_gb), 0.0) * (1024**3))
 
-    for path in sorted(data_root.glob("*.corrupt-*")):
-        if not path.is_file() or path.is_symlink():
+    for path in (paths if paths is not None else verified.inventory(data_root)):
+        if path.parent != data_root or ".corrupt-" not in path.name:
+            continue
+        if not _file_identity(path):
             continue
         lower_name = path.name.lower()
         if ".sqlite" not in lower_name and ".db" not in lower_name:
@@ -498,7 +529,7 @@ def _scan_stateful_corrupt_quarantine(
             blocked_reasons.append("corrupt_sqlite_min_age_not_met")
             verification_state = "age_policy"
             verification_reason = "corrupt SQLite copy is still inside the quarantine hold window"
-        if not active_sibling.exists() or active_sibling.is_symlink():
+        if not _safe_present(active_sibling):
             eligible = False
             blocked_reasons.append("active_stateful_sibling_not_verified")
             verification_state = "active_sibling_missing"
@@ -594,7 +625,7 @@ def _select_candidates(
             destination_bytes = _safe_int(row.get("size_bytes"), reclaimable)
             if already_selected + destination_bytes > quarantine_budget:
                 continue
-        if max_bytes and selected_bytes + reclaimable > max_bytes and selected:
+        if max_bytes and selected_bytes + reclaimable > max_bytes:
             continue
         selected_row = dict(row)
         selected_row["selected"] = True
@@ -613,18 +644,7 @@ def _select_candidates(
     return selected
 
 
-def _unique_destination(path: Path) -> Path:
-    if not path.exists():
-        return path
-    seq = 1
-    while True:
-        candidate = path.with_name(f"{path.name}.dupe.{seq}")
-        if not candidate.exists():
-            return candidate
-        seq += 1
-
-
-def _apply_selected(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _apply_selected(rows: list[dict[str, Any]], *, project_root=None, budget=None, source_root=None) -> dict[str, Any]:
     deleted_files = 0
     deleted_bytes = 0
     offloaded_files = 0
@@ -635,50 +655,45 @@ def _apply_selected(rows: list[dict[str, Any]]) -> dict[str, Any]:
     offloaded_rows: list[dict[str, Any]] = []
     for row in rows:
         path = Path(str(row.get("path") or "")).expanduser()
-        if not path.exists() or not path.is_file():
-            continue
         expected_identity = row.get("source_identity") if isinstance(row.get("source_identity"), dict) else {}
         current_identity = _file_identity(path)
+        if not current_identity:
+            skipped_rows.append({"path": str(path), "reason": "source_missing_or_route_unverifiable"})
+            continue
         if expected_identity and current_identity != expected_identity:
             skipped_rows.append({"path": str(path), "reason": "source_changed_since_scan"})
             continue
         size_bytes = _safe_int(row.get("reclaimable_bytes"), _file_allocated_size(path))
         action = str(row.get("action") or "delete")
-        if action == "quarantine":
-            destination = _unique_destination(Path(str(row.get("destination_path") or "")).expanduser())
-            try:
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(path), str(destination))
-            except Exception as exc:
-                errors.append({"path": str(path), "error": str(exc)})
+        if action == "delete":
+            if (row.get("tier_name") != "lossless_duplicate_raw_jsonl" or
+                    project_root is None or budget is None or not expected_identity):
+                skipped_rows.append({"path": str(path), "reason": "verified_duplicate_owner_required"})
                 continue
-            offloaded_files += 1
-            offloaded_bytes += size_bytes
-            offloaded_rows.append(
-                {
-                    "tier": _safe_int(row.get("tier"), 0),
-                    "tier_name": str(row.get("tier_name") or ""),
-                    "relative_path": str(row.get("relative_path") or ""),
-                    "destination_path": str(destination),
-                    "offloaded_bytes": int(size_bytes),
-                }
-            )
+            if _file_identity(Path(row["compressed_path"])) != row.get("compressed_identity"):
+                skipped_rows.append({"path": str(path), "reason": "archive_changed_since_scan"})
+                continue
+            try:
+                budget.check()
+                identity_keys = ("device", "inode", "size_bytes", "mtime_ns", "ctime_ns")
+                expected_pair = tuple(tuple(info[key] for key in identity_keys) for info in
+                                      (expected_identity, row["compressed_identity"]))
+                proof = verified.remove_pair(project_root, path, Path(row["compressed_path"]), budget,
+                                             expected=expected_pair, source_root=source_root)
+            except (OSError, RuntimeError, EOFError, zlib.error) as exc:
+                skipped_rows.append({"path": str(path), "reason": str(exc)})
+                continue
+            deleted_files += 1
+            deleted_bytes += size_bytes
+            deleted_rows.append({"relative_path": str(row.get("relative_path") or ""),
+                                 "deleted_bytes": size_bytes, "verification": proof})
+            for error in proof.get("persistence_errors", []):
+                errors.append({"path": str(path), "source_removed": True, "error": error})
             continue
-        try:
-            path.unlink()
-        except Exception as exc:
-            errors.append({"path": str(path), "error": str(exc)})
+        if action == "quarantine":
+            skipped_rows.append({"path": str(path), "reason": "verified_offload_owner_required"})
             continue
-        deleted_files += 1
-        deleted_bytes += size_bytes
-        deleted_rows.append(
-            {
-                "tier": _safe_int(row.get("tier"), 0),
-                "tier_name": str(row.get("tier_name") or ""),
-                "relative_path": str(row.get("relative_path") or ""),
-                "deleted_bytes": int(size_bytes),
-            }
-        )
+        skipped_rows.append({"path": str(path), "reason": "unsupported_cleanup_action"})
     reclaimed_bytes = int(deleted_bytes + offloaded_bytes)
     return {
         "deleted_files": int(deleted_files),
@@ -778,7 +793,7 @@ def _top_rows(rows: list[dict[str, Any]], *, limit: int = 20) -> list[dict[str, 
     return out
 
 
-def build_payload(
+def _build_payload(
     project_root: Path = PROJECT_ROOT,
     *,
     bot_logs_root: Path | None = None,
@@ -792,8 +807,20 @@ def build_payload(
     fallback_quarantine_root: Path = DEFAULT_FALLBACK_QUARANTINE_ROOT,
     out_path: Path = DEFAULT_OUT_PATH,
     history_path: Path = DEFAULT_HISTORY_PATH,
+    inventory_paths: list[Path] | None = None,
+    verification_budget=None,
+    max_files: int = 4,
 ) -> dict[str, Any]:
-    external_root = bot_logs_root or resolve_external_storage().external_root
+    external_root = bot_logs_root or _verified_external_root()
+    verification_budget = verification_budget or verified.Budget()
+    def checked_paths():
+        paths = inventory_paths if inventory_paths is not None else verified.inventory(external_root)
+        for path in paths:
+            verification_budget.check()
+            yield path
+        verification_budget.check()
+
+    verification_budget.check()
     disk_before = _disk_snapshot(external_root)
     target_free_bytes = int(max(float(target_free_gb), 0.0) * (1024**3))
     free_bytes = _safe_int(disk_before.get("free_bytes"), 0)
@@ -806,31 +833,39 @@ def build_payload(
         min_age_hours=float(min_age_hours),
         protect_current_day=bool(protect_current_day),
         prefix_verify_bytes=max(int(prefix_verify_bytes), 1),
+        paths=checked_paths(),
     )
     fallback_rows = _scan_external_local_fallback_copies(
         external_root,
         project_root=project_root,
         fallback_quarantine_root=fallback_quarantine_root,
-    )
+        paths=checked_paths(),
+    ) if max_tier >= 2 else []
     corrupt_rows = _scan_stateful_corrupt_quarantine(
         external_root,
         fallback_quarantine_root=fallback_quarantine_root,
-    )
-    stale_rows = _scan_stale_stage(external_root)
-    deep_cold_layer = load_json(project_root / "governance" / "health" / "deep_cold_storage_layer_latest.json")
+        paths=checked_paths(),
+    ) if max_tier >= 2 else []
+    stale_rows = _scan_stale_stage(external_root, paths=checked_paths())
+    verification_budget.check()
+    deep_cold_layer = load_json(verified.safety.allowed(project_root / "governance" / "health" / "deep_cold_storage_layer_latest.json", missing=True))
     deep_cold_summary = (
         deep_cold_layer.get("summary")
         if isinstance(deep_cold_layer.get("summary"), dict)
         else {}
     )
-    retention_v2 = load_json(project_root / "governance" / "health" / "retention_intelligence_v2_latest.json")
+    retention_v2 = load_json(verified.safety.allowed(project_root / "governance" / "health" / "retention_intelligence_v2_latest.json", missing=True))
     retention_report = (
         retention_v2.get("retention_report_card")
         if isinstance(retention_v2.get("retention_report_card"), dict)
         else {}
     )
     all_candidates = duplicate_rows + fallback_rows + corrupt_rows + stale_rows
+    for row in fallback_rows + corrupt_rows:
+        row["eligible"] = False
+        row["blocked_reasons"].append("verified_offload_owner_required")
     for row in all_candidates:
+        verification_budget.check()
         path = Path(str(row.get("path") or "")).expanduser()
         identity = _file_identity(path)
         row["source_identity"] = identity
@@ -844,7 +879,8 @@ def build_payload(
         target_free_bytes=target_free_bytes,
         max_tier=max(int(max_tier), 1),
         max_delete_bytes=max_delete_bytes,
-    )
+    )[:max_files]
+    verification_budget.check()
     selected_bytes = sum(_safe_int(row.get("reclaimable_bytes"), 0) for row in selected)
     projected_free_bytes = int(free_bytes + selected_bytes)
     cleanup_needed = free_bytes < target_free_bytes
@@ -871,13 +907,15 @@ def build_payload(
         selected_round = list(selected)
         estimated_attempted_bytes = 0
         while selected_round:
-            apply_rounds.append(_apply_selected(selected_round))
+            apply_rounds.append(_apply_selected(selected_round, project_root=project_root, budget=verification_budget,
+                                               source_root=external_root))
             for row in selected_round:
                 selected_paths.add(str(row.get("path") or ""))
                 estimated_attempted_bytes += _safe_int(row.get("reclaimable_bytes"), 0)
             disk_after = _disk_snapshot(external_root)
             actual_free_bytes = _safe_int(disk_after.get("free_bytes"), free_bytes)
-            if actual_free_bytes >= target_free_bytes or estimated_attempted_bytes >= max_delete_bytes:
+            if (actual_free_bytes >= target_free_bytes or estimated_attempted_bytes >= max_delete_bytes
+                    or len(selected_paths) >= max_files):
                 break
             remaining_delete_candidates = [
                 row
@@ -894,7 +932,7 @@ def build_payload(
                 target_free_bytes=target_free_bytes,
                 max_tier=max(int(max_tier), 1),
                 max_delete_bytes=remaining_budget,
-            )
+            )[:max_files - len(selected_paths)]
             selected.extend(selected_round)
         apply_result = {"applied": True, **_merge_apply_results(apply_rounds)}
         actual_reclaimed_bytes = max(_safe_int(disk_after.get("free_bytes"), free_bytes) - free_bytes, 0)
@@ -910,7 +948,7 @@ def build_payload(
         apply_result["apply_rounds"] = 0
 
     actual_free_bytes = _safe_int(disk_after.get("free_bytes"), projected_free_bytes if not apply else free_bytes)
-    comparison_free_bytes = actual_free_bytes if apply else projected_free_bytes
+    comparison_free_bytes = actual_free_bytes
     still_needed_bytes = max(target_free_bytes - comparison_free_bytes, 0)
     if comparison_free_bytes >= target_free_bytes:
         status = "ready"
@@ -926,19 +964,25 @@ def build_payload(
         "schema_version": 1,
         "ok": status == "ready",
         "overall_status": status,
+        "assessment_complete": True,
+        "cleanup_pass_complete": not apply_result["errors"] and not apply_result["skipped_files"],
+        "live_execution_authority": False,
         "apply_requested": bool(apply),
         "bot_logs_root": str(external_root),
         "target_free_gb": round(float(target_free_gb), 3),
         "max_tier": int(max_tier),
         "guardrails": {
-            "tier_1": "delete raw .jsonl only when a matching .jsonl.gz sibling exists and the prefix matches",
-            "tier_2": "delete value-expired stale-stage files first; offload external .local_fallback* conflict copies and old corrupt SQLite quarantine copies only when the unattended local reserve remains intact",
+            "tier_1": "closed-date logs/ raw/gzip pairs require full SHA-256 and length verification, idle single-link stable files, storage ownership and a durable pre-release receipt; SQL payload and unknown roots retain their retirement owners",
+            "tier_2": "advisory only; data-retention owns manifest/hash/protected-evidence expiry and verified offload owners preserve conflict/quarantine copies",
             "tier_3": "recommend SQL compaction or offload; do not delete stateful SQLite files here",
             "fallback_quarantine_root": str(fallback_quarantine_root),
             "internal_quarantine_min_free_gb": round(float(DEFAULT_INTERNAL_QUARANTINE_MIN_FREE_GB), 3),
-            "protect_current_day": bool(protect_current_day),
+            "protect_current_day": True,
             "min_age_hours": float(min_age_hours),
             "prefix_verify_bytes": int(prefix_verify_bytes),
+            "prefix_option_deprecated": True,
+            "max_files": max_files,
+            "preview_is_deletion_proof": False,
         },
         "disk_before": disk_before,
         "disk_after": disk_after,
@@ -954,7 +998,7 @@ def build_payload(
             "managed_gb": _safe_float(deep_cold_summary.get("managed_gb"), 0.0),
             "retention_locked_gb": _safe_float(deep_cold_summary.get("retention_locked_gb"), 0.0),
             "manifest_path": str(deep_cold_layer.get("manifest_path") or ""),
-            "policy": "manifest-index retention-locked evidence; cleanup still owns actual deletion windows",
+            "policy": "manifest-index retention-locked evidence; data-retention owns actual expiry and this duplicate lane cannot purge staged files",
         },
             "retention_intelligence_v2": {
             "ready": bool(retention_v2.get("ok", False)),
@@ -971,7 +1015,7 @@ def build_payload(
             "eligible_gb": _gb(
                 sum(_safe_int(row.get("reclaimable_bytes"), 0) for row in corrupt_rows if bool(row.get("eligible", False)))
             ),
-            "policy": "move old corrupt SQLite quarantine copies off BOT_LOGS; active SQLite siblings remain untouched",
+            "policy": "preserve corrupt SQLite copies for a verified offload owner; active SQLite siblings remain untouched",
         },
         "selected_candidates": selected_top,
         "top_candidates": _top_rows(all_candidates, limit=30),
@@ -991,8 +1035,7 @@ def build_payload(
             "self_updates": [
                 "history rows record applied/deleted bytes so future cleanup can measure which tier actually helped",
                 "current-day raw JSONL protection prevents the cleanup layer from racing active writers",
-                "external failback conflict copies are offloaded to local quarantine instead of being destroyed",
-                "old corrupt SQLite quarantine copies are moved off BOT_LOGS only after active sibling and local quarantine headroom checks pass",
+                "external failback conflict and corrupt SQLite copies remain advisory until a verified offload owner handles them",
                 "tier selection stops as soon as the target free-space floor is projected or achieved",
             ],
             "next_actions": ordered_unique(
@@ -1002,10 +1045,10 @@ def build_payload(
                     if not bool(retention_v2.get("ok", False)) else "",
                     "refresh deep-cold-storage-layer when stale-stage archives are retained but not deletion-eligible"
                     if len(stale_rows) > 0 else "",
-                    "run max-tier 2 only if tier 1 does not recover enough space",
+                    "tier 2 is advisory; use the manifest retention or verified offload owner for remaining capacity work",
                     "keep autosync disabled or space-gated until BOT_LOGS has enough free space"
                     if len(fallback_rows) > 0 else "",
-                    "quarantine old corrupt SQLite copies off BOT_LOGS to recover runway without deleting active databases"
+                    "request verified offload of corrupt SQLite copies without deleting active databases"
                     if len(corrupt_rows) > 0 and still_needed_bytes > 0 else "",
                     "checkpoint and compact jsonl_link.sqlite3 separately; it is stateful and intentionally outside this delete lane"
                     if still_needed_bytes > 0 else "",
@@ -1013,6 +1056,12 @@ def build_payload(
             ),
         },
     }
+    try:
+        verification_budget.check()
+    except RuntimeError as exc:
+        # Preserve actual releases even if the final assessment outlives its budget.
+        payload.update(assessment_complete=False, cleanup_pass_complete=False,
+                       overall_status="deferred", ok=False, reason=str(exc))
     write_payload(out_path, payload)
     history_path.parent.mkdir(parents=True, exist_ok=True)
     with history_path.open("a", encoding="utf-8") as handle:
@@ -1021,7 +1070,9 @@ def build_payload(
                 {
                     "timestamp_utc": payload["timestamp_utc"],
                     "apply_requested": bool(apply),
-                    "overall_status": status,
+                    "overall_status": payload["overall_status"],
+                    "assessment_complete": payload["assessment_complete"],
+                    "cleanup_pass_complete": payload["cleanup_pass_complete"],
                     "bot_logs_root": str(external_root),
                     "free_gb_before": disk_before.get("free_gb"),
                     "free_gb_after": disk_after.get("free_gb"),
@@ -1041,6 +1092,55 @@ def build_payload(
     return payload
 
 
+def build_payload(project_root: Path = PROJECT_ROOT, **kwargs) -> dict[str, Any]:
+    seconds = float(kwargs.pop("seconds", 90))
+    max_verify_gb = float(kwargs.pop("max_verify_gb", 1))
+    max_files = int(kwargs.get("max_files", 4))
+    if (not math.isfinite(seconds) or not 1 <= seconds <= 300 or
+            not math.isfinite(max_verify_gb) or not 0 < max_verify_gb <= 4 or
+            not 1 <= max_files <= 32):
+        raise ValueError("invalid_cleanup_budget")
+    out = kwargs.get("out_path", DEFAULT_OUT_PATH)
+    lock = None
+    try:
+        root = kwargs.get("bot_logs_root") or _verified_external_root()
+        kwargs["bot_logs_root"] = root
+        verified.safety.allowed(root)
+        verified.safety.allowed(project_root)
+        verified.safety.allowed(out, missing=True)
+        verified.safety.allowed(kwargs.get("history_path", DEFAULT_HISTORY_PATH), missing=True)
+        verified.safety.allowed(kwargs.get("fallback_quarantine_root", DEFAULT_FALLBACK_QUARANTINE_ROOT), missing=True)
+        guard = None
+        if kwargs.get("apply", False):
+            lock_path = verified.safety.allowed(project_root / "governance/locks/storage_maintenance.lock", missing=True)
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock = os.fdopen(os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600), "a+")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise verified.safety.Deferred("storage_maintenance_lock_busy") from exc
+            verified.safety.background_policy()
+            guard = verified.safety.Guard(project_root, seconds)
+            held = os.fstat(lock.fileno())
+            guard.lock_anchor = (lock_path, (held.st_dev, held.st_ino))
+            guard.check()
+        budget = verified.Budget(seconds, int(max_verify_gb * 1024**3), guard)
+        paths = verified.inventory(root, seconds=min(seconds, 15))
+        budget.check()
+        return _build_payload(project_root, inventory_paths=paths, verification_budget=budget, **kwargs)
+    except (OSError, RuntimeError) as exc:
+        payload = {"timestamp_utc": iso_now(), "overall_status": "deferred", "ok": False,
+                   "apply_requested": bool(kwargs.get("apply", False)), "reason": str(exc),
+                   "assessment_complete": False, "cleanup_pass_complete": False,
+                   "live_execution_authority": False}
+        verified.safety.allowed(out, missing=True)
+        write_payload(out, payload)
+        return payload
+    finally:
+        if lock is not None:
+            lock.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Tiered BOT_LOGS cleanup with guarded cleanup intelligence.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
@@ -1051,6 +1151,9 @@ def main() -> int:
     parser.add_argument("--target-free-gb", type=float, default=DEFAULT_TARGET_FREE_GB)
     parser.add_argument("--max-tier", type=int, default=1)
     parser.add_argument("--max-delete-gb", type=float, default=0.0)
+    parser.add_argument("--max-files", type=int, default=4)
+    parser.add_argument("--seconds", type=float, default=90)
+    parser.add_argument("--max-verify-gb", type=float, default=1)
     parser.add_argument("--min-age-hours", type=float, default=DEFAULT_MIN_AGE_HOURS)
     parser.add_argument("--protect-current-day", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--prefix-verify-bytes", type=int, default=DEFAULT_PREFIX_VERIFY_BYTES)
@@ -1058,7 +1161,7 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    project_root = Path(args.project_root).resolve()
+    project_root = Path(args.project_root).absolute()
     bot_logs_root = Path(args.bot_logs_root).expanduser() if str(args.bot_logs_root or "").strip() else None
     payload = build_payload(
         project_root,
@@ -1067,6 +1170,9 @@ def main() -> int:
         target_free_gb=float(args.target_free_gb),
         max_tier=max(int(args.max_tier), 1),
         max_delete_gb=float(args.max_delete_gb),
+        max_files=args.max_files,
+        seconds=args.seconds,
+        max_verify_gb=args.max_verify_gb,
         min_age_hours=float(args.min_age_hours),
         protect_current_day=bool(args.protect_current_day),
         prefix_verify_bytes=max(int(args.prefix_verify_bytes), 1),
@@ -1083,7 +1189,7 @@ def main() -> int:
             f"selected_gb={payload.get('selected_reclaimable_gb', 0)} "
             f"free_after_gb={((payload.get('disk_after') or {}).get('free_gb', 0))}"
         )
-    return 0 if str(payload.get("overall_status") or "") in {"ready", "degraded"} else 2
+    return 0 if payload.get("cleanup_pass_complete") is True else 2
 
 
 if __name__ == "__main__":

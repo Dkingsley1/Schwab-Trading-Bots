@@ -9,10 +9,10 @@ test results never certify those policies or grant autonomous order authority.
 
 - Designated Roth account only; existing settled cash, no borrowing.
 - O only, buy and hold, $300 total budget including a $1 cost reserve.
-- Maximum five whole shares; maximum buy limit $58.08 per share.
-- Proposed entry price: the lower of the fresh Schwab bid and $58.08, rounded
+- Maximum five whole shares; maximum buy limit $57.09 per share.
+- Proposed entry price: the lower of the fresh Schwab bid and $57.09, rounded
   down to a cent. Size is the affordable whole-share quantity, capped at five.
-  Five shares at the ceiling cost $290.40 before costs.
+  Five shares at the ceiling cost $285.45 before costs.
 - This is a passive execution-price proposal, not a valuation assessment or
   assurance that O is cheap, profitable, or likely to fill.
 - LIMIT, NORMAL, DAY, single equity leg only. No market fallback, replacement,

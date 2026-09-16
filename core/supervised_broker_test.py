@@ -63,7 +63,7 @@ def validate_policy(plan: Mapping[str, Any]) -> None:
         or plan.get("symbol") != "O"
         or plan.get("investment_style") != "buy_and_hold"
         or plan.get("entry_price_policy") != "passive_bid_no_chase"
-        or not 0 < number(plan.get("entry_limit_ceiling_usd")) <= Decimal("58.08")
+        or not 0 < number(plan.get("entry_limit_ceiling_usd")) <= Decimal("57.09")
         or number(plan.get("account_capital_usd")) != 300
         or number(limits.get("max_order_notional_usd")) != 300
         or number(limits.get("max_order_quantity")) != 5
@@ -172,7 +172,9 @@ def build_request(
     if price <= 0 or price != price.quantize(Decimal("0.01")):
         raise ValueError("positive cent-valid limit price required")
     if action == "BUY" and price > number(plan["entry_limit_ceiling_usd"]):
-        raise ValueError("buy limit exceeds the operator's $58.08 ceiling")
+        raise ValueError(
+            f"buy limit exceeds the operator's ${number(plan['entry_limit_ceiling_usd']):.2f} ceiling"
+        )
     if action == "BUY" and qty * price + number(limits["cost_reserve_usd"]) > number(
         plan["account_capital_usd"]
     ):

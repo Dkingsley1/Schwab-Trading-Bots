@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,181 @@ from core.storage_router import (
     inspect_storage_path,
 )
 from core.tiered_ingestion_lifecycle import load_lifecycle_policy
+from scripts.collector_contracts import declared_collector_definitions
+
+
+def declared_intake_catalog(project_root: Path) -> dict[str, Any]:
+    """Join owning declarations, never inspect producer payloads or run collectors."""
+    rel = "config/collector_capability_catalog_v1.json"
+    errors, sources, artifacts = [], [], []
+    try:
+        definitions = declared_collector_definitions()
+    except (KeyError, TypeError, ValueError):
+        definitions = []
+        errors.append("invalid_collector_definitions")
+    by_name = {}
+    for definition in definitions:
+        if not isinstance(definition, dict):
+            errors.append("invalid_collector_definition")
+            continue
+        name = definition.get("name")
+        if not isinstance(name, str) or not name or name in by_name:
+            errors.append("invalid_or_duplicate_collector_name")
+            continue
+        by_name[name] = definition
+        age = definition.get("freshness_minutes")
+        command = definition.get("owner_command")
+        if (
+            type(age) not in (int, float)
+            or not math.isfinite(age)
+            or age <= 0
+            or not isinstance(command, list)
+            or not command
+            or any(not isinstance(arg, str) or not arg for arg in command)
+        ):
+            errors.append(f"{name}:invalid_freshness_or_owner_command")
+    catalog, raw = {}, b""
+    route = inspect_storage_path(project_root / rel)
+    try:
+        if route["status"] != "present" or route.get("symlinks"):
+            raise ValueError("catalog_route_unavailable")
+        with (project_root / rel).open("rb") as handle:
+            raw = handle.read(2 * 1024 * 1024 + 1)
+        if len(raw) > 2 * 1024 * 1024:
+            raise ValueError("catalog_size_limit")
+        catalog = json.loads(raw)
+        if (
+            not isinstance(catalog, dict)
+            or type(catalog.get("schema_version")) is not int
+            or catalog.get("schema_version") != 1
+        ):
+            raise ValueError("catalog_schema_invalid")
+        if not isinstance(catalog.get("producers"), list):
+            raise ValueError("catalog_producers_invalid")
+    except (OSError, ValueError) as exc:
+        errors.append(str(exc))
+        catalog = {}
+
+    def logical_path(value, label):
+        if not isinstance(value, str) or not value:
+            errors.append(f"{label}:missing_logical_path")
+            return None
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts:
+            errors.append(f"{label}:nonlocal_logical_path")
+            return None
+        return {
+            "relative_path": path.as_posix(),
+            "logical_path": str(project_root / path),
+            "observed": False,
+        }
+
+    seen, bound = set(), set()
+    capabilities = set()
+    planes = catalog.get("planes", [])
+    if not isinstance(planes, list) or not planes:
+        errors.append("invalid_capability_planes")
+        planes = []
+    for plane in planes:
+        caps = plane.get("capabilities") if isinstance(plane, dict) else None
+        if not isinstance(caps, list) or any(
+            not isinstance(cap, str) or not cap for cap in caps
+        ):
+            errors.append("invalid_capability_plane")
+        else:
+            capabilities.update(caps)
+    for producer in catalog.get("producers", []):
+        if not isinstance(producer, dict):
+            errors.append("invalid_producer_declaration")
+            continue
+        pid = producer.get("producer_id")
+        if not isinstance(pid, str) or not pid or pid in seen:
+            errors.append("invalid_or_duplicate_producer_id")
+            continue
+        seen.add(pid)
+        caps = producer.get("capabilities")
+        age = producer.get("max_age_minutes")
+        if (
+            not isinstance(caps, list)
+            or not caps
+            or any(not isinstance(cap, str) or not cap for cap in caps)
+        ):
+            errors.append(f"{pid}:invalid_capabilities")
+        elif len(caps) != len(set(caps)) or not set(caps) <= capabilities:
+            errors.append(f"{pid}:unknown_or_duplicate_capability")
+        if type(age) not in (int, float) or not math.isfinite(age) or age <= 0:
+            errors.append(f"{pid}:invalid_freshness")
+        row = {
+            "producer_id": pid,
+            **{
+                key: producer.get(key)
+                for key in (
+                    "producer_kind",
+                    "source_kind",
+                    "cadence",
+                    "resource_class",
+                    "max_age_minutes",
+                    "capabilities",
+                    "cache_contract",
+                    "fallback_policy",
+                    "capability_evidence_contract",
+                    "capability_proofs",
+                )
+            },
+            "handoff_owner": "core/collector_capability_routing.py",
+            "raw_response_preservation": "not_established_by_declaration",
+            "runtime_conformance_verified": False,
+            "ingestion_lane_inferred": False,
+        }
+        kind = producer.get("producer_kind")
+        if kind == "collector":
+            name = producer.get("collector_name")
+            if not isinstance(name, str) or name not in by_name or name in bound:
+                errors.append(f"{pid}:unmatched_or_duplicate_collector_binding")
+                continue
+            bound.add(name)
+            definition = by_name[name]
+            row.update(
+                data_class="declared_collector_snapshot",
+                collector_contract=definition,
+                payload=logical_path(definition.get("payload_path"), pid + ":payload"),
+                health=logical_path(definition.get("health_path"), pid + ":health"),
+            )
+            sources.append(row)
+        elif kind == "artifact":
+            row.update(
+                data_class="derived_artifact",
+                owner_command=producer.get("owner_command"),
+                owner_command_status=(
+                    "declared"
+                    if producer.get("owner_command")
+                    else "not_declared_in_catalog"
+                ),
+                payload=logical_path(producer.get("artifact_path"), pid + ":artifact"),
+            )
+            artifacts.append(row)
+        else:
+            errors.append(f"{pid}:invalid_producer_kind")
+    unmatched = sorted(set(by_name) - bound)
+    errors.extend(f"{name}:collector_without_capability_binding" for name in unmatched)
+    return {
+        "definition_status": "defined" if not errors else "needs_attention",
+        "definition_errors": errors,
+        "collector_count": len(sources),
+        "artifact_producer_count": len(artifacts),
+        "collectors": sources,
+        "artifact_producers": artifacts,
+        "unmatched_collectors": unmatched,
+        "definition_sources": ["scripts/collector_contracts.py", rel],
+        "catalog_sha256": hashlib.sha256(raw).hexdigest() if raw else None,
+        "collector_definitions_sha256": hashlib.sha256(
+            json.dumps(definitions, sort_keys=True).encode()
+        ).hexdigest(),
+        "payloads_inspected": False,
+        "new_scheduler": False,
+        "live_execution_authority": False,
+    }
+
 
 INGESTION_STAGES = (
     {
@@ -253,10 +429,15 @@ def build_data_plane_definition(project_root: Path) -> dict[str, Any]:
                 }
             )
     policy = _policy_definition(root)
+    intake = declared_intake_catalog(root)
+    policy["definition_errors"].extend(intake["definition_errors"])
+    if policy["definition_errors"]:
+        policy["definition_status"] = "needs_attention"
     return {
         "schema_version": 1,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         **policy,
+        "declared_intake_catalog": intake,
         "observation_scope": "bounded canonical paths only; directories do not certify descendants; no process environment or integrity audit",
         "configured_intent": {
             "environment_scope": "calling process; opsctl loads the runtime profile; running daemons may differ",

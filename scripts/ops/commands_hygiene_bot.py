@@ -1279,7 +1279,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "./scripts/ops/opsctl.sh supervised-broker-test observe --json",
                 ],
                 notes=[
-                    "Status is offline. Preview and observe are broker-read-only; no attestation or order is issued. O buy-and-hold is bounded to $300, five whole shares, and a $58.08 maximum buy limit; a lower fresh bid may be proposed without claiming undervaluation.",
+                    "Status is offline. Preview and observe are broker-read-only; no attestation or order is issued. O buy-and-hold is bounded to $300, five whole shares, and a $57.09 maximum buy limit; a lower fresh bid may be proposed without claiming undervaluation.",
                     "The separate submit command requires an interactive operator, current personal review, and exact order confirmation. It retains technical safety gates and durable single-attempt accounting; production soak/profitability promotion is not waived or credited. No automatic sell, rebuy, repricing, or reinvestment.",
                     "See docs/operations/SUPERVISED_BROKER_TEST.md before any operator-controlled test. Cash/fee, position, dividend, and profitability evidence remain distinct.",
                 ],
@@ -1761,6 +1761,17 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Inspect verified duplicate cleanup",
+                ["./scripts/ops/opsctl.sh bot-logs-cleanup-intelligence --max-tier 1 --max-files 4 --max-delete-gb 0.5 --seconds 45 --max-verify-gb 1 --json"],
+                notes=[
+                    "The verification budget counts compressed input as well as raw and restored bytes, including padding and empty gzip members. Tier-2 conflict/quarantine moves are advisory here and remain with verified offload owners; cross-filesystem source removal cannot use a plain move. Post-unlink persistence failures report removal separately from durable completion.",
+                    "Only ordinary logs/ pairs qualify. SQL payload domains and unknown roots are excluded regardless of checkpoint contents and remain with their writer-aware compaction owners. Assessment shares the same deadline; an expired empty pass cannot claim completion.",
+                    "The existing hourly data-retention job checks local fallback and external storage. The existing 15-minute reserve-recovery pass also offers local cleanup under normal admission, excluding quick and compression-only relief modes. Each target is bounded to four files, 0.5 GiB deletion, 1 GiB raw/restored verification and 45 seconds; shared storage ownership, fresh resource checks and pressure-recovery cooldowns remain. Actual intervals include scheduler/admission delays. No new scheduler or Codex automation is used.",
+                    "Preview selection is metadata-only and is not deletion proof. Apply requires closed-date inactive raw/gzip pairs, full SHA-256 and exact restored length, gzip integrity, idle handles, stable single-link identities and durable pre-release evidence in governance/storage_recovery/verified_duplicate_cleanup.jsonl. Prefix verification cannot authorize deletion. Retained archives, latest/training artifacts, current-day files and protected/symlink routes are excluded. Age-only stale-stage deletion is disabled here; data-retention retains manifest/hash/protected-evidence/expiry ownership. Capacity readiness and completed cleanup are separate; no empty pass grants headroom or trading authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Inspect verified lifecycle backup compression",
                 ["./scripts/ops/opsctl.sh governance-lifecycle-compactor --json"],
                 notes=[
@@ -1883,6 +1894,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ],
                 notes=[
                     "Prints bounded canonical-path observations, owning lane/lifecycle policies, and separate fetch, qualification, SQL checkpoint, merge, and archive boundaries.",
+                    "The declared intake catalog joins collector and artifact-producer definitions to capability mappings, exposing payload/health landing paths, owner commands, freshness, coverage and degradation contracts. Unmatched or malformed declarations stay explicit; no payload read, collector invocation, file migration or runtime-conformance claim is implied.",
                     "This mode does not write a health artifact, inspect database contents, or apply route/throttle changes; --out-file is ignored. Exit 2 reports definition or route inspection issues, not a full runtime-health verdict.",
                     "The ordinary ingestion-storage-control --json report includes the same data_plane_definition section. See docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md.",
                 ],

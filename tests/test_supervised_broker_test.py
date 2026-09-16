@@ -35,7 +35,7 @@ def ledger(tmp_path):
     return LiveOrderLedger(tmp_path / "orders.sqlite3")
 
 
-def quote(now, bid=58.07, ask=58.08):
+def quote(now, bid=57.08, ask=57.09):
     return {
         "source_provider": "schwab_api",
         "realtime": True,
@@ -67,7 +67,7 @@ def submit(
     ledger,
     *,
     action="BUY",
-    price="58.08",
+    price="57.09",
     qty=5,
     assessment_changes=None,
     dispatch=None
@@ -90,7 +90,7 @@ def submit(
 
 
 def order_payload(
-    request, *, status="FILLED", filled=5, fill_price="58.07", broker_id="broker-test-1"
+    request, *, status="FILLED", filled=5, fill_price="57.08", broker_id="broker-test-1"
 ):
     return {
         **copy.deepcopy(request),
@@ -112,7 +112,7 @@ def order_payload(
 
 def filled_entry(plan, ledger):
     submit(plan, ledger)
-    request = build_request(plan, action="BUY", quantity=5, limit_price="58.08")
+    request = build_request(plan, action="BUY", quantity=5, limit_price="57.09")
     return reconcile_order(
         ledger, ledger.get(intent_id(plan, "BUY")), order_payload(request)
     )
@@ -122,15 +122,15 @@ def test_passive_price_uses_lower_bid_and_keeps_budget(plan):
     now = datetime.now(timezone.utc)
     proposal = propose_entry(plan, quote(now), now=now)
     assert proposal["state"] == "proposed"
-    assert proposal["request"]["price"] == "58.07"
+    assert proposal["request"]["price"] == "57.08"
     assert proposal["request"]["orderLegCollection"][0]["quantity"] == 5
     assert proposal["valuation_assessment"] == "not_established_by_quote"
     assert proposal["strategy_profitability_proven"] is False
     assert (
-        propose_entry(plan, quote(now, bid=58.50, ask=58.51), now=now)["request"][
+        propose_entry(plan, quote(now, bid=57.50, ask=57.51), now=now)["request"][
             "price"
         ]
-        == "58.08"
+        == "57.09"
     )
 
 
@@ -142,7 +142,7 @@ def test_passive_price_uses_lower_bid_and_keeps_budget(plan):
         {"bid_price": "NaN"},
         {"bid_price": 0},
         {"ask_price": 57},
-        {"ask_price": 58.07},
+        {"ask_price": 57.08},
         {"ask_price": 60},
         {"provider_timestamp_utc": "missing"},
     ],
@@ -170,8 +170,8 @@ def test_quote_freshness_and_future_rejection(plan, offset):
         (True, 58),
         (1, "NaN"),
         (1, "Infinity"),
-        (1, "58.081"),
-        (5, "58.09"),
+        (1, "57.091"),
+        (5, "57.10"),
         (1, 0),
         (1, -1),
     ],
@@ -201,7 +201,7 @@ def test_invalid_requests_rejected(plan, qty, price):
     ],
 )
 def test_payload_cannot_widen_order_scope(plan, change):
-    request = build_request(plan, action="BUY", quantity=5, limit_price="58.08")
+    request = build_request(plan, action="BUY", quantity=5, limit_price="57.09")
     request.update(change)
     with pytest.raises(ValueError):
         request_fields(plan, request)
@@ -210,6 +210,20 @@ def test_payload_cannot_widen_order_scope(plan, change):
 def test_policy_cannot_enable_autonomy(plan):
     plan["authority"]["automatic_sell"] = True
     with pytest.raises(ValueError):
+        validate_policy(plan)
+
+
+def test_lowered_ceiling_rejects_old_price_and_cannot_be_widened(plan):
+    assert plan["entry_limit_ceiling_usd"] == 57.09
+    assert (
+        build_request(plan, action="BUY", quantity=5, limit_price="57.09")["price"]
+        == "57.09"
+    )
+    for price in ("57.10", "58.08"):
+        with pytest.raises(ValueError, match="57.09 ceiling"):
+            build_request(plan, action="BUY", quantity=5, limit_price=price)
+    plan["entry_limit_ceiling_usd"] = 58.08
+    with pytest.raises(ValueError, match="outside reviewed boundary"):
         validate_policy(plan)
 
 
@@ -231,11 +245,11 @@ def test_policy_cannot_relax_account_or_operator_boundary(plan, section, key, va
 
 def test_each_fill_must_respect_limit_even_when_average_is_below_limit(plan, ledger):
     submit(plan, ledger)
-    request = build_request(plan, action="BUY", quantity=5, limit_price="58.08")
+    request = build_request(plan, action="BUY", quantity=5, limit_price="57.09")
     broker = order_payload(request)
     broker["orderActivityCollection"][0]["executionLegs"] = [
-        {"quantity": 1, "price": "58.09"},
-        {"quantity": 4, "price": "58.00"},
+        {"quantity": 1, "price": "57.10"},
+        {"quantity": 4, "price": "57.00"},
     ]
     with pytest.raises(ValueError, match="violates approved limit"):
         reconcile_order(ledger, ledger.get(intent_id(plan, "BUY")), broker)
@@ -329,7 +343,7 @@ def test_ack_without_broker_order_id_remains_unknown(plan, ledger):
 )
 def test_reconciliation_rejects_false_fill_proof(plan, ledger, change):
     submit(plan, ledger)
-    request = build_request(plan, action="BUY", quantity=5, limit_price="58.08")
+    request = build_request(plan, action="BUY", quantity=5, limit_price="57.09")
     with pytest.raises(ValueError):
         reconcile_order(
             ledger,
@@ -355,7 +369,7 @@ def test_buy_hold_observation_never_sells_or_proves_profitability(plan, ledger):
     assert result["strategy_profitability_proven"] is False
     assert result["automatic_order_requested"] is False
     assert len(ledger.intents()) == 1
-    assert entry["average_fill_price"] == pytest.approx(58.07)
+    assert entry["average_fill_price"] == pytest.approx(57.08)
 
 
 @pytest.mark.parametrize("reference,qty", [("wrong-account", 5), ("roth-test-hash", 6)])
@@ -374,7 +388,7 @@ def test_hold_rejects_wrong_account_and_position_drift(plan, ledger, reference, 
 
 
 def test_sell_only_after_verified_own_test_fill(plan, ledger):
-    request = build_request(plan, action="SELL", quantity=5, limit_price="58.08")
+    request = build_request(plan, action="SELL", quantity=5, limit_price="57.09")
     kwargs = dict(
         account_reference="roth-test-hash",
         position_quantity=5,
@@ -407,11 +421,11 @@ def test_buy_again_is_rejected_even_after_full_round_trip(plan, ledger):
             "order_id": "broker-test-2",
         },
     )
-    sell = build_request(plan, action="SELL", quantity=5, limit_price="58.08")
+    sell = build_request(plan, action="SELL", quantity=5, limit_price="57.09")
     reconcile_order(
         ledger,
         ledger.get(intent_id(plan, "SELL")),
-        order_payload(sell, fill_price="58.08", broker_id="broker-test-2"),
+        order_payload(sell, fill_price="57.09", broker_id="broker-test-2"),
     )
     now = datetime.now(timezone.utc) + timedelta(seconds=1)
     result = holding_observation(
@@ -423,7 +437,7 @@ def test_buy_again_is_rejected_even_after_full_round_trip(plan, ledger):
         now=now,
     )
     assert result["state"] == "round_trip_observed"
-    buy = build_request(plan, action="BUY", quantity=5, limit_price="58.08")
+    buy = build_request(plan, action="BUY", quantity=5, limit_price="57.09")
     assert "test_order_attempt_already_consumed" in lifecycle_check(
         plan,
         buy,

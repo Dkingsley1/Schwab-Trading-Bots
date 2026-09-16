@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 import sys
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts import ops_data_plane  # noqa: E402
 from core.research_context_expansion import COLLECTOR_DEFINITIONS  # noqa: E402
 
 HEALTH_ROOT = PROJECT_ROOT / "governance" / "health"
@@ -517,6 +517,18 @@ RESEARCH_CONTEXT_COLLECTOR_SPECS = [
 
 COLLECTOR_SPECS += ORGANIC_EVIDENCE_COLLECTOR_SPECS + RESEARCH_CONTEXT_COLLECTOR_SPECS
 
+
+def declared_collector_definitions() -> list[dict[str, Any]]:
+    """Copy declarations using lexical logical paths, without payload I/O."""
+    definitions = deepcopy(COLLECTOR_SPECS)
+    for spec in definitions:
+        for key in ("health_path", "payload_path"):
+            path = Path(spec[key])
+            if path.is_absolute() and path.is_relative_to(PROJECT_ROOT):
+                path = path.relative_to(PROJECT_ROOT)
+            spec[key] = str(path)
+    return definitions
+
 _PAYLOAD_META_KEYS = {
     "timestamp_utc",
     "generated_utc",
@@ -989,6 +1001,8 @@ def _data_plane_context(
         budget["source"] = "shared_data_plane_connection_failed"
         return {}, budget
     try:
+        from scripts import ops_data_plane
+
         latest_run = ops_data_plane.latest_collector_run(
             project_root,
             collector_key=collector_key,
@@ -1034,6 +1048,8 @@ def main() -> int:
     data_plane_connection_attempted = bool(args.include_data_plane)
     if args.include_data_plane:
         try:
+            from scripts import ops_data_plane
+
             data_plane_path = ops_data_plane.resolve_db_path(project_root)
             if data_plane_path.exists():
                 data_plane_connection = ops_data_plane.connect(

@@ -154,14 +154,14 @@ def setup(tmp_path, monkeypatch):
     ):
         monkeypatch.setenv(key, "0")
     ledger = LiveOrderLedger(tmp_path / cli.LEDGER_PATH)
-    request = build_request(plan, action="BUY", quantity=5, limit_price="58.08")
+    request = build_request(plan, action="BUY", quantity=5, limit_price="57.09")
     quote = {
         "source_provider": "schwab_api",
         "realtime": True,
         "transport": {"ok": True},
         "provider_timestamp_utc": now.isoformat(),
-        "bid_price": 58.08,
-        "ask_price": 58.09,
+        "bid_price": 57.09,
+        "ask_price": 57.10,
         "source_venue": "XNYS",
         "snapshot_id": "f" * 64,
     }
@@ -202,8 +202,8 @@ def test_native_quote_adapter_output_is_consumed_without_relabeling(setup, realt
         "ok": True,
         "status_code": 200,
         "quote_snapshot": {
-            "bid_price": 58.08,
-            "ask_price": 58.09,
+            "bid_price": 57.09,
+            "ask_price": 57.10,
             "raw_payload": {
                 "O": {
                     "realtime": realtime,
@@ -301,7 +301,7 @@ def test_bad_current_execution_evidence_fails_closed(setup, monkeypatch, mutatio
     elif mutation == "wrong_account":
         kwargs["reference"] = "another-account"
     elif mutation == "above_bid":
-        kwargs["quote"]["bid_price"] = 58.07
+        kwargs["quote"]["bid_price"] = 57.08
     else:
         monkeypatch.setattr(
             cli,
@@ -378,7 +378,7 @@ def test_cancel_deadline_dispatches_once_and_reconciles(tmp_path, monkeypatch):
     plan = json.loads((ROOT / cli.POLICY_PATH).read_text())
     ledger = LiveOrderLedger(tmp_path / "ledger.sqlite3")
     submit(plan, ledger)
-    request = build_request(plan, action="BUY", quantity=5, limit_price="58.08")
+    request = build_request(plan, action="BUY", quantity=5, limit_price="57.09")
     calls = []
 
     def invoke(**kwargs):

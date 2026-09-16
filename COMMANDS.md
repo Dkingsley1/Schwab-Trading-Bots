@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `ea735d3746d5229d17c6340ec8490ffb653926c26eee67beb8c857f1a4983cc8`.
+Command contract hash: `461f84bb2cfca68ac45f280c5ac44df0c088fa9cecc5753b86e985872bd63242`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `257` generated command entries from the current command contract.
+Search coverage: `258` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Keep the Mac awake (Most Used)"></option>
@@ -262,6 +262,7 @@ Search coverage: `257` generated command entries from the current command contra
   <option value="Inspect routed storage quotas (Storage)"></option>
   <option value="Inspect storage routes and ingestion definitions (Storage)"></option>
   <option value="Inspect verified decision-log compression (Storage)"></option>
+  <option value="Inspect verified duplicate cleanup (Storage)"></option>
   <option value="Inspect verified lifecycle backup compression (Storage)"></option>
   <option value="Preview bounded cold SQLite compression (Storage)"></option>
   <option value="Preview material SQLite space reclamation (Storage)"></option>
@@ -286,7 +287,7 @@ Search coverage: `257` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (257 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (258 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -526,6 +527,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:25e6fbe7f14acefc638a3d53897a63e4b6698afb6d67986f271e5e1f946ff5e8 section:`Storage` section_key:`storage` title:Inspect routed storage quotas title_key:`inspect-routed-storage-quotas` opsctl:`storage-quota-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:b60ad5f9dbdcc4fbc4d875961f518e4df5508f9a649cfdd8d252ba711aa4dff6 section:`Storage` section_key:`storage` title:Inspect storage routes and ingestion definitions title_key:`inspect-storage-routes-and-ingestion-definitions` opsctl:`ingestion-storage-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2d9c9c9e7f75c65ca25acfec3e6a5a005cf8ce8b3b240175dc2b2b93bf5afdde section:`Storage` section_key:`storage` title:Inspect verified decision-log compression title_key:`inspect-verified-decision-log-compression` opsctl:`decision-log-compactor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:f6216e11efd265c16ca19fbe64c0dde07a2bdb63eec2f77d2fe30a0494341f71 section:`Storage` section_key:`storage` title:Inspect verified duplicate cleanup title_key:`inspect-verified-duplicate-cleanup` opsctl:`bot-logs-cleanup-intelligence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:f9d7d5c6b2a07cf4f487c9b559adaca8d1f9d2352f49fae99cc50481c99fc93e section:`Storage` section_key:`storage` title:Inspect verified lifecycle backup compression title_key:`inspect-verified-lifecycle-backup-compression` opsctl:`governance-lifecycle-compactor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:25c07400510738d01e5f658892928ec9c5d618fb48d99a5bbb36b10c6acd4330 section:`Storage` section_key:`storage` title:Preview bounded cold SQLite compression title_key:`preview-bounded-cold-sqlite-compression` opsctl:`cold-archive-compactor` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:434fcff15b313462377cc5dbfdbd786b135a492f66bcb22d53a98d266935d6b6 section:`Storage` section_key:`storage` title:Preview material SQLite space reclamation title_key:`preview-material-sqlite-space-reclamation` opsctl:`sqlite-reclaim-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -1003,7 +1005,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh supervised-broker-test observe --json
 ```
 
-Status is offline. Preview and observe are broker-read-only; no attestation or order is issued. O buy-and-hold is bounded to $300, five whole shares, and a $58.08 maximum buy limit; a lower fresh bid may be proposed without claiming undervaluation.
+Status is offline. Preview and observe are broker-read-only; no attestation or order is issued. O buy-and-hold is bounded to $300, five whole shares, and a $57.09 maximum buy limit; a lower fresh bid may be proposed without claiming undervaluation.
 The separate submit command requires an interactive operator, current personal review, and exact order confirmation. It retains technical safety gates and durable single-attempt accounting; production soak/profitability promotion is not waived or credited. No automatic sell, rebuy, repricing, or reinvestment.
 See docs/operations/SUPERVISED_BROKER_TEST.md before any operator-controlled test. Cash/fee, position, dividend, and profitability evidence remain distinct.
 
@@ -2646,6 +2648,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Prints bounded canonical-path observations, owning lane/lifecycle policies, and separate fetch, qualification, SQL checkpoint, merge, and archive boundaries.
+The declared intake catalog joins collector and artifact-producer definitions to capability mappings, exposing payload/health landing paths, owner commands, freshness, coverage and degradation contracts. Unmatched or malformed declarations stay explicit; no payload read, collector invocation, file migration or runtime-conformance claim is implied.
 This mode does not write a health artifact, inspect database contents, or apply route/throttle changes; --out-file is ignored. Exit 2 reports definition or route inspection issues, not a full runtime-health verdict.
 The ordinary ingestion-storage-control --json report includes the same data_plane_definition section. See docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md.
 
@@ -2656,6 +2659,17 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 The existing native retention owner schedules this lane. Known pending or mismatched SQL checkpoints exclude logs of every age, including after UTC rollover. Checkpoints are rechecked before release; stable idle sources, full gzip restoration SHA-256, durable proof and no-clobber publication protect originals. Matching existing archives can be reused after verification; conflicts are preserved. Current-day exclusions and minimum ages remain unchanged. Deferred work is not compaction or ingestion completion.
+
+### Inspect verified duplicate cleanup
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh bot-logs-cleanup-intelligence --max-tier 1 --max-files 4 --max-delete-gb 0.5 --seconds 45 --max-verify-gb 1 --json
+```
+
+The verification budget counts compressed input as well as raw and restored bytes, including padding and empty gzip members. Tier-2 conflict/quarantine moves are advisory here and remain with verified offload owners; cross-filesystem source removal cannot use a plain move. Post-unlink persistence failures report removal separately from durable completion.
+Only ordinary logs/ pairs qualify. SQL payload domains and unknown roots are excluded regardless of checkpoint contents and remain with their writer-aware compaction owners. Assessment shares the same deadline; an expired empty pass cannot claim completion.
+The existing hourly data-retention job checks local fallback and external storage. The existing 15-minute reserve-recovery pass also offers local cleanup under normal admission, excluding quick and compression-only relief modes. Each target is bounded to four files, 0.5 GiB deletion, 1 GiB raw/restored verification and 45 seconds; shared storage ownership, fresh resource checks and pressure-recovery cooldowns remain. Actual intervals include scheduler/admission delays. No new scheduler or Codex automation is used.
+Preview selection is metadata-only and is not deletion proof. Apply requires closed-date inactive raw/gzip pairs, full SHA-256 and exact restored length, gzip integrity, idle handles, stable single-link identities and durable pre-release evidence in governance/storage_recovery/verified_duplicate_cleanup.jsonl. Prefix verification cannot authorize deletion. Retained archives, latest/training artifacts, current-day files and protected/symlink routes are excluded. Age-only stale-stage deletion is disabled here; data-retention retains manifest/hash/protected-evidence/expiry ownership. Capacity readiness and completed cleanup are separate; no empty pass grants headroom or trading authority.
 
 ### Inspect verified lifecycle backup compression
 ```bash
