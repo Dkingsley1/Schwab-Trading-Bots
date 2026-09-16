@@ -2644,6 +2644,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 [
                     "./scripts/daily_log_refresh.sh",
                     "./scripts/ops/opsctl.sh runtime-training-snapshot --max-runtime-seconds 150 --json",
+                    "./scripts/ops/opsctl.sh runtime-training-snapshot --cleanup-abandoned-builds --json",
                     "./scripts/ops/opsctl.sh coverage-seed --write-queue --json",
                     "./scripts/ops/opsctl.sh coverage-gap-closer --apply-stage --launch --json",
                     'PY="$(zsh ./scripts/ops/runtime_python.sh)"',
@@ -2652,6 +2653,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ],
                 notes=[
                     "Run this before a manual full retrain so SQL state, runtime snapshots, coverage, and promotion gates are fresh.",
+                    "Every native snapshot run and the existing bounded storage-recovery loop reclaim only unpublished .building scratch older than one hour, under the snapshot lock with idle-handle and stable-identity checks. The cleanup-only command previews without rebuilding; --apply-cleanup applies the same guarded cleanup. Published rows, compressed history, aliases, linked files and recent/active builds are retained. Receipts live in governance/storage_recovery/snapshot_scratch_cleanup_latest.json; recovery is measured separately from training readiness.",
                     "Promotion quality can reconcile a completed daily run's ingestion failure only from a newer typed healthy hot-lane observation no older than five minutes. Native daily-verify-remediation retries that owner; stale, partial, overloaded or failed retries retain debt, and historical results and qualification floors remain unchanged.",
                     "The snapshot worker rejects bad base digests before parsing and shares its scan deadline with base/seed reads. Unique row generations commit before the atomic manifest pointer, followed by the compatibility alias; bounded cleanup retains current/previous generations and a one-hour reader grace window. The total deadline, bounded decompressed scans and partial-coverage diagnostics remain enforced. The epoch coordinator preserves the producer-owned manifest and writes a separate failure receipt; timeout or changed mtime is not successful refresh or qualification.",
                 ],

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import sys
 import time
@@ -140,6 +141,92 @@ def _generation_rows_path(rows_path: Path) -> Path:
     return directory / f"{uuid.uuid4().hex}.jsonl"
 
 
+def _cleanup_abandoned_snapshot_builds(
+    rows_path: Path, *, project_root: Path, apply: bool = False,
+    protected_paths: tuple[Path, ...] = (), now: float | None = None,
+) -> dict[str, Any]:
+    """Caller holds the snapshot lock; only unpublished, hour-old scratch qualifies."""
+    current = time.time() if now is None else now
+    directory = rows_path.with_name(f".{rows_path.stem}.generations")
+    result = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "apply": apply, "ok": True, "overall_status": "nothing_to_do",
+        "candidate_count": 0, "candidate_bytes": 0, "removed_count": 0,
+        "removed_allocated_bytes": 0, "records": [], "errors": [],
+        "policy": "snapshot_lock_idle_proof_stable_identity_one_hour_grace_unpublished_building_only",
+        "published_snapshots_modified": False,
+    }
+    route = inspect_storage_path(directory, boundary_root=project_root, allow_external=False)
+    if route["status"] == "missing":
+        return result
+    if route["status"] != "present" or directory.is_symlink():
+        return {**result, "ok": False, "overall_status": "blocked", "errors": ["unsafe_snapshot_generation_route"]}
+    protected = set()
+    for path in protected_paths:
+        checked = inspect_storage_path(path, boundary_root=project_root, allow_external=False)
+        if checked["status"] not in {"present", "missing"}:
+            return {**result, "ok": False, "overall_status": "blocked", "errors": ["unsafe_published_snapshot_route"]}
+        protected.add(checked["resolved_path"])
+    candidates = []
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        with os.scandir(descriptor) as entries:
+            for index, entry in enumerate(entries):
+                if index >= 256:
+                    result["scan_limit_reached"] = True
+                    break
+                if not re.fullmatch(r"\.[a-f0-9]{32}\.jsonl\.building", entry.name):
+                    continue
+                info = entry.stat(follow_symlinks=False)
+                path = directory / entry.name
+                resolved = str(Path(route["resolved_path"]) / entry.name)
+                if (
+                    not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or max(info.st_mtime, info.st_ctime) >= current - 3600
+                    or resolved in protected
+                ):
+                    continue
+                candidates.append((path, info))
+        result["candidate_count"] = len(candidates)
+        result["candidate_bytes"] = sum(info.st_size for _, info in candidates)
+        if not candidates:
+            return result
+        result["overall_status"] = "planned"
+        if not apply:
+            result["records"] = [{"path": str(path), "bytes": info.st_size} for path, info in candidates]
+            return result
+        lsof = shutil.which("lsof")
+        if not lsof:
+            return {**result, "ok": False, "overall_status": "deferred", "errors": ["scratch_idle_probe_unavailable"]}
+        idle = run_bounded_process_group(
+            [lsof, "-t", "--", *(str(path) for path, _ in candidates)],
+            cwd=project_root, timeout_seconds=10,
+        )
+        if idle["rc"] != 1 or idle["stdout"].strip() or idle["stderr"].strip():
+            return {**result, "ok": False, "overall_status": "deferred", "errors": ["scratch_open_or_idle_probe_failed"]}
+        free_before = shutil.disk_usage(project_root).free
+        identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_nlink)
+        for path, before in candidates:
+            try:
+                after = os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+                if not stat.S_ISREG(after.st_mode) or identity(after) != identity(before):
+                    result["errors"].append(f"scratch_identity_changed:{path.name}")
+                    continue
+                os.unlink(path.name, dir_fd=descriptor)
+                result["removed_count"] += 1
+                result["removed_allocated_bytes"] += before.st_blocks * 512
+                result["records"].append({"path": str(path), "bytes": before.st_size, "status": "abandoned_scratch_removed"})
+            except OSError:
+                result["errors"].append(f"scratch_remove_failed:{path.name}")
+        os.fsync(descriptor)
+        result["net_free_change_bytes"] = shutil.disk_usage(project_root).free - free_before
+        result["ok"] = not result["errors"]
+        result["overall_status"] = "applied" if result["ok"] else "partial"
+        return result
+    finally:
+        os.close(descriptor)
+
+
 def _finish_generation_publication(
     rows_path: Path, generation: Path, previous_summary: dict[str, Any]
 ) -> None:
@@ -156,7 +243,7 @@ def _finish_generation_publication(
             for index, entry in enumerate(entries):
                 if index >= 256:
                     break
-                if not re.fullmatch(r"(?:[a-f0-9]{32}\.jsonl|\.[a-f0-9]{32}\.jsonl\.building)", entry.name):
+                if not re.fullmatch(r"[a-f0-9]{32}\.jsonl", entry.name):
                     continue
                 path = Path(entry.path)
                 info = entry.stat(follow_symlinks=False)
@@ -1413,6 +1500,8 @@ def main() -> int:
         help="Maximum valid JSONL candidate rows to parse during incremental refresh; 0 disables the row cap.",
     )
     parser.add_argument("--light-refresh-existing", action="store_true")
+    parser.add_argument("--cleanup-abandoned-builds", action="store_true", help="Inspect unpublished snapshot scratch under the existing single-writer lock without rebuilding.")
+    parser.add_argument("--apply-cleanup", action="store_true", help="Remove only verified idle scratch older than one hour; requires --cleanup-abandoned-builds.")
     parser.add_argument(
         "--max-runtime-seconds",
         type=int,
@@ -1422,6 +1511,8 @@ def main() -> int:
     parser.add_argument("--bounded-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    if args.apply_cleanup and not args.cleanup_abandoned_builds:
+        parser.error("--apply-cleanup requires --cleanup-abandoned-builds")
     if args.max_runtime_seconds <= 0:
         parser.error("--max-runtime-seconds must be positive")
     if not args.bounded_worker:
@@ -1466,6 +1557,28 @@ def main() -> int:
             )
         return 0
     try:
+        cleanup_summary = _load_json(health_path)
+        protected_paths = (Path(cleanup_summary["rows_path"]),) if cleanup_summary.get("rows_path") else ()
+        try:
+            cleanup = _cleanup_abandoned_snapshot_builds(
+                rows_path, project_root=project_root,
+                apply=args.apply_cleanup if args.cleanup_abandoned_builds else True,
+                protected_paths=protected_paths,
+            )
+        except (OSError, ValueError) as exc:
+            cleanup = {"ok": False, "overall_status": "deferred", "error": type(exc).__name__, "published_snapshots_modified": False}
+        cleanup_receipt = project_root / "governance/storage_recovery/snapshot_scratch_cleanup_latest.json"
+        if (not args.cleanup_abandoned_builds or args.apply_cleanup) and inspect_storage_path(cleanup_receipt, boundary_root=project_root, allow_external=False)["status"] in {"present", "missing"}:
+            prior_cleanup = _load_json(cleanup_receipt)
+            cleanup["last_reclamation"] = (
+                {key: cleanup.get(key) for key in ("timestamp_utc", "removed_count", "removed_allocated_bytes", "net_free_change_bytes", "records")}
+                if cleanup.get("removed_count", 0) > 0
+                else prior_cleanup.get("last_reclamation")
+            )
+            write_payload(cleanup_receipt, cleanup)
+        if args.cleanup_abandoned_builds:
+            print(json.dumps(cleanup, ensure_ascii=True))
+            return 0 if cleanup["ok"] else 2
         return _build_locked_snapshot(
             args,
             project_root,

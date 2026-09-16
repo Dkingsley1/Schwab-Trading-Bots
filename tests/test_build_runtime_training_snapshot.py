@@ -634,7 +634,7 @@ def test_generation_retention_preserves_previous_recent_and_foreign_files(tmp_pa
         src.os.utime(path, (1, 1))
     src._finish_generation_publication(rows, current, {"rows_path": str(previous)})
     assert not expired.exists()
-    assert not interrupted.exists()
+    assert interrupted.exists()  # Scratch has its own idle-verified recovery path.
     assert all(path.exists() for path in (current, previous, recent, foreign))
 
 

@@ -3395,7 +3395,7 @@ opsctl commands:
   governance-lifecycle-compactor [--apply] [--target-free-gb N] [--keep-latest N] [--json]
   cold-evidence-compactor [--apply] [--target-free-gb N] [--max-files N] [--seconds N] [--json]
   decision-log-compactor [--apply] [--target-free-gb N] [--min-file-mb N] [--json]
-  runtime-training-snapshot [--lookback-days N] [--reuse-if-fresh-minutes N] [--max-runtime-seconds N] [--incremental-max-runtime-seconds N] [--incremental-max-candidate-rows N] [--light-refresh-existing] [--json]
+  runtime-training-snapshot [--lookback-days N] [--reuse-if-fresh-minutes N] [--max-runtime-seconds N] [--incremental-max-runtime-seconds N] [--incremental-max-candidate-rows N] [--light-refresh-existing] [--cleanup-abandoned-builds [--apply-cleanup]] [--json]
   hdf5-training-cache|h5-training-cache [--apply] [--max-rows N] [--benchmark] [--assert-fresh] [--retention-keep-generated N] [--json]
   training-runtime-control [--fresh-minutes N] [--limit N] [--json]
   training-drain-autopilot [--apply] [--limit N] [--max-cycles N] [--json]

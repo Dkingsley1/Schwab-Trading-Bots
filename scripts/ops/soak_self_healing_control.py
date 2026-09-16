@@ -499,6 +499,7 @@ def _storage_memory_observation(result: dict[str, Any]) -> dict[str, Any]:
 def _storage_recovery_progress(name: str, result: dict[str, Any]) -> dict[str, Any] | None:
     """Owner receipts measure recovery; a successful exit alone does not."""
     fields = {
+        "local_disk_snapshot_scratch_cleanup": ("removed_allocated_bytes",),
         "local_disk_cold_evidence_compaction": ("saved_bytes",),
         "local_disk_lifecycle_backup_compaction": ("summary", "estimated_reduction_bytes"),
         "local_disk_governance_telemetry_compaction": ("summary", "estimated_hot_reduction_bytes"),
@@ -1099,6 +1100,12 @@ def build_storage_recovery_payload(
                     ),
                 ]
             )
+        commands.insert(0, (
+            "local_disk_snapshot_scratch_cleanup",
+            _cmd(opsctl, "runtime-training-snapshot", "--cleanup-abandoned-builds",
+                 "--apply-cleanup", "--max-runtime-seconds", "25", "--json"),
+            30,
+        ))
         for name, cmd, timeout in commands:
             if shutil.disk_usage(project_root).free / 1024**3 >= threshold:
                 break
@@ -1135,6 +1142,7 @@ def build_storage_recovery_payload(
                     (60 if quick_bounded else 900)
                     if name
                     in {
+                        "local_disk_snapshot_scratch_cleanup",
                         "local_disk_cold_evidence_compaction",
                         "local_disk_lifecycle_backup_compaction",
                     }

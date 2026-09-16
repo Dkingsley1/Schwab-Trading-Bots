@@ -580,9 +580,9 @@ def test_adaptive_pressure_entry_is_compression_only(tmp_path, monkeypatch, leas
     assert payload["admitted"] and payload["adaptive_compression_only"]
     assert not payload["ok"] and not payload["live_execution_authority"]
     assert [cmd[1] for cmd in calls[1:]] == [
-        "cold-evidence-compactor", "governance-lifecycle-compactor", "local-storage-reserve-guard"
+        "runtime-training-snapshot", "cold-evidence-compactor", "governance-lifecycle-compactor", "local-storage-reserve-guard"
     ]
-    lifecycle = calls[2]
+    lifecycle = calls[3]
     assert lifecycle[lifecycle.index("--max-files") + 1] == "32"
     assert lifecycle[lifecycle.index("--seconds") + 1] == "180"
     assert "--include-current-day" not in lifecycle
@@ -715,6 +715,9 @@ def test_storage_recovery_only_is_bounded_and_does_not_claim_complete(
     assert not payload["ok"]
     assert not payload["live_execution_authority"]
     assert not payload["heavy_maintenance_allowed"]
+    assert calls[1][1] == "runtime-training-snapshot"
+    assert "--cleanup-abandoned-builds" in calls[1] and "--apply-cleanup" in calls[1]
+    calls = [cmd for cmd in calls if "runtime-training-snapshot" not in cmd]
     assert len(calls) == 7
     assert "memory_efficiency_control.py" in calls[0][1]
     assert [cmd[1] for cmd in calls[1:]] == [
@@ -793,7 +796,8 @@ def test_disk_only_pressure_admits_only_bounded_storage_recovery(tmp_path, monke
     assert not payload["ok"]
     assert not payload["heavy_maintenance_allowed"]
     assert not payload["live_execution_authority"]
-    assert len(calls) == 7
+    assert len(calls) == 8
+    assert "--cleanup-abandoned-builds" in calls[1]
     assert (
         payload["steps"][0]["observation_reason"]
         == "disk_only_pressure_memory_admitted"
@@ -866,6 +870,9 @@ def test_quick_storage_recovery_is_compression_only_and_preserves_bounds(
     assert payload["shared_deadline_seconds"] == 90
     assert not payload["ok"]
     assert all(timeout <= 30 for timeout in timeouts)
+    cleanup = next(cmd for cmd in calls if "runtime-training-snapshot" in cmd)
+    assert "--cleanup-abandoned-builds" in cleanup and "--apply-cleanup" in cleanup
+    assert cleanup[cleanup.index("--max-runtime-seconds") + 1] == "25"
     compactors = [cmd for cmd in calls if any("compactor" in str(part) for part in cmd)]
     assert len(compactors) == 2
     for cmd in compactors:
@@ -960,7 +967,8 @@ def test_proactive_recovery_starts_before_writer_pressure_and_keeps_floors(tmp_p
     assert payload["pressure_free_gb"] == 64
     assert payload["recovery_trigger_free_gb"] == 125
     assert payload["recovery_target_free_gb"] == 135
-    assert calls[1][calls[1].index("--target-free-gb") + 1] == "135.0"
+    compactor = next(cmd for cmd in calls if "cold-evidence-compactor" in cmd)
+    assert compactor[compactor.index("--target-free-gb") + 1] == "135.0"
     assert not payload["heavy_maintenance_allowed"]
 
 
@@ -1024,7 +1032,7 @@ def test_storage_recovery_shared_deadline_reserves_final_assessment(tmp_path, mo
         return result
     monkeypatch.setattr(src, "_run_command", slow)
     payload = src.build_storage_recovery_payload(tmp_path, apply=True)
-    assert [cmd[1] for cmd in calls[1:]] == ["cold-evidence-compactor", "local-storage-reserve-guard"]
+    assert [cmd[1] for cmd in calls[1:]] == ["runtime-training-snapshot", "cold-evidence-compactor", "local-storage-reserve-guard"]
     assert payload["reason"] == "storage_recovery_deadline"
     assert not payload["ok"]
 
@@ -1040,7 +1048,7 @@ def test_storage_target_stops_more_compression_but_reconciles_reserve(tmp_path, 
     monkeypatch.setattr(src, "_run_command", recovered)
     payload = src.build_storage_recovery_payload(tmp_path, apply=True)
     assert payload["ok"]
-    assert [cmd[1] for cmd in calls[1:]] == ["cold-evidence-compactor", "local-storage-reserve-guard"]
+    assert [cmd[1] for cmd in calls[1:]] == ["runtime-training-snapshot", "cold-evidence-compactor", "local-storage-reserve-guard"]
 
 
 def test_sqlite_compression_requires_its_complete_verification_window(tmp_path, monkeypatch):

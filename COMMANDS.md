@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `eba8374772afbe71435c16579a8f1a37bdc4b844e699afa96283c848216930be`.
+Command contract hash: `ea735d3746d5229d17c6340ec8490ffb653926c26eee67beb8c857f1a4983cc8`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:
@@ -445,7 +445,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:71092f22733803ba0ad4e14fceca48b512b2fd859cd03b6343e72b4d355e7f6f section:`Retrain` section_key:`retrain` title:Evaluate or retire a strategy offspring title_key:`evaluate-or-retire-a-strategy-offspring` opsctl:`strategy-generation` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e78e252ae0c58e213c50dd68f07a9e85cf0a719eec0905408929dc9389dd4573 section:`Retrain` section_key:`retrain` title:Evaluate prepared datasets on held-out market outcomes title_key:`evaluate-prepared-datasets-on-held-out-market-outcomes` opsctl:`training-dataset-evaluate` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2d6f3e088d1289a8bdbdec63e7da16b1064b7a1ecfc4b7fb7675e93cf472c021 section:`Retrain` section_key:`retrain` title:Force full retrain (bypass prechecks) title_key:`force-full-retrain-bypass-prechecks` opsctl:`retrain-force-full` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
-- search-entry:60ac23054f7496be60b3a7290ab61dec9ac1339df302fabcc1e016692b6eb488 section:`Retrain` section_key:`retrain` title:Full retrain preflight title_key:`full-retrain-preflight` opsctl:`runtime-training-snapshot, coverage-seed, coverage-gap-closer` scripts:`scripts/daily_log_refresh.sh, scripts/ops/opsctl.sh, scripts/retrain_schema_compatibility_guard.py, scripts/promotion_quality_gate.py` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:6c3bcd9429b8ad1a45051fc9316b708844f1ec9b5f2bec5f169882d2fd8f8d89 section:`Retrain` section_key:`retrain` title:Full retrain preflight title_key:`full-retrain-preflight` opsctl:`runtime-training-snapshot, coverage-seed, coverage-gap-closer` scripts:`scripts/daily_log_refresh.sh, scripts/ops/opsctl.sh, scripts/retrain_schema_compatibility_guard.py, scripts/promotion_quality_gate.py` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:924904d5a4869f0f6b635462ae55c10a8a46d96069d9ad3ce35b3ac2b3a51c39 section:`Retrain` section_key:`retrain` title:Guarded retrain orchestrator title_key:`guarded-retrain-orchestrator` opsctl:`retrain-orchestrate` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:15fb024f3c8109d98e22d59d2bf0e48b8a5050b12decaea0281e3879c72d6e7a section:`Retrain` section_key:`retrain` title:Historical sleeve-specific labeling title_key:`historical-sleeve-specific-labeling` opsctl:`historical-sleeve-labeling` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:510d2ecaa1987134c112fc697456bdcccb41fe3e788431ebc4fb2b00b308bed0 section:`Retrain` section_key:`retrain` title:Inspect bounded strategy generations title_key:`inspect-bounded-strategy-generations` opsctl:`strategy-generation` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -1922,6 +1922,7 @@ Use this only when you intentionally want to bypass the normal data-quality, fre
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/daily_log_refresh.sh
 ./scripts/ops/opsctl.sh runtime-training-snapshot --max-runtime-seconds 150 --json
+./scripts/ops/opsctl.sh runtime-training-snapshot --cleanup-abandoned-builds --json
 ./scripts/ops/opsctl.sh coverage-seed --write-queue --json
 ./scripts/ops/opsctl.sh coverage-gap-closer --apply-stage --launch --json
 PY="$(zsh ./scripts/ops/runtime_python.sh)"
@@ -1930,6 +1931,7 @@ PY="$(zsh ./scripts/ops/runtime_python.sh)"
 ```
 
 Run this before a manual full retrain so SQL state, runtime snapshots, coverage, and promotion gates are fresh.
+Every native snapshot run and the existing bounded storage-recovery loop reclaim only unpublished .building scratch older than one hour, under the snapshot lock with idle-handle and stable-identity checks. The cleanup-only command previews without rebuilding; --apply-cleanup applies the same guarded cleanup. Published rows, compressed history, aliases, linked files and recent/active builds are retained. Receipts live in governance/storage_recovery/snapshot_scratch_cleanup_latest.json; recovery is measured separately from training readiness.
 Promotion quality can reconcile a completed daily run's ingestion failure only from a newer typed healthy hot-lane observation no older than five minutes. Native daily-verify-remediation retries that owner; stale, partial, overloaded or failed retries retain debt, and historical results and qualification floors remain unchanged.
 The snapshot worker rejects bad base digests before parsing and shares its scan deadline with base/seed reads. Unique row generations commit before the atomic manifest pointer, followed by the compatibility alias; bounded cleanup retains current/previous generations and a one-hour reader grace window. The total deadline, bounded decompressed scans and partial-coverage diagnostics remain enforced. The epoch coordinator preserves the producer-owned manifest and writes a separate failure receipt; timeout or changed mtime is not successful refresh or qualification.
 
