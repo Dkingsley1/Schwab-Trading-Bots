@@ -448,7 +448,7 @@
       "resource_path": "governance/runtime/supervised_broker_test_attestation.json",
       "owner_source": "scripts/ops/live_canary_preflight.py",
       "owner_command": ["./scripts/ops/opsctl.sh", "supervised-broker-test", "status", "--json"],
-      "owner_marker": "supervised_broker_test_attestation.json",
+      "owner_marker": "test_attestation_path(test_symbol)",
       "mutation_mode": "explicit_operator_atomic_snapshot",
       "coordination": "atomic_replace"
     },

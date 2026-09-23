@@ -6,6 +6,8 @@ Storage recovery distinguishes a completed offload pass from restoring the reser
 
 Candidate audit readers verify retained archive order using the original hash links, not filename suffixes. They preserve partition contents and reject missing links, altered events, forks and within-partition replays; reading compressed history never resets validation windows.
 
+The control-owner registry follows the canonical symbol-specific supervised attestation path resolver. Ownership verification neither issues an attestation nor grants execution authority.
+
 The [operations master infrabot](docs/operations/OPERATIONS_MASTER.md) extends the existing infrastructure supervisor with eight subgroup owners and fourteen explicit responsibilities. It publishes ordered directions, dependencies, evidence requirements and operator escalations. Bounded dispatch uses fresh admission, fixed commands, a singleton lock and persistent cooldowns; it cannot grant trading, release acceptance, halt clearance or policy-relaxation authority.
 
 AI-assisted multi-sleeve algorithmic trading research and paper-execution platform built around live market ingestion, specialist bot orchestration, behavior-model retraining, operational safety controls, and auditable runbooks across Schwab and Coinbase workflows.
