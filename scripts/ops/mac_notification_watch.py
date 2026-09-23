@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -55,6 +56,7 @@ DEFAULT_MIN_REPEAT_SECONDS = 300.0
 DEFAULT_AUTH_MIN_REPEAT_SECONDS = 1800.0
 DEFAULT_STORAGE_CONFIRMATIONS = 3
 TERMINAL_NOTIFIER_CANDIDATES = [
+    str(Path.home() / "Applications/terminal-notifier.app/Contents/MacOS/terminal-notifier"),
     "/opt/homebrew/bin/terminal-notifier",
     "/usr/local/bin/terminal-notifier",
 ]
@@ -355,20 +357,23 @@ def _notification_action_hint(key: str, message: str) -> str:
     if normalized_key.startswith("system_talk:"):
         return "Action: run the suggested safe command or ask Codex to inspect."
     if normalized_key.startswith("auth_lease:"):
-        if ":critical:" in normalized_key:
-            return (
-                "Action: run ./scripts/ops/opsctl.sh token-refresh-interactive --force "
-                "--requested-browser chrome --json"
-            )
-        return "Action: renew Schwab authorization before the lease reaches its critical floor."
+        return (
+            "Action: click to sign in with Schwab. Manual fallback: "
+            "./scripts/ops/opsctl.sh token-refresh-interactive --force --json"
+        )
     return ""
 
 
 def _notification_inspect_target(key: str, message: str) -> Path | None:
     normalized_key = str(key or "").strip().lower()
     if normalized_key.startswith("power_"):
-        return None
+        return PROCESS_WATCHDOG_PATH
     if normalized_key.startswith("critical_alert:"):
+        parts = normalized_key.split(":")
+        if len(parts) >= 3 and re.fullmatch(r"critical_latest_[a-z0-9_-]+", parts[2]):
+            source = ALERTS_DIR / (parts[2] + ".json")
+            if source.is_file() and not source.is_symlink():
+                return source
         return (
             INCIDENT_REVIEW_PATH
             if INCIDENT_REVIEW_PATH.exists()
@@ -513,9 +518,23 @@ def _escape_applescript_string(value: str) -> str:
 
 def _terminal_notifier_path() -> str:
     for candidate in TERMINAL_NOTIFIER_CANDIDATES:
-        if Path(candidate).exists():
+        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return candidate
     return ""
+
+
+def _notification_execute_target(key: str) -> str:
+    if str(key).strip().lower() not in {
+        "auth_lease:critical:interactive_refresh_required",
+        "auth_lease:critical:blocked",
+        "auth_lease:warn:lease_warning",
+    }:
+        return ""
+    # Only a fixed, local auth launcher may execute; never a report-supplied command.
+    return shlex.join([
+        str(PROJECT_ROOT / ".venv314/bin/python"),
+        str(PROJECT_ROOT / "scripts/ops/schwab_reauth_action.py"),
+    ])
 
 
 def _notify_mac(
@@ -525,33 +544,50 @@ def _notify_mac(
     *,
     group_key: str = "",
     open_target: str = "",
+    execute_target: str = "",
 ) -> Dict[str, Any]:
     notifier = _terminal_notifier_path()
+    native_failure = ""
     if notifier:
         cmd = [notifier, "-title", title, "-subtitle", subtitle, "-message", body]
         if group_key:
             cmd.extend(["-group", group_key])
-        if open_target:
+        if execute_target:
+            cmd.extend(["-execute", execute_target])
+        elif open_target:
             cmd.extend(["-open", open_target])
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        return {
-            "channel": "mac",
-            "transport": "terminal-notifier",
-            "returncode": int(proc.returncode),
-            "stdout": (proc.stdout or "").strip(),
-            "stderr": (proc.stderr or "").strip(),
-        }
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=10)
+            if proc.returncode == 0:
+                return {
+                    "channel": "mac", "transport": "terminal-notifier",
+                    "click_action_available": bool(execute_target or open_target),
+                    "click_action_kind": "schwab_sign_in" if execute_target else "open_report" if open_target else "none",
+                    "returncode": 0, "stdout": (proc.stdout or "").strip(),
+                    "stderr": (proc.stderr or "").strip(),
+                }
+            native_failure = f"terminal_notifier_exit:{proc.returncode}"
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            native_failure = type(exc).__name__
+    body = body.replace("click to sign in with Schwab. Manual fallback:", "sign in with Schwab using:")
     script = 'display notification "{}" with title "{}" subtitle "{}"'.format(
         _escape_applescript_string(body),
         _escape_applescript_string(title),
         _escape_applescript_string(subtitle),
     )
-    proc = subprocess.run(
-        ["osascript", "-e", script], capture_output=True, text=True, check=False
-    )
+    try:
+        proc = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, check=False, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"channel": "mac", "transport": "osascript", "returncode": 124,
+                "click_action_available": False, "native_action_failure": native_failure,
+                "error": type(exc).__name__}
     return {
         "channel": "mac",
         "transport": "osascript",
+        "click_action_available": False,
+        "native_action_failure": native_failure or "terminal_notifier_missing",
         "returncode": int(proc.returncode),
         "stdout": (proc.stdout or "").strip(),
         "stderr": (proc.stderr or "").strip(),
@@ -606,13 +642,15 @@ def _notify(
     *,
     group_key: str = "",
     open_target: str = "",
+    execute_target: str = "",
     imessage_enabled: bool = False,
     imessage_recipient: str = "",
     imessage_min_severity: str = DEFAULT_IMESSAGE_MIN_SEVERITY,
     severity: str = "warn",
 ) -> Dict[str, Any]:
     mac_result = _notify_mac(
-        title, body, subtitle=subtitle, group_key=group_key, open_target=open_target
+        title, body, subtitle=subtitle, group_key=group_key, open_target=open_target,
+        execute_target=execute_target,
     )
     out: Dict[str, Any] = {
         "mac": mac_result,
@@ -1614,6 +1652,7 @@ def _run_watch_loop(
                     subtitle=subtitle,
                     group_key=group_key,
                     open_target=open_target,
+                    execute_target=_notification_execute_target(key),
                     imessage_enabled=bool(
                         imessage_enabled
                         and _imessage_event_allowed(
@@ -1673,6 +1712,13 @@ def _run_watch_loop(
                 "min_repeat_seconds": min_repeat_seconds,
                 "storage_confirmation_observations": storage_confirmations,
                 "last_delivery": last_delivery,
+                "notification_click_actions": {
+                    "transport_installed": bool(_terminal_notifier_path()),
+                    "scope": "mac_desktop_notifications_only",
+                    "auth_action": "operator_supervised_sign_in",
+                    "other_actions": "read_only_reports",
+                    "live_execution_authority": False,
+                },
             },
         )
         time.sleep(max(poll_seconds, 2.0))
@@ -1721,7 +1767,9 @@ def main() -> int:
         if args.test:
             delivery = _notify(
                 "Trading Bot Incident",
-                "Notification watcher test",
+                "Notification test: click to open the current watchdog report. No system action is performed.",
+                group_key="schwab_notification_click_test",
+                open_target=_path_to_file_url(PROCESS_WATCHDOG_PATH),
                 imessage_enabled=bool(args.imessage_enabled),
                 imessage_recipient=str(args.imessage_recipient),
                 imessage_min_severity=str(args.imessage_min_severity),

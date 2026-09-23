@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import json
 import os
+import signal
 import sqlite3
 import sys
 import time
@@ -1113,6 +1114,8 @@ def main() -> int:
         "--filesystem-compressor", choices=("auto", "ditto", "afsctool", "applesauce"), default="auto"
     )
     parser.add_argument("--filesystem-timeout-seconds", type=int, default=900)
+    parser.add_argument("--filesystem-scratch-root", default="",
+                        help="Optional APFS staging root on another filesystem; all reserve and full-copy proofs remain required.")
     parser.add_argument("--allow-active-writer", action="store_true")
     parser.add_argument("--coordinate-writer-handoff", action="store_true")
     parser.add_argument(
@@ -1371,6 +1374,7 @@ def main() -> int:
         if payload is None and filesystem_mode:
             if payload is None:
                 payload = cold_sqlite_filesystem_compaction.build_payload(
+                    scratch_root=Path(args.filesystem_scratch_root).expanduser() if args.filesystem_scratch_root else None,
                     paths=[
                         Path(path).expanduser()
                         for path in args.filesystem_compress_sqlite
@@ -1476,5 +1480,18 @@ def main() -> int:
     return 0 if payload.get("ok") else 2
 
 
+def _terminate(_signum, _frame):
+    raise SystemExit(143)
+
+
+def cli() -> int:
+    # Unwind owned scratch and publication holds on the scheduler's soft stop.
+    previous = signal.signal(signal.SIGTERM, _terminate)
+    try:
+        return main()
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())

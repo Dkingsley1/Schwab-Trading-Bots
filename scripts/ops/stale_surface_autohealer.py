@@ -23,6 +23,7 @@ if __package__ in {None, ""}:
         load_json,
         ordered_unique,
         parse_iso_utc,
+        run_bounded_process_group,
         write_payload,
     )
 else:
@@ -32,6 +33,7 @@ else:
         load_json,
         ordered_unique,
         parse_iso_utc,
+        run_bounded_process_group,
         write_payload,
     )
 
@@ -50,6 +52,13 @@ SAFE_PYTHON_SCRIPTS = {
 }
 SAFE_EXECUTABLE_SCRIPTS = {
     "scripts/ops/opsctl.sh",
+}
+SAFE_OPS_OBSERVERS = {
+    "bot-organization", "bot-profitability-scalability", "sleeve-scalability-selector",
+    "master-grandmaster-evidence", "control-surface-ownership", "system-role-contract",
+    "independent-runtime-monitor", "production-resilience", "runtime-training-snapshot",
+    "storage-resilience", "operator-cockpit", "sentiment-report", "capability-materialization",
+    "collector-capability-control", "watchdog-intelligence", "coinbase-api-health",
 }
 COMPLETED_NOTICE_NAMES = (
     "codex_training_done_notice_latest.json",
@@ -112,8 +121,14 @@ def _normalize_safe_command(command: Any, project_root: Path) -> tuple[list[str]
     first = parts[0]
     first_rel = _project_relative(first, project_root)
     if first_rel in SAFE_EXECUTABLE_SCRIPTS:
+        if parts[1:] not in (["status"], ["coinbase-api-health", "--snapshot", "--json"]) and not (
+            len(parts) == 3 and parts[1] in SAFE_OPS_OBSERVERS and parts[2] == "--json"
+        ):
+            return None, "ops_command_or_arguments_not_allowlisted"
         return [str(project_root / first_rel), *parts[1:]], "safe_executable_script"
     if first_rel in SAFE_PYTHON_SCRIPTS:
+        if parts[1:] != ["--json"]:
+            return None, "python_arguments_not_allowlisted"
         return [str(PYTHON_BIN), str(project_root / first_rel), *parts[1:]], "safe_python_script"
 
     if len(parts) >= 2:
@@ -122,36 +137,23 @@ def _normalize_safe_command(command: Any, project_root: Path) -> tuple[list[str]
         if second_rel in SAFE_PYTHON_SCRIPTS and (
             first_name.startswith("python") or first_name in {"python3", "python3.14"}
         ):
-            return [first, str(project_root / second_rel), *parts[2:]], "safe_python_wrapper"
+            if parts[2:] != ["--json"]:
+                return None, "python_arguments_not_allowlisted"
+            return [str(PYTHON_BIN), str(project_root / second_rel), *parts[2:]], "safe_python_wrapper"
 
     return None, f"command_not_allowlisted:{first}"
 
 
 def _run_command(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
     started = datetime.now(timezone.utc)
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=max(int(timeout_sec), 1),
-        )
-        rc = int(proc.returncode)
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-        timed_out = False
-    except subprocess.TimeoutExpired as exc:
-        rc = 124
-        stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
-        timed_out = True
+    result = run_bounded_process_group(cmd, cwd=cwd, timeout_seconds=max(int(timeout_sec), 1))
+    rc, stdout, stderr = result["rc"], result["stdout"], result["stderr"]
     duration_ms = round((datetime.now(timezone.utc) - started).total_seconds() * 1000.0, 3)
     return {
         "cmd": list(cmd),
         "rc": rc,
-        "timed_out": bool(timed_out),
+        "timed_out": bool(result["timed_out"]),
+        "timeout_cleanup": result.get("timeout_cleanup", {}),
         "duration_ms": duration_ms,
         "stdout_tail": "\n".join(stdout.splitlines()[-8:]),
         "stderr_tail": "\n".join(stderr.splitlines()[-8:]),
@@ -458,7 +460,14 @@ def _refresh_inputs(project_root: Path, *, timeout_sec: int) -> list[dict[str, A
         [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "artifact_freshness_slo.py"), "--json"],
         [str(PYTHON_BIN), str(project_root / "scripts" / "ops" / "process_watchdog.py"), "--json"],
     ]
-    return [_run_command(cmd, cwd=project_root, timeout_sec=min(int(timeout_sec), 180)) for cmd in commands]
+    deadline = time.monotonic() + max(int(timeout_sec), 0)
+    results = []
+    for cmd in commands:
+        remaining = int(deadline - time.monotonic())
+        if remaining < 1:
+            break
+        results.append(_run_command(cmd, cwd=project_root, timeout_sec=min(remaining, 180)))
+    return results
 
 
 def build_payload(
@@ -475,6 +484,7 @@ def build_payload(
     refresh_inputs: bool = True,
 ) -> dict[str, Any]:
     project_root = project_root.resolve()
+    deadline = time.monotonic() + max(int(timeout_sec), 1)
     input_refresh_attempts: list[dict[str, Any]] = []
     if apply and refresh_inputs:
         input_refresh_attempts = _refresh_inputs(project_root, timeout_sec=timeout_sec)
@@ -500,12 +510,18 @@ def build_payload(
     applyable = [row for row in plan if row.get("action") in {"run_command", "launchctl_remove", "unlink"}]
     manual_review = [row for row in plan if row.get("action") == "manual_review"]
     attempts: list[dict[str, Any]] = []
+    deferred = []
     if apply:
-        for row in applyable:
-            attempts.append(_apply_plan_row(row, project_root=project_root, timeout_sec=timeout_sec))
+        for index, row in enumerate(applyable):
+            remaining = int(deadline - time.monotonic())
+            if remaining < 1:
+                deferred = [item.get("name") for item in applyable[index:]]
+                break
+            attempts.append(_apply_plan_row(row, project_root=project_root, timeout_sec=remaining))
     post_refresh_attempts: list[dict[str, Any]] = []
-    if apply:
-        post_refresh_attempts = _refresh_inputs(project_root, timeout_sec=timeout_sec)
+    remaining = int(deadline - time.monotonic())
+    if apply and remaining > 0:
+        post_refresh_attempts = _refresh_inputs(project_root, timeout_sec=remaining)
 
     failed_attempts = [
         row
@@ -527,9 +543,11 @@ def build_payload(
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
-        "ok": overall_status == "ready" or (apply and not hard_failed_attempts and not manual_review),
+        "ok": (overall_status == "ready" or (apply and not hard_failed_attempts and not manual_review)) and not deferred,
         "overall_status": overall_status,
         "apply": bool(apply),
+        "deferred_by_deadline": deferred,
+        "shared_deadline_seconds": max(int(timeout_sec), 1),
         "repair_plan": plan,
         "attempts": [
             {

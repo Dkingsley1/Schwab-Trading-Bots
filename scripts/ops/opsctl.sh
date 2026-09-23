@@ -817,6 +817,24 @@ case "$cmd" in
   start)
     exec "$PROJECT_ROOT/scripts/ops/start_stack.sh" "$@"
     ;;
+  system-power|system-switch)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/system_power.py" "$@"
+    ;;
+  self-healing-gaps)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/self_healing_gap_audit.py" "$@"
+    ;;
+  bitcoin-price-watch)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/bitcoin_price_watch.py" "$@"
+    ;;
+  emergency-storage-thin)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/emergency_storage_thin.py" "$@"
+    ;;
+  storage-route-verify)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_failback_sync.py" --verify-only "$@"
+    ;;
+  storage-fallback-repair)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_failback_sync.py" --repair-local-fallback-aliases "$@"
+    ;;
   start-sim)
     exec "$PROJECT_ROOT/scripts/ops/start_stack.sh" --profile sim --simulate "$@"
     ;;
@@ -1605,7 +1623,7 @@ case "$cmd" in
   degradation-swarm|degradation-swarm-coordinator|contained-degradation-swarm|swarm-degradation)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/degradation_swarm_coordinator.py" "$@"
     ;;
-  master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor)
+  operations-master|operations-master-infrabot|master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/master_infrastructure_supervisor.py" "$@"
     ;;
   coinbase-api-health|coinbase-health)
@@ -1673,6 +1691,12 @@ case "$cmd" in
     ;;
   supervised-broker-test)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/supervised_broker_test.py" "$@"
+    ;;
+  schd-decision-rehearsal)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/schd_decision_rehearsal.py" "$@"
+    ;;
+  purchase-proposals)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/purchase_proposals.py" "$@"
     ;;
   live-canary-graduation|canary-graduation|post-canary-graduation)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/live_canary_graduation.py" "$@"
@@ -3242,6 +3266,12 @@ opsctl commands:
   start-sim [--force-restart] [--no-coinbase] [--disable-circuit-breakers] [--run-all-sleeves]
   start-live [--force-restart] [--no-coinbase] [--paper|--schwab-paper] [--coinbase-paper] [--coinbase-live-data] [--disable-circuit-breakers] [--run-all-sleeves]
   stop
+  system-power|system-switch [status|on|off|clear-halts] [--json]
+  self-healing-gaps [--json]
+  bitcoin-price-watch [--json]
+  storage-fallback-repair [--apply] [--json]
+  emergency-storage-thin [--apply] [--json]
+  storage-route-verify [--json]
   status
   restart-sanity [--json] [--start-after] [--start-mode start|start-sim|start-live] [--force-restart]
   post-restart-settle|post-restart-settlement [--apply] [--max-renice-processes N] [--json]
@@ -3409,7 +3439,7 @@ opsctl commands:
   bot-quality-autopilot [--apply] [--timeout-sec N] [--mentor-limit N] [--min-train-samples N] [--json]
   bot-needs [--include-bot-ids CSV] [--limit N] [--json]
   commands-hygiene [--apply] [--json]
-  command-validity|commands-verify|command-audit [--apply] [--timeout-sec N] [--json]
+  command-validity|commands-verify|command-audit [--safe-audit | --apply] [--timeout-sec N] [--summary-json | --json]
   codex-project-guard|codex-guard [--staged] [--json]
   system-cleanliness-autopilot [--apply] [--timeout-sec N] [--json]
   system-cleanliness-infrabot [--apply] [--timeout-sec N] [--json]
@@ -3441,7 +3471,7 @@ opsctl commands:
   infrastructure-autofix [--apply] [--timeout-sec N] [--json]
   stale-surface-autohealer|stale-autoheal [--apply] [--timeout-sec N] [--json]
   degradation-swarm|degradation-swarm-coordinator [--apply] [--execute-safe-repairs] [--max-execute-actions N] [--command-timeout-seconds N] [--json]
-  master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor [--apply] [--timeout-sec N] [--json]
+  operations-master|operations-master-infrabot|master-infra-supervisor|master-infrastructure-supervisor|infra-supervisor [--apply] [--timeout-sec N] [--json]
   coinbase-api-health|coinbase-health [--symbol SYMBOL] [--snapshot] [--json]
   coinbase-account|coinbase-account-link [--status | --link-key-file PATH [--replace]] [--json]
   halt-trigger-status|kill-switch-status|halts-status [--assert-clear] [--json]
@@ -3463,7 +3493,10 @@ opsctl commands:
   promotion-quality-gate|promotion-gate [--json]
   autonomy-control [--json]
   live-canary-readiness|canary-readiness-contract|production-hardening-bar [--apply] [--json]
-  supervised-broker-test [status|preview|submit|observe] [--action BUY|SELL] [--quantity N --limit-price PRICE] [--json]
+  supervised-broker-test [status|preview|submit|observe|readiness|attestation-checklist] [--symbol O|SCHD] [--action BUY|SELL] [--quantity N --limit-price PRICE | --bot-market] [--json]  # submit: interactive operator only
+  risk-service|risk-service-boundary [--refresh-inputs] [--max-input-age-minutes N] [--json]
+  schd-decision-rehearsal [status|demo|charts|native [--refresh-market-data]|evaluate --input PATH] [--json]  # native: bounded bot evidence; optional read-only Schwab GETs; no orders
+  purchase-proposals [status|evaluate|revoke] [--scheduled] [--json]
   live-canary-graduation|post-canary-graduation [--policy PATH] [--plan PATH] [--ledger PATH] [--receipts PATH] [--json]
   live-canary-closeout|post-canary-closeout [--intent-id ID] [--capture] [--policy PATH] [--plan PATH] [--ledger PATH] [--receipts PATH] [--account-study PATH] [--json]
   use-mode-compliance|commercial-compliance|personal-use-readiness [--json]

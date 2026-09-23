@@ -264,6 +264,7 @@ def schwab_context(root: Path, now: datetime) -> dict:
 
 def build_snapshot(root: Path, state_dir=None, now=None) -> dict:
     now = now or datetime.now(timezone.utc)
+    watch, watch_meta = evidence(root, "bitcoin_price_watch_latest.json", now, 1200)
     breaker, breaker_meta = evidence(root, "execution_runtime_breaker_latest.json", now)
     launcher, launcher_meta = evidence(root, "all_sleeves_launcher_latest.json", now)
     training, training_meta = evidence(
@@ -311,6 +312,8 @@ def build_snapshot(root: Path, state_dir=None, now=None) -> dict:
             "transfers": False,
         },
         "portfolio": portfolio(state_dir, now),
+        "price_watch": {"evidence": watch_meta, "observations": watch if watch_meta["fresh"] else {},
+                        "live_execution_allowed": False},
         "schwab_context": schwab_context(root, now),
         "paper": {
             "status": "held",

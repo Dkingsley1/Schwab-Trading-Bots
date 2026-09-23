@@ -47,6 +47,70 @@ def test_optional_backend_still_requires_its_copy_dependency(monkeypatch):
         compact.require_compressor("afsctool")
 
 
+def test_alternate_scratch_keeps_both_filesystem_reserves(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    source = tmp_path / "cold.sqlite3"
+    source.touch()
+    scratch = tmp_path / "scratch"
+    original_stat = Path.stat
+    monkeypatch.setattr(compact, "_allowed", lambda path: None)
+    monkeypatch.setattr(compact, "inspect_storage_path", lambda path: {"status": "present", "symlinks": []})
+    monkeypatch.setattr(Path, "stat", lambda p, **kw: SimpleNamespace(st_dev=original_stat(p, **kw).st_dev + 1)
+                        if p == source else original_stat(p, **kw))
+    monkeypatch.setattr(compact.shutil, "disk_usage", lambda p: SimpleNamespace(free=70 * compact.GIB))
+    selected, reserve = compact.scratch_plan(source, 4*compact.GIB, 4*compact.GIB,
+                                           64*compact.GIB, scratch)
+    assert selected == scratch and reserve == 32*compact.GIB
+    assert scratch.is_dir()
+    monkeypatch.setattr(compact.shutil, "disk_usage", lambda p: SimpleNamespace(free=67 * compact.GIB))
+    with pytest.raises(RuntimeError, match="insufficient_publication_scratch"):
+        compact.scratch_plan(source, 4*compact.GIB, 4*compact.GIB, 64*compact.GIB, scratch)
+
+
+def test_alternate_scratch_cannot_evade_same_disk_budget(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    source = tmp_path / "cold.sqlite3"
+    source.touch()
+    monkeypatch.setattr(compact.shutil, "disk_usage", lambda p: SimpleNamespace(free=70 * compact.GIB))
+    with pytest.raises(RuntimeError, match="scratch_on_constrained_filesystem"):
+        compact.scratch_plan(source, 4*compact.GIB, 4*compact.GIB, 64*compact.GIB, tmp_path / "scratch")
+
+
+def test_alternate_scratch_rejects_protected_alias(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    source = tmp_path / "cold.sqlite3"
+    source.touch()
+    alias = tmp_path / "scratch"
+    alias.symlink_to("/Volumes/VIDEO")
+    monkeypatch.setattr(compact.shutil, "disk_usage", lambda p: SimpleNamespace(free=70 * compact.GIB))
+    with pytest.raises(ValueError, match="protected_or_unavailable_path"):
+        compact.scratch_plan(source, 4*compact.GIB, 4*compact.GIB, 64*compact.GIB, alias)
+
+
+@pytest.mark.skipif(not os.getenv("BOT_TEST_CROSS_VOLUME_ROOT"), reason="explicit cross-volume fixture root required")
+def test_verified_cross_volume_compression_publication(tmp_path, monkeypatch, native_apfs):
+    import tempfile
+    from types import SimpleNamespace
+    root = Path(os.environ["BOT_TEST_CROSS_VOLUME_ROOT"])
+    compact._allowed(root)
+    if not compact.streaming.installed():
+        pytest.skip("streaming compressor unavailable")
+    with tempfile.TemporaryDirectory(prefix=".compression_test_", dir=root) as directory:
+        archive = Path(directory)
+        if archive.stat().st_dev == tmp_path.stat().st_dev:
+            pytest.skip("different physical filesystems required")
+        path = _database(archive)
+        original_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        real_usage = compact.shutil.disk_usage
+        monkeypatch.setattr(compact.shutil, "disk_usage", lambda p: SimpleNamespace(free=64*compact.GIB + 32*1024**2)
+                            if Path(p).is_relative_to(archive) else real_usage(p))
+        result = _compact(path, archive, compressor="applesauce", scratch_root=tmp_path / "scratch")
+        assert result["status"] == "filesystem_compressed_verified", result
+        assert result["original_replaced"] and result["allocated_bytes_reclaimed"] > 0
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == original_hash
+        assert result["scratch_root"] == str(tmp_path / "scratch")
+
+
 @pytest.fixture
 def native_apfs(tmp_path):
     try:

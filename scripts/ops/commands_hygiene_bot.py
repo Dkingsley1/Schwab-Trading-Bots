@@ -120,6 +120,10 @@ def _stable_hash(payload: dict[str, Any]) -> str:
 
 
 MOST_USED_PINNED_TITLES = [
+    "Clear operator and global halts safely",
+    "Turn the platform on (guarded paper)",
+    "Turn the platform off",
+    "Check system power status",
     "Keep the Mac awake",
     "Start the full live stack",
     "Start the full live stack (fresh supervised restart)",
@@ -793,7 +797,36 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
     return [
         _section(
             "Most Used",
+            _command_entry(
+                project_root,
+                "Clear operator and global halts safely",
+                ["./scripts/ops/opsctl.sh system-power clear-halts --json"],
+                notes=[
+                    "One command releases the manual stop, refreshes evidence, and attempts a guarded global clear. Active safety faults remain blocked. A persistent system OFF request requires the explicit ON command instead.",
+                ],
+            ),
+            _command_entry(project_root, "Turn the platform on (guarded paper)",
+                ["./scripts/ops/opsctl.sh system-power on --json"],
+                notes=["Requests a guarded paper/live-data start and restores only recorded eligible repository agents. Does not authorize live orders; active safety blockers can prevent startup. See docs/operations/SYSTEM_POWER.md."]),
+            _command_entry(project_root, "Turn the platform off",
+                ["./scripts/ops/opsctl.sh system-power off --json"],
+                notes=["Persists OFF across scheduled ticks/logins, disables owned LaunchAgents and stops known runtime loops. Does not cancel broker orders or liquidate positions. Maintain independent broker access; verify any ad-hoc terminal processes separately."]),
+            _command_entry(project_root, "Check system power status",
+                ["./scripts/ops/opsctl.sh system-power status --json"],
+                notes=["Read-only intent, halt and last-transition status; not a certificate that every process is healthy or stopped."]),
             _command_entry(project_root, "Keep the Mac awake", ["caffeinate -dimsu"]),
+            _command_entry(
+                project_root,
+                "Audit self-healing gaps and physical routes",
+                ["./scripts/ops/opsctl.sh self-healing-gaps --json",
+                 "./scripts/ops/opsctl.sh storage-route-verify --json",
+                 "./scripts/ops/opsctl.sh storage-fallback-repair --json",
+                 "./scripts/ops/opsctl.sh emergency-storage-thin --json"],
+                notes=["Census and route commands are observation-only. Fallback repair and emergency-thin without --apply are previews; native accrual owns bounded conditional apply. Known legacy fallback aliases are preserved as historical links before creating real local directories. No external data is deleted and no command grants trading authority. See docs/operations/SELF_HEALING_GAPS.md."],
+            ),
+            _command_entry(project_root, "Observe Bitcoin day and swing movements",
+                ["./scripts/ops/opsctl.sh bitcoin-price-watch --json"],
+                notes=["Three observe-only profiles share two bounded public candle reads on the existing 15-minute accrual cadence. No Coinbase credentials, orders, capital allocation, or profitability credit; current account fees and net-of-cost forward evidence remain required."]),
             _command_entry(
                 project_root,
                 "Start the full live stack",
@@ -1231,7 +1264,12 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Validate documented commands",
-                ["./scripts/ops/opsctl.sh command-validity --json"],
+                ["./scripts/ops/opsctl.sh command-validity --safe-audit --summary-json"],
+                notes=[
+                    "The native command-validity infrabot repeats this non-executing audit on its existing 10-minute cadence.",
+                    "Every entry gets source, syntax, purpose and duplicate checks. Static success does not prove exact arguments or real-world effects; those remain explicit functional-evidence gaps.",
+                    "No documented order, deletion, restart, halt-clear or auth command is executed by this audit.",
+                ],
             ),
         ),
         _section(
@@ -1277,11 +1315,48 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "./scripts/ops/opsctl.sh supervised-broker-test status --json",
                     "./scripts/ops/opsctl.sh supervised-broker-test preview --json",
                     "./scripts/ops/opsctl.sh supervised-broker-test observe --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test status --symbol SCHD --session AM --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test status --symbol SCHD --session PM --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test readiness --symbol SCHD --json",
+                    "./scripts/ops/opsctl.sh risk-service-boundary --refresh-inputs --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test preview --symbol SCHD --bot-market --action BUY --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test attestation-checklist --symbol SCHD --bot-market --json",
                 ],
                 notes=[
                     "Status is offline. Preview and observe are broker-read-only; no attestation or order is issued. O buy-and-hold is bounded to $300, five whole shares, and a $57.09 maximum buy limit; a lower fresh bid may be proposed without claiming undervaluation.",
                     "The separate submit command requires an interactive operator, current personal review, and exact order confirmation. It retains technical safety gates and durable single-attempt accounting; production soak/profitability promotion is not waived or credited. No automatic sell, rebuy, repricing, or reinvestment.",
                     "See docs/operations/SUPERVISED_BROKER_TEST.md before any operator-controlled test. Cash/fee, position, dividend, and profitability evidence remain distinct.",
+                    "SCHD manual/AM/PM stays LIMIT/DAY. Explicit --bot-market requires a native decision, NORMAL/DAY, fresh two-sided evidence and separate operator confirmation per side. No automatic exit, retry, price guarantee, source acceptance or trading activation. Readiness refreshes owners; checklist does not attest.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review detailed SCHD decision evidence and isolated simulation",
+                [
+                    "./scripts/ops/opsctl.sh schd-decision-rehearsal status --json",
+                    "./scripts/ops/opsctl.sh schd-decision-rehearsal demo --json",
+                    "./scripts/ops/opsctl.sh schd-decision-rehearsal charts --json",
+                    "./scripts/ops/opsctl.sh schd-decision-rehearsal maintain --json",
+                    "./scripts/ops/opsctl.sh schd-decision-rehearsal native --json",
+                    "./scripts/ops/opsctl.sh schd-decision-rehearsal native --refresh-market-data --json",
+                ],
+                notes=[
+                    "Status/evaluate/demo are offline. Demo writes a clearly synthetic conditional buy/sell rehearsal, never broker or canonical paper orders. Charts explicitly fetches Schwab 1m/5m/daily price history with live execution locked off and creates bounded PNG candlestick diagrams.",
+                    "Detailed reports separate recorded bot reasons from closed-candle diagnostics for 5m/15m/1h/daily/monthly/yearly and trailing 180 calendar days; 1m is only shown when supplied.",
+                    "Native observes a bounded dividend-sleeve SCHD grand-master log with unchanged actions/reasons/gates and source/candidate hashes. Maintain refreshes candle context and prunes expired owned cache through the existing adaptive-ops cadence, never orders or decisions. It reports recent scope-checked producer pauses/pacing separately from decision freshness, without restart authority. Charts include a separately attributed recorded decision sample. Missing provider time, unverified price basis and retrospective context remain blockers. See docs/operations/SCHD_DECISION_REHEARSAL.md.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect or revoke native purchase proposals",
+                [
+                    "./scripts/ops/opsctl.sh purchase-proposals status --json",
+                    "./scripts/ops/opsctl.sh purchase-proposals evaluate --json",
+                    "./scripts/ops/opsctl.sh purchase-proposals revoke --json",
+                ],
+                notes=[
+                    "The existing 15-minute accrual profile owns read-only evaluations. Status is offline; evaluate never submits, cancels, replaces, or issues attestation. Revoke persistently stops this observer only.",
+                    "The filled O test consumes its original single entry and $300 scope; no follow-on purchase is implied. Cash, settlement, dividends, source validation and economic evidence remain distinct. See docs/operations/PURCHASE_PROPOSALS.md.",
                 ],
             ),
             _command_entry(
@@ -1367,6 +1442,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
         ),
         _section(
             "Notifications And Alerts",
+            _command_entry(
+                project_root,
+                "Test Mac notification click actions",
+                ["./scripts/ops/opsctl.sh notify-test --disable-imessage"],
+                notes=[
+                    "Click the test alert to open the current watchdog report. Schwab auth alerts instead launch one supervised browser sign-in session; other alerts open their matching diagnostic reports. Requires terminal-notifier and macOS notification permission. Old delivered alerts and phone iMessages are not retrofitted with local click actions.",
+                    "Notification clicks never place orders, clear halts, prune data, or restart the platform. See docs/operations/NOTIFICATION_ACTIONS.md for the mappings and transport verification.",
+                ],
+            ),
             _command_entry(
                 project_root,
                 "Send a test iMessage notification",
@@ -2256,10 +2340,10 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
-                "Master infrastructure supervisor",
-                ["./scripts/ops/opsctl.sh master-infra-supervisor --json"],
+                "Operations master infrabot",
+                ["./scripts/ops/opsctl.sh operations-master --json"],
                 notes=[
-                    "This parent check watches child infrastructure bots, command routes, storage health, report jobs, and One Numbers original-start coverage as one dependency graph.",
+                    "The existing master supervisor coordinates eight subgroups under fourteen explicit responsibilities. It publishes priorities, owners, dependencies, deferrals and proof requirements. --apply permits at most two exact allowlisted owner calls in a 150-second work window, with persistent ten-minute owner cooldowns and fresh admission checks. Other repairs remain delegated or operator-required; no trading, halt clearance, contract rewrite or source acceptance authority. See docs/operations/OPERATIONS_MASTER.md.",
                 ],
             ),
             _command_entry(

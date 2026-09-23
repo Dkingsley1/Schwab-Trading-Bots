@@ -160,6 +160,18 @@ PROCESS_RULES: tuple[tuple[str, str, str, bool], ...] = (
     ),
     ("scripts/link_jsonl_to_sql.py", "storage_writer", "backlog_writer", False),
     (
+        "scripts/ops/storage_sqlite_hot_route.py",
+        "storage_writer",
+        "backlog_writer",
+        False,
+    ),
+    (
+        "scripts/ops/live_feed_follow.py",
+        "operator_observability",
+        "operator_visible",
+        False,
+    ),
+    (
         "scripts/ops/sql_link_shard_manager.py",
         "storage_writer",
         "backlog_writer",

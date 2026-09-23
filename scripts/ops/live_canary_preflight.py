@@ -70,9 +70,16 @@ def _issue_attestation(
     confirm_all: bool,
     confirm_retirement_account_risk: bool = False,
     purpose: str = "production_canary",
+    test_symbol: str = "O",
+    session: str = "NORMAL",
+    confirm_extended_hours_risk: bool = False,
 ) -> dict[str, Any]:
     if purpose not in {"production_canary", "supervised_broker_test"}:
         raise ValueError("unsupported attestation purpose")
+    if purpose != "supervised_broker_test" and session != "NORMAL":
+        raise ValueError("production canary remains normal-session-only")
+    if session != "NORMAL" and confirm_extended_hours_risk is not True:
+        return {"ok": False, "error": "extended_hours_risk_confirmation_required", "live_execution_authority": False}
     if confirmation.strip() != CONFIRMATION_PHRASE or not confirm_all:
         return {
             "ok": False,
@@ -89,8 +96,13 @@ def _issue_attestation(
         policy.get("canary_plan_path") or "config/live_canary_micro_policy_v1.json"
     )
     if purpose == "supervised_broker_test":
-        plan_path = project_root / "config/supervised_broker_test_v1.json"
+        from core.supervised_broker_test import policy_path, attestation_path as test_attestation_path, validate_policy, validate_session
+
+        plan_path = project_root / policy_path(test_symbol)
     plan = _load_json(plan_path)
+    if purpose == "supervised_broker_test":
+        validate_policy(plan)
+        validate_session(plan, session)
     registry_path = project_root / str(
         policy.get("account_policy_registry_path")
         or "config/account_policy_registry.json"
@@ -111,9 +123,7 @@ def _issue_attestation(
         or "governance/runtime/live_canary_operator_attestation.json"
     )
     if purpose == "supervised_broker_test":
-        attestation_path = (
-            project_root / "governance/runtime/supervised_broker_test_attestation.json"
-        )
+        attestation_path = project_root / test_attestation_path(test_symbol)
     tax_path = project_root / str(
         policy.get("trading_tax_ledger_path")
         or "governance/tax/trading_tax_ledger_{year}_latest.json"
@@ -259,6 +269,8 @@ def _issue_attestation(
     }
     if purpose == "supervised_broker_test":
         payload["test_policy_sha256"] = _file_sha256(plan_path)
+        payload["session"] = session
+        payload["extended_hours_risk_reviewed"] = confirm_extended_hours_risk is True
         payload["broker_open_orders_reviewed"] = True
         payload["no_concurrent_manual_orders_confirmed"] = True
     for field in required_operator_confirmations(tax_wrapper):

@@ -48,7 +48,8 @@ fi
 
 # Storage pressure needs a bounded opportunity before the ordinary quiet-hours
 # gate. This mode retains the self-healing lock and fresh host/hold admission;
-# it cannot run cache rebuilds, training, broad repairs, or release operations.
+# Its full low-load pass may rebuild the verified compatibility cache; quick or
+# extra compression-only admission cannot. No training, broad repair or release.
 if ! nice -n 15 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/soak_self_healing_control.py" \
   --storage-recovery-only --rebuild-reserve --apply --json; then
   print -u2 "soak_self_healing bounded_storage_recovery=attention continuing_to_guarded_repair=1"

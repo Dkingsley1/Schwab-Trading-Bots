@@ -218,6 +218,7 @@ def test_control_plane_refresh_plan_repairs_stale_role_before_soak_dashboard(
     plan = module.build_control_plane_refresh_plan(metrics)
 
     assert [step["id"] for step in plan] == [
+        "risk_service_boundary",
         "system_role_contract",
         "soak_reliability_sentinel",
         "unattended_soak_readiness",
@@ -294,6 +295,7 @@ def test_control_plane_refresh_plan_orders_health_halt_before_soak(
     plan = module.build_control_plane_refresh_plan(metrics)
 
     assert [step["id"] for step in plan] == [
+        "risk_service_boundary",
         "health_gates",
         "global_halt_refresh",
         "halt_trigger_status",
@@ -373,6 +375,7 @@ def test_control_plane_refresh_plan_handles_coordination_refresh_due(
     plan = module.build_control_plane_refresh_plan(metrics)
 
     assert [step["id"] for step in plan] == [
+        "risk_service_boundary",
         "coordination_state",
         "soak_reliability_sentinel",
         "unattended_soak_readiness",

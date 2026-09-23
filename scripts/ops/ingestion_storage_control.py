@@ -4350,7 +4350,9 @@ def _p_core_burst_intelligence(
     if explicit > 0:
         selected = max(1, min(explicit, max_budget))
         mode = "operator_override"
-        reason = "explicit BACKLOG_PCORE_PREPROCESS_WORKERS_OVERRIDE applied"
+        reason = (
+            f"operator requested {explicit} workers; admitted {selected} within the current {max_budget}-worker resource budget"
+        )
     elif memory_critical:
         selected = min(max_budget, 2)
         mode = "memory_relief_2"
@@ -4419,6 +4421,8 @@ def _p_core_burst_intelligence(
         "max_budget": int(max_budget),
         "reason": reason,
         "inputs": {
+            "operator_requested_workers": int(explicit),
+            "operator_request_resource_capped": bool(explicit > max_budget),
             "host_saturation_score": round(float(host_saturation), 3),
             "compute_pressure_level": compute_pressure,
             "memory_pressure_level": memory_pressure,

@@ -1,5 +1,7 @@
 import json
 import sys
+import shlex
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -11,6 +13,63 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 import mac_notification_watch as watch
+
+
+def test_auth_action_is_fixed_and_other_alerts_cannot_execute(tmp_path, monkeypatch):
+    monkeypatch.setattr(watch, "PROJECT_ROOT", tmp_path / "root with ' quote")
+    command = watch._notification_execute_target("auth_lease:critical:interactive_refresh_required")
+    assert shlex.split(command) == [str(watch.PROJECT_ROOT / ".venv314/bin/python"),
+                                  str(watch.PROJECT_ROOT / "scripts/ops/schwab_reauth_action.py")]
+    for key in ("global_halt", "restart_storm:coinbase", "storage_mount_missing",
+                "auth_lease:critical:blocked; execute bad", "system_talk:run_command"):
+        assert watch._notification_execute_target(key) == ""
+
+
+def test_notifier_click_prefers_auth_action_over_report(monkeypatch):
+    monkeypatch.setattr(watch, "_terminal_notifier_path", lambda: "/native/notifier")
+    calls = []
+    monkeypatch.setattr(watch.subprocess, "run", lambda cmd, **kw:
+                        calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""))
+    result = watch._notify_mac("Auth", "Sign in", execute_target="fixed-auth", open_target="file:///report.json")
+    assert "-execute" in calls[0] and "-open" not in calls[0]
+    assert result["click_action_available"]
+
+
+def test_notifier_report_click_is_read_only(monkeypatch):
+    monkeypatch.setattr(watch, "_terminal_notifier_path", lambda: "/native/notifier")
+    calls = []
+    monkeypatch.setattr(watch.subprocess, "run", lambda cmd, **kw:
+                        calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""))
+    result = watch._notify_mac("Halt", "Review", open_target="file:///report.json")
+    assert calls[0][-2:] == ["-open", "file:///report.json"]
+    assert "-execute" not in calls[0] and result["click_action_available"]
+
+
+def test_failed_native_transport_falls_back_without_claiming_click_support(monkeypatch):
+    monkeypatch.setattr(watch, "_terminal_notifier_path", lambda: "/native/notifier")
+    calls = []
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise watch.subprocess.TimeoutExpired(cmd, 10)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(watch.subprocess, "run", run)
+    result = watch._notify_mac("Auth", "Action: click to sign in with Schwab. Manual fallback: command")
+    assert not result["click_action_available"]
+    assert result["transport"] == "osascript"
+    assert "click to" not in calls[1][-1]
+
+
+def test_notification_families_have_diagnostic_targets(tmp_path, monkeypatch):
+    monkeypatch.setattr(watch, "ALERTS_DIR", tmp_path)
+    alert = tmp_path / "critical_latest_covered_call.json"
+    alert.write_text("{}")
+    assert watch._notification_inspect_target("critical_alert:warn:critical_latest_covered_call", "") == alert
+    assert watch._notification_inspect_target("restart_storm:coinbase", "") == watch.PROCESS_WATCHDOG_PATH
+    assert watch._notification_inspect_target("power_lid_open:now", "") == watch.PROCESS_WATCHDOG_PATH
+    assert watch._notification_inspect_target("storage_mount_missing", "") == watch.STORAGE_GUARD_PATH
+    assert watch._notification_inspect_target("swap_pressure:warning", "") == watch.SWAP_PRESSURE_GOVERNOR_PATH
+    assert watch._notification_inspect_target("preflight_critical", "") == watch.PREFLIGHT_CRITICAL_PATH
 
 
 def test_power_event_candidates_include_recent_clamshell_sleep(monkeypatch) -> None:

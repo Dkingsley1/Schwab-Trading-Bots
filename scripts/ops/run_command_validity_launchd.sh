@@ -14,4 +14,4 @@ if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
 fi
 
 exec "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/command_validity_bot.py" \
-  --json
+  --safe-audit --timeout-sec 30 --summary-json

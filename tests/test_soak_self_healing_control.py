@@ -553,6 +553,70 @@ def _storage_recovery_fixture(tmp_path, monkeypatch, free_gb=40):
     return calls
 
 
+def test_pressure_recovery_prioritizes_cache_before_generic_compaction(
+    tmp_path, monkeypatch
+):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        src, "_compatibility_cache_rebuild_contract", lambda root: {"active": True}
+    )
+    monkeypatch.setenv("BOT_DEEP_COLD_OFFLOAD_ROOT", str(tmp_path / "deep"))
+    payload = src.build_storage_recovery_payload(tmp_path, apply=True)
+    rebuild = next(cmd for cmd in calls if "--rebuild-local-cache" in cmd)
+    assert rebuild[rebuild.index("--cold-export-root") + 1] == str(
+        tmp_path / "deep/sql_link_primary/autonomic_cache_rebuild"
+    )
+    assert "--prune-old-cache" in rebuild
+    assert rebuild[rebuild.index("--writer-drain-timeout-seconds") + 1] == "30"
+    names = [step["name"] for step in payload["steps"]]
+    assert names.index("local_compatibility_cache_rebuild") < names.index(
+        "local_disk_cold_evidence_compaction"
+    )
+    assert not payload["live_execution_authority"]
+    assert not payload["ok"]  # A successful command is not proof of recovered capacity.
+
+
+def test_quick_recovery_never_inherits_cache_rebuild(tmp_path, monkeypatch):
+    calls = _storage_recovery_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        src, "_compatibility_cache_rebuild_contract", lambda root: {"active": True}
+    )
+    src.build_storage_recovery_payload(tmp_path, apply=True, quick_bounded=True)
+    assert not any("--rebuild-local-cache" in cmd for cmd in calls)
+
+
+def test_cache_rebuild_deadline_is_nested_and_capped(tmp_path):
+    cmd, timeout = src._cache_rebuild_command(
+        tmp_path,
+        {
+            "BOT_LOGS_SQLITE_LOCAL_CACHE_REBUILD_TIMEOUT_SECONDS": "43200",
+        },
+        {"path": str(tmp_path / "cold")},
+    )
+    assert cmd[cmd.index("--operation-seconds") + 1] == "1500"
+    assert timeout == 1590
+
+
+def test_recovery_runner_reaps_owned_process_group_on_timeout(tmp_path, monkeypatch):
+    calls = []
+
+    def bounded(cmd, **kwargs):
+        calls.append(kwargs)
+        return {
+            "rc": 124,
+            "stdout": "",
+            "stderr": "",
+            "timed_out": True,
+            "timeout_cleanup": {"reaped": True, "signal": "SIGTERM"},
+        }
+
+    monkeypatch.setattr(src, "run_bounded_process_group", bounded)
+    result = src._run_command(["fake"], project_root=tmp_path, timeout_sec=12, env={})
+    assert calls[0]["timeout_seconds"] == 12
+    assert result["timed_out"] and not result["ok"]
+    assert result["timeout_cleanup"]["reaped"]
+
+
 @pytest.mark.parametrize("lease_state", ["fresh", "stale", "denied", "missing"])
 def test_adaptive_pressure_entry_is_compression_only(tmp_path, monkeypatch, lease_state):
     calls = _storage_recovery_fixture(tmp_path, monkeypatch)
@@ -763,6 +827,57 @@ def test_duplicate_cleanup_empty_pass_is_not_capacity_or_failure_credit(tmp_path
     assert result["ok"] and not result["capacity_assessment_ok"]
     assert result["storage_recovery_progress"]["made_progress"] is False
     assert result["storage_recovery_progress"]["proves_local_reserve_recovered"] is False
+
+
+def _deep_cold_capacity_result(moved_bytes=123):
+    moved = int(moved_bytes > 0)
+    return {
+        "rc": 2, "ok": False, "timed_out": False,
+        "parsed": {"overall_status": "needs_attention", "second_cold_move": {
+            "enabled": True, "status": "partial", "reason": "adaptive_release_target_unmet",
+            "selected_candidate_files": moved, "attempted_files": moved,
+            "moved_files": moved, "failed_files": 0, "moved_bytes": moved_bytes,
+            "release_target_met": False,
+        }},
+    }
+
+
+@pytest.mark.parametrize("moved_bytes", [0, 123])
+def test_completed_offload_pass_keeps_capacity_debt_without_failure_credit(tmp_path, monkeypatch, moved_bytes):
+    payload = _deep_cold_capacity_result(moved_bytes)
+    monkeypatch.setattr(src, "_run_command", lambda *args, **kwargs: payload)
+    name = "local_disk_resumable_deep_cold_offload"
+    state = {"steps": {name: {"failure_count": 8}}}
+    result = src._run_step([], name=name, cmd=["offload"], project_root=tmp_path,
+                           timeout_sec=60, env={}, state=state, cooldown_seconds=900)
+    assert result["ok"] and result["repair_pass_complete"]
+    assert result["capacity_assessment_ok"] is False
+    assert result["parsed"]["second_cold_move"]["release_target_met"] is False
+    progress = result["storage_recovery_progress"]
+    assert progress["made_progress"] is (moved_bytes > 0)
+    assert progress["reported_reclaimed_bytes"] == moved_bytes
+    assert progress["proves_local_reserve_recovered"] is False
+    assert state["steps"][name]["failure_count"] == 0
+    if not moved_bytes:
+        assert state["steps"][name]["cooldown_reason"] == "storage_recovery_no_measured_progress"
+
+
+@pytest.mark.parametrize("scope,key,value", [
+    ("result", "timed_out", True), ("result", "timed_out", None),
+    ("result", "rc", 1), ("result", "rc", False),
+    ("move", "failed_files", 1), ("move", "failed_files", False),
+    ("move", "reason", "one_or_more_moves_failed"),
+    ("move", "reason", "adaptive_release_waiting_for_maintenance_hold"),
+    ("move", "enabled", False), ("move", "moved_files", 2),
+    ("move", "attempted_files", 2), ("move", "selected_candidate_files", None),
+    ("move", "moved_bytes", -1), ("move", "moved_bytes", 0),
+    ("move", "moved_bytes", float("nan")), ("move", "moved_files", 0),
+])
+def test_offload_failure_or_invalid_receipt_remains_failed(scope, key, value):
+    payload = _deep_cold_capacity_result()
+    target = payload if scope == "result" else payload["parsed"]["second_cold_move"]
+    target[key] = value
+    assert src._completed_deep_cold_pass(payload) is False
 
 
 def test_hourly_retention_uses_guarded_bounded_duplicate_owner():

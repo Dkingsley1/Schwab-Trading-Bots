@@ -11,6 +11,16 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import runtime_throttle_control as src
 
 
+def test_cache_recovery_cpu_is_owned_storage_not_unknown():
+    for mode in ("--rebuild-local-cache", "--export-part-worker"):
+        row = src._classify_process(
+            f"python /project/scripts/ops/storage_sqlite_hot_route.py {mode}"
+        )
+        assert row["category"] == "storage_writer"
+        assert row["priority_tier"] == "backlog_writer"
+        assert row["throttle_candidate"] is False
+
+
 def _write_json(path: Path, payload: dict) -> None:
     payload = {"timestamp_utc": datetime.now(timezone.utc).isoformat(), **payload}
     path.parent.mkdir(parents=True, exist_ok=True)

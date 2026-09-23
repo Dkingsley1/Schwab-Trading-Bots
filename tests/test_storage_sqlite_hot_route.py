@@ -763,6 +763,86 @@ def test_local_cache_rebuild_refuses_active_writer_without_touching_source(
     assert source.read_bytes() == original
 
 
+def test_cold_capacity_checks_export_volume_not_staging(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    cold, staging = tmp_path / "cold", tmp_path / "staging"
+    monkeypatch.setattr(src, "_capacity_probe", lambda path: path)
+    monkeypatch.setattr(
+        Path,
+        "stat",
+        lambda path, **kw: SimpleNamespace(st_dev=1 if path == cold else 2),
+    )
+    monkeypatch.setattr(
+        src,
+        "_disk_free_bytes",
+        lambda path: 63 * 1024**3 if path == cold else 200 * 1024**3,
+    )
+    result = src._cold_capacity_budget(cold, staging, 4 * 1024**3, 64 * 1024**3)
+    assert not result["ready"]
+    assert result["probe_path"] == str(cold)
+    assert result["minimum_free_after_bytes"] == 64 * 1024**3
+    assert not result["same_filesystem_as_staging"]
+
+
+def test_cold_capacity_reserves_staging_only_on_shared_filesystem(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(src, "_capacity_probe", lambda path: path)
+    monkeypatch.setattr(Path, "stat", lambda path, **kw: SimpleNamespace(st_dev=1))
+    result = src._cold_capacity_budget(
+        tmp_path / "cold", tmp_path / "staging", 4 * 1024**3, 64 * 1024**3
+    )
+    assert result["ready"] and result["same_filesystem_as_staging"]
+    assert result["minimum_free_after_bytes"] == 68 * 1024**3
+
+
+def test_cache_capacity_refuses_symlink_destination(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    with pytest.raises(ValueError, match="unsafe_cache_storage_route"):
+        src._capacity_probe(link / "cold")
+
+
+def test_cache_cold_destination_capacity_failure_preserves_source(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "local_fallback_storage/data/jsonl_link.sqlite3"
+    _seed_db(source)
+    before = source.read_bytes()
+    external, cold = tmp_path / "external", tmp_path / "cold"
+    external.mkdir()
+    cold.mkdir()
+    monkeypatch.setattr(
+        src.writer_state, "writer_state_snapshot", lambda root: {"active": False}
+    )
+    monkeypatch.setattr(
+        src, "_disk_free_bytes", lambda path: (20 if path == cold else 512) * 1024**3
+    )
+    result = src.build_local_cache_payload(
+        tmp_path,
+        relative_path="data/jsonl_link.sqlite3",
+        hot_hours=18,
+        apply=True,
+        prune_old_cache=True,
+        min_local_free_after_gb=32,
+        min_external_free_after_gb=64,
+        cold_export_root=cold,
+        batch_size=1000,
+        compression="zstd",
+        require_writer_idle=True,
+        timeout_seconds=10,
+        external_root=external,
+    )
+    assert result["blockers"] == ["cold_export_destination_free_below_guard"]
+    assert source.read_bytes() == before
+    assert not list(cold.iterdir())
+
+
 def test_local_cache_rebuild_accepts_orphaned_running_progress(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1081,3 +1161,24 @@ def test_cli_requires_explicit_existing_hold_authority(
                 else "runtime_maintenance_hold_invalid"
             )
         ]
+
+
+def test_rebuild_receipt_dates_completion_not_start(tmp_path, monkeypatch):
+    from scripts.ops import storage_sqlite_hot_route as owner
+
+    monkeypatch.setattr(
+        owner,
+        "_build_local_cache_payload",
+        lambda *a, **kw: {
+            "timestamp_utc": "2026-09-23T12:00:00+00:00",
+            "ok": True,
+        },
+    )
+    monkeypatch.setattr(owner, "_iso", lambda: "2026-09-23T12:20:00+00:00")
+    result = owner.build_local_cache_payload(tmp_path, apply=True)
+    assert result["started_at_utc"] == "2026-09-23T12:00:00+00:00"
+    assert (
+        result["timestamp_utc"]
+        == result["assessment_completed_at_utc"]
+        == "2026-09-23T12:20:00+00:00"
+    )

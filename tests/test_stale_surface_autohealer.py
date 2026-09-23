@@ -6,6 +6,60 @@ from scripts.ops import infrastructure_autofix_bot as infra_src
 from scripts.ops import stale_surface_autohealer as healer
 
 
+def test_timeout_reaps_owned_process_group(tmp_path, monkeypatch):
+    calls = []
+    def run(cmd, **kwargs):
+        calls.append(kwargs)
+        return {"rc": 124, "timed_out": True, "stdout": "", "stderr": "timeout",
+                "timeout_cleanup": {"reaped": True}}
+    monkeypatch.setattr(healer, "run_bounded_process_group", run)
+    result = healer._run_command(["test"], cwd=tmp_path, timeout_sec=12)
+    assert result["timed_out"] and result["timeout_cleanup"]["reaped"]
+    assert calls[0]["timeout_seconds"] == 12
+
+
+def test_report_cannot_request_arbitrary_ops_actions(tmp_path):
+    for args in (["supervised-broker-test", "submit"], ["system-power", "on"],
+                 ["sentiment-report", "--json", "--out-file", "/tmp/override"]):
+        cmd, reason = healer._normalize_safe_command(["./scripts/ops/opsctl.sh", *args], tmp_path)
+        assert cmd is None and reason == "ops_command_or_arguments_not_allowlisted"
+
+
+def test_repairs_share_deadline_and_preserve_deferred_work(tmp_path, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(healer.time, "monotonic", lambda: now[0])
+    plan = [{"name": name, "surface": "stale_artifact", "action": "run_command"}
+            for name in ("first", "second", "third")]
+    monkeypatch.setattr(healer, "_artifact_refresh_plan", lambda *a, **kw: plan)
+    for name in ("_watchdog_process_plan", "_stale_launchd_plan", "_stale_file_cleanup_plan"):
+        monkeypatch.setattr(healer, name, lambda *a, **kw: [])
+    attempts = []
+    def apply(row, *, project_root, timeout_sec):
+        attempts.append((row["name"], timeout_sec))
+        now[0] += 5
+        return {**row, "rc": 0}
+    monkeypatch.setattr(healer, "_apply_plan_row", apply)
+    monkeypatch.setattr(healer, "_refresh_inputs", lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("no refresh budget remains")))
+    payload = healer.build_payload(tmp_path, apply=True, refresh_inputs=False, timeout_sec=10)
+    assert attempts == [("first", 10), ("second", 5)]
+    assert payload["deferred_by_deadline"] == ["third"]
+    assert not payload["ok"]
+
+
+def test_input_refreshes_share_deadline(tmp_path, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(healer.time, "monotonic", lambda: now[0])
+    budgets = []
+    def run(cmd, *, cwd, timeout_sec):
+        budgets.append(timeout_sec)
+        now[0] += 7
+        return {"rc": 0}
+    monkeypatch.setattr(healer, "_run_command", run)
+    healer._refresh_inputs(tmp_path, timeout_sec=10)
+    assert budgets == [10, 3]
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")

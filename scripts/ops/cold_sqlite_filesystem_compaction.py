@@ -192,6 +192,31 @@ def _receipt(path: Path, record: dict) -> None:
     _sync_directory(path.parent)
 
 
+def scratch_plan(path, size, extra, reserve_bytes, scratch_root=None):
+    required = int(size * 1.01) + extra + reserve_bytes
+    if shutil.disk_usage(path.parent).free >= required:
+        return path.parent, reserve_bytes
+    if scratch_root is None:
+        raise RuntimeError("insufficient_recovery_scratch")
+    _allowed(scratch_root)
+    route = inspect_storage_path(scratch_root)
+    if route.get("symlinks"):
+        raise ValueError("scratch_symlink_route_rejected")
+    ancestor = scratch_root
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    if ancestor.stat().st_dev == path.stat().st_dev:
+        raise RuntimeError("scratch_on_constrained_filesystem")
+    scratch_reserve = (32 if ancestor.stat().st_dev == Path(__file__).stat().st_dev else 64) * GIB
+    # The publication copy is budgeted at its full raw size, never an assumed ratio.
+    if shutil.disk_usage(path.parent).free < size * 1.01 + reserve_bytes:
+        raise RuntimeError("insufficient_publication_scratch")
+    if shutil.disk_usage(ancestor).free < size * 1.01 + extra + scratch_reserve:
+        raise RuntimeError("insufficient_alternate_scratch")
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    return scratch_root, scratch_reserve
+
+
 def compact_one(
     path: Path,
     *,
@@ -201,6 +226,7 @@ def compact_one(
     min_age_hours: float = 24.0,
     compressor: str = "ditto",
     publication_guard: Callable[[float], ContextManager] | None = None,
+    scratch_root: Path | None = None,
 ) -> dict:
     result = {
         "path": str(path),
@@ -210,6 +236,7 @@ def compact_one(
         "allocated_bytes_reclaimed": 0,
     }
     temporary = None
+    publication_temporary = None
     try:
         for candidate in (path, archive_root, manifest):
             _allowed(candidate)
@@ -259,15 +286,19 @@ def compact_one(
             reserve_bytes=reserve_bytes,
             extra_scratch_bytes=extra_scratch,
         )
-        if (
-            shutil.disk_usage(path.parent).free
-            < identity[2] * 1.01 + extra_scratch + reserve_bytes
-        ):
-            raise RuntimeError("insufficient_recovery_scratch")
+        staging_root, staging_reserve = scratch_plan(
+            path, identity[2], extra_scratch, reserve_bytes, scratch_root
+        )
+        if staging_root != path.parent:
+            disk = _run(["/bin/df", "-P", str(staging_root)], staging_root, deadline)
+            if disk["rc"] != 0 or len(disk["stdout"].splitlines()) != 2:
+                raise RuntimeError("scratch_filesystem_probe_failed")
+            _require_apfs(disk["stdout"].splitlines()[1].split()[0], staging_root, deadline)
+        result.update(scratch_root=str(staging_root), scratch_reserve_bytes=staging_reserve)
         _require_idle(path, deadline)
         source_hash = _hash(path, deadline)
         temporary = Path(
-            tempfile.mkdtemp(prefix=".filesystem_compaction_", dir=path.parent)
+            tempfile.mkdtemp(prefix=".filesystem_compaction_", dir=staging_root)
         )
         target = temporary / "verified.sqlite3"
         copied = _run(
@@ -294,7 +325,7 @@ def compact_one(
                 raise RuntimeError("afsctool_failed_or_timed_out")
         elif compressor == "applesauce":
             result["streaming_compression"] = streaming.compress(
-                backend, target, deadline=deadline, reserve_bytes=reserve_bytes
+                backend, target, deadline=deadline, reserve_bytes=staging_reserve
             )
             if result["streaming_compression"]["rc"] != 0:
                 raise RuntimeError("applesauce_failed")
@@ -322,6 +353,26 @@ def compact_one(
                 raise RuntimeError("compressed_sqlite_integrity_failed")
         with target.open("rb") as handle:
             os.fsync(handle.fileno())
+        if target.stat().st_dev != before.st_dev:
+            if shutil.disk_usage(path.parent).free < identity[2] * 1.01 + reserve_bytes:
+                raise RuntimeError("publication_scratch_consumed")
+            publication_temporary = Path(tempfile.mkdtemp(prefix=".filesystem_compaction_", dir=path.parent))
+            publication_target = publication_temporary / "verified.sqlite3"
+            copied = _run(["/usr/bin/ditto", "--hfsCompression", "--noclone", "--nocache",
+                           str(target), str(publication_target)], path.parent, deadline)
+            if copied["rc"] != 0 or copied.get("timed_out"):
+                raise RuntimeError("compressed_publication_copy_failed")
+            published = publication_target.stat()
+            if (published.st_size != before.st_size
+                or not published.st_flags & stat.UF_COMPRESSED
+                or _hash(publication_target, deadline) != source_hash):
+                raise RuntimeError("compressed_publication_verification_failed")
+            target, after = publication_target, published
+            reclaimed = (before.st_blocks - after.st_blocks) * 512
+            if reclaimed <= 0:
+                raise RuntimeError("no_publication_space_saving")
+            with target.open("rb") as handle:
+                os.fsync(handle.fileno())
         proof = {
             **result,
             "logical_bytes": before.st_size,
@@ -372,6 +423,8 @@ def compact_one(
     finally:
         if temporary is not None:
             shutil.rmtree(temporary, ignore_errors=True)
+        if publication_temporary is not None:
+            shutil.rmtree(publication_temporary, ignore_errors=True)
 
 
 def build_payload(
@@ -386,6 +439,7 @@ def build_payload(
     min_age_hours: float,
     compressor: str = "ditto",
     publication_guard: Callable[[float], ContextManager] | None = None,
+    scratch_root: Path | None = None,
 ) -> dict:
     deadline = time.monotonic() + max(int(timeout_seconds), 1)
     if (
@@ -421,6 +475,7 @@ def build_payload(
                 min_age_hours=min_age_hours,
                 compressor=compressor,
                 publication_guard=publication_guard,
+                scratch_root=scratch_root,
             )
             for path in selected
         ]

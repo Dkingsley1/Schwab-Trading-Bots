@@ -728,7 +728,7 @@ def build_payload(
     )
     commands_hygiene_payload = commands_hygiene.get("payload") if isinstance(commands_hygiene.get("payload"), dict) else {}
     command_validity = _run_json(
-        [str(PYTHON_BIN), str(COMMAND_VALIDITY_SCRIPT), "--project-root", str(project_root), "--json"],
+        [str(PYTHON_BIN), str(COMMAND_VALIDITY_SCRIPT), "--project-root", str(project_root), "--safe-audit", "--summary-json"],
         cwd=project_root,
         timeout_sec=min(int(timeout_sec), 180),
     )
@@ -768,8 +768,8 @@ def build_payload(
                 str(COMMAND_VALIDITY_SCRIPT),
                 "--project-root",
                 str(project_root),
-                "--apply",
-                "--json",
+                "--safe-audit",
+                "--summary-json",
             ],
         )
     drift_status = str(system_drift.get("overall_status") or "")

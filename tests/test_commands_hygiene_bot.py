@@ -81,12 +81,18 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     assert commands_text.index("**Search Bar**") < commands_text.index("## Most Used")
     most_used = commands_text.split("## Most Used", 1)[1].split("\n## Accounts And Positions", 1)[0]
     most_used_titles = [line for line in most_used.splitlines() if line.startswith("### ")]
-    assert most_used_titles[:4] == [
+    assert most_used_titles[:8] == [
+        "### Clear operator and global halts safely",
+        "### Turn the platform on (guarded paper)",
+        "### Turn the platform off",
+        "### Check system power status",
         "### Keep the Mac awake",
         "### Start the full live stack",
         "### Start the full live stack (fresh supervised restart)",
         "### Stop the stack",
     ]
+    assert "./scripts/ops/opsctl.sh system-power clear-halts --json" in commands_text
+    assert "./scripts/ops/opsctl.sh system-power off --json" in commands_text
     assert "### Refresh the livefeed mirror without restarting sleeves" in commands_text
     assert "### Repair and restart the livefeed mirror" in commands_text
     assert "./scripts/ops/opsctl.sh livefeed-refresh-guard --apply --force-restart --freshness-minutes 10 --json" in commands_text
@@ -419,8 +425,8 @@ def test_render_commands_markdown_places_new_entries_in_expected_sections(tmp_pa
     assert "./scripts/ops/opsctl.sh system-drift-autopilot --apply --json" in status_health
     assert "### Apply system architecture hardening" in status_health
     assert "./scripts/ops/opsctl.sh system-architecture-hardening --apply --json" in status_health
-    assert "### Master infrastructure supervisor" in status_health
-    assert "./scripts/ops/opsctl.sh master-infra-supervisor --json" in status_health
+    assert "### Operations master infrabot" in status_health
+    assert "./scripts/ops/opsctl.sh operations-master --json" in status_health
     assert "### Adapt infrabots to current system needs" in status_health
     assert "./scripts/ops/opsctl.sh infrabot-adaptive-governor --apply --json" in status_health
     assert "### Docs, commands, and reporting intelligence" in status_health

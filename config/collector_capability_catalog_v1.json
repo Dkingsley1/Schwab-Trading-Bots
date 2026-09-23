@@ -1908,6 +1908,7 @@
     },
     {
       "producer_id": "capability_materialization_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "capability-materialization", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_derived",
       "cadence": "intraday",
@@ -1944,6 +1945,7 @@
     },
     {
       "producer_id": "counterfactual_replay_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "counterfactual-replay", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_replay",
       "cadence": "intraday",
@@ -1979,6 +1981,7 @@
     },
     {
       "producer_id": "profitability_benchmark_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "profitability-benchmark-hurdle", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "daily",
@@ -2014,6 +2017,7 @@
     },
     {
       "producer_id": "trading_tax_evidence_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "trading-tax-estimate", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "daily",
@@ -2064,6 +2068,7 @@
     },
     {
       "producer_id": "source_verification_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "source-verification", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",
@@ -2088,6 +2093,7 @@
     },
     {
       "producer_id": "collector_contract_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "collector-contracts", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",
@@ -2148,6 +2154,7 @@
     },
     {
       "producer_id": "broker_account_snapshot_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "schwab-account-snapshot-refresh", "--json"],
       "producer_kind": "artifact",
       "source_kind": "broker_native",
       "cadence": "streaming",
@@ -2249,6 +2256,7 @@
     },
     {
       "producer_id": "live_order_ledger_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "live-order-ledger", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "streaming",
@@ -2279,6 +2287,7 @@
     },
     {
       "producer_id": "paper_execution_truth_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "paper-execution-truth", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",
@@ -2304,6 +2313,7 @@
     },
     {
       "producer_id": "paper_execution_calibration_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "paper-calibration", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",
@@ -2329,6 +2339,7 @@
     },
     {
       "producer_id": "paper_performance_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "paper-performance", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",
@@ -2357,6 +2368,7 @@
     },
     {
       "producer_id": "profitability_firewall_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "profitability-evidence-firewall", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",
@@ -2384,6 +2396,7 @@
     },
     {
       "producer_id": "training_lineage_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "training-lineage", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "daily",
@@ -2410,6 +2423,7 @@
     },
     {
       "producer_id": "runtime_throttle_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "runtime-throttle", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",
@@ -2431,6 +2445,7 @@
     },
     {
       "producer_id": "memory_efficiency_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "memory-efficiency", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",
@@ -2452,6 +2467,7 @@
     },
     {
       "producer_id": "ingestion_storage_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",
@@ -2474,6 +2490,7 @@
     },
     {
       "producer_id": "auth_lease_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "auth-lease", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",
@@ -2496,6 +2513,7 @@
     },
     {
       "producer_id": "process_watchdog_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "process-watchdog", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",
@@ -2518,6 +2536,7 @@
     },
     {
       "producer_id": "notification_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "notification-escalation-ladder", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",
@@ -2539,6 +2558,7 @@
     },
     {
       "producer_id": "storage_recovery_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "storage-disaster-recovery", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "daily",
@@ -2561,6 +2581,7 @@
     },
     {
       "producer_id": "soak_reliability_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "soak-reliability-sentinel", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",
@@ -2583,6 +2604,7 @@
     },
     {
       "producer_id": "incident_closeout_control",
+      "owner_command": ["./scripts/ops/opsctl.sh", "incident-closeout", "--json"],
       "producer_kind": "artifact",
       "source_kind": "internal_control",
       "cadence": "intraday",

@@ -52,6 +52,42 @@ DEFAULT_OUT_PATH = (
 _REBUILD_DEADLINE: float | None = None
 
 
+def _capacity_probe(path: Path) -> Path:
+    from core.storage_router import inspect_storage_path
+
+    route = inspect_storage_path(path)
+    if route.get("status") not in {"present", "missing"} or route.get("symlinks"):
+        raise ValueError("unsafe_cache_storage_route")
+    absolute = path.absolute()
+    if absolute.parts[:2] == ("/", "Volumes"):
+        mount = Path(*absolute.parts[:3])
+        if not mount.is_mount():
+            raise ValueError("cache_storage_volume_not_mounted")
+    probe = absolute
+    while not probe.exists():
+        probe = probe.parent
+    if not probe.is_dir():
+        probe = probe.parent
+    return probe
+
+
+def _cold_capacity_budget(
+    cold_root: Path, staging_root: Path, reserved_staging: int, reserve: int
+) -> dict[str, Any]:
+    probe = _capacity_probe(cold_root)
+    staging_probe = _capacity_probe(staging_root)
+    shared = probe.stat().st_dev == staging_probe.stat().st_dev
+    minimum = reserve + (reserved_staging if shared else 0)
+    free = _disk_free_bytes(probe)
+    return {
+        "ready": free is not None and free >= minimum,
+        "probe_path": str(probe),
+        "same_filesystem_as_staging": shared,
+        "free_bytes": free,
+        "minimum_free_after_bytes": minimum,
+    }
+
+
 def _remaining_seconds(limit: float) -> float:
     remaining = (
         float(limit)
@@ -1665,7 +1701,11 @@ def build_local_cache_payload(project_root: Path, **kwargs) -> dict[str, Any]:
         with _exclusive_lock(
             project_root / "governance/locks/storage_maintenance.lock"
         ):
-            return _build_local_cache_payload(project_root, **kwargs)
+            payload = _build_local_cache_payload(project_root, **kwargs)
+            payload["started_at_utc"] = payload.get("timestamp_utc")
+            payload["timestamp_utc"] = _iso()
+            payload["assessment_completed_at_utc"] = payload["timestamp_utc"]
+            return payload
     except RuntimeError as exc:
         if not str(exc).startswith("maintenance_lock_busy:"):
             raise
@@ -1695,13 +1735,22 @@ def _build_local_cache_payload(
     timeout_seconds: float,
     external_root: Path | None = None,
 ) -> dict[str, Any]:
-    relative_path = (
-        str(relative_path or "data/jsonl_link.sqlite3").replace("\\", "/").lstrip("./")
-    )
+    relative = Path(str(relative_path or "data/jsonl_link.sqlite3").replace("\\", "/"))
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or relative.parts[:1] != ("data",)
+    ):
+        raise ValueError("cache_relative_path_outside_data")
+    relative_path = str(relative)
     source_db = project_root / "local_fallback_storage" / relative_path
     repo_db = project_root / relative_path
     external_root = external_root or resolve_external_storage().external_root
     cold_export_root = cold_export_root.expanduser()
+    # Validate physical destinations before inspecting sources or resuming cleanup.
+    _capacity_probe(source_db)
+    _capacity_probe(external_root)
+    _capacity_probe(cold_export_root)
     transaction_path = (
         project_root
         / "governance"
@@ -1848,6 +1897,15 @@ def _build_local_cache_payload(
     if not staging["ready"]:
         payload["blockers"].append(staging["reason"])
     reserved_staging_bytes = int(staging.get("reserved_staging_bytes", 0))
+    cold_capacity = _cold_capacity_budget(
+        cold_export_root,
+        external_root,
+        reserved_staging_bytes,
+        min_external_free_after_bytes,
+    )
+    payload["cold_export_capacity"] = cold_capacity
+    if not cold_capacity["ready"]:
+        payload["blockers"].append("cold_export_destination_free_below_guard")
     if payload["blockers"]:
         payload["overall_status"] = "blocked"
         return payload
@@ -1916,9 +1974,8 @@ def _build_local_cache_payload(
                         cutoff=cutoff,
                         out_path=export_path,
                         compression=compression,
-                        free_guard_root=external_root,
-                        min_free_after_bytes=min_external_free_after_bytes
-                        + reserved_staging_bytes,
+                        free_guard_root=Path(cold_capacity["probe_path"]),
+                        min_free_after_bytes=cold_capacity["minimum_free_after_bytes"],
                     )
                 elif export_engine == "duckdb":
                     export = _export_cold_table_to_parquet_duckdb(
@@ -1927,9 +1984,8 @@ def _build_local_cache_payload(
                         cutoff=cutoff,
                         out_path=export_path,
                         compression=compression,
-                        free_guard_root=external_root,
-                        min_free_after_bytes=min_external_free_after_bytes
-                        + reserved_staging_bytes,
+                        free_guard_root=Path(cold_capacity["probe_path"]),
+                        min_free_after_bytes=cold_capacity["minimum_free_after_bytes"],
                     )
                 else:
                     export = _export_cold_table_to_parquet(
@@ -1939,9 +1995,8 @@ def _build_local_cache_payload(
                         out_path=export_path,
                         batch_size=max(int(batch_size), 1000),
                         compression=compression,
-                        free_guard_root=external_root,
-                        min_free_after_bytes=min_external_free_after_bytes
-                        + reserved_staging_bytes,
+                        free_guard_root=Path(cold_capacity["probe_path"]),
+                        min_free_after_bytes=cold_capacity["minimum_free_after_bytes"],
                     )
                 export["restore_verification"] = _verify_cold_export(
                     source_db, export, cutoff, timeout_seconds

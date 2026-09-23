@@ -293,6 +293,35 @@ def test_stored_coverage_stream_is_exact_for_unordered_future_and_duplicate_rows
     assert streamed["recent_windows_verification"]["row_count"] == len(rows)
 
 
+@pytest.mark.parametrize("backend", ["accelerated", "unavailable", "rejected"])
+def test_stored_coverage_uses_existing_json_accelerator_with_safe_fallback(
+    tmp_path, monkeypatch, backend
+):
+    from scripts import sql_dataset_io
+
+    calls = []
+
+    class Parser:
+        @staticmethod
+        def loads(raw):
+            calls.append(raw)
+            if backend == "rejected":
+                raise ValueError("unsupported input")
+            return json.loads(raw)
+
+    monkeypatch.setattr(
+        sql_dataset_io, "_fast_json", None if backend == "unavailable" else Parser
+    )
+    summary = _stored_coverage_fixture(tmp_path)
+    result = src._verified_stored_coverage_windows(
+        summary, now=datetime.now(timezone.utc)
+    )
+    assert result["recent_windows_verification"]["rows_sha256"] == summary["rows_sha256"]
+    assert result["recent_windows_verification"]["row_count"] == 1
+    assert result["recent_windows"]["1"]["row_count"] == 1
+    assert bool(calls) == (backend != "unavailable")
+
+
 @pytest.mark.parametrize("failure", [
     "hash", "count_short", "count_long", "missing_hash", "legacy", "invalid_timestamp",
     "missing_symbol", "malformed", "truncated", "nested_sequence",

@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.ops.crypto_workspace import handle_request as handle_crypto_request
+from core.status_label_contract import evidence_label
 
 LIVE_FEED_SCRIPT = PROJECT_ROOT / "scripts" / "ops" / "live_feed_tail.sh"
 RUNTIME_DASHBOARD = PROJECT_ROOT / "governance" / "health" / "runtime_gate_dashboard_latest.json"
@@ -89,6 +90,7 @@ HTML_PAGE = """<!doctype html>
       font-size: 12px;
       color: var(--muted);
       line-height: 1.45;
+      overflow-wrap: anywhere;
     }
     .terminal {
       padding: 12px 14px 18px;
@@ -356,10 +358,13 @@ HTML_PAGE = """<!doctype html>
         metaEl.innerHTML =
           `<span class="${statusClass}">dashboard=${esc(payload.dashboard_status)}</span> ` +
           `health=${esc(payload.data_quality_score)} ` +
-          `updated=${new Date().toLocaleTimeString()}`;
+          `data=${esc(payload.source_freshness)} ` +
+          `observed=${esc(payload.oldest_core_observation_utc || "unknown")} ` +
+          `polled=${new Date().toLocaleTimeString()}`;
         statusEl.textContent =
           `stream=${payload.stream_connected ? "live" : "idle"} ` +
-          `source=${payload.source} lines=${payload.lines} include_decisions=${payload.include_decisions ? "1" : "0"} pid=${payload.server_pid}`;
+          `source=${payload.source} lines=${payload.lines} include_decisions=${payload.include_decisions ? "1" : "0"} pid=${payload.server_pid} ` +
+          `stale_or_unknown=${(payload.stale_or_unknown_sources || []).join(",") || "none"}`;
         const spcxQuote = payload.spcx_quote_error ? payload.spcx_quote_error : "ok";
         const notifyState = payload.imessage_ready ? "iMessage" : "no_iMessage";
         const spcxAlert = payload.spcx_alert_triggered ? "alert" : "watch";
@@ -782,6 +787,19 @@ def _status_summary() -> dict[str, Any]:
     process_watchdog = _load_json(PROCESS_WATCHDOG)
     storage = _load_json(INGESTION_STORAGE_CONTROL)
     throttle = _load_json(RUNTIME_THROTTLE_CONTROL)
+    observations = {
+        name: evidence_label(payload, scope=name, source=str(path), max_age_seconds=600)
+        for name, payload, path in (
+            ("dashboard", runtime, RUNTIME_DASHBOARD),
+            ("health", health, HEALTH_GATES),
+            ("halts", killswitch, GLOBAL_KILLSWITCH),
+            ("storage", storage, INGESTION_STORAGE_CONTROL),
+            ("watchdog", process_watchdog, PROCESS_WATCHDOG),
+            ("throttle", throttle, RUNTIME_THROTTLE_CONTROL),
+        )
+    }
+    stale_sources = [name for name, label in observations.items() if not label["fresh"]]
+    stamps = [label["observation_timestamp_utc"] for label in observations.values()]
 
     def intish(value: Any) -> int:
         try:
@@ -818,15 +836,27 @@ def _status_summary() -> dict[str, Any]:
         else {}
     )
     return {
+        "source_observations": observations,
+        "source_freshness": "stale_or_unknown" if stale_sources else "fresh",
+        "stale_or_unknown_sources": stale_sources,
+        "oldest_core_observation_utc": min(stamps) if all(stamps) else None,
         "dashboard_status": str(overall.get("status", "unknown") or "unknown"),
-        "dashboard_attention": overall.get("attention") if isinstance(overall.get("attention"), list) else [],
+        "dashboard_attention": (
+            overall.get("attention")
+            if isinstance(overall.get("attention"), list)
+            else []
+        ),
         "data_quality_score": floatish(health.get("data_quality_score", 0.0)),
         "hard_gate_triggered": bool(health.get("hard_gate_triggered", False)),
         "halt_state": str(killswitch.get("halt_state") or "unknown"),
         "operating_mode": str(killswitch.get("operating_mode") or "unknown"),
-        "expansion_pressure_score": floatish(killswitch.get("expansion_pressure_score", 0.0)),
+        "expansion_pressure_score": floatish(
+            killswitch.get("expansion_pressure_score", 0.0)
+        ),
         "quant_status": str(quant.get("overall_status") or "unknown"),
-        "quant_resource_pressure": round(floatish(quant_features.get("quant_model_resource_pressure_norm", 0.0)), 3),
+        "quant_resource_pressure": round(
+            floatish(quant_features.get("quant_model_resource_pressure_norm", 0.0)), 3
+        ),
         "memory_profile": str(memory.get("recommended_profile") or "unknown"),
         "spcx_status": str(spcx.get("overall_status") or "unknown"),
         "spcx_symbol": str(spcx.get("symbol") or "SPCX"),
@@ -836,12 +866,16 @@ def _status_summary() -> dict[str, Any]:
         "macro_status": str(macro_intel.get("overall_status") or "unknown"),
         "macro_relevance": str(macro_intel.get("market_relevance") or "unknown"),
         "macro_calendar_status": str(macro_calendar.get("status") or "unknown"),
-        "macro_headline": str(macro_item.get("headline") or live_macro.get("headline") or ""),
+        "macro_headline": str(
+            macro_item.get("headline") or live_macro.get("headline") or ""
+        ),
         "imessage_ready": bool(
             mac_notification.get("imessage_enabled")
             and mac_notification.get("imessage_recipient_configured")
         ),
-        "imessage_min_severity": str(mac_notification.get("imessage_min_severity") or "unknown"),
+        "imessage_min_severity": str(
+            mac_notification.get("imessage_min_severity") or "unknown"
+        ),
         "remote_alert_status": str(remote_alert.get("overall_status") or "unknown"),
         "remote_alert_imessage": bool(remote_channels.get("imessage_bridge", False)),
         "remote_alert_unsent_count": intish(remote_backlog.get("unsent_count", 0)),

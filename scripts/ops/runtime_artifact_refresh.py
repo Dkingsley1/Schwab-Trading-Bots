@@ -1010,6 +1010,7 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "cmd": [
                 str(PY),
                 str(project_root / "scripts" / "execution_budgeter.py"),
+                "--refresh-slo",
                 "--json",
             ],
             "timeout_sec": 120,

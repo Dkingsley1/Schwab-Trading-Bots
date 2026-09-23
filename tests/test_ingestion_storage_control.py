@@ -7359,6 +7359,17 @@ def test_p_core_burst_intelligence_uses_seven_when_host_is_deep_green(
     assert contract["control_env"]["SQL_LINK_SERVICE_PREPROCESS_WORKERS"] == "7"
 
 
+def test_operator_request_reports_resource_cap_separately(monkeypatch):
+    monkeypatch.setenv("BACKLOG_PCORE_PREPROCESS_WORKERS_OVERRIDE", "8")
+    monkeypatch.setattr(src, "_recent_storage_eject_signal", lambda **kw: {"active": False})
+    result = src._p_core_burst_intelligence(p_core_count=8, foreground_reserve=3,
+        writer_reserve=1, active=True, backlog_ratio=2, sparse_active=False)
+    assert result["inputs"]["operator_requested_workers"] == 8
+    assert result["inputs"]["operator_request_resource_capped"]
+    assert result["selected_workers"] <= result["max_budget"] < 8
+    assert "operator requested 8" in result["reason"]
+
+
 def test_p_core_burst_intelligence_caps_after_recent_storage_eject(
     tmp_path: Path, monkeypatch
 ) -> None:

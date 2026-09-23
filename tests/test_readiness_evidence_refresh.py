@@ -77,6 +77,12 @@ def test_refresh_profiles_are_bounded_and_keep_required_ordering() -> None:
     production = [row["name"] for row in refresh.profile_steps("production")]
 
     assert accrual == [
+        "self_healing_gaps",
+        "bitcoin_price_watch",
+        "storage_fallback_repair",
+        "storage_route_observation",
+        "emergency_storage_thin",
+        "purchase_proposals",
         "market_replay_fill_capture",
         "runtime_training_snapshot",
         "point_in_time_event_store",

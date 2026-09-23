@@ -2670,6 +2670,20 @@ def _operator_mode_allows_core_sleeve_restart() -> Tuple[bool, str]:
     return True, "operator_mode_allows_core_sleeve_restart"
 
 
+def _local_fallback_start_ready(project_root=None) -> Tuple[bool, str]:
+    from core.storage_router import DEFAULT_LINK_DIRS, NESTED_SQLITE_ROUTE_RELS, inspect_storage_path
+
+    if os.getenv("BOT_LOGS_PREFER_EXTERNAL", "1").strip().lower() not in {"0", "false", "no", "off"}:
+        return True, "external_route_policy"
+    root = Path(project_root or PROJECT_ROOT)
+    local = Path(os.getenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(root / "local_fallback_storage")))
+    for relative in ("", *DEFAULT_LINK_DIRS, *NESTED_SQLITE_ROUTE_RELS):
+        route = inspect_storage_path(local / relative, boundary_root=local, allow_external=False)
+        if route["status"] not in {"present", "missing"}:
+            return False, f"local_fallback_route_rejected:{relative or 'root'}"
+    return True, "local_fallback_routes_ready"
+
+
 def _all_sleeves_start_ready(broker: str, simulate: bool) -> Tuple[bool, str]:
     operator_ready, operator_reason = _operator_mode_allows_core_sleeve_restart()
     if not operator_ready:
@@ -4065,6 +4079,15 @@ def main() -> int:
                 for p in t.get("alt_patterns", [])
                 if p
             )
+
+        if t["name"] in {"all_sleeves", "coinbase_loop", "coinbase_futures_loop"}:
+            ready, reason = _local_fallback_start_ready()
+            if not ready:
+                row["restart_skipped"] = "startup_not_ready"
+                row["reason"] = reason
+                row["repair_owner"] = "storage_failback_sync --repair-local-fallback-aliases --apply"
+                status.append(row)
+                continue
 
         if t["name"] == "all_sleeves":
             ready, reason = _all_sleeves_start_ready(

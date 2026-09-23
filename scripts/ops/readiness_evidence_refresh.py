@@ -40,6 +40,12 @@ SCHEMA_VERSION = 1
 Runner = Callable[..., dict[str, Any]]
 PROFILE_STEP_NAMES: dict[str, tuple[str, ...]] = {
     "accrual": (
+        "self_healing_gaps",
+        "bitcoin_price_watch",
+        "storage_fallback_repair",
+        "storage_route_observation",
+        "emergency_storage_thin",
+        "purchase_proposals",
         "market_replay_fill_capture",
         "runtime_training_snapshot",
         "point_in_time_event_store",
@@ -218,6 +224,42 @@ def _step(
 
 def default_steps() -> list[dict[str, Any]]:
     return [
+        _step(
+            "self_healing_gaps", "scripts/ops/self_healing_gap_audit.py",
+            "governance/health/self_healing_gap_audit_latest.json", "--json",
+            max_age_minutes=15, owner_timeout_seconds=30,
+        ),
+        _step(
+            "bitcoin_price_watch", "scripts/ops/bitcoin_price_watch.py",
+            "governance/health/bitcoin_price_watch_latest.json", "--json",
+            max_age_minutes=15, owner_timeout_seconds=30,
+        ),
+        _step(
+            "storage_fallback_repair", "scripts/ops/storage_failback_sync.py",
+            "governance/health/storage_fallback_repair_latest.json",
+            "--repair-local-fallback-aliases", "--apply", "--json",
+            max_age_minutes=15, owner_timeout_seconds=30,
+        ),
+        _step(
+            "storage_route_observation", "scripts/ops/storage_failback_sync.py",
+            "governance/health/storage_failback_sync_latest.json", "--verify-only", "--json",
+            max_age_minutes=15, owner_timeout_seconds=30,
+        ),
+        _step(
+            "emergency_storage_thin", "scripts/ops/emergency_storage_thin.py",
+            "governance/health/emergency_storage_thin_latest.json", "--apply", "--json",
+            max_age_minutes=15, owner_timeout_seconds=120,
+        ),
+        _step(
+            "purchase_proposals",
+            "scripts/ops/purchase_proposals.py",
+            "governance/health/purchase_proposals_latest.json",
+            "evaluate",
+            "--scheduled",
+            "--json",
+            max_age_minutes=15,
+            owner_timeout_seconds=120,
+        ),
         _step(
             "memory_pressure_intelligence",
             "scripts/ops/memory_pressure_intelligence.py",
@@ -520,6 +562,7 @@ def default_steps() -> list[dict[str, Any]]:
             "execution_budget",
             "scripts/execution_budgeter.py",
             "governance/risk/execution_budget_latest.json",
+            "--refresh-slo",
             "--json",
             max_age_minutes=60,
             depends_on=("portfolio_risk_ledger",),

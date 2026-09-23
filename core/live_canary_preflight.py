@@ -230,10 +230,13 @@ def evaluate_live_canary_preflight(
     env: Mapping[str, str] | None = None,
     now: datetime | None = None,
     purpose: str = "production_canary",
+    session: str = "NORMAL",
 ) -> dict[str, Any]:
     if purpose not in {"production_canary", "supervised_broker_test"}:
         raise ValueError("unsupported preflight purpose")
     supervised_test = purpose == "supervised_broker_test"
+    if not supervised_test and session != "NORMAL":
+        raise ValueError("production canary remains normal-session-only")
     root = Path(project_root)
     current = (now or _utc_now()).astimezone(timezone.utc)
     env_map = dict(env) if isinstance(env, Mapping) else dict(os.environ)
@@ -247,8 +250,18 @@ def evaluate_live_canary_preflight(
         "config/live_canary_micro_policy_v1.json",
     )
     if supervised_test:
-        plan_path = root / "config" / "supervised_broker_test_v1.json"
+        from core.supervised_broker_test import (
+            policy_path,
+            attestation_path as test_attestation_path,
+            validate_policy,
+            validate_session,
+        )
+
+        plan_path = root / policy_path(symbol)
     plan, plan_valid = _load_json(plan_path)
+    if supervised_test:
+        validate_policy(plan)
+        validate_session(plan, session)
     candidate_path = _project_path(
         root,
         policy.get("production_candidate_state_path"),
@@ -273,9 +286,7 @@ def evaluate_live_canary_preflight(
         "governance/runtime/live_canary_operator_attestation.json",
     )
     if supervised_test:
-        attestation_path = (
-            root / "governance/runtime/supervised_broker_test_attestation.json"
-        )
+        attestation_path = root / test_attestation_path(symbol)
     attestation, attestation_valid = _load_json(attestation_path)
     risk_path = _project_path(
         root,
@@ -559,6 +570,8 @@ def evaluate_live_canary_preflight(
             "broker_open_orders_reviewed",
             "no_concurrent_manual_orders_confirmed",
         )
+        if session != "NORMAL":
+            required_confirmations += ("extended_hours_risk_reviewed",)
     missing_confirmations = list(required_confirmations)
     attestation_issued = _parse_timestamp(attestation.get("issued_at_utc"))
     attestation_expires = _parse_timestamp(attestation.get("expires_at_utc"))
@@ -596,6 +609,8 @@ def evaluate_live_canary_preflight(
             or attestation.get("test_policy_sha256") != _file_sha256(plan_path)
         ):
             attestation_blockers.append("operator_attestation_test_policy_mismatch")
+        if supervised_test and attestation.get("session", "NORMAL") != session:
+            attestation_blockers.append("operator_attestation_session_mismatch")
         if (
             attestation_issued is None
             or attestation_expires is None
@@ -663,9 +678,14 @@ def evaluate_live_canary_preflight(
         if isinstance(risk_boundary.get("input_health"), Mapping)
         else {}
     )
+    risk_valid_until = _parse_timestamp(risk_boundary.get("valid_until_utc"))
+    risk_inputs_current = "valid_until_utc" not in risk_boundary or bool(
+        risk_valid_until and current <= risk_valid_until
+    )
     risk_ready = bool(
         risk_valid
         and risk_fresh
+        and risk_inputs_current
         and risk_boundary.get("ok", False)
         and str(risk_boundary.get("overall_status") or "").strip().lower() == "ready"
         and input_health.get("sources_ready", False)
@@ -791,6 +811,11 @@ def evaluate_live_canary_preflight(
         if require_session
         else {"ready": True, "state": "not_enforced", "blocker": ""}
     )
+    if supervised_test and session != "NORMAL":
+        from core.equity_order_sessions import extended_equity_session_state
+
+        session_state = extended_equity_session_state(session=session, now=current)
+        require_session = True
     if require_session and not bool(session_state.get("ready", False)):
         blockers.append(
             str(session_state.get("blocker") or "primary_equity_session_not_ready")
@@ -846,6 +871,7 @@ def evaluate_live_canary_preflight(
     receipt = {
         "schema_version": 1,
         "purpose": purpose,
+        "order_session": session,
         "evaluated_at_utc": current.isoformat(),
         "ready": not unique_blockers,
         "candidate_id": candidate_id,
@@ -877,6 +903,33 @@ def evaluate_live_canary_preflight(
         "immutable_release_boundary_ready": release_ready,
         "immutable_release_manifest_ready": release_manifest_ready,
         "technical_gate_diagnostics": {
+            "risk_boundary": {
+                "ready": risk_ready,
+                "fresh": risk_fresh,
+                "sources_ready": input_health.get("sources_ready") is True,
+                "valid_until_utc": risk_boundary.get("valid_until_utc"),
+                "source_blockers": [
+                    *list(input_health.get("blockers") or []),
+                    *([] if risk_inputs_current else ["risk_input_validity_expired_or_invalid"]),
+                ],
+                "sources": {
+                    name: {
+                        key: row.get(key)
+                        for key in (
+                            "ready",
+                            "age_minutes",
+                            "max_age_minutes",
+                            "blockers",
+                        )
+                    }
+                    for name, row in (
+                        input_health.get("sources", {}).items()
+                        if isinstance(input_health.get("sources"), Mapping)
+                        else ()
+                    )
+                    if isinstance(row, Mapping)
+                },
+            },
             "order_ledger": {
                 "ready": ledger_ready,
                 "fresh": ledger_fresh,

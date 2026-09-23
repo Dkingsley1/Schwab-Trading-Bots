@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from datetime import datetime, timezone
+from itertools import permutations
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
@@ -444,19 +445,19 @@ def candidate_source_coverage(
     }
 
 
-def _read_jsonl(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
-    rows: list[dict[str, Any]] = []
+def _read_candidate_partitions(path: Path) -> tuple[list[list[dict[str, Any]]], list[str]]:
+    partitions: list[list[dict[str, Any]]] = []
     errors: list[str] = []
     sources = [path] if path.suffix == ".gz" else [
         path.with_name(path.name + ".gz"),
         path.with_name(path.name + ".raw-training.gz"),
         path,
     ]
-    seen: dict[str, dict[str, Any]] = {}
     for source in sources:
         if not source.exists():
             continue
-        partition_seen: dict[str, dict[str, Any]] = {}
+        rows: list[dict[str, Any]] = []
+        partition_hashes: set[str] = set()
         try:
             opener = gzip.open if source.suffix == ".gz" else open
             with opener(source, "rt", encoding="utf-8") as handle:
@@ -472,21 +473,20 @@ def _read_jsonl(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
                         errors.append(f"non_object_line={index}")
                         continue
                     event_hash = str(payload.get("event_hash") or "")
-                    # Compaction may retain identical copies at partition boundaries.
-                    if event_hash and seen.get(event_hash) == payload:
-                        continue
-                    if event_hash:
-                        partition_seen[event_hash] = payload
+                    if event_hash and event_hash in partition_hashes:
+                        errors.append(f"replayed_event_within_partition_line={index}")
+                    partition_hashes.add(event_hash)
                     rows.append(payload)
-            seen.update(partition_seen)
+            partitions.append(rows)
         except (OSError, EOFError, UnicodeError) as exc:
             errors.append(f"event_log_read_failed:{type(exc).__name__}")
-    return rows, errors
+    return partitions, errors
 
 
-def read_candidate_event_chain(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Read retained partitions and validate the exact rows consumed by readers."""
-    rows, errors = _read_jsonl(path)
+def _validate_candidate_event_rows(
+    rows: list[dict[str, Any]], path: Path, read_errors: list[str]
+) -> dict[str, Any]:
+    errors = list(read_errors)
     expected_previous = ""
     recovery_boundaries: list[int] = []
     for index, row in enumerate(rows, start=1):
@@ -511,7 +511,7 @@ def read_candidate_event_chain(path: Path) -> tuple[list[dict[str, Any]], dict[s
         if actual_hash != expected_hash:
             errors.append(f"event_hash_mismatch_line={index}")
         expected_previous = actual_hash
-    chain = {
+    return {
         "ok": not errors,
         "event_count": len(rows),
         "chain_head": expected_previous,
@@ -519,7 +519,33 @@ def read_candidate_event_chain(path: Path) -> tuple[list[dict[str, Any]], dict[s
         "verified_recovery_boundary_lines": recovery_boundaries,
         "path": str(path),
     }
-    return ([] if errors else rows), chain
+
+
+def read_candidate_event_chain(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Order at most three retained partitions by their verified hash links."""
+    partitions, errors = _read_candidate_partitions(path)
+    first_failure = None
+    # Archive suffixes do not establish chronology. Never reorder within a partition.
+    for order in permutations(range(len(partitions))):
+        rows: list[dict[str, Any]] = []
+        seen: dict[str, dict[str, Any]] = {}
+        for index in order:
+            partition_seen: dict[str, dict[str, Any]] = {}
+            for row in partitions[index]:
+                event_hash = str(row.get("event_hash") or "")
+                if event_hash and seen.get(event_hash) == row:
+                    continue
+                rows.append(row)
+                if event_hash:
+                    partition_seen[event_hash] = row
+            seen.update(partition_seen)
+        chain = _validate_candidate_event_rows(rows, path, errors)
+        chain["partition_read_order"] = list(order)
+        if chain["ok"]:
+            return rows, chain
+        if first_failure is None:
+            first_failure = chain
+    return [], first_failure
 
 
 def verify_candidate_event_chain(path: Path) -> dict[str, Any]:

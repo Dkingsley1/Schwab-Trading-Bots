@@ -420,13 +420,25 @@ def test_rehearsal_forces_every_live_runtime_switch_off() -> None:
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "exit", "timeout", "stale", "future", "unchanged"]
+    "failure",
+    [
+        None,
+        "exit",
+        "timeout",
+        "stale",
+        "future",
+        "unchanged",
+        "risk_degraded",
+        "risk_degraded_stale",
+        "risk_exit",
+    ],
 )
 def test_technical_refresh_requires_new_owner_evidence(tmp_path, monkeypatch, failure):
     monkeypatch.setattr(rehearsal, "PROJECT_ROOT", tmp_path)
     health = tmp_path / "governance/health"
     health.mkdir(parents=True)
     names = {
+        "risk-service-boundary": "../risk/risk_service_boundary_latest.json",
         "schwab-tax-ledger-refresh": "schwab_tax_ledger_refresh_latest.json",
         "release-freeze": "release_freeze_guard_latest.json",
         "live-order-ledger": "live_order_ledger_control_latest.json",
@@ -436,13 +448,16 @@ def test_technical_refresh_requires_new_owner_evidence(tmp_path, monkeypatch, fa
         "ok": True,
     }
     for filename in names.values():
+        (health / filename).parent.mkdir(parents=True, exist_ok=True)
         (health / filename).write_text(json.dumps(old))
     calls = []
 
     def run(command, **kwargs):
         name = command[1]
         calls.append(name)
-        assert command[2:] == ["--json"]
+        assert command[2:] == (
+            ["--refresh-inputs", "--json"] if name == "risk-service-boundary" else ["--json"]
+        )
         assert kwargs["timeout"] <= 180
         assert kwargs["env"]["SCHWAB_AUTH_INTERACTIVE"] == "0"
         for key, value in READ_ONLY_ENVIRONMENT.items():
@@ -450,6 +465,12 @@ def test_technical_refresh_requires_new_owner_evidence(tmp_path, monkeypatch, fa
         if name == "schwab-tax-ledger-refresh" and failure == "timeout":
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         observed = datetime.now(timezone.utc)
+        blocked_risk = name == "risk-service-boundary" and failure in {
+            "risk_degraded",
+            "risk_degraded_stale",
+        }
+        if blocked_risk and failure == "risk_degraded_stale":
+            observed -= timedelta(days=1)
         if name == "schwab-tax-ledger-refresh":
             if failure == "stale":
                 observed -= timedelta(days=1)
@@ -460,27 +481,48 @@ def test_technical_refresh_requires_new_owner_evidence(tmp_path, monkeypatch, fa
                 json.dumps(
                     {
                         "timestamp_utc": observed.isoformat(),
-                        "ok": name != "release-freeze",
+                        "ok": name != "release-freeze" and not blocked_risk,
                         "overall_status": (
-                            "degraded" if name == "release-freeze" else "ready"
+                            "degraded"
+                            if name == "release-freeze" or blocked_risk
+                            else "ready"
                         ),
                     }
                 )
             )
         return SimpleNamespace(
             returncode=(
-                2 if name == "schwab-tax-ledger-refresh" and failure == "exit" else 0
+                2
+                if (name == "schwab-tax-ledger-refresh" and failure == "exit")
+                or blocked_risk
+                or (name == "risk-service-boundary" and failure == "risk_exit")
+                else 0
             )
         )
 
     monkeypatch.setattr(rehearsal.subprocess, "run", run)
     payload = rehearsal._refresh_technical_evidence()
     assert calls == list(names)
-    assert payload["ok"] is (failure is None)
-    assert payload["steps"][1]["refreshed"] is True
-    assert payload["steps"][1]["source_ok"] is False
+    assert payload["ok"] is (failure in {None, "risk_degraded"})
+    release_step = next(
+        row for row in payload["steps"] if row["name"] == "release_guard"
+    )
+    assert release_step["refreshed"] is True
+    assert release_step["source_ok"] is False
     assert payload["live_execution_authority"] is False
-    if failure:
+    if failure and failure.startswith("risk_"):
+        risk_step = next(
+            row for row in payload["steps"] if row["name"] == "risk_boundary"
+        )
+        assert risk_step["refreshed"] is (failure == "risk_degraded")
+        assert payload["blockers"] == (
+            []
+            if failure == "risk_degraded"
+            else ["technical_evidence_refresh_failed:risk_boundary"]
+        )
+        if failure != "risk_exit":
+            assert risk_step["source_ok"] is False
+    elif failure:
         assert payload["blockers"] == ["technical_evidence_refresh_failed:tax_ledger"]
 
 

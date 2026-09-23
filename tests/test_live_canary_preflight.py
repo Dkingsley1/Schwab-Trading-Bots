@@ -419,6 +419,59 @@ def test_stale_risk_boundary_fails_closed(tmp_path: Path) -> None:
 
     assert result["ready"] is False
     assert "risk_service_boundary_not_ready" in result["blockers"]
+    diagnostics = result["technical_gate_diagnostics"]["risk_boundary"]
+    assert diagnostics["ready"] is False
+    assert diagnostics["fresh"] is False
+
+
+def test_fresh_risk_wrapper_exposes_stale_dependency_without_clearance(tmp_path: Path) -> None:
+    now = datetime(2026, 8, 26, 15, tzinfo=timezone.utc)
+    env, _ = _seed_ready_preflight(tmp_path, now=now)
+    risk_path = tmp_path / "governance/risk/risk_service_boundary_latest.json"
+    risk = json.loads(risk_path.read_text(encoding="utf-8"))
+    risk.update(ok=False, overall_status="degraded")
+    risk["input_health"] = {
+        "sources_ready": False,
+        "blockers": ["execution_budget:artifact_stale"],
+        "sources": {
+            "execution_budget": {
+                "path": "private-owner-path-not-for-diagnostics",
+                "ready": False,
+                "age_minutes": 121.0,
+                "max_age_minutes": 120.0,
+                "blockers": ["artifact_stale"],
+            }
+        },
+    }
+    _write(risk_path, risk)
+
+    result = evaluate_live_canary_preflight(
+        tmp_path, symbol="SCHD", action="BUY", env=env, now=now
+    )
+
+    diagnostics = result["technical_gate_diagnostics"]["risk_boundary"]
+    assert diagnostics["fresh"] is True
+    assert diagnostics["ready"] is False
+    assert diagnostics["sources_ready"] is False
+    assert diagnostics["source_blockers"] == ["execution_budget:artifact_stale"]
+    assert diagnostics["sources"]["execution_budget"]["age_minutes"] == 121.0
+    assert "path" not in diagnostics["sources"]["execution_budget"]
+    assert "risk_service_boundary_not_ready" in result["blockers"]
+    assert result["ready"] is False
+    assert result["live_execution_authority"] is False
+
+
+def test_risk_input_expiry_blocks_even_when_owner_report_is_fresh(tmp_path: Path) -> None:
+    now = datetime(2026, 8, 26, 15, tzinfo=timezone.utc)
+    env, _ = _seed_ready_preflight(tmp_path, now=now)
+    path = tmp_path / "governance/risk/risk_service_boundary_latest.json"
+    payload = json.loads(path.read_text())
+    payload["valid_until_utc"] = (now - timedelta(seconds=1)).isoformat()
+    _write(path, payload)
+    result = evaluate_live_canary_preflight(tmp_path, symbol="SCHD", action="BUY", env=env, now=now)
+    assert result["technical_gate_diagnostics"]["risk_boundary"]["fresh"] is True
+    assert result["risk_boundary_ready"] is False
+    assert "risk_service_boundary_not_ready" in result["blockers"]
 
 
 def test_recent_unreviewed_same_symbol_disposition_fails_closed(

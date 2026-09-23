@@ -33,6 +33,10 @@ else:
         write_payload,
     )
 
+from scripts.ops.operations_master import directions as operations_directions
+from scripts.ops.operations_master import dispatch as dispatch_operations
+from scripts.ops.long_runtime_common import run_bounded_process_group
+
 
 DEFAULT_OUT_PATH = (
     PROJECT_ROOT
@@ -1338,7 +1342,7 @@ def _command_surface_check(project_root: Path) -> dict[str, Any]:
         },
         repair_commands=[
             ["./scripts/ops/opsctl.sh", "commands-hygiene", "--apply", "--json"],
-            ["./scripts/ops/opsctl.sh", "command-validity", "--apply", "--json"],
+            ["./scripts/ops/opsctl.sh", "command-validity", "--safe-audit", "--summary-json"],
         ],
     )
 
@@ -2243,19 +2247,16 @@ def _degradation_containment_contract(checks: list[dict[str, Any]]) -> dict[str,
 
 def _run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict[str, Any]:
     try:
-        proc = subprocess.run(
+        proc = run_bounded_process_group(
             cmd,
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=max(int(timeout_sec), 1),
+            cwd=cwd,
+            timeout_seconds=max(int(timeout_sec), 1),
             env=_child_env("master_infrastructure_supervisor"),
         )
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-        rc = int(proc.returncode)
-        timed_out = False
+        stdout = str(proc.get("stdout") or "")
+        stderr = str(proc.get("stderr") or "")
+        rc = int(proc["rc"])
+        timed_out = bool(proc.get("timed_out", False))
     except subprocess.TimeoutExpired as exc:
         stdout = (
             exc.stdout.decode("utf-8", errors="ignore")
@@ -2326,10 +2327,14 @@ def build_payload(
         ]
     )
 
+    operations = operations_directions(project_root, checks)
     attempts: list[dict[str, Any]] = []
+    deferred: list[dict[str, Any]] = []
     if apply:
-        for cmd in repair_commands:
-            attempts.append(_run_json(cmd, cwd=project_root, timeout_sec=timeout_sec))
+        attempts, deferred = dispatch_operations(
+            project_root, operations, runner=_run_json, timeout_sec=timeout_sec
+        )
+    operations["deferred_dispatch"] = deferred
 
     hard_failed_attempts = [
         row
@@ -2386,15 +2391,20 @@ def build_payload(
         "overall_status": overall_status,
         "apply": bool(apply),
         "checks": checks,
+        "operations_master": operations,
         "repair_plan": [
-            {"name": f"repair_{idx + 1}", "cmd": cmd}
-            for idx, cmd in enumerate(repair_commands)
+            {"name": row["subgroup"], "cmd": ["./scripts/ops/opsctl.sh", *row["command"]]}
+            for row in operations["directives"]
+            if row.get("command")
         ],
+        "owner_suggestions_not_dispatch_authority": repair_commands,
         "attempts": [
             {
                 "cmd": list(row.get("cmd") or []),
                 "rc": _safe_int(row.get("rc"), 1),
                 "timed_out": bool(row.get("timed_out", False)),
+                "subgroup": row.get("subgroup"),
+                "completion_credit": False,
             }
             for row in attempts
         ],
@@ -2402,7 +2412,9 @@ def build_payload(
             "check_count": len(checks),
             "blocked_check_count": len(blocked),
             "degraded_check_count": len(degraded),
-            "repair_command_count": len(repair_commands),
+            "repair_command_count": sum(
+                bool(row.get("command")) for row in operations["directives"]
+            ),
             "hard_failed_attempt_count": len(hard_failed_attempts),
             "degraded_attempt_count": len(degraded_attempts),
         },

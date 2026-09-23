@@ -38,7 +38,10 @@ def test_declared_catalog_joins_sources_without_payload_io(
         if row["source_kind"] == "internal_replay"
     )
     assert replay["data_class"] == "derived_artifact"
-    assert replay["owner_command_status"] == "not_declared_in_catalog"
+    assert replay["owner_command_status"] == "declared"
+    assert replay["owner_command"] == ["./scripts/ops/opsctl.sh", "counterfactual-replay", "--json"]
+    missing = [row["producer_id"] for row in result["artifact_producers"] if not row["owner_command"]]
+    assert missing == ["broker_readiness_control"]
 
 
 @pytest.mark.parametrize(

@@ -221,10 +221,19 @@ def _quote_summary(
     realtime = realtime_value is True or str(realtime_value or "").lower() == "true"
     venue = str(_first_nested(raw, VENUE_FIELDS) or "").strip()
     provider_payload_sha256 = _payload_sha256(raw)
+    symbol_row = raw.get(str(symbol).upper(), {})
+    side_quote = symbol_row.get("quote", {}) if isinstance(symbol_row, Mapping) else {}
+    side_quote = side_quote if isinstance(side_quote, Mapping) else {}
+    bid_time = _provider_timestamp(side_quote.get("bidTime"))
+    ask_time = _provider_timestamp(side_quote.get("askTime"))
     compact = {
         "symbol": str(symbol or "").strip().upper(),
         "bid_price": round(bid, 6),
         "ask_price": round(ask, 6),
+        "bid_timestamp_utc": bid_time.isoformat() if bid_time else "",
+        "ask_timestamp_utc": ask_time.isoformat() if ask_time else "",
+        "bid_size": _safe_float(side_quote.get("bidSize"), 0.0),
+        "ask_size": _safe_float(side_quote.get("askSize"), 0.0),
         "last_price": round(last, 6),
         "mark_price": round(mark, 6),
         "spread_bps": round(spread_bps, 6),
@@ -994,6 +1003,7 @@ def _restore_environment(previous: Mapping[str, str | None]) -> None:
 
 def _refresh_technical_evidence() -> dict[str, Any]:
     steps = (
+        ("risk_boundary", "risk-service-boundary", "risk_service_boundary_latest.json", 60),
         (
             "tax_ledger",
             "schwab-tax-ledger-refresh",
@@ -1009,7 +1019,7 @@ def _refresh_technical_evidence() -> dict[str, Any]:
         ),
     )
     required_paths = [
-        PROJECT_ROOT / "governance" / "health" / filename for _, _, filename, _ in steps
+        PROJECT_ROOT / "governance" / ("risk" if name == "risk_boundary" else "health") / filename for name, _, filename, _ in steps
     ] + [
         PROJECT_ROOT / "governance/runtime/live_order_ledger.sqlite3",
         PROJECT_ROOT / "governance/soak/release_freeze_window.json",
@@ -1034,14 +1044,15 @@ def _refresh_technical_evidence() -> dict[str, Any]:
         }
     observations = []
     for name, command, filename, timeout in steps:
-        path = PROJECT_ROOT / "governance" / "health" / filename
+        path = PROJECT_ROOT / "governance" / ("risk" if name == "risk_boundary" else "health") / filename
         previous_digest = file_sha256(path)
         started = datetime.now(timezone.utc)
         error = ""
         returncode = None
         try:
             proc = subprocess.run(
-                [str(PROJECT_ROOT / "scripts/ops/opsctl.sh"), command, "--json"],
+                [str(PROJECT_ROOT / "scripts/ops/opsctl.sh"), command,
+                 *(["--refresh-inputs"] if name == "risk_boundary" else []), "--json"],
                 cwd=str(PROJECT_ROOT),
                 env={
                     **os.environ,
@@ -1063,8 +1074,14 @@ def _refresh_technical_evidence() -> dict[str, Any]:
             and started <= observed <= datetime.now(timezone.utc)
             and previous_digest != file_sha256(path)
         )
-        # A freshly observed blocked release is valid observation, not release approval.
-        refreshed = returncode == 0 and fresh_publication
+        # A blocked owner can publish valid evidence without granting readiness.
+        observed_blocked_risk = bool(
+            name == "risk_boundary"
+            and returncode == 2
+            and source.get("ok") is False
+            and source.get("overall_status") == "degraded"
+        )
+        refreshed = (returncode == 0 or observed_blocked_risk) and fresh_publication
         observations.append(
             {
                 "name": name,

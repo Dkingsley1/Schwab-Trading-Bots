@@ -9,7 +9,7 @@ import os
 import shlex
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.ops.long_runtime_common import (
+    evidence_freshness,
+    parse_iso_utc,
     iso_now,
     load_json,
     run_bounded_process_group,
@@ -35,6 +37,16 @@ PROTECTED_VOLUME = "/Volumes/VIDEO"
 CONTROL_REFRESH_AGE_BUFFER_MINUTES = 5.0
 
 CONTROL_PLANE_REFRESH_STEPS: dict[str, dict[str, Any]] = {
+    "schd_evidence_maintenance": {
+        "command": ["./scripts/ops/opsctl.sh", "schd-decision-rehearsal", "maintain", "--json"],
+        "timeout_seconds": 45,
+        "reason": "refresh read-only SCHD candle context and prune expired owned cache; never orders or bot decisions",
+    },
+    "risk_service_boundary": {
+        "command": ["./scripts/ops/opsctl.sh", "risk-service-boundary", "--refresh-inputs", "--json"],
+        "timeout_seconds": 30,
+        "reason": "refresh watchdog-derived budget evidence before risk inputs expire; no execution authority",
+    },
     "system_role_contract": {
         "command": ["./scripts/ops/opsctl.sh", "system-role-contract", "--json"],
         "timeout_seconds": 45,
@@ -374,7 +386,31 @@ def _health_artifact_metric(
     }
 
 
+def _risk_evidence_metric(project_root: Path) -> dict[str, Any]:
+    from scripts.sleeve_slo_guard import read_local_json
+
+    path = project_root / "governance/risk/risk_service_boundary_latest.json"
+    try:
+        payload = read_local_json(project_root, path)
+    except (ValueError, OSError):
+        payload = {}
+    freshness = evidence_freshness(payload, max_age_minutes=3)
+    age = freshness.get("age_minutes")
+    deadline = parse_iso_utc(payload.get("valid_until_utc"))
+    input_expiry_due = "valid_until_utc" in payload and (
+        deadline is None or deadline <= datetime.now(timezone.utc) + timedelta(minutes=1)
+    )
+    return {
+        **freshness,
+        "refresh_due": not freshness["fresh"] or (age is not None and age >= 2.25) or input_expiry_due,
+        "input_expiry_due": input_expiry_due,
+        "path": str(path),
+    }
+
+
 def collect_metrics(project_root: Path) -> dict[str, Any]:
+    from scripts.ops.schd_evidence_maintenance import maintenance_metric
+
     dashboard = _load_health(project_root, "runtime_gate_dashboard_latest.json")
     ingestion = _load_health(project_root, "ingestion_storage_control_latest.json")
     local_reserve = _load_health(
@@ -483,6 +519,8 @@ def collect_metrics(project_root: Path) -> dict[str, Any]:
         for blocker in [*soak_blockers, *unattended_blockers]
     )
     freshness_artifacts = {
+        "risk_service_boundary": _risk_evidence_metric(project_root),
+        "schd_evidence_maintenance": maintenance_metric(project_root),
         "ingestion_storage_control": _health_artifact_metric(
             project_root,
             "ingestion_storage_control",
@@ -813,6 +851,10 @@ def build_control_plane_refresh_plan(metrics: dict[str, Any]) -> list[dict[str, 
         if f"{name}_stale" in stale_advisories
     ]
 
+    if _metric_refresh_due(metrics, "risk_service_boundary"):
+        add("risk_service_boundary")
+    if _metric_refresh_due(metrics, "schd_evidence_maintenance"):
+        add("schd_evidence_maintenance")
     if role_needed:
         add("system_role_contract")
     if capability_needed:

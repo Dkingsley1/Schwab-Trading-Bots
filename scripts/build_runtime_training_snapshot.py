@@ -35,6 +35,7 @@ from scripts.ops.long_runtime_common import (
     write_payload,
 )
 from core.storage_router import inspect_storage_path
+from scripts.sql_dataset_io import _json_loads
 
 DEFAULT_ROWS_PATH = PROJECT_ROOT / "exports" / "training" / "runtime_training_snapshot_latest.jsonl"
 DEFAULT_HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_training_snapshot_latest.json"
@@ -1344,7 +1345,7 @@ def _verified_stored_coverage_windows(
                     return reject("incomplete_line")
                 digest.update(raw)
                 bytes_read += len(raw)
-                row = json.loads(raw)
+                row = _json_loads(raw)
                 if (not isinstance(row, dict) or _parse_ts(row.get("timestamp_utc")) is None
                         or not isinstance(row.get("symbol"), str) or not row["symbol"].strip()):
                     return reject("invalid_row")

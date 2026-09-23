@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "policy_id": "roth_o_purchase_proposals_v1",
+  "mode": "proposal_only",
+  "test_id": "roth_o_buy_hold_001",
+  "account_policy_key": "schwab_roth_ira_primary",
+  "symbols": ["O"],
+  "investment_style": "buy_and_hold",
+  "valid_from_utc": "2026-09-16T00:00:00+00:00",
+  "expires_at_utc": "2026-10-16T00:00:00+00:00",
+  "lifetime_budget_usd": 300,
+  "max_entry_attempts": 1,
+  "max_order_quantity": 5,
+  "limit_ceiling_usd": 57.09,
+  "cost_reserve_usd": 1,
+  "minimum_purchase_spacing_seconds": 86400,
+  "evaluation_interval_seconds": 900,
+  "max_observation_age_seconds": 120,
+  "validation": {
+    "minimum_independent_days": 3,
+    "minimum_observations": 20,
+    "economic_evidence_required_for_execution_review": true,
+    "operator_review_required": true,
+    "automatic_stage_transition": false
+  },
+  "authority": {
+    "live_execution_authority": false,
+    "autonomous_execution": false,
+    "automatic_sell": false,
+    "automatic_reentry": false,
+    "automatic_reinvestment": false,
+    "production_promotion_credit": false
+  }
+}

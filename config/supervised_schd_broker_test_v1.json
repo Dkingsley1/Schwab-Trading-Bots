@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "policy_id": "supervised_schd_function_test_v1",
+  "test_id": "roth_schd_round_trip_001",
+  "purpose": "supervised_broker_test",
+  "account_policy_key": "schwab_roth_ira_primary",
+  "execution_route_id": "dividend_liquid_etf_candidate_v1",
+  "symbol": "SCHD",
+  "account_capital_usd": 100.0,
+  "investment_style": "operator_confirmed_round_trip",
+  "entry_price_policy": "explicit_operator_limit_no_chase",
+  "entry_limit_ceiling_usd": 99.0,
+  "account_constraints": {
+    "required_account_kind": "roth_ira",
+    "required_tax_wrapper": "roth_ira",
+    "cash_only": true,
+    "existing_positions_authority": "observe_only",
+    "new_contribution_assumed": false
+  },
+  "hard_limits": {
+    "max_order_notional_usd": 100.0,
+    "max_order_quantity": 1,
+    "cost_reserve_usd": 1.0,
+    "max_concurrent_positions": 1,
+    "max_entry_attempts": 1,
+    "max_exit_attempts": 1,
+    "max_spread_bps": 25.0,
+    "max_limit_distance_bps": 35.0,
+    "cancel_unfilled_after_seconds": 60
+  },
+  "activation_contract": {
+    "max_operator_attestation_hours": 1.0,
+    "operator_confirmation_each_order": true,
+    "limit_orders_only": false,
+    "normal_session_only": false,
+    "allowed_sessions": ["NORMAL", "AM", "PM"],
+    "extended_hours_risk_confirmation_required": true,
+    "whole_shares_only": true,
+    "live_execution_authority": false
+  },
+  "bot_market_order_contract": {
+    "native_decision_required": true,
+    "regular_session_only": true,
+    "operator_confirmation_each_order": true,
+    "market_price_not_guaranteed": true,
+    "max_quote_move_bps": 35,
+    "max_decision_age_seconds": 120,
+    "max_quote_age_seconds": 15,
+    "automatic_wait_or_retry": false
+  },
+  "evidence_contract": {
+    "execution_plumbing_only": true,
+    "strategy_profitability_proven": false,
+    "production_promotion_credit": false,
+    "production_soak_required_for_this_test": false,
+    "technical_preflight_required": true,
+    "immutable_release_required": true
+  },
+  "authority": {
+    "autonomous_execution": false,
+    "automatic_reentry": false,
+    "automatic_sell": false,
+    "automatic_reinvestment": false,
+    "scheduler_execution": false,
+    "live_execution_authority": false
+  }
+}

@@ -35,6 +35,8 @@ DEFAULT_OUT_PATH = (
     PROJECT_ROOT / "governance" / "health" / "artifact_freshness_slo_latest.json"
 )
 
+from core.status_label_contract import evidence_label
+
 
 def _artifact_contract(project_root: Path) -> dict[str, dict[str, Any]]:
     contract = {
@@ -214,11 +216,10 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         path = Path(cfg["path"])
         payload = load_json(path)
         exists = path.exists() and bool(payload)
-        age_minutes = payload_age_minutes(payload, path) if exists else None
-        stale = not exists or (
-            age_minutes is not None
-            and float(age_minutes) > float(cfg["max_age_minutes"])
-        )
+        label = evidence_label(payload, scope="artifact_freshness", source=str(path),
+                               max_age_seconds=float(cfg["max_age_minutes"]) * 60)
+        age_minutes = label["age_seconds"] / 60 if label["age_seconds"] is not None else None
+        stale = not exists or not label["fresh"]
         if stale:
             if bool(cfg["required"]):
                 stale_required += 1
@@ -235,6 +236,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 ),
                 "max_age_minutes": float(cfg["max_age_minutes"]),
                 "stale": bool(stale),
+                "timestamp_field": label["timestamp_field"],
+                "evidence_status": label["evidence_status"],
                 "refresh_command": str(cfg["refresh_command"]),
                 "source_sha256": (
                     hashlib.sha256(path.read_bytes()).hexdigest() if exists else ""

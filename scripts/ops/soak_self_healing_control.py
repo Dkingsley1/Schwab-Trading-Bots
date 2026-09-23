@@ -7,7 +7,6 @@ import json
 import math
 import os
 import shutil
-import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -30,6 +29,7 @@ PY = resolve_runtime_python(PROJECT_ROOT)
 from core.runtime_maintenance import maintenance_hold_snapshot
 from core.storage_router import inspect_storage_path
 from core.workload_admission import POLICIES, current_lease
+from scripts.ops.long_runtime_common import run_bounded_process_group
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "soak_self_healing_control_latest.json"
 DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "soak_self_healing_state.json"
@@ -252,30 +252,17 @@ def _run_command(
     env: dict[str, str],
 ) -> dict[str, Any]:
     started = _utc_now()
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(project_root),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=max(int(timeout_sec), 1),
-            check=False,
-        )
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-        rc = int(proc.returncode)
-        timed_out = False
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
-        rc = 124
-        timed_out = True
+    result = run_bounded_process_group(
+        cmd, cwd=project_root, env=env, timeout_seconds=max(int(timeout_sec), 1)
+    )
+    stdout, stderr = result["stdout"], result["stderr"]
+    rc, timed_out = result["rc"], result["timed_out"]
     parsed = _parse_json_output(stdout)
     return {
         "command": cmd,
         "rc": rc,
         "timed_out": timed_out,
+        "timeout_cleanup": result["timeout_cleanup"],
         "duration_seconds": round((_utc_now() - started).total_seconds(), 3),
         "parsed": parsed,
         "ok": bool(_payload_ok(parsed, rc)) and not timed_out,
@@ -499,11 +486,18 @@ def _storage_memory_observation(result: dict[str, Any]) -> dict[str, Any]:
 def _storage_recovery_progress(name: str, result: dict[str, Any]) -> dict[str, Any] | None:
     """Owner receipts measure recovery; a successful exit alone does not."""
     fields = {
+        "local_compatibility_cache_rebuild": ("reclaimed_bytes",),
         "local_disk_snapshot_scratch_cleanup": ("removed_allocated_bytes",),
         "local_disk_verified_duplicate_cleanup": ("apply_result", "deleted_bytes"),
         "local_disk_cold_evidence_compaction": ("saved_bytes",),
-        "local_disk_lifecycle_backup_compaction": ("summary", "estimated_reduction_bytes"),
-        "local_disk_governance_telemetry_compaction": ("summary", "estimated_hot_reduction_bytes"),
+        "local_disk_lifecycle_backup_compaction": (
+            "summary",
+            "estimated_reduction_bytes",
+        ),
+        "local_disk_governance_telemetry_compaction": (
+            "summary",
+            "estimated_hot_reduction_bytes",
+        ),
         "local_disk_cold_sqlite_compression": ("allocated_bytes_reclaimed",),
         "local_disk_resumable_deep_cold_offload": ("second_cold_move", "moved_bytes"),
     }
@@ -523,6 +517,29 @@ def _storage_recovery_progress(name: str, result: dict[str, Any]) -> dict[str, A
         "reason": "measured_reclamation" if reclaimed > 0 else "no_measured_reclamation",
         "proves_local_reserve_recovered": False,
     }
+
+
+def _completed_deep_cold_pass(result: dict[str, Any]) -> bool:
+    """An unmet capacity goal is not an I/O failure after a complete owner pass."""
+    move = _as_dict(_as_dict(result.get("parsed")).get("second_cold_move"))
+    counts = [move.get(key) for key in (
+        "selected_candidate_files", "attempted_files", "moved_files", "failed_files", "moved_bytes"
+    )]
+    if not all(type(value) is int and value >= 0 for value in counts):
+        return False
+    selected, attempted, moved, failed, moved_bytes = counts
+    return bool(
+        type(result.get("rc")) is int
+        and result["rc"] in {0, 2}
+        and result.get("timed_out") is False
+        and move.get("enabled") is True
+        and (move.get("status"), move.get("reason")) in {
+            ("ready", ""), ("partial", "adaptive_release_target_unmet")
+        }
+        and failed == 0
+        and moved <= attempted <= selected
+        and ((moved == 0 and moved_bytes == 0) or (moved > 0 and moved_bytes > 0))
+    )
 
 
 def _run_step(
@@ -578,6 +595,10 @@ def _run_step(
         result["capacity_assessment_ok"] = result.get("ok", False)
         result["ok"] = bool(result.get("rc") == 0 and parsed.get("assessment_complete") is True
                             and parsed.get("cleanup_pass_complete") is True)
+    if name == "local_disk_resumable_deep_cold_offload" and not result.get("ok"):
+        result["capacity_assessment_ok"] = False
+        result["repair_pass_complete"] = _completed_deep_cold_pass(result)
+        result["ok"] = result["repair_pass_complete"]
     row = {"name": name, "executed": True, **result}
     progress = _storage_recovery_progress(name, result)
     if progress is not None:
@@ -882,6 +903,47 @@ def _fast_refresh_steps(project_root: Path, *, py: Path, apply: bool) -> list[tu
     ]
 
 
+def _cache_rebuild_command(
+    project_root: Path, env: dict[str, str], cold: dict[str, Any]
+) -> tuple[list[str], int]:
+    # The archive and staging disks are independent; the rebuild owner validates both.
+    cold_root = Path(env.get("BOT_DEEP_COLD_OFFLOAD_ROOT") or cold["path"]).expanduser()
+    seconds = max(
+        60,
+        min(
+            _safe_int(
+                env.get("BOT_LOGS_SQLITE_LOCAL_CACHE_REBUILD_TIMEOUT_SECONDS"), 1200
+            ),
+            1500,
+        ),
+    )
+    return (
+        _cmd(
+            resolve_runtime_python(project_root),
+            project_root / "scripts/ops/storage_sqlite_hot_route.py",
+            "--rebuild-local-cache",
+            "--hot-hours",
+            env.get("SQL_LINK_SERVICE_HOT_HOURS", "18"),
+            "--apply",
+            "--prune-old-cache",
+            "--min-local-free-after-gb",
+            env.get("BOT_LOGS_SQLITE_LOCAL_CACHE_CRITICAL_FREE_GB", "32"),
+            "--min-external-free-after-gb",
+            env.get("BOT_LOGS_SQLITE_HOT_ROUTE_MIN_FREE_AFTER_GB", "64"),
+            "--cold-export-root",
+            cold_root / "sql_link_primary/autonomic_cache_rebuild",
+            "--writer-drain-timeout-seconds",
+            "30",
+            "--operation-seconds",
+            str(seconds),
+            "--sqlite-timeout-seconds",
+            "900",
+            "--json",
+        ),
+        seconds + 90,
+    )
+
+
 def build_storage_recovery_payload(
     project_root: Path = PROJECT_ROOT,
     *,
@@ -1042,6 +1104,8 @@ def build_storage_recovery_payload(
                             "--archive-root",
                             cold["path"],
                             "--filesystem-select-inactive",
+                            "--filesystem-scratch-root",
+                            project_root / "local_fallback_storage/cold_compaction_scratch",
                             "--filesystem-compressor",
                             "auto",
                             "--coordinate-writer-handoff",
@@ -1123,6 +1187,14 @@ def build_storage_recovery_payload(
                  "--apply-cleanup", "--max-runtime-seconds", "25", "--json"),
             30,
         ))
+        if (
+            not quick_bounded
+            and not adaptive_compression_only
+            and cold.get("configured")
+            and _compatibility_cache_rebuild_contract(project_root).get("active")
+        ):
+            command, timeout = _cache_rebuild_command(project_root, env, cold)
+            commands.insert(1, ("local_compatibility_cache_rebuild", command, timeout))
         for name, cmd, timeout in commands:
             if shutil.disk_usage(project_root).free / 1024**3 >= threshold:
                 break
@@ -1135,7 +1207,14 @@ def build_storage_recovery_payload(
             if remaining < (15 if quick_bounded else 30):
                 reason = "storage_recovery_deadline"
                 break
-            if name == "local_disk_cold_sqlite_compression" and remaining < timeout:
+            if (
+                name
+                in {
+                    "local_disk_cold_sqlite_compression",
+                    "local_compatibility_cache_rebuild",
+                }
+                and remaining < timeout
+            ):
                 steps.append(
                     {
                         "name": name,
@@ -1153,7 +1232,16 @@ def build_storage_recovery_payload(
                 cmd=cmd,
                 project_root=project_root,
                 timeout_sec=min(timeout, remaining),
-                env=env,
+                env=(
+                    {
+                        **env,
+                        "OMP_NUM_THREADS": "1",
+                        "OPENBLAS_NUM_THREADS": "1",
+                        "VECLIB_MAXIMUM_THREADS": "1",
+                    }
+                    if name == "local_compatibility_cache_rebuild"
+                    else env
+                ),
                 state=state,
                 cooldown_seconds=(
                     (60 if quick_bounded else 900)
@@ -1275,34 +1363,21 @@ def build_payload(
     cache_rebuild_initial = _compatibility_cache_rebuild_contract(project_root)
     cache_rebuild_payload: dict[str, Any] = {}
     if apply and bool(cache_rebuild_initial.get("active", False)) and bool(cold_archive_env.get("configured", False)):
-        cold_root = Path(str(cold_archive_env.get("path") or "")).expanduser()
+        rebuild_command, rebuild_timeout = _cache_rebuild_command(
+            project_root, env, cold_archive_env
+        )
         rebuild_row = _run_step(
             steps,
             name="local_compatibility_cache_rebuild",
-            cmd=_cmd(
-                py,
-                project_root / "scripts" / "ops" / "storage_sqlite_hot_route.py",
-                "--rebuild-local-cache",
-                "--hot-hours",
-                str(os.getenv("SQL_LINK_SERVICE_HOT_HOURS", "18")),
-                "--apply",
-                "--prune-old-cache",
-                "--min-local-free-after-gb",
-                str(os.getenv("BOT_LOGS_SQLITE_LOCAL_CACHE_CRITICAL_FREE_GB", "32")),
-                "--min-external-free-after-gb",
-                str(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_MIN_FREE_AFTER_GB", "40")),
-                "--cold-export-root",
-                cold_root / "sql_link_primary" / "autonomic_cache_rebuild",
-                "--sqlite-timeout-seconds",
-                "900",
-                "--json",
-            ),
+            cmd=rebuild_command,
             project_root=project_root,
-            timeout_sec=max(
-                int(step_timeout_sec),
-                _safe_int(os.getenv("BOT_LOGS_SQLITE_LOCAL_CACHE_REBUILD_TIMEOUT_SECONDS"), 43200),
-            ),
-            env=env,
+            timeout_sec=rebuild_timeout,
+            env={
+                **env,
+                "OMP_NUM_THREADS": "1",
+                "OPENBLAS_NUM_THREADS": "1",
+                "VECLIB_MAXIMUM_THREADS": "1",
+            },
             state=state,
             cooldown_seconds=300,
             respect_cooldowns=respect_cooldowns,
@@ -1397,6 +1472,8 @@ def build_payload(
                         "--archive-root",
                         str(env["BOT_SECOND_COLD_ROOT"]),
                         "--filesystem-select-inactive",
+                        "--filesystem-scratch-root",
+                        project_root / "local_fallback_storage/cold_compaction_scratch",
                         "--filesystem-compressor",
                         "auto",
                         "--coordinate-writer-handoff",

@@ -445,7 +445,7 @@ def _capability_registry() -> list[dict[str, Any]]:
             capability_id="command_validity",
             title="Command Validity",
             owns=["opsctl_routes", "command_parseability", "operator_surface_verification"],
-            command=_opsctl("command-validity", "--json"),
+            command=_opsctl("command-validity", "--safe-audit", "--summary-json"),
             advisory_only=True,
             success_artifact="governance/health/command_validity_latest.json",
         ),

@@ -2,12 +2,14 @@ import argparse
 import fcntl
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import time
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -34,6 +36,65 @@ TRACKED_SQLITE_ROUTES = (
     "data/bot_channel_queue.sqlite3",
     "data/snapshot_context.sqlite3",
 )
+
+
+def repair_local_fallback_aliases(project_root: Path, external_root: Path, *, apply=False):
+    """Detach only known legacy fallback aliases, preserving every external byte."""
+    from core.storage_router import DEFAULT_LINK_DIRS, inspect_storage_path
+    from core.accountability import safe_write_json_atomic
+
+    local = project_root / "local_fallback_storage"
+    archive = local / "quarantine/legacy_fallback_routes"
+    for path in (local, archive):
+        route = inspect_storage_path(path, boundary_root=project_root, allow_external=False)
+        if route["status"] not in {"present", "missing"} or route.get("symlinks"):
+            return {"ok": False, "reason": "unsafe_local_fallback_boundary", "actions": []}
+    actions = []
+    for name in DEFAULT_LINK_DIRS:
+        path = local / name
+        if not path.is_symlink():
+            continue
+        target = os.readlink(path)
+        expected = external_root / "local_fallback_storage" / name
+        # Exact legacy layout only. Unknown aliases need review, never repointing.
+        if target != str(expected) or inspect_storage_path(expected)["status"] != "present":
+            return {"ok": False, "reason": "unrecognized_or_unavailable_fallback_alias", "path": str(path), "actions": []}
+        info = path.lstat()
+        actions.append({"path": str(path), "target": target, "identity": [info.st_dev, info.st_ino],
+                        "history_link": str(archive / f"{name}.symlink_backup_{time.time_ns()}")})
+    result = {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "ok": True,
+              "apply": apply, "actions": actions, "reason": "planned" if actions else "no_legacy_aliases",
+              "external_data_modified": False, "live_execution_authority": False}
+    if not apply or not actions:
+        return result
+    if _maintenance_hold_blocks_route_mutation(maintenance_hold_snapshot(project_root)):
+        return {**result, "ok": False, "reason": "maintenance_hold_active"}
+    if shutil.disk_usage(project_root).free < 32 * 1024**3:
+        return {**result, "ok": False, "reason": "local_reserve_below_32_gib"}
+    archive.mkdir(parents=True, exist_ok=True)
+    receipt = archive / f"repair_{time.time_ns()}.json"
+    if safe_write_json_atomic(str(receipt), result, project_root=str(project_root), source="storage_fallback_repair") is False:
+        raise RuntimeError("fallback_repair_receipt_failed")
+    for action in actions:
+        path = Path(action["path"])
+        current = path.lstat()
+        if not path.is_symlink() or [current.st_dev, current.st_ino] != action["identity"] or os.readlink(path) != action["target"]:
+            raise RuntimeError("fallback_alias_changed_before_repair")
+        path.rename(action["history_link"])
+        path.mkdir(exist_ok=True)
+        if path.is_symlink() or inspect_storage_path(path, boundary_root=local, allow_external=False)["status"] != "present":
+            raise RuntimeError("fallback_repair_not_local")
+        action["repaired"] = True
+    for directory in (archive, local):
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    result.update(reason="legacy_aliases_preserved_local_routes_repaired", receipt_path=str(receipt))
+    if safe_write_json_atomic(str(receipt), result, project_root=str(project_root), source="storage_fallback_repair") is False:
+        raise RuntimeError("fallback_repair_completion_receipt_failed")
+    return result
 
 
 def _maintenance_hold_blocks_route_mutation(snapshot: dict[str, Any]) -> bool:
@@ -937,6 +998,26 @@ def build_sqlite_route_verification(
     )
 
 
+def observe_current_routes(project_root: Path) -> dict[str, object]:
+    """Observe physical route metadata without failback, copy, prune or env edits."""
+    from core.storage_router import _configured_external_project_root_no_io, inspect_storage_path
+
+    local_root = Path(os.getenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", str(project_root / "local_fallback_storage"))).expanduser()
+    external_root = _configured_external_project_root_no_io()
+    for path in (local_root, external_root, *(project_root / rel for rel in TRACKED_SQLITE_ROUTES)):
+        if inspect_storage_path(path).get("status") not in {"present", "missing"}:
+            return {"verification_state": "blocked", "reason": "protected_or_unavailable_route", "tracked_count": 0, "ready_count": 0}
+    is_local = _physical_sqlite_routes_are_local(project_root)
+    report = build_sqlite_route_verification(project_root, external_root,
+        mode="local_fallback" if is_local else "external", active_root=local_root if is_local else external_root)
+    result = dict(report["route_verification"])
+    if not result.get("tracked_count"):
+        result.update(verification_state="not_observed", reason="no_tracked_route_observations")
+    result.update(observed_at_utc=datetime.now(timezone.utc).isoformat(),
+                  observation_scope="physical_route_metadata_not_database_integrity_or_write_admission")
+    return result
+
+
 def _refresh_frozen_sqlite_skip_report(
     payload: dict[str, object], external_root: Path
 ) -> dict[str, object]:
@@ -994,7 +1075,12 @@ def main() -> int:
         description="Re-evaluate storage route and auto-sync local backlog when drive is back."
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--verify-only", action="store_true", help="Refresh read-only route metadata without failback, copying, pruning, or environment changes.")
+    parser.add_argument("--repair-local-fallback-aliases", action="store_true")
+    parser.add_argument("--apply", action="store_true", help="Apply the explicit legacy fallback-alias repair mode.")
     args = parser.parse_args()
+    if args.verify_only and args.repair_local_fallback_aliases:
+        parser.error("choose observation or fallback repair")
 
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
@@ -1013,6 +1099,46 @@ def main() -> int:
     compat = PROJECT_ROOT / "governance" / "health" / "storage_route_status_latest.json"
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    if lock_fh is None:
+        payload = _lock_busy_payload(lock_path, lock_owner, out)
+        # Only the lock holder may publish canonical route observations.
+        print(json.dumps(payload, ensure_ascii=True))
+        return 0
+
+    if args.repair_local_fallback_aliases:
+        try:
+            payload = repair_local_fallback_aliases(PROJECT_ROOT, resolve_external_storage().external_root, apply=args.apply)
+            from core.accountability import safe_write_json_atomic
+            destination = PROJECT_ROOT / "governance/health/storage_fallback_repair_latest.json"
+            if safe_write_json_atomic(str(destination), payload, project_root=str(PROJECT_ROOT), source="storage_fallback_repair") is False:
+                raise RuntimeError("fallback_repair_publication_failed")
+            print(json.dumps(payload))
+            return 0 if payload["ok"] else 2
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            lock_fh.close()
+
+    if args.verify_only:
+        try:
+            verification = observe_current_routes(PROJECT_ROOT)
+            payload = {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "ok": verification.get("verification_state") in {"ready", "verified", "curated_ready", "active_local_ready"},
+                "mode": verification.get("certified_mode", "not_verified"),
+                "certified_mode": verification.get("certified_mode", "not_verified"),
+                "observation_only": True, "route_mutation_performed": False,
+                "route_verification": verification,
+            }
+            from core.accountability import safe_write_json_atomic
+            for destination in (out, compat):
+                if safe_write_json_atomic(str(destination), payload, project_root=str(PROJECT_ROOT), source="storage_route_observation") is False:
+                    raise RuntimeError("route_observation_publication_failed")
+            print(json.dumps(payload, ensure_ascii=True))
+            return 0 if payload["ok"] else 2
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            lock_fh.close()
+
     maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
     local_route_intent = _preserve_verified_local_route_intent(PROJECT_ROOT)
     if _maintenance_hold_blocks_route_mutation(maintenance_hold):
@@ -1025,6 +1151,7 @@ def main() -> int:
             "runtime_maintenance_hold": maintenance_hold,
             "local_route_intent": local_route_intent,
             "reason": "runtime_maintenance_hold_blocks_storage_failback",
+            "route_verification": observe_current_routes(PROJECT_ROOT),
         }
         encoded = json.dumps(payload, ensure_ascii=True, indent=2)
         out.write_text(encoded, encoding="utf-8")
@@ -1033,27 +1160,8 @@ def main() -> int:
             print(json.dumps(payload, ensure_ascii=True))
         else:
             print("[StorageRoute] skipped runtime_maintenance_hold")
-        return 0
-
-    if lock_fh is None:
-        payload = _lock_busy_payload(lock_path, lock_owner, out)
-        encoded = json.dumps(payload, ensure_ascii=True, indent=2)
-        out.write_text(encoded, encoding="utf-8")
-        compat.write_text(encoded, encoding="utf-8")
-        if args.json:
-            print(json.dumps(payload, ensure_ascii=True))
-        else:
-            refresh_deferred = (
-                payload.get("refresh_deferred")
-                if isinstance(payload.get("refresh_deferred"), dict)
-                else {}
-            )
-            if bool(refresh_deferred.get("busy", False)):
-                print(
-                    f"[StorageRoute] busy preserved_previous_route lock_path={lock_path} owner={lock_owner}"
-                )
-            else:
-                print(f"[StorageRoute] busy lock_path={lock_path} owner={lock_owner}")
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        lock_fh.close()
         return 0
 
     external_root = _external_project_root()
@@ -1093,6 +1201,7 @@ def main() -> int:
                 "runtime_maintenance_hold": maintenance_hold,
                 "local_route_intent": local_route_intent,
                 "reason": "runtime_maintenance_hold_activated_before_storage_route_commit",
+                "route_verification": observe_current_routes(PROJECT_ROOT),
             }
             encoded = json.dumps(payload, ensure_ascii=True, indent=2)
             out.write_text(encoded, encoding="utf-8")

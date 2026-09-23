@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import gzip
 import json
+from itertools import permutations
 from pathlib import Path
+
+import pytest
 
 from scripts.ops.generation_behavior_attribution import build_payload, _read_events
 from scripts.ops.production_excellence_control import read_candidate_event_chain
@@ -73,10 +76,51 @@ def test_candidate_archive_corruption_or_missing_prefix_fails_closed(tmp_path):
     assert not _read_events(path)[1]["ok"]
 
 
+@pytest.mark.parametrize("order", list(permutations(range(3))))
+def test_candidate_partitions_use_hash_order_not_archive_suffix(tmp_path, order):
+    path = tmp_path / "events.jsonl"
+    _write_event_chain(path, [{"generation": i} for i in range(1, 7)])
+    lines = path.read_bytes().splitlines(keepends=True)
+    partitions = [b"".join(lines[i:i + 2]) for i in (0, 2, 4)]
+    sources = [path.with_name(path.name + ".gz"),
+               path.with_name(path.name + ".raw-training.gz"), path]
+    for target, index in zip(sources, order):
+        content = partitions[index]
+        target.write_bytes(gzip.compress(content) if target.suffix == ".gz" else content)
+    original = [source.read_bytes() for source in sources]
+    rows, chain = read_candidate_event_chain(path)
+    assert chain["ok"] and chain["event_count"] == 6
+    assert [row["generation"] for row in rows] == list(range(1, 7))
+    assert [source.read_bytes() for source in sources] == original
+    # Reversing events inside any partition is still invalid.
+    target = sources[0]
+    target.write_bytes(gzip.compress(b"".join(partitions[order[0]].splitlines(keepends=True)[::-1])))
+    assert not read_candidate_event_chain(path)[1]["ok"]
+
+
+def test_reverse_archive_order_preserves_missing_tail_and_fork_failures(tmp_path):
+    path = tmp_path / "events.jsonl"
+    _write_event_chain(path, [{"generation": i} for i in range(1, 4)])
+    lines = path.read_bytes().splitlines(keepends=True)
+    path.with_name(path.name + ".raw-training.gz").write_bytes(gzip.compress(lines[0]))
+    path.with_name(path.name + ".gz").write_bytes(gzip.compress(lines[1]))
+    path.unlink()
+    rows, chain = read_candidate_event_chain(path)
+    assert chain["ok"] and [r["generation"] for r in rows] == [1, 2]
+    assert chain["chain_head"] != json.loads(lines[2])["event_hash"]
+    fork = {**json.loads(lines[1]), "generation": 99}
+    fork.pop("event_hash")
+    fork["event_hash"] = _canonical_hash(fork)
+    path.write_text(json.dumps(fork) + "\n")
+    assert not read_candidate_event_chain(path)[1]["ok"]
+
+
 def test_candidate_reader_does_not_hide_replayed_rows_within_partition(tmp_path):
     path = tmp_path / "events.jsonl"
     _write_event_chain(path, [{"generation": 1}])
     path.write_bytes(path.read_bytes() * 2)
+    assert not read_candidate_event_chain(path)[1]["ok"]
+    path.with_name(path.name + ".gz").write_bytes(gzip.compress(path.read_bytes().splitlines(keepends=True)[0]))
     assert not read_candidate_event_chain(path)[1]["ok"]
 
 

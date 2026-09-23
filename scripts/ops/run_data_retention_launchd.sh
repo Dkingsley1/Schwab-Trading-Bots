@@ -51,7 +51,10 @@ for cleanup_scope in local external; do
   fi
 done
 
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/data_retention_policy.py" --apply --skip-sqlite-vacuum --json
+# Independent owners must still get their slot after a partial retention failure.
+if ! "$PYTHON_BIN" "$PROJECT_ROOT/scripts/data_retention_policy.py" --apply --skip-sqlite-vacuum --json; then
+  echo "data_retention policy=degraded detail=see_retention_receipt continuing_independent_owners=1"
+fi
 
 if [[ "${RETENTION_INCLUDE_EXTERNAL_STALE_ROOT:-1}" != "0" ]]; then
   stale_reaper_cmd=(

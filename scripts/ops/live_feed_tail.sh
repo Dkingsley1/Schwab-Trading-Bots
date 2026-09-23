@@ -10,6 +10,9 @@ HEAVY_MARKER_FILE="$HEALTH_DIR/live_feed_heavy_view_latest.json"
 LIVEFEED_HEALTH_FILE="$HEALTH_DIR/livefeed_local_latest.json"
 LIVE_FEED_MAIN_PID="$$"
 LIVE_FEED_BOOTSTRAP_PID=""
+typeset -a LIVE_FEED_ORIGINAL_ARGS
+LIVE_FEED_ORIGINAL_ARGS=("$@")
+LIST_FILES_ONLY=0
 
 if [[ -f "$MEMORY_OVERRIDE_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -62,6 +65,10 @@ FOLLOW_LAST_RC=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --list-files)
+      LIST_FILES_ONLY=1
+      shift
+      ;;
     --source)
       SOURCE="${2:-}"
       shift 2
@@ -453,7 +460,9 @@ if [[ "$HEAVY_REQUESTED" == "1" && "$SHOW_KEEPALIVE_EXPLICIT" != "1" ]]; then
 fi
 
 if [[ "$SNAPSHOT" != "1" && "$STARTUP_STATUS_ENABLED" == "1" ]]; then
-  echo "live_feed_starting source=$SOURCE heavy=$HEAVY_REQUESTED important_only=$IMPORTANT_ONLY include_decisions=$INCLUDE_DECISIONS memory_profile=${MEMORY_PROFILE:-default} memory_aware=$MEMORY_AWARE max_follow_files=$HEAVY_MAX_FOLLOW_FILES"
+  if [[ "$LIST_FILES_ONLY" != "1" ]]; then
+    echo "live_feed_starting source=$SOURCE heavy=$HEAVY_REQUESTED important_only=$IMPORTANT_ONLY include_decisions=$INCLUDE_DECISIONS memory_profile=${MEMORY_PROFILE:-default} memory_aware=$MEMORY_AWARE max_follow_files=$HEAVY_MAX_FOLLOW_FILES"
+  fi
 fi
 
 DAY_UTC="$(date -u +%Y%m%d)"
@@ -746,6 +755,7 @@ prioritize_heavy_livefeed_files() {
 prioritize_heavy_livefeed_files
 
 if [[ ${#files[@]} -eq 0 ]]; then
+  [[ "$LIST_FILES_ONLY" != "1" ]] || exit 0
   echo "No live feed files found for source=$SOURCE local_day=$DAY_LOCAL utc_day=$DAY_UTC" >&2
   echo "Start loops first with: $PROJECT_ROOT/scripts/ops/opsctl.sh start" >&2
   exit 1
@@ -821,6 +831,11 @@ write_heavy_marker() {
     printf '}\n'
   } > "$HEAVY_MARKER_FILE"
 }
+
+if [[ "$LIST_FILES_ONLY" == "1" ]]; then
+  printf '%s\0' "${files[@]}"
+  exit 0
+fi
 
 write_heavy_marker
 
@@ -935,15 +950,17 @@ emit_live_feed_keepalive() {
   if [[ -n "${LIVE_FEED_BOOTSTRAP_PID:-}" ]] && kill -0 "$LIVE_FEED_BOOTSTRAP_PID" >/dev/null 2>&1; then
     detail_snapshot_state="loading"
   fi
-  [[ "$SHOW_KEEPALIVE" == "1" && "$VISIBLE_KEEPALIVE_ALLOWED" == "1" ]] || return 0
-  printf 'live_feed_keepalive timestamp_utc=%s keepalive_count=%s source=%s heavy=%s files=%s following=1 detail_snapshot=%s important_only=%s waiting_for_new_matching_lines=1 next_keepalive_seconds=%s interrupt=ctrl-c\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$keepalive_count" "$SOURCE" "$HEAVY_REQUESTED" "${#files[@]}" "$detail_snapshot_state" "$IMPORTANT_ONLY" "$KEEPALIVE_SECONDS"
-  if [[ "$detail_snapshot_state" == "ready" && "$HEAVY_REQUESTED" == "1" && "$INCLUDE_DECISIONS" == "1" && "$KEEPALIVE_DECISION_SNAPSHOT" == "1" && "$KEEPALIVE_DECISION_EVERY" -gt 0 && "$keepalive_count" -gt 0 && $((keepalive_count % KEEPALIVE_DECISION_EVERY)) -eq 0 ]]; then
+  if [[ "$SHOW_KEEPALIVE" == "1" && "$VISIBLE_KEEPALIVE_ALLOWED" == "1" ]]; then
+    printf 'live_feed_keepalive timestamp_utc=%s keepalive_count=%s source=%s heavy=%s files=%s following=1 detail_snapshot=%s important_only=%s waiting_for_new_matching_lines=1 next_keepalive_seconds=%s interrupt=ctrl-c\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$keepalive_count" "$SOURCE" "$HEAVY_REQUESTED" "${#files[@]}" "$detail_snapshot_state" "$IMPORTANT_ONLY" "$KEEPALIVE_SECONDS"
+  fi
+  if [[ "$SHOW_KEEPALIVE" == "1" && "$VISIBLE_KEEPALIVE_ALLOWED" == "1" && "$detail_snapshot_state" == "ready" && "$HEAVY_REQUESTED" == "1" && "$INCLUDE_DECISIONS" == "1" && "$KEEPALIVE_DECISION_SNAPSHOT" == "1" && "$KEEPALIVE_DECISION_EVERY" -gt 0 && "$keepalive_count" -gt 0 && $((keepalive_count % KEEPALIVE_DECISION_EVERY)) -eq 0 ]]; then
     emit_livefeed_decision_paper_snapshot | truncate_live_lines 0 0 || true
   fi
-  if [[ "$detail_snapshot_state" == "ready" && "$HEAVY_REQUESTED" == "1" && "$STATUS_SNAPSHOT" == "1" && "$KEEPALIVE_STATUS_EVERY" -gt 0 && "$keepalive_count" -gt 0 && $((keepalive_count % KEEPALIVE_STATUS_EVERY)) -eq 0 ]]; then
+  # Source status must refresh even when connection chatter is hidden or the feed is light.
+  if [[ "$detail_snapshot_state" == "ready" && "$STATUS_SNAPSHOT" == "1" && "$KEEPALIVE_STATUS_EVERY" -gt 0 && "$keepalive_count" -gt 0 && $((keepalive_count % KEEPALIVE_STATUS_EVERY)) -eq 0 ]]; then
     echo "live_feed_keepalive_status_snapshot=begin every=${KEEPALIVE_STATUS_EVERY} keepalive_count=${keepalive_count}"
-    emit_livefeed_status_snapshot | truncate_live_lines 40 || true
+    emit_livefeed_status_snapshot | truncate_live_lines 80 || true
     echo "live_feed_keepalive_status_snapshot=end"
   fi
 }
@@ -1014,15 +1031,15 @@ tail_source_snapshot() {
 }
 
 tail_source_follow() {
-  if [[ "$TAIL_START_MODE" == "bytes" ]]; then
-    if [[ "$HEAVY_REQUESTED" == "1" && "$HEAVY_BOOTSTRAP_SNAPSHOT" == "1" ]]; then
-      tail -n 0 -F "${files[@]}"
-      return $?
-    fi
-    tail -c "$HEAVY_TAIL_BYTES" -F "${files[@]}"
-    return $?
-  fi
-  tail -n "$LINES" -F "${files[@]}"
+  local follow_py="$PROJECT_ROOT/.venv314/bin/python"
+  [[ -x "$follow_py" ]] || follow_py="$(command -v python3)"
+  local f
+  local -a follow_paths
+  for f in "${files[@]}"; do
+    follow_paths+=(--path "$f")
+  done
+  "$follow_py" "$PROJECT_ROOT/scripts/ops/live_feed_follow.py" "${follow_paths[@]}" -- \
+    "$PROJECT_ROOT/scripts/ops/live_feed_tail.sh" "${LIVE_FEED_ORIGINAL_ARGS[@]}" --list-files
 }
 
 truncate_live_lines() {
@@ -1658,6 +1675,20 @@ if watchdog:
         f"grade={intel.get('grade', '')} "
         f"active_issues={intel.get('active_issue_count', '')} "
         f"restarts={len(restarts)}"
+    )
+
+bitcoin_path = health / "bitcoin_price_watch_latest.json"
+bitcoin = load(bitcoin_path)
+if bitcoin:
+    bitcoin_fresh, bitcoin_age = artifact_freshness(bitcoin_path, bitcoin, max_age_seconds=1200)
+    bitcoin_bots = bitcoin.get("bots") if isinstance(bitcoin.get("bots"), list) else []
+    bitcoin_states = ",".join(str(row.get("observation", "unknown")) for row in bitcoin_bots if isinstance(row, dict))
+    print(
+        "[bitcoin-watch] "
+        f"status={bitcoin.get('overall_status', 'unknown') if bitcoin_fresh else 'stale'} "
+        f"fresh={as_bool(bitcoin_fresh)} age={as_num(bitcoin_age)} "
+        f"observers={len(bitcoin_bots)} observations={bitcoin_states if bitcoin_fresh else 'unverified'} "
+        "mode=closed_candle_observation cadence=15m live_orders=false capital_allocated=0"
     )
 
 dashboard_path = health / "runtime_gate_dashboard_latest.json"
@@ -2860,16 +2891,15 @@ if [[ "$SNAPSHOT" == "1" ]]; then
   if [[ "$HEAVY_REQUESTED" == "1" && "$INCLUDE_DECISIONS" == "1" ]]; then
     emit_livefeed_decision_paper_snapshot | truncate_live_lines 0 0 || true
   fi
-  if [[ "$HEAVY_REQUESTED" == "1" ]]; then
-    run_filtered_state_safe_snapshot "$filter_pat" "$snapshot_line_limit" || true
-  else
-    run_filtered_snapshot "$filter_pat" "$snapshot_line_limit" || true
-  fi
+  run_filtered_state_safe_snapshot "$filter_pat" "$snapshot_line_limit" || true
   exit 0
 fi
 
 emit_livefeed_status_snapshot | truncate_live_lines 80 || true
 install_live_feed_trap
+if [[ "$HEAVY_REQUESTED" != "1" || "$HEAVY_BOOTSTRAP_SNAPSHOT" != "1" ]]; then
+  run_filtered_state_safe_snapshot "$filter_pat" "$LINES" || true
+fi
 if [[ "$HEAVY_REQUESTED" == "1" && "$HEAVY_BOOTSTRAP_SNAPSHOT" == "1" ]]; then
   if [[ "$HEAVY_ASYNC_BOOTSTRAP" == "1" ]]; then
     echo "live_feed_following=1 interrupt=ctrl-c detail_snapshot=loading detail_preserved=true"

@@ -9,6 +9,19 @@ from unittest import mock
 from scripts.ops import process_watchdog as pw
 
 
+def test_redirected_fallback_is_preflight_hold_not_restart_attempt(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "0")
+    monkeypatch.delenv("BOT_LOGS_LOCAL_FALLBACK_ROOT", raising=False)
+    local = tmp_path / "local_fallback_storage"
+    local.mkdir()
+    (local / "decisions").symlink_to("/Volumes/BOT_LOGS/legacy/decisions")
+    ready, reason = pw._local_fallback_start_ready(tmp_path)
+    assert not ready and reason == "local_fallback_route_rejected:decisions"
+    (local / "decisions").unlink()
+    (local / "decisions").mkdir()
+    assert pw._local_fallback_start_ready(tmp_path)[0]
+
+
 class ProcessWatchdogStorageGuardTests(unittest.TestCase):
     def _set_env(self, updates: dict[str, str]) -> dict[str, str | None]:
         prev: dict[str, str | None] = {}

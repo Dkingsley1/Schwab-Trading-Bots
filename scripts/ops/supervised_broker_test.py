@@ -19,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.brokers.capability_contract import evaluate_order_request
+from core.broker_test_accounting import reconcile_test_accounting
 from core.accountability import safe_write_json_atomic
 from core.live_canary_preflight import (
     evaluate_live_canary_preflight,
@@ -36,8 +37,10 @@ from core.supervised_broker_test import (
     AUTHORITY,
     PURPOSE,
     account_digest,
+    attestation_path,
     approval_phrase,
     build_request,
+    build_market_request,
     dispatch_once,
     fresh,
     holding_observation,
@@ -45,11 +48,13 @@ from core.supervised_broker_test import (
     intent_payload,
     lifecycle_check,
     number,
+    policy_path,
     propose_entry,
     reconcile_order,
     request_fields,
     timestamp,
     validate_policy,
+    validate_session,
 )
 from core.system_role_contracts import component_action_guard, evaluate_component_action
 from scripts.brokers.schwab.common import build_schwab_trader
@@ -89,7 +94,7 @@ def load(root: Path, relative: str) -> dict[str, Any]:
     return result if isinstance(result, dict) else {}
 
 
-def check_evidence_routes(root: Path) -> None:
+def check_evidence_routes(root: Path, symbol: str = "O") -> None:
     firewall = load(root, "config/production_readiness_control_v1.json").get(
         "live_execution_risk_firewall", {}
     )
@@ -105,8 +110,8 @@ def check_evidence_routes(root: Path) -> None:
         LEDGER_PATH,
         LEDGER_PATH + "-wal",
         LEDGER_PATH + "-shm",
-        POLICY_PATH,
-        "governance/runtime/supervised_broker_test_attestation.json",
+        policy_path(symbol),
+        attestation_path(symbol),
     ):
         local_path(root, relative)
     release = load(root, "governance/health/release_freeze_guard_latest.json")
@@ -165,9 +170,10 @@ def assessment(
     ledger: LiveOrderLedger,
     inventory: Mapping[str, Any],
     now: datetime,
+    bot_handoff: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     validate_policy(plan)
-    check_evidence_routes(root)
+    check_evidence_routes(root, plan["symbol"])
     action, qty, limit = request_fields(plan, request)
     candidate = load(root, "governance/runtime/production_candidate_state.json")
     study = load(root, STUDY_PATH)
@@ -183,9 +189,22 @@ def assessment(
         action=action,
         account_reference=reference,
         purpose=PURPOSE,
+        session=request["session"],
         now=now,
     )
     blockers = list(preflight["blockers"])
+    market_order = request["orderType"] == "MARKET"
+    if market_order:
+        from core.schd_bot_handoff import validate_handoff
+
+        blockers.extend(
+            validate_handoff(
+                bot_handoff or {},
+                request=request,
+                candidate_id=candidate.get("candidate_id"),
+                now=now,
+            )
+        )
     blockers.extend(current_source_blockers(root, candidate))
     if not reference or not preflight.get("account_reference_matches"):
         blockers.append("pinned_roth_account_required")
@@ -276,6 +295,30 @@ def assessment(
         blockers.append("realtime_schwab_quote_required")
     if not fresh(quote.get("provider_timestamp_utc"), now, 15):
         blockers.append("fresh_quote_required")
+    extended_quote_expiry = ""
+    if request["session"] != "NORMAL":
+        if quote.get("symbol") != plan["symbol"]:
+            blockers.append("extended_quote_symbol_mismatch")
+        for side in ("bid", "ask"):
+            try:
+                age = (
+                    now - timestamp(quote.get(f"{side}_timestamp_utc"))
+                ).total_seconds()
+                valid = 0 <= age <= 15 and number(quote.get(f"{side}_size", 0)) > 0
+            except (ValueError, TypeError):
+                valid = False
+            if not valid:
+                blockers.append(f"fresh_extended_{side}_and_size_required")
+        try:
+            extended_quote_expiry = (
+                min(
+                    timestamp(quote.get(f"{side}_timestamp_utc"))
+                    for side in ("bid", "ask")
+                )
+                + timedelta(seconds=15)
+            ).isoformat()
+        except (ValueError, TypeError):
+            pass
     try:
         bid, ask = number(quote.get("bid_price")), number(quote.get("ask_price"))
         spread = (ask - bid) / ((ask + bid) / 2) * 10000
@@ -285,18 +328,34 @@ def assessment(
             or spread > number(plan["hard_limits"]["max_spread_bps"])
         ):
             blockers.append("quote_spread_invalid")
-        if action == "BUY" and limit > bid:
+        if not market_order and action == "BUY" and limit > bid:
             blockers.append("buy_limit_above_fresh_bid_no_chase")
-        if action == "SELL" and limit < bid * (
-            1 - number(plan["hard_limits"]["max_limit_distance_bps"]) / 10000
+        if request["session"] != "NORMAL" and abs(limit - bid) / bid * 10000 > number(
+            plan["hard_limits"]["max_limit_distance_bps"]
+        ):
+            blockers.append("extended_limit_too_far_from_bid")
+        if (
+            not market_order
+            and action == "SELL"
+            and limit
+            < bid * (1 - number(plan["hard_limits"]["max_limit_distance_bps"]) / 10000)
         ):
             blockers.append("sell_limit_too_far_below_bid")
     except (ValueError, ArithmeticError):
         bid = ask = spread = number(0)
         blockers.append("quote_prices_invalid")
+    funding_price = ask * number("1.0035") if market_order else limit
+    if market_order and funding_price * qty + number(
+        plan["hard_limits"]["cost_reserve_usd"]
+    ) > number(plan["account_capital_usd"]):
+        blockers.append("estimated_market_cost_above_test_budget")
+    if market_order and action == "SELL":
+        entry = ledger.get(intent_id(plan, "BUY"))
+        if bid <= number(entry.get("average_fill_price", 0)):
+            blockers.append("sell_quote_not_above_verified_entry_price")
     if action == "BUY" and number(
         account["settled_cash_broker_visible_usd"]
-    ) < limit * qty + number(plan["hard_limits"]["cost_reserve_usd"]):
+    ) < funding_price * qty + number(plan["hard_limits"]["cost_reserve_usd"]):
         blockers.append("test_not_fully_cash_funded")
     order_request = {
         "symbol": plan["symbol"],
@@ -340,7 +399,7 @@ def assessment(
         candidate_id=str(candidate.get("candidate_id") or ""),
         broker="schwab",
         account_reference=reference,
-        policy_sha256=file_sha256(local_path(root, POLICY_PATH)),
+        policy_sha256=file_sha256(local_path(root, policy_path(plan["symbol"]))),
         account_snapshot_evidence={
             "broker_position_snapshot_sha256": file_sha256(
                 local_path(root, STUDY_PATH)
@@ -355,7 +414,9 @@ def assessment(
         envelope,
         expected_candidate_id=str(candidate.get("candidate_id") or ""),
         expected_account_reference=reference,
-        expected_policy_sha256=file_sha256(local_path(root, POLICY_PATH)),
+        expected_policy_sha256=file_sha256(
+            local_path(root, policy_path(plan["symbol"]))
+        ),
         now_utc=now,
         require_affirmative_risk_decision=True,
         require_quote_provenance=True,
@@ -380,6 +441,7 @@ def assessment(
         "account_reference_sha256": account_digest(reference),
         "request_sha256": canonical_payload_sha256(request),
         "policy_sha256": canonical_payload_sha256(plan),
+        "extended_quote_expires_at_utc": extended_quote_expiry,
         "technical_ready": not technical_blockers,
         "operator_attestation_ready": preflight["operator_attestation_ready"],
         "operator_submit_ready": not blockers,
@@ -388,6 +450,8 @@ def assessment(
         "position_quantity": account["candidate_symbol_quantity"],
         "settled_cash_usd": account["settled_cash_broker_visible_usd"],
         "request": dict(request),
+        "bot_handoff": dict(bot_handoff or {}),
+        "market_price_not_guaranteed": market_order,
         "preflight": preflight,
         "envelope": envelope,
         "production_validation": "separate_not_waived_or_credited",
@@ -440,7 +504,7 @@ def broker_inventory(trader: Any, reference: str) -> dict[str, Any]:
 def connect(
     root: Path, plan: Mapping[str, Any], *, refresh_technical: bool = True
 ) -> tuple[Any, str, dict[str, Any]]:
-    check_evidence_routes(root)
+    check_evidence_routes(root, plan["symbol"])
     technical = _refresh_technical_evidence() if refresh_technical else {"ok": True}
     refreshed = _refresh_account_study(quiet_auth=True)
     if not technical.get("ok") or not refreshed.get("ok"):
@@ -564,6 +628,30 @@ def settle_order(
     }
 
 
+def broker_cash_observation(trader: Any, reference: str) -> dict[str, Any]:
+    result = trader._invoke_client_candidates(
+        operation="get_account",
+        candidates=[("get_account", (), {"account_hash": reference})],
+        context={"purpose": PURPOSE},
+    )
+    try:
+        raw = result["response"].json()
+        cash = number(raw["securitiesAccount"]["currentBalances"]["cashBalance"])
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return {"state": "explicit_current_cash_balance_unavailable"}
+    if result.get("ok") is not True:
+        return {"state": "broker_cash_read_failed"}
+    return {
+        "state": "observed",
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "account_reference_sha256": account_digest(reference),
+        "source": "schwab_currentBalances.cashBalance",
+        "balance_usd": str(cash),
+        "broker_payload_sha256": canonical_payload_sha256(raw),
+        "settled_cash_certified": False,
+    }
+
+
 def observe(
     root: Path,
     *,
@@ -593,8 +681,12 @@ def observe(
     )
     if not context["account_found"]:
         raise ValueError("designated_roth_account_truth_missing")
+    cash = broker_cash_observation(trader, reference)
     now = datetime.now(timezone.utc)
-    transactions = dividend_observations(trader, reference, plan, ledger, now=now)
+    source = transaction_observations(trader, reference, plan, ledger, now=now)
+    transactions = dividend_observations(
+        trader, reference, plan, ledger, now=now, source=source
+    )
     result = holding_observation(
         plan=plan,
         ledger=ledger,
@@ -608,10 +700,38 @@ def observe(
         key: value for key, value in transactions.items() if key != "events"
     }
     result["cash_reconciliation"] = "not_certified_by_position_observation"
+    orders = [ledger.get(intent_id(plan, side)) for side in ("BUY", "SELL")]
+    result["accounting"] = reconcile_test_accounting(
+        plan=plan,
+        orders=[row for row in orders if row],
+        transactions=source,
+        reference=reference,
+        position_consistent=not result["blockers"]
+        and result["state"]
+        in {"holding_observed", "round_trip_observed", "entry_not_filled"},
+        cash_observation=cash,
+        now=now,
+    )
+    entry = orders[0]
+    result["purchase_scope"] = {
+        "test_policy_sha256": canonical_payload_sha256(plan),
+        "account_policy_key": plan["account_policy_key"],
+        "symbol": plan["symbol"],
+        "entry_attempts": int(bool(entry)),
+        "entry_state": entry.get("state", "not_started"),
+        "entry_created_at_utc": entry.get("created_at_utc"),
+        "entry_gross_usd": str(
+            number(entry.get("filled_quantity", 0))
+            * number(entry.get("average_fill_price", 0))
+        ),
+        "position_quantity": context["candidate_symbol_quantity"],
+        "funding_proxy_usd": context["settled_cash_broker_visible_usd"],
+        "settled_cash_certified": False,
+    }
     return result
 
 
-def dividend_observations(
+def transaction_observations(
     trader: Any,
     reference: str,
     plan: Mapping[str, Any],
@@ -621,8 +741,10 @@ def dividend_observations(
 ) -> dict[str, Any]:
     entry = ledger.get(intent_id(plan, "BUY"))
     if not entry or number(entry.get("filled_quantity", 0)) <= 0:
-        return {"state": "not_started", "events": [], "source_complete": False}
-    start = max(timestamp(entry["created_at_utc"]), now - timedelta(days=59))
+        return {"state": "not_started", "rows": [], "source_complete": False}
+    baseline = intent_payload(entry).get("baseline_cash_observation", {})
+    origin = timestamp(baseline.get("timestamp_utc") or entry["created_at_utc"])
+    start = max(origin, now - timedelta(days=59))
     result = trader._invoke_client_candidates(
         operation="get_transactions",
         candidates=[
@@ -633,7 +755,6 @@ def dividend_observations(
                     "account_hash": reference,
                     "start_date": start,
                     "end_date": now,
-                    "symbol": plan["symbol"],
                 },
             )
         ],
@@ -650,13 +771,45 @@ def dividend_observations(
     ):
         return {
             "state": "broker_transaction_read_unavailable",
+            "rows": [],
+            "source_complete": False,
+        }
+    return {
+        "rows": rows,
+        "source_complete": len(rows) < 1000 and start == origin,
+        "window_start_utc": start.isoformat(),
+        "window_end_utc": now.isoformat(),
+    }
+
+
+def dividend_observations(
+    trader: Any,
+    reference: str,
+    plan: Mapping[str, Any],
+    ledger: LiveOrderLedger,
+    *,
+    now: datetime,
+    source: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = (
+        source
+        if source is not None
+        else transaction_observations(trader, reference, plan, ledger, now=now)
+    )
+    if not source.get("window_start_utc"):
+        return {
+            "state": source.get("state", "incomplete"),
             "events": [],
             "source_complete": False,
         }
+    rows = source["rows"]
+    start = timestamp(source["window_start_utc"])
     events = []
     unresolved = 0
     for row in rows:
         if _kind(row, action="UNKNOWN") != "dividend":
+            continue
+        if _symbol(row) and _symbol(row) != plan["symbol"]:
             continue
         event_id = str(row.get("activityId") or row.get("transactionId") or "")
         when = row.get("transactionDate") or row.get("time") or row.get("tradeDate")
@@ -685,11 +838,7 @@ def dividend_observations(
                 "broker_payload_sha256": canonical_payload_sha256(row),
             }
         )
-    complete = (
-        not unresolved
-        and len(rows) < 1000
-        and start == timestamp(entry["created_at_utc"])
-    )
+    complete = not unresolved and source.get("source_complete") is True
     return {
         "state": "observed" if events else "not_observed" if complete else "incomplete",
         "events": events,
@@ -713,16 +862,75 @@ def test_lock(root: Path):
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     root = PROJECT_ROOT
-    plan = load(root, POLICY_PATH)
+    symbol = getattr(args, "symbol", "O")
+    session = getattr(args, "session", "NORMAL")
+    plan = load(root, policy_path(symbol))
     validate_policy(plan)
+    validate_session(plan, session)
+    bot_market = getattr(args, "bot_market", False)
+    if bot_market and (
+        symbol != "SCHD"
+        or session != "NORMAL"
+        or args.quantity is not None
+        or args.limit_price is not None
+    ):
+        raise ValueError(
+            "bot market test requires SCHD NORMAL with fixed one-share quantity and no limit override"
+        )
     if args.command == "status":
         return {
             "purpose": PURPOSE,
             "state": "operator_controlled_not_armed",
             "plan": plan,
+            "selected_session": session,
             "connected": False,
             **AUTHORITY,
         }
+    if args.command == "attestation-checklist":
+        return {
+            "purpose": PURPOSE,
+            "state": "checklist_only_not_attested",
+            "account": plan["account_policy_key"],
+            "required_confirmations": list(required_operator_confirmations("roth_ira"))
+            + ["broker_open_orders_reviewed", "no_concurrent_manual_orders_confirmed"]
+            + (["extended_hours_risk_reviewed"] if session in {"AM", "PM"} else [])
+            + (["market_order_price_risk_reviewed"] if bot_market else []),
+            "current_settled_cash_required": True,
+            "confirmation_each_order": True,
+            "issue_only_after_technical_ready": True,
+            **AUTHORITY,
+        }
+    if args.command == "readiness":
+        previous = _read_only_environment()
+        try:
+            check_evidence_routes(root, symbol)
+            technical = _refresh_technical_evidence()
+            preflight = evaluate_live_canary_preflight(
+                root,
+                symbol=symbol,
+                action=args.action,
+                purpose=PURPOSE,
+                session=session,
+            )
+            candidate = load(root, "governance/runtime/production_candidate_state.json")
+            source_blockers = current_source_blockers(root, candidate)
+            blockers = list(
+                dict.fromkeys(
+                    technical["blockers"] + preflight["blockers"] + source_blockers
+                )
+            )
+            return {
+                "purpose": PURPOSE,
+                "state": "readiness_observation_not_authorization",
+                "ok": not blockers,
+                "blockers": blockers,
+                "technical_refresh": technical,
+                "preflight": preflight,
+                "source_blockers": source_blockers,
+                **AUTHORITY,
+            }
+        finally:
+            _restore_environment(previous)
     if args.command == "submit" and not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise ValueError("interactive_operator_terminal_required_no_unattended_submit")
     if args.command == "submit" and any(
@@ -746,6 +954,31 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     previous = _read_only_environment()
     previous.update({name: os.environ.get(name) for name in names})
     try:
+        if bot_market:
+            from core.decision_price_evidence import build_evidence
+            from scripts.ops.schd_bot_handoff import observe_handoff
+
+            observed = observe_handoff(
+                root, plan, {}, action=args.action, now=datetime.now(timezone.utc)
+            )
+            packet = observed.get("receipt", {}).get("packet")
+            evidence_blockers = (
+                build_evidence(packet, now=datetime.now(timezone.utc))["blockers"]
+                if packet
+                else observed["blockers"]
+            )
+            if packet and packet["decision"]["action"] != args.action:
+                evidence_blockers = list(evidence_blockers) + [
+                    "bot_action_does_not_match_requested_side"
+                ]
+            if evidence_blockers:
+                return {
+                    "state": "blocked",
+                    "purpose": PURPOSE,
+                    "blockers": evidence_blockers,
+                    "native_decision": packet.get("decision") if packet else None,
+                    **AUTHORITY,
+                }
         lease_path = (
             load(root, "config/system_role_contracts_v1.json")
             .get("action_leases", {})
@@ -769,11 +1002,53 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             ledger = open_ledger(root)
             if args.command == "observe":
-                return observe(
+                result = observe(
                     root, plan=plan, trader=trader, reference=reference, ledger=ledger
                 )
-            proposal = propose_entry(plan, quote, now=datetime.now(timezone.utc))
-            if (
+                if result.get("purchase_scope", {}).get("entry_attempts") == 0:
+                    quote = _quote_summary(
+                        trader._fetch_live_quote(symbol=plan["symbol"]),
+                        symbol=plan["symbol"],
+                        now=datetime.now(timezone.utc),
+                    )
+                    draft = propose_entry(plan, quote, now=datetime.now(timezone.utc))
+                    if draft.get("state") == "proposed":
+                        review = assessment(
+                            root,
+                            plan=plan,
+                            request=draft["request"],
+                            quote=quote,
+                            reference=reference,
+                            ledger=ledger,
+                            inventory=broker_inventory(trader, reference),
+                            now=datetime.now(timezone.utc),
+                        )
+                        result["proposal_preflight"] = {
+                            key: review[key]
+                            for key in (
+                                "timestamp_utc",
+                                "candidate_id",
+                                "policy_sha256",
+                                "technical_ready",
+                                "technical_blockers",
+                            )
+                        }
+                result["quote"] = quote
+                return result
+            proposal = propose_entry(
+                plan, quote, now=datetime.now(timezone.utc), session=session
+            )
+            handoff = None
+            if bot_market:
+                request = build_market_request(plan, action=args.action)
+                handoff = observe_handoff(
+                    root,
+                    plan,
+                    quote,
+                    action=args.action,
+                    now=datetime.now(timezone.utc),
+                )["receipt"]
+            elif (
                 args.action == "BUY"
                 and args.limit_price is None
                 and args.quantity is None
@@ -791,6 +1066,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     action=args.action,
                     quantity=args.quantity,
                     limit_price=args.limit_price,
+                    session=session,
                 )
             inventory = broker_inventory(trader, reference)
             review = assessment(
@@ -802,8 +1078,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 ledger=ledger,
                 inventory=inventory,
                 now=datetime.now(timezone.utc),
+                bot_handoff=handoff,
             )
-            review["price_proposal"] = proposal
+            review["price_proposal"] = (
+                {
+                    "state": "native_bot_market_request",
+                    "price_guaranteed": False,
+                    "automatic_sell": False,
+                }
+                if bot_market
+                else (
+                    {"state": "operator_specified_limit", "request": request,
+                     "blockers": [], **AUTHORITY}
+                    if args.limit_price is not None and args.quantity is not None
+                    else proposal
+                )
+            )
             if args.command == "preview" or not review["technical_ready"]:
                 return review
             phrase = approval_phrase(plan, request)
@@ -812,9 +1102,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     {
                         "request": request,
                         "account": plan["account_policy_key"],
-                        "budget_usd": 300,
-                        "cost_reserve_usd": 1,
-                        "buy_and_hold": args.action == "BUY",
+                        "budget_usd": plan["account_capital_usd"],
+                        "cost_reserve_usd": plan["hard_limits"]["cost_reserve_usd"],
+                        "buy_and_hold": plan["investment_style"] == "buy_and_hold",
                         "cancel_if_unfilled_seconds": 60,
                     },
                     indent=2,
@@ -823,6 +1113,24 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             print(
                 "Confirm each reviewed account/risk requirement, then this exact order. SELL is a separate test, never automatic."
             )
+            if bot_market:
+                print(
+                    "MARKET execution price is not guaranteed. The $100 check is a preflight estimate, not a broker price cap; even a SELL quoted above entry can fill lower."
+                )
+                if (
+                    input("market_order_price_risk_reviewed [yes/no]: ").strip().lower()
+                    != "yes"
+                ):
+                    raise ValueError("market_order_price_risk_confirmation_required")
+            if session != "NORMAL":
+                print(
+                    "Extended hours: lower liquidity, wider spreads, partial/no fills, and prices that may differ across venues. No market fallback or overnight carry."
+                )
+                if (
+                    input("extended_hours_risk_reviewed [yes/no]: ").strip().lower()
+                    != "yes"
+                ):
+                    raise ValueError("extended_hours_risk_confirmation_required")
             for field in required_operator_confirmations("roth_ira") + (
                 "broker_open_orders_reviewed",
                 "no_concurrent_manual_orders_confirmed",
@@ -832,7 +1140,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             settled_cash = number(
                 input("Current settled cash shown by Schwab (USD): ").strip()
             )
-            if settled_cash < 300:
+            if settled_cash < number(plan["account_capital_usd"]):
                 raise ValueError("settled_cash_below_test_budget")
             approved = input(f"Type exactly: {phrase}\n").strip()
             if approved != phrase:
@@ -850,15 +1158,34 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 confirm_all=True,
                 confirm_retirement_account_risk=True,
                 purpose=PURPOSE,
+                test_symbol=symbol,
+                session=session,
+                confirm_extended_hours_risk=session != "NORMAL",
             )
             if not issued.get("ok"):
                 raise ValueError("test_attestation_not_issued")
             inventory = broker_inventory(trader, reference)
+            cash_baseline = broker_cash_observation(trader, reference)
             quote = _quote_summary(
                 trader._fetch_live_quote(symbol=plan["symbol"]),
                 symbol=plan["symbol"],
                 now=datetime.now(timezone.utc),
             )
+            if bot_market:
+                refreshed_handoff = observe_handoff(
+                    root,
+                    plan,
+                    quote,
+                    action=args.action,
+                    now=datetime.now(timezone.utc),
+                )
+                if refreshed_handoff["receipt"].get(
+                    "decision_binding_sha256"
+                ) != handoff.get("decision_binding_sha256"):
+                    raise ValueError(
+                        "bot_decision_changed_during_confirmation_review_again"
+                    )
+                handoff = refreshed_handoff["receipt"]
             review = assessment(
                 root,
                 plan=plan,
@@ -868,9 +1195,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 ledger=ledger,
                 inventory=inventory,
                 now=datetime.now(timezone.utc),
+                bot_handoff=handoff,
             )
             if not review["operator_submit_ready"]:
                 return review
+            review["cash_balance_observation"] = cash_baseline
+            review["market_order_price_risk_reviewed"] = bot_market
             result = dispatch_once(
                 plan=plan,
                 request=request,
@@ -909,13 +1239,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "command",
-        choices=("status", "preview", "submit", "observe"),
+        choices=(
+            "status",
+            "preview",
+            "submit",
+            "observe",
+            "readiness",
+            "attestation-checklist",
+        ),
         nargs="?",
         default="status",
     )
     parser.add_argument("--action", choices=("BUY", "SELL"), default="BUY")
+    parser.add_argument("--symbol", choices=("O", "SCHD"), default="O")
+    parser.add_argument("--session", choices=("NORMAL", "AM", "PM"), default="NORMAL")
     parser.add_argument("--quantity")
     parser.add_argument("--limit-price")
+    parser.add_argument(
+        "--bot-market",
+        action="store_true",
+        help="Native SCHD decision, one share, regular session, separate operator confirmation per order",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -933,9 +1277,14 @@ def main(argv: list[str] | None = None) -> int:
             "manual_broker_check_required": args.command == "submit",
             **AUTHORITY,
         }
-    if args.command != "status":
+    if args.command not in {"status", "attestation-checklist", "readiness"}:
         try:
-            destination = local_path(PROJECT_ROOT, REPORT_PATH)
+            report_path = (
+                REPORT_PATH
+                if args.symbol == "O"
+                else "governance/health/supervised_schd_broker_test_latest.json"
+            )
+            destination = local_path(PROJECT_ROOT, report_path)
             written = safe_write_json_atomic(
                 str(destination),
                 result,

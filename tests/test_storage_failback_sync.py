@@ -26,10 +26,70 @@ storage_failback_sync = _load_module(
     "storage_failback_sync_test",
     ROOT / "scripts" / "ops" / "storage_failback_sync.py",
 )
+
+
+def test_legacy_fallback_repair_preserves_history_and_is_idempotent(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    root, external = tmp_path / "project", tmp_path / "external"
+    local = root / "local_fallback_storage"
+    local.mkdir(parents=True)
+    target = external / "local_fallback_storage/decisions"
+    target.mkdir(parents=True)
+    (target / "history.jsonl").write_text("retained")
+    (local / "decisions").symlink_to(target)
+    monkeypatch.setattr(storage_failback_sync.shutil, "disk_usage", lambda p: SimpleNamespace(free=100*1024**3))
+    monkeypatch.setattr(storage_failback_sync, "maintenance_hold_snapshot", lambda p: {})
+    preview = storage_failback_sync.repair_local_fallback_aliases(root, external)
+    assert preview["actions"] and (local / "decisions").is_symlink()
+    result = storage_failback_sync.repair_local_fallback_aliases(root, external, apply=True)
+    assert result["ok"] and not (local / "decisions").is_symlink()
+    assert (local / "decisions").is_dir()
+    history = Path(result["actions"][0]["history_link"])
+    assert history.is_symlink() and (history / "history.jsonl").read_text() == "retained"
+    assert (target / "history.jsonl").read_text() == "retained"
+    again = storage_failback_sync.repair_local_fallback_aliases(root, external, apply=True)
+    assert again["ok"] and again["actions"] == []
+
+
+def test_fallback_repair_never_detaches_unknown_or_protected_alias(tmp_path):
+    local = tmp_path / "local_fallback_storage"
+    local.mkdir()
+    path = local / "decisions"
+    path.symlink_to("/Volumes/VIDEO")
+    result = storage_failback_sync.repair_local_fallback_aliases(tmp_path, tmp_path / "external", apply=True)
+    assert not result["ok"] and path.is_symlink()
+    assert result["actions"] == []
 data_retention_policy = _load_module(
     "data_retention_policy_for_storage_sync_test",
     ROOT / "scripts" / "data_retention_policy.py",
 )
+
+
+def test_route_verify_only_populates_contract_without_mutating_routes(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(storage_failback_sync, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["storage_failback_sync", "--verify-only", "--json"])
+    monkeypatch.setattr(storage_failback_sync, "observe_current_routes", lambda root: {
+        "verification_state": "curated_ready", "certified_mode": "external_curated",
+        "tracked_count": 3, "ready_count": 3})
+    monkeypatch.setattr(storage_failback_sync, "_preserve_verified_local_route_intent", lambda *a: (_ for _ in ()).throw(AssertionError()))
+    assert storage_failback_sync.main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["mode"] == "external_curated"
+    assert result["observation_only"] and not result["route_mutation_performed"]
+    assert result["route_verification"]["tracked_count"] == 3
+
+
+def test_busy_route_verifier_cannot_overwrite_owner_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage_failback_sync, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["storage_failback_sync", "--verify-only", "--json"])
+    monkeypatch.setattr(storage_failback_sync, "_acquire_singleton_lock", lambda *a: (None, "held"))
+    monkeypatch.setattr(storage_failback_sync, "observe_current_routes", lambda *a: (_ for _ in ()).throw(AssertionError()))
+    health = tmp_path / "governance/health"
+    health.mkdir(parents=True)
+    path = health / "storage_failback_sync_latest.json"
+    path.write_text('{"timestamp_utc":"old","mode":"external"}')
+    assert storage_failback_sync.main() == 0
+    assert json.loads(path.read_text())["timestamp_utc"] == "old"
 
 
 def test_channel_queue_handoff_requires_registered_consumers_to_be_fully_acked(

@@ -284,11 +284,10 @@ def replay(candles: list, request: dict) -> dict:
     }
 
 
-def fetch_and_replay(request: dict) -> dict:
-    request = validate_request(request)
-    profile = PROFILES[request["profile"]]
+def fetch_candles(profile_name: str, *, now=None) -> list:
+    profile = PROFILES[profile_name]
     step = profile["granularity"]
-    end = int(datetime.now(timezone.utc).timestamp()) // step * step
+    end = int((now or datetime.now(timezone.utc)).timestamp()) // step * step
     start = end - profile["bars"] * step
     # A narrower public-data transport than the streaming market client:
     # fixed host/path, no credentials, proxies or redirects, and bounded bytes.
@@ -315,7 +314,12 @@ def fetch_and_replay(request: dict) -> dict:
         rows = json.loads(raw)
     finally:
         client.close()
-    return replay(validate_candles(rows, start=start, end=end, step=step), request)
+    return validate_candles(rows, start=start, end=end, step=step)
+
+
+def fetch_and_replay(request: dict) -> dict:
+    request = validate_request(request)
+    return replay(fetch_candles(request["profile"]), request)
 
 
 if __name__ == "__main__":

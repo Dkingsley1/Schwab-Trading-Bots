@@ -187,6 +187,7 @@ def mark_provider_recovered(
         not current
         or str(current.get("state") or "") != "cooldown"
         or (bool(current.get("active", False)) and not force)
+        or (force and provider_http_status_code(current) not in {401, 403})
     ):
         return current
     lock_path = state_path.with_suffix(".lock")
@@ -195,7 +196,13 @@ def mark_provider_recovered(
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
         try:
             current = provider_access_status(root, name)
-            if bool(current.get("active", False)) and not force:
+            # Auth/entitlement proof cannot release a rate-limit cooldown, including
+            # a new denial arriving while the recovery caller waited for this lock.
+            if (
+                str(current.get("state") or "") != "cooldown"
+                or (bool(current.get("active", False)) and not force)
+                or (force and provider_http_status_code(current) not in {401, 403})
+            ):
                 return current
             now = time.time()
             payload = {
@@ -308,6 +315,9 @@ def provider_request_slot(
         if not acquired:
             raise RuntimeError(f"{name}_provider_request_slot_timeout")
         try:
+            # A free slot is not provider admission; another slot may have failed.
+            if provider_access_status(root, name).get("active", False):
+                raise RuntimeError(f"{name}_provider_cooldown_active")
             yield
         finally:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)

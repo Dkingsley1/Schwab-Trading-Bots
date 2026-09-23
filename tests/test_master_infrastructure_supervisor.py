@@ -1444,6 +1444,10 @@ def test_master_supervisor_apply_treats_rc2_as_degraded_not_hard_failed(
     monkeypatch.delenv("ONE_NUMBERS_EXPECTED_START_DAY", raising=False)
     monkeypatch.delenv("INFRA_SUPERVISOR_ONE_NUMBERS_START_DAY", raising=False)
     _write_ready_fixture(project_root)
+    validity_path = project_root / "governance/health/command_validity_latest.json"
+    validity = json.loads(validity_path.read_text())
+    validity["metrics"]["unprobed_operator_gated_count"] = 1
+    _write_json(validity_path, validity)
 
     def _fake_run_json(cmd: list[str], *, cwd: Path, timeout_sec: int) -> dict:
         return {
@@ -1455,7 +1459,7 @@ def test_master_supervisor_apply_treats_rc2_as_degraded_not_hard_failed(
 
     monkeypatch.setattr(supervisor, "_run_json", _fake_run_json)
 
-    payload = supervisor.build_payload(project_root, apply=True, timeout_sec=30)
+    payload = supervisor.build_payload(project_root, apply=True, timeout_sec=150)
 
     assert payload["overall_status"] == "degraded"
     assert payload["attempts"]

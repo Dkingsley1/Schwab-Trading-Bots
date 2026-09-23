@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 import shutil
+import signal
 import sqlite3
 import sys
 from pathlib import Path
@@ -11,6 +12,22 @@ import pytest
 
 import scripts.ops.cold_archive_compactor as compactor
 from scripts.ops.cold_archive_compactor import archive_root_available, build_payload, writer_blocks_compaction
+
+
+def test_soft_stop_unwinds_cleanup_and_restores_handler(monkeypatch):
+    previous = signal.getsignal(signal.SIGTERM)
+    cleanup = []
+    def stopped_main():
+        try:
+            signal.raise_signal(signal.SIGTERM)
+        finally:
+            cleanup.append("released")
+    monkeypatch.setattr(compactor, "main", stopped_main)
+    with pytest.raises(SystemExit) as stopped:
+        compactor.cli()
+    assert stopped.value.code == 143
+    assert cleanup == ["released"]
+    assert signal.getsignal(signal.SIGTERM) == previous
 
 
 @pytest.mark.parametrize("requested", ["auto", "afsctool"])

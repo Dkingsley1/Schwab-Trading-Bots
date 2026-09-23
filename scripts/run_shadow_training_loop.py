@@ -6786,6 +6786,9 @@ def _market_snapshot_from_schwab(client: Any, symbol: str) -> Dict[str, float]:
         "quote_history_agreement_norm": quote_history_agreement_norm,
     }
     out.update(futures_quote)
+    from core.schd_market_evidence import provider_quote_features
+
+    out.update(provider_quote_features(quote_obj, symbol, now=now_utc))
     out.update(_default_dividend_features())
     out.update(default_bond_reference_features())
     out.update(
@@ -14054,6 +14057,19 @@ def _external_ingestion_extra_interval_seconds(project_root: str) -> int:
         extra = max(extra, queue_extra)
 
     return min(extra, max_extra)
+
+
+def _collection_interval_seconds(
+    *,
+    adaptive_interval_seconds: float,
+    base_interval_seconds: float,
+    external_extra_seconds: float,
+) -> float:
+    # External pressure is per-cycle admission, not persistent adaptive state.
+    return max(
+        adaptive_interval_seconds,
+        base_interval_seconds + external_extra_seconds,
+    )
 
 
 def _collection_duty_cycle_contract(
@@ -23432,6 +23448,10 @@ def _write_heartbeat(
     state: str,
     progress_current: int | None = None,
     progress_total: int | None = None,
+    activity: str = "",
+    pause_gate: str = "",
+    pause_reason: str = "",
+    pacing: Mapping[str, Any] | None = None,
 ) -> None:
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -23451,6 +23471,14 @@ def _write_heartbeat(
         payload["progress_current"] = max(int(progress_current), 0)
     if progress_total is not None:
         payload["progress_total"] = max(int(progress_total), 0)
+    if activity:
+        payload["activity"] = activity
+    if pause_gate:
+        payload["pause_gate"] = pause_gate
+    if pause_reason:
+        payload["pause_reason"] = pause_reason
+    if pacing is not None:
+        payload["collector_pacing"] = dict(pacing)
     path = _heartbeat_path(project_root, broker)
     safe_write_json_atomic(
         path,
@@ -24975,6 +25003,7 @@ def run_loop(
         _append_jsonl(_snapshot_debug_path(PROJECT_ROOT, broker=broker), row)
 
     loop_state = "initialized"
+    loop_state_reason = ""
     ingress_totals: Dict[str, int] = {
         "cache_ok": 0,
         "simulate_ok": 0,
@@ -24989,11 +25018,12 @@ def run_loop(
     }
 
     def _set_loop_state(new_state: str, reason: str = "", **extra: Any) -> None:
-        nonlocal loop_state
+        nonlocal loop_state, loop_state_reason
         if (new_state == loop_state) and (not reason) and (not extra):
             return
         prev_state = loop_state
         loop_state = new_state
+        loop_state_reason = reason
         _emit_loop_state(
             project_root=PROJECT_ROOT,
             broker=broker,
@@ -25055,7 +25085,16 @@ def run_loop(
             details=details or None,
         )
 
-    def _publish_ingress_state(*, pause_gate: str = "", pause_reason: str = "") -> None:
+    def _publish_ingress_state(
+        *,
+        pause_gate: str = "",
+        pause_reason: str = "",
+        activity: str = "",
+        pacing: Mapping[str, Any] | None = None,
+        emit_summary: bool = True,
+    ) -> None:
+        if not pause_reason and loop_state != "running":
+            pause_reason = loop_state_reason
         ingress_total_requests = sum(int(v or 0) for v in iter_ingress.values())
         ingress_error_count = int(iter_ingress.get("api_error", 0) or 0)
         ingress_error_rate = (
@@ -25066,6 +25105,7 @@ def run_loop(
 
         ingress_state = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "pid": os.getpid(),
             "run_id": str(os.getenv("CORRELATION_RUN_ID", "") or "").strip(),
             "iter_id": str(os.getenv("CORRELATION_ITER_ID", "") or "").strip(),
             "iter": int(iter_count),
@@ -25089,6 +25129,23 @@ def run_loop(
             ingress_state["pause_gate"] = pause_gate
         if pause_reason:
             ingress_state["pause_reason"] = pause_reason
+        if activity:
+            ingress_state["activity"] = activity
+        if pacing is not None:
+            ingress_state["collector_pacing"] = dict(pacing)
+
+        _write_heartbeat(
+            project_root=PROJECT_ROOT,
+            broker=broker,
+            iter_count=iter_count,
+            symbols_total=len(symbols),
+            context_total=len(context_symbols),
+            state=loop_state,
+            activity=activity,
+            pause_gate=pause_gate,
+            pause_reason=pause_reason,
+            pacing=pacing,
+        )
 
         _write_ingress_state(
             project_root=PROJECT_ROOT, broker=broker, payload=ingress_state
@@ -25114,7 +25171,8 @@ def run_loop(
         if pause_reason:
             event_row["pause_reason"] = pause_reason
 
-        _append_jsonl(_event_bus_path(PROJECT_ROOT), event_row)
+        if emit_summary:
+            _append_jsonl(_event_bus_path(PROJECT_ROOT), event_row)
 
     backlog_pause_seen = _collector_bootstrap_backlog_stagger_enabled(
         max_iterations=max_iterations
@@ -30023,6 +30081,13 @@ def run_loop(
                 "paper_execution_authority_version": "grand_master_paper_authority_v2",
             }
 
+            if symbol == "SCHD":
+                from core.schd_market_evidence import candle_context_receipt
+
+                grand_master_metadata["schd_candle_context"] = candle_context_receipt(
+                    PROJECT_ROOT, symbol
+                )
+
             if _dynamic_storage_flag(
                 "LOG_GRAND_MASTER_DECISIONS", log_grand_master_decisions
             ):
@@ -31766,16 +31831,26 @@ def run_loop(
             effective_interval_seconds
             + _external_ingestion_extra_interval_seconds(PROJECT_ROOT)
         )
-        if current_interval_seconds < external_floor:
+        scheduled_interval_seconds = _collection_interval_seconds(
+            adaptive_interval_seconds=current_interval_seconds,
+            base_interval_seconds=effective_interval_seconds,
+            external_extra_seconds=external_floor - effective_interval_seconds,
+        )
+        if current_interval_seconds < scheduled_interval_seconds:
             print(
                 f"[IngestionBackpressure] applying external interval floor={external_floor}s"
             )
-            current_interval_seconds = external_floor
 
         duty_cycle = _collection_duty_cycle_contract(
             loop_seconds=loop_seconds,
-            interval_seconds=current_interval_seconds,
+            interval_seconds=scheduled_interval_seconds,
         )
+        pacing = {
+            "adaptive_interval_seconds": current_interval_seconds,
+            "external_interval_floor_seconds": external_floor,
+            "scheduled_interval_seconds": scheduled_interval_seconds,
+            "collector_duty_cycle": duty_cycle,
+        }
         if duty_cycle["applied"]:
             try:
                 duty_cycle_log_every = max(
@@ -31817,7 +31892,9 @@ def run_loop(
                     "overloaded": bp.overloaded,
                     "active_bots": len([b for b in bots if b.active]),
                     "cache_size": len(state_cache._store),
-                    "current_interval_seconds": current_interval_seconds,
+                    "current_interval_seconds": scheduled_interval_seconds,
+                    "adaptive_interval_seconds": current_interval_seconds,
+                    "external_interval_floor_seconds": external_floor,
                     "collector_duty_cycle": duty_cycle,
                     "memory_throttle_active": memory_throttle_active,
                     "memory_free_pct": latest_memory_snapshot.get("free_pct"),
@@ -31854,6 +31931,9 @@ def run_loop(
 
         JsonlWriteBuffer.shared().flush_all()
         sleep_s = float(duty_cycle["sleep_seconds"])
+        _publish_ingress_state(
+            activity="interval_wait", pacing=pacing, emit_summary=False
+        )
         time.sleep(sleep_s)
 
 

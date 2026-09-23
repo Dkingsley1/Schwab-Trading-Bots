@@ -92,6 +92,18 @@ def build_payload(
     deadline_seconds: int,
     command: list[str],
 ) -> tuple[dict[str, Any], int]:
+    if (project_root / "governance/health/SYSTEM_POWER_OFF.flag").exists():
+        # A deferred scheduler tick must not rewrite a producer's evidence age.
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "command_executed": False,
+            "job_lifecycle": {
+                "terminal_status": "deferred",
+                "rc": 0,
+                "deferred_reason": "system_power_off",
+            },
+        }, 0
     started = utc_now()
     artifact_present_before = artifact.exists()
     result = run_command(command, cwd=project_root, timeout_seconds=deadline_seconds)

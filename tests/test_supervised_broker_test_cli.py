@@ -356,6 +356,31 @@ def test_no_unattended_submit_or_broker_connection(tmp_path, monkeypatch):
         cli.run(args)
 
 
+def test_explicit_pm_limit_label_and_extended_risk_checklist(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "PROJECT_ROOT", tmp_path)
+    policy = "config/supervised_schd_broker_test_v1.json"
+    _write(tmp_path / policy, json.loads((ROOT / policy).read_text()))
+    args = argparse.Namespace(command="attestation-checklist", symbol="SCHD",
+        session="PM", action="BUY", quantity=1, limit_price="33.33", json=True,
+        bot_market=False)
+    checklist = cli.run(args)
+    assert "extended_hours_risk_reviewed" in checklist["required_confirmations"]
+    assert "market_order_price_risk_reviewed" not in checklist["required_confirmations"]
+    monkeypatch.setattr(cli, "connect", lambda *a, **k: (object(), "test", {}))
+    monkeypatch.setattr(cli, "open_ledger", lambda *a: object())
+    monkeypatch.setattr(cli, "broker_inventory", lambda *a: {})
+    monkeypatch.setattr(cli, "assessment", lambda *a, **k: {
+        "technical_ready": False, "technical_blockers": ["retained_test_blocker"],
+        "request": k["request"], "live_execution_authority": False})
+    args.command = "preview"
+    result = cli.run(args)
+    assert result["price_proposal"]["state"] == "operator_specified_limit"
+    assert result["request"]["price"] == "33.33"
+    assert result["request"]["session"] == "PM"
+    assert result["technical_blockers"] == ["retained_test_blocker"]
+    assert not result["live_execution_authority"]
+
+
 def test_protected_symlink_rejected_before_target_io(tmp_path):
     (tmp_path / "redirect").symlink_to("/Volumes/VIDEO/private")
     with pytest.raises(ValueError, match="unsafe_test_path"):
@@ -453,6 +478,95 @@ def test_observed_dividend_requires_symbol_bound_broker_data(tmp_path):
     assert result["events"] == []
 
 
+@pytest.mark.parametrize("cash", ["565.49", 0, None, "NaN", True])
+def test_cash_observation_requires_explicit_finite_broker_balance(cash):
+    calls = []
+    trader = SimpleNamespace(
+        _invoke_client_candidates=lambda **kwargs: calls.append(kwargs)
+        or {
+            "ok": True,
+            "response": SimpleNamespace(
+                json=lambda: {
+                    "securitiesAccount": {"currentBalances": {"cashBalance": cash}}
+                }
+            ),
+        }
+    )
+    result = cli.broker_cash_observation(trader, "private-reference")
+    assert (result["state"] == "observed") == (
+        cash in ("565.49", 0) and not isinstance(cash, bool)
+    )
+    assert calls[0]["operation"] == "get_account"
+    assert "private-reference" not in json.dumps(result)
+    if result["state"] == "observed":
+        assert result["settled_cash_certified"] is False
+
+
+def test_observe_unused_scope_reuses_native_technical_preflight(setup, monkeypatch):
+    root, kwargs = setup
+    calls = []
+    monkeypatch.setattr(cli, "PROJECT_ROOT", root)
+    trader = SimpleNamespace(
+        _fetch_live_quote=lambda **kw: calls.append("quote") or kwargs["quote"]
+    )
+    monkeypatch.setattr(
+        cli,
+        "connect",
+        lambda *args, **kw: (trader, kwargs["reference"], kwargs["quote"]),
+    )
+    monkeypatch.setattr(
+        cli, "observe", lambda *args, **kw: {"purchase_scope": {"entry_attempts": 0}}
+    )
+    monkeypatch.setattr(cli, "_quote_summary", lambda *args, **kw: kwargs["quote"])
+    monkeypatch.setattr(
+        cli,
+        "broker_inventory",
+        lambda *args: calls.append("inventory") or kwargs["inventory"],
+    )
+
+    def preflight(*args, **kw):
+        calls.append("preflight")
+        return {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "candidate_id": "test",
+            "policy_sha256": "test-policy",
+            "technical_ready": False,
+            "technical_blockers": ["halt_flags_active"],
+        }
+
+    monkeypatch.setattr(cli, "assessment", preflight)
+    result = cli.run(argparse.Namespace(command="observe"))
+    assert calls == ["quote", "inventory", "preflight"]
+    assert result["proposal_preflight"]["technical_ready"] is False
+    assert not kwargs["ledger"].intents()
+
+
+def test_account_transaction_query_is_unfiltered_and_rejects_truncation(tmp_path):
+    plan = json.loads((ROOT / cli.POLICY_PATH).read_text())
+    ledger = LiveOrderLedger(tmp_path / "ledger.sqlite3")
+    filled_entry(plan, ledger)
+    calls = []
+    rows = [{}] * 1000
+    trader = SimpleNamespace(
+        _invoke_client_candidates=lambda **kw: calls.append(kw)
+        or {"ok": True, "response": SimpleNamespace(json=lambda: rows)}
+    )
+    result = cli.transaction_observations(
+        trader, "roth-test-hash", plan, ledger, now=datetime.now(timezone.utc)
+    )
+    assert not result["source_complete"]
+    assert "symbol" not in calls[0]["candidates"][0][2]
+    rows.clear()
+    result = cli.transaction_observations(
+        trader,
+        "roth-test-hash",
+        plan,
+        ledger,
+        now=datetime.now(timezone.utc) + timedelta(days=60),
+    )
+    assert not result["source_complete"]
+
+
 @pytest.mark.parametrize(
     "scenario", ["confirmed", "declined", "changed_evidence", "autonomy_enabled"]
 )
@@ -525,12 +639,16 @@ def test_interactive_flow_uses_only_mock_broker_and_exact_confirmation(
             cli.run(args)
     else:
         result = cli.run(args)
-        assert bool(calls) == (scenario == "confirmed")
+        mutations = [call for call in calls if call["operation"] != "get_account"]
+        assert bool(mutations) == (scenario == "confirmed")
         assert attestations[0]["purpose"] == PURPOSE
         if scenario == "confirmed":
             assert result["ok"]
-            assert [call["operation"] for call in calls] == ["place_order"]
-            assert calls[0]["candidates"][0][2]["order_spec"] == kwargs["request"]
+            assert [call["operation"] for call in calls] == [
+                "get_account",
+                "place_order",
+            ]
+            assert mutations[0]["candidates"][0][2]["order_spec"] == kwargs["request"]
             assert not kwargs["ledger"].get(intent_id(kwargs["plan"], "SELL"))
     if scenario in {"declined", "autonomy_enabled"}:
         assert not calls and not attestations and not kwargs["ledger"].intents()

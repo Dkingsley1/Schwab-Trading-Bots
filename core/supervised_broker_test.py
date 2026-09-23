@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from typing import Any, Callable, Mapping
 
 from core.live_order_ledger import LiveOrderLedger, TERMINAL_STATES
+from core.equity_order_sessions import extended_equity_session_state
 from core.order_intent import canonical_payload_sha256
 
 PURPOSE = "supervised_broker_test"
@@ -17,6 +17,44 @@ AUTHORITY = {
     "production_promotion_credit": False,
     "strategy_profitability_proven": False,
 }
+
+SCHD_MARKET_CONTRACT = {
+    "native_decision_required": True,
+    "regular_session_only": True,
+    "operator_confirmation_each_order": True,
+    "market_price_not_guaranteed": True,
+    "max_quote_move_bps": 35,
+    "max_decision_age_seconds": 120,
+    "max_quote_age_seconds": 15,
+    "automatic_wait_or_retry": False,
+}
+
+
+def policy_path(symbol: str = "O") -> str:
+    paths = {
+        "O": "config/supervised_broker_test_v1.json",
+        "SCHD": "config/supervised_schd_broker_test_v1.json",
+    }
+    if symbol not in paths:
+        raise ValueError("unsupported supervised test symbol")
+    return paths[symbol]
+
+
+def attestation_path(symbol: str = "O") -> str:
+    policy_path(symbol)
+    suffix = "_schd" if symbol == "SCHD" else ""
+    return f"governance/runtime/supervised_broker_test{suffix}_attestation.json"
+
+
+def validate_session(plan: Mapping[str, Any], session: str) -> None:
+    activation = plan["activation_contract"]
+    allowed = (
+        ["NORMAL"]
+        if activation["normal_session_only"]
+        else activation["allowed_sessions"]
+    )
+    if session not in allowed:
+        raise ValueError("session outside reviewed supervised test policy")
 
 
 def number(value: Any) -> Decimal:
@@ -55,18 +93,23 @@ def validate_policy(plan: Mapping[str, Any]) -> None:
     evidence = plan.get("evidence_contract", {})
     activation = plan.get("activation_contract", {})
     account = plan.get("account_constraints", {})
+    schd = plan.get("symbol") == "SCHD"
+    budget, max_qty, ceiling = (100, 1, "99") if schd else (300, 5, "57.09")
     if (
         plan.get("schema_version") != 1
         or plan.get("purpose") != PURPOSE
-        or not re.fullmatch(r"[a-z0-9_]{1,80}", str(plan.get("test_id", "")))
+        or plan.get("test_id")
+        != ("roth_schd_round_trip_001" if schd else "roth_o_buy_hold_001")
         or plan.get("account_policy_key") != "schwab_roth_ira_primary"
-        or plan.get("symbol") != "O"
-        or plan.get("investment_style") != "buy_and_hold"
-        or plan.get("entry_price_policy") != "passive_bid_no_chase"
-        or not 0 < number(plan.get("entry_limit_ceiling_usd")) <= Decimal("57.09")
-        or number(plan.get("account_capital_usd")) != 300
-        or number(limits.get("max_order_notional_usd")) != 300
-        or number(limits.get("max_order_quantity")) != 5
+        or plan.get("symbol") not in {"O", "SCHD"}
+        or plan.get("investment_style")
+        != ("operator_confirmed_round_trip" if schd else "buy_and_hold")
+        or plan.get("entry_price_policy")
+        != ("explicit_operator_limit_no_chase" if schd else "passive_bid_no_chase")
+        or not 0 < number(plan.get("entry_limit_ceiling_usd")) <= Decimal(ceiling)
+        or number(plan.get("account_capital_usd")) != budget
+        or number(limits.get("max_order_notional_usd")) != budget
+        or number(limits.get("max_order_quantity")) != max_qty
         or number(limits.get("cost_reserve_usd")) < 1
         or limits.get("max_entry_attempts") != 1
         or limits.get("max_exit_attempts") != 1
@@ -79,16 +122,25 @@ def validate_policy(plan: Mapping[str, Any]) -> None:
         or account.get("new_contribution_assumed") is not False
         or not 0 < number(activation.get("max_operator_attestation_hours")) <= 1
         or activation.get("live_execution_authority") is not False
+        or activation.get("limit_orders_only") is not (not schd)
+        or (schd and plan.get("bot_market_order_contract") != SCHD_MARKET_CONTRACT)
+        or activation.get("normal_session_only") is not (not schd)
+        or (
+            schd
+            and (
+                activation.get("allowed_sessions") != ["NORMAL", "AM", "PM"]
+                or activation.get("extended_hours_risk_confirmation_required")
+                is not True
+            )
+        )
         or any(
             activation.get(key) is not True
             for key in (
                 "operator_confirmation_each_order",
-                "limit_orders_only",
-                "normal_session_only",
                 "whole_shares_only",
             )
         )
-        or not 0 < number(limits.get("max_spread_bps")) <= 75
+        or not 0 < number(limits.get("max_spread_bps")) <= (25 if schd else 75)
         or not 0 < number(limits.get("max_limit_distance_bps")) <= 35
         or any(
             authority.get(key) is not False
@@ -110,9 +162,21 @@ def validate_policy(plan: Mapping[str, Any]) -> None:
 
 
 def propose_entry(
-    plan: Mapping[str, Any], quote: Mapping[str, Any], *, now: datetime
+    plan: Mapping[str, Any],
+    quote: Mapping[str, Any],
+    *,
+    now: datetime,
+    session: str = "NORMAL",
 ) -> dict[str, Any]:
     validate_policy(plan)
+    validate_session(plan, session)
+    if plan["entry_price_policy"] == "explicit_operator_limit_no_chase":
+        return {
+            "state": "operator_limit_required",
+            "request": {},
+            "blockers": ["explicit_quantity_and_limit_price_required"],
+            **AUTHORITY,
+        }
     blockers: list[str] = []
     if (
         quote.get("source_provider") != "schwab_api"
@@ -137,7 +201,9 @@ def propose_entry(
         qty = min(
             int(available / price), int(plan["hard_limits"]["max_order_quantity"])
         )
-        request = build_request(plan, action="BUY", quantity=qty, limit_price=price)
+        request = build_request(
+            plan, action="BUY", quantity=qty, limit_price=price, session=session
+        )
     except (ValueError, InvalidOperation, ZeroDivisionError):
         blockers.append("quote_or_affordable_whole_share_quantity_invalid")
         request = {}
@@ -156,9 +222,15 @@ def propose_entry(
 
 
 def build_request(
-    plan: Mapping[str, Any], *, action: str, quantity: Any, limit_price: Any
+    plan: Mapping[str, Any],
+    *,
+    action: str,
+    quantity: Any,
+    limit_price: Any,
+    session: str = "NORMAL",
 ) -> dict[str, Any]:
     validate_policy(plan)
+    validate_session(plan, session)
     if action not in {"BUY", "SELL"}:
         raise ValueError("only BUY and separately confirmed SELL are supported")
     qty, price = number(quantity), number(limit_price)
@@ -168,7 +240,7 @@ def build_request(
         or qty != qty.to_integral_value()
         or qty > number(limits["max_order_quantity"])
     ):
-        raise ValueError("quantity must be one to five whole shares")
+        raise ValueError("quantity outside reviewed whole-share test limit")
     if price <= 0 or price != price.quantize(Decimal("0.01")):
         raise ValueError("positive cent-valid limit price required")
     if action == "BUY" and price > number(plan["entry_limit_ceiling_usd"]):
@@ -178,10 +250,10 @@ def build_request(
     if action == "BUY" and qty * price + number(limits["cost_reserve_usd"]) > number(
         plan["account_capital_usd"]
     ):
-        raise ValueError("order plus cost reserve exceeds the $300 test budget")
+        raise ValueError("order plus cost reserve exceeds the reviewed test budget")
     return {
         "orderType": "LIMIT",
-        "session": "NORMAL",
+        "session": session,
         "duration": "DAY",
         "price": f"{price:.2f}",
         "orderStrategyType": "SINGLE",
@@ -204,8 +276,17 @@ def request_fields(
             raise ValueError("one order leg required")
         leg = legs[0]
         action = leg["instruction"]
+        if request.get("orderType") == "MARKET":
+            expected = build_market_request(plan, action=action)
+            if dict(request) != expected:
+                raise ValueError("order differs from fixed SCHD market template")
+            return action, 1, Decimal(0)
         expected = build_request(
-            plan, action=action, quantity=leg["quantity"], limit_price=request["price"]
+            plan,
+            action=action,
+            quantity=leg["quantity"],
+            limit_price=request["price"],
+            session=request["session"],
         )
         if dict(request) != expected:
             raise ValueError(
@@ -214,6 +295,25 @@ def request_fields(
         return action, int(leg["quantity"]), number(request["price"])
     except (KeyError, TypeError, IndexError) as exc:
         raise ValueError("invalid test order") from exc
+
+
+def build_market_request(plan: Mapping[str, Any], *, action: str) -> dict[str, Any]:
+    validate_policy(plan)
+    if plan["symbol"] != "SCHD" or action not in {"BUY", "SELL"}:
+        raise ValueError("native bot market test is SCHD BUY or SELL only")
+    return {
+        "orderType": "MARKET",
+        "session": "NORMAL",
+        "duration": "DAY",
+        "orderStrategyType": "SINGLE",
+        "orderLegCollection": [
+            {
+                "instruction": action,
+                "quantity": 1,
+                "instrument": {"symbol": "SCHD", "assetType": "EQUITY"},
+            }
+        ],
+    }
 
 
 def intent_id(plan: Mapping[str, Any], action: str) -> str:
@@ -286,7 +386,12 @@ def lifecycle_check(
 
 def approval_phrase(plan: Mapping[str, Any], request: Mapping[str, Any]) -> str:
     action, qty, price = request_fields(plan, request)
-    return f"CONFIRM {action} {qty} {plan['symbol']} LIMIT {price:.2f} IN MY ROTH"
+    if request["orderType"] == "MARKET":
+        return f"CONFIRM {action} 1 SCHD MARKET IN MY ROTH PRICE NOT GUARANTEED"
+    phrase = f"CONFIRM {action} {qty} {plan['symbol']} LIMIT {price:.2f} IN MY ROTH"
+    return phrase + (
+        f" SESSION {request['session']} DAY" if plan["symbol"] == "SCHD" else ""
+    )
 
 
 def dispatch_once(
@@ -301,6 +406,43 @@ def dispatch_once(
     now: datetime,
 ) -> dict[str, Any]:
     action, qty, _ = request_fields(plan, request)
+    if request["orderType"] == "MARKET":
+        from core.schd_bot_handoff import validate_handoff
+
+        market_blockers = validate_handoff(
+            assessment.get("bot_handoff", {}),
+            request=request,
+            candidate_id=assessment.get("candidate_id"),
+            now=now,
+        )
+        if assessment.get("market_order_price_risk_reviewed") is not True:
+            market_blockers.append("market_order_price_risk_confirmation_required")
+        if market_blockers:
+            return {"ok": False, "blockers": market_blockers, **AUTHORITY}
+    if request["session"] != "NORMAL":
+        session_state = extended_equity_session_state(
+            session=request["session"], now=now
+        )
+        preflight = assessment.get("preflight", {})
+        try:
+            quote_valid = now < timestamp(
+                assessment.get("extended_quote_expires_at_utc")
+            )
+        except (ValueError, TypeError):
+            quote_valid = False
+        if (
+            not session_state["ready"]
+            or preflight.get("equity_session", {}).get("session") != request["session"]
+            or preflight.get("ready") is not True
+            or not quote_valid
+        ):
+            return {
+                "ok": False,
+                "blockers": [
+                    session_state["blocker"] or "exact_session_preflight_required"
+                ],
+                **AUTHORITY,
+            }
     if (
         approved_phrase != approval_phrase(plan, request)
         or not fresh(approved_at.isoformat(), now, 60)
@@ -332,8 +474,12 @@ def dispatch_once(
         "test_policy_sha256": canonical_payload_sha256(plan),
         "baseline_position_quantity": assessment["position_quantity"],
         "baseline_cash_usd": assessment["settled_cash_usd"],
+        "baseline_cash_observation": dict(
+            assessment.get("cash_balance_observation", {})
+        ),
         "approved_at_utc": approved_at.isoformat(),
         "technical_receipt_sha256": canonical_payload_sha256(assessment),
+        "bot_handoff": dict(assessment.get("bot_handoff", {})),
         "production_promotion_credit": False,
     }
     reservation = ledger.reserve(intent_id=key, payload=payload, requested_quantity=qty)
@@ -386,8 +532,23 @@ def reconcile_order(
         or legs[0].get("instrument", {}).get("symbol") != payload.get("symbol")
         or legs[0].get("instrument", {}).get("assetType") != "EQUITY"
         or number(legs[0].get("quantity", -1)) != number(row["requested_quantity"])
-        or broker_order.get("orderType") != "LIMIT"
-        or number(broker_order.get("price", -1)) != number(spec.get("price", 0))
+        or spec.get("orderType") not in {"LIMIT", "MARKET"}
+        or broker_order.get("orderType") != spec.get("orderType")
+        or broker_order.get("session") != spec.get("session")
+        or broker_order.get("duration") != spec.get("duration")
+        or (
+            spec.get("orderType") == "LIMIT"
+            and number(broker_order.get("price", -1)) != number(spec.get("price", 0))
+        )
+        or (
+            spec.get("orderType") == "MARKET"
+            and (
+                payload.get("symbol") != "SCHD"
+                or number(row["requested_quantity"]) != 1
+                or spec.get("session") != "NORMAL"
+                or "price" in spec
+            )
+        )
     ):
         raise ValueError("broker order identity mismatch")
     filled = number(broker_order.get("filledQuantity", 0))
@@ -432,7 +593,7 @@ def reconcile_order(
         raise ValueError("unknown broker order state requires manual reconciliation")
     if status == "FILLED" and filled != requested:
         raise ValueError("filled status without full execution proof")
-    if any(
+    if spec.get("orderType") == "LIMIT" and any(
         (payload["action"] == "BUY" and number(leg["price"]) > number(spec["price"]))
         or (
             payload["action"] == "SELL" and number(leg["price"]) < number(spec["price"])

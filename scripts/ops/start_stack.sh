@@ -10,6 +10,10 @@ GLOBAL_HALT_FLAG="$HEALTH_DIR/GLOBAL_TRADING_HALT.flag"
 RUNTIME_MAINTENANCE_HOLD_FLAG="$HEALTH_DIR/RUNTIME_MAINTENANCE_HOLD.flag"
 PAPER_TRADE_LOCK_FILE="$HEALTH_DIR/PAPER_TRADE_LOCK.flag"
 STACK_STOPPED_FLAG="$HEALTH_DIR/STACK_STOPPED.flag"
+if [[ -e "$HEALTH_DIR/SYSTEM_POWER_OFF.flag" ]]; then
+  echo "stack_start_blocked=system_power_off use=opsctl.sh_system-power_on" >&2
+  exit 2
+fi
 STACK_RESTART_FENCE_SCRIPT="$PROJECT_ROOT/scripts/ops/stack_restart_fence.py"
 PROCESS_MATCH_SCRIPT="$PROJECT_ROOT/scripts/ops/runtime_process_match.py"
 
