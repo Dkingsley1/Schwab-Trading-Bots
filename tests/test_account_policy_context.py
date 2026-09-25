@@ -2,8 +2,12 @@ import importlib.util
 import json
 from pathlib import Path
 
-
-SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "ops" / "account_policy_context.py"
+SCRIPT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "ops"
+    / "account_policy_context.py"
+)
 
 
 def _load_module():
@@ -20,7 +24,9 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_account_policy_context_uses_safe_defaults_without_exposing_secrets(tmp_path: Path) -> None:
+def test_account_policy_context_uses_safe_defaults_without_exposing_secrets(
+    tmp_path: Path,
+) -> None:
     module = _load_module()
 
     payload = module.build_payload(
@@ -32,8 +38,12 @@ def test_account_policy_context_uses_safe_defaults_without_exposing_secrets(tmp_
     assert payload["overall_status"] == "ready"
     assert payload["coverage"]["configured_account_slots"] == 3
     assert payload["coverage"]["margin_slots"] == 0
+    assert payload["coverage"]["limited_margin_slots"] == 1
     assert payload["bot_contract"]["auto_order_enabled"] is False
-    assert payload["bot_contract"]["day_trading_rule_awareness"] == "finra_intraday_margin_replaces_legacy_pdt"
+    assert (
+        payload["bot_contract"]["day_trading_rule_awareness"]
+        == "finra_intraday_margin_replaces_legacy_pdt"
+    )
     assert payload["bot_contract"]["day_trade_widening_allowed"] is False
     redaction = payload["account_policy_context"]["redaction_contract"]
     assert redaction["account_numbers_exposed_in_policy"] is False
@@ -44,14 +54,19 @@ def test_account_policy_context_uses_safe_defaults_without_exposing_secrets(tmp_
     assert transition["phase_in_end_date"] == "2027-10-20"
     probe = payload["account_policy_context"]["intraday_margin_probe_contract"]
     assert probe["status"] == "scheduled_pre_schwab_cutover"
-    assert payload["bot_contract"]["intraday_margin_probe_status"] == "scheduled_pre_schwab_cutover"
+    assert (
+        payload["bot_contract"]["intraday_margin_probe_status"]
+        == "scheduled_pre_schwab_cutover"
+    )
     assert (
         payload["bot_contract"]["broker_developer_platform_order_limit_policy"]
         == "operator_managed_external_throttle_not_internal_scalability_ceiling"
     )
 
 
-def test_account_policy_context_reads_registry_and_blocks_auto_order(tmp_path: Path) -> None:
+def test_account_policy_context_reads_registry_and_blocks_auto_order(
+    tmp_path: Path,
+) -> None:
     module = _load_module()
     registry = tmp_path / "account_policy_registry.json"
     registry.write_text(
@@ -79,6 +94,41 @@ def test_account_policy_context_reads_registry_and_blocks_auto_order(tmp_path: P
     assert payload["bot_contract"]["auto_order_enabled"] is True
 
 
+def test_account_policy_context_accepts_one_hash_alias_without_account_number(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_module()
+    registry = tmp_path / "account_policy_registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "account_slots": [
+                    {
+                        "account_policy_key": "schwab_cash_account_1",
+                        "account_type": "cash",
+                        "broker": "schwab",
+                        "env_names": [
+                            "SCHWAB_CASH_ACCOUNT_1_HASH",
+                            "SCHWAB_TAXABLE_ACCOUNT_1_HASH",
+                            "SCHWAB_CASH_ACCOUNT_1_NUMBER",
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SCHWAB_CASH_ACCOUNT_1_HASH", "opaque-reference")
+
+    payload = module.build_payload(tmp_path, registry_path=registry)
+
+    assert payload["missing_env_bindings"] == []
+    assert all(
+        "set account hash environment variables" not in action
+        for action in payload["next_actions"]
+    )
+
+
 def test_account_policy_context_tracks_schwab_cutover_dates(tmp_path: Path) -> None:
     module = _load_module()
 
@@ -87,27 +137,48 @@ def test_account_policy_context_tracks_schwab_cutover_dates(tmp_path: Path) -> N
         registry_path=tmp_path / "missing.json",
         as_of_date="2026-05-29",
     )
-    assert pre_cutover["bot_contract"]["legacy_pdt_framework_active_for_schwab_policy"] is True
+    assert (
+        pre_cutover["bot_contract"]["legacy_pdt_framework_active_for_schwab_policy"]
+        is True
+    )
     assert pre_cutover["bot_contract"]["schwab_day_trade_count_retired"] is False
-    assert pre_cutover["bot_contract"]["pdt_transition_phase"] == "legacy_pdt_until_finra_effective_date"
+    assert (
+        pre_cutover["bot_contract"]["pdt_transition_phase"]
+        == "legacy_pdt_until_finra_effective_date"
+    )
 
     schwab_cutover = module.build_payload(
         tmp_path,
         registry_path=tmp_path / "missing.json",
         as_of_date="2026-06-08",
     )
-    assert schwab_cutover["bot_contract"]["legacy_pdt_framework_active_for_schwab_policy"] is False
+    assert (
+        schwab_cutover["bot_contract"]["legacy_pdt_framework_active_for_schwab_policy"]
+        is False
+    )
     assert schwab_cutover["bot_contract"]["schwab_day_trade_count_retired"] is True
     assert schwab_cutover["bot_contract"]["day_trade_widening_allowed"] is False
-    assert schwab_cutover["bot_contract"]["intraday_margin_probe_status"] == "needs_broker_intraday_margin_probe"
-    assert schwab_cutover["account_policy_context"]["intraday_margin_probe_contract"]["probe_required_now"] is True
     assert (
-        schwab_cutover["account_policy_context"]["pdt_intraday_margin_transition"]["phase"]
+        schwab_cutover["bot_contract"]["intraday_margin_probe_status"]
+        == "needs_broker_intraday_margin_probe"
+    )
+    assert (
+        schwab_cutover["account_policy_context"]["intraday_margin_probe_contract"][
+            "probe_required_now"
+        ]
+        is True
+    )
+    assert (
+        schwab_cutover["account_policy_context"]["pdt_intraday_margin_transition"][
+            "phase"
+        ]
         == "schwab_day_trade_count_retired_intraday_margin_phase_in"
     )
 
 
-def test_account_policy_context_requires_intraday_margin_context_for_margin_accounts(tmp_path: Path) -> None:
+def test_account_policy_context_requires_intraday_margin_context_for_margin_accounts(
+    tmp_path: Path,
+) -> None:
     module = _load_module()
     registry = tmp_path / "account_policy_registry.json"
     registry.write_text(
@@ -128,7 +199,9 @@ def test_account_policy_context_requires_intraday_margin_context_for_margin_acco
         encoding="utf-8",
     )
 
-    payload = module.build_payload(tmp_path, registry_path=registry, as_of_date="2026-06-10")
+    payload = module.build_payload(
+        tmp_path, registry_path=registry, as_of_date="2026-06-10"
+    )
 
     policy = payload["account_policy_context"]["slot_margin_policies"][0]
     assert policy["margin_enabled"] is True
@@ -139,7 +212,9 @@ def test_account_policy_context_requires_intraday_margin_context_for_margin_acco
     )
 
 
-def test_account_policy_context_detects_broker_intraday_buying_power(tmp_path: Path) -> None:
+def test_account_policy_context_detects_broker_intraday_buying_power(
+    tmp_path: Path,
+) -> None:
     module = _load_module()
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -155,7 +230,9 @@ def test_account_policy_context_detects_broker_intraday_buying_power(tmp_path: P
         },
     )
 
-    payload = module.build_payload(tmp_path, registry_path=tmp_path / "missing.json", as_of_date="2026-06-08")
+    payload = module.build_payload(
+        tmp_path, registry_path=tmp_path / "missing.json", as_of_date="2026-06-08"
+    )
     probe = payload["account_policy_context"]["intraday_margin_probe_contract"]
 
     assert probe["status"] == "ready"
@@ -164,7 +241,9 @@ def test_account_policy_context_detects_broker_intraday_buying_power(tmp_path: P
     assert payload["bot_contract"]["intraday_margin_buying_power_observed"] is True
 
 
-def test_account_policy_context_reads_current_schwab_shared_snapshot_intraday_power(tmp_path: Path) -> None:
+def test_account_policy_context_reads_current_schwab_shared_snapshot_intraday_power(
+    tmp_path: Path,
+) -> None:
     module = _load_module()
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -192,7 +271,9 @@ def test_account_policy_context_reads_current_schwab_shared_snapshot_intraday_po
         },
     )
 
-    payload = module.build_payload(tmp_path, registry_path=tmp_path / "missing.json", as_of_date="2026-06-08")
+    payload = module.build_payload(
+        tmp_path, registry_path=tmp_path / "missing.json", as_of_date="2026-06-08"
+    )
     probe = payload["account_policy_context"]["intraday_margin_probe_contract"]
 
     assert probe["status"] == "ready"
@@ -219,9 +300,61 @@ def test_account_policy_context_simulates_paper_intraday_margin_deficit(
     )
     monkeypatch.setenv("PAPER_INTRADAY_MARGIN_SIM_EXPOSURE_USD", "1500")
 
-    payload = module.build_payload(tmp_path, registry_path=tmp_path / "missing.json", as_of_date="2026-06-08")
-    simulator = payload["account_policy_context"]["paper_intraday_margin_deficit_simulator"]
+    payload = module.build_payload(
+        tmp_path, registry_path=tmp_path / "missing.json", as_of_date="2026-06-08"
+    )
+    simulator = payload["account_policy_context"][
+        "paper_intraday_margin_deficit_simulator"
+    ]
 
     assert simulator["status"] == "deficit_simulated"
     assert simulator["live_execution_allowed"] is False
     assert simulator["simulated_margin_deficit_usd"] == 500.0
+
+
+def test_account_policy_context_models_limited_margin_without_borrowing(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    registry = tmp_path / "account_policy_registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "account_slots": [
+                    {
+                        "account_policy_key": "cash_canary",
+                        "account_label": "Cash Canary",
+                        "account_type": "cash",
+                        "tax_treatment": "taxable",
+                        "broker": "schwab",
+                        "trading_access": "limited_margin",
+                        "borrowing_allowed": False,
+                        "cash_only_live_budget": True,
+                        "canary_candidate": True,
+                        "canary_cap_usd": 200,
+                        "allowed_live_routes": ["dividend_liquid_etf_candidate_v1"],
+                        "operator_verified": True,
+                        "verification_source": "operator",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = module.build_payload(tmp_path, registry_path=registry)
+    policy = payload["account_policy_context"]["slot_margin_policies"][0]
+
+    assert policy["limited_margin"] is True
+    assert policy["broker_margin_feature_enabled"] is True
+    assert policy["margin_enabled"] is False
+    assert policy["borrowing_allowed"] is False
+    assert policy["margin_interest_possible"] is False
+    assert policy["requires_intraday_margin_buying_power_confirmation"] is False
+    assert payload["coverage"]["canary_candidate_slots"] == 1
+    assert payload["bot_contract"]["limited_margin_is_not_borrowing_authority"] is True
+    assert payload["bot_contract"]["canary_candidates"][0]["canary_cap_usd"] == 200.0
+    assert (
+        payload["bot_contract"]["canary_candidates"][0]["live_execution_authority"]
+        is False
+    )

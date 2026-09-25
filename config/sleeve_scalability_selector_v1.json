@@ -1,0 +1,542 @@
+{
+  "schema_version": 1,
+  "policy_id": "sleeve_scalability_selector_v1",
+  "operating_mode": "candidate_bound_advisory_selection",
+  "inputs": {
+    "profitability_manifest": "governance/bot_organization/bot_profitability_scalability_latest.json",
+    "bot_hierarchy": "governance/bot_organization/bot_hierarchy_latest.json",
+    "live_canary_graduation": "governance/health/live_canary_graduation_latest.json",
+    "account_position_study": "governance/health/account_position_study_latest.json",
+    "profitability_firewall": "governance/health/profitability_evidence_firewall_latest.json",
+    "paper_execution_calibration": "governance/health/paper_execution_calibration_latest.json"
+  },
+  "freshness_seconds": {
+    "profitability_manifest": 1800,
+    "bot_hierarchy": 21600,
+    "live_canary_graduation": 600,
+    "account_position_study": 600,
+    "profitability_firewall": 1800,
+    "paper_execution_calibration": 1800
+  },
+  "sleeve_evidence": {
+    "eligible_role_ids": [
+      "signal"
+    ],
+    "minimum_qualified_bots": 1,
+    "minimum_candidate_samples": 30,
+    "minimum_independent_days": 3,
+    "minimum_distinct_regimes": 2,
+    "minimum_positive_day_ratio": 0.55,
+    "minimum_post_cost_lcb_bps_exclusive": 0.0,
+    "maximum_drawdown_to_turnover_ratio": 0.1,
+    "minimum_regime_compatibility_score": 0.55,
+    "minimum_correlation_clusters": 1,
+    "minimum_supported_notional_usd": 100.0,
+    "require_candidate_binding": true,
+    "require_rank_evidence": true,
+    "require_persistence": true,
+    "require_marginal_contribution": true,
+    "require_capacity_curve": true,
+    "require_current_regime_compatibility": true
+  },
+  "score": {
+    "target_good_lcb_bps": 10.0,
+    "weights": {
+      "conservative_edge": 0.25,
+      "persistence": 0.15,
+      "drawdown_control": 0.15,
+      "execution_capacity": 0.15,
+      "evidence_depth": 0.1,
+      "regime_fit": 0.1,
+      "independent_breadth": 0.1
+    }
+  },
+  "portfolio_selection": {
+    "selection_mode": "bounded_low_correlation_subset_search",
+    "maximum_candidates_considered": 8,
+    "maximum_combinations_evaluated": 256,
+    "minimum_common_days": 5,
+    "maximum_pairwise_correlation": 0.65,
+    "unknown_correlation_fails_closed": true,
+    "maximum_sleeves_by_tier": {
+      "micro_validation": 1,
+      "micro_two": 2,
+      "micro_four": 3,
+      "foundation_1600": 3,
+      "foundation_3200": 3,
+      "foundation_6400": 3,
+      "personal_12800": 3,
+      "personal_25000": 3,
+      "personal_50000": 3,
+      "personal_100000": 3,
+      "advanced_250000": 4,
+      "advanced_500000": 4,
+      "advanced_1000000": 4,
+      "professional_2500000": 6,
+      "professional_5000000": 6,
+      "professional_10000000": 6,
+      "institutional_25000000": 8,
+      "institutional_50000000": 8,
+      "institutional_100000000": 8,
+      "large_institutional_250000000": 8,
+      "large_institutional_500000000": 8,
+      "large_institutional_1000000000": 8
+    },
+    "default_maximum_sleeves": 1,
+    "minimum_sleeve_weight": 0.15,
+    "maximum_sleeve_weight": 0.6,
+    "diversification_bonus_weight": 0.1,
+    "allocation_method": "bounded_equal_weight_with_score_tiebreak"
+  },
+  "capital_growth": {
+    "mode": "broker_reconciled_profit_compounding_advisory",
+    "seed_capital_usd": 200.0,
+    "realized_profit_source": "live_canary_graduation.metrics.total_post_cost_pnl_usd",
+    "external_deposits_count_toward_organic_progress": false,
+    "unrealized_pnl_counts_toward_organic_progress": false,
+    "unattributed_income_counts_toward_organic_progress": false,
+    "earned_profit_reinvestment_fraction": 0.75,
+    "minimum_profit_reserve_fraction": 0.25,
+    "maximum_incremental_reinvestment_fraction_of_active_capital": 0.25,
+    "maximum_growth_drawdown_fraction": 0.1,
+    "deployment_requirements": [
+      {
+        "maximum_capital_usd": 200.0,
+        "minimum_independent_sleeves": 1,
+        "minimum_capacity_headroom_ratio": 1.0
+      },
+      {
+        "maximum_capital_usd": 400.0,
+        "minimum_independent_sleeves": 1,
+        "minimum_capacity_headroom_ratio": 1.25
+      },
+      {
+        "maximum_capital_usd": 800.0,
+        "minimum_independent_sleeves": 2,
+        "minimum_capacity_headroom_ratio": 1.5
+      },
+      {
+        "maximum_capital_usd": 6400.0,
+        "minimum_independent_sleeves": 2,
+        "minimum_capacity_headroom_ratio": 1.75
+      },
+      {
+        "maximum_capital_usd": 100000.0,
+        "minimum_independent_sleeves": 3,
+        "minimum_capacity_headroom_ratio": 2.0
+      },
+      {
+        "maximum_capital_usd": 1000000.0,
+        "minimum_independent_sleeves": 4,
+        "minimum_capacity_headroom_ratio": 2.5
+      },
+      {
+        "maximum_capital_usd": 10000000.0,
+        "minimum_independent_sleeves": 6,
+        "minimum_capacity_headroom_ratio": 3.0
+      },
+      {
+        "maximum_capital_usd": 100000000.0,
+        "minimum_independent_sleeves": 8,
+        "minimum_capacity_headroom_ratio": 4.0
+      },
+      {
+        "maximum_capital_usd": 1000000000.0,
+        "minimum_independent_sleeves": 8,
+        "minimum_capacity_headroom_ratio": 5.0
+      }
+    ],
+    "targets": [
+      {
+        "target_id": "organic_200_seed",
+        "capital_usd": 200.0,
+        "minimum_reconciled_round_trips": 0,
+        "minimum_independent_days": 0,
+        "minimum_distinct_regimes": 0,
+        "require_positive_lcb_95": false,
+        "require_positive_benchmark_excess": false,
+        "require_actual_fee_evidence": false
+      },
+      {
+        "target_id": "organic_400",
+        "capital_usd": 400.0,
+        "minimum_reconciled_round_trips": 10,
+        "minimum_independent_days": 5,
+        "minimum_distinct_regimes": 2,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_800",
+        "capital_usd": 800.0,
+        "minimum_reconciled_round_trips": 25,
+        "minimum_independent_days": 10,
+        "minimum_distinct_regimes": 3,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_1600",
+        "capital_usd": 1600.0,
+        "minimum_reconciled_round_trips": 50,
+        "minimum_independent_days": 20,
+        "minimum_distinct_regimes": 3,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_3200",
+        "capital_usd": 3200.0,
+        "minimum_reconciled_round_trips": 100,
+        "minimum_independent_days": 30,
+        "minimum_distinct_regimes": 4,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_6400",
+        "capital_usd": 6400.0,
+        "minimum_reconciled_round_trips": 175,
+        "minimum_independent_days": 45,
+        "minimum_distinct_regimes": 4,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_12800",
+        "capital_usd": 12800.0,
+        "minimum_reconciled_round_trips": 300,
+        "minimum_independent_days": 60,
+        "minimum_distinct_regimes": 5,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_25000",
+        "capital_usd": 25000.0,
+        "minimum_reconciled_round_trips": 500,
+        "minimum_independent_days": 90,
+        "minimum_distinct_regimes": 5,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_50000",
+        "capital_usd": 50000.0,
+        "minimum_reconciled_round_trips": 750,
+        "minimum_independent_days": 120,
+        "minimum_distinct_regimes": 6,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_100000",
+        "capital_usd": 100000.0,
+        "minimum_reconciled_round_trips": 1200,
+        "minimum_independent_days": 180,
+        "minimum_distinct_regimes": 6,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_250000",
+        "capital_usd": 250000.0,
+        "minimum_reconciled_round_trips": 2000,
+        "minimum_independent_days": 252,
+        "minimum_distinct_regimes": 7,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_500000",
+        "capital_usd": 500000.0,
+        "minimum_reconciled_round_trips": 3000,
+        "minimum_independent_days": 365,
+        "minimum_distinct_regimes": 7,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_1000000",
+        "capital_usd": 1000000.0,
+        "minimum_reconciled_round_trips": 5000,
+        "minimum_independent_days": 504,
+        "minimum_distinct_regimes": 8,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_2500000",
+        "capital_usd": 2500000.0,
+        "minimum_reconciled_round_trips": 7500,
+        "minimum_independent_days": 756,
+        "minimum_distinct_regimes": 8,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_5000000",
+        "capital_usd": 5000000.0,
+        "minimum_reconciled_round_trips": 10000,
+        "minimum_independent_days": 1008,
+        "minimum_distinct_regimes": 9,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_10000000",
+        "capital_usd": 10000000.0,
+        "minimum_reconciled_round_trips": 15000,
+        "minimum_independent_days": 1260,
+        "minimum_distinct_regimes": 9,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_25000000",
+        "capital_usd": 25000000.0,
+        "minimum_reconciled_round_trips": 25000,
+        "minimum_independent_days": 1512,
+        "minimum_distinct_regimes": 10,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_50000000",
+        "capital_usd": 50000000.0,
+        "minimum_reconciled_round_trips": 40000,
+        "minimum_independent_days": 1764,
+        "minimum_distinct_regimes": 10,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_100000000",
+        "capital_usd": 100000000.0,
+        "minimum_reconciled_round_trips": 60000,
+        "minimum_independent_days": 2016,
+        "minimum_distinct_regimes": 10,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_250000000",
+        "capital_usd": 250000000.0,
+        "minimum_reconciled_round_trips": 100000,
+        "minimum_independent_days": 2520,
+        "minimum_distinct_regimes": 12,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_500000000",
+        "capital_usd": 500000000.0,
+        "minimum_reconciled_round_trips": 150000,
+        "minimum_independent_days": 3024,
+        "minimum_distinct_regimes": 12,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      },
+      {
+        "target_id": "organic_1000000000",
+        "capital_usd": 1000000000.0,
+        "minimum_reconciled_round_trips": 250000,
+        "minimum_independent_days": 3780,
+        "minimum_distinct_regimes": 12,
+        "require_positive_lcb_95": true,
+        "require_positive_benchmark_excess": true,
+        "require_actual_fee_evidence": true
+      }
+    ]
+  },
+  "account_scaling_scope": {
+    "mode": "classified_account_policy_isolated_ledgers",
+    "applies_to_all_classified_accounts": true,
+    "active_canary_account_selected_separately": true,
+    "cross_account_evidence_pooling": false,
+    "cross_account_loss_netting": false,
+    "cross_account_capital_netting": false,
+    "organic_progress_isolated_by_account_policy_key": true,
+    "raw_account_identifiers_allowed": false,
+    "automatic_account_activation": false,
+    "operator_review_required_per_account": true
+  },
+  "host_portability": {
+    "policy_and_code_portable": true,
+    "account_policy_keys_portable": true,
+    "raw_account_identifiers_portable": false,
+    "credential_material_portable": false,
+    "oauth_tokens_portable": false,
+    "keychain_bindings_portable": false,
+    "automatic_live_reactivation_on_new_host": false,
+    "required_new_host_checks": [
+      "dependency_environment_rebuild",
+      "policy_hash_verification",
+      "account_alias_rediscovery",
+      "keychain_account_rebind",
+      "fresh_broker_oauth",
+      "broker_capability_reconciliation",
+      "account_preflight_reissue",
+      "independent_execution_recalibration",
+      "live_canary_dress_rehearsal"
+    ]
+  },
+  "application_routes": {
+    "dividend_liquid_etf_candidate_v1": {
+      "broker": "schwab",
+      "instrument_class": "cash_equity_etf",
+      "eligible_sleeve_ids": [
+        "dividend_income",
+        "dividend_capture",
+        "conservative"
+      ],
+      "maximum_sleeves": 3,
+      "allowed_account_kinds": [
+        "roth_ira",
+        "traditional_ira",
+        "cash",
+        "taxable"
+      ],
+      "allowed_trading_access": [
+        "cash",
+        "limited_margin",
+        "full_margin"
+      ],
+      "borrowing_allowed": false,
+      "short_stock_allowed": false,
+      "options_allowed": false
+    }
+  },
+  "system_scalability_goals": [
+    {
+      "goal_id": "g01_single_sleeve_proof",
+      "minimum_independent_sleeves": 1,
+      "minimum_days_per_sleeve": 3,
+      "minimum_regimes_per_sleeve": 2,
+      "minimum_supported_notional_usd": 200.0,
+      "require_global_economic_evidence": true
+    },
+    {
+      "goal_id": "g02_dual_sleeve_diversification",
+      "minimum_independent_sleeves": 2,
+      "minimum_days_per_sleeve": 5,
+      "minimum_regimes_per_sleeve": 2,
+      "minimum_supported_notional_usd": 400.0,
+      "require_global_economic_evidence": true
+    },
+    {
+      "goal_id": "g03_three_sleeve_regime_resilience",
+      "minimum_independent_sleeves": 3,
+      "minimum_days_per_sleeve": 10,
+      "minimum_regimes_per_sleeve": 3,
+      "minimum_supported_notional_usd": 800.0,
+      "require_global_economic_evidence": true
+    },
+    {
+      "goal_id": "g04_four_sleeve_portfolio_proof",
+      "minimum_independent_sleeves": 4,
+      "minimum_days_per_sleeve": 20,
+      "minimum_regimes_per_sleeve": 3,
+      "minimum_supported_notional_usd": 2000.0,
+      "require_global_economic_evidence": true
+    },
+    {
+      "goal_id": "g05_six_sleeve_capacity_proof",
+      "minimum_independent_sleeves": 6,
+      "minimum_days_per_sleeve": 30,
+      "minimum_regimes_per_sleeve": 4,
+      "minimum_supported_notional_usd": 5000.0,
+      "require_global_economic_evidence": true
+    },
+    {
+      "goal_id": "g06_eight_sleeve_operational_scale",
+      "minimum_independent_sleeves": 8,
+      "minimum_days_per_sleeve": 45,
+      "minimum_regimes_per_sleeve": 5,
+      "minimum_supported_notional_usd": 10000.0,
+      "require_global_economic_evidence": true
+    },
+    {
+      "goal_id": "g07_personal_25000_capacity",
+      "minimum_independent_sleeves": 3,
+      "minimum_days_per_sleeve": 90,
+      "minimum_regimes_per_sleeve": 5,
+      "minimum_supported_notional_usd": 50000.0,
+      "require_global_economic_evidence": true
+    },
+    {
+      "goal_id": "g08_personal_100000_capacity",
+      "minimum_independent_sleeves": 3,
+      "minimum_days_per_sleeve": 180,
+      "minimum_regimes_per_sleeve": 6,
+      "minimum_supported_notional_usd": 200000.0,
+      "require_global_economic_evidence": true
+    },
+    {
+      "goal_id": "g09_advanced_1000000_capacity",
+      "minimum_independent_sleeves": 4,
+      "minimum_days_per_sleeve": 504,
+      "minimum_regimes_per_sleeve": 8,
+      "minimum_supported_notional_usd": 2500000.0,
+      "require_global_economic_evidence": true
+    },
+    {
+      "goal_id": "g10_professional_10000000_capacity",
+      "minimum_independent_sleeves": 6,
+      "minimum_days_per_sleeve": 1260,
+      "minimum_regimes_per_sleeve": 9,
+      "minimum_supported_notional_usd": 30000000.0,
+      "require_global_economic_evidence": true
+    },
+    {
+      "goal_id": "g11_institutional_100000000_capacity",
+      "minimum_independent_sleeves": 8,
+      "minimum_days_per_sleeve": 2016,
+      "minimum_regimes_per_sleeve": 10,
+      "minimum_supported_notional_usd": 400000000.0,
+      "require_global_economic_evidence": true
+    },
+    {
+      "goal_id": "g12_large_institutional_1000000000_capacity",
+      "minimum_independent_sleeves": 8,
+      "minimum_days_per_sleeve": 3780,
+      "minimum_regimes_per_sleeve": 12,
+      "minimum_supported_notional_usd": 5000000000.0,
+      "require_global_economic_evidence": true
+    }
+  ],
+  "safety_contract": {
+    "advisory_only": true,
+    "changes_runtime_decisions": false,
+    "changes_paper_allocation": false,
+    "changes_live_allocation": false,
+    "automatic_stage_progression": false,
+    "automatic_capital_scaling": false,
+    "paper_execution_authority": false,
+    "live_execution_authority": false,
+    "allowlist_authority": false,
+    "order_payload_created": false,
+    "profitability_guaranteed": false,
+    "operator_review_required": true
+  }
+}

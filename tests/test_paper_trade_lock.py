@@ -12,8 +12,9 @@ from scripts.ops import lock_watchdog
 
 
 @pytest.fixture(autouse=True)
-def _use_local_execution_lane_root(monkeypatch):
+def _use_local_execution_lane_root(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "0")
+    monkeypatch.setenv("EXECUTION_LANE_LOCK_ROOT", str(tmp_path / "lane_locks"))
     monkeypatch.delenv("EXECUTION_LANE_ROOT", raising=False)
 
 
@@ -64,7 +65,14 @@ def test_paper_execution_lane_pauses_when_runtime_guard_blocks_consumer(tmp_path
     health_path = tmp_path / "governance" / "health" / "execution_lane_paper_latest.json"
     payload = json.loads(health_path.read_text(encoding="utf-8"))
     assert payload["auth_ok"] is True
-    assert payload["auth_error"] == "paper_execution_paused_for_runtime_pressure"
+    assert payload["auth_error"] == ""
+    assert payload["execution_safety_hold"] == {
+        "active": True,
+        "reason": "paper_execution_paused_for_runtime_pressure",
+        "source": "execution_lane_runtime_control",
+    }
+    assert payload["accepting_new_exposure"] is False
+    assert payload["execution_plumbing_status"] == "resident_runtime_safety_hold"
     assert heartbeat_calls == ["execution_lane_paused"]
 
 
@@ -106,6 +114,8 @@ def test_execution_lane_loads_runtime_control_env(tmp_path: Path, monkeypatch) -
     assert run_execution_lane._env_float("EXECUTION_LANE_PAPER_MAX_INTENT_AGE_SECONDS", 0.0, minimum=0.0) == 900.0
     assert run_execution_lane._env_float("EXECUTION_LANE_POLL_SECONDS", 2.0) == 4.0
     assert run_execution_lane._paper_execution_target_nice() == 20
+    monkeypatch.setenv("BOT_CPU_WORKLOAD_POLICY_LOCKED", "1")
+    assert run_execution_lane._paper_execution_target_nice() == 0
     assert "IGNORED_KEY" not in os.environ
 
 
@@ -219,3 +229,17 @@ def test_lock_watchdog_recognizes_paper_policy_locks(tmp_path: Path) -> None:
     lock_path.write_text("policy=live_data_paper_trade_only\n", encoding="utf-8")
 
     assert lock_watchdog._is_policy_lock(lock_path, lock_path.read_text(encoding="utf-8")) is True
+
+
+def test_execution_lane_lock_records_single_consumer_owner(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("EXECUTION_LANE_LOCK_ROOT", str(tmp_path))
+    handle = run_execution_lane._acquire_execution_lane_lock("paper")
+    try:
+        lock_path = tmp_path / "execution_lane_paper.lock"
+        payload = lock_path.read_text(encoding="utf-8")
+        assert f"pid={run_execution_lane.os.getpid()}" in payload
+        assert "mode=paper" in payload
+        assert "started_utc=" in payload
+    finally:
+        run_execution_lane.fcntl.flock(handle.fileno(), run_execution_lane.fcntl.LOCK_UN)
+        handle.close()

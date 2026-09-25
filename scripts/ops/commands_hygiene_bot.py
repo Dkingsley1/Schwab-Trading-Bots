@@ -13,13 +13,27 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, ordered_unique, write_payload
+    from scripts.ops.long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        ordered_unique,
+        write_payload,
+    )
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, ordered_unique, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        ordered_unique,
+        write_payload,
+    )
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "commands_hygiene_latest.json"
-DEFAULT_CONTRACT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "commands_contract_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "commands_hygiene_latest.json"
+)
+DEFAULT_CONTRACT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "commands_contract_latest.json"
+)
 COMMAND_CONTRACT_SCHEMA_VERSION = 1
 MANUAL_OPERATOR_EXCLUDED_SECTIONS = {
     "Platform Expansion",
@@ -87,19 +101,29 @@ def _extract_first_code_block(lines: list[str]) -> str:
 
 def _entry_fingerprint(entry: dict[str, Any]) -> tuple[str, str]:
     title_key = _normalize_key(str(entry.get("title") or ""))
-    code_key = _normalize_code(_extract_first_code_block(list(entry.get("lines") or [])))
+    code_key = _normalize_code(
+        _extract_first_code_block(list(entry.get("lines") or []))
+    )
     if code_key:
         return title_key, code_key
-    body_key = _normalize_key("\n".join(str(line or "") for line in list(entry.get("lines") or [])))
+    body_key = _normalize_key(
+        "\n".join(str(line or "") for line in list(entry.get("lines") or []))
+    )
     return title_key, body_key
 
 
 def _stable_hash(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(
+        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
 MOST_USED_PINNED_TITLES = [
+    "Clear operator and global halts safely",
+    "Turn the platform on (guarded paper)",
+    "Turn the platform off",
+    "Check system power status",
     "Keep the Mac awake",
     "Start the full live stack",
     "Start the full live stack (fresh supervised restart)",
@@ -155,7 +179,11 @@ def _alphabetized_inventory(sections: Iterable[dict[str, Any]]) -> list[dict[str
         sorted_sections.append(copied)
     sorted_sections.sort(
         key=lambda section: (
-            0 if _normalize_key(str(section.get("heading") or "")) == "most used" else 1,
+            (
+                {"live execution control": 0, "most used": 1}.get(
+                    _normalize_key(str(section.get("heading") or "")), 2
+                )
+            ),
             _normalize_key(str(section.get("heading") or "")),
         )
     )
@@ -165,8 +193,12 @@ def _alphabetized_inventory(sections: Iterable[dict[str, Any]]) -> list[dict[str
 def _manual_operator_inventory(project_root: Path) -> list[dict[str, Any]]:
     """Return only commands the operator is expected to paste manually."""
     sections: list[dict[str, Any]] = []
-    excluded_sections = {_normalize_key(section) for section in MANUAL_OPERATOR_EXCLUDED_SECTIONS}
-    excluded_titles = {_normalize_key(title) for title in MANUAL_OPERATOR_EXCLUDED_TITLES}
+    excluded_sections = {
+        _normalize_key(section) for section in MANUAL_OPERATOR_EXCLUDED_SECTIONS
+    }
+    excluded_titles = {
+        _normalize_key(title) for title in MANUAL_OPERATOR_EXCLUDED_TITLES
+    }
     for section in _commands_inventory(project_root):
         heading = str(section.get("heading") or "")
         if _normalize_key(heading) in excluded_sections:
@@ -190,12 +222,17 @@ def build_command_contract(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             title = str(entry.get("title") or "").strip()
             code_block = _extract_first_code_block(list(entry.get("lines") or []))
             normalized_code = _normalize_code(code_block)
-            command_lines = [line for line in normalized_code.splitlines() if line.strip()]
+            command_lines = [
+                line for line in normalized_code.splitlines() if line.strip()
+            ]
             opsctl_subcommands: list[str] = []
             script_paths: list[str] = []
             for line in command_lines:
                 tokens = _parse_tokens(line.strip())
-                if len(tokens) >= 2 and tokens[0] in {"./scripts/ops/opsctl.sh", "scripts/ops/opsctl.sh"}:
+                if len(tokens) >= 2 and tokens[0] in {
+                    "./scripts/ops/opsctl.sh",
+                    "scripts/ops/opsctl.sh",
+                }:
                     opsctl_subcommands.append(tokens[1])
                 for token in tokens:
                     if token.startswith("./scripts/") or token.startswith("scripts/"):
@@ -267,7 +304,9 @@ def _render_command_search_index(contract: dict[str, Any]) -> list[str]:
     for entry in entries:
         section = str(entry.get("section") or "")
         title = str(entry.get("title") or "")
-        lines.append(f'  <option value="{_html_attr(title)} ({_html_attr(section)})"></option>')
+        lines.append(
+            f'  <option value="{_html_attr(title)} ({_html_attr(section)})"></option>'
+        )
     lines.extend(
         [
             "</datalist>",
@@ -283,9 +322,21 @@ def _render_command_search_index(contract: dict[str, Any]) -> list[str]:
         section = str(entry.get("section") or "").strip()
         title = str(entry.get("title") or "").strip()
         fingerprint = str(entry.get("fingerprint") or "").strip()
-        command_lines = [str(line or "") for line in list(entry.get("command_lines") or []) if str(line or "").strip()]
-        opsctl = ", ".join(str(item) for item in list(entry.get("opsctl_subcommands") or []) if str(item or "").strip())
-        scripts = ", ".join(str(item) for item in list(entry.get("script_paths") or []) if str(item or "").strip())
+        command_lines = [
+            str(line or "")
+            for line in list(entry.get("command_lines") or [])
+            if str(line or "").strip()
+        ]
+        opsctl = ", ".join(
+            str(item)
+            for item in list(entry.get("opsctl_subcommands") or [])
+            if str(item or "").strip()
+        )
+        scripts = ", ".join(
+            str(item)
+            for item in list(entry.get("script_paths") or [])
+            if str(item or "").strip()
+        )
         first_command = _compact_search_text(command_lines[0] if command_lines else "")
         lines.append(
             "- "
@@ -334,7 +385,9 @@ def _parse_commands_sections(text: str) -> tuple[list[str], list[dict[str, Any]]
         if current_entry is None or current_section is None:
             current_entry = None
             return
-        current_entry["lines"] = _trim_blank_edges(list(current_entry.get("lines") or []))
+        current_entry["lines"] = _trim_blank_edges(
+            list(current_entry.get("lines") or [])
+        )
         current_section["entries"].append(current_entry)
         current_entry = None
 
@@ -342,7 +395,9 @@ def _parse_commands_sections(text: str) -> tuple[list[str], list[dict[str, Any]]
         nonlocal current_section
         if current_section is None:
             return
-        current_section["intro_lines"] = _trim_blank_edges(list(current_section.get("intro_lines") or []))
+        current_section["intro_lines"] = _trim_blank_edges(
+            list(current_section.get("intro_lines") or [])
+        )
         sections.append(current_section)
         current_section = None
 
@@ -375,7 +430,9 @@ def _parse_commands_sections(text: str) -> tuple[list[str], list[dict[str, Any]]
     return _trim_blank_edges(preamble), sections
 
 
-def _section(heading: str, *entries: dict[str, Any], intro_lines: Iterable[str] = ()) -> dict[str, Any]:
+def _section(
+    heading: str, *entries: dict[str, Any], intro_lines: Iterable[str] = ()
+) -> dict[str, Any]:
     return {
         "heading": heading,
         "intro_lines": [str(line) for line in intro_lines],
@@ -420,27 +477,84 @@ def _open_report_entry(
     *,
     notes: Iterable[str] = (),
 ) -> dict[str, Any]:
-    return _command_entry(project_root, title, [f"./scripts/ops/open_report_artifact.sh {report_key}"], notes=notes)
+    return _command_entry(
+        project_root,
+        title,
+        [f"./scripts/ops/open_report_artifact.sh {report_key}"],
+        notes=notes,
+    )
 
 
 def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
     bot_stack_pdf_path = project_root / "exports" / "bot_stack_status" / "latest.pdf"
-    report_bundle_pdf_path = project_root / "exports" / "reports" / "report_pdf_bundle_latest.pdf"
-    daily_ops_pdf_path = project_root / "exports" / "reports" / "daily_ops_report_latest.pdf"
-    strategy_attribution_pdf_path = project_root / "exports" / "reports" / "strategy_attribution_latest.pdf"
-    strategy_inventory_pdf_path = project_root / "exports" / "reports" / "strategy_inventory" / "strategy_inventory_latest.pdf"
-    expansion_inventory_pdf_path = project_root / "exports" / "reports" / "expansion_inventory" / "expansion_inventory_latest.pdf"
-    quant_model_control_pdf_path = project_root / "exports" / "reports" / "quant_model_control" / "quant_model_control_latest.pdf"
-    system_overview_pdf_path = project_root / "exports" / "reports" / "system_overview" / "system_overview_weekly_platform_history_latest.pdf"
-    incident_report_pdf_path = project_root / "exports" / "reports" / "incident_report_latest.pdf"
-    retrain_scorecard_pdf_path = project_root / "exports" / "sql_reports" / "retrain_scorecard_latest.pdf"
-    daily_runtime_summary_pdf_path = project_root / "exports" / "sql_reports" / "daily_runtime_summary_latest.pdf"
-    daily_auto_verify_pdf_path = project_root / "exports" / "sql_reports" / "daily_auto_verify_latest.pdf"
-    model_card_pdf_path = project_root / "exports" / "sql_reports" / "model_card_latest.pdf"
-    paper_calibration_pdf_path = project_root / "exports" / "sql_reports" / "paper_execution_calibration_latest.pdf"
-    one_numbers_pdf_path = project_root / "exports" / "one_numbers" / "one_numbers_latest.pdf"
+    report_bundle_pdf_path = (
+        project_root / "exports" / "reports" / "report_pdf_bundle_latest.pdf"
+    )
+    daily_ops_pdf_path = (
+        project_root / "exports" / "reports" / "daily_ops_report_latest.pdf"
+    )
+    strategy_attribution_pdf_path = (
+        project_root / "exports" / "reports" / "strategy_attribution_latest.pdf"
+    )
+    strategy_inventory_pdf_path = (
+        project_root
+        / "exports"
+        / "reports"
+        / "strategy_inventory"
+        / "strategy_inventory_latest.pdf"
+    )
+    expansion_inventory_pdf_path = (
+        project_root
+        / "exports"
+        / "reports"
+        / "expansion_inventory"
+        / "expansion_inventory_latest.pdf"
+    )
+    quant_model_control_pdf_path = (
+        project_root
+        / "exports"
+        / "reports"
+        / "quant_model_control"
+        / "quant_model_control_latest.pdf"
+    )
+    system_overview_pdf_path = (
+        project_root
+        / "exports"
+        / "reports"
+        / "system_overview"
+        / "system_overview_weekly_platform_history_latest.pdf"
+    )
+    incident_report_pdf_path = (
+        project_root / "exports" / "reports" / "incident_report_latest.pdf"
+    )
+    retrain_scorecard_pdf_path = (
+        project_root / "exports" / "sql_reports" / "retrain_scorecard_latest.pdf"
+    )
+    daily_runtime_summary_pdf_path = (
+        project_root / "exports" / "sql_reports" / "daily_runtime_summary_latest.pdf"
+    )
+    daily_auto_verify_pdf_path = (
+        project_root / "exports" / "sql_reports" / "daily_auto_verify_latest.pdf"
+    )
+    model_card_pdf_path = (
+        project_root / "exports" / "sql_reports" / "model_card_latest.pdf"
+    )
+    paper_calibration_pdf_path = (
+        project_root
+        / "exports"
+        / "sql_reports"
+        / "paper_execution_calibration_latest.pdf"
+    )
+    one_numbers_pdf_path = (
+        project_root / "exports" / "one_numbers" / "one_numbers_latest.pdf"
+    )
     one_numbers_csv_path = project_root / "exports" / "one_numbers" / "latest.csv"
-    state_snapshot_pdf_path = project_root / "exports" / "state_snapshot_drills" / "state_snapshot_drills_latest.pdf"
+    state_snapshot_pdf_path = (
+        project_root
+        / "exports"
+        / "state_snapshot_drills"
+        / "state_snapshot_drills_latest.pdf"
+    )
     report_pdf_open_entries = [
         _open_report_entry(
             project_root,
@@ -682,8 +796,85 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
     ]
     return [
         _section(
+            "Live Execution Control",
+            _command_entry(
+                project_root, "Live Execution OFF - block new live orders",
+                ["./scripts/ops/opsctl.sh live-execution off --json"],
+                notes=["Blocks new placements and replacements, including exits, in processes loaded with switch support. Does not cancel pending or in-flight orders, sell holdings, or stop paper/data collection. Check the broker directly for outstanding orders."],
+            ),
+            _command_entry(
+                project_root, "Live Execution ON - guarded permission only",
+                ["./scripts/ops/opsctl.sh live-execution on"],
+                notes=["Interactive scope, symbol and exact confirmation; expires after 30 minutes. Native technical checks must pass. Supervised tests still collect fresh attestation and exact per-order approval. No halt clearance, environment arming, source acceptance or order submission. Use --session AM or --session PM only for a permitted supervised extended-hours test."],
+            ),
+            _command_entry(
+                project_root, "Live Execution status - read the current permission",
+                ["./scripts/ops/opsctl.sh live-execution status --json"],
+                notes=["Reads current persisted permission, scope, expiry and blockers. ON is not proof that all execution gates pass or that any order was submitted. Missing, corrupt, expired or candidate/policy-mismatched state fails closed."],
+            ),
+            intro_lines=[
+                "> **WARNING: REAL MONEY - LIVE ORDER PERMISSION**",
+                "> This is separate from system power. ON does not authorize an order or bypass safety checks. OFF also blocks new exit orders; it does not cancel pending orders, recall in-flight requests or liquidate positions. Keep independent Schwab access.",
+                "> **Deployment warning:** existing processes must load the switch-enabled release before they enforce it. A saved OFF state alone does not certify that older processes are stopped.",
+                "> ON/OFF commands send a Live Execution state notification after verification. Blocked changes and delivery failures remain explicit. Clicking opens this command list, never an order.",
+            ],
+        ),
+        _section(
             "Most Used",
+            _command_entry(
+                project_root,
+                "Clear operator and global halts safely",
+                ["./scripts/ops/opsctl.sh system-power clear-halts --json"],
+                notes=[
+                    "One command releases the manual stop, refreshes evidence, and attempts a guarded global clear. Active safety faults remain blocked. A persistent system OFF request requires the explicit ON command instead.",
+                ],
+            ),
+            _command_entry(project_root, "Turn the platform on (guarded paper)",
+                ["./scripts/ops/opsctl.sh system-power on --json"],
+                notes=["Requests a guarded paper/live-data start and restores only recorded eligible repository agents. Does not authorize live orders; active safety blockers can prevent startup. See docs/operations/SYSTEM_POWER.md."]),
+            _command_entry(project_root, "Turn the platform off",
+                ["./scripts/ops/opsctl.sh system-power off --json"],
+                notes=["Persists OFF across scheduled ticks/logins, disables owned LaunchAgents and stops known runtime loops. Does not cancel broker orders or liquidate positions. Maintain independent broker access; verify any ad-hoc terminal processes separately."]),
+            _command_entry(project_root, "Check system power status",
+                ["./scripts/ops/opsctl.sh system-power status --json"],
+                notes=["Read-only intent, halt and last-transition status; not a certificate that every process is healthy or stopped."]),
             _command_entry(project_root, "Keep the Mac awake", ["caffeinate -dimsu"]),
+            _command_entry(
+                project_root,
+                "Audit self-healing gaps and physical routes",
+                ["./scripts/ops/opsctl.sh self-healing-gaps --json",
+                 "./scripts/ops/opsctl.sh storage-route-verify --json",
+                 "./scripts/ops/opsctl.sh storage-fallback-repair --json",
+                 "./scripts/ops/opsctl.sh emergency-storage-thin --json"],
+                notes=["Census and route commands are observation-only. Fallback repair and emergency-thin without --apply are previews; native accrual owns bounded conditional apply. Known legacy fallback aliases are preserved as historical links before creating real local directories. No external data is deleted and no command grants trading authority. See docs/operations/SELF_HEALING_GAPS.md."],
+            ),
+            _command_entry(project_root, "Observe Bitcoin day and swing movements",
+                ["./scripts/ops/opsctl.sh bitcoin-price-watch --json"],
+                notes=["Three observe-only profiles share two bounded public candle reads on the existing 15-minute accrual cadence. No Coinbase credentials, orders, capital allocation, or profitability credit; current account fees and net-of-cost forward evidence remain required."]),
+            _command_entry(
+                project_root,
+                "Review raw-inventory cleanup controls",
+                ["./scripts/ops/opsctl.sh raw-inventory-cleanup --help"],
+                notes=["Requires an explicitly reviewed inventory. Empty files do not override active-control or archive-custody protection; candidate duplicate fingerprints are not full-content proof. Apply preserves required lookup paths and durable retirement evidence. No trading or source-release authority."],
+            ),
+            _command_entry(
+                project_root,
+                "Review targeted collection gaps",
+                ["./scripts/ops/opsctl.sh collection-gap-census --help"],
+                notes=["Explicit bounded sources and exact missing intervals only. Plans GETs but does not download, certify lifetime coverage, or turn backfilled history into historical live evidence."],
+            ),
+            _command_entry(
+                project_root,
+                "Pull a decision chart report",
+                ["./scripts/ops/opsctl.sh decision-chart-report --help"],
+                notes=["All shared-logger decisions can bind provider candle context. Schwab equity and Coinbase spot charts show recorded indicator reasoning separately from review calculations. Select an original decision ID/log or --bitcoin-bot ID. Uncaptured historical context stays unavailable; verified Schwab fills only, never inferred Coinbase executions."],
+            ),
+            _command_entry(
+                project_root,
+                "Capture read-only decision candles",
+                ["./scripts/ops/opsctl.sh decision-candle-capture --help"],
+                notes=["Explicit equity symbol, bounded Schwab market-data GETs only. Reuses the shared capture store. Coinbase BTC candles are retained by the native Bitcoin observer. No orders or trading authority."],
+            ),
             _command_entry(
                 project_root,
                 "Start the full live stack",
@@ -711,7 +902,10 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Runtime mode switchboard",
-                ['PY="$(zsh ./scripts/ops/runtime_python.sh)"', 'SWITCHBOARD_MODES="shadow,paper" "$PY" scripts/run_mode_switchboard.py'],
+                [
+                    'PY="$(zsh ./scripts/ops/runtime_python.sh)"',
+                    'SWITCHBOARD_MODES="shadow,paper" "$PY" scripts/run_mode_switchboard.py',
+                ],
                 notes=[
                     "Valid modes are `shadow`, `paper`, and `live`.",
                     "This launches one `main.py` child per mode and sets `BOT_MODE` automatically.",
@@ -720,7 +914,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Phone mirror view for the live feed",
-                ["./scripts/ops/opsctl.sh phone-feed --host 0.0.0.0 --source all --include-decisions"],
+                [
+                    "./scripts/ops/opsctl.sh phone-feed --host 0.0.0.0 --source all --include-decisions"
+                ],
                 notes=[
                     "This starts the phone-friendly live feed mirror and prints the local and Tailscale URLs in the terminal.",
                     "When `--host 0.0.0.0` is used without `--token`, the server auto-generates a remote-access token for you.",
@@ -809,7 +1005,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Repair and restart the livefeed mirror",
-                ["./scripts/ops/opsctl.sh livefeed-refresh-guard --apply --force-restart --freshness-minutes 10 --json"],
+                [
+                    "./scripts/ops/opsctl.sh livefeed-refresh-guard --apply --force-restart --freshness-minutes 10 --json"
+                ],
                 notes=[
                     "Use this when the terminal livefeed starts showing stale output, escaped JSON fragments, token blobs, or mid-line storage payloads.",
                     "This validates every livefeed refresh route, restarts only the supervised local mirror, and checks `governance/health/livefeed_local_latest.json`; it does not restart sleeve loops or change paper/live execution authority.",
@@ -818,7 +1016,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Emergency stop: engage operator stop and global halt",
-                ["./scripts/ops/opsctl.sh operator-control --engage --set-global-halt --reason operator_emergency_stop --json"],
+                [
+                    "./scripts/ops/opsctl.sh operator-control --engage --set-global-halt --reason operator_emergency_stop --json"
+                ],
                 notes=[
                     "Use this as the red-button stop when you want both the operator stop flag and the global trading halt set immediately.",
                 ],
@@ -901,7 +1101,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Run adversarial system drills",
-                ["./scripts/ops/opsctl.sh system-adversarial-drills --run-probes --json"],
+                [
+                    "./scripts/ops/opsctl.sh system-adversarial-drills --run-probes --json"
+                ],
                 notes=[
                     "This runs safe read-only probes and ranks cross-layer weak points without enabling live execution or launching duplicate storage drains.",
                     "Add `--apply` when you want the drill result artifact written to `governance/drills/system_adversarial_drill_results_latest.json`.",
@@ -937,11 +1139,25 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Advance native write-path verification",
+                ["./scripts/ops/opsctl.sh data-plane-recovery --apply --json"],
+                notes=[
+                    "Existing SQL and artifact-refresh schedules run this bounded owner. At most four requested paths are checked per pass; actual owner fsync/read-back receipts and independent 60-second probation are required. Six failed checks escalate with backoff. Exact stable-ID/payload checkpoints may reconcile append history; missing or ambiguous records remain unresolved. No synthetic writes, trade replay, new scheduler, reserve change or execution authority. Omit --apply for observation only.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Apply backlog writer catch-up waves",
                 ["./scripts/ops/opsctl.sh writer-cycle-coordinator --apply --json"],
                 notes=[
                     "This lets the single writer run bounded catch-up waves and then hands off follow-through to the active drainer lane.",
+                    "The runtime drainer reserves one existing file slot per regular/crypto shard for the oldest tail after 30 minutes, increasing to four when fresh hot debt is inside its 5,000-core/15,000-total/240-second envelope. Batch limits and protected-window rules remain unchanged.",
+                    "Both direct writer entry points enforce fresh storage admission before locks and at cycle boundaries. Storage deferral stops catch-up waves, publishes a separate admission receipt, and cannot count as completed drain work or bypass owner reserves with a maintenance token.",
+                    "The sharded writer also checks before new child launches, corruption retries, primary merges, and subsequent maintenance. Mid-cycle pressure retains completed rows and the focused request, marks unstarted shards pending, and returns 75; prior real errors remain errors. In-flight children retain their existing bounds. This does not predict a transaction's allocation or lower any reserve.",
                     "Associated bots/control layers: `writer-cycle-coordinator`, `backpressure-drainer-fleet`, `storage-backpressure-autopilot`, `retention-debt-sheriff`.",
+                    "The existing scheduled SQL writer also runs `backpressure-drainer-fleet --apply --refresh-backlog --ttl-seconds 120 --json` before ingestion. Observation has a ten-second deadline, explicitly requests a 512-source census, and cannot replace a request after failed or stale measurement. While storage-paused, the job offers `soak-self-healing --storage-recovery-only --quick-storage-recovery --apply --json` a 90-second compression-only pass; existing holds, cooldowns, memory/thermal checks, verification, and reserve gates remain mandatory. Neither command creates a new scheduler or Codex automation.",
+                    "Multi-wave super drains require a measured pending reduction or current-wave row work to continue. Successful empty calls and unchanged counters from a previous cycle stop as `progress_stalled` rather than consuming all retry waves.",
+                    "The native sharded launcher uses `--once --scheduled-drain`: fresh measured debt after a successful pass permits 5-15 second follow-up delays, at most eight cycles and a 180-second next-cycle admission window inside the existing outer job deadline. `governance/health/scheduled_sql_drain_latest.json` records the decision. Failure, no progress, invalid/stale observations or near-empty debt stop follow-through; all cycle-boundary holds and caps remain. The maintenance owner uses `--maintenance-scope --shards ...` to cover the full shard set without consuming focused ingestion requests.",
                 ],
             ),
             _command_entry(
@@ -950,6 +1166,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh autonomic-governor --apply --json"],
                 notes=[
                     "This applies the host-aware budget for live loops, backlog writer, collectors, trainings, MLX/GPU jobs, reports, and foreground apps.",
+                    "For active drains outside hard protection, the runtime governor now requests its already-admitted worker budget above 1,000 core or 2,500 total pending rows, or for nonempty core debt older than 60 seconds. Empty-age noise cannot trigger this smaller-tail allowance. Hard-pressure behavior and the selected host worker ceiling remain unchanged. Accelerator activation receipts distinguish requested capacity from observed execution.",
                     "Associated bots/control layers: `autonomic-resource-governor`, `host-capability-contract`, `os-adapter-layer`, `workload-class-registry`, `computer-task-intelligence`.",
                 ],
             ),
@@ -1018,10 +1235,45 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Refresh governor observations and decisions",
+                [
+                    "./scripts/ops/opsctl.sh governor-refresh --json",
+                    "./scripts/ops/opsctl.sh whole-system-governor --refresh --json",
+                ],
+                notes=[
+                    "The native runtime publisher now exposes workload_admission for bounded observation, verified recovery, maintenance and single-target canary headroom. Source evidence expires after 90 seconds; independent clear spans, capacity-scaled CPU categories and per-class load/memory/disk ceilings govern extra admission. Aggregate protect alone cannot starve measured-clear observation or compression, while explicit pauses, thermal warnings and storage/quality/execution gates remain authoritative. See docs/architecture/WORKLOAD_ADMISSION.md.",
+                    "Guarded maintenance uses a lifetime kernel lease and a living supervisor. Adaptive repair slots recheck every five seconds, cap runs at 180 seconds and use duration-aware default cooldowns; heavy quiet/macro windows and explicit intervals remain. The infrastructure launcher first runs a fixed non-apply assessment with a 60-second ceiling and shorter jitter. Timeout or resource revocation is not completion; failed load readings cannot become zero load.",
+                    "Memory efficiency publishes the same sampled decision it applied, with a read-back-verified override hash. A blocked workload verdict or unchanged profile can complete the refresh only with fresh input and verified application; failed writes, stale input, mismatches, and timeouts retain protective fallback. Monitoring completion never means workload admission.",
+                    "The existing native runtime-smooth job has a 20-second interval and an 18-second work budget for ordered resource, memory, throttle, support-gate and autonomic refreshes. One kernel-held lock prevents overlap; bounded child cleanup has a 60-second outer lifecycle deadline. Actual start spacing includes scheduler and execution delays. No Codex automation is involved.",
+                    "`./scripts/ops/opsctl.sh backlog-pcore-accelerator --runtime-only --json` refreshes activation evidence without directory inventories or configuration changes; it cannot be combined with `--apply`. The native writer calls the fleet with `--refresh-backlog --refresh-accelerator --ttl-seconds 120` before storage-paused exits, and again after successful storage recovery. Each observer has its own ten-second bound. The accelerator's `activation_contract` reports requested versus observed workers and current storage blockers; an armed request is not a running writer. Operator holds still defer the whole pass.",
+                    "`./scripts/ops/opsctl.sh grade-regression-autopilot --apply --respect-quiet-hours --timeout-sec 180 --json` runs a bounded repair pass while deferring protected heavy storage work. Missing paper-replay proof invokes the existing 336-hour drill with strict failure reporting and unchanged row thresholds before packet/lineage regeneration. Promotion readiness, stage-only coverage assessment, and incident timeline are refreshed before their consumers. This is not candidate staging, training launch, approval, or promotion. Full child evidence stays in its owner artifact; copied stdout/stderr tails are limited to 4,000 characters each.",
+                    "Promotion dependencies now run `scripts/walk_forward_validate.py` then `scripts/walk_forward_promotion_gate.py` before readiness. The validator automatically reads routed plain/gzip logs under bounded file, byte, and time limits, deduplicates copies, and publishes scan completeness atomically. The gate rejects incomplete or older-than-15-minute scans and preserves the configured minimum considered bots; it does not shrink the four-bot floor to the available population. Repaired bots cannot reuse pre-repair runs. Neither command trains, promotes, or starts execution.",
+                    "SQL watchdog status can report `sql_writer_between_scheduled_cycles` after verified completed work and a matching native scheduled lifecycle receipt. Its grace is twice the cadence plus 30 seconds, bounded to cadences no greater than 120 seconds. It is not queue clearance: stale/failed/partial progress restores normal restart evaluation, and repeated scheduler deferrals do not reset the successful-progress clock. The native launcher itself counts as alive during admission/preparation.",
+                    "Adaptive safety projects 40-second memory/local-disk headroom against existing warning floors using independent 5-120 second source intervals and material drops. It only tightens controls; thermal/performance warnings and failed required sensor evidence also protect capacity. Probes have one-second bounds, clear evidence must span 60 seconds before adaptive release, and allocation relief cannot cancel a separate safety hold. Six seconds of the work budget are reserved for bounded protective fallback; failed refreshes remain degraded even when protection is applied.",
+                    "Training/paper views and read-only grade regression assessments refresh every five minutes; grade assessment has a five-second child bound and remains observable while heavy repairs are deferred. A fresh blocked verdict completes observation only and never renews upstream proof. Whole-system advisory health refreshes every fifteen without registry writes. Failed optional owners retain visible debt and a minimum one-minute retry. Heavy adaptive repairs remain with production hardening.",
+                    "Producer/source ages expire independently of file writes. Sensors continue during support pauses; healthy recovery credits require observations at least 60 seconds apart, while adverse readings reset recovery immediately. Runtime throttle publishes the decision actually applied from one sampled observation; the next pass measures its effect. Optional views only start with their full allowance plus cleanup reserve. Per-step and fast-pass elapsed times remain visible. Fast observers use nice 10, not hard core affinity; bulk CPU policy, operator holds, capacity ceilings and execution locks remain unchanged.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect grade regressions and bounded repairs",
+                [
+                    "./scripts/ops/opsctl.sh grade-regression-guard --json",
+                    "./scripts/ops/opsctl.sh grade-regression-autopilot --json",
+                ],
+                notes=[
+                    "Inspection does not run repairs. Approved --apply work shares --timeout-sec across children with ten seconds reserved for cleanup and final assessment; the guarded native job defaults to 840 seconds inside its 900-second lifecycle. Deferred work stays visible. The existing packet builder runs once before promotion assessment and lineage without bootstrapping keys, approving candidates, or granting live authority; routine incident repair does not render PDFs, and no full-graph refresh is implied.",
+                    "Missing or incomplete restore receipts trigger native resource-gated --recover-latest-verified before storage resilience and ingestion assessments, outside nested evidence refreshes. Archive verification remains bounded and preserves the original proof timestamp; owner deferrals do not count as completed repairs or new backups.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Apply runtime throttle and P-core priority controls",
                 ["./scripts/ops/opsctl.sh runtime-throttle --apply --json"],
                 notes=[
+                    "--apply --protective-hold is the restrictive native fallback after a failed fast control owner. It skips repeat hardware probes, uses a bounded process census and preserves existing process ownership/priority rules. It cannot grant workload admission, raise ceilings, promote models or enable orders.",
                     "This refreshes process priority, niceness, fanout limits, P-core feedback, and co-tenant headroom after the host pressure picture changes.",
+                    "Memory pressure is reconciled against fresh resource and normal-tier swap evidence before allocated swap/logical compression is treated as current pressure. Raw counters stay visible; stale evidence, real pressure, disk and thermal guards still block. WindowServer is system work; Codex CPU remains counted; research workers and hardening observability have explicit platform classifications.",
                     "Canonical `master_bot_registry.json` writes are blocked by default; runtime registry adjustments publish `runtime_throttle_registry_candidate_latest.json` unless explicitly source-write authorized.",
                     "Associated bots/control layers: `runtime-throttle`, `process-fanout-guard`, `memory-pressure-intelligence`, `autonomic-resource-governor`.",
                 ],
@@ -1038,7 +1290,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Watch P-core/E-core load with low overhead",
-                ["sudo /Library/Frameworks/Python.framework/Versions/3.14/bin/asitop --interval 3 --show_cores 1"],
+                [
+                    "sudo /Library/Frameworks/Python.framework/Versions/3.14/bin/asitop --interval 3 --show_cores 1"
+                ],
                 notes=[
                     "Use this as the normal Apple Silicon watcher. The 3-second interval reduces observer overhead so the monitor is less likely to create the pressure it is measuring.",
                     "Associated bots/control layers: external observer for `memory-pressure-intelligence`, `autonomic-resource-governor`, and `runtime-throttle`.",
@@ -1047,16 +1301,36 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Watch P-core/E-core load live/heavy",
-                ["sudo /Library/Frameworks/Python.framework/Versions/3.14/bin/asitop --interval 1 --show_cores 1"],
+                [
+                    "sudo /Library/Frameworks/Python.framework/Versions/3.14/bin/asitop --interval 1 --show_cores 1"
+                ],
                 notes=[
                     "Use this briefly when you need faster visual feedback. The memory intelligence layer can flag interval-1 asitop as observer overhead if it starts distorting CPU or memory pressure.",
                     "Associated bots/control layers: external observer for `memory-pressure-intelligence`, `autonomic-resource-governor`, and `runtime-throttle`.",
                 ],
             ),
-            _command_entry(project_root, "Validate documented commands", ["./scripts/ops/opsctl.sh command-validity --json"]),
+            _command_entry(
+                project_root,
+                "Validate documented commands",
+                ["./scripts/ops/opsctl.sh command-validity --safe-audit --summary-json"],
+                notes=[
+                    "The native command-validity infrabot repeats this non-executing audit on its existing 10-minute cadence.",
+                    "Every entry gets source, syntax, purpose and duplicate checks. Static success does not prove exact arguments or real-world effects; those remain explicit functional-evidence gaps.",
+                    "No documented order, deletion, restart, halt-clear or auth command is executed by this audit.",
+                ],
+            ),
         ),
         _section(
             "Accounts And Positions",
+            _command_entry(
+                project_root,
+                "Bind verified Schwab accounts to Keychain",
+                ["./scripts/ops/opsctl.sh schwab-account-hash-sync --json"],
+                notes=[
+                    "Discovers connected Schwab routing hashes, maps them through operator-verified last-four aliases, and stores only the opaque references in the macOS Keychain.",
+                    "It writes no raw hashes to repository artifacts and cannot arm live execution.",
+                ],
+            ),
             _command_entry(
                 project_root,
                 "Refresh Schwab account positions",
@@ -1075,10 +1349,106 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Check the supervised live-canary preflight",
+                ["./scripts/ops/opsctl.sh live-canary-preflight --json"],
+                notes=[
+                    "Fail-closed check for the exact candidate/account binding, settled-cash attestation, broker restrictions, risk boundary, live-order ledger, immutable release, tax review, and exchange session.",
+                    "The Roth canary additionally requires explicit retirement loss-capacity, contribution-capacity, and cross-account wash-sale confirmation. The command cannot arm live execution.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect the separate operator-only broker function test",
+                [
+                    "./scripts/ops/opsctl.sh supervised-broker-test status --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test preview --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test observe --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test status --symbol SCHD --session AM --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test status --symbol SCHD --session PM --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test readiness --symbol SCHD --json",
+                    "./scripts/ops/opsctl.sh risk-service-boundary --refresh-inputs --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test preview --symbol SCHD --bot-market --action BUY --json",
+                    "./scripts/ops/opsctl.sh supervised-broker-test attestation-checklist --symbol SCHD --bot-market --json",
+                ],
+                notes=[
+                    "Status is offline. Preview and observe are broker-read-only; no attestation or order is issued. O buy-and-hold is bounded to $300, five whole shares, and a $57.09 maximum buy limit; a lower fresh bid may be proposed without claiming undervaluation.",
+                    "Observe separates verified additional broker purchases from test fills using fresh, complete account-bound transaction evidence. Outside reductions and ambiguous activity remain pending; the original sell lifecycle, test quantity and cash/settlement gates are unchanged.",
+                    "The separate submit command requires an interactive operator, current personal review, and exact order confirmation. It retains technical safety gates and durable single-attempt accounting; production soak/profitability promotion is not waived or credited. No automatic sell, rebuy, repricing, or reinvestment.",
+                    "See docs/operations/SUPERVISED_BROKER_TEST.md before any operator-controlled test. Cash/fee, position, dividend, and profitability evidence remain distinct.",
+                    "SCHD manual/AM/PM stays LIMIT/DAY. Explicit --bot-market requires a native decision, NORMAL/DAY, fresh two-sided evidence and separate operator confirmation per side. No automatic exit, retry, price guarantee, source acceptance or trading activation. Readiness refreshes owners; checklist does not attest.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review detailed SCHD decision evidence and isolated simulation",
+                [
+                    "./scripts/ops/opsctl.sh schd-decision-rehearsal status --json",
+                    "./scripts/ops/opsctl.sh schd-decision-rehearsal demo --json",
+                    "./scripts/ops/opsctl.sh schd-decision-rehearsal charts --json",
+                    "./scripts/ops/opsctl.sh schd-decision-rehearsal maintain --json",
+                    "./scripts/ops/opsctl.sh schd-decision-rehearsal native --json",
+                    "./scripts/ops/opsctl.sh schd-decision-rehearsal native --refresh-market-data --json",
+                ],
+                notes=[
+                    "Status/evaluate/demo are offline. Demo writes a clearly synthetic conditional buy/sell rehearsal, never broker or canonical paper orders. Charts explicitly fetches Schwab 1m/5m/daily price history with live execution locked off and creates bounded PNG candlestick diagrams.",
+                    "Detailed reports separate recorded bot reasons from closed-candle diagnostics for 5m/15m/1h/daily/monthly/yearly and trailing 180 calendar days; 1m is only shown when supplied.",
+                    "Native observes a bounded dividend-sleeve SCHD grand-master log with unchanged actions/reasons/gates and source/candidate hashes. Maintain refreshes candle context and prunes expired owned cache through the existing adaptive-ops cadence, never orders or decisions. It reports recent scope-checked producer pauses/pacing separately from decision freshness, without restart authority. Charts include a separately attributed recorded decision sample. Missing provider time, unverified price basis and retrospective context remain blockers. See docs/operations/SCHD_DECISION_REHEARSAL.md.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect or revoke native purchase proposals",
+                [
+                    "./scripts/ops/opsctl.sh purchase-proposals status --json",
+                    "./scripts/ops/opsctl.sh purchase-proposals evaluate --json",
+                    "./scripts/ops/opsctl.sh purchase-proposals revoke --json",
+                ],
+                notes=[
+                    "The existing 15-minute accrual profile owns read-only evaluations. Status is offline; evaluate never submits, cancels, replaces, or issues attestation. Revoke persistently stops this observer only.",
+                    "The filled O test consumes its original single entry and $300 scope; no follow-on purchase is implied. Cash, settlement, dividends, source validation and economic evidence remain distinct. See docs/operations/PURCHASE_PROPOSALS.md.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Run the connected read-only canary dress rehearsal",
+                [
+                    "./scripts/ops/opsctl.sh live-canary-dress-rehearsal --symbol SCHD --json"
+                ],
+                notes=[
+                    "First refreshes tax history through its existing six-hour cache, rechecks release integrity, and verifies the order ledger. Failed or stale owner publications block readiness; no freeze, release manifest, commit, attestation, or allowlist is created.",
+                    "Use --symbol O for the separate read-only buy-and-hold test scope. SCHD and O are test candidates only; O remains outside executable canary stages and must retain canary_ready=false. No paper/live order, ex-dividend trading, or limit change is authorized.",
+                    "Refreshes designated Schwab account truth, fetches a real provider quote, and builds the exact redacted one-share LIMIT/NORMAL/DAY payload plus cash, position, collateral, and reconciliation projections.",
+                    "Every live switch is forced off. The control never submits, cancels, replaces, or grants live authority; `ready_locked` is expected while funding, release, attestation, session, or earned-evidence gates remain.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Seal a reconciled live-canary closeout",
+                [
+                    "./scripts/ops/opsctl.sh live-canary-closeout --intent-id INTENT_ID --json",
+                    "./scripts/ops/opsctl.sh live-canary-closeout --intent-id INTENT_ID --capture --json",
+                ],
+                notes=[
+                    "Run immediately after the live lane reports a terminal fill and after a fresh Schwab account snapshot. The command appends only when the hash-chained order event, exact account position delta, isolated cash delta, conservative cost floor, and safety state agree.",
+                    "Preview without `--capture` first. It never contacts or mutates the broker, never persists raw account or broker identifiers, and cannot authorize a follow-on order, stage change, or capital increase.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review post-canary graduation milestones",
+                ["./scripts/ops/opsctl.sh live-canary-graduation --json"],
+                notes=[
+                    "Reads the durable live-order ledger and sealed broker closeout receipts to track the first reconciled fill, round trips, independent days, post-cost outcomes, fill fidelity, drawdown, regime coverage, and bounded future-tier evidence.",
+                    "Missing earned evidence is a normal waiting state. Tampering, identity mismatch, ambiguity, or safety violations fail closed; the control cannot issue an allowlist, progress a stage, change limits, or submit an order.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Watch covered-call roll windows",
                 ["./scripts/ops/opsctl.sh covered-call-roll-watch --json"],
                 notes=[
                     "Evaluates held covered calls against account aliases, DTE windows, ITM depth, hard roll targets, and per-underlying preferences before publishing roll alerts.",
+                    "Routine NVDA roll-window notifications repeat at most every six hours unless a material contract, coverage, quantity or risk-category change occurs. Urgent/assignment statuses retain normal delivery. Quote noise and daily DTE changes do not create new alerts; underlying risk and order controls are unchanged.",
                 ],
             ),
             _command_entry(
@@ -1103,7 +1473,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Install the SpaceX/SPCX IPO downside watcher",
-                ["./scripts/ops/opsctl.sh spacex-ipo-watch-install --poll-seconds 30 --symbol SPCX --until-utc 2026-06-13T01:00:00+00:00"],
+                [
+                    "./scripts/ops/opsctl.sh spacex-ipo-watch-install --poll-seconds 30 --symbol SPCX --until-utc 2026-06-13T01:00:00+00:00"
+                ],
                 notes=[
                     "Installs the launchd watcher for first-print, high-watermark, IPO-price, spread, and proxy weakness alerts; policy remains monitoring-only with automatic execution disabled.",
                 ],
@@ -1121,8 +1493,19 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             "Notifications And Alerts",
             _command_entry(
                 project_root,
+                "Test Mac notification click actions",
+                ["./scripts/ops/opsctl.sh notify-test --disable-imessage"],
+                notes=[
+                    "Click the test alert to open the current watchdog report. Only confirmed Schwab refresh-token rejection offers supervised sign-in; routine refresh warnings open diagnostics. Fresh automatic renewal supersedes older expiry alerts, and healthy-token HTTP 429 cooldowns do not request reauth. Obsolete native auth alerts are dismissed when supported; old auth clicks recheck recovery. Broker cooldowns and trading gates stay unchanged. Requires terminal-notifier and macOS notification permission; phone iMessages cannot be retracted or gain local click actions.",
+                    "Notification clicks never place orders, clear halts, prune data, or restart the platform. See docs/operations/NOTIFICATION_ACTIONS.md for the mappings and transport verification.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Send a test iMessage notification",
-                ['./scripts/ops/opsctl.sh notify-test --enable-imessage --imessage-recipient "you@example.com" --imessage-min-severity critical'],
+                [
+                    './scripts/ops/opsctl.sh notify-test --enable-imessage --imessage-recipient "you@example.com" --imessage-min-severity critical'
+                ],
                 notes=[
                     "Use this after changing the recipient or iMessage allowlist; replace the recipient with the phone/email address that receives iMessage.",
                 ],
@@ -1130,7 +1513,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Start the Mac notification and iMessage watcher",
-                ['./scripts/ops/opsctl.sh notify-start --enable-imessage --imessage-recipient "you@example.com" --imessage-min-severity critical'],
+                [
+                    './scripts/ops/opsctl.sh notify-start --enable-imessage --imessage-recipient "you@example.com" --imessage-min-severity critical'
+                ],
                 notes=[
                     "Installs and starts the macOS notification watcher with iMessage delivery enabled for critical allowed events.",
                 ],
@@ -1138,7 +1523,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Install the startup Yes/No bot start prompt",
-                ["./scripts/ops/opsctl.sh startup-start-prompt --install --no-kickstart --no-browser"],
+                [
+                    "./scripts/ops/opsctl.sh startup-start-prompt --install --no-kickstart --no-browser"
+                ],
                 notes=[
                     "Arms a login-time actionable macOS notification with `Start` and `Not Now` buttons for the guarded `opsctl start` path; a corrected Yes/No dialog is the fallback.",
                     "No response, notification dismissal, or UI failure leaves the stack off and records the decision transport in `governance/health/startup_start_prompt_latest.json`.",
@@ -1149,12 +1536,18 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Dry-run the startup Yes/No bot start prompt",
-                ["./scripts/ops/opsctl.sh startup-start-prompt-test --dry-run --delay-seconds 0"],
+                [
+                    "./scripts/ops/opsctl.sh startup-start-prompt-test --dry-run --delay-seconds 0"
+                ],
                 notes=[
                     "Launches the signed helper in self-test mode and verifies its result contract without showing a notification or starting the trading stack.",
                 ],
             ),
-            _command_entry(project_root, "Stop the notification watcher", ["./scripts/ops/opsctl.sh notify-stop"]),
+            _command_entry(
+                project_root,
+                "Stop the notification watcher",
+                ["./scripts/ops/opsctl.sh notify-stop"],
+            ),
             _command_entry(
                 project_root,
                 "Review remote alert control",
@@ -1177,7 +1570,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Arm or candidate-promote the guarded 400 bot paper ramp",
-                ["./scripts/ops/opsctl.sh paper-400-ramp --apply --promote-roster --json"],
+                [
+                    "./scripts/ops/opsctl.sh paper-400-ramp --apply --promote-roster --json"
+                ],
                 notes=[
                     "Writes guarded paper caps and publishes a candidate registry promotion when global halt, memory, runtime, and ingestion gates are clean.",
                     "Canonical `master_bot_registry.json` writes require `--allow-source-registry-write` or `PAPER_400_RAMP_ALLOW_SOURCE_REGISTRY_WRITE=1`.",
@@ -1218,8 +1613,47 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Run historical profitability crisis drills",
+                ["./scripts/ops/opsctl.sh profitability-crisis-drill --json"],
+                notes=[
+                    "Runs deterministic paper-only collapse and recovery diagnostics for the 2008 global financial crisis, the 2020 pandemic liquidity break, and the 2023 regional-bank failures.",
+                    "The drill checks stressed fills, severe-phase abstention, reduce-only exits, and recovery re-entry. Its A+ is a control grade, not organic profitability, promotion, or live-release evidence.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Run the adversarial profitability drill pack",
+                ["./scripts/ops/opsctl.sh profitability-adversarial-drill --json"],
+                notes=[
+                    "Runs fourteen deterministic paper-only economic-adversarial scenarios without starting a daemon or contacting a broker.",
+                    "The capacity scenario covers all runtime sleeves from the $200 canary through $1,000,000 across normal, wide-spread, thin-liquidity, and high-volatility/latency states.",
+                    "An A+ grades drill execution and failure-mode detection only; modeled capacity remains diagnostic until candidate-forward fills and costs calibrate it.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Run paper behavior intervention drills",
+                ["./scripts/ops/opsctl.sh paper-behavior-intervention-drill --json"],
+                notes=[
+                    "Runs fourteen candidate-bound champion/challenger scenarios that test paper-only abstention, throttling, recovery, and sizing behavior.",
+                    "A fresh complete A+ proposal can be admitted only by paper-profitability-control; the drill itself cannot write runtime controls, submit orders, grant live authority, or prove organic profitability.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Run the complete trading behavior drill program",
+                ["./scripts/ops/opsctl.sh trading-behavior-drill-program --json"],
+                notes=[
+                    "Freezes one candidate and policy receipt, then runs crisis, adversarial profitability, and paper behavior suites under one bounded run ID.",
+                    "The program rejects regressions and candidate mutations, retains a compact evidence history, and may only propose a paper overlay to paper-profitability-control; it has no order or live authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Capture the candidate-bound passive benchmark close",
-                ["./scripts/ops/opsctl.sh profitability-benchmark-capture --apply --json"],
+                [
+                    "./scripts/ops/opsctl.sh profitability-benchmark-capture --apply --json"
+                ],
                 notes=[
                     "After the configured market close, appends at most one immutable broker-native SPY benchmark point for a candidate that existed before the session opened.",
                 ],
@@ -1250,6 +1684,100 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Review institutional capability and evidence gaps",
+                ["./scripts/ops/opsctl.sh institutional-capability-control --json"],
+                notes=[
+                    "Separates six implementation, guarded-paper, candidate-evidence, entitlement, and live-promotion states without treating source count as alpha.",
+                    "The target is a compact set of authoritative provider families and shared derived features, not 10,000 feeds; subscriptions, independent fills, attestations, and live release remain external or human actions.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review the canonical research data platform",
+                ["./scripts/ops/opsctl.sh research-data-platform --json"],
+                notes=[
+                    "Checks the ten catalog, entitlement, point-in-time, bitemporal, alpha-lifecycle, source-value, portfolio, simulation, feed-SLO, and reproducibility contracts used by every decision family.",
+                    "Structural readiness stays separate from candidate-bound evidence and grants no signal, sizing, promotion, paper-order, or live-order authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review the eight institutional research extensions",
+                ["./scripts/ops/opsctl.sh institutional-research-extensions --json"],
+                notes=[
+                    "Checks factor benchmarks, pipeline incident ownership, material-change governance, candidate risk schedules, execution speed-cost frontiers, checkpointable research DAGs, versioned datasets, and cross-engine valuations.",
+                    "The public Point72/Cubist, AQR, Man AHL, Two Sigma, D. E. Shaw, and GS Quant material is design provenance only; structural A+ remains separate from earned candidate evidence, licensing, profitability, promotion, and order authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Validate the 39 authoritative production references and 18 controls",
+                ["./scripts/ops/opsctl.sh authoritative-systems --json"],
+                notes=[
+                    "Runs the original execution and evidence checks plus exchange sequencing, atomic archive snapshots, formal specifications, build provenance, canonical trade lifecycle, independent risk-oracle reconciliation, constrained portfolio advice, declarative data-quality checkpoints, and the eight institutional research extensions.",
+                    "The A+ grade is limited to local structural implementation; external observations remain separate, it is not profitability evidence, and it grants no live execution authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Compare paper and live-shadow intent semantics",
+                ["./scripts/ops/opsctl.sh paper-live-equivalence --json"],
+                notes=[
+                    "Requires action, quantity, strategy, candidate, asset, risk, and order intent to match while permitting broker-specific fills, fees, latency, and venue state to differ.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review candidate-bound quantitative challengers",
+                ["./scripts/ops/opsctl.sh quantitative-challengers --json"],
+                notes=[
+                    "Evaluates eight deterministic, candidate-forward research methods without changing actions, sizing, allocation, labels, promotion, or live execution.",
+                    "Collecting or unsupported results remain visible and never borrow lifetime or pre-candidate performance.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review sleeve strategy contracts and lifecycle evidence",
+                ["./scripts/ops/opsctl.sh sleeve-strategy-specialization --json"],
+                notes=[
+                    "Materializes complete objective-aware contracts for every active runtime and collection strategy, then joins only candidate-bound post-cost evidence.",
+                    "Broad master decisions stay attributed to an ensemble identity; hedge, cash, and control sleeves use portfolio-appropriate objectives and the report has no action, sizing, allocation, promotion, or live-order authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Search the 12,000-strategy sleeve library and scorecards",
+                [
+                    "./scripts/ops/opsctl.sh strategy-library --sleeve crypto_spot --regime-relevance aligned --limit 40"
+                ],
+                notes=[
+                    "Refreshes the deterministic library, then shows hot or cold tier, current-regime relevance, evidence maturity, and honest quality verdicts.",
+                    "Use `--good`, `--bad`, `--verdict NAME`, `--tier cold_research`, or `--json`; unknown evidence is never mislabeled bad and the query has no execution authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Check all 12,000 strategies against current market conditions",
+                ["./scripts/ops/opsctl.sh strategy-market-fit --force"],
+                notes=[
+                    "Checks every preserved strategy contract in bounded batches and maintains five exact existing cold strategies as a shadow-only challenger cohort.",
+                    "Market-fit scores rank research attention, not expected return; the scanner cannot activate strategies, change the candidate or soak, submit paper or live orders, or claim profitability without candidate-bound post-cost proof.",
+                    "Omit `--force` to reuse the last full scan whenever all source signatures are unchanged.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Browse the consolidated strategy-family catalog",
+                [
+                    "./scripts/ops/opsctl.sh strategy-families --sleeve crypto_spot --objective digital_asset_alpha --limit 40"
+                ],
+                notes=[
+                    "Presents all 12,000 preserved identities as 1,989 canonical records: 879 native hot identities plus 11,121 cold child receipts under 1,110 parent families.",
+                    "Every cold child keeps separate evidence and lineage; the catalog cannot alter runtime IDs, activate a strategy, pool evidence, promote a candidate, or submit an order.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Review the locked profitability holdout vault",
                 ["./scripts/ops/opsctl.sh profitability-holdout-vault --json"],
                 notes=[
@@ -1272,11 +1800,271 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "Keeps structural control grades separate from candidate-bound economic proof and blocks promotion until every baseline and future-profitability hardener has current evidence.",
                 ],
             ),
+            _command_entry(
+                project_root,
+                "Ask the system what profitability needs next",
+                ["./scripts/ops/opsctl.sh profitability-self-assessment --json"],
+                notes=[
+                    "Publishes one candidate-bound truth packet for confidence, sleeve/regime thresholds, income-sleeve acceptance, tradeability/conflict, exits, fills, sizing, and allocation.",
+                    "Historical paper debt remains visible but cannot grade the current candidate or authorize live execution.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review candidate alpha and cross-sleeve ownership",
+                ["./scripts/ops/opsctl.sh alpha-generation-control --json"],
+                notes=[
+                    "Separates 10/10 alpha-control implementation from organic post-cost evidence, then decomposes common versus residual sleeve alpha.",
+                    "Shared regime, liquidity, macro, factor, risk, and cost context cannot duplicate trade ownership; incomplete evidence returns cash, freezes new strategy offspring, and grants no allocation or live authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review the alpha concept map and sixteen measurement engines",
+                ["./scripts/ops/opsctl.sh alpha-concepts --json"],
+                notes=[
+                    "Reports 128 canonical concepts across 16 families and runs sixteen candidate-bound measurement engines outside the market hot path.",
+                    "Implementation, catalog routing, candidate evidence, and economic support are separate grades; missing evidence becomes a collection priority and never grants action, sizing, allocation, label, promotion, paper-order, or live authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Review alpha tools and evidence gaps for every sleeve",
+                ["./scripts/ops/opsctl.sh sleeve-alpha-toolbox --json"],
+                notes=[
+                    "Resolves every declared sleeve to an explicit policy family and routes each required evidence axis to deterministic candidate-bound diagnostics.",
+                    "Publishes five expanded priority research families, five deferred families, and per-sleeve priority labels; research order is definition-only and does not start workers or change execution-policy digests.",
+                    "Full route coverage is structural only; current-candidate post-cost evidence must pass organically, and the toolbox has no action, sizing, paper-order, promotion, allocation, or live authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Compare cumulative soak behavior between candidate generations",
+                [
+                    "./scripts/ops/opsctl.sh generation-behavior-attribution --from-generation 65 --to-generation 99 --last-days 21 --json"
+                ],
+                notes=[
+                    "Compares candidate-stamped behavior and post-cost generation flows while preserving the cumulative segmented soak context.",
+                    "Legacy unstamped rows are labeled as descriptive time-window associations only; the report is not causal proof, current-candidate promotion credit, a profitability guarantee, or order authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Build current-generation learning from verified historical paper fills",
+                ["./scripts/ops/opsctl.sh generation-fill-learning --apply --json"],
+                notes=[
+                    "Builds an offline challenger dataset owned by the current accepted candidate, presently G104, while preserving every verified fill's source generation.",
+                    "Exact candidate or decision receipts are required; unbound rows are quarantined, expected-fill simulations remain nonempirical, and lineage, chronological validation, and training-quality gates must pass before trainer consumption.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Replay decision thresholds and exit choices",
+                ["./scripts/ops/opsctl.sh counterfactual-replay --json"],
+                notes=[
+                    "Tests threshold, tradeability, conflict, and exit alternatives before any future loosening or size increase.",
+                ],
+            ),
         ),
         _section(
             "Storage",
-            _command_entry(project_root, "Switch collection to the Mac's internal drive", ["./scripts/ops/opsctl.sh storage-switch-local"]),
-            _command_entry(project_root, "Switch collection back to the external BOT_LOGS drive", ["./scripts/ops/opsctl.sh storage-switch-external"]),
+            _command_entry(
+                project_root,
+                "Refresh analytical SQL summaries",
+                [
+                    'PY="$(zsh ./scripts/ops/runtime_python.sh)"',
+                    '"$PY" scripts/ops/sql_analytics_mirror.py --json',
+                ],
+                notes=[
+                    "The existing operations coordinator owns routine refreshes. This command refreshes operational summaries from primary history before updating the analytical cache; do not use it to bypass maintenance admission during storage pressure.",
+                    "Primary aggregation streams compact fields without raw-JSON sorting, with 250,000-row, 32 MiB projection and 20-second bounds. A singleton child has a 35-second process-group deadline. Admission requires 1 GiB above the pressure floor (at least 65 GiB free), rechecked during scanning. Incomplete scans roll back both operational summaries; deferred or timed-out observations never certify the old cache as fresh.",
+                    "Stream and symbol summaries share one read-only SQLite snapshot and one DuckDB publication transaction. A failed load preserves the previous complete mirror, and a first-load failure rolls back the schema. No new service, ledger authority, source deletion or migration is implied.",
+                    "Database direction: keep SQLite and DuckDB/Parquet; evaluate PostgreSQL for demonstrated concurrent-writer or multi-host needs; defer Redis/NoSQL pending a measured cache bottleneck and freshness/invalidation contract. This command does not install a backend or perform that evaluation. Under storage pressure, no unadmitted services, migration copies or history scans are allowed. See docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md#database-direction.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview verified compatibility-cache rebuild",
+                ["./scripts/ops/opsctl.sh storage-sqlite-hot-route --rebuild-local-cache --json"],
+                notes=[
+                    "The bounded source preview uses an available full timestamp-leading index, avoids combined MIN/MAX scans, reuses counts and estimates encoded payload bytes. Faster inspection does not bypass capacity, writer or restoration checks. An existing maintenance hold requires explicitly supplied matching-token authority; a rebuild cannot silently adopt or release another owner's hold.",
+                    "`staging_budget` separates the estimate from the enforced main-database ceiling. Fresh headroom can admit a smaller capped attempt when the measured hot payload fits; a verified SQLite `max_page_count` rejects excess growth. Cold export reserves the ceiling plus 256 MiB overhead, and live disk checks protect temporary work. Local staging/copy preserves at least 32 GiB and external staging at least 64 GiB, even when a lower argument is supplied. The local copy rechecks space per 16 MiB chunk and after verification. Unknown observations, oversized actual output, exhausted capacity or interrupted proofs cannot replace the source or count as recovery.",
+                    "The existing self-healing owner schedules apply after maintenance admission and writer handoff. Read-only inspection is capped at 60 seconds; --operation-seconds cooperatively caps rebuild work at 1800 seconds. Cold exports require full typed-row restoration hashes, hot staging reserves external space above a 64 GiB floor, and verified replacement preserves source stability, IDs, schema and merge cursors under storage/writer locks. A preview or interrupted run is not reclaimed space or snapshot completion.",
+                    "The separate guarded storage-maintenance lane now enables the retention work deferred by ordinary one-pass writers, with 1000-row batches, 5000 rows and 120 seconds per database. Archive allocation has a 64 GiB floor plus scratch; no inline vacuum or archive expiry runs in that bounded batch. Failed retention cannot count as successful maintenance merely because ingestion succeeded. Each child has a 1800-second process-group deadline and bounded cleanup, including stopped workers. Timeout rejects partial success and older receipts. The separate data-retention command uses --skip-sqlite-vacuum and --no-archive-prune-vacuum; its expiry policy is unchanged. Missing current child evidence remains an error.",
+                    "Nine previously uncovered shards now declare seven-day hot windows for equities trading, runtime and API-ingress, and fourteen-day windows for governance and watchdog history. Their rules use daily shard archives, 1000-row batches, 5000-row passes and a five-minute minimum interval. Archive-expiry zero is preserved explicitly; these rules do not expire archived history or request inline vacuum. Size triggers are not hard caps, and assigning rules does not bypass maintenance admission or prove disk recovery. See docs/operations/SOURCE_AND_STORAGE_MAINTENANCE.md#shard-hot-retention-coverage.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect verified duplicate cleanup",
+                ["./scripts/ops/opsctl.sh bot-logs-cleanup-intelligence --max-tier 1 --max-files 4 --max-delete-gb 0.5 --seconds 45 --max-verify-gb 1 --json"],
+                notes=[
+                    "The verification budget counts compressed input as well as raw and restored bytes, including padding and empty gzip members. Tier-2 conflict/quarantine moves are advisory here and remain with verified offload owners; cross-filesystem source removal cannot use a plain move. Post-unlink persistence failures report removal separately from durable completion.",
+                    "Only ordinary logs/ pairs qualify. SQL payload domains and unknown roots are excluded regardless of checkpoint contents and remain with their writer-aware compaction owners. Assessment shares the same deadline; an expired empty pass cannot claim completion.",
+                    "The existing hourly data-retention job checks local fallback and external storage. The existing 15-minute reserve-recovery pass also offers local cleanup under normal admission, excluding quick and compression-only relief modes. Each target is bounded to four files, 0.5 GiB deletion, 1 GiB raw/restored verification and 45 seconds; shared storage ownership, fresh resource checks and pressure-recovery cooldowns remain. Actual intervals include scheduler/admission delays. No new scheduler or Codex automation is used.",
+                    "Preview selection is metadata-only and is not deletion proof. Apply requires closed-date inactive raw/gzip pairs, full SHA-256 and exact restored length, gzip integrity, idle handles, stable single-link identities and durable pre-release evidence in governance/storage_recovery/verified_duplicate_cleanup.jsonl. Prefix verification cannot authorize deletion. Retained archives, latest/training artifacts, current-day files and protected/symlink routes are excluded. Age-only stale-stage deletion is disabled here; data-retention retains manifest/hash/protected-evidence/expiry ownership. Stale retirement now preserves manifest replay order, blocks corrupt receipts, reapplies current evidence protection and budgets selection before hashing; the native reaper rejects unlimited settings and preserves the active owner's receipt on lock contention. See docs/operations/SOURCE_AND_STORAGE_MAINTENANCE.md#retention-safety-audit. Capacity readiness and completed cleanup are separate; no empty pass grants headroom or trading authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect verified lifecycle backup compression",
+                ["./scripts/ops/opsctl.sh governance-lifecycle-compactor --json"],
+                notes=[
+                    "The existing native retention owner schedules this gzip backup lane. Default policy retains the newest 12 backups, current-day files and files younger than 24 hours. Only named registry backups in governance/lifecycle qualify. A shared storage lock, paced worker, fresh resource checks, scratch/emergency reserve, stable idle source and full restored SHA-256 receipt precede replacement. Existing archives are never overwritten; a valid matching archive can resume after re-verification. --seconds bounds work to 720 seconds by default and at most 840 seconds. Deferral is not batch completion or reserve readiness.",
+                    "The shared cold/lifecycle guard automatically allows compression-only CPU relief below 125 GiB local free space on >=8 logical CPUs, with fresh ready sensors, clear memory/thermal checks, no creative/cooldown or protective/support hold, and saturation <=70. Foreground CPU must stay <150%, system CPU <200%, their sum <300%, and five-minute load <=0.85 per logical CPU. One worker remains paced to 25% of one core with second-scale checks; operator holds, scratch/emergency reserves and full restoration verification remain mandatory. Other workload guards are unchanged."
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect verified decision-log compression",
+                ["./scripts/ops/opsctl.sh decision-log-compactor --json"],
+                notes=[
+                    "The existing native retention owner schedules this lane. Known pending or mismatched SQL checkpoints exclude logs of every age, including after UTC rollover. Checkpoints are rechecked before release; stable idle sources, full gzip restoration SHA-256, durable proof and no-clobber publication protect originals. Matching existing archives can be reused after verification; conflicts are preserved. Current-day exclusions and minimum ages remain unchanged. Deferred work is not compaction or ingestion completion.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect routed storage quotas",
+                ["./scripts/ops/opsctl.sh storage-quota-guard --json"],
+                notes=[
+                    "Read-only accounting includes canonical and fallback SQLite shards, counts distinct resident copies and deduplicates aliases/hard links by device and inode. Compressed-history deductions include safe gzip aliases with resolved-path deduplication matching the tier inventory; raw and protected targets cannot earn an archive exemption. Quota thresholds and physical capacity accounting remain unchanged. This command does not move, delete or rehome data.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect automatic cold evidence compression",
+                ["./scripts/ops/opsctl.sh cold-evidence-compactor --json"],
+                notes=[
+                    "After pressure relief, the normal guarded self-healing pass continues this same owner toward its configured recovery target (135 GiB by default), with normal maintenance admission and storage cooldowns.",
+                    "The lock watchdog preserves kernel-lock anchors, including idle and PID-less markers. Compression defers if its held lock path is lost or replaced; stale PID text does not authorize unlinking a shared lock.",
+                    "The existing 15-minute self-healing job invokes this owner under internal-storage pressure, before heavy maintenance. It selects only week-old, idle archived JSONL/log files in the fixed local quarantine cold root, bootstraps scratch space with fitting smaller files, and reserves at least 16 GiB. One worker is paced to 25% of one core, with fresh memory/thermal/foreground checks and a shared storage-maintenance lock. Full restored SHA-256 proofs and durable receipts precede source release; database files, active paths, symlinks and protected volumes are excluded. A completed assessment or partial batch is not storage readiness. The same pass reconciles reserve-only controls; the existing minute-scale guarded SQL recovery remains responsible for drains."
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect pressure-triggered storage recovery",
+                [
+                    "./scripts/ops/opsctl.sh soak-self-heal --storage-recovery-only --json"
+                ],
+                notes=[
+                    "Recovery receipts separate measured owner reclamation, net local headroom change, and remaining capacity shortfall. Successful empty/unmeasured compactor passes use per-owner exponential backoff capped at one hour, reset by positive measured reclamation; they do not open failure circuits or certify reserves.",
+                    "The existing 15-minute launcher adds `--rebuild-reserve` to the recovery-only apply pass. Preview with `./scripts/ops/opsctl.sh soak-self-heal --storage-recovery-only --rebuild-reserve --json`; add `--apply` for guarded recovery. It starts below the configured 125 GiB target and aims for 135 GiB, while the quick emergency lane keeps its existing 64 GiB pressure threshold. The modes cannot be combined. Capacity and full system readiness remain separately measured, and no heavy rebuild is admitted by this flag.",
+                    "Elevated-load recovery requires a current storage-recovery lease and stays within 240 seconds, four files and 60 seconds per compactor. Quick recovery retains its 90-second limit. Both load windows, holds and required leases are rechecked between steps; memory is renewed after 60 seconds. The recovery receipt reports pressure/trigger/target deficits, actual owner progress, empty/deferred/failed work and per-owner retry times. An empty pass cannot clear capacity debt or bypass a repair circuit.",
+                    "The existing pressure-recovery owner also runs a 32-file/180-second lifecycle-backup compression batch with a 15-minute cooldown. Fresh workload-specific recovery admission can raise only the outer compression load allowance to 0.85 per logical CPU; this path excludes heavier telemetry, offload and database work. Reserve reconciliation and the writer's independent storage admission still follow.",
+                    "The existing launchd owner runs bounded pressure relief before its heavy-maintenance gate. Apply keeps the shared self-healing lock, fresh typed memory admission, cold writer handoff, and destination reserve; it cannot run cache rebuilds, training, candidate acceptance, or trading. Verified disk-only yellow pressure can admit this lane with raw source age <=90 seconds, free memory >=85%, swap <=8 GiB, resident compressor <=1 GiB, and zero throttled pages; the host verdict and other workload gates stay blocked. A completed storage-pressure assessment is not a failed memory repair; legacy observation-circuit revalidation retains its prior state."
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview bounded cold SQLite compression",
+                [
+                    "./scripts/ops/opsctl.sh cold-archive-compactor --filesystem-select-inactive --filesystem-compressor auto --max-files 4 --max-raw-gb 8 --json"
+                ],
+                notes=[
+                    "Archive inventory/vacuum close each SQLite connection explicitly, including on failure. A failed filesystem probe reports unknown observation separately from a confirmed non-APFS volume; both remain blocking. Neither a successful scan nor an unsupported-probe error counts as recovered capacity.",
+                    "The native cadence and CLI default use auto selection: prefer the pinned local Applesauce backend when installed, then afsctool, then built-in ditto. Explicit backend choices remain available, dependencies are checked before writer holds, and receipts identify the selected backend. Only inactive SQLite archives qualify; bounded selection starts at 100 MiB and apply requires --coordinate-writer-handoff. Legacy backends retain the 2 GiB ceiling. Applesauce accepts logical files below its built-in 4 GiB limit but limits compressed data to 3.5 GiB because AFSC offsets are 32-bit. It works on an isolated physical copy with additional scratch reserved, a sampled 256 MiB RSS ceiling, 50 ms CPU sampling and a quarter-core aggregate budget across its threads. External recovery preserves at least 64 GiB and local emergency recovery at least 16 GiB. Full hashes, SQLite quick_check, durable receipts, and physical savings precede atomic replacement. A successful copy without verified compression cannot count as recovery; backend failures preserve the source and do not trigger an unbounded fallback loop.",
+                    "",
+                    "Streaming batches also cap logical bytes at the command deadline divided by 150 seconds per GiB, leaving a conservative allowance for pacing, physical copying and read verification. Receipts expose requested and effective budgets; oversized entries cannot override either bound. Bounded selection skips busy, uncheckpointed or unknown-idleness archives before consuming that budget; apply repeats the idle check before replacement.",
+                    "",
+                    "Native scheduled SQLite recovery uses a 4 GiB batch, 1200-second filesystem budget and 1300-second child timeout. Isolated copying, compression and full-file verification leave the hot SQL writer free. Only publication requests an owned hold and the actual writer lock, with at most 60 seconds for handoff plus 30 seconds for final checks; expiry includes 60 seconds of cleanup headroom. Source identity, idleness, reserves, deadline and durable receipts are rechecked before replacement. The non-filesystem hold-TTL flag remains separate. The shared recovery pass still requires its complete child window. CPU, memory, reserve and repair-circuit limits are unchanged.",
+                    "",
+                    "`MAINTENANCE_SLOT_LEASE_WAIT_SECONDS=120 ./scripts/ops/run_guarded_maintenance.sh SLOT COMMAND [ARGS...]` opts into waiting for the existing kernel lease. The default remains zero; values outside 0-120 seconds are rejected. The guard runs fresh admission after acquiring ownership, retains all holds/cooldowns/resource checks, and never preempts another job. Include the wait and scheduler jitter in the caller's outer deadline; child runtime limits are unchanged.",
+                    "",
+                    "`./scripts/ops/opsctl.sh cold-archive-compactor --archive-root /Volumes/BOT_LOGS/schwab_trading_bot/cold_archive --index-only --apply --json` refreshes the dataset/month Markdown index and sorted CSV/JSON catalogs without moving files or taking a SQL-writer hold. It scans at most 50,000 entries within 20 seconds, with bounded path/manifest input and its own kernel publication lock. The native post-compaction refresh uses five seconds/15,000 entries. Incomplete scans remain explicitly partial; verification columns reflect compatible historical compression receipts, never a new content or restore check. SQLite sidecars, backups, quarantine and incomplete maintenance files remain separately labeled and untouched.",
+                    "",
+                    "Cold restoration verification selects `row_encoding=msgpack_sqlite_scalars_v1` when the existing MessagePack C extension is installed, otherwise `json_type_pairs_ascii_v1`. Both compare every typed source/restored row and compute independent SHA-256 streams. The binary encoding is domain-separated, retains binary/text and integer/float/bool distinctions and uses double-precision floats. No extra installation, sampling, source mutation, reserve or deadline change is enabled by this acceleration.",
+                    "",
+                    "The rebuilt hot database reports `index_build_strategy=maintained_during_row_copy`: exact source index definitions are installed on the empty destination and maintained by SQLite during insertion, avoiding repeated wide-row overflow scans. No index, uniqueness rule, partial predicate, collation, sort order, integrity check or capacity guard is removed.",
+                    "",
+                    "The optional backend is the official Apple Silicon Applesauce CLI 0.5.28 binary installed at `.venv314/bin/applesauce`, with its GPLv3 license alongside. Its archive SHA-256 is `7853dd51a33593a11f964054765b26bbc6a7a482f9b9655f3e86a010f331da3d`; the executable hash pinned by the owner is `38be5419c9b8068781880a22fda1ec4bec509e2e68042874d4faa6f65e7eb918`. No unattended download or executable upgrade occurs. Official release: https://github.com/Dr-Emann/applesauce/releases/tag/applesauce-cli-v0.5.28 . Installation here checked the release digest; GitHub attestation verification was unavailable because the local Sigstore verifier could not initialize. Missing optional installation falls back; a changed installed binary fails preflight.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Preview material SQLite space reclamation",
+                ["./scripts/ops/opsctl.sh sqlite-reclaim-control --json"],
+                notes=[
+                    "Use --db PATH and --scratch-dir PATH for a specific shard. Apply retains the same source/scratch capacity, memory, maintenance ownership, and single-writer guards."
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Prepare the new primary data SSD",
+                ["./scripts/ops/opsctl.sh external-drive-preflight --json"],
+                notes=[
+                    "Read-only preparation for primary platform data, large shards, datasets, models, reports and eligible cold archives. With an explicit --mount /Volumes/NAME and operator-reviewed --expected-uuid UUID, checks only that selected volume's metadata, APFS and headroom. Never enumerates disks, adopts a drive, formats, writes to it or switches routes. A metadata pass is not activation clearance. Existing BOT_LOGS and VIDEO remain unchanged; see docs/operations/EXTERNAL_DRIVE_ONBOARDING.md for the supervised handoff and rollback checklist.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect closed compressed history offload",
+                [
+                    "./scripts/ops/opsctl.sh deep-cold-storage-layer --adaptive --include-compressed-history --include-registry-backups --json"
+                ],
+                notes=[
+                    "Only dated decision and governance JSONL gzip history older than 24 hours joins the existing cold-storage inventory. BOT_DEEP_COLD_OFFLOAD_ROOT selects offload independently of the APFS compression root. Missing external mounts fail closed. Adaptive moves preserve destination reserve; unsupported exclusive rename/hard links use exclusive-create copy with scratch/streaming reserve checks and full SHA-256 verification. Durable receipts precede atomic source links, and the destination must remain attached for archive reads. Offload never authorizes record deletion or retention expiry."
+                    " Full native recovery also includes named registry backups older than 24 hours, keeping the newest per producer family local. Explicit --closed-history-min-age-hours N changes only closed gzip offload age (minimum one hour); native recovery keeps 24 hours. Current/future/invalid dates, raw files, retention deletion and reserve relaxation remain excluded."
+                    " Catch-up reconciliation and file ordering reuse writer cursor validation: replaced, truncated, rewound or invalid-offset source generations cannot clear debt. Existing material raw-live focus reserves at most one existing source slot per requested shard for a small tail older than 30 minutes, without standalone tiny-tail activation or larger worker/source/storage limits."
+                    " The data shard accepts the named cold-archive compaction manifest without arbitrary archive traversal or primary merge. Existing governance allocator/archive/regime/research/risk receipts participate in priority selection only under their normal governance filters; selection does not certify referenced archive integrity."
+                    " Routine ordering reserves one existing second-position slot within each lane for its oldest overdue pending work, preserving the first file and lane quotas. The census exposes valid checkpoint observation age separately as checkpoint_service_age_seconds, scheduling evidence only; reset, invalid, EOF and journal-advanced state cannot supply stale age. API/ingress focus uses that signal for one overdue path per already-selected multi-slot lane without raising path, byte, worker or storage caps."
+                    " Owned ingestion journals and their indexes are excluded from payload selection even under explicit focus, sharing the existing census boundary. Journal files and checkpoint recovery remain intact; ordinary receipts and health snapshots remain eligible. This prevents recursive work without deleting history or changing measured backlog."
+                    " Health histories outside normal fast-health filters keep their governance owner. Small overdue deferred-accounting receipts accepted by normal governance filters may use the existing single tail slot after material raw-live admission; no new shard, sentinel replacement, cold expansion or standalone deferred activation."
+                    " Loop-state channels retain their normal governance or crypto-governance owner instead of an incompatible runtime shard; deferred-accounting loop-state tails use that already-selected owner's existing slot after material admission. Actual runtime routes, normal source filters and all work limits remain unchanged."
+                    " Separate checkpoint service age may schedule that tail slot while a receipt keeps appending, without redefining event lateness. Each sequential writer pass lazily reuses one fully integrity-checked ops receipt connection, committing per file/checkpoint and closing at pass end. Connection/write/commit failures remain visible and invalidate reuse; dry runs do not open it. Shared connection policy and primary source commit behavior stay unchanged."
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Refresh bounded collector observation counters",
+                ["./scripts/ops/opsctl.sh data-collection-observation-rollup --apply --state-only --bootstrap-tail-lines 5000 --json"],
+                notes=[
+                    "The native evidence refresh uses this state-only mode: persist complete-row cursors without registry or training-exclusion writes. One kernel lock serializes scans and publications. Reads share a 90-second cooperative budget, 256 MiB total and 4 MiB per source, including decompressed gzip bytes. The native child retains a 180-second outer timeout.",
+                    "Incomplete gzip decodes never advance cursors or count partial records. Partial scans remain degraded with explicit lower-bound counts, cannot release training exclusions, and do not prove full-history coverage, model qualification, or trading readiness. The existing guarded-collection projection remains separate from raw scan completeness.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect collector storage policy changes",
+                ["./scripts/ops/opsctl.sh data-collection-storage-guard --json"],
+                notes=[
+                    "Apply backs up and updates the registry only for policy changes. Assessment timestamps and changing free-space measurements remain in the health receipt; unchanged policy is a no-write operation. This command does not enable duplicate cleanup unless explicitly requested."
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect storage routes and ingestion definitions",
+                [
+                    "./scripts/ops/opsctl.sh ingestion-storage-control --definitions-only --json"
+                ],
+                notes=[
+                    "Prints bounded canonical-path observations, owning lane/lifecycle policies, and separate fetch, qualification, SQL checkpoint, merge, and archive boundaries.",
+                    "The declared intake catalog joins collector and artifact-producer definitions to capability mappings, exposing payload/health landing paths, owner commands, freshness, coverage and degradation contracts. Unmatched or malformed declarations stay explicit; no payload read, collector invocation, file migration or runtime-conformance claim is implied.",
+                    "This mode does not write a health artifact, inspect database contents, or apply route/throttle changes; --out-file is ignored. Exit 2 reports definition or route inspection issues, not a full runtime-health verdict.",
+                    "The ordinary ingestion-storage-control --json report includes the same data_plane_definition section. See docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Verify newly committed ingestion rows",
+                [
+                    './scripts/ops/opsctl.sh ingestion-storage-control --verify-new-ingestion --since "$INGEST_VERIFY_SINCE" --json'
+                ],
+                notes=[
+                    "Set INGEST_VERIFY_SINCE to a timezone-aware whole-second ISO timestamp. Optional --until fixes the exclusive end; otherwise the current whole UTC second is used. Dates refer to SQL ingestion time, not market event time.",
+                    "Read-only indexed primary/shard checks verify stored payload SHA-1 consistency and JSON parsing. Defaults are 90 seconds, 256 MiB of payloads and 100,000 rows; explicit ceilings are 300 seconds, 1,024 MiB and 1,000,000 rows. A database has a 15-second query budget and a single payload is limited to 8 MiB. Missing indexes, route errors and exhausted budgets remain incomplete; split large windows instead of claiming sampled rows certify everything.",
+                    "Writes ingestion_verification_latest.json, separate from overall ingestion health, or the explicit --out-file. Exit 0 certifies only this scoped stored-row check, never source completeness, unique global events, primary merge equivalence, archive restoration or trading readiness. No new scheduler, cursor advancement or source mutation.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Switch collection to the Mac's internal drive",
+                ["./scripts/ops/opsctl.sh storage-switch-local"],
+            ),
+            _command_entry(
+                project_root,
+                "Switch collection back to the external BOT_LOGS drive",
+                ["./scripts/ops/opsctl.sh storage-switch-external"],
+            ),
             _command_entry(
                 project_root,
                 "Review external SSD disconnect and reconnect protection",
@@ -1293,11 +2081,17 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "Repairs the guard installation and storage recovery dependencies without granting live-order authority.",
                 ],
             ),
-            _command_entry(project_root, "Run the storage disaster recovery bot", ["./scripts/ops/opsctl.sh storage-disaster-recovery --apply --json"]),
+            _command_entry(
+                project_root,
+                "Run the storage disaster recovery bot",
+                ["./scripts/ops/opsctl.sh storage-disaster-recovery --apply --json"],
+            ),
             _command_entry(
                 project_root,
                 "Safe force-clear storage pressure supervisor",
-                ["./scripts/ops/opsctl.sh storage-pressure-clearance --apply --force-clear-stale-gate --json"],
+                [
+                    "./scripts/ops/opsctl.sh storage-pressure-clearance --apply --force-clear-stale-gate --json"
+                ],
                 notes=[
                     "This is the parent storage pressure bot. It forces safe refresh/checkpoint/drain actions, but only clears stale storage gates after live WAL and backlog metrics are inside the safe envelope.",
                 ],
@@ -1305,7 +2099,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Repair local stateful storage regressions",
-                ["./scripts/ops/opsctl.sh stateful-storage-regression-guard --apply --json"],
+                [
+                    "./scripts/ops/opsctl.sh stateful-storage-regression-guard --apply --json"
+                ],
                 notes=[
                     "This guard keeps SQL shards, execution-lane telemetry, and SQL writer launchd logs routed away from the internal disk.",
                 ],
@@ -1340,7 +2136,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Heavy operator livefeed view",
-                ["./scripts/ops/opsctl.sh feed --source main --heavy --no-heavy-ttl --color --red-actions"],
+                [
+                    "./scripts/ops/opsctl.sh feed --source main --heavy --no-heavy-ttl --color --red-actions"
+                ],
                 notes=[
                     "Use this as the primary operator view when you want decisions plus important storage, backpressure, auth, halt, and alert messages in one window.",
                     "The `--red-actions` palette keeps the feed red-dominant while leaving `BUY` green and `SELL` red.",
@@ -1352,7 +2150,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Heavy live feed with file diagnostics",
-                ["./scripts/ops/opsctl.sh feed --source main --heavy --show-files --no-heavy-ttl --color --red-actions"],
+                [
+                    "./scripts/ops/opsctl.sh feed --source main --heavy --show-files --no-heavy-ttl --color --red-actions"
+                ],
                 notes=[
                     "Use this when the feed looks sparse or cut off; it prints followed files plus any skipped unreadable file paths and keeps the operator tab open without the pressure-relief heavy-feed TTL.",
                 ],
@@ -1395,9 +2195,12 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Interactive Schwab authorization re-consent",
-                ["./scripts/ops/opsctl.sh token-refresh-interactive --force --prompt-before-browser --json"],
+                [
+                    "./scripts/ops/opsctl.sh token-refresh-interactive --force --prompt-before-browser --json"
+                ],
                 notes=[
                     "Run this when you need to update the browser handshake after changing credentials, renewing consent, or clearing stale callback/token state.",
+                    "The explicit operator command marks a bounded interactive session. Supervision preserves its callback window plus the bounded post-refresh checks and defers competing auth repairs; even a newly written token does not authorize killing the unfinished truth refresh. This never grants live execution authority.",
                 ],
             ),
             _command_entry(
@@ -1417,8 +2220,12 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
         ),
         _section(
             "Status And Health",
-            _command_entry(project_root, "Runtime status", ["./scripts/ops/opsctl.sh status"]),
-            _command_entry(project_root, "Health snapshot", ["./scripts/ops/opsctl.sh health"]),
+            _command_entry(
+                project_root, "Runtime status", ["./scripts/ops/opsctl.sh status"]
+            ),
+            _command_entry(
+                project_root, "Health snapshot", ["./scripts/ops/opsctl.sh health"]
+            ),
             _command_entry(project_root, "Doctor", ["./scripts/ops/opsctl.sh doctor"]),
             _command_entry(
                 project_root,
@@ -1465,10 +2272,12 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Plan or apply the MLX library upgrade bundle",
                 [
                     "./scripts/ops/opsctl.sh mlx-library-upgrade --json",
-                    "./scripts/ops/opsctl.sh mlx-library-upgrade --apply --json",
+                    "./scripts/ops/opsctl.sh mlx-library-upgrade --scope all --json",
+                    './scripts/ops/opsctl.sh mlx-library-upgrade --scope all --apply --ack-maintenance --maintenance-token "$MAINTENANCE_TOKEN" --full-test --json',
                 ],
                 notes=[
-                    "The dry run prints the pinned MLX package bundle from `config/requirements.lock.txt`; the apply form installs those pins, then you should run `./scripts/ops/opsctl.sh mlx-audit --json`.",
+                    "The dry run plans either the MLX-only bundle or the complete exact lock from `config/requirements.lock.txt`. Apply is fail-closed: an active maintenance hold, its matching token, a stopped runtime stack, and explicit acknowledgement are required. The transaction snapshots the current environment, installs the lock, runs dependency and native-runtime audits plus capability smoke tests, optionally runs the full suite, and automatically rolls back if any validation fails. Never pass credentials or broker tokens as the maintenance token.",
+                    "Pytest runs with an allowlisted environment so production governor overrides, credentials, maintenance tokens and Python import overrides cannot contaminate test fixtures. OS paths/locales, explicit test options, the research interpreter, thread limits and offline model settings are preserved; test charts use the headless Agg backend. Installation and native runtime audits still inherit the operational environment; this isolation grants no trading or release authority.",
                 ],
             ),
             _command_entry(
@@ -1482,7 +2291,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Apply system architecture hardening",
-                ["./scripts/ops/opsctl.sh system-architecture-hardening --apply --json"],
+                [
+                    "./scripts/ops/opsctl.sh system-architecture-hardening --apply --json"
+                ],
                 notes=[
                     "Writes the cross-layer architecture hardening artifact and read-only guardrails for queue, storage, runtime, paper/live, and reporting contracts.",
                 ],
@@ -1514,10 +2325,23 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Review system responsibility and runtime authority",
+                ["./scripts/ops/opsctl.sh system-role-contract --json"],
+                notes=[
+                    "Validates all operating planes, role contracts, concrete components, state-domain writers, control bindings, and registry-role coverage.",
+                    "Includes ten infrastructure responsibility domains with inherited owner SLO/resource budgets, measured completion requirements and escalation boundaries; complete definitions do not prove operational recovery.",
+                    "Use --component, --action, and --state-domain to evaluate one runtime action; unknown or ambiguous mutations fail closed.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Review hierarchical bot organization",
-                ["./scripts/ops/opsctl.sh bot-organization --json"],
+                ["./scripts/ops/opsctl.sh bot-organization --json", "./scripts/ops/opsctl.sh bot-organization --json --require-definition-complete", "./scripts/ops/opsctl.sh bot-organization --json --require-trading-mandate-complete"],
                 notes=[
                     "Audits every registered bot's sleeve, sub-sleeve, cohort, role, provenance, correlation cluster, and resource posture.",
+                    "Each assignment includes scoped status_labels separating declared activity and collection configuration from definition completeness, runtime verification and economic evidence; status_label_audit reports registry-wide coverage.",
+                    "Includes all seven operating-definition areas with pinned source/registry bindings; --require-definition-complete exits 2 for incomplete operating jobs. Original standalone trading requirements remain separate under --require-trading-mandate-complete; neither changes runtime gates or economic evidence.",
+                    "Use --bot-definition BOT_ID --json to inspect all 32 named and numbered area subsections, source parameters, shared defaults and the profile-specific process graph with owners, dependencies, source-reference gaps and completion evidence. Native reports include subsection and process counts, separate from runtime and economic verification. --materialize-operating-definitions explicitly authors/rebinds reviewed metadata; never add that flag to scheduled refresh or automatic repairs.",
                     "The generated ensemble contract is shadow-only and has no paper or live execution authority.",
                 ],
             ),
@@ -1551,6 +2375,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Review sleeve scalability goals and portfolio fit",
+                ["./scripts/ops/opsctl.sh sleeve-scalability-selector --json"],
+                notes=[
+                    "Ranks only candidate-bound sleeves with positive conservative post-cost evidence, persistence, regime fit, independent contribution, execution calibration, and enough capacity for the current account, route, capital tier, and order size.",
+                    "It may recommend one sleeve or a bounded low-correlation set and reports six earned scalability goals. Unknown correlation, stale evidence, route mismatch, or insufficient capacity abstains; the report cannot allocate capital, change a limit or allowlist, or create an order.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Review sleeve-master and grand-master evidence",
                 ["./scripts/ops/opsctl.sh master-grandmaster-evidence --json"],
                 notes=[
@@ -1568,10 +2401,10 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
-                "Master infrastructure supervisor",
-                ["./scripts/ops/opsctl.sh master-infra-supervisor --json"],
+                "Operations master infrabot",
+                ["./scripts/ops/opsctl.sh operations-master --json"],
                 notes=[
-                    "This parent check watches child infrastructure bots, command routes, storage health, report jobs, and One Numbers original-start coverage as one dependency graph.",
+                    "The existing master supervisor coordinates eight subgroups under fourteen explicit responsibilities. It publishes priorities, owners, dependencies, deferrals and proof requirements. --apply permits at most two exact allowlisted owner calls in a 150-second work window, with persistent ten-minute owner cooldowns and fresh admission checks. Other repairs remain delegated or operator-required; no trading, halt clearance, contract rewrite or source acceptance authority. See docs/operations/OPERATIONS_MASTER.md.",
                 ],
             ),
             _command_entry(
@@ -1586,7 +2419,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Publish production-quality repair lanes",
-                ["./scripts/ops/opsctl.sh production-quality --apply --refresh-contract --json"],
+                [
+                    "./scripts/ops/opsctl.sh production-quality --apply --refresh-contract --json"
+                ],
                 notes=[
                     "This turns live-canary blockers into ordered safe repair lanes for raw profitability, paper continuity, auth continuity, storage pressure, and promotion/paper freshness.",
                 ],
@@ -1594,7 +2429,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Track production-quality SLO recurrence",
-                ["./scripts/ops/opsctl.sh production-quality-slo --apply --refresh-quality --json"],
+                [
+                    "./scripts/ops/opsctl.sh production-quality-slo --apply --refresh-quality --json"
+                ],
                 notes=[
                     "This keeps state across checks so repeated production-quality lane failures become watch, warning, or breach evidence instead of isolated snapshots.",
                 ],
@@ -1609,14 +2446,31 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Review scheduled ops job lifecycle",
+                [
+                    "./scripts/ops/opsctl.sh ops-scheduled-jobs --json",
+                    "./scripts/ops/opsctl.sh ops-scheduled-jobs --queue-only --json",
+                    "./scripts/ops/opsctl.sh ops-scheduled-jobs --preflight-only --json",
+                ],
+                notes=[
+                    "This inventories launchd-backed ops jobs from the static scheduled-job catalog, the checked-in installer, local LaunchAgents plists, each producer's latest lifecycle artifact, and whether the installed plist uses the shared lifecycle runner. Missing plists/evidence are hard issues; stale evidence, wrapper adoption, and missing transition receipts are surfaced in the prioritized action queue. The preflight-only view validates queued commands against the local allowlist and keeps execution operator-confirmed.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Refresh readiness evidence without the full dashboard",
                 [
+                    "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile production --status --json",
                     "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile accrual --apply --json",
                     "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile production --apply --json",
                     "./scripts/ops/opsctl.sh readiness-evidence-refresh --profile dashboard --apply --json",
                 ],
                 notes=[
-                    "The fifteen-stage accrual profile maintains organic collection every 15 minutes. The hourly production profile keeps all ten pillar owners, risk inputs, recovery proof, immutable evidence, and derived readiness controls current. The dashboard profile refreshes the bounded hot-state surface. All profiles are serialized, independently cooled down, market-data/paper-only, and have no training-launch or live-order authority.",
+                    "Accrual uses a 15-minute default cooldown and production uses 45 minutes in the scheduled wrapper; admission and runtime failures can delay either. The wrapper continues independent observations after a failed profile, retains a failed cycle exit, and disables optional watcher repairs for that cycle. An OS-owned wrapper lock cannot be stolen by age.",
+                    "Within a profile, failed or expired selected dependencies block their consumers even under --force; independent branches still run. Expected qualification-pending assessments remain separate from producer failure. Dependencies outside the selected profile stay consumer-owned instead of expanding a bounded profile into the full graph.",
+                    "Accrual and dashboard refresh both two-hour operational coverage and the distinct 24-hour training coverage after the runtime snapshot, before publishing the feature manifest. Training coverage remains its preferred input; fresh operational coverage cannot substitute for a failed training-coverage publication.",
+                    "A matching generation-locked training refresh follows the feature manifest, with 240 seconds of work, at most 120 seconds of lock wait, and a separate training_accrual_refresh_latest.json receipt. Qualification holds remain visible and no trainer or order is launched.",
+                    "--status is read-only and shows the current lock-bound run, active step, interruption state, and the requested profile's own completion receipt. --apply publishes an atomic .progress.json journal plus the terminal report. Cooldowns start at completion; old, unfinished, or another profile's evidence cannot imply current success. No training-launch or live-order authority is added.",
                 ],
             ),
             _command_entry(
@@ -1675,13 +2529,35 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             ),
             _command_entry(
                 project_root,
+                "Build the twenty-control investor readiness packet",
+                ["./scripts/ops/opsctl.sh investor-readiness --json"],
+                notes=[
+                    "Separates implemented controls, candidate and live evidence, and real external attestations without publishing a blended readiness percentage.",
+                    "Generates a clearly labeled paper tear sheet and data-room index. It cannot select an allocation, self-issue an audit, scale the canary, or grant live-order authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Inspect candidate source drift",
+                [
+                    "./scripts/ops/opsctl.sh source-mutation-guard --json",
+                    "./scripts/ops/opsctl.sh production-excellence --json",
+                ],
+                notes=[
+                    "Shows dynamically discovered dirty candidate source, exact changed scopes and files, source-inventory coverage, and event-chain state.",
+                    "Detection is automatic, but acceptance is operator-only; the drift autopilot cannot advance a candidate or restore clean soak credit.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Freeze or accept a production candidate",
                 [
                     "./scripts/ops/opsctl.sh production-excellence --apply --initialize-candidate --json",
-                    "./scripts/ops/opsctl.sh production-excellence --apply --accept-candidate-change --change-reason \"Describe the reviewed production change\" --json",
+                    './scripts/ops/opsctl.sh production-excellence --apply --accept-candidate-change --change-reason "Describe the reviewed production change" --json',
                 ],
                 notes=[
-                    "Initialize only after the intended production code is committed. Accepted changes reset only the affected evidence scopes and preserve historical profitability.",
+                    "Run focused regressions first, then accept the exact reviewed working-tree fingerprint before committing. The pre-commit source guard blocks unaccepted candidate-scoped changes.",
+                    "Accepted changes record exact file evidence, reset only affected evidence scopes, and preserve historical profitability. No self-healing process may accept drift.",
                 ],
             ),
             _command_entry(
@@ -1691,6 +2567,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 notes=[
                     "Checks the transactional order-intent ledger, hash-chained lifecycle events, and unresolved submit or cancel outcomes. Unknown broker outcomes require reconciliation and are never auto-retried.",
                     "After independently verifying broker truth, use `--resolve-intent ID --resolution STATE --evidence TEXT`; the evidence-backed resolution is appended to the ledger event chain.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Rehearse the sealed live-execution path",
+                ["./scripts/ops/opsctl.sh live-execution-rehearsal --json"],
+                notes=[
+                    "Runs 14 structural controls and ten negative-path probes without a broker client, network access, paper-order authority, or live-order authority.",
+                    "The rehearsal validates sealed candidate, account, snapshot, policy, quote, intent, and broker-request parity. An A+ implementation result is not live-release or profitability evidence.",
                 ],
             ),
             _command_entry(
@@ -1720,7 +2605,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "PyCharm active bot blue highlights",
-                ["./scripts/ops/opsctl.sh pycharm-active-bot-highlights --apply --json"],
+                [
+                    "./scripts/ops/opsctl.sh pycharm-active-bot-highlights --apply --json"
+                ],
                 notes=[
                     "This writes the JetBrains `Active Bots` scope and blue file-color mapping so active `core/brain_refinery_*.py` files get a durable Project-pane scope background. PyCharm's bright blue filename text remains reserved for VCS-modified files.",
                 ],
@@ -1738,7 +2625,19 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Coinbase API health",
                 ["./scripts/ops/opsctl.sh coinbase-api-health --json"],
                 notes=[
-                    "This checks Coinbase public market-data endpoints and reports only credential presence booleans, never secret values.",
+                    "This checks Coinbase public market-data endpoints, reports credential presence booleans, and includes separately aged read-only personal-account status. Public API readiness does not mean the account is linked.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Coinbase read-only account connection",
+                [
+                    "./scripts/ops/opsctl.sh coinbase-account --status --json",
+                    "./scripts/ops/opsctl.sh coinbase-account --link-key-file /path/to/cdp_api_key.json --json",
+                    "./scripts/ops/opsctl.sh coinbase-account --json",
+                ],
+                notes=[
+                    "Use the documented COINBASE_ACCOUNT_LINK.md auth flow with an Ed25519 or P-256 key and View permission; never put key contents in arguments. Transfer and Receive must be disabled; any Trade capability is reported but never used. Import verifies permissions and complete account pagination before storing credentials and holdings in an owner-only directory outside the repository. Refresh is on-demand; status expires after five minutes. No orders, transfers, collector restart, account switching, or live promotion are authorized.",
                 ],
             ),
             _command_entry(
@@ -1770,6 +2669,16 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             "Strategy Research",
             _command_entry(
                 project_root,
+                "Compare the offline research libraries",
+                ["./scripts/ops/opsctl.sh library-research --research-python /Library/Frameworks/Python.framework/Versions/3.14/bin/python3.14 --self-test --json"],
+                notes=[
+                    "Reuses the downloaded research packages in an explicit separate interpreter, without adding global packages to the live Python path. One 90-second, single-thread child compares TA-Lib/Polars indicators and Backtrader/VectorBT next-open fills, then checks in-memory Parquet restoration and DuckDB counts. No broker access, new service or native bot decision.",
+                    "Also checks Pandas TA Classic native indicators and Backtesting.py zero-cost timing against a separate reference, reports QuantStats cost-inclusive per-bar diagnostics, and fits one arch GARCH model capped at 1000 returns and 100 iterations. Missing/flat histories, failed fits and stationarity warnings remain explicit; no optimizer search or annualized/trade-win-rate claim. The additions-only lock is config/library_research_extras.lock.txt; Backtesting.py licensing requires review before redistribution.",
+                    "For local Schwab-shaped history, replace --self-test with --input /absolute/local/candles.json --bar-seconds 3600 (use the actual bar duration). Input is limited to 4 MiB and 5,000 closed ordered candles. --out-file writes an optional small report. A synthetic pass is compatibility evidence, not profitability or release clearance. See docs/operations/LIBRARY_RESEARCH.md.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Review the 10-layer deep quant advisory upgrade",
                 ["./scripts/ops/opsctl.sh deep-quant-layer-upgrade --json"],
                 notes=[
@@ -1789,7 +2698,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Push advancement until the safety guard pauses it",
-                ["./scripts/ops/opsctl.sh safety-bounded-advancement-frontier --apply --json"],
+                [
+                    "./scripts/ops/opsctl.sh safety-bounded-advancement-frontier --apply --json"
+                ],
                 notes=[
                     "Applies the next 10 safe control-plane frontier stages: route assimilation, freshness DAG, cache ownership, cost ledger, paper/live parity witness, incremental feature reuse, pricing reuse, cross-impact graphing, route retirement, and soak/pause guard.",
                     "The command intentionally stops at advisory/control-plane scope when promotion evidence, active training, or live authority gates say the system needs a soak period.",
@@ -1822,9 +2733,17 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/daily_log_refresh.sh"],
                 notes=[
                     "Use this when you want the full SQL/log/report refresh instead of the one-pass writer sync.",
+                    "Routine SQLite planner maintenance uses bounded optimization; full ANALYZE is opt-in and resource-gated. Existing storage reserves, maintenance ownership, and writer locks remain mandatory.",
                 ],
             ),
-            _command_entry(project_root, "Quick SQL sync", ["./scripts/ops/opsctl.sh sql-sync"]),
+            _command_entry(
+                project_root,
+                "Quick SQL sync",
+                ["./scripts/ops/opsctl.sh sql-sync"],
+                notes=[
+                    "Native scheduled SQL writers always run one pass, with or without shards; lifecycle deadlines and storage/maintenance deferrals remain enforced."
+                ],
+            ),
             _command_entry(
                 project_root,
                 "Data quality refresh bundle",
@@ -1868,7 +2787,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Reconcile interrupted strategy offspring training",
-                ["./scripts/ops/opsctl.sh strategy-generation --reconcile-stale --json"],
+                [
+                    "./scripts/ops/opsctl.sh strategy-generation --reconcile-stale --json"
+                ],
                 notes=[
                     "Quarantines a stale training lifecycle after the signed single-flight lock is released; it never grants execution authority or restarts training automatically.",
                 ],
@@ -1889,7 +2810,8 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Full retrain preflight",
                 [
                     "./scripts/daily_log_refresh.sh",
-                    "./scripts/ops/opsctl.sh runtime-training-snapshot --json",
+                    "./scripts/ops/opsctl.sh runtime-training-snapshot --max-runtime-seconds 150 --json",
+                    "./scripts/ops/opsctl.sh runtime-training-snapshot --cleanup-abandoned-builds --json",
                     "./scripts/ops/opsctl.sh coverage-seed --write-queue --json",
                     "./scripts/ops/opsctl.sh coverage-gap-closer --apply-stage --launch --json",
                     'PY="$(zsh ./scripts/ops/runtime_python.sh)"',
@@ -1898,6 +2820,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ],
                 notes=[
                     "Run this before a manual full retrain so SQL state, runtime snapshots, coverage, and promotion gates are fresh.",
+                    "Every native snapshot run and the existing bounded storage-recovery loop reclaim only unpublished .building scratch older than one hour, under the snapshot lock with idle-handle and stable-identity checks. The cleanup-only command previews without rebuilding; --apply-cleanup applies the same guarded cleanup. Published rows, compressed history, aliases, linked files and recent/active builds are retained. Receipts live in governance/storage_recovery/snapshot_scratch_cleanup_latest.json; recovery is measured separately from training readiness.",
+                    "Promotion quality can reconcile a completed daily run's ingestion failure only from a newer typed healthy hot-lane observation no older than five minutes. Native daily-verify-remediation retries that owner; stale, partial, overloaded or failed retries retain debt, and historical results and qualification floors remain unchanged.",
+                    "The snapshot worker rejects bad base digests before parsing and shares its scan deadline with base/seed reads. Unique row generations commit before the atomic manifest pointer, followed by the compatibility alias; bounded cleanup retains current/previous generations and a one-hour reader grace window. The total deadline, bounded decompressed scans and partial-coverage diagnostics remain enforced. The epoch coordinator preserves the producer-owned manifest and writes a separate failure receipt; timeout or changed mtime is not successful refresh or qualification.",
                 ],
             ),
             _command_entry(
@@ -1911,26 +2836,131 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Training and labeling intelligence",
-                ["./scripts/ops/opsctl.sh training-labeling-intelligence --apply --json"],
+                [
+                    "./scripts/ops/opsctl.sh training-labeling-intelligence --apply --json"
+                ],
                 notes=[
                     "Normalizes label contracts, writes training-process intelligence, and keeps targeted retrain candidates behind schema, feature-store, coverage, runtime, and lineage gates.",
                 ],
             ),
             _command_entry(
                 project_root,
-                "Refresh one coherent training evidence epoch",
-                ["./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training --skip-dashboard --json"],
+                "Materialize training data without launching models",
+                [
+                    "./scripts/ops/opsctl.sh training-dataset-preflight --materialize --json"
+                ],
                 notes=[
+                    "Defaults to the ten registered CryptoRuntimeSpec strategies against a verified, bounded runtime snapshot. Explicit --include-bot-ids selections additionally support v35 DMI, v100 stock/crypto overlap, and v103 crypto throttle-relief, reusing unchanged production callbacks, filters, stride, and thresholds. At most ten bots per batch; unselected or unsupported strategies remain unassessed.",
+                    "Exports compressed research arrays with source hashes and row-aligned label lineage, purges overlapping feature/outcome intervals from chronological splits, and reports class and sequence gaps. This command has no training, promotion, paper, or live execution authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Prepare and evaluate an explicitly selected research bot",
+                [
+                    ".venv314/bin/python scripts/resource_guard.py --profile refresh --json",
+                    "./scripts/ops/opsctl.sh training-dataset-preflight --include-bot-ids brain_refinery_v103_crypto_throttle_relief_momentum --materialize --json",
+                    "./scripts/ops/opsctl.sh training-dataset-evaluate --json",
+                ],
+                notes=[
+                    "Proceed only after the resource guard succeeds. Select v35, v100, or v103 by its full module ID, or comma-separated supported IDs. Smaller selections retain fewer snapshot features; byte/time budgets and data floors are unchanged. The saved snapshot must still have valid producer and observation timestamps.",
+                    "Evaluate immediately after successful materialization to consume that selected cohort; --prepare would replace it with the default crypto cohort. This does not alter the production roster, deployed weights, or execution authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Evaluate prepared datasets on held-out market outcomes",
+                ["./scripts/ops/opsctl.sh training-dataset-evaluate --prepare --json"],
+                notes=[
+                    "Prepares bounded research datasets, verifies content/source receipts and purged partitions, and selects logistic regularization using nested purged training intervals only. Single-thread fits report untouched outer validation/test accuracy, balanced accuracy, calibration, and training-majority baselines.",
+                    "Existing guarded daily/weekly jobs use --prepare: resource admission, a bounded 150-second snapshot refresh (reuse at most 15 minutes), then two-minute materialization. Producer and observation timestamps both expire. No runtime model/registry writes, candidate promotion, trade-profitability credit, or execution authority; reused holdouts are diagnostic, not independent edge.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Run or resume a larger research-training cohort",
+                [
+                    "./scripts/ops/opsctl.sh training-research-batch --json",
+                    "./scripts/ops/opsctl.sh training-research-batch --status --json",
+                ],
+                notes=[
+                    "Queues all 13 supported research adapters by default, one isolated bot worker at a time. Optional --include-bot-ids narrows the cohort; --seconds accepts 150-1800 (default 600). Existing resource guards run before each worker and before its fit, with unchanged 2000-sample, 32 MiB retained-row, split, and quality limits. Child process trees have 120-second deadlines and at most two attempts per bot.",
+                    "Repeat to resume pending work without refitting completed bots. --status is read-only. Changed inputs require a fresh verified saved snapshot and --new-run; prior per-run and per-bot receipts are preserved. This command does not force snapshot refresh or change existing daily/weekly schedules. Completion is accounting, not evidence that every bot trained or improved. No deployed weights, registry, promotion, trading, or Codex automation changes.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Historical sleeve-specific labeling",
+                [
+                    "./scripts/ops/opsctl.sh historical-sleeve-labeling --run --seconds 120",
+                    "./scripts/ops/opsctl.sh historical-sleeve-labeling --run --full --seconds 7200",
+                ],
+                notes=[
+                    "The full runner records an unavailable OS priority API and uses a single cooperatively paced worker at a 25%-of-one-core CPU-time budget. This never bypasses admission or implies hard CPU affinity.",
+                    "The bounded batch command preserves legacy runs. --full reads the declared retained JSONL/gzip, compatible SQLite (including committed WAL), and configured Parquet payload exports into verified compressed partitions, with a separate full-run resume pointer. --new-inventory preserves earlier evidence after code/policy changes. Both commands honor preparation, storage, Mac-fluidity and maintenance gates.",
+                    "All 111 sleeves have explicit primary/secondary research horizons in config/historical_sleeve_research_horizons_v1.json, published with the full run. Execution holding periods are unchanged. Primary economic/control/OOS outcomes still require authority-specific materialization. No training, promotion, or trading authority is granted; source-scan completion is not full outcome completion.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Measure and verify selected-file restore capacity",
+                [
+                    "./scripts/ops/opsctl.sh state-snapshot-drill --capacity-only --json",
+                    "./scripts/ops/opsctl.sh state-snapshot-drill --recover-latest-verified --json",
+                    "./scripts/ops/opsctl.sh state-snapshot-drill --json",
+                ],
+                notes=[
+                    "Only after explicit one-time operator approval, --operator-approved-recovery permits one 30-minute paced attempt through the support latch. Fresh hard resource, thermal, memory, operator-hold and disk checks still apply; schedulers never add this flag automatically.",
+                    "The capacity-only command does not copy or publish readiness. The real drill follows config/state_snapshot_drill_v1.json, the shared storage lock, support pause, memory/deadline/CPU pacing, protected routes, and actual volume reserves.",
+                    "Read-only compact SQLite snapshots and APFS restore clones must pass hashes and SQLite checks; retained gzip copies require full decoded-byte verification. No unreserved physical-copy fallback, metadata-only restore credit, independent-media recovery claim, training, promotion, or live execution authority.",
+                    "Failed replacement drills preserve complete prior proof and publish a separate attempt receipt. --recover-latest-verified rechecks retained archive SHA-256 against the original complete unexpired restore manifest within 180 seconds; it never advances the source proof timestamp or claims a new restore. Expired owned maintenance holds no longer block recovery; active and unreadable holds still do.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Operator-approved archive recovery for restore capacity",
+                [
+                    "./scripts/ops/opsctl.sh raw-training-compaction --operator-approved-recovery --apply --scan-root /Volumes/BOT_LOGS/schwab_trading_bot --max-files 128 --max-gb 40 --jumbo-gb 0 --compaction-workers 1 --min-age-hours 24 --write-history --json"
+                ],
+                notes=[
+                    "Requires explicit operator approval for this invocation. One paced worker processes small older archived governance JSONL files first, rejects open files, preserves a 64 GiB reserve, and stops at 84 GiB free or its 30-minute deadline. Full decoded hashes and stable source identity precede release of raw copies; current-day history and live-money controls remain untouched.",
+                    "Uses the shared storage-maintenance lock and per-file recovery progress receipt. This bounded path skips the usual self-model refresh cascade and never launches backfill, training, promotion or execution.",
+                    "If one selected-file archive exceeds its cap after copy/restore hashes pass, explicitly approved state-snapshot-drill --resume-run ABSOLUTE_OWNED_RUN_DIRECTORY revalidates retained proofs and seals a new archive within the 4 GiB reserved budget. Failed partial archives stay preserved and original snapshot time stays unchanged.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Refresh one coherent training evidence epoch",
+                [
+                    "./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training --skip-dashboard --json"
+                ],
+                notes=[
+                    "For missing snapshot or feature-store lineage, the native grade repair owner invokes `runtime-artifact-refresh --scope lineage-inputs --max-run-seconds 165 --skip-dashboard --json` once before reassessment. Its five-producer graph shares the generation lock with a five-second wait and bounds snapshot work to 120 seconds. It defers when the outer repair cannot provide its complete 180-second child allowance; it never lowers replay or coverage floors.",
                     "Refreshes the dependency-closed snapshot, point-in-time event, feature, label, lineage, replay, candidate-selection, schema, and training-runtime chain under one epoch ID.",
+                    "Training-only and profitability scopes share the generation lock. Replay reads routed plain/gzip evidence under shared time, row and byte bounds; duplicate rows, incomplete source discovery/reads, and intent-only fallbacks cannot satisfy the unchanged 20-record floor.",
                     "This command does not launch training, promotion, allocation, paper orders, or live orders.",
                 ],
             ),
             _command_entry(
                 project_root,
+                "Bootstrap local promotion packet signing",
+                [
+                    ".venv314/bin/python scripts/promotion_packet_builder.py --bootstrap-local-signing-key --json"
+                ],
+                notes=[
+                    "Explicit local setup creates a complete owner-only (0600) signing key with no-clobber publication; existing keys are reused, never rotated or overwritten. Protected routes, symlink keys, nonregular files, and oversized keys fail closed. Secret values do not enter packet output.",
+                    "A signature proves local packet integrity only. Signed idle-scope completeness does not count as successful candidate training, promotion approval, operator attestation, or live-order authority.",
+                ],
+            ),
+            _command_entry(
+                project_root,
                 "Refresh training and profitability evidence together",
-                ["./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training-profitability --skip-dashboard --json"],
+                [
+                    "./scripts/ops/opsctl.sh runtime-artifact-refresh --scope training-profitability --max-run-seconds 1200 --skip-dashboard --json"
+                ],
                 notes=[
                     "Refreshes both evidence graphs in one bounded cycle so cross-artifact consumers cannot combine old and new proof.",
+                    "The shared 20-minute step/retry budget leaves time for a separate progress receipt and unfinished evidence debt; the generation lock adds at most 120 seconds. The production coordinator allows 1500 seconds for this owner and 2100 seconds for selected-file restore, rather than killing either at the generic step timeout.",
                     "A blocked result is evidence debt, not permission to bypass a launch or promotion gate.",
                 ],
             ),
@@ -1948,13 +2978,24 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
         ),
         _section(
             "Reports And PDFs",
-            _command_entry(project_root, "One Numbers report", ['PY="$(zsh ./scripts/ops/runtime_python.sh)"', '"$PY" scripts/build_one_numbers_report.py']),
+            _command_entry(
+                project_root,
+                "One Numbers report",
+                [
+                    'PY="$(zsh ./scripts/ops/runtime_python.sh)"',
+                    '"$PY" scripts/build_one_numbers_report.py',
+                ],
+                notes=[
+                    "For the unattended admission path, use ./scripts/ops/opsctl.sh one-numbers-refresh. It schedules from producer measurement time and the breaker freshness deadline, including off-hours; real resource and maintenance holds remain authoritative.",
+                ],
+            ),
             _command_entry(
                 project_root,
                 "Paper performance report",
                 ["./scripts/ops/open_report_artifact.sh paper"],
                 notes=[
                     "This refreshes the paper-performance source and opens the report-ready chart PDF.",
+                    "For a lightweight evidence trace, run ./scripts/ops/opsctl.sh paper-performance --json-only --json. The outcome_evidence_diagnostics field separates absent outcomes, candidate/cohort exclusions, unreadable sources, fresh execution holds, and profitability evidence holds. Profitability input freshness uses producer time, not mtime; it cannot release a hold or grant trading authority.",
                 ],
             ),
             _command_entry(
@@ -1995,7 +3036,11 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "This installs the macOS launchd job that refreshes showcase docs, system explainers, and PDFs automatically each night.",
                 ],
             ),
-            _command_entry(project_root, "Report catalog bundle", ["./scripts/ops/opsctl.sh report-pdfs --json"]),
+            _command_entry(
+                project_root,
+                "Report catalog bundle",
+                ["./scripts/ops/opsctl.sh report-pdfs --json"],
+            ),
             _command_entry(
                 project_root,
                 "Repair and validate report PDFs",
@@ -2024,12 +3069,58 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 project_root,
                 "Options flow context sync",
                 ["./scripts/ops/opsctl.sh options-flow-sync --json"],
-                notes=["`options-flow-sync` is the canonical command. `tastytrade-sync` remains a legacy alias for backward compatibility."],
+                notes=[
+                    "`options-flow-sync` is the canonical command. `tastytrade-sync` remains a legacy alias for backward compatibility."
+                ],
             ),
-            _command_entry(project_root, "Crypto market context sync", ["./scripts/ops/opsctl.sh crypto-market-sync --json"]),
-            _command_entry(project_root, "Stock / crypto correlation sync", ["./scripts/ops/opsctl.sh market-correlation-sync --json"]),
-            _command_entry(project_root, "FX market context sync", ["./scripts/ops/opsctl.sh fx-market-sync --json"]),
-            _command_entry(project_root, "Macro context sync", ["./scripts/ops/opsctl.sh macro-context-sync --json"]),
+            _command_entry(
+                project_root,
+                "Crypto market context sync",
+                ["./scripts/ops/opsctl.sh crypto-market-sync --json"],
+            ),
+            _command_entry(
+                project_root,
+                "Stock / crypto correlation sync",
+                ["./scripts/ops/opsctl.sh market-correlation-sync --json"],
+            ),
+            _command_entry(
+                project_root,
+                "FX market context sync",
+                ["./scripts/ops/opsctl.sh fx-market-sync --json"],
+            ),
+            _command_entry(
+                project_root,
+                "Macro context sync",
+                ["./scripts/ops/opsctl.sh macro-context-sync --json"],
+            ),
+            _command_entry(
+                project_root,
+                "Official public financial context sync",
+                ["./scripts/ops/opsctl.sh public-financial-sync --json"],
+                notes=[
+                    "Collects SEC issuer facts, OFR financial stress, FDIC failure and quarterly bank-financial evidence, Federal Register financial-policy activity, ECB euro funding context, and New York Fed primary-dealer statistics.",
+                    "Features are classified and routed by decision plane and family. The weekly and quarterly additions are supplemental, cannot authorize orders or promotion, and are omitted rather than zero-filled when unavailable.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Public macro and micro source inventory",
+                ["./scripts/ops/opsctl.sh economic-source-inventory --list"],
+                notes=[
+                    "Validates and lists all direct and grouped public economic sources, their physical producers, capabilities, decision-plane routes, and decision-family routes.",
+                    "Source count is inventory evidence only and does not raise alpha, profitability, readiness, or promotion grades.",
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Refresh the eight bounded research-context collectors",
+                ["./scripts/ops/opsctl.sh research-context-sync --all --json"],
+                notes=[
+                    "Materializes cross-asset breadth, tape liquidity, options surface, futures curve, earnings, portfolio risk, FINRA fixed-income, and BIS global-liquidity context through one bounded process.",
+                    "BIS is public and credential-free. FINRA requires an optional public OAuth bearer in `FINRA_API_ACCESS_TOKEN`; when absent, that one collector records credential debt without making an unauthorized request or blocking paper trading.",
+                    "Every capability needs its own proof receipt. Missing dimensions remain unavailable, and these collectors have no action, sizing, order, registry-mutation, or promotion authority.",
+                ],
+            ),
             _command_entry(
                 project_root,
                 "Decision context macro/micro mesh sync",
@@ -2051,15 +3142,23 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 project_root,
                 "Global central-bank policy and assets sync",
                 ["./scripts/ops/opsctl.sh global-central-bank-sync --json"],
-                notes=["Collects the governed 32-bank BIS policy-rate and total-asset context with point-in-time history."],
+                notes=[
+                    "Collects the governed 32-bank BIS policy-rate and total-asset context with point-in-time history."
+                ],
             ),
             _command_entry(
                 project_root,
                 "Central-bank cross-source synchronization",
                 ["./scripts/ops/opsctl.sh central-bank-context-sync --json"],
-                notes=["Joins fresh central-bank rows to FX, sovereign macro, official events, USD liquidity, and cross-asset evidence before bot routing."],
+                notes=[
+                    "Joins fresh central-bank rows to FX, sovereign macro, official events, USD liquidity, and cross-asset evidence before bot routing."
+                ],
             ),
-            _command_entry(project_root, "Source verification", ["./scripts/ops/opsctl.sh source-verification --json"]),
+            _command_entry(
+                project_root,
+                "Source verification",
+                ["./scripts/ops/opsctl.sh source-verification --json"],
+            ),
         ),
         _section(
             "Platform Expansion",
@@ -2134,7 +3233,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Apply the settlement stabilization layer",
-                ["./scripts/ops/opsctl.sh platform-settlement-stabilization --apply --json"],
+                [
+                    "./scripts/ops/opsctl.sh platform-settlement-stabilization --apply --json"
+                ],
                 notes=[
                     "Adds the post-expansion settlement layer for queue decay, single-writer protection, market-hours cadence, global-halt clear readiness, paper collection floors, off-hours drain planning, and stabilization memory.",
                     "This layer keeps MLX as default, leaves live execution disabled, and records whether each stabilization pass actually reduces pressure.",
@@ -2185,7 +3286,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Apply the intelligence layer advancement pack",
-                ["./scripts/ops/opsctl.sh intelligence-layer-advancement --apply --json"],
+                [
+                    "./scripts/ops/opsctl.sh intelligence-layer-advancement --apply --json"
+                ],
                 notes=[
                     "Adds the guarded meta-intelligence layer: metacognitive routing, counterfactual world models, alpha benchmarks, memory compression, critic debate, active learning, ensemble uncertainty, library routing, safety invariants, and self-improvement backlog planning.",
                     "The bots are collection-only with paper/live execution blocked until benchmark, memory-quality, safety-invariant, and runtime-pressure gates clear.",
@@ -2202,7 +3305,9 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Apply the apex self-awareness intelligence pack",
-                ["./scripts/ops/opsctl.sh apex-self-awareness-intelligence --apply --json"],
+                [
+                    "./scripts/ops/opsctl.sh apex-self-awareness-intelligence --apply --json"
+                ],
                 notes=[
                     "Adds the 46 guarded apex bots that bring the platform to 1000 total bots: deep self-modeling, meta-reasoning, experience memory, scenario oracles, upgrade foundry, causal alpha safety, resource autonomy, operator copilot, Grand Master collective intelligence, and research frontier scouting.",
                     "The bots are collection-only with live execution, allocation, and training blocked until 120 days, 30000 observations, and safety/resource/memory gates clear.",
@@ -2307,9 +3412,15 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(
                 project_root,
                 "Start the macro auto-watch lane",
-                ['./scripts/ops/opsctl.sh macro-auto-start --force-restart --youtube-channel-url "https://www.youtube.com/@federalreserve" --template fed --speaker "Federal Reserve" --source "Federal Reserve"'],
+                [
+                    './scripts/ops/opsctl.sh macro-auto-start --force-restart --youtube-channel-url "https://www.youtube.com/@federalreserve" --template fed --speaker "Federal Reserve" --source "Federal Reserve"'
+                ],
             ),
-            _command_entry(project_root, "Show macro auto-watch status", ["./scripts/ops/opsctl.sh macro-auto-status --json"]),
+            _command_entry(
+                project_root,
+                "Show macro auto-watch status",
+                ["./scripts/ops/opsctl.sh macro-auto-status --json"],
+            ),
         ),
     ]
 
@@ -2326,7 +3437,7 @@ def render_commands_markdown(project_root: Path = PROJECT_ROOT) -> str:
         f"Command contract hash: `{contract['contract_hash']}`.",
         "Command contract artifact: `governance/health/commands_contract_latest.json`.",
         "",
-        "This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:",
+        "Live Execution Control is pinned above Most Used; the remaining sections are alphabetized by section and command title:",
         "- paper mode is the operating default",
         "- no simulate variants are listed",
         "- no duplicate restart commands are listed when a broader command already covers them",
@@ -2337,11 +3448,15 @@ def render_commands_markdown(project_root: Path = PROJECT_ROOT) -> str:
     parts = ["\n".join(preamble)]
     for section in _alphabetized_inventory(_manual_operator_inventory(project_root)):
         blocks = [f"## {section['heading']}"]
-        intro_text = "\n".join(_trim_blank_edges(list(section.get("intro_lines") or []))).strip()
+        intro_text = "\n".join(
+            _trim_blank_edges(list(section.get("intro_lines") or []))
+        ).strip()
         if intro_text:
             blocks.append(intro_text)
         for entry in list(section.get("entries") or []):
-            blocks.append("\n".join(_trim_blank_edges(list(entry.get("lines") or []))).rstrip())
+            blocks.append(
+                "\n".join(_trim_blank_edges(list(entry.get("lines") or []))).rstrip()
+            )
         parts.append("\n\n".join(block for block in blocks if block))
     rendered = "\n\n".join(part for part in parts if part).rstrip()
     return rendered + "\n"
@@ -2360,12 +3475,18 @@ def _source_duplicate_entry_count(sections: list[dict[str, Any]]) -> int:
     return duplicates
 
 
-def clean_commands_markdown(text: str, *, project_root: Path) -> tuple[str, dict[str, int]]:
+def clean_commands_markdown(
+    text: str, *, project_root: Path
+) -> tuple[str, dict[str, int]]:
     _, before_sections = _parse_commands_sections(text)
     desired_commands = render_commands_markdown(project_root)
     _, after_sections = _parse_commands_sections(desired_commands)
-    before_entry_count = sum(len(list(section.get("entries") or [])) for section in before_sections)
-    after_entry_count = sum(len(list(section.get("entries") or [])) for section in after_sections)
+    before_entry_count = sum(
+        len(list(section.get("entries") or [])) for section in before_sections
+    )
+    after_entry_count = sum(
+        len(list(section.get("entries") or [])) for section in after_sections
+    )
     return desired_commands, {
         "section_count_before": len(before_sections),
         "section_count_after": len(after_sections),
@@ -2482,14 +3603,20 @@ esac
 """
 
 
-def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> dict[str, Any]:
+def build_payload(
+    project_root: Path = PROJECT_ROOT, *, apply: bool = False
+) -> dict[str, Any]:
     commands_path = project_root / "COMMANDS.md"
     runbook_path = project_root / "scripts" / "runbook.sh"
-    contract_path = project_root / "governance" / "health" / "commands_contract_latest.json"
+    contract_path = (
+        project_root / "governance" / "health" / "commands_contract_latest.json"
+    )
     commands_text = _read_text(commands_path)
     runbook_text = _read_text(runbook_path)
     command_contract = build_command_contract(project_root)
-    authored_commands_text, metrics = clean_commands_markdown(commands_text, project_root=project_root)
+    authored_commands_text, metrics = clean_commands_markdown(
+        commands_text, project_root=project_root
+    )
     desired_runbook_text = render_runbook_script()
 
     commands_changed = authored_commands_text != commands_text
@@ -2523,21 +3650,30 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
         apply_results["runbook_written"] = True
     if apply:
         contract_path.parent.mkdir(parents=True, exist_ok=True)
-        contract_path.write_text(json.dumps(command_contract, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+        contract_path.write_text(
+            json.dumps(command_contract, indent=2, ensure_ascii=True) + "\n",
+            encoding="utf-8",
+        )
         apply_results["contract_written"] = True
 
     overall_status = "degraded" if (commands_changed or runbook_changed) else "ready"
     recommended_actions = ordered_unique(
         [
-            "run commands-hygiene in apply mode when you want COMMANDS.md re-authored from the curated inventory"
-            if commands_changed
-            else "",
-            "edit scripts/ops/commands_hygiene_bot.py instead of hand-editing COMMANDS.md directly"
-            if commands_changed
-            else "",
-            "let runbook.sh resolve live section slugs dynamically so it follows current headings"
-            if runbook_changed
-            else "",
+            (
+                "run commands-hygiene in apply mode when you want COMMANDS.md re-authored from the curated inventory"
+                if commands_changed
+                else ""
+            ),
+            (
+                "edit scripts/ops/commands_hygiene_bot.py instead of hand-editing COMMANDS.md directly"
+                if commands_changed
+                else ""
+            ),
+            (
+                "let runbook.sh resolve live section slugs dynamically so it follows current headings"
+                if runbook_changed
+                else ""
+            ),
         ]
     )
 
@@ -2562,16 +3698,24 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
     }
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Author COMMANDS.md and the runbook helper from the curated operator command inventory.")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Author COMMANDS.md and the runbook helper from the curated operator command inventory."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
-    parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
+    parser.add_argument("--out-file", default="")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    payload = build_payload(Path(args.project_root).resolve(), apply=bool(args.apply))
-    write_payload(Path(args.out_file).expanduser(), payload)
+    project_root = Path(args.project_root).expanduser().resolve()
+    out_file = (
+        Path(args.out_file).expanduser()
+        if str(args.out_file or "").strip()
+        else project_root / "governance" / "health" / "commands_hygiene_latest.json"
+    )
+    payload = build_payload(project_root, apply=bool(args.apply))
+    write_payload(out_file, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

@@ -7,6 +7,10 @@ from core.market_context_features import (
     summarize_data_quality_context,
     summarize_structured_news_items,
 )
+from scripts.collect_market_micro_context import (
+    _aggregate_global_features,
+    _parse_treasury_auction_rows,
+)
 
 
 def test_summarize_structured_news_items_emits_source_topics_and_session_flags() -> None:
@@ -165,3 +169,49 @@ def test_summarize_data_quality_context_uses_quote_and_streaks() -> None:
     assert out["data_quality_stale_streak_norm"] > 0.0
     assert out["data_quality_fail_streak_norm"] > 0.0
     assert out["data_quality_missing_feature_ratio_norm"] > 0.0
+
+
+def test_treasury_auction_evidence_rejects_future_rows_and_reaches_global_context() -> None:
+    as_of = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
+    payload = {
+        "data": [
+            {
+                "security_type": "Note",
+                "security_term": "10-Year",
+                "auction_date": "2026-08-20",
+                "offering_amt": "42000000000",
+                "total_accepted": "41000000000",
+                "primary_dealer_accepted": "8200000000",
+                "indirect_bidder_accepted": "24600000000",
+                "bid_to_cover_ratio": "2.60",
+                "high_yield": "4.10",
+            },
+            {
+                "security_type": "Note",
+                "security_term": "10-Year",
+                "auction_date": "2026-09-20",
+                "offering_amt": "999000000000",
+                "total_accepted": "999000000000",
+            },
+        ]
+    }
+    rows, future_rejected = _parse_treasury_auction_rows(payload, as_of=as_of)
+    assert len(rows) == 1
+    assert future_rejected == 1
+    assert rows[0]["dealer_accepted_share"] == 0.2
+    assert rows[0]["indirect_accepted_share"] == 0.6
+
+    features = _aggregate_global_features(
+        local_micro={},
+        short_volume={"rows": {}},
+        treasury={
+            "auction_demand_norm": 0.55,
+            "auction_dealer_absorption_norm": 0.2,
+            "auction_indirect_demand_norm": 0.6,
+            "auction_supply_pressure_norm": 0.4,
+        },
+    )
+    assert features["treasury_auction_demand_norm"] == 0.55
+    assert features["treasury_auction_dealer_absorption_norm"] == 0.2
+    assert features["treasury_auction_indirect_demand_norm"] == 0.6
+    assert features["treasury_auction_supply_pressure_norm"] == 0.4

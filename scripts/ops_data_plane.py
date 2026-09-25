@@ -997,103 +997,176 @@ def emit_materialized_summaries(
     *,
     source_db_path: Path | str,
     lookback_days: int = 7,
+    max_rows: int = 250_000,
+    max_projected_bytes: int = 32 * 1024**2,
+    timeout_seconds: float = 20.0,
+    admission_check=None,
 ) -> dict[str, Any]:
     source_path = Path(source_db_path).expanduser()
     refreshed_utc = _now_utc()
-    day_floor = (datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))).strftime("%Y-%m-%d")
+    day_floor = (
+        datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))
+    ).strftime("%Y-%m-%d")
     attached = False
     source_record_count = 0
-    conn.execute("ATTACH DATABASE ? AS sourcedb", (str(source_path),))
+    deadline = time.monotonic() + min(max(timeout_seconds, 0.01), 20.0)
+    row_limit = min(max(int(max_rows), 1), 250_000)
+    byte_limit = min(max(int(max_projected_bytes), 1), 32 * 1024**2)
+    failure = ""
+    last_admission = 0.0
+
+    def check_budget():
+        nonlocal last_admission
+        current = time.monotonic()
+        if current >= deadline:
+            raise RuntimeError("analytics_summary_deadline_exceeded")
+        if admission_check is not None and current - last_admission >= 0.5:
+            admission_check()
+            last_admission = current
+
+    def progress():
+        nonlocal failure
+        try:
+            check_budget()
+            return 0
+        except Exception as exc:
+            failure = str(exc)
+            return 1
+
+    check_budget()
+    conn.execute(
+        "ATTACH DATABASE ? AS sourcedb", (source_path.absolute().as_uri() + "?mode=ro",)
+    )
     attached = True
+    conn.set_progress_handler(progress, 1000)
     try:
+        conn.execute("BEGIN")
         source_cols = {
             str(row[1])
-            for row in conn.execute("PRAGMA sourcedb.table_info(jsonl_records)").fetchall()
+            for row in conn.execute(
+                "PRAGMA sourcedb.table_info(jsonl_records)"
+            ).fetchall()
             if isinstance(row, (list, tuple)) and len(row) > 1
         }
         day_expr = "COALESCE(source_day_utc, substr(COALESCE(json_extract(payload_json, '$.timestamp_utc'), ingested_at), 1, 10))"
         if "source_day_utc" not in source_cols:
             day_expr = "substr(COALESCE(json_extract(payload_json, '$.timestamp_utc'), ingested_at), 1, 10)"
-        stream_expr = "COALESCE(source_stream, CASE " \
-            "WHEN source_rel LIKE 'decision_explanations/%' THEN 'decision_explanations' " \
-            "WHEN source_rel LIKE 'decisions/%' THEN 'decisions' " \
-            "WHEN source_rel LIKE 'governance/events/%' THEN 'governance_events' " \
-            "WHEN source_rel LIKE 'governance/watchdog/%' THEN 'governance_watchdog' " \
-            "WHEN source_rel LIKE 'governance/%' THEN 'governance' " \
-            "WHEN source_rel LIKE 'exports/trade_logs/%' THEN 'trade_logs' " \
-            "WHEN source_rel LIKE 'exports/paper_broker_bridge/%' THEN 'paper_broker_bridge' " \
-            "WHEN source_rel LIKE 'data/%' THEN 'data' " \
+        stream_expr = (
+            "COALESCE(source_stream, CASE "
+            "WHEN source_rel LIKE 'decision_explanations/%' THEN 'decision_explanations' "
+            "WHEN source_rel LIKE 'decisions/%' THEN 'decisions' "
+            "WHEN source_rel LIKE 'governance/events/%' THEN 'governance_events' "
+            "WHEN source_rel LIKE 'governance/watchdog/%' THEN 'governance_watchdog' "
+            "WHEN source_rel LIKE 'governance/%' THEN 'governance' "
+            "WHEN source_rel LIKE 'exports/trade_logs/%' THEN 'trade_logs' "
+            "WHEN source_rel LIKE 'exports/paper_broker_bridge/%' THEN 'paper_broker_bridge' "
+            "WHEN source_rel LIKE 'data/%' THEN 'data' "
             "ELSE 'other' END)"
+        )
         if "source_stream" not in source_cols:
-            stream_expr = "CASE " \
-                "WHEN source_rel LIKE 'decision_explanations/%' THEN 'decision_explanations' " \
-                "WHEN source_rel LIKE 'decisions/%' THEN 'decisions' " \
-                "WHEN source_rel LIKE 'governance/events/%' THEN 'governance_events' " \
-                "WHEN source_rel LIKE 'governance/watchdog/%' THEN 'governance_watchdog' " \
-                "WHEN source_rel LIKE 'governance/%' THEN 'governance' " \
-                "WHEN source_rel LIKE 'exports/trade_logs/%' THEN 'trade_logs' " \
-                "WHEN source_rel LIKE 'exports/paper_broker_bridge/%' THEN 'paper_broker_bridge' " \
-                "WHEN source_rel LIKE 'data/%' THEN 'data' " \
+            stream_expr = (
+                "CASE "
+                "WHEN source_rel LIKE 'decision_explanations/%' THEN 'decision_explanations' "
+                "WHEN source_rel LIKE 'decisions/%' THEN 'decisions' "
+                "WHEN source_rel LIKE 'governance/events/%' THEN 'governance_events' "
+                "WHEN source_rel LIKE 'governance/watchdog/%' THEN 'governance_watchdog' "
+                "WHEN source_rel LIKE 'governance/%' THEN 'governance' "
+                "WHEN source_rel LIKE 'exports/trade_logs/%' THEN 'trade_logs' "
+                "WHEN source_rel LIKE 'exports/paper_broker_bridge/%' THEN 'paper_broker_bridge' "
+                "WHEN source_rel LIKE 'data/%' THEN 'data' "
                 "ELSE 'other' END"
-        source_record_count = int(
+            )
+        # Never GROUP BY raw JSON: SQLite may retain entire payloads in its sorter.
+        # Stream only compact projections, with finite row/byte/time budgets.
+        streams: dict[tuple[str, str], list[Any]] = {}
+        symbols: dict[tuple[str, str], list[Any]] = {}
+        projected_bytes = 0
+        cursor = conn.execute(
+            f"""SELECT {day_expr}, {stream_expr}, source_rel,
+                       COALESCE(log_schema_version, 0), ingested_at,
+                       UPPER(TRIM(COALESCE(json_extract(payload_json, '$.symbol'), ''))),
+                       UPPER(TRIM(COALESCE(json_extract(payload_json, '$.action'), '')))
+                FROM sourcedb.jsonl_records WHERE {day_expr} >= ? LIMIT ?""",
+            (day_floor, row_limit + 1),
+        )
+        try:
+            for day, stream, source, schema, ingested, symbol, action in cursor:
+                check_budget()
+                source_record_count += 1
+                projected_bytes += len(
+                    _json_text(
+                        [day, stream, source, schema, ingested, symbol, action]
+                    ).encode("utf-8")
+                )
+                if source_record_count > row_limit or projected_bytes > byte_limit:
+                    raise RuntimeError("analytics_summary_row_or_byte_budget_exceeded")
+                group = streams.setdefault(
+                    (day, stream), [0, set(), schema, schema, ingested]
+                )
+                group[0] += 1
+                group[1].add(source)
+                group[2] = min(group[2], schema)
+                group[3] = max(group[3], schema)
+                group[4] = max(group[4], ingested)
+                if symbol:
+                    group = symbols.setdefault((day, symbol), [0, 0, 0, 0, ingested])
+                    group[0] += 1
+                    if action in {"BUY", "SELL", "HOLD"}:
+                        group[{"BUY": 1, "SELL": 2, "HOLD": 3}[action]] += 1
+                    group[4] = max(group[4], ingested)
+        finally:
+            cursor.close()
+        check_budget()
+        conn.execute(
+            "DELETE FROM materialized_stream_daily WHERE day_utc>=?", (day_floor,)
+        )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO materialized_stream_daily(
+                day_utc, stream, record_count, distinct_sources, min_schema_version,
+                max_schema_version, last_ingested_at, refreshed_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (day, stream, g[0], len(g[1]), g[2], g[3], g[4], refreshed_utc)
+                for (day, stream), g in streams.items()
+            ],
+        )
+        conn.execute(
+            "DELETE FROM materialized_symbol_daily WHERE day_utc>=?", (day_floor,)
+        )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO materialized_symbol_daily(
+                day_utc, symbol, record_count, buy_count, sell_count, hold_count, last_ingested_at, refreshed_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [(day, symbol, *g, refreshed_utc) for (day, symbol), g in symbols.items()],
+        )
+        stream_count = int(
             conn.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM sourcedb.jsonl_records
-                WHERE {day_expr} >= ?
-                """,
+                "SELECT COUNT(*) FROM materialized_stream_daily WHERE day_utc>=?",
                 (day_floor,),
             ).fetchone()[0]
             or 0
         )
-        conn.execute("DELETE FROM materialized_stream_daily WHERE day_utc>=?", (day_floor,))
-        conn.execute(
-            f"""
-            INSERT OR REPLACE INTO materialized_stream_daily(
-                day_utc, stream, record_count, distinct_sources, min_schema_version,
-                max_schema_version, last_ingested_at, refreshed_utc
-            )
-            SELECT
-                {day_expr} AS day_utc,
-                {stream_expr} AS stream,
-                COUNT(*) AS record_count,
-                COUNT(DISTINCT source_rel) AS distinct_sources,
-                MIN(COALESCE(log_schema_version, 0)) AS min_schema_version,
-                MAX(COALESCE(log_schema_version, 0)) AS max_schema_version,
-                MAX(ingested_at) AS last_ingested_at,
-                ? AS refreshed_utc
-            FROM sourcedb.jsonl_records
-            WHERE {day_expr} >= ?
-            GROUP BY 1, 2
-            """,
-            (refreshed_utc, day_floor),
+        symbol_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM materialized_symbol_daily WHERE day_utc>=?",
+                (day_floor,),
+            ).fetchone()[0]
+            or 0
         )
-        conn.execute("DELETE FROM materialized_symbol_daily WHERE day_utc>=?", (day_floor,))
-        conn.execute(
-            f"""
-            INSERT OR REPLACE INTO materialized_symbol_daily(
-                day_utc, symbol, record_count, buy_count, sell_count, hold_count, last_ingested_at, refreshed_utc
-            )
-            SELECT
-                {day_expr} AS day_utc,
-                UPPER(TRIM(COALESCE(json_extract(payload_json, '$.symbol'), ''))) AS symbol,
-                COUNT(*) AS record_count,
-                SUM(CASE WHEN UPPER(TRIM(COALESCE(json_extract(payload_json, '$.action'), ''))) = 'BUY' THEN 1 ELSE 0 END) AS buy_count,
-                SUM(CASE WHEN UPPER(TRIM(COALESCE(json_extract(payload_json, '$.action'), ''))) = 'SELL' THEN 1 ELSE 0 END) AS sell_count,
-                SUM(CASE WHEN UPPER(TRIM(COALESCE(json_extract(payload_json, '$.action'), ''))) = 'HOLD' THEN 1 ELSE 0 END) AS hold_count,
-                MAX(ingested_at) AS last_ingested_at,
-                ? AS refreshed_utc
-            FROM sourcedb.jsonl_records
-            WHERE {day_expr} >= ?
-              AND LENGTH(TRIM(COALESCE(json_extract(payload_json, '$.symbol'), ''))) > 0
-            GROUP BY 1, 2
-            """,
-            (refreshed_utc, day_floor),
-        )
-        stream_count = int(conn.execute("SELECT COUNT(*) FROM materialized_stream_daily WHERE day_utc>=?", (day_floor,)).fetchone()[0] or 0)
-        symbol_count = int(conn.execute("SELECT COUNT(*) FROM materialized_symbol_daily WHERE day_utc>=?", (day_floor,)).fetchone()[0] or 0)
+        check_budget()
         conn.commit()
+    except Exception as exc:
+        conn.set_progress_handler(None, 0)
+        conn.rollback()
+        if failure:
+            raise RuntimeError(failure) from exc
+        raise
     finally:
+        conn.set_progress_handler(None, 0)
         if attached:
             conn.execute("DETACH DATABASE sourcedb")
     return {
@@ -1102,6 +1175,8 @@ def emit_materialized_summaries(
         "source_record_count": source_record_count,
         "stream_summary_rows": stream_count,
         "symbol_summary_rows": symbol_count,
+        "projected_bytes": projected_bytes,
+        "bounded_streaming": True,
     }
 
 

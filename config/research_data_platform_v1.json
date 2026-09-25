@@ -1,0 +1,421 @@
+{
+  "schema_version": 1,
+  "policy_id": "research_data_platform_v1",
+  "purpose": "Provide one local-first contract for data discovery, permitted use, point-in-time research access, alpha lifecycle evidence, feed reliability, simulation parity, and reproducible research without granting trading authority.",
+  "authority": {
+    "metadata_and_research_control_only": true,
+    "can_change_signal": false,
+    "can_change_action": false,
+    "can_change_quantity": false,
+    "can_allocate_capital": false,
+    "can_promote_live": false,
+    "can_submit_order": false,
+    "can_purchase_data": false
+  },
+  "required_capability_ids": [
+    "canonical_data_catalog",
+    "license_entitlement_registry",
+    "point_in_time_research_api",
+    "bitemporal_revision_history",
+    "alpha_lifecycle_governance",
+    "source_value_accounting",
+    "portfolio_alpha_combination",
+    "unified_simulation_semantics",
+    "feed_service_levels",
+    "research_reproducibility"
+  ],
+  "capabilities": {
+    "canonical_data_catalog": {
+      "owner": "core/research_data_platform.py",
+      "test": "tests/test_research_data_platform.py",
+      "description": "Give every research dataset a stable identity, schema, temporal contract, owner, source lineage, consumers, storage class, and lifecycle."
+    },
+    "license_entitlement_registry": {
+      "owner": "core/research_data_platform.py",
+      "test": "tests/test_research_data_platform.py",
+      "description": "Fail closed on undeclared uses and keep credentials, redistribution rights, derived-data rights, and subscription evidence separate."
+    },
+    "point_in_time_research_api": {
+      "owner": "core/research_data_platform.py",
+      "test": "tests/test_research_data_platform.py",
+      "description": "Build deterministic, receipt-bound query plans and return only rows knowable at the requested decision time."
+    },
+    "bitemporal_revision_history": {
+      "owner": "core/research_data_platform.py",
+      "test": "tests/test_research_data_platform.py",
+      "description": "Preserve effective time and knowledge time so revised macro and reference values cannot leak backward into research."
+    },
+    "alpha_lifecycle_governance": {
+      "owner": "core/research_data_platform.py",
+      "test": "tests/test_research_data_platform.py",
+      "description": "Enforce evidence-bearing transitions from raw feature through candidate, validated sleeve strategy, and portfolio candidate states."
+    },
+    "source_value_accounting": {
+      "owner": "core/research_data_platform.py",
+      "test": "tests/test_research_data_platform.py",
+      "description": "Measure incremental candidate-bound value, reliability, redundancy, latency, and cost without treating source count as alpha."
+    },
+    "portfolio_alpha_combination": {
+      "owner": "core/research_data_platform.py",
+      "test": "tests/test_research_data_platform.py",
+      "description": "Delegate to the existing constrained portfolio advisory and preserve correlation, turnover, capacity, cost, and cash constraints."
+    },
+    "unified_simulation_semantics": {
+      "owner": "core/research_data_platform.py",
+      "test": "tests/test_research_data_platform.py",
+      "description": "Normalize research, replay, paper, shadow, and live-shadow events into one non-submitting contract with explicit mode differences."
+    },
+    "feed_service_levels": {
+      "owner": "core/research_data_platform.py",
+      "test": "tests/test_research_data_platform.py",
+      "description": "Evaluate freshness, completeness, validity, correction, and availability targets per data product with bounded degradation actions."
+    },
+    "research_reproducibility": {
+      "owner": "core/research_data_platform.py",
+      "test": "tests/test_research_data_platform.py",
+      "description": "Hash candidate identity, code, datasets, parameters, labels, costs, and results into a local reproducibility receipt."
+    }
+  },
+  "decision_family_contract": {
+    "required_family_ids": [
+      "balanced_directional",
+      "commodity_inflation",
+      "digital_asset_basis",
+      "event_driven",
+      "infrastructure_control",
+      "intraday_momentum",
+      "liquidity_microstructure",
+      "long_horizon_income",
+      "macro_rates_fx",
+      "relative_value",
+      "research_models",
+      "structured_credit",
+      "swing_directional",
+      "tail_hedge",
+      "volatility_derivatives"
+    ],
+    "minimum_products_per_family": 2,
+    "every_family_must_have_point_in_time_product": true,
+    "every_family_must_have_outcome_evidence_product": true
+  },
+  "license_profiles": {
+    "official_public_internal": {
+      "allowed_uses": ["research", "paper_decision_context", "internal_derived_feature", "simulation", "audit"],
+      "prohibited_uses": ["credential_storage", "unapproved_redistribution", "automatic_live_authority"],
+      "derived_data_allowed": true,
+      "redistribution_allowed": false,
+      "external_terms_review_required": false
+    },
+    "public_terms_review": {
+      "allowed_uses": ["research", "paper_decision_context", "internal_derived_feature", "simulation", "audit"],
+      "prohibited_uses": ["credential_storage", "unapproved_redistribution", "automatic_live_authority"],
+      "derived_data_allowed": true,
+      "redistribution_allowed": false,
+      "external_terms_review_required": true
+    },
+    "broker_account_restricted": {
+      "allowed_uses": ["research", "paper_decision_context", "internal_derived_feature", "simulation", "audit"],
+      "prohibited_uses": ["credential_storage", "redistribution", "cross_account_disclosure", "automatic_live_authority"],
+      "derived_data_allowed": true,
+      "redistribution_allowed": false,
+      "external_terms_review_required": true
+    },
+    "internal_derived": {
+      "allowed_uses": ["research", "paper_decision_context", "internal_derived_feature", "simulation", "audit"],
+      "prohibited_uses": ["source_lineage_removal", "historical_relabeling", "automatic_live_authority"],
+      "derived_data_allowed": true,
+      "redistribution_allowed": false,
+      "external_terms_review_required": false
+    }
+  },
+  "data_products": [
+    {
+      "dataset_id": "official_us_macro_v1",
+      "title": "Official US Macro Releases",
+      "layer": "normalized",
+      "owner": "macro_context_collectors",
+      "source_ids": ["bls_census", "official_macro_context"],
+      "license_profile_id": "official_public_internal",
+      "required_entitlement_ids": [],
+      "schema_id": "official_macro_release_v1",
+      "natural_key_columns": ["series_id", "period"],
+      "event_time_column": "effective_at_utc",
+      "knowledge_time_column": "known_at_utc",
+      "revision_policy": "append_revision_never_overwrite",
+      "freshness_slo_seconds": 86400,
+      "capability_ids": ["growth_indicators", "inflation_indicators", "economic_event_calendar"],
+      "consumer_decision_families": ["balanced_directional", "commodity_inflation", "event_driven", "long_horizon_income", "macro_rates_fx", "research_models", "swing_directional", "tail_hedge", "volatility_derivatives"],
+      "storage_class": "warm_parquet_and_manifest"
+    },
+    {
+      "dataset_id": "public_macro_calendar_v1",
+      "title": "Public Macro Calendar And Crosscheck",
+      "layer": "normalized",
+      "owner": "macro_context_collectors",
+      "source_ids": ["tradingeconomics_guest", "public_macro_feeds"],
+      "license_profile_id": "public_terms_review",
+      "required_entitlement_ids": [],
+      "schema_id": "macro_calendar_event_v1",
+      "natural_key_columns": ["country", "event_id", "effective_at_utc"],
+      "event_time_column": "effective_at_utc",
+      "knowledge_time_column": "known_at_utc",
+      "revision_policy": "append_revision_never_overwrite",
+      "freshness_slo_seconds": 21600,
+      "capability_ids": ["economic_event_calendar", "growth_indicators", "inflation_indicators"],
+      "consumer_decision_families": ["balanced_directional", "commodity_inflation", "event_driven", "infrastructure_control", "intraday_momentum", "long_horizon_income", "macro_rates_fx", "research_models", "swing_directional", "volatility_derivatives"],
+      "storage_class": "warm_parquet_and_manifest"
+    },
+    {
+      "dataset_id": "global_central_bank_context_v1",
+      "title": "Global Central Bank And Liquidity Context",
+      "layer": "normalized",
+      "owner": "central_bank_context_mesh",
+      "source_ids": ["central_bank_cross_source_context", "central_bank_liquidity_context", "global_central_bank_context"],
+      "license_profile_id": "official_public_internal",
+      "required_entitlement_ids": [],
+      "schema_id": "central_bank_context_v1",
+      "natural_key_columns": ["institution_id", "series_id", "effective_at_utc"],
+      "event_time_column": "effective_at_utc",
+      "knowledge_time_column": "known_at_utc",
+      "revision_policy": "append_revision_never_overwrite",
+      "freshness_slo_seconds": 86400,
+      "capability_ids": ["central_bank_decisions", "central_bank_balance_sheets", "global_liquidity_regime", "funding_stress", "repo_conditions"],
+      "consumer_decision_families": ["balanced_directional", "commodity_inflation", "digital_asset_basis", "event_driven", "infrastructure_control", "intraday_momentum", "liquidity_microstructure", "long_horizon_income", "macro_rates_fx", "relative_value", "research_models", "structured_credit", "swing_directional", "tail_hedge", "volatility_derivatives"],
+      "storage_class": "warm_parquet_and_manifest"
+    },
+    {
+      "dataset_id": "rates_credit_reference_v1",
+      "title": "Rates And Credit Reference Context",
+      "layer": "normalized",
+      "owner": "rates_credit_context_collectors",
+      "source_ids": ["bond_reference_context", "public_policy_context", "public_financial_context"],
+      "license_profile_id": "official_public_internal",
+      "required_entitlement_ids": [],
+      "schema_id": "rates_credit_reference_v1",
+      "natural_key_columns": ["instrument_id", "effective_at_utc"],
+      "event_time_column": "effective_at_utc",
+      "knowledge_time_column": "known_at_utc",
+      "revision_policy": "append_revision_never_overwrite",
+      "freshness_slo_seconds": 21600,
+      "capability_ids": ["treasury_yield_curve", "rates_credit_regime", "credit_spreads", "government_debt_issuance", "funding_stress", "default_risk"],
+      "consumer_decision_families": ["balanced_directional", "event_driven", "long_horizon_income", "macro_rates_fx", "relative_value", "research_models", "structured_credit", "tail_hedge", "volatility_derivatives"],
+      "storage_class": "warm_parquet_and_manifest"
+    },
+    {
+      "dataset_id": "cross_asset_regime_context_v1",
+      "title": "Cross-Asset Regime And Risk Context",
+      "layer": "feature",
+      "owner": "decision_context_mesh",
+      "source_ids": ["macro_cross_asset_context", "decision_context_mesh", "extended_quant_context"],
+      "license_profile_id": "internal_derived",
+      "required_entitlement_ids": [],
+      "schema_id": "cross_asset_regime_feature_v1",
+      "natural_key_columns": ["snapshot_id", "symbol", "effective_at_utc"],
+      "event_time_column": "effective_at_utc",
+      "knowledge_time_column": "known_at_utc",
+      "revision_policy": "immutable_snapshot_new_version",
+      "freshness_slo_seconds": 1800,
+      "capability_ids": ["risk_on_off_state", "cross_asset_correlation", "dollar_regime", "fx_spot", "energy_markets", "commodity_inventories"],
+      "consumer_decision_families": ["balanced_directional", "commodity_inflation", "digital_asset_basis", "event_driven", "infrastructure_control", "intraday_momentum", "liquidity_microstructure", "long_horizon_income", "macro_rates_fx", "relative_value", "research_models", "structured_credit", "swing_directional", "tail_hedge", "volatility_derivatives"],
+      "storage_class": "hot_feature_store"
+    },
+    {
+      "dataset_id": "broker_market_observations_v1",
+      "title": "Broker And Exchange Market Observations",
+      "layer": "normalized",
+      "owner": "market_data_collectors",
+      "source_ids": ["market_quote_profiles", "fx_market_context", "crypto_market_context", "free_equity_reference_context"],
+      "license_profile_id": "broker_account_restricted",
+      "required_entitlement_ids": ["broker_market_data_access"],
+      "schema_id": "market_observation_v1",
+      "natural_key_columns": ["venue", "symbol", "event_id"],
+      "event_time_column": "effective_at_utc",
+      "knowledge_time_column": "known_at_utc",
+      "revision_policy": "append_correction_with_sequence",
+      "freshness_slo_seconds": 900,
+      "capability_ids": ["market_quotes", "fx_spot", "crypto_spot", "tradeability_state"],
+      "consumer_decision_families": ["balanced_directional", "commodity_inflation", "digital_asset_basis", "event_driven", "intraday_momentum", "liquidity_microstructure", "long_horizon_income", "macro_rates_fx", "relative_value", "research_models", "swing_directional", "tail_hedge", "volatility_derivatives"],
+      "storage_class": "hot_append_only_then_cold_parquet"
+    },
+    {
+      "dataset_id": "derivatives_microstructure_context_v1",
+      "title": "Derivatives And Market Microstructure Context",
+      "layer": "normalized",
+      "owner": "derivatives_context_collectors",
+      "source_ids": ["options_context_mesh", "market_micro_context"],
+      "license_profile_id": "public_terms_review",
+      "required_entitlement_ids": [],
+      "schema_id": "derivatives_microstructure_v1",
+      "natural_key_columns": ["venue", "symbol", "effective_at_utc"],
+      "event_time_column": "effective_at_utc",
+      "knowledge_time_column": "known_at_utc",
+      "revision_policy": "append_correction_with_sequence",
+      "freshness_slo_seconds": 1800,
+      "capability_ids": ["options_surface", "volatility_surface", "market_microstructure", "funding_stress"],
+      "consumer_decision_families": ["event_driven", "intraday_momentum", "liquidity_microstructure", "research_models", "structured_credit", "tail_hedge", "volatility_derivatives"],
+      "storage_class": "hot_append_only_then_cold_parquet"
+    },
+    {
+      "dataset_id": "issuer_event_fundamental_context_v1",
+      "title": "Issuer Events, Filings, News, And Fundamentals",
+      "layer": "normalized",
+      "owner": "issuer_context_collectors",
+      "source_ids": ["sec_edgar_context", "schwab_symbol_news", "ticker_news_context", "public_financial_context"],
+      "license_profile_id": "public_terms_review",
+      "required_entitlement_ids": [],
+      "schema_id": "issuer_event_context_v1",
+      "natural_key_columns": ["issuer_id", "event_id", "effective_at_utc"],
+      "event_time_column": "effective_at_utc",
+      "knowledge_time_column": "known_at_utc",
+      "revision_policy": "append_revision_never_overwrite",
+      "freshness_slo_seconds": 3600,
+      "capability_ids": ["issuer_filings", "corporate_events", "symbol_news", "fundamental_reference", "financial_statements", "quality_ratios", "operating_profitability", "cash_flow_quality"],
+      "consumer_decision_families": ["balanced_directional", "event_driven", "long_horizon_income", "research_models", "swing_directional"],
+      "storage_class": "warm_parquet_and_manifest"
+    },
+    {
+      "dataset_id": "point_in_time_feature_store_v1",
+      "title": "Point-In-Time Feature Store",
+      "layer": "feature",
+      "owner": "training_data_plane",
+      "source_ids": ["feature_store_manifest", "point_in_time_event_store"],
+      "license_profile_id": "internal_derived",
+      "required_entitlement_ids": [],
+      "schema_id": "point_in_time_feature_snapshot_v1",
+      "natural_key_columns": ["snapshot_id", "symbol", "mode", "effective_at_utc"],
+      "event_time_column": "effective_at_utc",
+      "knowledge_time_column": "known_at_utc",
+      "revision_policy": "immutable_snapshot_new_version",
+      "freshness_slo_seconds": 21600,
+      "capability_ids": ["point_in_time_features", "training_features", "event_joins", "feature_lineage"],
+      "consumer_decision_families": ["balanced_directional", "commodity_inflation", "digital_asset_basis", "event_driven", "infrastructure_control", "intraday_momentum", "liquidity_microstructure", "long_horizon_income", "macro_rates_fx", "relative_value", "research_models", "structured_credit", "swing_directional", "tail_hedge", "volatility_derivatives"],
+      "storage_class": "hot_manifest_warm_parquet_cold_archive"
+    },
+    {
+      "dataset_id": "candidate_outcome_evidence_v2",
+      "title": "Candidate-Bound Decision, Fill, Cost, And Outcome Evidence",
+      "layer": "evidence",
+      "owner": "paper_truth_and_profitability_controls",
+      "source_ids": ["decision_explanations", "paper_performance", "paper_execution_calibration", "multiple_testing_guard"],
+      "license_profile_id": "internal_derived",
+      "required_entitlement_ids": [],
+      "schema_id": "candidate_outcome_evidence_v2",
+      "natural_key_columns": ["candidate_id", "trace_id", "outcome_id"],
+      "event_time_column": "effective_at_utc",
+      "knowledge_time_column": "known_at_utc",
+      "revision_policy": "append_only_no_historical_relabeling",
+      "freshness_slo_seconds": 7200,
+      "capability_ids": ["candidate_outcomes", "post_cost_returns", "fill_calibration", "multiple_testing", "causal_attribution"],
+      "consumer_decision_families": ["balanced_directional", "commodity_inflation", "digital_asset_basis", "event_driven", "infrastructure_control", "intraday_momentum", "liquidity_microstructure", "long_horizon_income", "macro_rates_fx", "relative_value", "research_models", "structured_credit", "swing_directional", "tail_hedge", "volatility_derivatives"],
+      "storage_class": "tamper_evident_evidence_ledger"
+    }
+  ],
+  "query_contract": {
+    "contract_id": "point_in_time_research_query_v1",
+    "required_fields": ["dataset_id", "consumer_id", "purpose", "as_of_utc", "valid_at_utc"],
+    "maximum_dataset_count_per_query": 12,
+    "require_catalog_receipt": true,
+    "require_entitlement_check": true,
+    "fail_on_future_knowledge": true,
+    "return_query_receipt": true
+  },
+  "bitemporal_contract": {
+    "effective_from_field": "effective_at_utc",
+    "effective_to_field": "effective_until_utc",
+    "known_at_field": "known_at_utc",
+    "superseded_at_field": "superseded_at_utc",
+    "revision_id_field": "revision_id",
+    "never_overwrite_prior_revision": true,
+    "latest_known_revision_per_natural_key": true
+  },
+  "alpha_lifecycle": {
+    "states": ["raw_feature", "candidate_alpha", "validated_alpha", "sleeve_strategy", "portfolio_candidate", "parked", "retired"],
+    "allowed_transitions": {
+      "raw_feature": ["candidate_alpha", "parked", "retired"],
+      "candidate_alpha": ["validated_alpha", "parked", "retired"],
+      "validated_alpha": ["sleeve_strategy", "parked", "retired"],
+      "sleeve_strategy": ["portfolio_candidate", "parked", "retired"],
+      "portfolio_candidate": ["parked", "retired"],
+      "parked": ["candidate_alpha", "retired"],
+      "retired": []
+    },
+    "required_evidence_by_target_state": {
+      "candidate_alpha": ["dataset_receipts", "hypothesis_id", "candidate_id"],
+      "validated_alpha": ["holdout_receipt", "multiple_testing_receipt", "post_cost_evidence_receipt"],
+      "sleeve_strategy": ["sleeve_id", "regime_contract_receipt", "risk_contract_receipt"],
+      "portfolio_candidate": ["portfolio_advisory_receipt", "capacity_receipt", "correlation_receipt"],
+      "parked": ["reason"],
+      "retired": ["reason"]
+    },
+    "live_execution_authority": false
+  },
+  "source_value_policy": {
+    "minimum_candidate_bound_samples": 30,
+    "weights": {
+      "quality": 0.2,
+      "freshness": 0.15,
+      "availability": 0.15,
+      "incremental_information": 0.2,
+      "net_post_cost_contribution": 0.2,
+      "nonredundancy": 0.1
+    },
+    "source_count_is_value": false,
+    "missing_outcome_metrics_status": "collecting",
+    "automatic_source_purchase_authority": false,
+    "automatic_source_retirement_authority": false
+  },
+  "portfolio_combination": {
+    "delegate": "core.portfolio_advisory.build_multi_period_advisory",
+    "minimum_qualified_sleeves": 4,
+    "minimum_independent_fills": 30,
+    "cash_floor": 0.1,
+    "maximum_sleeve_weight": 0.25,
+    "maximum_step_turnover": 0.2,
+    "maximum_pairwise_correlation": 0.75,
+    "advisory_only": true
+  },
+  "simulation_contract": {
+    "contract_id": "unified_market_and_order_event_v1",
+    "supported_modes": ["research", "backtest", "replay", "shadow", "paper", "live_shadow", "live"],
+    "mode_invariant_fields": ["event_id", "trace_id", "candidate_id", "symbol", "event_time_utc", "known_at_utc", "event_type", "payload_sha256"],
+    "mode_specific_fields": ["broker_order_id", "fill_price", "fill_quantity", "latency_ms", "fee_amount", "slippage_bps"],
+    "live_mode_representation_does_not_grant_submission": true,
+    "paper_live_equivalence_required_before_promotion": true
+  },
+  "feed_slo_contract": {
+    "minimum_completeness_ratio": 0.98,
+    "minimum_validity_ratio": 0.99,
+    "minimum_availability_ratio": 0.99,
+    "maximum_correction_ratio": 0.02,
+    "missing_observation_status": "unknown",
+    "degradation_actions": ["use_independent_failover", "quarantine_invalid_rows", "collect_only", "block_candidate_promotion"],
+    "feed_failure_does_not_grant_fallback_order_authority": true
+  },
+  "reproducibility_contract": {
+    "contract_id": "research_reproducibility_receipt_v1",
+    "required_materials": ["candidate_id", "code_revision", "dataset_receipts", "parameter_receipt", "label_contract_receipt", "cost_model_receipt", "result_receipt"],
+    "canonical_json_required": true,
+    "local_receipt_is_not_external_attestation": true,
+    "historical_results_may_not_be_rewritten": true
+  },
+  "public_influences": [
+    {
+      "id": "trexquant_research_platform",
+      "organization": "Trexquant Investment LP",
+      "official_url": "https://trexquant.com/",
+      "supplementary_urls": [
+        "https://trexquant.com/careers/13A32AB65C",
+        "https://trexquant.com/careers/6D8F95262F"
+      ],
+      "principles": ["data-to-alpha-to-strategy separation", "proprietary simulation workflow", "data quality and lineage", "event-based orchestration", "market-neutral portfolio construction"],
+      "influence_only": true
+    }
+  ],
+  "soak_contract": {
+    "classification": "additive_observability_and_research_governance",
+    "preserve_cumulative_history": true,
+    "reset_main_soak_clock": false,
+    "changes_signal_or_order_semantics": false,
+    "new_control_evidence_accrues_forward": true
+  }
+}

@@ -14,6 +14,7 @@ from core.runtime_training_common import _load_runtime_gap_fill_context
 from scripts.collect_decision_context_mesh import (
     _build_plane,
     _cadence_freshness,
+    _feature_candidates,
     _routed_source_path,
     parse_bts_freight_tsi,
     parse_eia_weekly_petroleum,
@@ -158,6 +159,55 @@ def test_cadence_freshness_awards_current_release_and_decays_before_hard_slo() -
     assert _cadence_freshness(7.0, target_age=10.0, maximum_age=21.0) == 1.0
     assert 0.0 < _cadence_freshness(15.0, target_age=10.0, maximum_age=21.0) < 1.0
     assert _cadence_freshness(22.0, target_age=10.0, maximum_age=21.0) == 0.0
+
+
+def test_public_economic_features_route_into_their_intended_decision_planes() -> None:
+    now = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
+    payloads = {
+        "public_financial_context": {
+            "derived": {
+                "global_features": {
+                    "nyfed_dealer_repo_imbalance_norm": 0.8,
+                    "nyfed_dealer_financing_fails_pressure_norm": 0.4,
+                    "nyfed_dealer_treasury_inventory_pressure_norm": 0.6,
+                    "nyfed_dealer_corporate_inventory_pressure_norm": 0.7,
+                    "fdic_bank_deposit_funding_norm": 0.7,
+                    "fdic_bank_noncurrent_loan_pressure_norm": 0.3,
+                }
+            }
+        },
+        "market_micro_context": {
+            "derived": {
+                "global_features": {
+                    "treasury_auction_demand_norm": 0.75,
+                    "treasury_auction_supply_pressure_norm": 0.45,
+                }
+            }
+        },
+    }
+    source_state = {
+        "ok": True,
+        "observation_time": "2026-08-22T12:00:00+00:00",
+        "timestamp_utc": "2026-08-23T11:00:00+00:00",
+        "publisher": "official source",
+        "url": "https://example.test/official",
+    }
+    planes = _feature_candidates(
+        payloads,
+        {
+            "public_financial_context": dict(source_state),
+            "market_micro_context": dict(source_state),
+        },
+        now=now,
+    )
+
+    assert round(planes["funding_stress"]["funding_dealer_repo_imbalance_pressure_norm"]["value"], 8) == 0.6
+    assert round(planes["funding_stress"]["funding_bank_deposit_shortfall_norm"]["value"], 8) == 0.3
+    assert planes["positioning_crowding"]["positioning_dealer_credit_inventory_norm"]["value"] == 0.7
+    assert planes["securities_lending"]["lending_dealer_settlement_fails_norm"]["value"] == 0.4
+    assert planes["credit_curve"]["credit_bank_noncurrent_loan_pressure_norm"]["value"] == 0.3
+    assert planes["fiscal_liquidity"]["fiscal_auction_supply_pressure_norm"]["value"] == 0.45
+    assert planes["market_calendar"]["calendar_treasury_auction_weak_demand_norm"]["value"] == 0.25
 
 
 def test_estimate_plane_cap_lifts_only_with_direct_consensus_evidence() -> None:

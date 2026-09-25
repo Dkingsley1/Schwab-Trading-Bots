@@ -1,0 +1,254 @@
+{
+  "schema_version": 1,
+  "scenario_id": "gfc_2008_financial_crisis",
+  "aliases": [
+    "great_financial_crisis_2008",
+    "lehman_liquidity_crisis",
+    "banking_crisis_2008"
+  ],
+  "source": {
+    "publisher": "Federal Deposit Insurance Corporation and Federal Reserve",
+    "title": "Official 2007-2009 Financial Crisis History and Event Anchors",
+    "url": "https://www.fdic.gov/resources/publications/crisis-response/book/crisis-response.pdf",
+    "retrieved_date": "2026-08-25",
+    "source_type": "official_historical_crisis_composite",
+    "references": [
+      {
+        "publisher": "Federal Deposit Insurance Corporation",
+        "title": "Crisis and Response: An FDIC History, 2008-2013",
+        "url": "https://www.fdic.gov/resources/publications/crisis-response/book/crisis-response.pdf",
+        "official_authoritative_source": true
+      },
+      {
+        "publisher": "Federal Deposit Insurance Corporation",
+        "title": "2000-2009 Historical Timeline",
+        "url": "https://www.fdic.gov/history/2000-2009",
+        "official_authoritative_source": true
+      },
+      {
+        "publisher": "Federal Reserve History",
+        "title": "The Great Recession and Its Aftermath",
+        "url": "https://www.federalreservehistory.org/essays/great-recession-and-its-aftermath",
+        "official_authoritative_source": true
+      }
+    ]
+  },
+  "scope": {
+    "scenario_type": "historical_banking_funding_credit_and_deleveraging_crisis",
+    "start_date": "2007-07-01",
+    "end_date": "2009-06-30",
+    "peak_stress_window": "2008-09-15/2008-11-21",
+    "usage_policy": "research_replay_and_stress_labeling_only",
+    "forecast_warning": "Historical event anchors are official; normalized drill values are deterministic diagnostic parameters, not reconstructed ticks, forecasts, or execution signals."
+  },
+  "key_stress_anchors": {
+    "mortgage_credit_losses": "severe",
+    "bank_funding_stress": "severe",
+    "counterparty_confidence_shock": "severe",
+    "money_market_run": "severe",
+    "forced_deleveraging": "severe",
+    "cross_asset_correlation_convergence": "severe",
+    "policy_liquidity_response": "extraordinary"
+  },
+  "event_timeline": [
+    {
+      "date": "2008-03-24",
+      "event": "bear_stearns_acquisition_with_official_assistance",
+      "stress_channel": "dealer_funding_and_counterparty_risk"
+    },
+    {
+      "date": "2008-09-15",
+      "event": "lehman_brothers_bankruptcy",
+      "stress_channel": "global_counterparty_and_wholesale_funding"
+    },
+    {
+      "date": "2008-09-16",
+      "event": "aig_liquidity_facility_and_reserve_primary_fund_breaks_the_buck",
+      "stress_channel": "insurance_derivatives_and_money_market_run"
+    },
+    {
+      "date": "2008-09-25",
+      "event": "washington_mutual_failure",
+      "stress_channel": "deposit_run_and_bank_failure"
+    },
+    {
+      "date": "2008-10-03",
+      "event": "emergency_economic_stabilization_act",
+      "stress_channel": "systemic_policy_backstop"
+    },
+    {
+      "date": "2009-03-09",
+      "event": "us_equity_trough_window",
+      "stress_channel": "deleveraging_to_early_recovery_transition"
+    }
+  ],
+  "replay_path": {
+    "columns": [
+      "phase",
+      "start_date",
+      "end_date",
+      "bank_funding_stress_norm",
+      "credit_spread_stress_norm",
+      "equity_drawdown_norm",
+      "volatility_stress_norm",
+      "liquidity_stress_norm",
+      "correlation_convergence_norm",
+      "policy_backstop_norm"
+    ],
+    "rows": [
+      ["credit_deterioration", "2007-07-01", "2008-03-23", 0.48, 0.46, 0.34, 0.42, 0.40, 0.38, 0.12],
+      ["dealer_funding_break", "2008-03-24", "2008-09-12", 0.72, 0.68, 0.58, 0.66, 0.70, 0.64, 0.36],
+      ["lehman_systemic_break", "2008-09-15", "2008-10-10", 1.00, 1.00, 0.90, 1.00, 1.00, 1.00, 0.72],
+      ["forced_deleveraging", "2008-10-13", "2009-03-09", 0.88, 0.92, 1.00, 0.86, 0.90, 0.94, 0.92],
+      ["policy_stabilization_recovery", "2009-03-10", "2009-06-30", 0.42, 0.50, 0.58, 0.44, 0.46, 0.48, 1.00]
+    ]
+  },
+  "market_proxy_symbols": {
+    "broad_equity": ["SPY", "DIA", "IWM"],
+    "financial_stress": ["XLF", "KRE", "JPM", "BAC"],
+    "credit_liquidity": ["LQD", "HYG", "JNK"],
+    "rates_duration": ["IEF", "TLT"],
+    "volatility": ["VIXY"],
+    "safe_haven": ["GLD", "UUP"]
+  },
+  "internal_feature_keys": [
+    "gfc_2008_replay_trace",
+    "bank_funding_stress_norm",
+    "credit_spread_stress_norm",
+    "counterparty_confidence_stress_norm",
+    "correlation_convergence_norm",
+    "policy_backstop_norm"
+  ],
+  "governance_targets": [
+    "source_verification",
+    "point_in_time_event_store",
+    "replay_hash_registry",
+    "macro_crisis_scenario_lab",
+    "profitability_crisis_drill"
+  ],
+  "storage_targets": [
+    "config/stress_scenarios",
+    "governance/research/profitability_crisis_drill_latest.json"
+  ],
+  "profitability_drill": {
+    "schema_version": 1,
+    "parameter_notice": "Values below are deterministic stress-test inputs calibrated to event severity; they are not historical tick reconstruction.",
+    "profile": "financial_stress_defensive",
+    "symbol": "KRE",
+    "recovery_phase": "policy_stabilization_recovery",
+    "phases": [
+      {
+        "phase": "credit_deterioration",
+        "severity_norm": 0.48,
+        "diagnostic_forward_return_bps": -90.0,
+        "spread_bps": 14.0,
+        "volatility_1m": 0.009,
+        "latency_ms": 240.0,
+        "same_side_depth": 120.0,
+        "order_size": 10.0,
+        "quote_age_ms": 450.0,
+        "tradeability_norm": 0.62,
+        "execution_fitness_norm": 0.60,
+        "liquidity_quality_norm": 0.58,
+        "session_quality_norm": 0.78,
+        "source_quality_norm": 0.96,
+        "cross_asset_confirmation_norm": 0.34,
+        "portfolio_overlap_pressure_norm": 0.22,
+        "cross_bot_conflict_norm": 0.18,
+        "predicted_edge_lcb_bps": 32.0,
+        "expected_new_long_entry": "blocked"
+      },
+      {
+        "phase": "dealer_funding_break",
+        "severity_norm": 0.76,
+        "diagnostic_forward_return_bps": -360.0,
+        "spread_bps": 48.0,
+        "volatility_1m": 0.028,
+        "latency_ms": 720.0,
+        "same_side_depth": 12.0,
+        "order_size": 10.0,
+        "quote_age_ms": 1800.0,
+        "tradeability_norm": 0.30,
+        "execution_fitness_norm": 0.28,
+        "liquidity_quality_norm": 0.25,
+        "session_quality_norm": 0.42,
+        "source_quality_norm": 0.96,
+        "cross_asset_confirmation_norm": 0.16,
+        "portfolio_overlap_pressure_norm": 0.48,
+        "cross_bot_conflict_norm": 0.44,
+        "predicted_edge_lcb_bps": 85.0,
+        "expected_new_long_entry": "blocked"
+      },
+      {
+        "phase": "lehman_systemic_break",
+        "severity_norm": 1.0,
+        "diagnostic_forward_return_bps": -900.0,
+        "spread_bps": 120.0,
+        "volatility_1m": 0.055,
+        "latency_ms": 1400.0,
+        "same_side_depth": 3.0,
+        "order_size": 10.0,
+        "quote_age_ms": 6500.0,
+        "tradeability_norm": 0.08,
+        "execution_fitness_norm": 0.08,
+        "liquidity_quality_norm": 0.06,
+        "session_quality_norm": 0.18,
+        "source_quality_norm": 0.96,
+        "cross_asset_confirmation_norm": 0.08,
+        "portfolio_overlap_pressure_norm": 0.88,
+        "cross_bot_conflict_norm": 0.82,
+        "predicted_edge_lcb_bps": 150.0,
+        "expected_new_long_entry": "blocked"
+      },
+      {
+        "phase": "forced_deleveraging",
+        "severity_norm": 0.9,
+        "diagnostic_forward_return_bps": -540.0,
+        "spread_bps": 82.0,
+        "volatility_1m": 0.04,
+        "latency_ms": 980.0,
+        "same_side_depth": 6.0,
+        "order_size": 10.0,
+        "quote_age_ms": 3200.0,
+        "tradeability_norm": 0.18,
+        "execution_fitness_norm": 0.16,
+        "liquidity_quality_norm": 0.14,
+        "session_quality_norm": 0.30,
+        "source_quality_norm": 0.96,
+        "cross_asset_confirmation_norm": 0.12,
+        "portfolio_overlap_pressure_norm": 0.76,
+        "cross_bot_conflict_norm": 0.70,
+        "predicted_edge_lcb_bps": 120.0,
+        "expected_new_long_entry": "blocked"
+      },
+      {
+        "phase": "policy_stabilization_recovery",
+        "severity_norm": 0.34,
+        "diagnostic_forward_return_bps": 650.0,
+        "spread_bps": 8.0,
+        "volatility_1m": 0.006,
+        "latency_ms": 120.0,
+        "same_side_depth": 500.0,
+        "order_size": 10.0,
+        "quote_age_ms": 180.0,
+        "tradeability_norm": 0.86,
+        "execution_fitness_norm": 0.84,
+        "liquidity_quality_norm": 0.82,
+        "session_quality_norm": 0.86,
+        "source_quality_norm": 0.96,
+        "cross_asset_confirmation_norm": 0.84,
+        "portfolio_overlap_pressure_norm": 0.16,
+        "cross_bot_conflict_norm": 0.12,
+        "predicted_edge_lcb_bps": 180.0,
+        "expected_new_long_entry": "allowed"
+      }
+    ]
+  },
+  "replay_contract": {
+    "time_grain": "phase_window",
+    "alignment_key": "start_date/end_date",
+    "join_policy": "official_event_anchor_plus_diagnostic_parameter_path",
+    "label_policy": "research_only_no_execution",
+    "minimum_required_sections": ["key_stress_anchors", "event_timeline", "replay_path", "market_proxy_symbols", "profitability_drill"]
+  }
+}

@@ -92,6 +92,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
     series_path = _resolve(project_root, policy.get("series"))
     benchmark_rows = _load_jsonl(series_path)
     benchmark_by_day: dict[str, dict[str, float]] = {}
+    require_cash_proxy = bool(policy.get("require_cash_proxy", False))
     rejected_candidate_rows = 0
     rejected_unbound_rows = 0
     for row in benchmark_rows:
@@ -107,25 +108,53 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
             continue
         passive = _safe_float(row.get("passive_return_bps"), float("nan"))
         cash = _safe_float(row.get("cash_return_bps"), float("nan"))
+        cash_proxy = _safe_float(row.get("cash_proxy_return_bps"), float("nan"))
         if not math.isfinite(passive):
             continue
+        if require_cash_proxy and not math.isfinite(cash_proxy):
+            continue
         if not math.isfinite(cash):
-            cash = ((1.0 + _safe_float(policy.get("cash_annual_rate"), 0.04)) ** (1.0 / 252.0) - 1.0) * 10_000.0
-        benchmark_by_day[day] = {"passive_return_bps": passive, "cash_return_bps": cash}
+            cash = (
+                (1.0 + _safe_float(policy.get("cash_annual_rate"), 0.04))
+                ** (1.0 / 252.0)
+                - 1.0
+            ) * 10_000.0
+        benchmark_by_day[day] = {
+            "passive_return_bps": passive,
+            "cash_return_bps": cash,
+            "cash_proxy_return_bps": cash_proxy,
+        }
     common_days = sorted(set(active_by_day) & set(benchmark_by_day))
     active = [active_by_day[day] for day in common_days]
     passive = [benchmark_by_day[day]["passive_return_bps"] for day in common_days]
     cash = [benchmark_by_day[day]["cash_return_bps"] for day in common_days]
+    cash_proxy = [
+        benchmark_by_day[day]["cash_proxy_return_bps"]
+        for day in common_days
+        if math.isfinite(benchmark_by_day[day]["cash_proxy_return_bps"])
+    ]
     active_return = _compound(active) if active else 0.0
     passive_return = _compound(passive) if passive else 0.0
     cash_return = _compound(cash) if cash else 0.0
+    cash_proxy_return = _compound(cash_proxy) if cash_proxy else 0.0
     active_drawdown = _max_drawdown(active) if active else 0.0
     passive_drawdown = _max_drawdown(passive) if passive else 0.0
     minimum_days = max(int(_safe_float(policy.get("minimum_common_days"), 30)), 1)
-    minimum_excess = _safe_float(policy.get("minimum_excess_return_bps"), 0.0) / 10_000.0
-    drawdown_ratio_ceiling = _safe_float(policy.get("maximum_drawdown_ratio_to_passive"), 1.0)
-    return_hurdle = active_return > max(passive_return, cash_return) + minimum_excess
-    drawdown_hurdle = active_drawdown <= max(passive_drawdown, 1e-9) * drawdown_ratio_ceiling
+    minimum_excess = (
+        _safe_float(policy.get("minimum_excess_return_bps"), 0.0) / 10_000.0
+    )
+    drawdown_ratio_ceiling = _safe_float(
+        policy.get("maximum_drawdown_ratio_to_passive"), 1.0
+    )
+    benchmark_return_ceiling = max(
+        passive_return,
+        cash_return,
+        cash_proxy_return if require_cash_proxy else cash_return,
+    )
+    return_hurdle = active_return > benchmark_return_ceiling + minimum_excess
+    drawdown_hurdle = (
+        active_drawdown <= max(passive_drawdown, 1e-9) * drawdown_ratio_ceiling
+    )
     evidence_ready = bool(
         validator.get("evidence_ready", False)
         and len(common_days) >= minimum_days
@@ -171,8 +200,12 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
             "active_compound_return": round(active_return, 10),
             "passive_compound_return": round(passive_return, 10),
             "cash_compound_return": round(cash_return, 10),
+            "cash_proxy_compound_return": round(cash_proxy_return, 10),
             "active_excess_over_passive": round(active_return - passive_return, 10),
             "active_excess_over_cash": round(active_return - cash_return, 10),
+            "active_excess_over_cash_proxy": round(
+                active_return - cash_proxy_return, 10
+            ),
             "active_max_drawdown": round(active_drawdown, 10),
             "passive_max_drawdown": round(passive_drawdown, 10),
         },
@@ -185,6 +218,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, config_path: Path | None
         "blockers": blockers,
         "control_contract": {
             "cash_and_passive_hurdles_required": True,
+            "cash_proxy_hurdle_required": require_cash_proxy,
             "candidate_binding_enforced": True,
             "mid_session_candidate_freeze_days_rejected": True,
             "point_in_time_series_required": True,

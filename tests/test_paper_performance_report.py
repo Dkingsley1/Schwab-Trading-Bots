@@ -1,4 +1,5 @@
 import json
+import pytest
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -220,6 +221,111 @@ def test_paper_performance_report_json_only_skips_render_bundle(tmp_path, monkey
     assert sync_calls == [(project_root, out_file, True)]
 
 
+def test_paper_performance_report_survives_render_bundle_storage_failure(
+    tmp_path, monkeypatch
+) -> None:
+    project_root = tmp_path / "project"
+    log_dir = project_root / "exports" / "paper_broker_bridge" / "paper"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    out_file = project_root / "governance" / "health" / "paper_performance_latest.json"
+    md_file = project_root / "exports" / "reports" / "paper_performance_latest.md"
+    html_file = project_root / "exports" / "reports" / "paper_performance_latest.html"
+    pdf_file = project_root / "exports" / "reports" / "paper_performance_latest.pdf"
+    daily_chart = (
+        project_root / "exports" / "reports" / "paper_performance_daily_latest.png"
+    )
+    weekly_chart = (
+        project_root / "exports" / "reports" / "paper_performance_weekly_latest.png"
+    )
+    monthly_chart = (
+        project_root / "exports" / "reports" / "paper_performance_monthly_latest.png"
+    )
+    quarterly_chart = (
+        project_root
+        / "exports"
+        / "reports"
+        / "paper_performance_quarterly_latest.png"
+    )
+    sleeves_chart = (
+        project_root / "exports" / "reports" / "paper_performance_sleeves_latest.png"
+    )
+
+    row = {
+        "timestamp_utc": "2026-03-31T20:00:00+00:00",
+        "symbol": "NVDA",
+        "action": "BUY",
+        "strategy": "grand_master_bot",
+        "metadata": {"source_profile": "default"},
+        "realized_pnl_total": 3.0,
+        "unrealized_pnl_total": 1.5,
+    }
+    (log_dir / "paper_bridge_orders_20260331.jsonl").write_text(
+        json.dumps(row) + "\n", encoding="utf-8"
+    )
+
+    def _raise_permission_error(*_args, **_kwargs):
+        raise PermissionError("external report volume unavailable")
+
+    sync_calls = []
+
+    def _fake_sync(project_root_arg, performance_path, *, enabled):
+        sync_calls.append((project_root_arg, performance_path, enabled))
+        return {"ok": True, "attempted": True, "reason": "hash_bound"}
+
+    monkeypatch.setattr(report, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(
+        report, "render_paper_performance_graphs", _raise_permission_error
+    )
+    monkeypatch.setattr(report, "_render_pdf_from_html", _raise_permission_error)
+    monkeypatch.setattr(report, "_sync_profitability_control", _fake_sync)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "paper_performance_report.py",
+            "--day",
+            "20260331",
+            "--out-file",
+            str(out_file),
+            "--md-out-file",
+            str(md_file),
+            "--html-out-file",
+            str(html_file),
+            "--pdf-out-file",
+            str(pdf_file),
+            "--daily-chart-file",
+            str(daily_chart),
+            "--weekly-chart-file",
+            str(weekly_chart),
+            "--monthly-chart-file",
+            str(monthly_chart),
+            "--quarterly-chart-file",
+            str(quarterly_chart),
+            "--sleeves-chart-file",
+            str(sleeves_chart),
+        ],
+    )
+
+    rc = report.main()
+    payload = json.loads(out_file.read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert payload["day"]["ending_net_pnl_total"] == 4.5
+    assert payload["graphs"]["available"] is False
+    assert payload["graphs"]["mode"] == "render_bundle_storage_unavailable"
+    assert "PermissionError" in payload["graphs"]["error"]
+    assert payload["graphs"]["daily_png"] == ""
+    assert payload["graphs"]["intended_paths"]["daily_png"] == str(daily_chart)
+    assert payload["pdf"]["available"] is False
+    assert payload["pdf"]["detail"].startswith(
+        "render_bundle_storage_unavailable:PermissionError"
+    )
+    assert not md_file.exists()
+    assert not html_file.exists()
+    assert not pdf_file.exists()
+    assert sync_calls == [(project_root, out_file, True)]
+
+
 def test_profitability_generation_sync_requires_matching_hash(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "project"
     performance_path = project_root / "governance" / "health" / "paper_performance_latest.json"
@@ -240,6 +346,8 @@ def test_profitability_generation_sync_requires_matching_hash(tmp_path, monkeypa
                     "paper_performance_input_contract": {
                         "sha256": expected_hash,
                         "usable_for_profitability_grade": True,
+                        "source_fresh": True,
+                        "source_stable_during_read": True,
                     }
                 }
             ),
@@ -261,6 +369,50 @@ def test_profitability_generation_sync_requires_matching_hash(tmp_path, monkeypa
     assert result["paper_performance_sha256"] == expected_hash
     assert result["profitability_source_sha256"] == expected_hash
     assert sync_payload["generation_id"] == expected_hash[:16]
+
+
+@pytest.mark.parametrize("change,returncode,expected", [
+    ({}, 0, True),
+    ({"sha256": "wrong"}, 0, False),
+    ({"source_fresh": False}, 0, False),
+    ({"source_stable_during_read": False}, 0, False),
+    ({"blockers": ["paper_performance_has_no_execution_evidence", "paper_performance_has_no_sleeves"]}, 0, False),
+    ({}, 2, False),
+])
+def test_sync_publication_does_not_grant_missing_execution_qualification(tmp_path, monkeypatch, change, returncode, expected):
+    performance = tmp_path / "governance/health/paper_performance_latest.json"
+    performance.parent.mkdir(parents=True)
+    performance.write_text('{"ok":true}')
+    script = tmp_path / "scripts/ops/paper_profitability_control.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("# isolated test fixture\n")
+    contract = {
+        "sha256": report._file_sha256(performance),
+        "source_fresh": True,
+        "source_stable_during_read": True,
+        "usable_for_profitability_grade": False,
+        "blockers": ["paper_performance_has_no_execution_evidence"],
+        **change,
+    }
+
+    def runner(*args, **kwargs):
+        (performance.parent / "paper_profitability_control_latest.json").write_text(json.dumps({
+            "ok": False, "overall_status": "blocked_missing_evidence",
+            "paper_performance_input_contract": contract,
+        }))
+        return SimpleNamespace(returncode=returncode, stdout="", stderr="")
+
+    monkeypatch.setattr(report.subprocess, "run", runner)
+    result = report._sync_profitability_control(tmp_path, performance, enabled=True)
+    assert result["ok"] is expected
+    assert result["publication_verified"] is expected
+    assert not result["qualification_ready"]
+    assert not result["source_usable_for_grade"]
+    assert result["qualification_blockers"] == contract["blockers"]
+    if expected:
+        assert result["reason"] == "hash_bound_evidence_pending"
+        published = json.loads((performance.parent / "paper_profitability_control_latest.json").read_text())
+        assert published["overall_status"] == "blocked_missing_evidence"
 
 
 def test_sleeve_chart_profiles_keeps_all_unique_profiles() -> None:
@@ -431,6 +583,150 @@ def test_post_cost_expectancy_requires_positive_confidence_bound() -> None:
     assert expectancy["evidence_sufficient"] is True
     assert expectancy["positive_lower_confidence_bound_95"] is True
     assert expectancy["status"] == "positive_with_95pct_confidence"
+
+
+def test_post_cost_expectancy_reports_candidate_payoff_asymmetry() -> None:
+    rows = [
+        {
+            "timestamp_utc": "2026-03-31T20:00:00+00:00",
+            "paper_pnl_schema_version": 2,
+            "post_cost_pnl_delta": 4.0,
+            "post_cost_return_bps": 40.0,
+        },
+        {
+            "timestamp_utc": "2026-03-31T20:01:00+00:00",
+            "paper_pnl_schema_version": 2,
+            "post_cost_pnl_delta": -2.0,
+            "post_cost_return_bps": -20.0,
+        },
+    ]
+
+    expectancy = report._post_cost_expectancy(rows)
+
+    assert expectancy["payoff_asymmetry"] == {
+        "available": True,
+        "positive_sample_count": 1,
+        "negative_sample_count": 1,
+        "average_positive_post_cost_pnl_delta": 4.0,
+        "average_negative_post_cost_pnl_delta_abs": 2.0,
+        "average_win_to_average_loss_ratio": 2.0,
+        "profit_factor": 2.0,
+        "policy": "payoff asymmetry is measured only from candidate-bound post-cost wins and losses; independent-sample sufficiency remains a separate live gate",
+    }
+    decomposition = expectancy["expected_value_decomposition"]
+    assert decomposition["win_probability"] == 0.5
+    assert decomposition["average_win"] == 4.0
+    assert decomposition["loss_probability"] == 0.5
+    assert decomposition["average_loss_abs"] == 2.0
+    assert decomposition["expected_value"] == 1.0
+    assert decomposition["observed_mean"] == 1.0
+    assert decomposition["mean_identity_error"] == 0.0
+
+
+def test_promotion_cohort_accepts_only_exact_active_stage_identity(
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "profitability_self_assessment_v1.json").write_text(
+        json.dumps(
+            {
+                "promotion_cohort": {
+                    "enabled": True,
+                    "cohort_id": "dividend-test",
+                    "profile": "dividend",
+                    "sleeve_id": "dividend_income",
+                    "active_stage": 1,
+                    "maximum_active_stages": 1,
+                    "maximum_active_strategies": 1,
+                    "maximum_symbols_per_stage": 1,
+                    "stages": [
+                        {
+                            "stage": 1,
+                            "symbol": "SCHD",
+                            "strategy_id": "sleeve::dividend_income::quality_dividend::v1",
+                        },
+                        {
+                            "stage": 2,
+                            "symbol": "SPYD",
+                            "strategy_id": "sleeve::dividend_income::dividend_growth::v1",
+                        },
+                    ],
+                    "live_execution_allowed": False,
+                    "automatic_stage_advancement_allowed": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    cohort = report._promotion_cohort_context(tmp_path)
+    matching = {
+        "symbol": "SCHD",
+        "strategy": "fallback",
+        "metadata": {
+            "source_profile": "dividend",
+            "strategy_specialization": {
+                "sleeve_id": "dividend_income",
+                "selected_strategy_id": "sleeve::dividend_income::quality_dividend::v1",
+            },
+        },
+    }
+
+    assert cohort["valid"] is True
+    assert report._promotion_cohort_row_eligibility(matching, cohort) == (
+        True,
+        "active_promotion_stage_match",
+    )
+    assert report._promotion_cohort_row_eligibility(
+        {**matching, "symbol": "SPYD"}, cohort
+    ) == (False, "symbol_outside_active_stage")
+
+
+def test_candidate_post_cost_daily_series_keeps_profiles_and_days_separate() -> None:
+    rows = [
+        {
+            "timestamp_utc": "2026-03-31T20:00:00+00:00",
+            "paper_pnl_schema_version": 2,
+            "post_cost_pnl_delta": 1.0,
+            "post_cost_return_bps": 10.0,
+            "symbol": "SPY",
+            "strategy": "alpha",
+            "metadata": {"source_profile": "default"},
+        },
+        {
+            "timestamp_utc": "2026-03-31T21:00:00+00:00",
+            "paper_pnl_schema_version": 2,
+            "post_cost_pnl_delta": -0.25,
+            "post_cost_return_bps": -2.5,
+            "symbol": "QQQ",
+            "strategy": "beta",
+            "metadata": {"source_profile": "default"},
+        },
+        {
+            "timestamp_utc": "2026-04-01T14:00:00+00:00",
+            "paper_pnl_schema_version": 2,
+            "post_cost_pnl_delta": 2.0,
+            "post_cost_return_bps": 20.0,
+            "symbol": "SCHD",
+            "strategy": "income",
+            "metadata": {"source_profile": "dividend"},
+        },
+    ]
+
+    series = report._candidate_post_cost_daily_series(rows)
+
+    assert series["default"] == [
+        {
+            "day_utc": "20260331",
+            "sample_count": 2,
+            "post_cost_pnl_delta_total": 0.75,
+            "post_cost_return_bps_total": 7.5,
+            "mean_post_cost_return_bps": 3.75,
+            "unique_symbol_count": 2,
+            "unique_strategy_count": 2,
+        }
+    ]
+    assert series["dividend"][0]["day_utc"] == "20260401"
 
 
 def test_paper_performance_report_includes_win_rate_by_non_flat_strategy(tmp_path, monkeypatch) -> None:
@@ -951,6 +1247,7 @@ def test_candidate_forward_accounting_requires_current_candidate_identity(tmp_pa
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def row(timestamp: str, candidate_id: str, pnl: float) -> dict:
+        generation = 54 if candidate_id == "candidate-current" else 53
         return {
             "timestamp_utc": timestamp,
             "symbol": "SPY",
@@ -965,6 +1262,7 @@ def test_candidate_forward_accounting_requires_current_candidate_identity(tmp_pa
             "metadata": {
                 "source_profile": "default",
                 "production_candidate_id": candidate_id,
+                "production_candidate_generation": generation,
             },
         }
 
@@ -989,3 +1287,16 @@ def test_candidate_forward_accounting_requires_current_candidate_identity(tmp_pa
     assert views["candidate_forward_flow"]["candidate_ids"] == ["candidate-current"]
     assert views["candidate_forward_flow"]["candidate_binding_mismatch_rows_excluded"] == 1
     assert payload["post_cost_expectancy"]["sample_count"] == 1
+    developmental = payload["developmental_generation_flows"]
+    assert developmental["candidate_bound_sample_count"] == 3
+    assert developmental["unbound_schema_v2_sample_count"] == 0
+    assert developmental["metadata_conflict_count"] == 0
+    flows = {
+        row["candidate_id"]: row for row in developmental["generation_flows"]
+    }
+    assert flows["candidate-current"]["candidate_generation"] == 54
+    assert flows["candidate-current"]["sample_count"] == 2
+    assert flows["candidate-current"]["post_cost_pnl_delta_total"] == -2.0
+    assert flows["candidate-current"]["promotion_grade_eligible_from_this_view"] is False
+    assert flows["candidate-old"]["candidate_generation"] == 53
+    assert flows["candidate-old"]["sample_count"] == 1

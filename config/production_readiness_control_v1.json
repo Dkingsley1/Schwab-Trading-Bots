@@ -7,19 +7,75 @@
     "allow_order_execution_env": "ALLOW_ORDER_EXECUTION",
     "market_data_only_env": "MARKET_DATA_ONLY",
     "max_single_order_notional": 100.0,
-    "max_daily_loss": 25.0,
-    "max_order_quantity": 5,
+    "max_daily_loss": 2.0,
+    "max_cumulative_loss": 10.0,
+    "max_order_quantity": 1,
     "max_quote_age_seconds": 15.0,
+    "max_account_snapshot_age_seconds": 30.0,
     "max_spread_bps": 75.0,
+    "max_future_clock_skew_seconds": 2.0,
+    "live_execution_envelope_ttl_seconds": 15.0,
+    "require_sealed_live_execution_envelope": true,
+    "require_affirmative_risk_decision": true,
+    "require_quote_provenance": true,
+    "allowed_quote_providers": [
+      "schwab"
+    ],
+    "allowed_order_types": [
+      "LIMIT"
+    ],
+    "allowed_sessions": [
+      "NORMAL"
+    ],
+    "allowed_durations": [
+      "DAY"
+    ],
+    "require_whole_share_quantity": true,
+    "equity_tick_size": 0.01,
+    "cancel_unfilled_after_seconds": 60,
+    "require_primary_equity_session_open": true,
+    "primary_equity_calendar_id": "XNYS",
+    "equity_auction_buffer_minutes": 5.0,
+    "mutating_broker_retries_after_dispatch_allowed": false,
+    "allow_live_order_replace": false,
     "allowed_asset_types": ["EQUITY"],
     "allowed_instructions": ["BUY", "SELL"],
     "allow_new_short_positions": false,
     "permit_verified_emergency_risk_reduction": true,
     "canary_allowlist_path": "governance/runtime/live_canary_allowlist.json",
+    "canary_plan_path": "config/live_canary_micro_policy_v1.json",
+    "production_candidate_state_path": "governance/runtime/production_candidate_state.json",
+    "symbol_lifecycle_path": "config/symbol_lifecycle_v1.json",
+    "require_candidate_bound_canary_allowlist": true,
+    "account_reference_env": "SCHWAB_ACCOUNT_HASH",
+    "account_auto_discover_env": "SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER",
+    "require_pinned_account_reference": true,
+    "require_hash_account_reference": true,
+    "require_live_canary_preflight": true,
+    "account_policy_registry_path": "config/account_policy_registry.json",
+    "account_position_study_path": "governance/health/account_position_study_latest.json",
+    "max_account_preflight_age_seconds": 120.0,
+    "live_canary_operator_attestation_path": "governance/runtime/live_canary_operator_attestation.json",
+    "risk_service_boundary_path": "governance/risk/risk_service_boundary_latest.json",
+    "max_risk_boundary_age_seconds": 900.0,
+    "live_order_ledger_control_path": "governance/health/live_order_ledger_control_latest.json",
+    "max_live_order_ledger_age_seconds": 120.0,
+    "release_freeze_guard_path": "governance/health/release_freeze_guard_latest.json",
+    "max_release_guard_age_seconds": 900.0,
+    "trading_tax_ledger_path": "governance/tax/trading_tax_ledger_{year}_latest.json",
+    "max_tax_ledger_age_seconds": 86400.0,
+    "regime_control_plane_path": "governance/health/regime_control_plane_latest.json",
+    "max_regime_evidence_age_seconds": 900.0,
+    "wash_sale_review_lookback_days": 31,
+    "require_schwab_boundary_clear": true,
+    "schwab_boundary_quarantine_artifact": "governance/health/SCHWAB_BROKER_BOUNDARY_QUARANTINE.json",
     "production_excellence_artifact": "governance/health/production_excellence_control_latest.json",
     "require_production_excellence_for_live_submit": true,
     "live_transition_integrity_artifact": "governance/health/live_transition_integrity_control_latest.json",
     "require_live_transition_integrity_for_live_submit": true,
+    "system_role_contract_path": "config/system_role_contracts_v1.json",
+    "live_execution_component_id": "live_execution_gateway",
+    "require_system_role_contract_for_live_submit": true,
     "required_safety_flags": [
       "governance/health/PAPER_TRADE_LOCK.flag"
     ],
@@ -28,7 +84,7 @@
       "governance/health/GLOBAL_TRADING_HALT.flag"
     ],
     "order_intent_path": "governance/health/live_order_intents_latest.json",
-    "policy": "reject_by_default_unless_live_execution_is_explicitly_armed_and_every_order_intent_passes_limits_and_the_ten_pillar_production_excellence_contract"
+    "policy": "reject_by_default_unless live execution is explicitly armed and the candidate, account, settled-cash attestation, quote, risk, order-state, release, tax, and production-excellence evidence all pass"
   },
   "deterministic_replay": {
     "required_artifacts": [
@@ -79,13 +135,15 @@
       "scripts/ops/library_utilization_router.py",
       "scripts/ops/mlx_intelligence_router.py",
       "scripts/ops/promotion_pipeline.py",
+      "scripts/ops/system_role_contract_control.py",
       "scripts/secret_scan.py"
     ],
     "required_artifacts": [
       "governance/health/library_utilization_router_latest.json",
       "governance/health/mlx_intelligence_router_latest.json",
       "governance/health/live_readiness_smoke_latest.json",
-      "governance/health/promotion_quality_gate_latest.json"
+      "governance/health/promotion_quality_gate_latest.json",
+      "governance/health/system_role_contract_latest.json"
     ],
     "policy": "release_requires_static_security_dependency_router_and_smoke_artifacts"
   },
@@ -105,6 +163,7 @@
       "config/library_candidate_routes_v1.json",
       "config/library_activation_profiles_v1.json",
       "config/production_readiness_control_v1.json",
+      "config/system_role_contracts_v1.json",
       "config/.env.library_utilization_router_override",
       "config/runtime_profiles/live.lock.txt",
       "config/runtime_profiles/ops.lock.txt",
@@ -150,6 +209,15 @@
       "slo_error_budget_policy": ["ready"]
     },
     "required_capabilities": [
+      {
+        "capability_id": "system_role_contract",
+        "title": "System Responsibility And Runtime Authority",
+        "artifact": "governance/health/system_role_contract_latest.json",
+        "ready_statuses": ["ready"],
+        "max_age_hours": 0.5,
+        "truthy_keys": ["ok"],
+        "required": true
+      },
       {
         "capability_id": "external_alert_supervision",
         "title": "External Alert Supervision",

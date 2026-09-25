@@ -1,4 +1,5 @@
 import argparse
+from bisect import bisect_left
 import glob
 import json
 import math
@@ -820,11 +821,60 @@ def _canonical_behavior_decision_row(row: Dict[str, Any]) -> Optional[Dict[str, 
         "strategy": "grand_master_bot",
         "action": row.get("master_action") or row.get("master_intent_action") or row.get("action") or "HOLD",
         "quantity": row.get("quantity", portfolio.get("dispatch_qty", 0.0)),
+        "model_score": row.get("model_score", row.get("master_score")),
+        "threshold": row.get("threshold"),
+        "decision": row.get("decision") or row.get("status"),
+        "decision_id": row.get("decision_id") or metadata.get("decision_id"),
+        "log_schema_version": row.get("log_schema_version"),
+        "schema_valid": row.get("schema_valid", True),
+        "candidate_binding": row.get("candidate_binding"),
+        "alpha_evidence_contract": row.get("alpha_evidence_contract"),
+        "cross_sleeve_alpha_contract": row.get("cross_sleeve_alpha_contract"),
+        "data_route": row.get("data_route"),
+        "asset_class": row.get("asset_class"),
+        "routing_lane": row.get("routing_lane"),
         "mode": row.get("mode") or row.get("shadow_profile") or row.get("profile") or row.get("broker") or "",
         "features": features,
         "gates": row.get("gates") or row.get("execution_guard") or {},
+        "reasons": row.get("reasons") or [],
         "metadata": canonical_meta,
     }
+
+
+def _signed_forecast_score(value: Any) -> Optional[float]:
+    """Normalize a probability-like score for ranking diagnostics, never edge bps."""
+    try:
+        score = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(score):
+        return None
+    if 0.0 <= score <= 1.0:
+        return _clamp((2.0 * score) - 1.0, -1.0, 1.0)
+    return _clamp(score, -1.0, 1.0)
+
+
+def _post_cost_decision_outcome(
+    *,
+    action: str,
+    forward_return: float,
+    entry_cost_bps: float,
+    exit_cost_bps: float,
+    fee_bps: float,
+) -> Dict[str, Any]:
+    direction = _direction_for_action(action)
+    directional_return = (
+        float(direction) * float(forward_return) if direction else float(forward_return)
+    )
+    result = post_cost_adjusted_forward_return(
+        action=("BUY" if direction else "HOLD"),
+        forward_return=directional_return,
+        entry_cost_bps=entry_cost_bps,
+        exit_cost_bps=exit_cost_bps,
+        fee_bps=fee_bps,
+    )
+    result["gross_directional_forward_return"] = directional_return if direction else None
+    return result
 
 
 def _role_index(mode_label: str) -> float:
@@ -1919,6 +1969,73 @@ def _excursion_bucket(value: float, *, adverse: bool = False) -> str:
     return f"{prefix}_large"
 
 
+def _counterfactual_horizon_label(seconds: int) -> str:
+    if seconds % 86400 == 0:
+        return f"{seconds // 86400}d"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
+def _parse_counterfactual_horizons(value: Any) -> List[int]:
+    horizons: set[int] = set()
+    for item in str(value or "").split(","):
+        raw = item.strip()
+        if not raw:
+            continue
+        try:
+            seconds = int(float(raw))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if seconds > 0:
+            horizons.add(max(seconds, 30))
+    return sorted(horizons or {300, 3600, 86400})
+
+
+def _counterfactual_action_outcomes(
+    *,
+    raw_returns: Dict[int, float],
+    observed_action: str,
+    round_trip_cost_bps: float,
+) -> Dict[str, Any]:
+    cost_return = max(float(round_trip_cost_bps or 0.0), 0.0) / 10000.0
+    outcomes: Dict[str, Any] = {}
+    normalized_action = str(observed_action or "HOLD").strip().upper()
+    for seconds, raw_return in sorted(raw_returns.items()):
+        buy_outcome = float(raw_return) - cost_return
+        sell_outcome = -float(raw_return) - cost_return
+        action_values = {
+            "BUY": buy_outcome,
+            "SELL": sell_outcome,
+            "HOLD": 0.0,
+        }
+        best_action = max(action_values, key=action_values.get)
+        label = _counterfactual_horizon_label(int(seconds))
+        outcomes[label] = {
+            "horizon_seconds": int(seconds),
+            "raw_market_return": round(float(raw_return), 8),
+            "buy_post_cost_return": round(float(buy_outcome), 8),
+            "sell_post_cost_return": round(float(sell_outcome), 8),
+            "hold_return": 0.0,
+            "observed_action": normalized_action,
+            "observed_action_post_cost_return": round(
+                float(action_values.get(normalized_action, 0.0)), 8
+            ),
+            "best_action_post_cost": best_action,
+            "best_action_post_cost_return": round(float(action_values[best_action]), 8),
+            "observed_action_regret": round(
+                float(
+                    action_values[best_action]
+                    - action_values.get(normalized_action, 0.0)
+                ),
+                8,
+            ),
+        }
+    return outcomes
+
+
 def _path_dependent_labels(
     *,
     action: str,
@@ -2335,30 +2452,151 @@ def _decision_feature_vector(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build leak-free behavior dataset from shadow decisions (forward-return labels + rich context).")
-    parser.add_argument("--decision-glob", default=str(PROJECT_ROOT / "decision_explanations" / "shadow*" / "decision_explanations_*.jsonl"))
-    parser.add_argument("--channel-decision-glob", default=os.getenv("BEHAVIOR_DATASET_CHANNEL_DECISION_GLOB", str(PROJECT_ROOT / "governance" / "channels" / "decision" / "*" / "decision_*.jsonl")))
-    parser.add_argument("--governance-glob", default=str(PROJECT_ROOT / "governance" / "shadow*" / "master_control_*.jsonl"))
-    parser.add_argument("--pnl-attribution-glob", default=str(PROJECT_ROOT / "governance" / "shadow*" / "shadow_pnl_attribution_*.jsonl"))
-    parser.add_argument("--paper-trades-glob", default=str(PROJECT_ROOT / "exports" / "trade_logs" / "**" / "paper_trades_*.jsonl"))
-    parser.add_argument("--out-file", default=str(PROJECT_ROOT / "data" / "trade_history" / "trade_learning_dataset.json"))
-    parser.add_argument("--policy", default=str(PROJECT_ROOT / "config" / "trade_learning_policy.json"))
-    parser.add_argument("--lookback-hours", type=int, default=int(os.getenv("BEHAVIOR_DATASET_LOOKBACK_HOURS", "96")))
-    parser.add_argument("--horizon-seconds", type=int, default=int(os.getenv("BEHAVIOR_DATASET_FORWARD_HORIZON_SECONDS", "300")))
-    parser.add_argument("--aux-horizon-seconds", type=int, default=int(os.getenv("BEHAVIOR_DATASET_FORWARD_AUX_HORIZON_SECONDS", "900")))
-    parser.add_argument("--horizon-blend-alpha", type=float, default=float(os.getenv("BEHAVIOR_DATASET_HORIZON_BLEND_ALPHA", "0.65")))
-    parser.add_argument("--max-examples", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MAX_EXAMPLES", "120000")))
-    parser.add_argument("--min-per-symbol", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MIN_PER_SYMBOL", "8")))
-    parser.add_argument("--max-per-symbol", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MAX_PER_SYMBOL", "3000")))
-    parser.add_argument("--max-per-symbol-regime", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MAX_PER_SYMBOL_REGIME", "1200")))
-    parser.add_argument("--decision-tail-bytes", type=int, default=int(os.getenv("BEHAVIOR_DATASET_DECISION_TAIL_BYTES", str(16 * 1024 * 1024))))
-    parser.add_argument("--governance-tail-bytes", type=int, default=int(os.getenv("BEHAVIOR_DATASET_GOVERNANCE_TAIL_BYTES", str(8 * 1024 * 1024))))
-    parser.add_argument("--pnl-tail-bytes", type=int, default=int(os.getenv("BEHAVIOR_DATASET_PNL_TAIL_BYTES", str(64 * 1024 * 1024))))
-    parser.add_argument("--paper-trades-tail-bytes", type=int, default=int(os.getenv("BEHAVIOR_DATASET_PAPER_TRADES_TAIL_BYTES", str(64 * 1024 * 1024))))
-    parser.add_argument("--channel-decision-max-files", type=int, default=int(os.getenv("BEHAVIOR_DATASET_CHANNEL_DECISION_MAX_FILES", "96")))
-    parser.add_argument("--sqlite-path", default=os.getenv("BEHAVIOR_DATASET_SQLITE_PATH", ""))
-    parser.add_argument("--min-output-rows", type=int, default=int(os.getenv("BEHAVIOR_DATASET_MIN_OUTPUT_ROWS", "50")))
-    parser.add_argument("--failure-file", default=os.getenv("BEHAVIOR_DATASET_FAILURE_FILE", str(DEFAULT_BUILD_FAILURE_PATH)))
+    parser = argparse.ArgumentParser(
+        description="Build leak-free behavior dataset from shadow decisions (forward-return labels + rich context)."
+    )
+    parser.add_argument(
+        "--decision-glob",
+        default=str(
+            PROJECT_ROOT
+            / "decision_explanations"
+            / "shadow*"
+            / "decision_explanations_*.jsonl"
+        ),
+    )
+    parser.add_argument(
+        "--channel-decision-glob",
+        default=os.getenv(
+            "BEHAVIOR_DATASET_CHANNEL_DECISION_GLOB",
+            str(
+                PROJECT_ROOT
+                / "governance"
+                / "channels"
+                / "decision"
+                / "*"
+                / "decision_*.jsonl"
+            ),
+        ),
+    )
+    parser.add_argument(
+        "--governance-glob",
+        default=str(PROJECT_ROOT / "governance" / "shadow*" / "master_control_*.jsonl"),
+    )
+    parser.add_argument(
+        "--pnl-attribution-glob",
+        default=str(
+            PROJECT_ROOT / "governance" / "shadow*" / "shadow_pnl_attribution_*.jsonl"
+        ),
+    )
+    parser.add_argument(
+        "--paper-trades-glob",
+        default=str(
+            PROJECT_ROOT / "exports" / "trade_logs" / "**" / "paper_trades_*.jsonl"
+        ),
+    )
+    parser.add_argument(
+        "--out-file",
+        default=str(
+            PROJECT_ROOT / "data" / "trade_history" / "trade_learning_dataset.json"
+        ),
+    )
+    parser.add_argument(
+        "--policy", default=str(PROJECT_ROOT / "config" / "trade_learning_policy.json")
+    )
+    parser.add_argument(
+        "--lookback-hours",
+        type=int,
+        default=int(os.getenv("BEHAVIOR_DATASET_LOOKBACK_HOURS", "96")),
+    )
+    parser.add_argument(
+        "--horizon-seconds",
+        type=int,
+        default=int(os.getenv("BEHAVIOR_DATASET_FORWARD_HORIZON_SECONDS", "300")),
+    )
+    parser.add_argument(
+        "--aux-horizon-seconds",
+        type=int,
+        default=int(os.getenv("BEHAVIOR_DATASET_FORWARD_AUX_HORIZON_SECONDS", "900")),
+    )
+    parser.add_argument(
+        "--horizon-blend-alpha",
+        type=float,
+        default=float(os.getenv("BEHAVIOR_DATASET_HORIZON_BLEND_ALPHA", "0.65")),
+    )
+    parser.add_argument(
+        "--counterfactual-horizons-seconds",
+        default=os.getenv(
+            "BEHAVIOR_DATASET_COUNTERFACTUAL_HORIZONS_SECONDS",
+            "300,3600,86400",
+        ),
+    )
+    parser.add_argument(
+        "--max-examples",
+        type=int,
+        default=int(os.getenv("BEHAVIOR_DATASET_MAX_EXAMPLES", "120000")),
+    )
+    parser.add_argument(
+        "--min-per-symbol",
+        type=int,
+        default=int(os.getenv("BEHAVIOR_DATASET_MIN_PER_SYMBOL", "8")),
+    )
+    parser.add_argument(
+        "--max-per-symbol",
+        type=int,
+        default=int(os.getenv("BEHAVIOR_DATASET_MAX_PER_SYMBOL", "3000")),
+    )
+    parser.add_argument(
+        "--max-per-symbol-regime",
+        type=int,
+        default=int(os.getenv("BEHAVIOR_DATASET_MAX_PER_SYMBOL_REGIME", "1200")),
+    )
+    parser.add_argument(
+        "--decision-tail-bytes",
+        type=int,
+        default=int(
+            os.getenv("BEHAVIOR_DATASET_DECISION_TAIL_BYTES", str(16 * 1024 * 1024))
+        ),
+    )
+    parser.add_argument(
+        "--governance-tail-bytes",
+        type=int,
+        default=int(
+            os.getenv("BEHAVIOR_DATASET_GOVERNANCE_TAIL_BYTES", str(8 * 1024 * 1024))
+        ),
+    )
+    parser.add_argument(
+        "--pnl-tail-bytes",
+        type=int,
+        default=int(
+            os.getenv("BEHAVIOR_DATASET_PNL_TAIL_BYTES", str(64 * 1024 * 1024))
+        ),
+    )
+    parser.add_argument(
+        "--paper-trades-tail-bytes",
+        type=int,
+        default=int(
+            os.getenv("BEHAVIOR_DATASET_PAPER_TRADES_TAIL_BYTES", str(64 * 1024 * 1024))
+        ),
+    )
+    parser.add_argument(
+        "--channel-decision-max-files",
+        type=int,
+        default=int(os.getenv("BEHAVIOR_DATASET_CHANNEL_DECISION_MAX_FILES", "96")),
+    )
+    parser.add_argument(
+        "--sqlite-path", default=os.getenv("BEHAVIOR_DATASET_SQLITE_PATH", "")
+    )
+    parser.add_argument(
+        "--min-output-rows",
+        type=int,
+        default=int(os.getenv("BEHAVIOR_DATASET_MIN_OUTPUT_ROWS", "50")),
+    )
+    parser.add_argument(
+        "--failure-file",
+        default=os.getenv(
+            "BEHAVIOR_DATASET_FAILURE_FILE", str(DEFAULT_BUILD_FAILURE_PATH)
+        ),
+    )
     parser.add_argument(
         "--prefer-sql",
         action=argparse.BooleanOptionalAction,
@@ -2432,6 +2670,9 @@ def main() -> int:
     horizon_aux_s = max(int(args.aux_horizon_seconds), 0)
     aux_enabled = horizon_aux_s >= 30
     blend_alpha = _clamp(float(args.horizon_blend_alpha), 0.0, 1.0)
+    counterfactual_horizons = _parse_counterfactual_horizons(
+        args.counterfactual_horizons_seconds
+    )
 
     decision_pattern = _routed_input_pattern(args.decision_glob, project_root=PROJECT_ROOT)
     channel_decision_pattern = _routed_input_pattern(args.channel_decision_glob, project_root=PROJECT_ROOT)
@@ -2557,6 +2798,27 @@ def main() -> int:
         action = _normalize_action(str(row.get("action") or "HOLD"))
         mode_label = str(row.get("mode") or "")
         snapshot_id = str((row.get("metadata") or {}).get("snapshot_id") or "").strip()
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        specialization = metadata.get("strategy_specialization") if isinstance(metadata.get("strategy_specialization"), dict) else {}
+        candidate_binding = row.get("candidate_binding") if isinstance(row.get("candidate_binding"), dict) else {}
+        alpha_evidence_contract = row.get("alpha_evidence_contract") if isinstance(row.get("alpha_evidence_contract"), dict) else {}
+        cross_sleeve_alpha_contract = row.get("cross_sleeve_alpha_contract") if isinstance(row.get("cross_sleeve_alpha_contract"), dict) else {}
+        data_route = row.get("data_route") if isinstance(row.get("data_route"), dict) else {}
+        candidate_id = str(
+            metadata.get("production_candidate_id")
+            or metadata.get("candidate_id")
+            or row.get("production_candidate_id")
+            or ""
+        ).strip()
+        candidate_generation = max(
+            int(_to_float(
+                metadata.get("production_candidate_generation")
+                or row.get("production_candidate_generation")
+                or candidate_binding.get("generation"),
+                0.0,
+            )),
+            0,
+        )
 
         by_symbol[symbol].append(
             {
@@ -2569,9 +2831,29 @@ def main() -> int:
                 "mode": mode_label,
                 "role_idx": _role_index(mode_label),
                 "snapshot_id": snapshot_id,
+                "production_candidate_id": candidate_id,
+                "production_candidate_generation": candidate_generation,
+                "candidate_binding": candidate_binding,
+                "source_strategy": str(row.get("strategy") or ""),
+                "profile": str(specialization.get("profile") or row.get("profile") or mode_label or ""),
+                "sleeve_id": str(specialization.get("sleeve_id") or cross_sleeve_alpha_contract.get("sleeve") or ""),
+                "selected_strategy_id": str(specialization.get("selected_strategy_id") or ""),
+                "selected_strategy_name": str(specialization.get("selected_strategy_name") or ""),
+                "strategy_source_kind": str(specialization.get("source_kind") or ""),
+                "model_score": (_to_float(row.get("model_score"), 0.0) if row.get("model_score") is not None else None),
+                "signed_forecast_score": _signed_forecast_score(row.get("model_score")),
+                "threshold": (_to_float(row.get("threshold"), 0.0) if row.get("threshold") is not None else None),
+                "decision": str(row.get("decision") or ""),
+                "decision_id": str(row.get("decision_id") or metadata.get("decision_id") or ""),
+                "log_schema_version": int(_to_float(row.get("log_schema_version"), 0.0)),
+                "schema_valid": bool(row.get("schema_valid", True)),
+                "asset_class": str(row.get("asset_class") or data_route.get("asset_class") or ""),
+                "routing_lane": str(row.get("routing_lane") or data_route.get("routing_lane") or ""),
+                "alpha_evidence_contract": alpha_evidence_contract,
                 "features": features,
                 "last_price": last_price,
                 "gates": row.get("gates") or {},
+                "reasons": list(row.get("reasons") or []),
             }
         )
 
@@ -2588,6 +2870,7 @@ def main() -> int:
 
     for symbol, rows in by_symbol.items():
         rows.sort(key=lambda r: r["ts_epoch"])
+        row_epochs = [float(row["ts_epoch"]) for row in rows]
         if len(rows) < max(args.min_per_symbol, 2):
             skipped_low_symbol_rows += len(rows)
             continue
@@ -2624,6 +2907,22 @@ def main() -> int:
                 skipped_no_horizon += 1
                 continue
 
+            counterfactual_raw_returns: Dict[int, float] = {}
+            for horizon_seconds in counterfactual_horizons:
+                horizon_index = bisect_left(
+                    row_epochs,
+                    base["ts_epoch"] + horizon_seconds,
+                    lo=i + 1,
+                )
+                if horizon_index >= n:
+                    continue
+                future_price = _to_float(rows[horizon_index].get("last_price"), 0.0)
+                if future_price <= 0.0:
+                    continue
+                counterfactual_raw_returns[horizon_seconds] = (
+                    future_price - base["last_price"]
+                ) / max(base["last_price"], 1e-6)
+
             horizon_indices = []
             if ret_primary is not None:
                 horizon_indices.append(j_primary)
@@ -2657,14 +2956,29 @@ def main() -> int:
                 _to_float(paper_snapshot.get("mean_entry_cost_bps"), 0.0),
                 minimum_entry_cost_bps,
             )
-            post_cost = post_cost_adjusted_forward_return(
+            post_cost = _post_cost_decision_outcome(
                 action=base["action"],
                 forward_return=forward_return,
                 entry_cost_bps=(observed_entry_cost_bps if post_cost_labels_enabled else 0.0),
                 exit_cost_bps=(default_exit_cost_bps if post_cost_labels_enabled else 0.0),
                 fee_bps=(fee_bps if post_cost_labels_enabled else 0.0),
             )
-            post_cost_forward_return = _to_float(post_cost.get("post_cost_forward_return"), forward_return)
+            directional_forward_return = _to_float(
+                post_cost.get("gross_directional_forward_return"), forward_return
+            )
+            trade_direction = _direction_for_action(base["action"])
+            post_cost_forward_return = _to_float(
+                post_cost.get("post_cost_forward_return"), forward_return
+            )
+            counterfactual_action_outcomes = _counterfactual_action_outcomes(
+                raw_returns=counterfactual_raw_returns,
+                observed_action=base["action"],
+                round_trip_cost_bps=(
+                    observed_entry_cost_bps + default_exit_cost_bps + fee_bps
+                    if post_cost_labels_enabled
+                    else 0.0
+                ),
+            )
             path_labels = (
                 _path_dependent_labels(
                     action=base["action"],
@@ -2746,11 +3060,36 @@ def main() -> int:
                     "timestamp_utc": base["timestamp_utc"],
                     "symbol": symbol,
                     "action": base["action"],
+                    "quantity": round(_to_float(base.get("quantity"), 0.0), 8),
+                    "production_candidate_id": base.get("production_candidate_id", ""),
+                    "production_candidate_generation": int(
+                        base.get("production_candidate_generation", 0) or 0
+                    ),
+                    "candidate_binding": dict(base.get("candidate_binding") or {}),
+                    "decision_id": base.get("decision_id", ""),
+                    "decision": base.get("decision", ""),
+                    "source_strategy": base.get("source_strategy", ""),
+                    "profile": base.get("profile", ""),
+                    "sleeve_id": base.get("sleeve_id", ""),
+                    "selected_strategy_id": base.get("selected_strategy_id", ""),
+                    "selected_strategy_name": base.get("selected_strategy_name", ""),
+                    "strategy_source_kind": base.get("strategy_source_kind", ""),
+                    "model_score": base.get("model_score"),
+                    "signed_forecast_score": base.get("signed_forecast_score"),
+                    "forecast_semantics": "centered_probability_or_bounded_signed_score_not_expected_return",
+                    "threshold": base.get("threshold"),
+                    "log_schema_version": int(base.get("log_schema_version", 0) or 0),
+                    "schema_valid": bool(base.get("schema_valid", True)),
+                    "asset_class": base.get("asset_class", ""),
+                    "routing_lane": base.get("routing_lane", ""),
                     "regime": regime,
                     "label": label,
                     "label_confidence": round(label_conf, 6),
                     "label_confidence_proxy": round(label_conf_proxy, 6),
                     "forward_return": round(forward_return, 8),
+                    "gross_directional_forward_return": (
+                        round(directional_forward_return, 8) if trade_direction else None
+                    ),
                     "post_cost_forward_return": round(post_cost_forward_return, 8),
                     "round_trip_cost_bps": round(_to_float(post_cost.get("round_trip_cost_bps"), 0.0), 6),
                     "post_cost_label": bool(post_cost_labels_enabled and base["action"] in {"BUY", "SELL"}),
@@ -2761,7 +3100,30 @@ def main() -> int:
                     "horizon_blend_alpha": round(blend_alpha, 4),
                     "horizon_profile": horizon_profile,
                     "horizon_disagree": bool(horizon_disagree),
+                    "counterfactual_action_outcomes": counterfactual_action_outcomes,
+                    **{
+                        f"counterfactual_{label}_outcome": outcome
+                        for label, outcome in counterfactual_action_outcomes.items()
+                    },
                     **path_labels,
+                    "measurement_context": {
+                        key: base["features"].get(key)
+                        for key in (
+                            "last_price", "bid_price", "ask_price", "spread_bps",
+                            "bid_size", "ask_size", "pct_from_close", "mom_5m",
+                            "vol_30m", "expected_slippage_bps", "lag_slippage_bps",
+                            "lag_impact_bps", "lag_fee_bps",
+                            "market_micro_relative_volume_norm",
+                            "market_micro_order_flow_imbalance_norm",
+                            "market_micro_tradeability_score_norm",
+                            "ctx_SPY_pct_from_close", "ctx_QQQ_pct_from_close",
+                            "ctx_IWM_pct_from_close", "ctx_TLT_pct_from_close",
+                            "ctx_UUP_pct_from_close",
+                        )
+                        if key in base["features"]
+                    },
+                    "alpha_evidence_contract": dict(base.get("alpha_evidence_contract") or {}),
+                    "reasons": list(base.get("reasons") or []),
                     "sample_weight": round(max(weight, 0.05), 6),
                     "features": feats,
                 }
@@ -2780,7 +3142,7 @@ def main() -> int:
     payload = {
         "timestamp_utc": now_utc.isoformat(),
         "dataset_kind": "curated_decision_governance",
-        "schema": "behavior_dataset_v7_post_cost_path_labels_point_in_time",
+        "schema": "behavior_dataset_v8_candidate_bound_multi_horizon_counterfactuals",
         "feature_schema_version": "trade_behavior_features_v6",
         "lookback_hours": int(args.lookback_hours),
         "horizons": {
@@ -2788,6 +3150,11 @@ def main() -> int:
             "aux_seconds": int(horizon_aux_s if aux_enabled else 0),
             "blend_alpha": float(blend_alpha),
             "aux_enabled": bool(aux_enabled),
+            "counterfactual_seconds": counterfactual_horizons,
+            "counterfactual_labels": [
+                _counterfactual_horizon_label(seconds)
+                for seconds in counterfactual_horizons
+            ],
         },
         "caps": {
             "max_examples": int(args.max_examples),
@@ -2892,7 +3259,16 @@ def main() -> int:
                 "post_entry_regime_bucket",
                 "no_trade_counterfactual_outcome",
                 "trade_vs_no_trade_excess_return",
+                "counterfactual_action_outcomes",
+                "counterfactual_5m_outcome",
+                "counterfactual_1h_outcome",
+                "counterfactual_1d_outcome",
             ],
+            "counterfactual_action_horizons": [
+                _counterfactual_horizon_label(seconds)
+                for seconds in counterfactual_horizons
+            ],
+            "counterfactual_actions": ["BUY", "SELL", "HOLD"],
             "no_trade_baseline": "cash_return_zero_before_financing_cost",
             "endpoint_only_training_allowed": False,
         },

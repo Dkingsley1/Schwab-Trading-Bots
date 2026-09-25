@@ -14,6 +14,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.channel_queue import default_queue_db_path
 from core.runtime_maintenance import maintenance_hold_snapshot
+from scripts.ops.scheduled_lifecycle_common import lifecycle_receipt
+from scripts.ops.sql_writer_lock_path import configured_sql_writer_lock_path
+from scripts.ops.sql_writer_admission import defer_storage_writer
 
 PY = PROJECT_ROOT / '.venv314' / 'bin' / 'python'
 LINK_SCRIPT = PROJECT_ROOT / 'scripts' / 'link_jsonl_to_sql.py'
@@ -33,6 +36,41 @@ QUEUE_DB_PATH = Path(
     )
 ).expanduser()
 PROGRESS_HEALTH = PROJECT_ROOT / 'governance' / 'health' / 'sql_link_service_progress_latest.json'
+OUT_PATH = PROJECT_ROOT / 'governance' / 'health' / 'sql_link_service_latest.json'
+
+
+def _writer_lifecycle(
+    *,
+    started_utc: datetime,
+    completed_utc: datetime,
+    interval_seconds: int,
+    rc: int,
+    terminal_status: str,
+    deferred_reason: str = '',
+    failure_reason: str = '',
+    stdout_tail: str = '',
+    stderr_tail: str = '',
+) -> dict:
+    ok = int(rc) == 0 and terminal_status in {'completed', 'deferred'}
+    return lifecycle_receipt(
+        job_id='sql_link_writer',
+        scheduled=True,
+        started_utc=started_utc,
+        completed_utc=completed_utc,
+        schedule_interval_seconds=interval_seconds,
+        rc=int(rc),
+        terminal_status=terminal_status,
+        ok=ok,
+        deferred_reason=deferred_reason,
+        failure_reason='' if ok else failure_reason or terminal_status,
+        stdout_tail=stdout_tail,
+        stderr_tail=stderr_tail,
+        artifact_present_before=OUT_PATH.exists(),
+        artifact_present_after=True,
+        deadline_seconds=int(os.getenv('MAINTENANCE_SLOT_SQL_LINK_WRITER_MAX_RUNTIME_SECONDS', '900')),
+        command=['scripts/ops/sql_link_writer_service.py'],
+        source='sql_link_writer_service',
+    )
 
 
 def _db_size_gb(path: Path) -> float:
@@ -224,7 +262,7 @@ def main() -> int:
     parser.add_argument('--sqlite-timeout-seconds', type=int, default=int(os.getenv('SQL_LINK_SERVICE_SQLITE_TIMEOUT', '300')))
     parser.add_argument('--sqlite-lock-retries', type=int, default=int(os.getenv('SQL_LINK_SERVICE_LOCK_RETRIES', '200')))
     parser.add_argument('--sqlite-lock-retry-delay-seconds', type=float, default=float(os.getenv('SQL_LINK_SERVICE_LOCK_RETRY_DELAY_SECONDS', '0.5')))
-    parser.add_argument('--lock-path', default=str(PROJECT_ROOT / 'governance' / 'locks' / 'jsonl_sql_writer.lock'))
+    parser.add_argument('--lock-path', default=str(configured_sql_writer_lock_path(PROJECT_ROOT)))
     parser.add_argument('--json-file-sync-min-interval-seconds', type=int, default=int(os.getenv('SQL_LINK_SERVICE_JSON_FILE_SYNC_MIN_INTERVAL_SECONDS', '1800')))
     parser.add_argument('--auto-wal-checkpoint', action='store_true', default=os.getenv('SQL_LINK_SERVICE_AUTO_WAL_CHECKPOINT', '1') == '1')
     parser.add_argument('--wal-checkpoint-threshold-gb', type=float, default=float(os.getenv('SQL_LINK_SERVICE_WAL_CHECKPOINT_THRESHOLD_GB', '2')))
@@ -261,14 +299,31 @@ def main() -> int:
     parser.add_argument('--once', action='store_true')
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
+    storage_hold = defer_storage_writer(PROJECT_ROOT, owner="sql_link_writer_service")
+    if storage_hold:
+        print(json.dumps(storage_hold, ensure_ascii=True))
+        return 75
+    out_path = OUT_PATH
     maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
     if bool(maintenance_hold.get('active', False)):
+        ts = datetime.now(timezone.utc)
         payload = {
+            'timestamp_utc': ts.isoformat(),
             'ok': True,
-            'overall_status': 'guarded_hold',
+            'overall_status': 'deferred',
             'reason': 'runtime_maintenance_hold_active',
             'runtime_maintenance_hold': maintenance_hold,
+            'job_lifecycle': _writer_lifecycle(
+                started_utc=ts,
+                completed_utc=ts,
+                interval_seconds=int(args.interval_seconds),
+                rc=0,
+                terminal_status='deferred',
+                deferred_reason='runtime_maintenance_hold_active',
+            ),
         }
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')
         print(json.dumps(payload, ensure_ascii=True) if args.json else 'sql_link_writer_service guarded_hold=runtime_maintenance_hold_active')
         return 75
 
@@ -279,12 +334,23 @@ def main() -> int:
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        ts = datetime.now(timezone.utc)
         fh.seek(0)
         owner = fh.read().strip()
-        msg = {'ok': False, 'reason': 'writer_lock_busy', 'lock_path': str(lock_path), 'owner': owner}
+        msg = {'timestamp_utc': ts.isoformat(), 'ok': True, 'overall_status': 'deferred', 'reason': 'writer_lock_busy', 'lock_path': str(lock_path), 'owner': owner}
         progress = _busy_progress_summary()
         if progress:
             msg['service_progress'] = progress
+        msg['job_lifecycle'] = _writer_lifecycle(
+            started_utc=ts,
+            completed_utc=ts,
+            interval_seconds=int(args.interval_seconds),
+            rc=0,
+            terminal_status='deferred',
+            deferred_reason='writer_lock_busy',
+        )
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(msg, ensure_ascii=True, indent=2), encoding='utf-8')
         if args.json:
             print(json.dumps(msg, ensure_ascii=True))
         else:
@@ -304,14 +370,18 @@ def main() -> int:
     fh.write(f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()} cmd=sql_link_writer_service")
     fh.flush()
 
-    out_path = PROJECT_ROOT / 'governance' / 'health' / 'sql_link_service_latest.json'
     last_wal_checkpoint_ts = 0.0
     last_hot_retention_ts = 0.0
     last_queue_retention_ts = 0.0
     last_json_file_sync_ts = 0.0
 
     while True:
-        ts = datetime.now(timezone.utc).isoformat()
+        storage_hold = defer_storage_writer(PROJECT_ROOT, owner="sql_link_writer_service")
+        if storage_hold:
+            print(json.dumps(storage_hold, ensure_ascii=True))
+            return 75
+        cycle_started_utc = datetime.now(timezone.utc)
+        ts = cycle_started_utc.isoformat()
         cycle_ts = time.time()
         json_file_sync_interval = max(int(args.json_file_sync_min_interval_seconds), 60)
         include_json_files = (cycle_ts - float(last_json_file_sync_ts)) >= json_file_sync_interval
@@ -484,6 +554,7 @@ def main() -> int:
             'skipped_reason': '' if include_json_files else 'min_interval_not_met',
         }
 
+        cycle_completed_utc = datetime.now(timezone.utc)
         payload = {
             'timestamp_utc': ts,
             'ok': rc == 0,
@@ -498,6 +569,16 @@ def main() -> int:
             'wal_checkpoint': wal_checkpoint,
             'hot_retention': hot_retention,
             'queue_retention': queue_retention,
+            'job_lifecycle': _writer_lifecycle(
+                started_utc=cycle_started_utc,
+                completed_utc=cycle_completed_utc,
+                interval_seconds=int(args.interval_seconds),
+                rc=int(rc),
+                terminal_status='completed' if rc == 0 else 'failed',
+                failure_reason='' if rc == 0 else 'link_failed',
+                stdout_tail='\n'.join(out.splitlines()[-20:]),
+                stderr_tail='\n'.join(err.splitlines()[-20:]),
+            ),
         }
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding='utf-8')

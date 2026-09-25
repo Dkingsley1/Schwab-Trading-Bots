@@ -2,8 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
+import math
+import os
+import re
 import sys
+import time
+from contextlib import ExitStack
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,10 +23,17 @@ if __package__ in {None, ""}:
 else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
 
+from core.storage_router import inspect_storage_path
+from core.status_label_contract import evidence_label, read_label_source
+from core.write_path_recovery import MAX_DOMAINS, MAX_RECORDS, digest, domain_id, recovery_pass
+
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "data_plane_recovery_controller_latest.json"
 PAPER_STORAGE_PRESSURE_ADVISORY_CEILING = 0.50
 PAPER_STORAGE_PRESSURE_TARGET = 0.25
+WRITE_HISTORY_MAX_FILES = 64
+WRITE_HISTORY_MAX_BYTES = 8 * 1024**2
+WRITE_HISTORY_MAX_ROWS = 25000
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -51,6 +65,184 @@ def _parse_dt(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _write_failure_history(project_root: Path, incident: dict[str, Any]) -> dict[str, Any]:
+    """Count the timeline's two latest daily families before its display cap."""
+    directory = project_root / "governance/events"
+    route = inspect_storage_path(directory, boundary_root=project_root, allow_external=False)
+    prior_path = project_root / "governance/health/data_plane_recovery_controller_latest.json"
+    prior_route = inspect_storage_path(prior_path, boundary_root=project_root, allow_external=False)
+    prior = load_json(Path(prior_route["resolved_path"])) if prior_route["status"] == "present" else {}
+    previous = prior.get("write_failure_history")
+    previous = previous if isinstance(previous, dict) else {}
+    errors = []
+    if prior_route["status"] not in {"present", "missing"}:
+        errors.append({"path": str(prior_path), "route_status": prior_route["status"]})
+    files = []
+    scope_dates = []
+    families = defaultdict(list)
+    rows = []
+    used_bytes = 0
+    scanned_rows = 0
+    now = datetime.now(timezone.utc)
+    deadline = time.monotonic() + 8.0
+    if route["status"] == "missing" and not previous and not errors:
+        # Compatibility for older installations; never label this complete history.
+        legacy = [row for row in (incident.get("recent_incidents") or [])
+                  if isinstance(row, dict) and row.get("summary") == "write_failure"]
+        count = max(len(legacy), _safe_int(prior.get("raw_write_failure_count"), 0))
+        return {"source": "legacy_timeline", "complete": False, "count": count,
+                "raw_event_count": len(legacy), "duplicate_count": 0,
+                "errors": ([{"path": str(directory), "route_status": "missing"}]
+                           if _safe_int(prior.get("raw_write_failure_count"), 0) > 0 else []),
+                "coverage": "display_only_journal_unavailable"}
+    if route["status"] != "present":
+        errors.append({"path": str(directory), "route_status": route["status"]})
+    else:
+        try:
+            with os.scandir(str(route["resolved_path"])) as entries:
+                for index, entry in enumerate(entries):
+                    if index >= 4096:
+                        raise ValueError("write_history_directory_budget_exceeded")
+                    match = re.fullmatch(r"write_failures_(\d{8})\.jsonl(?:\.raw-training)?(?:\.gz)?", entry.name)
+                    if match:
+                        day = datetime.strptime(match[1], "%Y%m%d").date()
+                        if day > now.date():
+                            errors.append({"path": str(directory / entry.name), "reason": "future_journal_date"})
+                            continue
+                        families[match[1]].append(directory / entry.name)
+            scope_dates = sorted(families, reverse=True)[:2]
+            files = [path for day in scope_dates for path in sorted(families[day])]
+            if len(files) > WRITE_HISTORY_MAX_FILES:
+                raise ValueError("write_history_file_budget_exceeded")
+            for path in files:
+                observation = inspect_storage_path(path, boundary_root=project_root, allow_external=False)
+                if observation["status"] != "present" or observation.get("size_bytes") is None:
+                    errors.append({"path": str(path), "route_status": observation["status"]})
+                    continue
+                with ExitStack() as stack:
+                    raw = stack.enter_context(os.fdopen(os.open(str(observation["resolved_path"]), os.O_RDONLY | os.O_NOFOLLOW), "rb"))
+                    before = os.fstat(raw.fileno())
+                    handle = stack.enter_context(gzip.GzipFile(fileobj=raw)) if path.suffix == ".gz" else raw
+                    while True:
+                        if time.monotonic() >= deadline:
+                            raise ValueError("write_history_time_budget_exceeded")
+                        line = handle.readline(min(2 * 1024**2, WRITE_HISTORY_MAX_BYTES - used_bytes) + 1)
+                        if not line:
+                            break
+                        used_bytes += len(line)
+                        if used_bytes > WRITE_HISTORY_MAX_BYTES or len(line) > 2 * 1024**2:
+                            raise ValueError("write_history_byte_budget_exceeded")
+                        if not line.strip():
+                            continue
+                        scanned_rows += 1
+                        if scanned_rows > WRITE_HISTORY_MAX_ROWS:
+                            raise ValueError("write_history_row_budget_exceeded")
+                        try:
+                            row = json.loads(line)
+                        except (ValueError, UnicodeDecodeError):
+                            errors.append({"path": str(path), "reason": "invalid_jsonl_record"})
+                            break
+                        if not isinstance(row, dict):
+                            errors.append({"path": str(path), "reason": "invalid_event_record"})
+                            break
+                        if (row.get("event") != "write_failure"
+                                or not isinstance(row.get("timestamp_utc"), str)
+                                or _parse_dt(row.get("timestamp_utc")) is None
+                                or any(not isinstance(row.get(key), str) or not row[key].strip()
+                                       for key in ("source", "target_path", "error"))):
+                            errors.append({"path": str(path), "reason": "invalid_write_failure_schema"})
+                            break
+                        if _parse_dt(row["timestamp_utc"]) > now:
+                            errors.append({"path": str(path), "reason": "future_write_failure"})
+                            continue
+                        rows.append(row)
+                    after = os.fstat(raw.fileno())
+                    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                        errors.append({"path": str(path), "reason": "journal_changed_during_read"})
+        except (OSError, ValueError, EOFError) as exc:
+            errors.append({"path": str(directory), "reason": str(exc)})
+
+    # Collapse only exact receipts and matched inner/outer batch-error pairs.
+    seen = set()
+    unmatched = defaultdict(deque)
+    count = 0
+    recent_count = 0
+    latest_failure = None
+    domains = {}
+    for row in sorted(rows, key=lambda item: str(item.get("timestamp_utc") or "")):
+        timestamp = _parse_dt(row.get("timestamp_utc"))
+        if timestamp is not None:
+            latest_failure = max(latest_failure, timestamp) if latest_failure else timestamp
+        encoded = json.dumps(row, sort_keys=True)
+        if timestamp is not None and encoded in seen:
+            continue
+        seen.add(encoded)
+        error = str(row.get("error") or "")
+        identity = tuple(str(row.get(key) or "") for key in ("source", "run_id", "iter_id", "target_path"))
+        if timestamp is not None and all(identity) and error in {"channel_batch_append_failed", "batch_write_failed"}:
+            other = "batch_write_failed" if error == "channel_batch_append_failed" else "channel_batch_append_failed"
+            pending = unmatched[(identity, other)]
+            while pending and (timestamp - pending[0]).total_seconds() > 1:
+                pending.popleft()
+            if pending and 0 <= (timestamp - pending[0]).total_seconds() <= 1:
+                pending.popleft()
+                continue
+            unmatched[(identity, error)].append(timestamp)
+        count += 1
+        day = timestamp.strftime("%Y%m%d") if timestamp else "unknown"
+        key = domain_id(row["source"], row["target_path"], day)
+        if key not in domains and len(domains) >= MAX_DOMAINS:
+            errors.append({"path": str(directory), "reason": "write_history_domain_budget_exceeded"})
+        else:
+            domain = domains.setdefault(key, {
+                "id": key, "source": row["source"], "target_path": row["target_path"],
+                "day": day, "count": 0, "generation": "", "failed_records": [],
+                "record_checkpoint_complete": True,
+            })
+            domain["count"] += 1
+            domain["generation"] = digest([domain["generation"], row])
+            domain["latest_failure_utc"] = timestamp.isoformat() if timestamp else None
+            records = row.get("failed_records")
+            valid_records = (isinstance(records, list) and bool(records)
+                             and len(records) <= MAX_RECORDS
+                             and all(isinstance(record, dict) and isinstance(record.get("message_id"), str)
+                                     and record["message_id"] and isinstance(record.get("payload_sha256"), str)
+                                     and re.fullmatch(r"[0-9a-f]{64}", record["payload_sha256"]) for record in records))
+            if (row.get("record_checkpoint_complete") is not True or not valid_records
+                    or len(domain["failed_records"]) + len(records) > MAX_RECORDS):
+                domain["record_checkpoint_complete"] = False
+            else:
+                domain["failed_records"].extend(records)
+        if timestamp is not None:
+            recent_count += int(0 <= (now - timestamp).total_seconds() <= 900)
+    observed_count = count
+    previous_count = _safe_int(previous.get("count"), 0)
+    if previous.get("scope_dates") != scope_dates and not errors and rows:
+        previous_count = 0
+    if not previous and (not rows or errors):
+        previous_count = max(previous_count, _safe_int(prior.get("raw_write_failure_count"), 0))
+    if count < previous_count:
+        errors.append({"path": str(directory), "reason": "retained_history_count_regressed"})
+        count = previous_count
+    return {"source": "local_write_failure_journals", "complete": not errors,
+            "count": count, "observed_unique_count": observed_count,
+            "raw_event_count": len(rows), "duplicate_count": len(rows) - observed_count,
+            "file_count": len(files), "bytes_read": used_bytes, "errors": errors,
+            "scope_dates": scope_dates,
+            "domains": list(domains.values()),
+            "unmapped_prior_failure_count": (
+                _safe_int(previous.get("count"), 0)
+                if previous and not previous.get("domains") and previous.get("scope_dates") != scope_dates else 0
+            ),
+            "latest_observed_failure_utc": latest_failure.isoformat() if latest_failure else None,
+            "recent_observed_failure_count": recent_count if not errors else None,
+            "recent_window_seconds": 900,
+            "affected_source_count": len({row["source"] for row in rows}),
+            "affected_target_count": len({row["target_path"] for row in rows}),
+            "coverage": "two_latest_daily_families_plain_and_gzip_with_bounded_reads",
+            "historical_failures_are_not_current_sql_failure_counts": True}
 
 
 def _effective_storage_backpressure(storage_control: dict[str, Any]) -> dict[str, Any]:
@@ -226,7 +418,7 @@ def _current_storage_write_recovery(storage_control: dict[str, Any], *, pending_
     }
 
 
-def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     incident = load_json(health_root / "incident_timeline_latest.json")
     backlog_drain = load_json(health_root / "external_backlog_drain_latest.json")
@@ -235,6 +427,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     storage_control = load_json(health_root / "ingestion_storage_control_latest.json")
     runtime = load_json(health_root / "live_runtime_separation_control_latest.json")
     writer_progress = load_json(health_root / "sql_link_service_progress_latest.json")
+    writer_observation = read_label_source(project_root, "governance/health/sql_writer_observation_latest.json")
     snapshot_cache = load_json(health_root / "broker_truth_shared_snapshot_schwab_latest.json")
 
     recent = incident.get("recent_incidents") if isinstance(incident.get("recent_incidents"), list) else []
@@ -248,7 +441,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         for row in recent
         if isinstance(row, dict) and str(row.get("summary") or "").strip().lower() == "get_accounts_snapshot"
     ]
-    write_failure_count_raw = len(write_failures)
+    write_history = _write_failure_history(project_root, incident)
+    try:
+        path_recovery = recovery_pass(project_root, write_history, apply=apply)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        path_recovery = {"overall_status": "blocked", "reason": f"recovery_state_unavailable:{type(exc).__name__}", "apply_requested": apply}
+    write_failure_count_raw = _safe_int(write_history.get("count"), len(write_failures))
     account_snapshot_count_raw = len(account_snapshot_failures)
     raw_pending_lines = _safe_int((queue.get("lane_counts") or {}).get("core", {}).get("pending_lines", queue.get("queue_depth", 0)), 0)
     effective_backpressure = _effective_storage_backpressure(storage_control)
@@ -282,11 +480,20 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     hot_path_over_budget = 0 if write_path_storage_ready else hot_path_over_budget_raw
     write_path_recovered_by_storage = bool(
         write_failure_count_raw > 0
+        and write_history["source"] == "legacy_timeline"
+        and not write_history["errors"]
         and write_path_storage_ready
         and pending_lines <= 5000
         and writer_status in {"", "ok", "complete", "idle", "ready", "running", "busy"}
     )
     write_failure_count = 0 if write_path_recovered_by_storage else write_failure_count_raw
+    path_state = path_recovery.get("state") or {}
+    reconciled = {d["id"]: d for d in path_state.get("domains", []) if d.get("historical_reconciled")}
+    verified_count = sum(d["count"] for d in write_history.get("domains", [])
+                         if reconciled.get(d["id"], {}).get("generation") == d["generation"])
+    write_failure_count = max(0, write_failure_count - verified_count)
+    # Never let the two-day journal display retire retained recovery debt.
+    write_failure_count = max(write_failure_count, _safe_int(path_state.get("unreconciled_failure_count"), 0))
     snapshot_cache_ready = bool(snapshot_cache.get("fetched")) and bool(snapshot_cache.get("timestamp_utc"))
     snapshot_cache_ts = _parse_dt(snapshot_cache.get("timestamp_utc"))
     snapshot_failure_times = [
@@ -327,6 +534,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         recovery_state = "recovering_under_guard"
     elif pending_lines > 0 and writer_busy and not small_steady_queue:
         recovery_state = "recovering_under_guard"
+    if write_history["errors"] or path_recovery.get("overall_status") == "blocked":
+        recovery_state = "blocked"
 
     overall_status = "ready"
     if recovery_state == "blocked":
@@ -345,6 +554,50 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         ]
     )
 
+    storage_label = evidence_label(
+        storage_control, scope="current_storage_write_health",
+        source="governance/health/ingestion_storage_control_latest.json", max_age_seconds=300,
+    )
+    writer_label = evidence_label(
+        writer_progress, scope="writer_progress",
+        source="governance/health/sql_link_service_progress_latest.json", max_age_seconds=300,
+    )
+    data_integrity = storage_control.get("data_integrity")
+    data_integrity = data_integrity if isinstance(data_integrity, dict) else {}
+    sql_errors = data_integrity.get("sql_overlay_ops_write_failures")
+    overlay = storage_control.get("sql_ingestion_pending_overlay")
+    overlay = overlay if isinstance(overlay, dict) else {}
+    overlay_age = overlay.get("max_source_age_seconds")
+    fresh_sql_sources = _safe_int(overlay.get("fresh_source_count"), 0)
+    stale_sql_sources = _safe_int(overlay.get("stale_source_count"), 0)
+    current_sql_errors_known = (
+        storage_label["fresh"] and isinstance(sql_errors, (int, float))
+        and not isinstance(sql_errors, bool) and math.isfinite(sql_errors)
+        and sql_errors >= 0 and float(sql_errors).is_integer()
+        and fresh_sql_sources > 0 and isinstance(overlay_age, (int, float))
+        and not isinstance(overlay_age, bool) and math.isfinite(overlay_age)
+        and 0 <= overlay_age <= 300
+    )
+    recovery_gaps = []
+    if not write_history.get("complete"):
+        recovery_gaps.append("failure_history_scan_incomplete")
+    if not storage_label["fresh"]:
+        recovery_gaps.append("fresh_storage_evidence_required")
+    if not writer_label["fresh"]:
+        recovery_gaps.append("fresh_writer_progress_required")
+    if not current_sql_errors_known:
+        recovery_gaps.append("current_sql_failure_measurement_unavailable")
+    elif sql_errors > 0:
+        recovery_gaps.append("current_sql_write_failures_present")
+    if not write_path_storage_ready:
+        recovery_gaps.append("storage_write_recovery_checks_unmet")
+    if pending_lines > 5000:
+        recovery_gaps.append("pending_ingestion_above_recovery_gate")
+    if writer_status not in {"ok", "complete", "idle", "ready", "running", "busy"}:
+        recovery_gaps.append("writer_not_in_accepted_recovery_state")
+    if write_failure_count > 0:
+        recovery_gaps.append("historical_failure_reconciliation_not_verified")
+
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
@@ -353,6 +606,38 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "recovery_state": recovery_state,
         "write_failure_count": write_failure_count,
         "raw_write_failure_count": write_failure_count_raw,
+        "write_failure_count_scope": "unreconciled_historical_failure_debt_not_current_sql_errors",
+        "recovery_diagnostics": {
+            "historical_failure_count": write_failure_count_raw,
+            "unreconciled_historical_failure_count": write_failure_count,
+            "recent_observed_failure_count": write_history.get("recent_observed_failure_count"),
+            "recent_window_seconds": write_history.get("recent_window_seconds"),
+            "latest_observed_failure_utc": write_history.get("latest_observed_failure_utc"),
+            "current_sql_write_failure_count": sql_errors if current_sql_errors_known else None,
+            "current_sql_measurement_available": current_sql_errors_known,
+            "sql_failure_measurement_scope": "producer_reported_fresh_overlay_sources_not_all_write_paths",
+            "sql_overlay_fresh_source_count": fresh_sql_sources,
+            "sql_overlay_stale_source_count": stale_sql_sources,
+            "sql_overlay_coverage": (
+                "unavailable" if not current_sql_errors_known
+                else "partial" if stale_sql_sources or _safe_int(overlay.get("fresh_pending_unknown_source_count"), 0)
+                else "reported_sources_only"
+            ),
+            "reported_sql_overlay_failure_count": sql_errors,
+            "storage_evidence": storage_label,
+            "writer_evidence": writer_label,
+            "writer_admission_observation": evidence_label(
+                writer_observation, scope="writer_admission_not_progress",
+                source="governance/health/sql_writer_observation_latest.json", max_age_seconds=180,
+            ),
+            "writer_deferral_reasons": writer_observation.get("blockers", []),
+            "unmet_requirements": recovery_gaps,
+            "authority": "diagnostic_only_no_recovery_release",
+            "quiet_period_alone_proves_recovery": False,
+        },
+        "write_failure_history": write_history,
+        "native_write_path_recovery": path_recovery,
+        "checkpoint_reconciled_failure_count": verified_count,
         "write_path_recovered_by_storage": write_path_recovered_by_storage,
         "account_snapshot_failure_count": account_snapshot_count,
         "raw_account_snapshot_failure_count": account_snapshot_count_raw,
@@ -434,9 +719,10 @@ def main() -> int:
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--apply", action="store_true", help="Advance bounded native verification and probation; never replay trades or override admission.")
     args = parser.parse_args()
 
-    payload = build_payload(Path(args.project_root).resolve())
+    payload = build_payload(Path(args.project_root).resolve(), apply=args.apply)
     out_path = Path(args.out_file).expanduser()
     write_payload(out_path, payload)
     if args.json:

@@ -9,8 +9,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if __package__ in {None, ""}:
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from scripts.ops import production_excellence_control
+    from scripts.ops.long_runtime_common import load_json, write_payload
+else:
+    from . import production_excellence_control
+    from .long_runtime_common import load_json, write_payload
+
+
+DEFAULT_CANDIDATE_CONFIG_PATH = (
+    PROJECT_ROOT / "config" / "production_excellence_v1.json"
+)
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "source_mutation_guard_latest.json"
+)
 DEFAULT_PROTECTED_PATHS = (
     ".github/workflows/ci_guardrails.yml",
     ".github/workflows/refresh-showcase.yml",
@@ -20,9 +35,11 @@ DEFAULT_PROTECTED_PATHS = (
     "core/collector_capability_routing.py",
     "core/capability_materialization.py",
     "core/bot_profitability_scalability.py",
+    "core/sleeve_scalability_selector.py",
     "core/hierarchical_ensemble.py",
     "core/master_grandmaster_evidence.py",
     "core/regime_taxonomy.py",
+    "core/system_role_contracts.py",
     "core/master_bot.py",
     "core/live_order_ledger.py",
     "scripts/install_infra_stack_launchd.sh",
@@ -40,6 +57,7 @@ DEFAULT_PROTECTED_PATHS = (
     "scripts/ops/bot_profitability_scalability_control.py",
     "scripts/ops/master_grandmaster_evidence_control.py",
     "scripts/ops/control_surface_ownership.py",
+    "scripts/ops/system_role_contract_control.py",
     "scripts/ops/chaos_drill_coordinator.py",
     "scripts/ops/artifact_freshness_slo.py",
     "scripts/ops/install_ops_automation_launchd.sh",
@@ -70,6 +88,7 @@ DEFAULT_PROTECTED_PATHS = (
     "scripts/ops/soak_reliability_sentinel.py",
     "scripts/ops/soak_self_healing_control.py",
     "scripts/ops/storage_disaster_recovery.py",
+    "scripts/ops/storage_switch_orchestrator.py",
     "scripts/ops/profitability_evidence_firewall.py",
     "scripts/ops/unattended_soak_readiness.py",
     "scripts/ops/source_mutation_guard.py",
@@ -94,6 +113,7 @@ DEFAULT_PROTECTED_PATHS = (
     "config/bot_profitability_scalability_v1.json",
     "config/master_grandmaster_evidence_v2.json",
     "config/control_surface_ownership_v1.json",
+    "config/system_role_contracts_v1.json",
     "config/infrabot_library_self_awareness_v1.json",
     "config/live_canary_readiness_contract.json",
     "config/production_level_upgrade_hardener_v1.json",
@@ -107,7 +127,6 @@ DEFAULT_PROTECTED_PATHS = (
     "docs/architecture/BOT_ORGANIZATION.md",
     "docs/architecture/COLLECTOR_CAPABILITY_ROUTING.md",
     "docs/architecture/MASTER_GRANDMASTER_EVIDENCE_V2.md",
-    "docs/pycharm/distributed_cell_architecture_latest.md",
     "master_bot_registry.json",
 )
 
@@ -116,16 +135,251 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def git_status(project_root: Path, protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS) -> tuple[list[str], str]:
-    cmd = ["git", "status", "--porcelain", "--", *protected_paths]
-    proc = subprocess.run(cmd, cwd=project_root, text=True, capture_output=True, check=False)
+def git_status(
+    project_root: Path, protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS
+) -> tuple[list[str], str]:
+    cmd = ["git", "status", "--porcelain", "--untracked-files=all"]
+    proc = subprocess.run(
+        cmd, cwd=project_root, text=True, capture_output=True, check=False
+    )
     if proc.returncode != 0:
         return [], (proc.stderr or proc.stdout or "git status failed").strip()
-    return [line for line in proc.stdout.splitlines() if line.strip()], ""
+    protected = {str(path).replace("\\", "/") for path in protected_paths}
+    entries = [line for line in proc.stdout.splitlines() if line.strip()]
+    return [
+        entry
+        for entry in entries
+        if any(path in protected for path in _entry_paths(entry))
+    ], ""
 
 
-def build_payload(project_root: Path, protected_paths: tuple[str, ...] = DEFAULT_PROTECTED_PATHS) -> dict[str, Any]:
-    dirty_entries, error = git_status(project_root, protected_paths=protected_paths)
+def _entry_paths(entry: str) -> list[str]:
+    raw = entry[3:].strip() if len(entry) >= 4 else ""
+    if not raw:
+        return []
+    return [part.strip().strip('"') for part in raw.split(" -> ") if part.strip()]
+
+
+def _candidate_acceptance(
+    project_root: Path,
+    dirty_entries: list[str],
+    *,
+    config_path: Path,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "checked": bool(dirty_entries),
+        "ready": not dirty_entries,
+        "candidate_id": "",
+        "generation": 0,
+        "changed_scopes": [],
+        "event_chain_valid": False,
+        "event_chain_head_matches_state": False,
+        "entry_scope_coverage": {},
+        "reason": "not_required" if not dirty_entries else "candidate_config_missing",
+    }
+    if not dirty_entries:
+        return result
+
+    config = load_json(config_path)
+    if not config:
+        result["config_path"] = str(config_path)
+        return result
+
+    try:
+        state_path, event_path = production_excellence_control._candidate_paths(
+            project_root, config
+        )
+        state = load_json(state_path)
+        current = production_excellence_control.candidate_fingerprints(
+            project_root, config
+        )
+        changed_scopes = (
+            production_excellence_control._changed_scopes(state, current)
+            if state
+            else []
+        )
+        chain = production_excellence_control.verify_candidate_event_chain(event_path)
+        head_matches = bool(
+            state
+            and str(chain.get("chain_head") or "")
+            == str(state.get("event_chain_head") or "")
+        )
+        fingerprint_matches = bool(
+            state
+            and not changed_scopes
+            and str(current.get("overall_sha256") or "")
+            == str(state.get("overall_sha256") or "")
+        )
+        scope_files = production_excellence_control.candidate_scope_files(
+            project_root, config
+        )
+        scope_paths = {
+            scope: {
+                str(path.relative_to(project_root)).replace("\\", "/") for path in paths
+            }
+            for scope, paths in scope_files.items()
+        }
+        for scope, row in _as_dict(state.get("scope_fingerprints")).items():
+            scope_paths.setdefault(str(scope), set()).update(
+                str(path) for path in _as_dict(_as_dict(row).get("file_manifest"))
+            )
+        last_change = _as_dict(state.get("last_change"))
+        for scope, row in _as_dict(last_change.get("scope_changes")).items():
+            scope_paths.setdefault(str(scope), set()).update(
+                str(path) for path in _as_list(_as_dict(row).get("changed_files"))
+            )
+        coverage: dict[str, list[str]] = {}
+        for entry in dirty_entries:
+            paths = _entry_paths(entry)
+            matched = sorted(
+                scope
+                for scope, members in scope_paths.items()
+                if paths and all(path in members for path in paths)
+            )
+            coverage[entry] = matched
+
+        chain_valid = (
+            bool(chain.get("ok", False)) and int(chain.get("event_count") or 0) >= 1
+        )
+        candidate_ready = bool(
+            state
+            and chain_valid
+            and head_matches
+            and fingerprint_matches
+            and not bool(state.get("live_execution_authority", False))
+        )
+        result.update(
+            {
+                "ready": candidate_ready,
+                "candidate_id": str(state.get("candidate_id") or "") if state else "",
+                "generation": int(state.get("generation") or 0) if state else 0,
+                "changed_scopes": changed_scopes,
+                "event_chain_valid": chain_valid,
+                "event_chain_head_matches_state": head_matches,
+                "fingerprint_matches": fingerprint_matches,
+                "live_execution_authority": (
+                    bool(state.get("live_execution_authority", False))
+                    if state
+                    else False
+                ),
+                "entry_scope_coverage": coverage,
+                "source_coverage": current.get("source_coverage", {}),
+                "config_path": str(config_path),
+                "state_path": str(state_path),
+                "event_path": str(event_path),
+                "reason": (
+                    "accepted_candidate_matches_worktree"
+                    if candidate_ready
+                    else (
+                        "candidate_state_missing"
+                        if not state
+                        else (
+                            "candidate_event_chain_invalid"
+                            if not chain_valid or not head_matches
+                            else (
+                                "candidate_fingerprint_drift"
+                                if not fingerprint_matches
+                                else "candidate_live_authority_must_remain_false"
+                            )
+                        )
+                    )
+                ),
+            }
+        )
+    except Exception as exc:
+        result["ready"] = False
+        result["reason"] = f"candidate_acceptance_check_failed:{type(exc).__name__}"
+    return result
+
+
+def _as_dict(raw: Any) -> dict[str, Any]:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _as_list(raw: Any) -> list[Any]:
+    return raw if isinstance(raw, list) else []
+
+
+def _candidate_protected_paths(
+    project_root: Path,
+    config: dict[str, Any],
+) -> tuple[str, ...]:
+    generated_policy = (
+        production_excellence_control.candidate_generated_artifact_policy(
+            project_root, config
+        )
+    )
+    exclusions = {
+        str(path) for path in _as_list(generated_policy.get("excluded_paths"))
+    }
+    paths = set(DEFAULT_PROTECTED_PATHS)
+    for scope_files in production_excellence_control.candidate_scope_files(
+        project_root, config
+    ).values():
+        paths.update(
+            str(path.relative_to(project_root)).replace("\\", "/")
+            for path in scope_files
+        )
+    state_path, _ = production_excellence_control._candidate_paths(project_root, config)
+    state = load_json(state_path)
+    for row in _as_dict(state.get("scope_fingerprints")).values():
+        paths.update(str(path) for path in _as_dict(_as_dict(row).get("file_manifest")))
+    paths.update(
+        str(path)
+        for path in _as_list(_as_dict(state.get("last_change")).get("changed_files"))
+    )
+    return tuple(sorted(path for path in paths if path and path not in exclusions))
+
+
+def build_payload(
+    project_root: Path,
+    protected_paths: tuple[str, ...] | None = None,
+    *,
+    candidate_config_path: Path | None = None,
+) -> dict[str, Any]:
+    config_path = (
+        candidate_config_path
+        or project_root / "config" / DEFAULT_CANDIDATE_CONFIG_PATH.name
+    )
+    config = load_json(config_path)
+    generated_policy = (
+        production_excellence_control.candidate_generated_artifact_policy(
+            project_root, config
+        )
+        if config
+        else {}
+    )
+    generated_exclusions = {
+        str(path) for path in _as_list(generated_policy.get("excluded_paths"))
+    }
+    effective_protected_paths = (
+        tuple(path for path in protected_paths if path not in generated_exclusions)
+        if protected_paths is not None
+        else (
+            _candidate_protected_paths(project_root, config)
+            if config
+            else DEFAULT_PROTECTED_PATHS
+        )
+    )
+    observed_dirty_entries, error = git_status(
+        project_root, protected_paths=effective_protected_paths
+    )
+    candidate = _candidate_acceptance(
+        project_root, observed_dirty_entries, config_path=config_path
+    )
+    coverage = (
+        candidate.get("entry_scope_coverage")
+        if isinstance(candidate.get("entry_scope_coverage"), dict)
+        else {}
+    )
+    accepted_entries = [
+        entry
+        for entry in observed_dirty_entries
+        if candidate.get("ready", False) and bool(coverage.get(entry))
+    ]
+    dirty_entries = [
+        entry for entry in observed_dirty_entries if entry not in accepted_entries
+    ]
     ok = not dirty_entries and not error
     return {
         "timestamp_utc": iso_now(),
@@ -133,32 +387,58 @@ def build_payload(project_root: Path, protected_paths: tuple[str, ...] = DEFAULT
         "overall_status": "ready" if ok else "blocked",
         "check": "source_mutation_guard",
         "project_root": str(project_root),
-        "protected_paths": list(protected_paths),
+        "protected_paths": list(effective_protected_paths),
         "dirty_count": len(dirty_entries),
         "dirty_entries": dirty_entries,
+        "observed_dirty_count": len(observed_dirty_entries),
+        "observed_dirty_entries": observed_dirty_entries,
+        "accepted_candidate_dirty_count": len(accepted_entries),
+        "accepted_candidate_dirty_entries": accepted_entries,
+        "candidate_acceptance": candidate,
         "error": error,
         "contract": {
             "runtime_outputs_only": ["governance", "runtime", "exports", "logs", "tmp"],
             "canonical_source_updates_require_explicit_operator_intent": True,
+            "explicitly_accepted_candidate_fingerprints_are_not_runtime_mutations": True,
+            "post_acceptance_drift_and_unscoped_changes_remain_blocking": True,
+            "candidate_scope_paths_are_discovered_dynamically": True,
+            "accepted_manifest_paths_preserve_deleted_file_detection": True,
+            "all_repository_status_is_filtered_in_process_to_avoid_path_argument_limits": True,
+            "generated_runtime_outputs_are_owned_by_exact_policy_paths": bool(
+                generated_policy.get("ready", False)
+            ),
+            "generated_runtime_outputs_remain_freshness_owned_not_source_owned": True,
+            "generated_artifact_policy": generated_policy,
         },
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Fail if runtime or CI has mutated protected source files.")
+    parser = argparse.ArgumentParser(
+        description="Fail if runtime or CI has mutated protected source files."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
-    parser.add_argument("--check-clean", action="store_true", help="Exit nonzero when protected source paths are dirty.")
-    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    parser.add_argument(
+        "--check-clean",
+        action="store_true",
+        help="Exit nonzero when protected source paths are dirty.",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Print machine-readable JSON."
+    )
+    parser.add_argument("--out-file", type=Path, default=DEFAULT_OUT_PATH)
     args = parser.parse_args(argv)
 
     payload = build_payload(Path(args.project_root).resolve())
+    write_payload(args.out_file, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True, indent=2))
     else:
         print(
             "source_mutation_guard "
             f"status={payload['overall_status']} "
-            f"dirty_count={payload['dirty_count']}"
+            f"dirty_count={payload['dirty_count']} "
+            f"accepted_candidate_dirty_count={payload['accepted_candidate_dirty_count']}"
         )
         for entry in payload["dirty_entries"]:
             print(entry)

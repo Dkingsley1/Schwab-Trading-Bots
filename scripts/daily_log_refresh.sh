@@ -102,6 +102,12 @@ run_cached_collector "extended_quant_context" "${DAILY_CACHE_EXTENDED_QUANT_MINU
   -- \
   "$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_extended_quant_context.py" --json \
   || echo "[WARN] collect_extended_quant_context failed; continuing daily refresh"
+run_cached_collector "public_financial_context" "${DAILY_CACHE_PUBLIC_FINANCIAL_MINUTES:-720}" \
+  "$PROJECT_ROOT/governance/health/public_financial_context_sync_latest.json" \
+  "$PROJECT_ROOT/exports/external_context/public_financial_context_latest.json" \
+  -- \
+  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/collect_public_financial_context.py" --json \
+  || echo "[WARN] collect_public_financial_context failed; optional context unavailable"
 run_cached_collector "options_flow_context" "${DAILY_CACHE_OPTIONS_FLOW_MINUTES:-${DAILY_CACHE_TASTYTRADE_MINUTES:-120}}" \
   "$PROJECT_ROOT/governance/health/options_flow_context_sync_latest.json" \
   "$PROJECT_ROOT/exports/external_context/options_flow_context_latest.json" \

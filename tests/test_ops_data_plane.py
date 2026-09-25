@@ -307,6 +307,18 @@ def test_resolve_sqlite_runtime_settings_downshift_ops_plane_under_pressure(tmp_
 
 def test_resolve_sqlite_runtime_settings_requires_explicit_mmap_opt_in(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
+    health_root = project_root / "governance/health"
+    health_root.mkdir(parents=True)
+    (health_root / "resource_guard_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "memory_pressure_state": "green",
+                "memory_free_pct": 60,
+                "swap_used_gb": 0,
+            }
+        )
+    )
     monkeypatch.setenv("BOT_OPS_SQLITE_MMAP_SIZE_MB", "96")
     monkeypatch.delenv("BOT_OPS_SQLITE_ALLOW_MMAP", raising=False)
 

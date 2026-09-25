@@ -2,12 +2,146 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import shutil
+import signal
 import sqlite3
+import sys
 from pathlib import Path
+
+import pytest
 
 import scripts.ops.cold_archive_compactor as compactor
 from scripts.ops.cold_archive_compactor import archive_root_available, build_payload, writer_blocks_compaction
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_compression_preserves_source_rewritten_after_verification(tmp_path, monkeypatch, existing):
+    source = tmp_path / "closed.jsonl"
+    target = tmp_path / "closed.jsonl.gz"
+    source.write_bytes(b"old data\n")
+    if existing:
+        target.write_bytes(gzip.compress(source.read_bytes()))
+    original = compactor._stream_hash
+    calls = 0
+
+    def hash_then_change(stream):
+        nonlocal calls
+        result = original(stream)
+        calls += 1
+        if calls == (2 if existing else 1):
+            source.write_bytes(b"new data\n")
+        return result
+
+    monkeypatch.setattr(compactor, "_stream_hash", hash_then_change)
+    result = compactor._compress_jsonl(source, target, compression_level=1)
+    assert source.exists()
+    assert source.read_bytes() == b"new data\n"
+    assert result["status"] not in {"compacted_verified", "released_verified_duplicate"}
+
+
+def test_compression_does_not_overwrite_target_created_during_verification(tmp_path, monkeypatch):
+    source = tmp_path / "closed.jsonl"
+    target = tmp_path / "closed.jsonl.gz"
+    source.write_bytes(b"old data\n")
+    original = compactor._stream_hash
+
+    def hash_then_create(stream):
+        result = original(stream)
+        target.write_bytes(b"other owner's archive")
+        return result
+
+    monkeypatch.setattr(compactor, "_stream_hash", hash_then_create)
+    result = compactor._compress_jsonl(source, target, compression_level=1)
+    assert target.read_bytes() == b"other owner's archive"
+    assert source.exists()
+    assert result["status"] == "error"
+
+
+def test_compression_rejects_linked_source(tmp_path):
+    source = tmp_path / "closed.jsonl"
+    target = tmp_path / "closed.jsonl.gz"
+    source.write_bytes(b"data\n")
+    os.link(source, tmp_path / "held")
+    result = compactor._compress_jsonl(source, target, compression_level=1)
+    assert source.exists()
+    assert not target.exists()
+    assert result["status"] == "error"
+
+
+def test_soft_stop_unwinds_cleanup_and_restores_handler(monkeypatch):
+    previous = signal.getsignal(signal.SIGTERM)
+    cleanup = []
+    def stopped_main():
+        try:
+            signal.raise_signal(signal.SIGTERM)
+        finally:
+            cleanup.append("released")
+    monkeypatch.setattr(compactor, "main", stopped_main)
+    with pytest.raises(SystemExit) as stopped:
+        compactor.cli()
+    assert stopped.value.code == 143
+    assert cleanup == ["released"]
+    assert signal.getsignal(signal.SIGTERM) == previous
+
+
+@pytest.mark.parametrize("requested", ["auto", "afsctool"])
+def test_missing_filesystem_backend_is_reported_before_writer_hold(
+    tmp_path, monkeypatch, requested
+):
+    archive = tmp_path / "cold"
+    archive.mkdir()
+    monkeypatch.setattr(compactor.cold_sqlite_filesystem_compaction.streaming,
+                        "installed", lambda: False)
+    out = tmp_path / "health.json"
+    monkeypatch.setattr(
+        compactor.cold_sqlite_filesystem_compaction,
+        "select_inactive_archives",
+        lambda *a, **kw: [],
+    )
+
+    monkeypatch.setattr(
+        compactor.cold_sqlite_filesystem_compaction.shutil,
+        "which",
+        lambda _: "/tool/afsctool",
+    )
+
+    def missing(_compressor):
+        assert _compressor == "afsctool"
+        raise RuntimeError("afsctool_not_installed")
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("writer must not be disturbed after failed preflight")
+
+    monkeypatch.setattr(
+        compactor.cold_sqlite_filesystem_compaction, "require_compressor", missing
+    )
+    monkeypatch.setattr(compactor, "engage_maintenance_hold", unexpected)
+    monkeypatch.setattr(compactor, "writer_state_snapshot", unexpected)
+    monkeypatch.setattr(compactor, "_acquire_lock", unexpected)
+    monkeypatch.setattr(compactor.os, "nice", lambda value: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cold_archive_compactor.py",
+            "--apply",
+            "--archive-root",
+            str(archive),
+            "--filesystem-select-inactive",
+            "--filesystem-compressor",
+            requested,
+            "--coordinate-writer-handoff",
+            "--out-file",
+            str(out),
+            "--json",
+        ],
+    )
+    assert compactor.main() == 2
+    payload = json.loads(out.read_text())
+    assert payload["overall_status"] == "blocked_compressor_unavailable"
+    assert payload["blockers"] == ["afsctool_not_installed"]
+    assert not payload["source_records_deleted"]
 
 
 def test_compactor_defers_heavy_work_while_single_writer_is_active() -> None:
@@ -16,7 +150,9 @@ def test_compactor_defers_heavy_work_while_single_writer_is_active() -> None:
     assert writer_blocks_compaction({"active": False}) is False
 
 
-def test_compactor_requires_existing_archive_root_before_unattended_apply(tmp_path: Path) -> None:
+def test_compactor_requires_existing_archive_root_before_unattended_apply(
+    tmp_path: Path,
+) -> None:
     assert archive_root_available(tmp_path / "missing") is False
     assert archive_root_available(tmp_path) is True
 
@@ -32,7 +168,9 @@ def test_compactor_rejects_protected_archive_root_before_scanning() -> None:
     assert payload["blockers"] == ["protected_archive_volume_rejected"]
 
 
-def test_stable_file_work_preflight_ignores_quarantine_and_finds_pending(tmp_path: Path) -> None:
+def test_stable_file_work_preflight_ignores_quarantine_and_finds_pending(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "cold"
     pending = root / "evidence.jsonl.gz.tmp"
     pending.parent.mkdir(parents=True)

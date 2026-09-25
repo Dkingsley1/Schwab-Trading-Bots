@@ -22,6 +22,7 @@ class CoinbaseBrokerAdapter(BrokerAdapter):
         supports_order_replace=False,
         supports_order_cancel=False,
         supports_order_fetch=False,
+        supports_order_list=False,
         supports_options=False,
         supports_futures=True,
     )

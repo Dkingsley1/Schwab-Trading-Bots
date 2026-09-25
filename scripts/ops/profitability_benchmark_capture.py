@@ -25,6 +25,11 @@ else:
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "profitability_evidence_firewall_v1.json"
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "research" / "profitability_benchmark_capture_latest.json"
 
+from core.storage_router import inspect_storage_path
+from scripts.snapshot_coverage_sentinel import ScanBudget
+
+MAX_LINE_BYTES = 2 * 1024 * 1024
+
 
 def _as_dict(raw: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
@@ -51,17 +56,40 @@ def _parse_local_time(raw: Any) -> time:
         return time(hour=16, minute=5)
 
 
-def _source_files(project_root: Path, patterns: Iterable[Any]) -> list[Path]:
+def _source_files(project_root: Path, patterns: Iterable[Any], budget: ScanBudget | None = None) -> list[Path]:
     files: list[Path] = []
     seen: set[str] = set()
     for raw in patterns:
         pattern = str(raw or "").strip()
         if not pattern:
             continue
-        for path in project_root.glob(pattern):
-            if not path.is_file():
+        parts = Path(pattern).parts
+        if Path(pattern).is_absolute() or any(part in {"..", "**"} for part in parts):
+            if budget is not None:
+                budget.reasons.add("unsupported_source_pattern")
+            continue
+        candidates = [project_root]
+        for part in parts:
+            matches = []
+            for parent in candidates:
+                if inspect_storage_path(parent).get("status") != "present":
+                    if budget is not None:
+                        budget.reasons.add("source_route_unavailable")
+                    continue
+                for path in parent.glob(part):
+                    if budget is not None and not budget.admitted():
+                        break
+                    if len(matches) >= 4096:
+                        if budget is not None:
+                            budget.reasons.add("source_file_limit")
+                        break
+                    matches.append(path)
+            candidates = matches
+        for path in candidates:
+            route = inspect_storage_path(path)
+            if route.get("status") != "present" or route.get("kind") != "file":
                 continue
-            identity = str(path.resolve())
+            identity = str(route["resolved_path"])
             if identity in seen:
                 continue
             seen.add(identity)
@@ -69,23 +97,40 @@ def _source_files(project_root: Path, patterns: Iterable[Any]) -> list[Path]:
     return sorted(files, key=lambda path: str(path))
 
 
-def _iter_tail_lines(path: Path, *, tail_bytes: int) -> Iterable[str]:
-    if path.suffix == ".gz":
-        try:
-            with gzip.open(path, "rt", encoding="utf-8", errors="replace") as handle:
-                yield from handle
-        except OSError:
-            return
+def _iter_tail_lines(path: Path, *, tail_bytes: int, budget: ScanBudget | None = None) -> Iterable[str]:
+    scan = budget if budget is not None else ScanBudget()
+    if inspect_storage_path(path).get("status") != "present":
+        scan.reasons.add("source_route_unavailable")
         return
     try:
         size = path.stat().st_size
-        with path.open("rb") as handle:
-            if tail_bytes > 0 and size > tail_bytes:
+        opener = gzip.open if path.suffix == ".gz" else open
+        with opener(path, "rb") as handle:
+            used = 0
+            if path.suffix != ".gz" and tail_bytes > 0 and size > tail_bytes:
                 handle.seek(max(size - tail_bytes, 0))
-                handle.readline()
-            for raw in handle:
+                skipped = handle.readline(min(MAX_LINE_BYTES + 1, scan.max_file_bytes, scan.max_bytes - scan.bytes_read))
+                used += len(skipped)
+                scan.bytes_read += len(skipped)
+                if not skipped.endswith(b"\n"):
+                    scan.reasons.add("truncated_or_oversized_line")
+                    return
+            while scan.admitted():
+                remaining = min(scan.max_file_bytes - used, scan.max_bytes - scan.bytes_read)
+                if remaining <= 0:
+                    scan.reasons.add("per_file_byte_limit")
+                    return
+                raw = handle.readline(min(MAX_LINE_BYTES + 1, remaining))
+                if not raw:
+                    return
+                used += len(raw)
+                scan.bytes_read += len(raw)
+                if len(raw) > MAX_LINE_BYTES or (len(raw) == remaining and not raw.endswith(b"\n")):
+                    scan.reasons.add("truncated_or_oversized_line")
+                    return
                 yield raw.decode("utf-8", errors="replace")
     except OSError:
+        scan.reasons.add("source_read_error")
         return
 
 
@@ -131,6 +176,13 @@ def _capture_candidates(
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     capture = _as_dict(policy.get("capture"))
     symbol = str(capture.get("symbol") or "SPY").strip().upper()
+    cash_proxy_symbol = str(capture.get("cash_proxy_symbol") or "").strip().upper()
+    require_cash_proxy = bool(
+        capture.get("require_cash_proxy", bool(cash_proxy_symbol))
+    )
+    symbols = {symbol}
+    if cash_proxy_symbol:
+        symbols.add(cash_proxy_symbol)
     try:
         local_zone = ZoneInfo(str(capture.get("local_timezone") or "America/New_York"))
     except Exception:
@@ -142,21 +194,32 @@ def _capture_candidates(
     minimum_quality = _safe_float(capture.get("minimum_source_quality_score"), 0.9)
     require_broker_native = bool(capture.get("require_broker_native", True))
     tail_bytes = max(int(_safe_float(capture.get("tail_bytes_per_file"), 64 * 1024 * 1024)), 0)
-    files = _source_files(project_root, _as_list(capture.get("source_globs")))
-    selected: dict[str, dict[str, Any]] = {}
+    budget = ScanBudget()
+    files = _source_files(project_root, _as_list(capture.get("source_globs")), budget)
+    selected_quotes: dict[tuple[str, str], dict[str, Any]] = {}
     rows_parsed = 0
     rows_rejected = 0
     partial_candidate_days_rejected = 0
     for path in files:
-        for raw in _iter_tail_lines(path, tail_bytes=tail_bytes):
-            if f'"symbol": "{symbol}"' not in raw and f'"symbol":"{symbol}"' not in raw:
+        if not budget.admitted():
+            break
+        for raw in _iter_tail_lines(path, tail_bytes=tail_bytes, budget=budget):
+            if not any(
+                f'"symbol": "{candidate_symbol}"' in raw
+                or f'"symbol":"{candidate_symbol}"' in raw
+                for candidate_symbol in symbols
+            ):
                 continue
             try:
                 row = json.loads(raw)
             except Exception:
                 rows_rejected += 1
                 continue
-            if not isinstance(row, dict) or str(row.get("symbol") or "").strip().upper() != symbol:
+            if not isinstance(row, dict):
+                rows_rejected += 1
+                continue
+            row_symbol = str(row.get("symbol") or "").strip().upper()
+            if row_symbol not in symbols:
                 continue
             rows_parsed += 1
             timestamp = parse_iso_utc(row.get("timestamp_utc") or row.get("timestamp"))
@@ -190,39 +253,91 @@ def _capture_candidates(
                 rows_rejected += 1
                 continue
             day = local_timestamp.date().isoformat()
-            current = selected.get(day)
+            current = selected_quotes.get((day, row_symbol))
             if current is not None and timestamp <= current["_timestamp"]:
                 continue
-            cash_rate = _safe_float(policy.get("cash_annual_rate"), 0.04)
-            selected[day] = {
-                "schema_version": 1,
+            selected_quotes[(day, row_symbol)] = {
                 "day_utc": day,
-                "candidate_id": candidate["candidate_id"],
-                "candidate_generation": candidate["generation"],
-                "candidate_cutoff_utc": candidate["cutoff_utc"],
-                "candidate_full_session": True,
-                "symbol": symbol,
-                "passive_return_bps": round((last_price / previous_close - 1.0) * 10_000.0, 8),
-                "cash_return_bps": round(((1.0 + cash_rate) ** (1.0 / 252.0) - 1.0) * 10_000.0, 8),
-                "benchmark_price": last_price,
+                "symbol": row_symbol,
+                "return_bps": round((last_price / previous_close - 1.0) * 10_000.0, 8),
+                "price": last_price,
                 "previous_close": previous_close,
                 "source_timestamp_utc": timestamp.isoformat(),
                 "source_broker": str(row.get("source_broker") or row.get("broker") or ""),
                 "source_provider": str(row.get("source_provider") or ""),
                 "source_quality_label": quality_label,
                 "source_quality_score": quality,
-                "source_record_sha256": hashlib.sha256(raw.strip().encode("utf-8")).hexdigest(),
-                "captured_at_utc": now.isoformat(),
-                "point_in_time_immutable": True,
+                "source_record_sha256": hashlib.sha256(
+                    raw.strip().encode("utf-8")
+                ).hexdigest(),
                 "_timestamp": timestamp,
             }
-    for row in selected.values():
-        row.pop("_timestamp", None)
+    selected: dict[str, dict[str, Any]] = {}
+    days = sorted({day for day, _symbol in selected_quotes})
+    cash_rate = _safe_float(policy.get("cash_annual_rate"), 0.04)
+    for day in days:
+        passive = selected_quotes.get((day, symbol))
+        cash_proxy = (
+            selected_quotes.get((day, cash_proxy_symbol)) if cash_proxy_symbol else None
+        )
+        if passive is None or (require_cash_proxy and cash_proxy is None):
+            continue
+        passive_hash = str(passive.get("source_record_sha256") or "")
+        cash_proxy_hash = str((cash_proxy or {}).get("source_record_sha256") or "")
+        combined_hash = hashlib.sha256(
+            f"{passive_hash}:{cash_proxy_hash}".encode("utf-8")
+        ).hexdigest()
+        selected[day] = {
+            "schema_version": 2 if cash_proxy_symbol else 1,
+            "day_utc": day,
+            "candidate_id": candidate["candidate_id"],
+            "candidate_generation": candidate["generation"],
+            "candidate_cutoff_utc": candidate["cutoff_utc"],
+            "candidate_full_session": True,
+            "symbol": symbol,
+            "passive_return_bps": passive["return_bps"],
+            "cash_proxy_symbol": cash_proxy_symbol,
+            "cash_proxy_return_bps": (
+                cash_proxy.get("return_bps") if cash_proxy is not None else None
+            ),
+            "cash_return_bps": round(
+                ((1.0 + cash_rate) ** (1.0 / 252.0) - 1.0) * 10_000.0,
+                8,
+            ),
+            "benchmark_price": passive["price"],
+            "previous_close": passive["previous_close"],
+            "cash_proxy_price": (
+                cash_proxy.get("price") if cash_proxy is not None else None
+            ),
+            "cash_proxy_previous_close": (
+                cash_proxy.get("previous_close") if cash_proxy is not None else None
+            ),
+            "source_timestamp_utc": passive["source_timestamp_utc"],
+            "source_broker": passive["source_broker"],
+            "source_provider": passive["source_provider"],
+            "source_quality_label": passive["source_quality_label"],
+            "source_quality_score": passive["source_quality_score"],
+            "source_record_sha256": combined_hash,
+            "passive_source_record_sha256": passive_hash,
+            "cash_proxy_source_record_sha256": cash_proxy_hash,
+            "captured_at_utc": now.isoformat(),
+            "point_in_time_immutable": True,
+        }
     return selected, {
+        "incomplete": bool(budget.reasons),
+        "scan_limit_reasons": sorted(budget.reasons),
+        "decompressed_bytes_read": budget.bytes_read,
+        "max_scan_bytes": budget.max_bytes,
+        "max_scan_seconds": budget.max_seconds,
         "source_file_count": len(files),
         "rows_parsed": rows_parsed,
         "rows_rejected": rows_rejected,
         "eligible_day_count": len(selected),
+        "eligible_quote_count": len(selected_quotes),
+        "passive_symbol": symbol,
+        "cash_proxy_symbol": cash_proxy_symbol,
+        "cash_proxy_required": require_cash_proxy,
+        "incomplete_day_count": len(days) - len(selected),
         "partial_candidate_days_rejected": partial_candidate_days_rejected,
     }
 
@@ -254,7 +369,7 @@ def build_payload(
         (str(row.get("candidate_id") or ""), str(row.get("day_utc") or "")): row
         for row in existing
     }
-    if apply and candidate["bound"] and selected:
+    if apply and candidate["bound"] and selected and not scan["incomplete"]:
         series_path.parent.mkdir(parents=True, exist_ok=True)
         with series_path.open("a+", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
@@ -298,17 +413,21 @@ def build_payload(
     )
     implementation_ready = bool(policy and capture_policy and policy.get("series"))
     blockers = []
+    if scan["incomplete"]:
+        blockers.append("benchmark_capture_scan_incomplete_no_append")
     if not candidate["bound"]:
         blockers.append("candidate_binding_pending")
     if not candidate_days:
         blockers.append("completed_point_in_time_benchmark_day_pending")
+    if bool(capture_policy.get("require_cash_proxy", False)) and not selected:
+        blockers.append("completed_point_in_time_cash_proxy_day_pending")
     if conflicts:
         blockers.append("immutable_benchmark_series_conflict")
     payload = {
         "timestamp_utc": current_time.isoformat(),
         "schema_version": 1,
-        "ok": implementation_ready,
-        "overall_status": "ready" if candidate_days and not conflicts else "evidence_pending",
+        "ok": implementation_ready and not scan["incomplete"],
+        "overall_status": "blocked" if scan["incomplete"] else "ready" if candidate_days and not conflicts else "evidence_pending",
         "implementation_ready": implementation_ready,
         "candidate_binding": candidate,
         "apply": bool(apply),
@@ -324,6 +443,9 @@ def build_payload(
             "candidate_cutoff_enforced": True,
             "mid_session_candidate_freeze_day_excluded": True,
             "broker_native_source_quality_required": True,
+            "cash_proxy_capture_required": bool(
+                capture_policy.get("require_cash_proxy", False)
+            ),
             "one_immutable_row_per_candidate_day": True,
             "source_record_hash_preserved": True,
             "live_execution_authority": False,

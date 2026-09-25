@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,21 +22,34 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _load_latest_jsonl_row(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        with path.open("r", encoding="utf-8", errors="ignore") as handle:
-            rows = [line.strip() for line in handle if line.strip()]
-    except Exception:
-        return {}
-    for raw in reversed(rows):
+    candidates = [path, path.with_name(f"{path.name}.gz")]
+    latest: dict[str, Any] = {}
+    latest_key = ("", -1)
+    ordinal = 0
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        opener = gzip.open if candidate.name.endswith(".gz") else open
         try:
-            payload = json.loads(raw)
+            with opener(candidate, "rt", encoding="utf-8", errors="ignore") as handle:
+                for raw in handle:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    ordinal += 1
+                    key = (str(payload.get("timestamp_utc") or ""), ordinal)
+                    if key >= latest_key:
+                        latest = payload
+                        latest_key = key
         except Exception:
             continue
-        if isinstance(payload, dict):
-            return payload
-    return {}
+    return latest
 
 
 def _ordered_unique(items: list[str]) -> list[str]:
@@ -70,13 +84,21 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     experiment_latest = _load_latest_jsonl_row(experiments_root / "experiment_registry.jsonl")
     feature_store_manifest = _load_json(feature_store_root / "latest.json")
     replay_hash_registry = _load_json(health_root / "replay_hash_registry_guard_latest.json")
-    paper_replay = _load_json(health_root / "paper_replay_drill_latest.json")
+    paper_replay_path = health_root / "paper_replay_training_latest.json"
+    paper_replay = _load_json(paper_replay_path)
+    if not paper_replay:
+        paper_replay_path = health_root / "paper_replay_drill_latest.json"
+        paper_replay = _load_json(paper_replay_path)
     replay_end_to_end = _load_json(health_root / "replay_end_to_end_latest.json")
     promotion_quality = _load_json(health_root / "promotion_quality_gate_latest.json")
     promotion_autopilot = _load_json(project_root / "governance" / "champion_challenger" / "promotion_autopilot_packet_latest.json")
     promotion_packet = _load_json(project_root / "governance" / "champion_challenger" / "promotion_packet_latest.json")
     training_report = _load_json(health_root / "training_report_latest.json")
-    snapshot_coverage = _load_json(health_root / "snapshot_coverage_latest.json")
+    snapshot_coverage_path = health_root / "snapshot_coverage_training_latest.json"
+    snapshot_coverage = _load_json(snapshot_coverage_path)
+    if not snapshot_coverage:
+        snapshot_coverage_path = health_root / "snapshot_coverage_latest.json"
+        snapshot_coverage = _load_json(snapshot_coverage_path)
     multiple_testing_guard = _load_json(project_root / "governance" / "research" / "multiple_testing_guard_latest.json")
     decay_monitor = _load_json(project_root / "governance" / "research" / "decay_monitor_latest.json")
 
@@ -332,13 +354,13 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "experiment_registry": str(experiments_root / "experiment_registry.jsonl"),
             "feature_store_manifest": str(feature_store_root / "latest.json"),
             "replay_hash_registry_guard": str(health_root / "replay_hash_registry_guard_latest.json"),
-            "paper_replay_drill": str(health_root / "paper_replay_drill_latest.json"),
+            "paper_replay_drill": str(paper_replay_path),
             "replay_end_to_end": str(health_root / "replay_end_to_end_latest.json"),
             "promotion_quality_gate": str(health_root / "promotion_quality_gate_latest.json"),
             "promotion_packet": str(project_root / "governance" / "champion_challenger" / "promotion_packet_latest.json"),
             "promotion_autopilot_packet": str(project_root / "governance" / "champion_challenger" / "promotion_autopilot_packet_latest.json"),
             "training_report": str(health_root / "training_report_latest.json"),
-            "snapshot_coverage": str(health_root / "snapshot_coverage_latest.json"),
+            "snapshot_coverage": str(snapshot_coverage_path),
             "multiple_testing_guard": str(project_root / "governance" / "research" / "multiple_testing_guard_latest.json"),
             "decay_monitor": str(project_root / "governance" / "research" / "decay_monitor_latest.json"),
         },

@@ -341,6 +341,38 @@ def test_live_runtime_separation_treats_cool_raw_live_sql_overlay_as_guarded_rea
     assert payload["release_contract"]["shared_host_training_resume_allowed"] is False
 
 
+def test_live_runtime_separation_uses_managed_support_pressure_contract() -> None:
+    relief = separation_src._overlay_only_storage_relief(
+        {
+            "overall_status": "ready",
+            "severity": "stable",
+            "backpressure": {
+                "core_pending_lines": 509,
+                "total_pending_lines": 425901,
+                "effective_pressure_clear": True,
+                "managed_support_pressure_clear": True,
+                "effective_raw_live_source": "raw_live_backpressure+managed_support_overlay_pressure",
+                "effective_raw_live": {
+                    "core_pending_lines": 509,
+                    "total_pending_lines": 6436,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+                "raw_live": {
+                    "core_pending_lines": 509,
+                    "total_pending_lines": 425901,
+                    "oldest_pending_age_seconds": 0.0,
+                },
+            },
+        },
+        {},
+    )
+
+    assert relief["active"] is True
+    assert relief["effective_pressure_contract"] is True
+    assert relief["effective_raw_live_used"] is True
+    assert relief["raw_live"]["total_pending_lines"] == 6436
+
+
 def test_live_runtime_separation_treats_staged_cold_lane_defer_as_managed(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = project_root / "governance" / "health"

@@ -1,0 +1,1 @@
+../../../scripts/ops/infrabot_library_self_awareness_control.py

@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "toolbox_id": "sleeve_alpha_toolbox_v1",
+  "objective": "Route candidate-bound alpha diagnostics to every sleeve according to its declared quantitative evidence requirements without creating trading or promotion authority.",
+  "minimum_tools_per_required_axis": 2,
+  "axis_routes": {
+    "selection_bias_control": {
+      "tools": [
+        "subsample_stability_selection",
+        "hierarchical_bayesian_skill"
+      ],
+      "collection_priority": "independent experiments, frozen hypotheses, and repeated out-of-sample observations"
+    },
+    "independent_samples": {
+      "tools": [
+        "hierarchical_bayesian_skill",
+        "residual_redundancy_graph"
+      ],
+      "collection_priority": "candidate-bound post-cost returns separated by sleeve, regime, and non-overlapping decision window"
+    },
+    "uncertainty_calibration": {
+      "tools": [
+        "split_conformal_residual_calibration",
+        "cross_fitted_causal_transportability"
+      ],
+      "collection_priority": "time-ordered forecast and realized-outcome pairs with stable labels and environment identifiers"
+    },
+    "signal_decay_fit": {
+      "tools": [
+        "information_coefficient_term_structure",
+        "sequential_change_point_stability"
+      ],
+      "collection_priority": "forecast ranks and realized outcomes across horizons with enough time depth for drift detection"
+    },
+    "payoff_asymmetry": {
+      "tools": [
+        "economic_alpha_decomposition",
+        "regime_conditional_robustness"
+      ],
+      "collection_priority": "post-cost outcomes partitioned by setup, side, holding horizon, and independently observed regime"
+    },
+    "capacity_headroom": {
+      "tools": [
+        "capacity_impact_surface",
+        "cost_stress_survival",
+        "execution_alpha_attribution"
+      ],
+      "collection_priority": "spread, fee, slippage, volume, volatility, fill, and markout evidence at realistic paper notionals"
+    },
+    "crowding_residual": {
+      "tools": [
+        "factor_neutral_residualization",
+        "residual_redundancy_graph"
+      ],
+      "collection_priority": "factor-aligned and residual sleeve returns with synchronized timestamps and crowding proxies"
+    },
+    "tail_survival": {
+      "tools": [
+        "regime_conditional_robustness",
+        "cost_stress_survival",
+        "cross_fitted_causal_transportability"
+      ],
+      "collection_priority": "independent volatile, gap, liquidity-stress, and adverse-cost observations"
+    },
+    "regime_stability": {
+      "tools": [
+        "sequential_change_point_stability",
+        "regime_conditional_robustness",
+        "information_coefficient_term_structure"
+      ],
+      "collection_priority": "point-in-time regime labels, transition observations, and post-cost outcomes across multiple states"
+    }
+  },
+  "universal_foundation_tools": [
+    "point_in_time_security_master_audit",
+    "execution_alpha_attribution",
+    "active_learning_value_of_information"
+  ],
+  "evidence_contract": {
+    "current_candidate_binding_required": true,
+    "post_cost_outcomes_required_for_economic_support": true,
+    "missing_evidence_is_zero": false,
+    "historical_generation_evidence_grades_current_candidate": false,
+    "legacy_window_association_is_promotion_grade": false,
+    "tool_implementation_is_alpha_evidence": false,
+    "passing_one_tool_waives_other_required_axes": false
+  },
+  "authority": {
+    "changes_signal": false,
+    "changes_action": false,
+    "changes_threshold": false,
+    "changes_position_size": false,
+    "submits_paper_order": false,
+    "submits_live_order": false,
+    "promotes_strategy": false,
+    "accepts_candidate_change": false,
+    "allocates_capital": false
+  }
+}

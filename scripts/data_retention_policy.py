@@ -8,7 +8,9 @@ import re
 import signal
 import shutil
 import sqlite3
+import stat
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -18,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.storage_mounts import resolve_external_storage
+from core.storage_router import inspect_storage_path
 from core.training_guard import check_confirmed_training_success
 from sql_hot_retention import _prune_archive_storage
 from snapshot_health_sql import debug_snapshot_ingest_coverage, sync_raw_debug_snapshots_to_sqlite
@@ -51,6 +54,7 @@ PROTECTED_STALE_EVIDENCE_TOKENS = (
     "risk",
     "tax",
     "trade",
+    "trading",
 )
 
 
@@ -156,12 +160,14 @@ def _stale_stage_protection_reason(label: str, path: Path) -> str:
     section = str(label or "").strip().lower()
     name = path.name.lower()
     text = f"{section}/{name}"
-    if ".local_fallback" in name:
-        return ""
     if section in {"decisions", "decision_explanations"}:
         return "immutable_decision_evidence"
+    if re.search(r"(?:^|[_.-])manifest(?:[_.-]|$)", name):
+        return "retention_or_archive_custody_manifest"
     if any(token in text for token in PROTECTED_STALE_EVIDENCE_TOKENS):
         return "durable_audit_or_financial_evidence"
+    if any(part.lower() in (*PROTECTED_STALE_EVIDENCE_TOKENS, "decisions", "decision_explanations") for part in path.parts[:-1]):
+        return "durable_audit_or_financial_evidence_directory"
     if section.startswith("governance") and (
         name.endswith("_latest.json")
         or name.endswith("_state.json")
@@ -467,11 +473,122 @@ def _move_paths_to_stale_stage(
     }
 
 
+def _stale_route(path: Path, *, missing: bool = False) -> Path:
+    route = inspect_storage_path(path)
+    links = route.get("symlinks") or []
+    # The router owns this one local alias; retain logical manifest keys across it.
+    owned_alias = links == [{
+        "path": str(PROJECT_ROOT / "data/stale_stage"),
+        "target": str(PROJECT_ROOT / "local_fallback_storage/data/stale_stage"),
+    }]
+    if route.get("status") not in ({"present", "missing"} if missing else {"present"}) or (links and not owned_alias):
+        raise RuntimeError("stale_retention_route_unavailable_or_linked")
+    return Path(str(route["resolved_path"]))
+
+
+def _stale_file_identity(path: Path) -> tuple[int, ...]:
+    _stale_route(path)
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise RuntimeError("stale_retention_requires_regular_single_link_file")
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _restore_offloaded_stale_manifest(project_root: Path, manifest_path: Path) -> dict[str, object]:
+    expected = project_root / "local_fallback_storage/data/stale_stage/stale_manifest.jsonl"
+    logical = project_root / "data/stale_stage/stale_manifest.jsonl"
+    if manifest_path not in {expected, logical}:
+        return {"restored": False, "reason": "not_owned_local_manifest"}
+    _stale_route(manifest_path.parent)
+    if not manifest_path.is_symlink():
+        return {"restored": False, "reason": "already_local"}
+    link_before = manifest_path.lstat()
+    target_text = os.readlink(manifest_path)
+    source = Path(target_text)
+    route = inspect_storage_path(source)
+    if (
+        not source.is_absolute()
+        or route.get("status") != "present"
+        or route.get("symlinks")
+        or "/deep_cold/stale_stage/" not in str(source)
+        or source.parent.parts[-2:] != ("data", "stale_stage")
+        or not source.name.startswith("stale_manifest.")
+        or source.suffix != ".jsonl"
+    ):
+        raise RuntimeError("unrecognized_offloaded_stale_manifest")
+    before = source.stat()
+    if not stat.S_ISREG(before.st_mode) or before.st_size > 64 * 1024**2:
+        raise RuntimeError("offloaded_manifest_size_or_type_rejected")
+    parent = _stale_route(expected.parent)
+    fd, name = tempfile.mkstemp(prefix=".stale_manifest.restore.", dir=parent)
+    temporary = Path(name)
+    try:
+        digest = hashlib.sha256()
+        copied = 0
+        with os.fdopen(fd, "wb") as output, os.fdopen(os.open(source, os.O_RDONLY | os.O_NOFOLLOW), "rb") as original:
+            for chunk in iter(lambda: original.read(1024**2), b""):
+                copied += len(chunk)
+                if copied > 64 * 1024**2:
+                    raise RuntimeError("offloaded_manifest_grew")
+                digest.update(chunk)
+                output.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        after = source.stat()
+        current_link = manifest_path.lstat()
+        if (
+            (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+            or copied != before.st_size
+            or _path_sha256(temporary) != digest.hexdigest()
+            or (current_link.st_dev, current_link.st_ino, current_link.st_ctime_ns)
+            != (link_before.st_dev, link_before.st_ino, link_before.st_ctime_ns)
+            or os.readlink(manifest_path) != target_text
+        ):
+            raise RuntimeError("offloaded_manifest_changed_during_restore")
+        receipt = project_root / "governance/storage_recovery/stale_manifest_restore.jsonl"
+        _stale_route(receipt, missing=True)
+        proof = {"source": str(source), "destination": str(expected), "sha256": digest.hexdigest(), "bytes": copied, "archive_preserved": True}
+        _append_jsonl(receipt, {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "event": "verified_before_manifest_restore", **proof})
+        _stale_route(parent)
+        os.replace(temporary, expected)
+        parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+        return {"restored": True, **proof}
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_stale_manifest(manifest_path: Path) -> list[dict[str, object]]:
+    _stale_route(manifest_path, missing=True)
+    try:
+        handle = manifest_path.open(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    rows = []
+    with handle:
+        for number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except (ValueError, UnicodeError) as exc:
+                raise ValueError(f"invalid_stale_manifest_line:{number}") from exc
+            if not isinstance(row, dict) or row.get("event") not in {"staged", "purged"} or not isinstance(row.get("staged_path"), str) or not row["staged_path"].strip():
+                raise ValueError(f"invalid_stale_manifest_row:{number}")
+            rows.append(row)
+    return rows
+
+
 def _compact_stale_manifest(
     *,
     manifest_path: Path,
     keep_recent_purged: int = 256,
 ) -> dict[str, object]:
+    _stale_route(manifest_path, missing=True)
     if not manifest_path.exists():
         return {
             "ran": False,
@@ -483,42 +600,36 @@ def _compact_stale_manifest(
             "purged_rows_kept": 0,
         }
 
-    active_rows: list[dict[str, object]] = []
-    purged_rows: list[dict[str, object]] = []
-    lines_before = 0
-
-    for raw in manifest_path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        lines_before += 1
-        try:
-            row = json.loads(line)
-        except Exception:
-            continue
-        if not isinstance(row, dict):
-            continue
-        event = str(row.get("event") or "").strip().lower()
-        staged_path_text = str(row.get("staged_path") or "").strip()
-        staged_path = Path(staged_path_text) if staged_path_text else None
-        if event == "purged":
-            purged_rows.append(row)
-            continue
-        if staged_path is not None and staged_path.exists():
-            active_rows.append(row)
-
-    kept_purged = purged_rows[-max(int(keep_recent_purged), 0) :] if keep_recent_purged > 0 else []
-    compacted_rows = active_rows + kept_purged
+    rows = _read_stale_manifest(manifest_path)
+    lines_before = len(rows)
+    active_indices: dict[str, int] = {}
+    purged_indices = []
+    for index, row in enumerate(rows):
+        key = str(row["staged_path"]).strip()
+        if row["event"] == "staged":
+            active_indices[key] = index
+        else:
+            active_indices.pop(key, None)
+            purged_indices.append(index)
+    kept_purged = purged_indices[-int(keep_recent_purged):] if keep_recent_purged > 0 else []
+    # Preserve replay order and disconnected-volume records without probing payload paths.
+    compacted_rows = [rows[index] for index in sorted(set(active_indices.values()) | set(kept_purged))]
     compacted_text = "\n".join(json.dumps(row, ensure_ascii=True) for row in compacted_rows)
     if compacted_text:
         compacted_text += "\n"
-    tmp_path = manifest_path.with_name(f".{manifest_path.name}.{os.getpid()}.tmp")
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{manifest_path.name}.", suffix=".tmp", dir=manifest_path.parent)
+    tmp_path = Path(temporary)
     try:
-        with tmp_path.open("w", encoding="utf-8") as handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(compacted_text)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_path, manifest_path)
+        parent_fd = os.open(_stale_route(manifest_path.parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
     finally:
         try:
             tmp_path.unlink(missing_ok=True)
@@ -531,26 +642,14 @@ def _compact_stale_manifest(
         "lines_before": int(lines_before),
         "lines_after": int(len(compacted_rows)),
         "lines_dropped": int(max(lines_before - len(compacted_rows), 0)),
-        "active_rows_kept": int(len(active_rows)),
+        "active_rows_kept": int(len(active_indices)),
         "purged_rows_kept": int(len(kept_purged)),
     }
 
 
 def _active_stale_manifest_rows(manifest_path: Path) -> dict[str, dict[str, object]]:
     active: dict[str, dict[str, object]] = {}
-    if not manifest_path.exists():
-        return active
-    try:
-        lines = manifest_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return active
-    for raw in lines:
-        try:
-            row = json.loads(raw)
-        except Exception:
-            continue
-        if not isinstance(row, dict):
-            continue
+    for row in _read_stale_manifest(manifest_path):
         staged_path = str(row.get("staged_path") or "").strip()
         if not staged_path:
             continue
@@ -572,6 +671,7 @@ def _reindex_legacy_stale_stage(
     oversized_max_bytes: int = 64 * (1024**3),
     oversized_min_age_days: float = 3.0,
 ) -> dict[str, object]:
+    _stale_route(stale_root, missing=True)
     active = _active_stale_manifest_rows(manifest_path)
     candidates: list[dict[str, object]] = []
     if stale_root.exists():
@@ -581,8 +681,12 @@ def _reindex_legacy_stale_stage(
                 path = Path(root) / name
                 if path == manifest_path:
                     continue
+                try:
+                    _stale_file_identity(path)
+                except (OSError, RuntimeError):
+                    continue
                 current = active.get(str(path), {})
-                if bool(current.get("integrity_verified", False)) and str(current.get("sha256") or ""):
+                if current.get("integrity_verified") is True and str(current.get("sha256") or ""):
                     continue
                 try:
                     rel = path.relative_to(stale_root)
@@ -676,8 +780,8 @@ def _reindex_legacy_stale_stage(
         if not isinstance(path, Path) or not path.exists():
             continue
         try:
-            stat_before = path.stat()
-        except OSError as exc:
+            identity_before = _stale_file_identity(path)
+        except (OSError, RuntimeError) as exc:
             errors.append(f"{path}:legacy_stat_before_failed:{exc}")
             continue
         sha256 = _path_sha256(path)
@@ -685,14 +789,11 @@ def _reindex_legacy_stale_stage(
             errors.append(f"{path}:legacy_hash_unavailable")
             continue
         try:
-            stat_after = path.stat()
-        except OSError as exc:
+            identity_after = _stale_file_identity(path)
+        except (OSError, RuntimeError) as exc:
             errors.append(f"{path}:legacy_stat_after_failed:{exc}")
             continue
-        if (
-            int(stat_before.st_size) != int(stat_after.st_size)
-            or int(stat_before.st_mtime_ns) != int(stat_after.st_mtime_ns)
-        ):
+        if identity_before != identity_after:
             errors.append(f"{path}:legacy_file_changed_during_hash")
             continue
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -703,8 +804,8 @@ def _reindex_legacy_stale_stage(
                 "label": str(row.get("label") or "unknown"),
                 "original_path": str(row.get("original_path") or ""),
                 "staged_path": str(path),
-                "size_bytes": int(stat_after.st_size),
-                "original_mtime_ns": int(stat_after.st_mtime_ns),
+                "size_bytes": identity_after[2],
+                "original_mtime_ns": identity_after[3],
                 "sha256": sha256,
                 "integrity_verified": True,
                 "integrity_basis": "legacy_quarantine_baseline",
@@ -772,6 +873,8 @@ def _purge_old_stale_stage(
     oversized_max_files: int = 0,
     oversized_max_bytes: int = 0,
 ) -> dict[str, object]:
+    _stale_route(stale_root, missing=True)
+    now = datetime.now(timezone.utc)
     fallback_window = max(int(older_than_days), 0)
     purge_windows = {
         "low": max(int(low_value_days), 0) if low_value_days is not None else fallback_window,
@@ -799,25 +902,31 @@ def _purge_old_stale_stage(
                     skipped_unmanifested += 1
                     continue
                 expected_sha256 = str(manifest_row.get("sha256") or "")
-                if not bool(manifest_row.get("integrity_verified", False)) or not expected_sha256:
+                if manifest_row.get("integrity_verified") is not True or not expected_sha256:
                     skipped_unverified += 1
                     continue
-                if bool(manifest_row.get("protected_evidence", False)):
+                label = path.relative_to(stale_root).parts[0]
+                if bool(manifest_row.get("protected_evidence", False)) or _stale_stage_protection_reason(label, path):
                     skipped_protected += 1
                     continue
                 if bool(manifest_row.get("legacy_reindexed", False)):
                     try:
                         indexed_at = datetime.fromisoformat(str(manifest_row.get("timestamp_utc") or "").replace("Z", "+00:00"))
-                        indexed_age_hours = (datetime.now(timezone.utc) - indexed_at.astimezone(timezone.utc)).total_seconds() / 3600.0
-                    except Exception:
-                        indexed_age_hours = 0.0
-                    hold_hours = max(float(manifest_row.get("legacy_reindex_hold_hours") or 24.0), 24.0)
+                        hold_hours = float(manifest_row.get("legacy_reindex_hold_hours") or 24.0)
+                        if indexed_at.tzinfo is None or not math.isfinite(hold_hours):
+                            raise ValueError("invalid_legacy_hold_evidence")
+                        indexed_age_hours = (now - indexed_at).total_seconds() / 3600.0
+                        hold_hours = max(hold_hours, 24.0)
+                    except (TypeError, ValueError, OverflowError):
+                        skipped_legacy_hold += 1
+                        continue
                     if indexed_age_hours < hold_hours:
                         skipped_legacy_hold += 1
                         continue
                 try:
-                    mt = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-                except OSError:
+                    identity = _stale_file_identity(path)
+                    mt = datetime.fromtimestamp(identity[3] / 1e9, tz=timezone.utc)
+                except (OSError, RuntimeError):
                     continue
                 label = "unknown"
                 try:
@@ -828,15 +937,12 @@ def _purge_old_stale_stage(
                     label = "unknown"
                 economic_value = str(manifest_row.get("economic_value") or _stale_stage_economic_value(label, path))
                 purge_window_days = purge_windows.get(economic_value, fallback_window)
-                cutoff = datetime.now(timezone.utc) - timedelta(days=purge_window_days)
+                cutoff = now - timedelta(days=purge_window_days)
                 if mt >= cutoff:
                     skipped_by_tier += 1
                     continue
-                if _path_sha256(path) != expected_sha256:
-                    skipped_hash_mismatch += 1
-                    continue
-                age_days = _path_age_days(path)
-                size_bytes = _path_size_bytes(path)
+                age_days = (now - mt).total_seconds() / 86400
+                size_bytes = identity[2]
                 candidates.append(
                     {
                         "path": path,
@@ -847,6 +953,7 @@ def _purge_old_stale_stage(
                         "size_bytes": int(size_bytes),
                         "sha256": expected_sha256,
                         "manifest_row": manifest_row,
+                        "identity": identity,
                     }
                 )
     candidates = sorted(
@@ -924,16 +1031,16 @@ def _purge_old_stale_stage(
         age_days = float(row.get("age_days") or _path_age_days(path))
         purge_window_days = int(row.get("purge_window_days") or fallback_window)
         expected_sha256 = str(row.get("sha256") or "")
-        if not expected_sha256 or _path_sha256(path) != expected_sha256:
-            errors += 1
-            error_rows.append(f"{path}:hash_changed_after_selection")
-            continue
         try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
-        except OSError as exc:
+            if _stale_file_identity(path) != row["identity"]:
+                raise RuntimeError("identity_changed_after_selection")
+            if not expected_sha256 or _path_sha256(path) != expected_sha256:
+                skipped_hash_mismatch += 1
+                raise RuntimeError("hash_changed_after_selection")
+            if _stale_file_identity(path) != row["identity"]:
+                raise RuntimeError("identity_changed_during_verification")
+            path.unlink()
+        except (OSError, RuntimeError) as exc:
             errors += 1
             error_rows.append(f"{path}:{exc}")
             continue

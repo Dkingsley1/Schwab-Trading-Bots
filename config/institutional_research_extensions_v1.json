@@ -1,0 +1,318 @@
+{
+  "schema_version": 1,
+  "policy_id": "institutional_research_extensions_v1",
+  "purpose": "Join eight public-firm-inspired research and control patterns into candidate-bound, locally testable, advisory-only contracts.",
+  "authority": {
+    "advisory_only": true,
+    "can_fetch_external_data": false,
+    "can_install_dependencies": false,
+    "can_store_credentials": false,
+    "can_change_signal": false,
+    "can_change_quantity": false,
+    "can_change_risk_limits": false,
+    "can_launch_processes": false,
+    "can_submit_paper_order": false,
+    "can_submit_live_order": false,
+    "can_promote_live": false,
+    "can_guarantee_profitability": false
+  },
+  "required_control_ids": [
+    "independent_factor_benchmarks",
+    "pipeline_incident_ownership",
+    "material_strategy_change_governance",
+    "candidate_risk_schedules",
+    "execution_speed_cost_frontier",
+    "research_dag_checkpoint_resume",
+    "versioned_research_dataset_storage",
+    "cross_engine_valuation_reconciliation"
+  ],
+  "controls": {
+    "independent_factor_benchmarks": {
+      "owner": "core/institutional_research_extensions.py",
+      "test": "tests/test_institutional_research_extensions.py",
+      "evidence_artifact": "governance/research/factor_benchmark_latest.json"
+    },
+    "pipeline_incident_ownership": {
+      "owner": "core/institutional_research_extensions.py",
+      "test": "tests/test_institutional_research_extensions.py",
+      "evidence_artifact": "governance/health/pipeline_incident_ownership_latest.json"
+    },
+    "material_strategy_change_governance": {
+      "owner": "core/institutional_research_extensions.py",
+      "test": "tests/test_institutional_research_extensions.py",
+      "evidence_artifact": "governance/health/material_strategy_change_latest.json"
+    },
+    "candidate_risk_schedules": {
+      "owner": "core/institutional_research_extensions.py",
+      "test": "tests/test_institutional_research_extensions.py",
+      "evidence_artifact": "governance/health/candidate_risk_schedule_latest.json"
+    },
+    "execution_speed_cost_frontier": {
+      "owner": "core/institutional_research_extensions.py",
+      "test": "tests/test_institutional_research_extensions.py",
+      "evidence_artifact": "governance/research/execution_speed_cost_frontier_latest.json"
+    },
+    "research_dag_checkpoint_resume": {
+      "owner": "core/institutional_research_extensions.py",
+      "test": "tests/test_institutional_research_extensions.py",
+      "evidence_artifact": "governance/research/research_dag_checkpoint_latest.json"
+    },
+    "versioned_research_dataset_storage": {
+      "owner": "core/institutional_research_extensions.py",
+      "test": "tests/test_institutional_research_extensions.py",
+      "evidence_artifact": "governance/research/versioned_dataset_storage_latest.json"
+    },
+    "cross_engine_valuation_reconciliation": {
+      "owner": "core/institutional_research_extensions.py",
+      "test": "tests/test_institutional_research_extensions.py",
+      "evidence_artifact": "governance/health/cross_engine_valuation_latest.json"
+    }
+  },
+  "factor_benchmarks": {
+    "minimum_observations": 30,
+    "ridge_lambda": 0.000000000001,
+    "benchmark_ids": [
+      "cash",
+      "equity_market",
+      "value",
+      "momentum",
+      "quality",
+      "low_beta",
+      "cross_asset_trend"
+    ],
+    "semantics": {
+      "intercept_is_not_proven_alpha": true,
+      "factor_loading_is_not_strategy_admission": true,
+      "candidate_binding_required": true,
+      "post_cost_forward_validation_required": true
+    }
+  },
+  "incident_ownership": {
+    "required_fields": [
+      "incident_id",
+      "pipeline_id",
+      "owner",
+      "severity",
+      "detected_at_utc",
+      "status"
+    ],
+    "acknowledgement_slo_seconds": {
+      "critical": 300,
+      "high": 900,
+      "medium": 3600,
+      "low": 14400
+    },
+    "recovery_slo_seconds": {
+      "critical": 1800,
+      "high": 7200,
+      "medium": 28800,
+      "low": 86400
+    },
+    "closed_statuses": ["resolved", "closed"],
+    "root_cause_receipt_required_when_closed": true,
+    "remediation_receipt_required_when_closed": true
+  },
+  "material_change_governance": {
+    "classes": [
+      {
+        "class_id": "observability_only",
+        "rank": 0,
+        "patterns": ["docs/**", "README.md", "COMMANDS.md", "scripts/ops/live_feed_status_contract.py"],
+        "required_reviews": ["owner_review"],
+        "required_tests": ["focused_regression"],
+        "forward_evidence_hours": 0
+      },
+      {
+        "class_id": "data_research_material",
+        "rank": 1,
+        "patterns": ["config/*data*", "core/*data*", "scripts/*collect*", "scripts/ops/*source*"],
+        "required_reviews": ["data_owner_review", "research_owner_review"],
+        "required_tests": ["point_in_time_regression", "data_quality_regression"],
+        "forward_evidence_hours": 24
+      },
+      {
+        "class_id": "strategy_material",
+        "rank": 2,
+        "patterns": ["core/*strategy*", "core/*alpha*", "core/institutional_decision_flow.py", "config/*strategy*"],
+        "required_reviews": ["strategy_owner_review", "risk_owner_review"],
+        "required_tests": ["strategy_validity", "paper_live_equivalence", "profitability_evidence_firewall"],
+        "forward_evidence_hours": 168
+      },
+      {
+        "class_id": "risk_execution_critical",
+        "rank": 3,
+        "patterns": ["core/*risk*", "core/*execution*", "core/live_order_ledger.py", "scripts/run_execution_lane.py", "config/*live*"],
+        "required_reviews": ["risk_owner_review", "execution_owner_review", "human_live_release_review"],
+        "required_tests": ["execution_fault_scenarios", "paper_live_equivalence", "live_readiness_smoke", "full_regression"],
+        "forward_evidence_hours": 720
+      }
+    ],
+    "default_class_id": "data_research_material",
+    "human_acceptance_required": true,
+    "live_self_approval_forbidden": true,
+    "cumulative_soak_history_preserved": true,
+    "affected_scope_forward_window_required": true
+  },
+  "candidate_risk_schedule": {
+    "schedule_id": "candidate_risk_schedule_v1",
+    "max_broker_truth_age_seconds": 120,
+    "limits": {
+      "gross_exposure_ratio": 1.0,
+      "absolute_net_exposure_ratio": 1.0,
+      "symbol_weight": 0.25,
+      "sleeve_weight": 0.4,
+      "drawdown_ratio": 0.1,
+      "daily_loss_ratio": 0.03,
+      "buying_power_utilization_ratio": 0.8
+    },
+    "allowed_asset_types": ["EQUITY", "ETF"],
+    "allowed_instruction_types": ["BUY", "SELL", "SELL_TO_CLOSE"],
+    "live_limits_remain_owned_by_existing_pretrade_controls": true
+  },
+  "execution_frontier": {
+    "frontier_id": "execution_speed_cost_frontier_v1",
+    "minimum_independent_fills": 30,
+    "minimum_fill_probability": 0.2,
+    "maximum_participation_rate": 0.15,
+    "minimum_positive_post_cost_capture_bps": 0.0,
+    "cost_terms": ["spread_bps", "impact_bps", "adverse_selection_bps", "fees_bps", "alpha_decay_bps"],
+    "abstain_when_evidence_is_thin": true
+  },
+  "research_dag": {
+    "dag_id": "candidate_research_dag_v1",
+    "stages": [
+      {"stage_id": "source_snapshot", "depends_on": []},
+      {"stage_id": "point_in_time_features", "depends_on": ["source_snapshot"]},
+      {"stage_id": "labels", "depends_on": ["point_in_time_features"]},
+      {"stage_id": "train", "depends_on": ["labels"]},
+      {"stage_id": "validate", "depends_on": ["train"]},
+      {"stage_id": "cost_replay", "depends_on": ["validate"]},
+      {"stage_id": "candidate_packet", "depends_on": ["cost_replay"]}
+    ],
+    "checkpoint_reuse_requires": ["candidate_id", "code_receipt", "dataset_receipts", "dependency_receipts"],
+    "resume_launch_authority": false
+  },
+  "versioned_storage": {
+    "adapter_id": "local_content_addressed_manifest_v1",
+    "immutable_versions": true,
+    "snapshot_time_travel": true,
+    "content_hash_required": true,
+    "source_retirement_authority": false,
+    "profiles": [
+      {
+        "profile_id": "stdlib_local_manifest",
+        "status": "approved_local_adapter",
+        "production_dependency": false
+      },
+      {
+        "profile_id": "arcticdb_design_influence",
+        "status": "influence_only_license_review_required",
+        "production_dependency": false,
+        "license_review_required": true
+      },
+      {
+        "profile_id": "versioned_hdf5_design_influence",
+        "status": "influence_only",
+        "production_dependency": false
+      }
+    ]
+  },
+  "valuation_reconciliation": {
+    "contract_id": "cross_engine_valuation_reconciliation_v1",
+    "minimum_distinct_engines": 2,
+    "relative_tolerance": 0.000001,
+    "absolute_tolerance": {
+      "present_value": 0.01,
+      "delta": 0.0001,
+      "gamma": 0.0001,
+      "vega": 0.001,
+      "theta": 0.001
+    },
+    "signed_external_attestation_required_for_promotion_evidence": true,
+    "synthetic_probe_is_not_external_evidence": true
+  },
+  "firm_influences": [
+    {
+      "reference_id": "point72_cubist_trade_lifecycle",
+      "organization": "Point72 / Cubist",
+      "official_url": "https://point72.com/blog/five-years-of-the-cubist-quant-academy/",
+      "adopted_patterns": ["research_to_execution_stage_boundaries", "post_trade_feedback"],
+      "control_ids": ["research_dag_checkpoint_resume", "material_strategy_change_governance"]
+    },
+    {
+      "reference_id": "point72_data_reliability",
+      "organization": "Point72 / Cubist",
+      "official_url": "https://careers.point72.com/CSJobDetail?jobCode=CSS-0014985&jobName=data-reliability-engineer&locale=English&location=New+York&retURL=%2FCSCareerSearch",
+      "adopted_patterns": ["named_pipeline_ownership", "validation_incident_management_entitlements"],
+      "control_ids": ["pipeline_incident_ownership", "versioned_research_dataset_storage"]
+    },
+    {
+      "reference_id": "point72_risk_governance",
+      "organization": "Point72",
+      "official_url": "https://point72.com/wp-content/uploads/2025/08/Point72-Europe-London-LLP-MIFIDPRU-8-Public-Disclosure-2025.pdf",
+      "adopted_patterns": ["real_time_limits", "launch_and_material_change_review"],
+      "control_ids": ["candidate_risk_schedules", "material_strategy_change_governance"]
+    },
+    {
+      "reference_id": "aqr_data_library",
+      "organization": "AQR Capital Management",
+      "official_url": "https://www.aqr.com/Insights/Datasets/About-the-AQR-Data-Library",
+      "adopted_patterns": ["independent_factor_return_benchmarks", "revision_aware_research_series"],
+      "control_ids": ["independent_factor_benchmarks"]
+    },
+    {
+      "reference_id": "man_arcticdb",
+      "organization": "Man Group",
+      "official_url": "https://github.com/man-group/ArcticDB",
+      "adopted_patterns": ["versioned_time_series", "snapshots_time_travel_compression"],
+      "control_ids": ["versioned_research_dataset_storage"],
+      "local_constraint": "design_influence_only_until_license_and_production_use_review"
+    },
+    {
+      "reference_id": "man_ahl_speed_cost",
+      "organization": "Man AHL",
+      "official_url": "https://www.man.com/documents/download/c6197-d1843-5316b-7b14c/Man_Perspective_The_Need_for_Speed_in_Trend-Following_Strategies_English_%28United_States%29_04-01-2023.pdf",
+      "adopted_patterns": ["signal_speed_cost_tradeoff", "turnover_aware_parameter_selection"],
+      "control_ids": ["execution_speed_cost_frontier"]
+    },
+    {
+      "reference_id": "two_sigma_engineering",
+      "organization": "Two Sigma",
+      "official_url": "https://www.twosigma.com/careers/engineering/",
+      "adopted_patterns": ["reproducible_research_engineering", "production_research_boundaries"],
+      "control_ids": ["research_dag_checkpoint_resume", "pipeline_incident_ownership"]
+    },
+    {
+      "reference_id": "two_sigma_uberjob",
+      "organization": "Two Sigma",
+      "official_url": "https://github.com/twosigma/uberjob",
+      "adopted_patterns": ["call_graph_workflow_composition", "checkpointable_stage_identity"],
+      "control_ids": ["research_dag_checkpoint_resume"]
+    },
+    {
+      "reference_id": "deshaw_versioned_hdf5",
+      "organization": "D. E. Shaw Research",
+      "official_url": "https://github.com/deshaw/versioned-hdf5",
+      "adopted_patterns": ["immutable_dataset_versions", "historical_snapshot_access"],
+      "control_ids": ["versioned_research_dataset_storage"]
+    },
+    {
+      "reference_id": "goldman_gs_quant",
+      "organization": "Goldman Sachs",
+      "official_url": "https://github.com/goldmansachs/gs-quant",
+      "adopted_patterns": ["independent_derivatives_measure_sets", "pricing_risk_reconciliation"],
+      "control_ids": ["cross_engine_valuation_reconciliation"],
+      "local_constraint": "no_connected_api_or_institutional_credentials_required"
+    }
+  ],
+  "evidence_semantics": {
+    "structural_readiness_is_not_earned_evidence": true,
+    "public_design_influence_is_not_proprietary_replication": true,
+    "factor_intercept_is_not_guaranteed_alpha": true,
+    "incident_free_is_not_incident_response_proof": true,
+    "synthetic_valuation_is_not_independent_attestation": true,
+    "paper_soak_history_is_preserved": true,
+    "candidate_affected_scopes_accrue_forward": true,
+    "live_release_remains_separately_human_gated": true
+  }
+}

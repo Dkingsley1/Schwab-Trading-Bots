@@ -6,8 +6,11 @@ import fcntl
 import gzip
 import hashlib
 import json
+import math
 import os
+import signal
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,8 +24,30 @@ else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, write_payload
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "decision_log_compactor_latest.json"
-DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "decision_log_compactor.lock"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "decision_log_compactor_latest.json"
+)
+DEFAULT_LOCK_PATH = (
+    PROJECT_ROOT / "governance" / "locks" / "decision_log_compactor.lock"
+)
+
+
+def _checkpoint_complete(progress: dict[str, Any], source_stat: os.stat_result) -> bool:
+    try:
+        for key in ("last_offset_bytes", "file_size_bytes", "file_inode"):
+            if type(progress.get(key)) is not int or progress[key] < 0:
+                return False
+        mtime = progress.get("mtime")
+        return (
+            progress["last_offset_bytes"] == source_stat.st_size
+            and progress["file_size_bytes"] == source_stat.st_size
+            and progress["file_inode"] == source_stat.st_ino
+            and type(mtime) in {int, float}
+            and math.isfinite(mtime)
+            and mtime == source_stat.st_mtime
+        )
+    except (ValueError, TypeError, OverflowError):
+        return False
 
 
 def _gb(raw_bytes: int) -> float:
@@ -76,7 +101,9 @@ def _effective_runtime_overrides(project_root: Path) -> dict[str, str]:
 def _sqlite_progress_index(project_root: Path) -> dict[str, dict[str, Any]]:
     index: dict[str, dict[str, Any]] = {}
     state_root = project_root / "governance" / "sql_link_shards"
-    for path in state_root.glob("jsonl_sql_link_state*.json") if state_root.exists() else ():
+    for path in (
+        state_root.glob("jsonl_sql_link_state*.json") if state_root.exists() else ()
+    ):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
@@ -97,7 +124,9 @@ def _sqlite_progress_index(project_root: Path) -> dict[str, dict[str, Any]]:
     return index
 
 
-def _current_day_logging_disabled(source_rel: str, overrides: dict[str, str]) -> tuple[bool, str]:
+def _current_day_logging_disabled(
+    source_rel: str, overrides: dict[str, str]
+) -> tuple[bool, str]:
     rel = str(source_rel or "")
     if rel.startswith("decision_explanations/"):
         key = "LOG_DECISION_EXPLANATIONS"
@@ -109,7 +138,9 @@ def _current_day_logging_disabled(source_rel: str, overrides: dict[str, str]) ->
     if raw is None:
         return False, f"{key.lower()}_not_explicitly_disabled"
     disabled = str(raw).strip().lower() in {"0", "false", "no", "off"}
-    return disabled, ("logging_disabled" if disabled else f"{key.lower()}_still_enabled")
+    return disabled, (
+        "logging_disabled" if disabled else f"{key.lower()}_still_enabled"
+    )
 
 
 def _file_day(path: Path) -> str:
@@ -132,7 +163,12 @@ def _parse_families(raw: str | list[str] | tuple[str, ...] | None) -> list[str]:
         rows = [str(item).strip() for item in raw if str(item).strip()]
     else:
         rows = [part.strip() for part in str(raw or "").split(",") if part.strip()]
-    return rows or ["decisions", "decision_explanations", "paper_bridge", "shadow_pnl_attribution"]
+    return rows or [
+        "decisions",
+        "decision_explanations",
+        "paper_bridge",
+        "shadow_pnl_attribution",
+    ]
 
 
 def _family_roots(project_root: Path, families: list[str]) -> list[Path]:
@@ -171,14 +207,18 @@ def _iter_family_files(project_root: Path, families: list[str]) -> list[Path]:
             if governance_root.exists():
                 paths.extend(
                     path
-                    for path in governance_root.glob("shadow*/shadow_pnl_attribution_*.jsonl")
+                    for path in governance_root.glob(
+                        "shadow*/shadow_pnl_attribution_*.jsonl"
+                    )
                     if ".__external_symlink_backup" not in path.parent.name
                 )
             continue
         for root in _family_roots(project_root, [family]):
             if not root.exists():
                 continue
-            paths.extend(path for path in root.rglob("*") if _is_candidate_log_path(path))
+            paths.extend(
+                path for path in root.rglob("*") if _is_candidate_log_path(path)
+            )
     return sorted(paths, key=lambda path: str(path))
 
 
@@ -218,7 +258,12 @@ def _candidate_rows(
         )
         if row:
             rows.append(row)
-    rows.sort(key=lambda row: (-int(row.get("size_bytes", 0) or 0), str(row.get("relative_path") or "")))
+    rows.sort(
+        key=lambda row: (
+            -int(row.get("size_bytes", 0) or 0),
+            str(row.get("relative_path") or ""),
+        )
+    )
     return rows
 
 
@@ -251,13 +296,18 @@ def _candidate_row(
     if is_current_day and not include_current_day:
         return None
     source_rel = _canonical_source_rel(project_root, path)
+    progress = progress_index.get(source_rel)
+    if progress is not None and not _checkpoint_complete(progress, stat):
+        return None
     current_day_safety: dict[str, Any] = {
         "required": bool(is_current_day and require_current_day_safe),
         "ready": not bool(is_current_day and require_current_day_safe),
         "reason": "not_current_day",
     }
     if is_current_day and require_current_day_safe:
-        logging_disabled, logging_reason = _current_day_logging_disabled(source_rel, runtime_overrides)
+        logging_disabled, logging_reason = _current_day_logging_disabled(
+            source_rel, runtime_overrides
+        )
         progress = dict(progress_index.get(source_rel) or {})
         checkpoint_offset = int(progress.get("last_offset_bytes", 0) or 0)
         checkpoint_size = int(progress.get("file_size_bytes", 0) or 0)
@@ -273,9 +323,11 @@ def _candidate_row(
             "reason": (
                 "inert_and_fully_ingested"
                 if logging_disabled and fully_ingested
-                else logging_reason
-                if not logging_disabled
-                else "sqlite_checkpoint_not_at_exact_eof"
+                else (
+                    logging_reason
+                    if not logging_disabled
+                    else "sqlite_checkpoint_not_at_exact_eof"
+                )
             ),
             "logging_disabled": bool(logging_disabled),
             "logging_reason": logging_reason,
@@ -314,7 +366,9 @@ def _is_candidate_log_path(path: Path) -> bool:
     return name.endswith(".jsonl") or ".jsonl.local_fallback" in name
 
 
-def _select_rows(rows: list[dict[str, Any]], *, target_free_bytes: int, max_files: int) -> list[dict[str, Any]]:
+def _select_rows(
+    rows: list[dict[str, Any]], *, target_free_bytes: int, max_files: int
+) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
     selected_bytes = 0
     for row in rows:
@@ -335,12 +389,31 @@ def _compact_one(
     source_fingerprint: dict[str, Any] | None = None,
     current_day: bool = False,
 ) -> dict[str, Any]:
-    source_path = project_root / source_rel
+    from scripts.ops import cold_evidence_compactor as verified
+
+    source_alias = project_root / source_rel
+    try:
+        route = verified.inspect_storage_path(source_alias)
+        if route.get("status") != "present":
+            raise RuntimeError("protected_or_unavailable_source_route")
+        if source_alias.is_symlink():
+            raise RuntimeError("source_file_symlink_not_eligible")
+        source_path = verified.allowed(source_alias.resolve(strict=True))
+    except (OSError, RuntimeError) as exc:
+        return {"relative_path": source_rel, "status": "error", "error": str(exc)}
     if not source_path.exists():
-        return {"relative_path": source_rel, "status": "missing", "error": "source_missing"}
+        return {
+            "relative_path": source_rel,
+            "status": "missing",
+            "error": "source_missing",
+        }
     archive_path = source_path.with_name(f"{source_path.name}.gz")
     if current_day and archive_path.exists():
-        stem = source_path.name[:-6] if source_path.name.endswith(".jsonl") else source_path.name
+        stem = (
+            source_path.name[:-6]
+            if source_path.name.endswith(".jsonl")
+            else source_path.name
+        )
         for part in range(1, 10000):
             candidate = source_path.with_name(f"{stem}.part{part:03d}.jsonl.gz")
             if not candidate.exists():
@@ -360,10 +433,14 @@ def _compact_one(
         return {"relative_path": source_rel, "status": "error", "error": str(exc)}
     if expected and any(
         (
-            int(expected.get("device", before.st_dev) or before.st_dev) != int(before.st_dev),
-            int(expected.get("inode", before.st_ino) or before.st_ino) != int(before.st_ino),
-            int(expected.get("size_bytes", before.st_size) or before.st_size) != int(before.st_size),
-            int(expected.get("mtime_ns", before.st_mtime_ns) or before.st_mtime_ns) != int(before.st_mtime_ns),
+            int(expected.get("device", before.st_dev) or before.st_dev)
+            != int(before.st_dev),
+            int(expected.get("inode", before.st_ino) or before.st_ino)
+            != int(before.st_ino),
+            int(expected.get("size_bytes", before.st_size) or before.st_size)
+            != int(before.st_size),
+            int(expected.get("mtime_ns", before.st_mtime_ns) or before.st_mtime_ns)
+            != int(before.st_mtime_ns),
         )
     ):
         return {
@@ -372,8 +449,21 @@ def _compact_one(
             "error": "source_fingerprint_changed_before_compaction",
         }
 
-    tmp_archive = archive_path.with_name(f"{archive_path.name}.tmp.{os.getpid()}")
+    tmp_archive = None
     try:
+        verified.allowed(source_path)
+        verified.allowed(archive_path, missing=True)
+        verified.idle(source_path)
+        source_identity = verified.identity(source_path)
+        progress = _sqlite_progress_index(project_root).get(source_rel)
+        checkpoint_required = progress is not None
+        if progress is not None and not _checkpoint_complete(progress, before):
+            return {"relative_path": source_rel, "status": "deferred_pending_ingestion"}
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".decision_compact_", suffix=".tmp", dir=source_path.parent
+        )
+        os.close(fd)
+        tmp_archive = Path(tmp_name)
         digest = hashlib.sha256()
         copied_bytes = 0
         with source_path.open("rb") as src, gzip.open(
@@ -405,28 +495,84 @@ def _compact_one(
                 "copied_bytes": copied_bytes,
                 "expected_bytes": int(before.st_size),
             }
-        tmp_archive.replace(archive_path)
+        source_sha256 = digest.hexdigest()
+        restored_digest, restored_bytes = hashlib.sha256(), 0
+        # Verify every restored byte before publishing or releasing the source.
+        verify_path = archive_path if archive_preexisting else tmp_archive
+        archive_identity = verified.identity(verify_path)
+        with gzip.open(verify_path, "rb") as restored:
+            while chunk := restored.read(4 * 1024 * 1024):
+                restored_bytes += len(chunk)
+                if restored_bytes > copied_bytes:
+                    raise RuntimeError("restored_archive_exceeds_source_size")
+                restored_digest.update(chunk)
+        if (
+            restored_bytes != copied_bytes
+            or restored_digest.hexdigest() != source_sha256
+        ):
+            raise RuntimeError("full_gzip_restore_sha256_mismatch")
+        if verified.identity(verify_path) != archive_identity:
+            raise RuntimeError("archive_changed_during_verification")
+        if verified.identity(source_path) != source_identity:
+            raise RuntimeError("source_changed_during_verification")
+        if archive_identity[2] >= copied_bytes:
+            raise RuntimeError("no_positive_space_saving")
+        with verify_path.open("rb") as durable:
+            os.fsync(durable.fileno())
+        if not archive_preexisting:
+            os.link(tmp_archive, archive_path, follow_symlinks=False)
+            verified.sync_dir(source_path.parent)
         archive_bytes = int(archive_path.stat().st_size)
+        published_identity = verified.identity(archive_path)
+        proof = {
+            "source": source_rel,
+            "compressed": _relative(project_root, archive_path),
+            "source_identity": source_identity,
+            "source_bytes": copied_bytes,
+            "compressed_bytes": archive_bytes,
+            "sha256_uncompressed": source_sha256,
+            "verified_restored_bytes": restored_bytes,
+            "verification": "full_gzip_restore_sha256_stable_idle_source",
+        }
+        verified.receipt(
+            project_root, {"event": "decision_verified_before_release", **proof}
+        )
+        verified.idle(source_path)
+        if (
+            verified.identity(source_path) != source_identity
+            or verified.identity(archive_path) != published_identity
+        ):
+            raise RuntimeError("source_or_archive_changed_before_release")
+        if (
+            verified.inspect_storage_path(source_alias).get("status") != "present"
+            or source_alias.resolve(strict=True) != source_path
+        ):
+            raise RuntimeError("source_route_changed_before_release")
+        progress = _sqlite_progress_index(project_root).get(source_rel)
+        if (checkpoint_required or progress is not None) and not _checkpoint_complete(
+            progress or {}, source_path.stat()
+        ):
+            raise RuntimeError("ingestion_checkpoint_changed_before_release")
         source_path.unlink()
+        verified.sync_dir(source_path.parent)
+        verified.receipt(project_root, {"event": "decision_original_replaced", **proof})
         return {
             "relative_path": source_rel,
             "status": "compacted",
-            "archive_replaced": bool(archive_preexisting),
+            "archive_replaced": False,
+            "matching_archive_reused": bool(archive_preexisting),
             "raw_bytes": raw_bytes,
             "raw_gb": _gb(raw_bytes),
             "archive_path": _relative(project_root, archive_path),
             "archive_bytes": archive_bytes,
             "archive_gb": _gb(archive_bytes),
-            "source_sha256": digest.hexdigest(),
+            "source_sha256": source_sha256,
+            "restore_proof": proof,
             "source_fingerprint_verified": True,
             "estimated_reduction_bytes": max(raw_bytes - archive_bytes, 0),
             "estimated_reduction_gb": _gb(max(raw_bytes - archive_bytes, 0)),
         }
     except Exception as exc:
-        try:
-            tmp_archive.unlink(missing_ok=True)
-        except Exception:
-            pass
         return {
             "relative_path": source_rel,
             "status": "error",
@@ -435,6 +581,9 @@ def _compact_one(
             "archive_path": _relative(project_root, archive_path),
             "error": str(exc),
         }
+    finally:
+        if tmp_archive is not None:
+            tmp_archive.unlink(missing_ok=True)
 
 
 def build_payload(
@@ -462,7 +611,11 @@ def build_payload(
         families=family_list,
         require_current_day_safe=bool(require_current_day_safe),
     )
-    selected = _select_rows(candidates, target_free_bytes=target_free_bytes, max_files=max(int(max_files), 0))
+    selected = _select_rows(
+        candidates,
+        target_free_bytes=target_free_bytes,
+        max_files=max(int(max_files), 0),
+    )
 
     if apply and selected:
         records = [
@@ -484,12 +637,21 @@ def build_payload(
 
     compacted = [row for row in records if str(row.get("status") or "") == "compacted"]
     errors = [row for row in records if str(row.get("status") or "") == "error"]
-    selected_bytes = sum(int(row.get("size_bytes", row.get("raw_bytes", 0)) or 0) for row in selected)
+    deferred = [
+        row for row in records if str(row.get("status") or "").startswith("deferred")
+    ]
+    selected_bytes = sum(
+        int(row.get("size_bytes", row.get("raw_bytes", 0)) or 0) for row in selected
+    )
     raw_compacted_bytes = sum(int(row.get("raw_bytes", 0) or 0) for row in compacted)
     archive_bytes = sum(int(row.get("archive_bytes", 0) or 0) for row in compacted)
-    reduction_bytes = sum(int(row.get("estimated_reduction_bytes", 0) or 0) for row in compacted)
+    reduction_bytes = sum(
+        int(row.get("estimated_reduction_bytes", 0) or 0) for row in compacted
+    )
     if errors:
         overall_status = "degraded"
+    elif deferred:
+        overall_status = "deferred"
     elif apply and compacted:
         overall_status = "applied"
     elif selected:
@@ -500,7 +662,7 @@ def build_payload(
     return {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
-        "ok": not errors,
+        "ok": not errors and not deferred,
         "overall_status": overall_status,
         "apply": bool(apply),
         "policy": {
@@ -512,7 +674,7 @@ def build_payload(
             "min_age_minutes": float(min_age_minutes),
             "compression_level": int(compression_level),
             "families": family_list,
-            "compaction_policy": "gzip_old_logs_in_place; current-day logs require explicit producer disablement, exact SQL EOF, minimum inert age, and unchanged-file verification",
+            "compaction_policy": "gzip_old_logs_in_place; known pending or mismatched SQL checkpoints defer all ages; current-day logs also require explicit producer disablement and minimum inert age; full gzip restoration, stable idle source and durable proof precede release; conflicting archives are preserved",
         },
         "summary": {
             "candidate_count": len(candidates),
@@ -527,14 +689,17 @@ def build_payload(
             "estimated_reduction_bytes": int(reduction_bytes),
             "estimated_reduction_gb": _gb(reduction_bytes),
             "error_count": len(errors),
+            "deferred_count": len(deferred),
         },
         "records": records,
         "next_action": (
             "refresh storage-tier-policy and storage-quota-guard"
             if apply and compacted
-            else "run with --apply to compact old decision logs"
-            if selected and not apply
-            else "monitor decisions quota"
+            else (
+                "run with --apply to compact old decision logs"
+                if selected and not apply
+                else "monitor decisions quota"
+            )
         ),
     }
 
@@ -563,22 +728,49 @@ def _acquire_lock(path: Path) -> tuple[Any | None, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Gzip-compact older decisions JSONL files while preserving current-day hot logs.")
+    parser = argparse.ArgumentParser(
+        description="Gzip-compact older decisions JSONL files while preserving current-day hot logs."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--lock-path", default=str(DEFAULT_LOCK_PATH))
-    parser.add_argument("--min-file-mb", type=float, default=float(os.getenv("DECISION_LOG_COMPACTOR_MIN_FILE_MB", "128")))
-    parser.add_argument("--target-free-gb", type=float, default=float(os.getenv("DECISION_LOG_COMPACTOR_TARGET_FREE_GB", "9")))
-    parser.add_argument("--max-files", type=int, default=int(os.getenv("DECISION_LOG_COMPACTOR_MAX_FILES", "8")))
-    parser.add_argument("--compression-level", type=int, default=int(os.getenv("DECISION_LOG_COMPACTOR_GZIP_LEVEL", "1")))
-    parser.add_argument("--include-current-day", action=argparse.BooleanOptionalAction, default=os.getenv("DECISION_LOG_COMPACTOR_INCLUDE_CURRENT_DAY", "0").strip() == "1")
+    parser.add_argument(
+        "--min-file-mb",
+        type=float,
+        default=float(os.getenv("DECISION_LOG_COMPACTOR_MIN_FILE_MB", "128")),
+    )
+    parser.add_argument(
+        "--target-free-gb",
+        type=float,
+        default=float(os.getenv("DECISION_LOG_COMPACTOR_TARGET_FREE_GB", "9")),
+    )
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=int(os.getenv("DECISION_LOG_COMPACTOR_MAX_FILES", "8")),
+    )
+    parser.add_argument(
+        "--compression-level",
+        type=int,
+        default=int(os.getenv("DECISION_LOG_COMPACTOR_GZIP_LEVEL", "1")),
+    )
+    parser.add_argument(
+        "--include-current-day",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("DECISION_LOG_COMPACTOR_INCLUDE_CURRENT_DAY", "0").strip()
+        == "1",
+    )
     parser.add_argument(
         "--require-current-day-safe",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Require explicit logging disablement and an exact SQLite EOF checkpoint before current-day rotation.",
     )
-    parser.add_argument("--min-age-minutes", type=float, default=float(os.getenv("DECISION_LOG_COMPACTOR_MIN_AGE_MINUTES", "60")))
+    parser.add_argument(
+        "--min-age-minutes",
+        type=float,
+        default=float(os.getenv("DECISION_LOG_COMPACTOR_MIN_AGE_MINUTES", "60")),
+    )
     parser.add_argument(
         "--families",
         default=os.getenv(
@@ -589,6 +781,7 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
 
     out_path = Path(args.out_file).expanduser()
     lock_fh = None
@@ -623,7 +816,11 @@ def main() -> int:
         if args.json:
             print(json.dumps(payload, ensure_ascii=True))
         else:
-            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+            summary = (
+                payload.get("summary")
+                if isinstance(payload.get("summary"), dict)
+                else {}
+            )
             print(
                 "decision_log_compactor "
                 f"overall_status={payload.get('overall_status', '')} "

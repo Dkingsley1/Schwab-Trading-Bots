@@ -395,6 +395,12 @@ def _apply_backlog_relief_env(env: dict[str, str], backlog_relief_contract: dict
                 "SIGNAL_GENERATION_BAD_SIGNAL_BATCH_CAP": "64",
             }
         )
+    if active.intersection({"intake_outpaces_drain", "raw_live_expansion_headroom"}):
+        # These streams are reproducible from preserved decisions and fills.
+        # Pause them until the writer has both positive throughput and enough
+        # raw/live headroom, without dropping trading truth.
+        env["LOG_DECISION_EXPLANATIONS"] = "0"
+        env["LOG_SHADOW_PNL_ATTRIBUTION"] = "0"
     if "stale_old_pending_work" in active:
         env["WRITER_CYCLE_MAX_CATCH_UP_WAVES"] = "3"
     if isinstance(backlog_relief_contract, dict):
@@ -482,6 +488,12 @@ def _profile_env(
         "RETENTION_STALE_PURGE_CRITICAL_VALUE_DAYS": "90",
         "RETENTION_STALE_PURGE_MAX_FILES": "5000",
         "RETENTION_STALE_PURGE_MAX_GB": "10",
+        # Share one recent backlog snapshot across the sleeve fleet. A five-second
+        # cadence makes every loop contend for the refresh lease, while 60 seconds
+        # remains comfortably inside the fail-closed 180-second freshness limit.
+        "SHADOW_LOOP_SELF_REFRESH_BACKPRESSURE_ENABLED": "1",
+        "SHADOW_LOOP_BACKLOG_REFRESH_MAX_AGE_SECONDS": "60",
+        "SHADOW_LOOP_FRESH_BACKLOG_MAX_AGE_SECONDS": "180",
     }
     if profile_name == "critical_backpressure":
         deferred_budget = _critical_deferred_budget(

@@ -25,6 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.decision_context_mesh import (
     DECISION_CONTEXT_MESH_FEATURE_KEYS,
     PLANE_SIGNAL_FEATURE_KEYS,
+    PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS,
     assess_decision_context_mesh,
     load_decision_context_mesh_config,
     percentage_grade,
@@ -71,6 +72,14 @@ LOCAL_SOURCE_SPECS = {
         "CFTC, Federal Reserve Bank of New York, Cboe, Nasdaq, and SEC",
         "https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm",
         "official_quant_context",
+    ),
+    "public_financial_context": (
+        "exports/external_context/public_financial_context_latest.json",
+        24.0,
+        96.0,
+        "SEC, OFR, FDIC, Federal Register, ECB, and Federal Reserve Bank of New York",
+        "https://www.sec.gov/search-filings/edgar-application-programming-interfaces",
+        "official_public_financial_context",
     ),
     "options_flow_context": (
         "exports/external_context/options_flow_context_latest.json",
@@ -693,6 +702,8 @@ def _feature_candidates(
     micro = _global_features(payloads.get("market_micro_context", {}))
     extended_payload = payloads.get("extended_quant_context", {})
     extended = _global_features(extended_payload)
+    public_financial_payload = payloads.get("public_financial_context", {})
+    public_financial = _global_features(public_financial_payload)
     extended_calendar = _path_value(extended_payload, "derived.calendar_features") or {}
     options = _global_features(payloads.get("options_flow_context", {}))
     sec = _global_features(payloads.get("sec_edgar_context", {}))
@@ -726,11 +737,22 @@ def _feature_candidates(
     debt_change = _safe_float(public.get("us_public_debt_daily_change_usd"))
     _add_feature(fiscal, "fiscal_debt_issuance_impulse_norm", _signed_norm(debt_change, 100_000_000_000.0) if debt_change is not None else None, source_id="public_policy_context", field_path="features.us_public_debt_daily_change_usd", source_states=source_states, now=now, confidence=0.98)
     _add_feature(fiscal, "fiscal_tga_drain_impulse_norm", official.get("fed_tga_drain_impulse_norm"), source_id="official_macro_context", field_path="derived.global_features.fed_tga_drain_impulse_norm", source_states=source_states, now=now, confidence=0.99)
+    auction_demand = _safe_float(micro.get("treasury_auction_demand_norm"))
+    _add_feature(fiscal, "fiscal_auction_supply_pressure_norm", micro.get("treasury_auction_supply_pressure_norm"), source_id="market_micro_context", field_path="derived.global_features.treasury_auction_supply_pressure_norm", source_states=source_states, now=now, confidence=0.99)
+    _add_feature(fiscal, "fiscal_auction_weak_demand_norm", (1.0 - auction_demand) if auction_demand is not None else None, source_id="market_micro_context", field_path="derived.global_features.treasury_auction_demand_norm", source_states=source_states, now=now, confidence=0.99)
 
     funding = planes["funding_stress"]
     _add_feature(funding, "funding_fed_stress_norm", official.get("fed_funding_stress_norm"), source_id="official_macro_context", field_path="derived.global_features.fed_funding_stress_norm", source_states=source_states, now=now, confidence=0.99)
     _add_feature(funding, "funding_sofr_stress_norm", extended.get("sofr_funding_stress_norm"), source_id="extended_quant_context", field_path="derived.global_features.sofr_funding_stress_norm", source_states=source_states, now=now, confidence=0.98)
     _add_feature(funding, "funding_corridor_pressure_norm", official.get("fed_sofr_effr_spread_norm"), source_id="official_macro_context", field_path="derived.global_features.fed_sofr_effr_spread_norm", source_states=source_states, now=now, confidence=0.99)
+    _add_feature(funding, "funding_ofr_stress_norm", public_financial.get("ofr_funding_stress_norm"), source_id="public_financial_context", field_path="derived.global_features.ofr_funding_stress_norm", source_states=source_states, now=now, confidence=0.99)
+    _add_feature(funding, "funding_ecb_estr_pressure_norm", public_financial.get("ecb_estr_funding_pressure_norm"), source_id="public_financial_context", field_path="derived.global_features.ecb_estr_funding_pressure_norm", source_states=source_states, now=now, confidence=0.99)
+    dealer_repo_imbalance = _safe_float(public_financial.get("nyfed_dealer_repo_imbalance_norm"))
+    _add_feature(funding, "funding_dealer_repo_imbalance_pressure_norm", abs(dealer_repo_imbalance - 0.5) * 2.0 if dealer_repo_imbalance is not None else None, source_id="public_financial_context", field_path="derived.global_features.nyfed_dealer_repo_imbalance_norm", source_states=source_states, now=now, confidence=0.99)
+    _add_feature(funding, "funding_dealer_settlement_fails_norm", public_financial.get("nyfed_dealer_financing_fails_pressure_norm"), source_id="public_financial_context", field_path="derived.global_features.nyfed_dealer_financing_fails_pressure_norm", source_states=source_states, now=now, confidence=0.99)
+    _add_feature(funding, "funding_dealer_treasury_inventory_norm", public_financial.get("nyfed_dealer_treasury_inventory_pressure_norm"), source_id="public_financial_context", field_path="derived.global_features.nyfed_dealer_treasury_inventory_pressure_norm", source_states=source_states, now=now, confidence=0.99)
+    fdic_deposit_funding = _safe_float(public_financial.get("fdic_bank_deposit_funding_norm"))
+    _add_feature(funding, "funding_bank_deposit_shortfall_norm", (1.0 - fdic_deposit_funding) if fdic_deposit_funding is not None else None, source_id="public_financial_context", field_path="derived.global_features.fdic_bank_deposit_funding_norm", source_states=source_states, now=now, confidence=0.99)
 
     cross_border = planes["cross_border_capital"]
     tic_observation = tic.get("observation_time")
@@ -743,12 +765,16 @@ def _feature_candidates(
     _add_feature(cross_border, "cross_border_fx_confirmation_norm", fx.get("fx_proxy_agreement_norm"), source_id="fx_market_context", field_path="derived.global_features.fx_proxy_agreement_norm", source_states=source_states, now=now, confidence=0.9)
     _add_feature(cross_border, "cross_border_external_balance_imbalance_norm", public.get("world_bank_current_account_imbalance_norm"), source_id="public_policy_context", field_path="features.world_bank_current_account_imbalance_norm", source_states=source_states, now=now, confidence=0.96)
     _add_feature(cross_border, "cross_border_policy_spillover_norm", central.get("central_bank_policy_spillover_risk_norm"), source_id="central_bank_cross_source_context", field_path="derived.global_features.central_bank_policy_spillover_risk_norm", source_states=source_states, now=now, confidence=0.95)
+    _add_feature(cross_border, "cross_border_ecb_funding_pressure_norm", public_financial.get("ecb_estr_funding_pressure_norm"), source_id="public_financial_context", field_path="derived.global_features.ecb_estr_funding_pressure_norm", source_states=source_states, now=now, confidence=0.99)
+    _add_feature(cross_border, "cross_border_ecb_rate_change_norm", public_financial.get("ecb_estr_change_5d_norm"), source_id="public_financial_context", field_path="derived.global_features.ecb_estr_change_5d_norm", source_states=source_states, now=now, confidence=0.99)
 
     positioning = planes["positioning_crowding"]
     _add_feature(positioning, "positioning_cot_crowding_norm", extended.get("cot_equity_crowding_norm"), source_id="extended_quant_context", field_path="derived.global_features.cot_equity_crowding_norm", source_states=source_states, now=now, confidence=0.98)
     _add_feature(positioning, "positioning_macro_stress_norm", extended.get("cot_macro_positioning_stress_norm"), source_id="extended_quant_context", field_path="derived.global_features.cot_macro_positioning_stress_norm", source_states=source_states, now=now, confidence=0.98)
     _add_feature(positioning, "positioning_put_call_stress_norm", extended.get("cboe_put_call_stress_norm"), source_id="extended_quant_context", field_path="derived.global_features.cboe_put_call_stress_norm", source_states=source_states, now=now, confidence=0.97)
     _add_feature(positioning, "positioning_etf_flow_pressure_norm", micro.get("etf_fund_family_flow_norm"), source_id="market_micro_context", field_path="derived.global_features.etf_fund_family_flow_norm", source_states=source_states, now=now, confidence=0.82)
+    _add_feature(positioning, "positioning_dealer_treasury_inventory_norm", public_financial.get("nyfed_dealer_treasury_inventory_pressure_norm"), source_id="public_financial_context", field_path="derived.global_features.nyfed_dealer_treasury_inventory_pressure_norm", source_states=source_states, now=now, confidence=0.99)
+    _add_feature(positioning, "positioning_dealer_credit_inventory_norm", public_financial.get("nyfed_dealer_corporate_inventory_pressure_norm"), source_id="public_financial_context", field_path="derived.global_features.nyfed_dealer_corporate_inventory_pressure_norm", source_states=source_states, now=now, confidence=0.99)
 
     lending = planes["securities_lending"]
     borrow_availability = _safe_float(options.get("short_borrow_availability_norm"))
@@ -757,6 +783,7 @@ def _feature_candidates(
     _add_feature(lending, "lending_utilization_norm", options.get("short_utilization_norm"), source_id="options_flow_context", field_path="derived.global_features.short_utilization_norm", source_states=source_states, now=now, confidence=0.82)
     _add_feature(lending, "lending_ftd_pressure_norm", extended.get("short_ftd_total_hits_norm"), source_id="extended_quant_context", field_path="derived.global_features.short_ftd_total_hits_norm", source_states=source_states, now=now, confidence=0.98)
     _add_feature(lending, "lending_short_volume_pressure_norm", micro.get("market_micro_short_pressure_norm"), source_id="market_micro_context", field_path="derived.global_features.market_micro_short_pressure_norm", source_states=source_states, now=now, confidence=0.9)
+    _add_feature(lending, "lending_dealer_settlement_fails_norm", public_financial.get("nyfed_dealer_financing_fails_pressure_norm"), source_id="public_financial_context", field_path="derived.global_features.nyfed_dealer_financing_fails_pressure_norm", source_states=source_states, now=now, confidence=0.99)
 
     credit = planes["credit_curve"]
     yields = bond.get("treasury_yields") if isinstance(bond.get("treasury_yields"), Mapping) else {}
@@ -766,12 +793,17 @@ def _feature_candidates(
     spread = _safe_float(bond.get("credit_spread_bps"))
     _add_feature(credit, "credit_spread_pressure_norm", _clamp01(spread / 10.0) if spread is not None else None, source_id="bond_reference_context", field_path="credit_spread_bps", source_states=source_states, now=now, confidence=0.95)
     _add_feature(credit, "credit_flow_pressure_norm", micro.get("market_micro_credit_flow_norm"), source_id="market_micro_context", field_path="derived.global_features.market_micro_credit_flow_norm", source_states=source_states, now=now, confidence=0.84)
+    _add_feature(credit, "credit_ofr_stress_norm", public_financial.get("ofr_credit_stress_norm"), source_id="public_financial_context", field_path="derived.global_features.ofr_credit_stress_norm", source_states=source_states, now=now, confidence=0.99)
+    _add_feature(credit, "credit_fdic_failure_pressure_norm", public_financial.get("fdic_failure_12m_norm"), source_id="public_financial_context", field_path="derived.global_features.fdic_failure_12m_norm", source_states=source_states, now=now, confidence=0.99)
+    _add_feature(credit, "credit_bank_noncurrent_loan_pressure_norm", public_financial.get("fdic_bank_noncurrent_loan_pressure_norm"), source_id="public_financial_context", field_path="derived.global_features.fdic_bank_noncurrent_loan_pressure_norm", source_states=source_states, now=now, confidence=0.99)
+    _add_feature(credit, "credit_dealer_corporate_inventory_norm", public_financial.get("nyfed_dealer_corporate_inventory_pressure_norm"), source_id="public_financial_context", field_path="derived.global_features.nyfed_dealer_corporate_inventory_pressure_norm", source_states=source_states, now=now, confidence=0.99)
 
     volatility = planes["volatility_surface"]
     _add_feature(volatility, "volatility_surface_skew_norm", options.get("options_iv_skew_norm"), source_id="options_flow_context", field_path="derived.global_features.options_iv_skew_norm", source_states=source_states, now=now, confidence=0.9)
     _add_feature(volatility, "volatility_term_structure_norm", options.get("options_iv_term_structure_norm"), source_id="options_flow_context", field_path="derived.global_features.options_iv_term_structure_norm", source_states=source_states, now=now, confidence=0.9)
     _add_feature(volatility, "volatility_surface_change_norm", options.get("options_surface_change_norm"), source_id="options_flow_context", field_path="derived.global_features.options_surface_change_norm", source_states=source_states, now=now, confidence=0.88)
     _add_feature(volatility, "volatility_put_call_stress_norm", extended.get("cboe_put_call_stress_norm"), source_id="extended_quant_context", field_path="derived.global_features.cboe_put_call_stress_norm", source_states=source_states, now=now, confidence=0.97)
+    _add_feature(volatility, "volatility_ofr_stress_norm", public_financial.get("ofr_volatility_stress_norm"), source_id="public_financial_context", field_path="derived.global_features.ofr_volatility_stress_norm", source_states=source_states, now=now, confidence=0.99)
 
     passive = planes["passive_mechanical_flows"]
     _add_feature(passive, "passive_etf_creation_redemption_stress_norm", micro.get("etf_creation_redemption_stress_norm"), source_id="market_micro_context", field_path="derived.global_features.etf_creation_redemption_stress_norm", source_states=source_states, now=now, confidence=0.82)
@@ -785,6 +817,10 @@ def _feature_candidates(
     _add_feature(calendar, "calendar_options_expiry_norm", extended_calendar.get("calendar_options_expiry_week_norm"), source_id="extended_quant_context", field_path="derived.calendar_features.calendar_options_expiry_week_norm", source_states=source_states, now=now, confidence=0.97)
     _add_feature(calendar, "calendar_futures_roll_norm", extended_calendar.get("calendar_futures_roll_window_norm"), source_id="extended_quant_context", field_path="derived.calendar_features.calendar_futures_roll_window_norm", source_states=source_states, now=now, confidence=0.97)
     _add_feature(calendar, "calendar_auction_pressure_norm", micro.get("market_micro_auction_print_pressure_norm"), source_id="market_micro_context", field_path="derived.global_features.market_micro_auction_print_pressure_norm", source_states=source_states, now=now, confidence=0.88)
+    _add_feature(calendar, "calendar_financial_rule_activity_norm", public_financial.get("federal_register_financial_activity_norm"), source_id="public_financial_context", field_path="derived.global_features.federal_register_financial_activity_norm", source_states=source_states, now=now, confidence=0.98)
+    _add_feature(calendar, "calendar_financial_rule_high_impact_norm", public_financial.get("federal_register_high_impact_norm"), source_id="public_financial_context", field_path="derived.global_features.federal_register_high_impact_norm", source_states=source_states, now=now, confidence=0.98)
+    _add_feature(calendar, "calendar_treasury_auction_supply_norm", micro.get("treasury_auction_supply_pressure_norm"), source_id="market_micro_context", field_path="derived.global_features.treasury_auction_supply_pressure_norm", source_states=source_states, now=now, confidence=0.99)
+    _add_feature(calendar, "calendar_treasury_auction_weak_demand_norm", (1.0 - auction_demand) if auction_demand is not None else None, source_id="market_micro_context", field_path="derived.global_features.treasury_auction_demand_norm", source_states=source_states, now=now, confidence=0.99)
 
     supply = planes["supply_chain_inventory"]
     eia_observation = eia.get("observation_time")
@@ -872,6 +908,7 @@ def _build_plane(
     minimum_score: float,
 ) -> dict[str, Any]:
     source_ids = [str(value) for value in spec.get("source_ids", []) if str(value)]
+    optional_source_ids = [str(value) for value in spec.get("optional_source_ids", []) if str(value)]
     source_rows = [source_states.get(source_id, {}) for source_id in source_ids]
     source_health = sum(1.0 for row in source_rows if row.get("ok") is True) / max(len(source_ids), 1)
     required_feature_count = max(int(spec.get("required_feature_count", 3) or 3), 1)
@@ -943,6 +980,7 @@ def _build_plane(
         "observed_feature_count": max(len(features) - (1 if signal_key in features else 0), 0),
         "missing_required_feature_slots": max(required_feature_count - max(len(features) - 1, 0), 0),
         "source_ids": source_ids,
+        "optional_source_ids": optional_source_ids,
         "contributing_source_ids": sorted(contributing_source_ids),
         "distinct_source_family_count": len(distinct_families),
         "direct_consensus_ready": direct_consensus_ready if spec.get("plane_id") == "estimates_dispersion" else None,
@@ -957,20 +995,28 @@ def _build_plane(
     }
 
 
-def _symbol_context_features(payloads: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, float]]:
+def _symbol_context_features(
+    payloads: Mapping[str, Mapping[str, Any]],
+    source_states: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, float]]:
     micro = _symbol_features(payloads.get("market_micro_context", {}))
     extended = _symbol_features(payloads.get("extended_quant_context", {}))
     options = _symbol_features(payloads.get("options_flow_context", {}))
     sec = _symbol_features(payloads.get("sec_edgar_context", {}))
     news = _symbol_features(payloads.get("schwab_symbol_news", {}))
     consensus = _symbol_features(payloads.get("analyst_consensus_context", {}))
+    public_financial = (
+        _symbol_features(payloads.get("public_financial_context", {}))
+        if source_states.get("public_financial_context", {}).get("ok") is True
+        else {}
+    )
     capacity_rows = payloads.get("portfolio_capacity_curves", {}).get("curves")
     capacity_by_symbol = {
         str(row.get("symbol") or "").upper(): row
         for row in capacity_rows
         if isinstance(capacity_rows, list) and isinstance(row, Mapping) and str(row.get("symbol") or "")
     } if isinstance(capacity_rows, list) else {}
-    symbols = sorted({str(symbol).upper() for mapping in (micro, extended, options, sec, news, consensus) for symbol in mapping.keys()} | set(capacity_by_symbol))
+    symbols = sorted({str(symbol).upper() for mapping in (micro, extended, options, sec, news, consensus, public_financial) for symbol in mapping.keys()} | set(capacity_by_symbol))
     out: dict[str, dict[str, float]] = {}
     for symbol in symbols:
         micro_row = micro.get(symbol) if isinstance(micro.get(symbol), Mapping) else {}
@@ -979,7 +1025,12 @@ def _symbol_context_features(payloads: Mapping[str, Mapping[str, Any]]) -> dict[
         sec_row = sec.get(symbol) if isinstance(sec.get(symbol), Mapping) else {}
         news_row = news.get(symbol) if isinstance(news.get(symbol), Mapping) else {}
         consensus_row = consensus.get(symbol) if isinstance(consensus.get(symbol), Mapping) else {}
+        public_financial_row = public_financial.get(symbol) if isinstance(public_financial.get(symbol), Mapping) else {}
         row: dict[str, float] = {}
+        for key in PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS:
+            value = _safe_float(public_financial_row.get(key))
+            if value is not None:
+                row[key] = _clamp01(value)
         borrow_availability = _safe_float(options_row.get("short_borrow_availability_norm"))
         lending_values = [
             value
@@ -1091,6 +1142,19 @@ def build_decision_context_mesh(
         if source_id in DIRECT_SOURCE_SPECS and isinstance(state, Mapping):
             source_states[source_id] = dict(state)
 
+    plane_specs = [spec for spec in mesh_config.get("planes", []) if isinstance(spec, Mapping)]
+    required_source_ids = {
+        str(source_id)
+        for spec in plane_specs
+        for source_id in spec.get("source_ids", [])
+        if str(source_id)
+    }
+    optional_source_ids = {
+        str(source_id)
+        for spec in plane_specs
+        for source_id in spec.get("optional_source_ids", [])
+        if str(source_id)
+    }
     candidate_planes = _feature_candidates(payloads, source_states, now=now)
     minimum_score = float(contract.get("minimum_plane_score_pct", 70.0) or 70.0)
     plane_rows = [
@@ -1101,8 +1165,7 @@ def build_decision_context_mesh(
             scoring=scoring,
             minimum_score=minimum_score,
         )
-        for spec in mesh_config.get("planes", [])
-        if isinstance(spec, Mapping)
+        for spec in plane_specs
     ]
     macro_rows = [row for row in plane_rows if row.get("plane_class") == "macro"]
     micro_rows = [row for row in plane_rows if row.get("plane_class") == "micro"]
@@ -1129,7 +1192,41 @@ def build_decision_context_mesh(
         "context_mesh_lineage_coverage_norm": _clamp01(average_lineage),
         "context_mesh_cross_verification_norm": _clamp01(average_cross),
     }
-    symbol_features = _symbol_context_features(payloads)
+    if source_states.get("public_financial_context", {}).get("ok") is True:
+        public_financial_global = _global_features(payloads.get("public_financial_context", {}))
+        for key in PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS:
+            value = _safe_float(public_financial_global.get(key))
+            if value is not None:
+                global_features[key] = _clamp01(value)
+    symbol_features = _symbol_context_features(payloads, source_states)
+    public_financial_payload = payloads.get("public_financial_context", {})
+    public_taxonomy = (
+        public_financial_payload.get("evidence_taxonomy")
+        if isinstance(public_financial_payload.get("evidence_taxonomy"), Mapping)
+        else {}
+    )
+    taxonomy_feature_routes = (
+        public_taxonomy.get("feature_routes")
+        if isinstance(public_taxonomy.get("feature_routes"), Mapping)
+        else {}
+    )
+    present_public_feature_keys = set(global_features) | {
+        key for row in symbol_features.values() for key in row
+    }
+    classified_public_routes = {
+        key: {
+            field: route.get(field)
+            for field in (
+                "scope",
+                "evidence_class",
+                "semantic_direction",
+                "decision_plane_ids",
+                "decision_family_ids",
+            )
+        }
+        for key, route in taxonomy_feature_routes.items()
+        if key in present_public_feature_keys and isinstance(route, Mapping)
+    }
     future_excluded = {
         source_id: [str(state.get("observation_time") or state.get("timestamp_utc") or "")]
         for source_id, state in source_states.items()
@@ -1160,6 +1257,16 @@ def build_decision_context_mesh(
             "signal_coverage_ratio": round(plane_coverage, 6),
             "source_count": len(source_states),
             "healthy_source_count": sum(1 for row in source_states.values() if row.get("ok") is True),
+            "required_source_count": len(required_source_ids),
+            "required_source_ids": sorted(required_source_ids),
+            "healthy_required_source_count": sum(
+                1 for source_id in required_source_ids if source_states.get(source_id, {}).get("ok") is True
+            ),
+            "optional_source_count": len(optional_source_ids),
+            "optional_source_ids": sorted(optional_source_ids),
+            "healthy_optional_source_count": sum(
+                1 for source_id in optional_source_ids if source_states.get(source_id, {}).get("ok") is True
+            ),
             "future_observations_excluded": future_excluded,
             "future_observation_selected": False,
         },
@@ -1184,6 +1291,9 @@ def build_decision_context_mesh(
             },
             "global_feature_keys": sorted(global_features),
             "symbol_feature_count": len(symbol_features),
+            "classified_public_financial_routes": classified_public_routes,
+            "public_financial_taxonomy_receipt_sha256": public_financial_payload.get("taxonomy_receipt_sha256"),
+            "unclassified_public_financial_feature_policy": "quarantine_from_bot_context",
             "consumer_surfaces": [
                 "paper_decision_context",
                 "runtime_training_gap_fill",
@@ -1258,12 +1368,21 @@ def collect_decision_context_mesh(
             if isinstance(row, Mapping)
         },
         "source_health": {
-            "healthy": (payload.get("coverage") or {}).get("healthy_source_count", 0),
-            "total": (payload.get("coverage") or {}).get("source_count", 0),
+            "healthy": (payload.get("coverage") or {}).get("healthy_required_source_count", 0),
+            "total": (payload.get("coverage") or {}).get("required_source_count", 0),
             "failed_source_ids": sorted(
                 source_id
                 for source_id, row in (payload.get("sources") or {}).items()
-                if isinstance(row, Mapping) and row.get("ok") is not True
+                if source_id in set((payload.get("coverage") or {}).get("required_source_ids", []))
+                and isinstance(row, Mapping)
+                and row.get("ok") is not True
+            ),
+            "optional_healthy": (payload.get("coverage") or {}).get("healthy_optional_source_count", 0),
+            "optional_total": (payload.get("coverage") or {}).get("optional_source_count", 0),
+            "optional_unavailable_source_ids": sorted(
+                source_id
+                for source_id in (payload.get("coverage") or {}).get("optional_source_ids", [])
+                if (payload.get("sources") or {}).get(source_id, {}).get("ok") is not True
             ),
         },
         "sources": {
@@ -1271,7 +1390,8 @@ def collect_decision_context_mesh(
                 "ok": row.get("ok") is True,
                 "fresh": row.get("fresh") is True,
                 "fallback": bool(row.get("fallback", False)),
-                "contract_participates": True,
+                "contract_participates": source_id in set((payload.get("coverage") or {}).get("required_source_ids", [])),
+                "optional_context": source_id in set((payload.get("coverage") or {}).get("optional_source_ids", [])),
             }
             for source_id, row in (payload.get("sources") or {}).items()
             if isinstance(row, Mapping)

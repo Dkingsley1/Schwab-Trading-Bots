@@ -31,6 +31,7 @@ POLICY_FILES = {
     "commercial_readiness": "config/commercial_readiness_framework_v1.json",
     "live_canary_readiness": "config/live_canary_readiness_contract.json",
     "production_excellence": "config/production_excellence_v1.json",
+    "candidate_scope_validation": "config/candidate_scope_validation_v1.json",
 }
 
 
@@ -192,6 +193,7 @@ def check_policy_configs(project_root: Path) -> dict[str, Any]:
     commercial = loaded["commercial_readiness"]
     canary = loaded["live_canary_readiness"]
     excellence = loaded["production_excellence"]
+    scope_validation = loaded["candidate_scope_validation"]
     forbidden_paths = loaded["self_healing"].get("forbidden_source_paths") or []
 
     conditions = {
@@ -255,8 +257,56 @@ def check_policy_configs(project_root: Path) -> dict[str, Any]:
         "production_excellence_has_ten_pillars": set((excellence.get("candidate") or {}).get("soak_scopes") or [])
         >= {"strategy", "execution", "risk", "data", "promotion", "operations", "dependencies"}
         and len((excellence.get("recovery") or {}).get("required_drills") or []) == 10
-        and float((excellence.get("soak") or {}).get("required_hours", 0) or 0) >= 720
+        and (excellence.get("candidate") or {}).get("scope_validation_policy_path")
+        == "config/candidate_scope_validation_v1.json"
+        and (excellence.get("candidate") or {}).get(
+            "require_scope_validation_policy"
+        )
+        is True
         and float((excellence.get("canary") or {}).get("max_initial_weight", 1) or 1) <= 0.01,
+        "candidate_scope_validation_is_materiality_tiered": (
+            (scope_validation.get("scope_tiers") or {}).get("operations")
+            == "operations"
+            and float(
+                ((scope_validation.get("tiers") or {}).get("operations") or {}).get(
+                    "required_hours", 0
+                )
+                or 0
+            )
+            == 72
+            and int(
+                ((scope_validation.get("tiers") or {}).get("operations") or {}).get(
+                    "required_completed_sessions", 0
+                )
+                or 0
+            )
+            == 3
+            and all(
+                (scope_validation.get("scope_tiers") or {}).get(scope)
+                == "material_trading"
+                for scope in ("strategy", "execution", "risk")
+            )
+            and float(
+                (
+                    (scope_validation.get("tiers") or {}).get("material_trading")
+                    or {}
+                ).get("required_hours", 0)
+                or 0
+            )
+            >= 720
+            and int(
+                (
+                    (scope_validation.get("tiers") or {}).get("material_trading")
+                    or {}
+                ).get("required_completed_sessions", 0)
+                or 0
+            )
+            >= 20
+            and (scope_validation.get("authority") or {}).get(
+                "live_execution_authority"
+            )
+            is False
+        ),
     }
     return {
         "ok": all(conditions.values()),

@@ -104,3 +104,33 @@ def test_soak_runtime_grade_maps_to_freshness_root(tmp_path: Path) -> None:
 
     assert payload["unique_root_cause_count"] == 1
     assert payload["root_causes"][0]["root_id"] == "readiness_artifact_freshness"
+
+
+def test_continuous_soak_sections_roll_up_to_elapsed_candidate_time(tmp_path: Path) -> None:
+    health = tmp_path / "governance" / "health"
+    _write(health / "production_excellence_control_latest.json", {"pillars": []})
+    _write(
+        health / "live_money_readiness_contract_latest.json",
+        {
+            "grade_summary": {"below_floor_sections": ["continuous_soak"]},
+            "transition_runway": {
+                "pillars": [
+                    {
+                        "pillar_id": "continuous_soak",
+                        "ready": False,
+                        "runway_status": "late_blocked",
+                        "blocked_sections": ["continuous_soak"],
+                        "blockers": ["continuous_soak_below_A"],
+                    }
+                ]
+            },
+        },
+    )
+    _write(health / "paper_profitability_control_latest.json", {"raw_profitability_grade": "A"})
+
+    payload = rollup.build_payload(tmp_path)
+
+    assert payload["unique_root_cause_count"] == 1
+    root = payload["root_causes"][0]
+    assert root["root_id"] == "candidate_soak_time"
+    assert root["fix_class"] == "elapsed_time"

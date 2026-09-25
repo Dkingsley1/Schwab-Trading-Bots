@@ -8,7 +8,7 @@ LABEL="com.dankingsley.ops.soak_self_healing"
 UID_NUM="$(id -u)"
 LOG_DIR="${BOT_OPS_LAUNCHD_LOG_DIR:-/tmp/schwab_trading_bot/launchd_ops}"
 RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-live}"
-INTERVAL_SECONDS="${SOAK_SELF_HEAL_INTERVAL_SECONDS:-900}"
+INTERVAL_SECONDS="${SOAK_SELF_HEAL_INTERVAL_SECONDS:-300}"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
 chmod +x "$RUNNER_SCRIPT"

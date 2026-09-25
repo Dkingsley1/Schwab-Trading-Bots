@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "mode": "compact_sqlite_apfs_clone_gzip",
+  "out_root": "/Volumes/BOT_LOGS/schwab_trading_bot/cold_archive/state_snapshot_drills",
+  "max_snapshot_bytes": 68719476736,
+  "operation_seconds": 1800,
+  "command_timeout_seconds": 2100,
+  "policy": "Measured per-target allocation ceilings plus gzip scratch and a verified copy-on-write restore. Preserve the configured local reserve and at least 64 GiB on the distinct archive volume. Failed copies never earn readiness. No source rewrite, training, promotion or live execution authority."
+}

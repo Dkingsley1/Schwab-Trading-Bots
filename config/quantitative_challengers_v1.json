@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "policy_id": "candidate_bound_quantitative_challengers_v1",
+  "operating_mode": "paper_only_read_only_champion_challenger",
+  "objective": "Evaluate distinct quantitative methods against frozen-candidate post-cost evidence without granting order, sizing, allocation, training, promotion, or live authority.",
+  "authority": {
+    "changes_active_action": false,
+    "changes_position_size": false,
+    "changes_allocator_weights": false,
+    "changes_training_labels": false,
+    "submits_paper_orders": false,
+    "submits_live_orders": false,
+    "grants_promotion": false,
+    "mutates_candidate": false,
+    "rewrites_history": false
+  },
+  "candidate_binding": {
+    "required": true,
+    "require_candidate_filter_active": true,
+    "require_zero_mismatch_rows": true,
+    "require_post_cutoff_watermark": true,
+    "allow_historical_fallback": false,
+    "allow_cross_candidate_pooling": false
+  },
+  "methods": {
+    "always_valid_sequential_inference": {
+      "enabled": true,
+      "minimum_observations": 20,
+      "null_win_probability": 0.5,
+      "alternative_win_probability": 0.57,
+      "alpha": 0.05,
+      "beta": 0.2,
+      "hurdle_bps": 0.0
+    },
+    "spa_reality_check": {
+      "enabled": true,
+      "minimum_periods": 12,
+      "replications": 500,
+      "block_length": 3,
+      "alpha": 0.05,
+      "seed": 1729
+    },
+    "probabilistic_sharpe_bayesian_utility": {
+      "enabled": true,
+      "minimum_observations": 20,
+      "annualization_periods": 252,
+      "reference_sharpe": 0.0,
+      "posterior_draws": 1000,
+      "posterior_probability_floor": 0.95,
+      "prior_strength": 5.0,
+      "prior_scale_bps": 25.0,
+      "risk_aversion": 3.0,
+      "seed": 1733
+    },
+    "drawdown_constrained_kelly": {
+      "enabled": true,
+      "minimum_observations": 20,
+      "maximum_fraction": 0.25,
+      "drawdown_limit": 0.1,
+      "grid_steps": 50
+    },
+    "entropy_pooling": {
+      "enabled": true,
+      "minimum_observations": 20,
+      "tail_quantile": 0.25,
+      "target_tail_probability": 0.35
+    },
+    "optimal_stopping": {
+      "enabled": true,
+      "horizon": 5,
+      "minimum_independent_paths": 12,
+      "training_fraction": 0.7
+    },
+    "cpcv_triple_barrier": {
+      "enabled": true,
+      "minimum_observations": 30,
+      "upper_barrier_bps": 25.0,
+      "lower_barrier_bps": 25.0,
+      "horizon": 5,
+      "group_count": 6,
+      "test_group_count": 2,
+      "embargo_observations": 1
+    },
+    "online_expert_aggregation": {
+      "enabled": true,
+      "minimum_periods": 12,
+      "learning_rate": 1.0,
+      "return_scale_bps": 100.0,
+      "transaction_cost_bps": 2.0,
+      "maximum_weight": 0.35
+    }
+  },
+  "graduation_contract": {
+    "research_ready_does_not_mean_profitable": true,
+    "method_support_does_not_grant_authority": true,
+    "requires_forward_post_cost_candidate_evidence": true,
+    "requires_independent_outcomes": true,
+    "requires_champion_challenger_replay": true,
+    "requires_explicit_operator_review": true,
+    "requires_new_candidate_acceptance_before_active_use": true
+  },
+  "resource_contract": {
+    "run_outside_market_decision_hot_path": true,
+    "runtime_reads_compact_report_only": true,
+    "deterministic_seeded_resampling": true,
+    "bounded_bootstrap_replications": true,
+    "non_overlapping_optimal_stopping_paths": true,
+    "raw_tick_scan_required": false
+  }
+}

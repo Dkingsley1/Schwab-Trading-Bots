@@ -5,7 +5,7 @@ import argparse
 import hashlib
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.risk_engine import RiskEngine
-from scripts.ops.long_runtime_common import payload_age_minutes
+from scripts.ops.long_runtime_common import evidence_freshness, parse_iso_utc, write_payload
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "risk" / "risk_service_boundary_latest.json"
@@ -57,13 +57,14 @@ def _input_health(
     now: datetime,
     max_age_minutes: float,
 ) -> dict[str, Any]:
-    age_minutes = payload_age_minutes(payload, path, now=now)
+    freshness = evidence_freshness(payload, now=now, max_age_minutes=max_age_minutes)
+    age_minutes = freshness.get("age_minutes")
     status = str(payload.get("overall_status") or payload.get("status") or "").strip().lower()
     input_freshness = payload.get("input_freshness") if isinstance(payload.get("input_freshness"), dict) else {}
     blockers: list[str] = []
     if not payload:
         blockers.append("payload_missing_or_invalid")
-    if age_minutes is None or age_minutes > max(float(max_age_minutes), 0.0):
+    if not freshness["fresh"]:
         blockers.append("artifact_stale")
     if "ok" in payload and not bool(payload.get("ok", False)):
         blockers.append("upstream_not_ok")
@@ -82,6 +83,20 @@ def _input_health(
         blockers.append("reconciliation_not_ready")
 
     blockers = list(dict.fromkeys(blockers))
+    deadlines = []
+    observed = parse_iso_utc(freshness.get("source_timestamp_utc"))
+    if observed:
+        deadlines.append(observed + timedelta(minutes=max_age_minutes))
+    observations = payload.get("input_evidence")
+    if isinstance(observations, dict):
+        for evidence in observations.values():
+            if not isinstance(evidence, dict):
+                continue
+            source_time = parse_iso_utc(evidence.get("source_timestamp_utc"))
+            if source_time:
+                deadlines.append(source_time + timedelta(minutes=min(
+                    _safe_float(evidence.get("max_age_minutes"), 0), max_age_minutes
+                )))
     return {
         "path": str(path),
         "exists": path.exists(),
@@ -91,6 +106,7 @@ def _input_health(
         "reported_ok": payload.get("ok"),
         "ready": not blockers,
         "blockers": blockers,
+        "valid_until_utc": min(deadlines).isoformat() if deadlines else None,
     }
 
 
@@ -138,6 +154,7 @@ def build_payload(
         for blocker in row.get("blockers", [])
     ]
     upstream_ready = all(bool(row.get("ready", False)) for row in input_health.values())
+    input_deadlines = [parse_iso_utc(row.get("valid_until_utc")) for row in input_health.values()]
 
     exposure_state: dict[str, int] = {}
     pre_trade: list[dict[str, Any]] = []
@@ -232,6 +249,7 @@ def build_payload(
         "schema_version": 2,
         "ok": overall_status == "ready",
         "overall_status": overall_status,
+        "valid_until_utc": min(input_deadlines).isoformat() if all(input_deadlines) else None,
         "services": service_contracts,
         "service_contracts": service_contracts,
         "policy_hashes": policy_hashes,
@@ -262,7 +280,17 @@ def main() -> int:
     parser.add_argument("--max-input-age-minutes", type=float, default=DEFAULT_MAX_INPUT_AGE_MINUTES)
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--refresh-inputs", action="store_true",
+                        help="Refresh the watchdog-derived SLO and execution budget through their owners; never orders.")
     args = parser.parse_args()
+
+    if args.refresh_inputs:
+        from scripts.execution_budgeter import refresh
+
+        canonical_budget = PROJECT_ROOT / "governance/risk/execution_budget_latest.json"
+        if Path(args.execution_budget_file) != canonical_budget:
+            parser.error("--refresh-inputs requires the canonical execution budget")
+        refresh(PROJECT_ROOT, risk=Path(args.portfolio_risk_file), refresh_slo=True)
 
     payload = build_payload(
         PROJECT_ROOT,
@@ -273,7 +301,7 @@ def main() -> int:
     )
     out_path = Path(args.out_file).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(out_path, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

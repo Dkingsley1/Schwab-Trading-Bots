@@ -83,6 +83,12 @@ def test_storage_tier_policy_surfaces_hot_path_and_cold_candidates(tmp_path: Pat
     decision_entry = entries[str(decisions.relative_to(project_root))]
     assert decision_entry["classification"] == "keep_hot_critical"
     assert decision_entry["delete_allowed_by_policy"] is False
+    lifecycle = payload["tiered_ingestion_lifecycle"]
+    assert lifecycle["operational_status"] == "ready"
+    assert lifecycle["implemented_control_count"] == 14
+    assert lifecycle["execution_authority"] is False
+    assert lifecycle["move_authority"] is False
+    assert lifecycle["source_delete_authority"] is False
 
 
 def test_storage_tier_policy_controls_fixed_hot_budget_with_continuous_run_margin(tmp_path: Path) -> None:

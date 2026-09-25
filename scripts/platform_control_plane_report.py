@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import gzip
 import json
 import sys
 from collections import Counter
@@ -29,21 +30,30 @@ def _load(path: Path) -> dict[str, Any]:
 
 
 def _load_latest_jsonl_row(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        with path.open("r", encoding="utf-8", errors="ignore") as handle:
-            rows = [line.strip() for line in handle if line.strip()]
-    except Exception:
-        return {}
-    for raw in reversed(rows):
+    latest: dict[str, Any] = {}
+    latest_key = ("", -1)
+    ordinal = 0
+    for candidate in (path, path.with_name(f"{path.name}.gz")):
+        if not candidate.exists():
+            continue
+        opener = gzip.open if candidate.name.endswith(".gz") else open
         try:
-            payload = json.loads(raw)
+            with opener(candidate, "rt", encoding="utf-8", errors="ignore") as handle:
+                for raw in handle:
+                    try:
+                        payload = json.loads(raw)
+                    except Exception:
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    ordinal += 1
+                    key = (str(payload.get("timestamp_utc") or ""), ordinal)
+                    if key >= latest_key:
+                        latest = payload
+                        latest_key = key
         except Exception:
             continue
-        if isinstance(payload, dict):
-            return payload
-    return {}
+    return latest
 
 
 def _safe_float(raw: Any, default: float = 0.0) -> float:

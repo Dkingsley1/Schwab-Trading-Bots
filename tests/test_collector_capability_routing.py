@@ -1,14 +1,26 @@
 import json
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from core.collector_capability_routing import build_capability_routing, validate_catalog
+from core.collector_capability_routing import (
+    _gap_resolution_contract,
+    _producer_rows,
+    build_capability_routing,
+    resolve_runtime_ingestion_route,
+    validate_catalog,
+    validate_ingestion_routing_policy,
+)
+from core.research_context_expansion import COLLECTOR_IDS as RESEARCH_CONTEXT_COLLECTOR_IDS
+from scripts.collector_contracts import COLLECTOR_SPECS
 from scripts.ops.collector_capability_control import build_payload
+from scripts.run_all_sleeves import SPECIALIZED_SLEEVE_PROFILES
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = PROJECT_ROOT / "config" / "collector_capability_catalog_v1.json"
+ROUTING_PATH = PROJECT_ROOT / "config" / "sleeve_ingestion_routing_v2.json"
+DECISION_POLICY_PATH = PROJECT_ROOT / "config" / "institutional_decision_flow_v1.json"
 
 
 def _catalog() -> dict:
@@ -114,6 +126,87 @@ def test_repository_catalog_is_complete_and_execution_free() -> None:
     assert len(catalog["planes"]) == 25
     assert capability_count >= 250
     assert set(catalog["safety_contract"].values()) == {False}
+    gap_overrides = catalog["capability_gap_resolution_policy"]["overrides"]
+    assert {
+        "order_book_depth",
+        "order_book_imbalance",
+        "nbbo_quotes",
+        "venue_quality",
+        "commodity_curves",
+        "earnings_surprise",
+        "correlation_risk",
+        "futures_term_structure",
+        "futures_basis",
+        "roll_yield",
+    }.issubset(gap_overrides)
+
+
+def test_every_decision_family_has_explicit_economic_context() -> None:
+    catalog = _catalog()
+    policy = json.loads(ROUTING_PATH.read_text(encoding="utf-8"))
+    decision_policy = json.loads(
+        DECISION_POLICY_PATH.read_text(encoding="utf-8")
+    )
+    capability_ids = {
+        capability_id
+        for plane in catalog["planes"]
+        for capability_id in plane["capabilities"]
+    }
+    family_routes = policy["family_routes"]
+
+    assert validate_ingestion_routing_policy(
+        policy,
+        catalog=catalog,
+        decision_policy=decision_policy,
+    ) == []
+    assert set(family_routes) == set(
+        decision_policy["sleeve_policy_families"]
+    )
+    assert all(
+        len(route["economic_context_capability_ids"]) >= 2
+        for route in family_routes.values()
+    )
+    assert all(
+        set(route["economic_context_capability_ids"]).issubset(capability_ids)
+        for route in family_routes.values()
+    )
+
+
+def test_route_context_collectors_publish_owned_repair_commands() -> None:
+    contracts = {str(row.get("name") or ""): row for row in COLLECTOR_SPECS}
+
+    assert contracts["tradingeconomics_guest"]["owner_command"] == [
+        "./scripts/ops/opsctl.sh",
+        "tradingeconomics-sync",
+        "--json",
+    ]
+    assert contracts["options_flow_context"]["owner_command"] == [
+        "./scripts/ops/opsctl.sh",
+        "options-flow-sync",
+        "--json",
+    ]
+    assert contracts["tradingeconomics_guest"]["data_plane_key"] == "economic_context"
+    assert contracts["options_flow_context"]["data_plane_key"] == "options_derivatives_context"
+    assert len(COLLECTOR_SPECS) == 34
+    assert set(RESEARCH_CONTEXT_COLLECTOR_IDS).issubset(contracts)
+    assert all(
+        contracts[collector_id]["owner_command"] == [
+            "./scripts/ops/opsctl.sh",
+            "research-context-sync",
+            "--collector",
+            collector_id,
+            "--json",
+        ]
+        for collector_id in RESEARCH_CONTEXT_COLLECTOR_IDS
+    )
+    assert all(row.get("collector_class") for row in COLLECTOR_SPECS)
+    assert all(row.get("data_plane_key") for row in COLLECTOR_SPECS)
+    assert all(row.get("owner_command") for row in COLLECTOR_SPECS)
+    assert all(
+        row.get("owner_command")
+        for row in COLLECTOR_SPECS
+        if bool(row.get("required", False))
+    )
 
 
 def test_router_shares_profiles_and_reports_unsupported_coverage(tmp_path: Path) -> None:
@@ -133,6 +226,16 @@ def test_router_shares_profiles_and_reports_unsupported_coverage(tmp_path: Path)
     assert health["summary"]["subscription_profile_count"] == 1
     assert health["coverage_debt"]["gap_count"] > 0
     assert health["coverage_debt"]["blocks_guarded_paper_soak"] is False
+    gap_rows = {
+        row["capability_id"]: row for row in health["coverage_debt"]["rows"]
+    }
+    assert gap_rows["order_book_depth"]["external_entitlement_required"] is True
+    correlation_resolution = _gap_resolution_contract(
+        catalog, "correlation_risk", "unavailable"
+    )
+    assert correlation_resolution["organically_clearable"] is True
+    assert correlation_resolution["automatic_repair_eligible"] is True
+    assert health["coverage_debt"]["external_entitlement_gap_count"] >= 1
     assert routing["bot_bindings"][0]["profile_id"] == routing["bot_bindings"][1]["profile_id"]
     assert set(routing["authority_contract"].values()) == {False}
     assert routing["cache_contract"]["router_launches_physical_collectors"] is False
@@ -173,7 +276,7 @@ def test_repository_runtime_maps_every_collector_and_binds_every_bot() -> None:
         for row in health["producer_health"]
         if row["producer_id"] == "broker_account_snapshot_control"
     )
-    assert {
+    required_account_capabilities = {
         "broker_accounts",
         "cash_balance",
         "buying_power",
@@ -182,14 +285,19 @@ def test_repository_runtime_maps_every_collector_and_binds_every_bot() -> None:
         "account_restrictions",
         "margin_state",
         "account_reconciliation",
-    }.issubset(set(account_snapshot["usable_capabilities"]))
+    }
+    assert required_account_capabilities.issubset(set(account_snapshot["capabilities"]))
     account_positions = next(
         row
         for row in routing["capability_resolutions"]
         if row["capability_id"] == "account_positions"
     )
-    assert account_positions["selected_producer_id"] == "broker_account_snapshot_control"
-    assert account_positions["selected_proof"]["mode"] == "field_level_payload_proof"
+    if account_snapshot["usable"]:
+        assert required_account_capabilities.issubset(set(account_snapshot["usable_capabilities"]))
+        assert account_positions["selected_producer_id"] == "broker_account_snapshot_control"
+        assert account_positions["selected_proof"]["mode"] == "field_level_payload_proof"
+    else:
+        assert account_positions["selected_producer_id"] != "broker_account_snapshot_control"
     central_bank = next(
         row
         for row in health["producer_health"]
@@ -203,6 +311,187 @@ def test_repository_runtime_maps_every_collector_and_binds_every_bot() -> None:
         "global_liquidity_regime",
     }.issubset(set(central_bank["capabilities"]))
     assert health["coverage_debt"]["next_admission_candidates"]
+
+
+def test_broker_account_capability_contract_and_bounded_last_good_fallback(tmp_path: Path) -> None:
+    catalog = _catalog()
+    producer = next(
+        row
+        for row in catalog["producers"]
+        if row["producer_id"] == "broker_account_snapshot_control"
+    )
+    capabilities = set(producer["capabilities"])
+    assert capabilities == set(producer["capability_proofs"])
+    assert producer["fallback_policy"] == "serve_last_good_only_within_freshness_contract"
+    assert producer["last_good_artifact_path"].endswith("_last_good.json")
+
+    now = datetime(2026, 8, 22, 19, 0, tzinfo=timezone.utc)
+    current_path = tmp_path / producer["artifact_path"]
+    last_good_path = tmp_path / producer["last_good_artifact_path"]
+    current_path.parent.mkdir(parents=True, exist_ok=True)
+    current_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": now.isoformat(),
+                "broker": "schwab",
+                "fetched": {
+                    "ok": False,
+                    "error": "account_discovery_provider_unavailable",
+                    "provider_failure": True,
+                    "status_code": 500,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    last_good_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": (now - timedelta(minutes=1)).isoformat(),
+                "broker": "schwab",
+                "fetched": {
+                    "ok": True,
+                    "account_count": 1,
+                    "discovered_account_count": 1,
+                    "failed_account_count": 0,
+                    "account_snapshot_partial": False,
+                    "payload": {
+                        "accounts": [
+                            {
+                                "securitiesAccount": {
+                                    "currentBalances": {
+                                        "cashBalance": 100.0,
+                                        "buyingPower": 100.0,
+                                        "marginBalance": 0.0,
+                                    },
+                                    "positions": [{"averagePrice": 10.0}],
+                                    "isClosingOnlyRestricted": False,
+                                }
+                            }
+                        ]
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    row = _producer_rows(
+        tmp_path,
+        {"producers": [producer]},
+        {},
+        now=now,
+    )[0]
+
+    assert row["serving_last_good"] is True
+    assert row["live_promotion_eligible"] is False
+    assert row["published_status"] == "last_good_fallback"
+    assert row["current_published_ok"] is None
+    assert row["last_good_age_minutes"] == 1.0
+    assert capabilities.issubset(set(row["usable_capabilities"]))
+
+
+def test_ingestion_routes_are_decision_family_specific_and_receipt_bound() -> None:
+    health, routing = build_payload(PROJECT_ROOT)
+    runtime = {
+        row["runtime_profile"]: row
+        for row in routing["runtime_sleeve_routes"]
+    }
+
+    assert routing["schema_version"] == 2
+    assert health["ingestion_routing_contract"]["decision_stage"] == "02_data_qualification"
+    assert runtime["dividend"]["decision_policy_family_id"] == "long_horizon_income"
+    assert runtime["fx"]["decision_policy_family_id"] == "macro_rates_fx"
+    assert runtime["pairs_correlation"]["decision_policy_family_id"] == "relative_value"
+    assert runtime["crypto_futures_basis"]["decision_policy_family_id"] == "digital_asset_basis"
+    assert set(SPECIALIZED_SLEEVE_PROFILES).issubset(runtime)
+    assert health["summary"]["runtime_sleeve_route_count"] == len(runtime)
+    economic = routing["economic_context_contract"]
+    assert economic["family_count"] == 15
+    assert economic["configured_family_count"] == 15
+    assert economic["contract_receipt_sha256"]
+    assert economic["paper_execution_authority"] is False
+    assert economic["live_execution_authority"] is False
+    assert economic["economic_profitability_grade_authority"] is False
+    assert all(
+        row["economic_context_capability_ids"]
+        for row in routing["ingestion_route_profiles"]
+    )
+    assert all(
+        row["economic_context_routes"]
+        for row in routing["profile_delivery_routes"]
+    )
+    assert all(row["route_binding_receipt_sha256"] for row in runtime.values())
+    assert all(binding["binding_receipt_sha256"] for binding in routing["bot_bindings"])
+    assert max(
+        len(row["optional_capability_ids"])
+        for row in routing["ingestion_route_profiles"]
+    ) <= 78
+
+
+def test_runtime_ingestion_route_detects_tampering(tmp_path: Path) -> None:
+    catalog = _catalog()
+    _write_artifact_fixtures(tmp_path, catalog)
+    _health, routing = build_capability_routing(
+        tmp_path,
+        catalog,
+        _collector_contracts(catalog),
+        _hierarchy(),
+        now=datetime(2026, 8, 13, 16, 0, tzinfo=timezone.utc),
+    )
+    route = resolve_runtime_ingestion_route(
+        routing,
+        "default",
+        now=datetime(2026, 8, 13, 16, 1, tzinfo=timezone.utc),
+    )
+
+    assert route["receipt_valid"] is True
+    assert route["artifact_fresh"] is True
+    assert route["decision_policy_family_id"] == "balanced_directional"
+    assert route["paper_required_capability_coverage_ratio"] >= 0.0
+    assert route["live_required_capability_coverage_ratio"] >= 0.0
+    assert route["economic_context_contract_id"] == "sleeve_economic_context_v1"
+    assert route["economic_context_capability_count"] >= 2
+    assert route["economic_context_coverage_ratio"] == 1.0
+    assert route["economic_context_source_count"] >= 2
+    assert route["economic_context_ready"] is True
+    assert route["economic_context_advisory_only"] is True
+    assert route["research_data_contract_id"] == "point_in_time_research_query_v1"
+    assert route["research_data_product_count"] >= 2
+    assert "point_in_time_feature_store_v1" in route["research_data_product_ids"]
+    assert "candidate_outcome_evidence_v2" in route["research_data_product_ids"]
+    assert len(route["research_data_catalog_receipt_sha256"]) == 64
+    assert route["research_data_metadata_only"] is True
+    assert route["research_data_execution_authority"] is False
+    assert route["institutional_extension_policy_id"] == "institutional_research_extensions_v1"
+    assert len(route["institutional_extension_control_ids"]) == 8
+    assert len(route["institutional_extension_receipt_sha256"]) == 64
+    assert route["institutional_extension_metadata_only"] is True
+    assert route["institutional_extension_existing_route_authority_unchanged"] is True
+    assert route["institutional_extension_execution_authority"] is False
+    assert route["route_summary_receipt_sha256"]
+
+    tampered = deepcopy(routing)
+    default_profile_id = next(
+        row["profile_id"]
+        for row in tampered["runtime_sleeve_routes"]
+        if row["runtime_profile"] == "default"
+    )
+    delivery = next(
+        row
+        for row in tampered["profile_delivery_routes"]
+        if row["profile_id"] == default_profile_id
+    )
+    delivery["delivery_routes"][0]["selected_producer_id"] = "tampered"
+    invalid = resolve_runtime_ingestion_route(
+        tampered,
+        "default",
+        now=datetime(2026, 8, 13, 16, 1, tzinfo=timezone.utc),
+    )
+
+    assert invalid["status"] == "invalid_receipt"
+    assert invalid["receipt_valid"] is False
+    assert invalid["paper_decision_data_ready"] is False
 
 
 def test_live_capability_readiness_is_candidate_specific(tmp_path: Path) -> None:

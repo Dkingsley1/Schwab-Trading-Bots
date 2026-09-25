@@ -1,11 +1,17 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.ops.long_runtime_common import write_payload
+
 DEFAULT_IN_FILE = PROJECT_ROOT / "governance" / "walk_forward" / "walk_forward_latest.json"
 DEFAULT_REGISTRY_FILE = PROJECT_ROOT / "master_bot_registry.json"
 OPS_THRESHOLDS_FILE = PROJECT_ROOT / "governance" / "ops_thresholds.json"
@@ -22,6 +28,19 @@ def _ops_thresholds() -> dict[str, Any]:
     payload = _load_json(OPS_THRESHOLDS_FILE)
     gates = payload.get("promotion_gates") if isinstance(payload.get("promotion_gates"), dict) else {}
     return gates.get("promotion_gate") if isinstance(gates.get("promotion_gate"), dict) else {}
+
+
+def _source_evidence_ready(payload: dict[str, Any], now: datetime) -> tuple[bool, str]:
+    evidence = payload.get("source_evidence")
+    if not isinstance(evidence, dict) or evidence.get("complete") is not True:
+        return False, "walk_forward_source_scan_incomplete"
+    try:
+        measured = datetime.fromisoformat(str(payload.get("timestamp_utc", "")).replace("Z", "+00:00"))
+        if measured.tzinfo is None or not 0 <= (now - measured).total_seconds() <= 900:
+            return False, "walk_forward_source_stale_or_future"
+    except (ValueError, TypeError):
+        return False, "walk_forward_source_timestamp_invalid"
+    return True, "complete_fresh_scan"
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -188,6 +207,7 @@ def main() -> int:
 
     payload = _load_json(in_path)
     bots = payload.get("bots", {}) if isinstance(payload, dict) else {}
+    source_ready, source_reason = _source_evidence_ready(payload, datetime.now(timezone.utc))
 
     registry_path = Path(args.registry_file)
     use_registry_filter = _should_use_registry_filter(in_path, registry_path)
@@ -295,23 +315,23 @@ def main() -> int:
     fail_share = fails / max(considered, 1)
     raw_fail_share = raw_fails / max(considered, 1)
     severe_overfit_share = severe_overfit / max(considered, 1)
-    effective_min_considered = (
-        min(max(int(args.min_considered_bots), 1), max(considered, 1))
-        if considered > 0
-        else max(int(args.min_considered_bots), 1)
-    )
+    effective_min_considered = max(int(args.min_considered_bots), 1)
     coverage_ok = considered >= int(effective_min_considered)
     coverage_shortfall_bots = max(int(effective_min_considered) - considered, 0)
     mean_trading_quality_score = tq_sum / max(considered, 1)
 
     promote_ok = (
         coverage_ok
+        and source_ready
         and (fail_share <= float(args.max_fail_share))
         and (severe_overfit_share <= float(args.max_severe_overfit_share))
     )
 
     out = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "source_evidence": payload.get("source_evidence", {}),
+        "source_evidence_ready": source_ready,
+        "source_evidence_reason": source_reason,
         "considered_bots": considered,
         "failed_bots": fails,
         "fail_share": round(fail_share, 6),
@@ -360,8 +380,7 @@ def main() -> int:
     }
 
     out_path = Path(args.out_file)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(out_path, out)
     print(json.dumps(out, ensure_ascii=True))
     return 0 if promote_ok else 2
 

@@ -26,7 +26,9 @@ def _seed_project(tmp_path: Path) -> None:
                     "data_collection_active": True,
                     "data_collection_observations": 1200,
                     "minimum_training_observations": 1000,
-                    "data_collection_started_utc": (now - timedelta(days=10)).isoformat(),
+                    "data_collection_started_utc": (
+                        now - timedelta(days=10)
+                    ).isoformat(),
                     "minimum_data_collection_days": 7,
                     "training_candidate_after_threshold": True,
                     "exclude_from_training": True,
@@ -64,7 +66,9 @@ def _seed_project(tmp_path: Path) -> None:
                     "data_collection_active": True,
                     "data_collection_observations": 50,
                     "minimum_training_observations": 1000,
-                    "data_collection_started_utc": (now - timedelta(days=1)).isoformat(),
+                    "data_collection_started_utc": (
+                        now - timedelta(days=1)
+                    ).isoformat(),
                     "minimum_data_collection_days": 7,
                     "paper_trade_lock_required": True,
                     "resource_throttle_aware": True,
@@ -105,7 +109,12 @@ def _seed_project(tmp_path: Path) -> None:
     )
     _write_json(
         health / "regime_control_plane_latest.json",
-        {"overall_status": "ready", "regime_state": "risk_off_shock", "stance_label": "bearish", "stance_score": -0.4},
+        {
+            "overall_status": "ready",
+            "regime_state": "risk_off_shock",
+            "stance_label": "bearish",
+            "stance_score": -0.4,
+        },
     )
     _write_json(
         health / "paper_execution_calibration_latest.json",
@@ -121,7 +130,10 @@ def _seed_project(tmp_path: Path) -> None:
     )
     _write_json(
         tmp_path / "governance" / "research" / "decay_monitor_latest.json",
-        {"overall_status": "needs_work", "weak_sleeves": [{"profile": "intraday_aggressive"}]},
+        {
+            "overall_status": "needs_work",
+            "weak_sleeves": [{"profile": "intraday_aggressive"}],
+        },
     )
     _write_json(
         health / "data_ingress_latest_schwab_futures_equities_schwab.json",
@@ -132,13 +144,18 @@ def _seed_project(tmp_path: Path) -> None:
             "total_counts": {"api_ok": 0, "api_error": 4},
         },
     )
-    _write_json(health / "global_halt_auto_clear_latest.json", {"halt": False, "clear_ready": True})
+    _write_json(
+        health / "global_halt_auto_clear_latest.json",
+        {"halt": False, "clear_ready": True},
+    )
     _write_json(health / "process_watchdog_latest.json", {"alerts": []})
     _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready"})
     _write_json(health / "paper_400_ramp_latest.json", {"overall_status": "planned"})
 
 
-def test_platform_intelligence_expansion_builds_all_twelve_primary_sections(tmp_path: Path) -> None:
+def test_platform_intelligence_expansion_builds_all_twelve_primary_sections(
+    tmp_path: Path,
+) -> None:
     _seed_project(tmp_path)
 
     payload = src.build_payload(tmp_path, max_rows=10)
@@ -146,15 +163,35 @@ def test_platform_intelligence_expansion_builds_all_twelve_primary_sections(tmp_
     assert payload["expansion_count"] == 12
     assert set(payload["primary_section_keys"]) == set(src.PRIMARY_SECTION_KEYS)
     assert set(payload["primary_sections"]) == set(src.PRIMARY_SECTION_KEYS)
-    assert payload["sections"]["bot_admission_controller"]["overall_status"] == "protect_live"
-    assert payload["sections"]["swap_cpu_capacity_planner"]["training_policy"] == "paused"
-    assert payload["sections"]["swap_cpu_capacity_planner"]["max_new_collectors_now"] == 0
-    assert payload["sections"]["provider_rotation_failover_mesh"]["degraded_provider_count"] == 1
-    assert payload["sections"]["paper_trade_capacity_governor"]["live_execution_allowed"] is False
-    assert payload["recommended_env_overrides"]["PLATFORM_INTELLIGENCE_LAYER_VERSION"] == "2"
+    assert (
+        payload["sections"]["bot_admission_controller"]["overall_status"]
+        == "protect_live"
+    )
+    assert (
+        payload["sections"]["swap_cpu_capacity_planner"]["training_policy"] == "paused"
+    )
+    assert (
+        payload["sections"]["swap_cpu_capacity_planner"]["max_new_collectors_now"] == 0
+    )
+    assert (
+        payload["sections"]["provider_rotation_failover_mesh"][
+            "degraded_provider_count"
+        ]
+        == 1
+    )
+    assert (
+        payload["sections"]["paper_trade_capacity_governor"]["live_execution_allowed"]
+        is False
+    )
+    assert (
+        payload["recommended_env_overrides"]["PLATFORM_INTELLIGENCE_LAYER_VERSION"]
+        == "2"
+    )
 
 
-def test_provider_rotation_treats_session_gate_as_paused_not_degraded(tmp_path: Path) -> None:
+def test_provider_rotation_treats_session_gate_as_paused_not_degraded(
+    tmp_path: Path,
+) -> None:
     _seed_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -177,7 +214,9 @@ def test_provider_rotation_treats_session_gate_as_paused_not_degraded(tmp_path: 
     assert provider["providers"][0]["failover_route"] == "session_gate_last_good_cache"
 
 
-def test_provider_cooldown_and_soft_failures_are_watch_not_repair_failure(tmp_path: Path) -> None:
+def test_provider_cooldown_and_soft_failures_are_watch_not_repair_failure(
+    tmp_path: Path,
+) -> None:
     _seed_project(tmp_path)
     health = tmp_path / "governance" / "health"
     _write_json(
@@ -200,7 +239,9 @@ def test_provider_cooldown_and_soft_failures_are_watch_not_repair_failure(tmp_pa
         },
     )
 
-    provider = src.build_payload(tmp_path, max_rows=10)["sections"]["provider_rotation_failover_mesh"]
+    provider = src.build_payload(tmp_path, max_rows=10)["sections"][
+        "provider_rotation_failover_mesh"
+    ]
 
     assert provider["overall_status"] == "watch"
     assert provider["required_failure_count"] == 0
@@ -209,7 +250,12 @@ def test_provider_cooldown_and_soft_failures_are_watch_not_repair_failure(tmp_pa
 
 def test_quality_debt_is_watch_unless_low_quality_live_execution_is_allowed() -> None:
     rows = [
-        {"bot_id": f"cold_{idx}", "quality_label": "cold_start", "quality_score": 20.0, "direct_execution_allowed": False}
+        {
+            "bot_id": f"cold_{idx}",
+            "quality_label": "cold_start",
+            "quality_score": 20.0,
+            "direct_execution_allowed": False,
+        }
         for idx in range(30)
     ]
 
@@ -233,7 +279,11 @@ def test_generic_paper_locked_quality_debt_is_managed_not_actionable() -> None:
             "test_accuracy": 0.42,
             "paper_trade_lock_required": True,
             "direct_execution_allowed": False,
-            "target_functions": ["paper_live_data_standard", "paper_trade_lock", "data_collection_floor"],
+            "target_functions": [
+                "paper_live_data_standard",
+                "paper_trade_lock",
+                "data_collection_floor",
+            ],
             "correlation_dependencies": [],
         },
         sleeve="default",
@@ -255,7 +305,11 @@ def test_generic_paper_collection_overlap_is_managed_not_duplicate_alpha() -> No
             "bot_id": f"generic_{idx}",
             "sleeve": "default",
             "quality_score": 30.0,
-            "target_functions": ["paper_live_data_standard", "paper_trade_lock", "data_collection_floor"],
+            "target_functions": [
+                "paper_live_data_standard",
+                "paper_trade_lock",
+                "data_collection_floor",
+            ],
             "correlation_dependencies": [],
             "direct_execution_allowed": False,
             "managed_quality_debt": False,
@@ -268,13 +322,24 @@ def test_generic_paper_collection_overlap_is_managed_not_duplicate_alpha() -> No
     assert duplicate["overall_status"] == "ready"
     assert duplicate["managed_overlap_cluster_count"] == 1
     assert duplicate["actionable_overlap_cluster_count"] == 0
-    assert duplicate["overlap_clusters"][0]["managed_overlap_reason"] == "generic_paper_live_collection_contract"
+    assert (
+        duplicate["overlap_clusters"][0]["managed_overlap_reason"]
+        == "generic_paper_live_collection_contract"
+    )
 
 
-def test_execution_realism_capacity_constraints_are_managed_not_failure(tmp_path: Path) -> None:
+def test_execution_realism_capacity_constraints_are_managed_not_failure(
+    tmp_path: Path,
+) -> None:
     health = tmp_path / "governance" / "health"
-    _write_json(health / "paper_execution_calibration_latest.json", {"metrics": {"mae_bps": 19.0}})
-    _write_json(health / "execution_lab_latest.json", {"top_worst_case_scenarios": [{"slippage_bps": 35.0}]})
+    _write_json(
+        health / "paper_execution_calibration_latest.json",
+        {"metrics": {"mae_bps": 19.0}},
+    )
+    _write_json(
+        health / "execution_lab_latest.json",
+        {"top_worst_case_scenarios": [{"slippage_bps": 35.0}]},
+    )
     _write_json(
         tmp_path / "governance" / "allocator" / "portfolio_capacity_curve_latest.json",
         {"summary": {"constrained_curve_count": 4}},
@@ -288,9 +353,14 @@ def test_execution_realism_capacity_constraints_are_managed_not_failure(tmp_path
     assert realism["capacity_curve_haircut_active"] is True
 
 
-def test_low_pressure_runtime_degraded_label_is_managed_in_pressure_snapshot(tmp_path: Path) -> None:
+def test_low_pressure_runtime_degraded_label_is_managed_in_pressure_snapshot(
+    tmp_path: Path,
+) -> None:
     health = tmp_path / "governance" / "health"
-    _write_json(health / "swap_pressure_governor_latest.json", {"swap_pressure": {"tier": "normal", "swap_used_gb": 0.5}})
+    _write_json(
+        health / "swap_pressure_governor_latest.json",
+        {"swap_pressure": {"tier": "normal", "swap_used_gb": 0.5}},
+    )
     _write_json(
         health / "runtime_throttle_control_latest.json",
         {
@@ -300,9 +370,15 @@ def test_low_pressure_runtime_degraded_label_is_managed_in_pressure_snapshot(tmp
             "memory_pressure_level": "normal",
         },
     )
-    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "ready", "pressure_index": 0.01})
+    _write_json(
+        health / "ingestion_storage_control_latest.json",
+        {"overall_status": "ready", "pressure_index": 0.01},
+    )
     _write_json(health / "global_killswitch_latest.json", {"global_halt_active": False})
-    _write_json(health / "memory_efficiency_control_latest.json", {"overall_status": "ready", "recommended_profile": "max_throughput"})
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {"overall_status": "ready", "recommended_profile": "max_throughput"},
+    )
 
     pressure = src._pressure_snapshot(tmp_path)
 
@@ -311,12 +387,22 @@ def test_low_pressure_runtime_degraded_label_is_managed_in_pressure_snapshot(tmp
     assert pressure["compute_policy"] == "normal"
 
 
-def test_self_healing_auto_playbooks_are_watch_manual_auth_is_needs_work(tmp_path: Path) -> None:
+def test_self_healing_auto_playbooks_are_watch_manual_auth_is_needs_work(
+    tmp_path: Path,
+) -> None:
     health = tmp_path / "governance" / "health"
-    _write_json(health / "global_halt_auto_clear_latest.json", {"halt": False, "clear_ready": True})
-    _write_json(health / "process_watchdog_latest.json", {"alerts": [{"id": "collector_restart_storm"}]})
+    _write_json(
+        health / "global_halt_auto_clear_latest.json",
+        {"halt": False, "clear_ready": True},
+    )
+    _write_json(
+        health / "process_watchdog_latest.json",
+        {"alerts": [{"id": "collector_restart_storm"}]},
+    )
     _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "ready"})
-    _write_json(health / "ingestion_storage_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "ingestion_storage_control_latest.json", {"overall_status": "ready"}
+    )
 
     playbooks = src._self_healing_incident_playbooks(
         tmp_path,
@@ -328,7 +414,9 @@ def test_self_healing_auto_playbooks_are_watch_manual_auth_is_needs_work(tmp_pat
     assert playbooks["overall_status"] == "watch"
     assert playbooks["manual_triggered_count"] == 0
 
-    _write_json(health / "auth_lease_manager_latest.json", {"overall_status": "warning"})
+    _write_json(
+        health / "auth_lease_manager_latest.json", {"overall_status": "warning"}
+    )
     playbooks = src._self_healing_incident_playbooks(
         tmp_path,
         {},
@@ -340,34 +428,93 @@ def test_self_healing_auto_playbooks_are_watch_manual_auth_is_needs_work(tmp_pat
     assert playbooks["manual_triggered_count"] == 1
 
 
-def test_admission_downshifts_collection_and_blocks_training_under_swap(tmp_path: Path) -> None:
+def test_admission_downshifts_collection_and_blocks_training_under_swap(
+    tmp_path: Path,
+) -> None:
     _seed_project(tmp_path)
 
     payload = src.build_payload(tmp_path, max_rows=10)
     admissions = payload["sections"]["bot_admission_controller"]["sampled_admissions"]
-    row = next(item for item in admissions if item["bot_id"] == "brain_refinery_intraday_aggressive_breakout_bot")
+    row = next(
+        item
+        for item in admissions
+        if item["bot_id"] == "brain_refinery_intraday_aggressive_breakout_bot"
+    )
 
     assert row["collect_allowed"] is True
     assert row["collection_mode"] == "thin_sample"
     assert row["train_allowed"] is False
     assert row["admission_state"] == "defer_training_until_resource_pressure_clears"
     lifecycle = payload["sections"]["bot_lifecycle_manager"]["sampled_lifecycle"]
-    lifecycle_row = next(item for item in lifecycle if item["bot_id"] == "brain_refinery_intraday_aggressive_breakout_bot")
+    lifecycle_row = next(
+        item
+        for item in lifecycle
+        if item["bot_id"] == "brain_refinery_intraday_aggressive_breakout_bot"
+    )
     assert lifecycle_row["lifecycle_stage"] == "paper_ready_train_review"
 
 
-def test_sleeve_masters_research_pipeline_decay_and_black_box_are_written(tmp_path: Path) -> None:
+def test_sleeve_masters_research_pipeline_decay_and_black_box_are_written(
+    tmp_path: Path,
+) -> None:
     _seed_project(tmp_path)
+    _write_json(
+        tmp_path / "governance" / "health" / "market_pattern_feedback_latest.json",
+        {
+            "overall_status": "ready",
+            "pattern_count": 2,
+            "observable_dimension_count": 10,
+            "dominant_patterns": [
+                {
+                    "pattern_id": "defensive_high_vol_chop",
+                    "label": "Defensive high-volatility chop",
+                    "strength": 0.89,
+                    "confidence": 0.70,
+                    "direction": "defensive_or_mean_reversion",
+                }
+            ],
+            "sleeve_feedback": [
+                {
+                    "sleeve": "volatility",
+                    "paper_sampling_posture": "prioritize_bounded_paper_sampling",
+                    "boost_score": 0.89,
+                    "caution_score": 0.0,
+                    "context_score": 0.6,
+                    "pattern_ids": [
+                        "defensive_high_vol_chop",
+                        "source_context_available",
+                    ],
+                }
+            ],
+            "platform_feedback_contract": {
+                "can_route_paper_collection_priority": True,
+                "can_change_live_execution": False,
+                "can_claim_profitability": False,
+            },
+            "profitability_evidence_gaps": {"candidate_post_cost_sample_count": 0},
+            "recommended_actions": ["prioritize bounded paper samples for volatility"],
+        },
+    )
 
     payload = src.build_payload(tmp_path, max_rows=10)
     written = src.write_section_artifacts(tmp_path, payload)
 
-    assert len(written) >= 20
+    assert len(written) >= 21
     for path in written.values():
         assert Path(path).exists()
+    market_feedback = payload["sections"]["market_pattern_feedback_loop"]
+    assert market_feedback["pattern_count"] == 2
+    assert market_feedback["live_execution_allowed"] is False
+    assert market_feedback["top_sleeves"][0]["sleeve"] == "volatility"
+    assert "market_pattern_feedback_loop" in written
     masters = payload["sections"]["per_sleeve_master_bots"]["sleeve_masters"]
     assert any(row["sleeve"] == "intraday_aggressive" for row in masters)
-    assert payload["sections"]["research_to_strategy_pipeline"]["stage_counts"]["paper_only_collecting"] >= 1
+    assert (
+        payload["sections"]["research_to_strategy_pipeline"]["stage_counts"][
+            "paper_only_collecting"
+        ]
+        >= 1
+    )
     assert payload["sections"]["model_decay_detector"]["decaying_bot_count"] >= 1
     correlation = payload["sections"]["cross_sleeve_correlation_governor"]
     assert correlation["overall_status"] == "ready"

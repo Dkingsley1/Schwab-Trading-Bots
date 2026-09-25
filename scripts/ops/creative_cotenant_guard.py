@@ -375,6 +375,34 @@ def _command_for_pid(pid: int) -> str:
     return " ".join((completed.stdout or "").split())
 
 
+def _parent_pid_for_pid(pid: int) -> int:
+    try:
+        completed = subprocess.run(
+            ["ps", "-p", str(int(pid)), "-o", "ppid="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except Exception:
+        return 0
+    if completed.returncode != 0:
+        return 0
+    return _safe_int((completed.stdout or "").strip(), 0)
+
+
+def _paper_lane_keep_pid(project_root: Path, pids: list[int]) -> tuple[int | None, list[int]]:
+    parent_owned: list[int] = []
+    expected_parent_marker = str(project_root / "scripts" / "run_all_sleeves.py")
+    for pid in pids:
+        parent_pid = _parent_pid_for_pid(pid)
+        if parent_pid > 0 and expected_parent_marker in _command_for_pid(parent_pid):
+            parent_owned.append(pid)
+
+    candidates = parent_owned or pids
+    return (max(candidates) if candidates else None), sorted(parent_owned)
+
+
 def _is_protected_manual_training(command: str) -> bool:
     text = " ".join(str(command or "").split())
     if "scripts/weekly_retrain.py" not in text:
@@ -490,8 +518,8 @@ def _pause_contract(project_root: Path, *, snapshot: dict[str, Any], pause_resul
 def _paper_lane_snapshot(project_root: Path, *, apply: bool) -> dict[str, Any]:
     pattern = _paper_execution_lane_pattern(project_root)
     before = _pgrep_matching_pids(pattern)
-    keep_pid = before[0] if before else None
-    extras = before[1:] if len(before) > 1 else []
+    keep_pid, parent_owned_pids = _paper_lane_keep_pid(project_root, before)
+    extras = [pid for pid in before if pid != keep_pid]
     terminated: list[dict[str, Any]] = []
 
     after = before
@@ -503,9 +531,35 @@ def _paper_lane_snapshot(project_root: Path, *, apply: bool) -> dict[str, Any]:
         "pattern": pattern,
         "count_before": len(before),
         "count_after": len(after),
-        "keep_pid": (after[0] if after else keep_pid),
+        "keep_pid": keep_pid if keep_pid in after else (after[0] if after else keep_pid),
         "extra_pids": extras,
+        "parent_owned_pids": parent_owned_pids,
+        "selection_policy": "prefer_current_all_sleeves_child_then_newest_pid",
         "terminated": terminated,
+    }
+
+
+def build_paper_lane_singleton(project_root: Path = PROJECT_ROOT, *, apply: bool) -> dict[str, Any]:
+    paper_lane = _paper_lane_snapshot(project_root, apply=apply)
+    count_after = int(paper_lane.get("count_after", 0) or 0)
+    ready = count_after == 1
+    return {
+        "timestamp_utc": iso_now(),
+        "schema_version": 1,
+        "ok": ready,
+        "overall_status": "ready" if ready else "blocked",
+        "apply_mode": bool(apply),
+        "paper_execution_lane": paper_lane,
+        "live_execution_allowed": False,
+        "actions": [
+            "paper_execution_lane_deduped"
+            if apply and int(paper_lane.get("count_before", 0) or 0) > 1
+            else "paper_execution_lane_singleton_verified"
+            if ready
+            else "paper_execution_lane_missing"
+            if count_after == 0
+            else "paper_execution_lane_duplicates_detected"
+        ],
     }
 
 
@@ -771,29 +825,38 @@ def main() -> int:
     parser.add_argument("--cooldown-seconds", type=int, default=int(os.getenv("CREATIVE_COTENANT_COOLDOWN_SECONDS", "600")))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--lightweight", action="store_true")
+    parser.add_argument(
+        "--paper-lane-only",
+        action="store_true",
+        help="Verify or dedupe only the paper execution lane without changing memory or creative-session controls.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     override_path = Path(args.override_file).expanduser()
-    payload = build_payload(
-        PROJECT_ROOT,
-        apply=args.action == "apply",
-        override_path=override_path,
-        state_path=Path(args.state_file).expanduser(),
-        cooldown_seconds=int(args.cooldown_seconds),
-        lightweight=bool(args.lightweight),
-    )
+    if args.paper_lane_only:
+        payload = build_paper_lane_singleton(PROJECT_ROOT, apply=args.action == "apply")
+    else:
+        payload = build_payload(
+            PROJECT_ROOT,
+            apply=args.action == "apply",
+            override_path=override_path,
+            state_path=Path(args.state_file).expanduser(),
+            cooldown_seconds=int(args.cooldown_seconds),
+            lightweight=bool(args.lightweight),
+        )
     out_path = Path(args.out_file).expanduser()
     write_payload(out_path, payload)
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:
+        paper_lane = payload.get("paper_execution_lane", {})
         print(
             "creative_cotenant_guard "
             f"status={payload['overall_status']} "
             f"profile={payload.get('memory_efficiency', {}).get('recommended_profile', '')} "
-            f"paper_count={payload.get('paper_execution_lane', {}).get('count_after', 0)}"
+            f"paper_count={paper_lane.get('count_after', 0)}"
         )
     return 0 if bool(payload.get("ok", False)) else 2
 

@@ -1,0 +1,3665 @@
+{
+  "schema_version": 1,
+  "observed_at_utc": "2026-09-25T18:56:41.660878+00:00",
+  "file_count": 522,
+  "bytes": 18497606,
+  "deleted_count": 0,
+  "payloads_published": false,
+  "restore_verified": false,
+  "files": [
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/attempt-1-native-transaction.json",
+      "bytes": 53158,
+      "sha256": "fb6ff1a6955e01a54b4e161a8f49ada6583523ce071416afcd690753f806e871",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/attempt-1-native-upgrade.json",
+      "bytes": 58,
+      "sha256": "05fbaa13bc350d35f79f9ef607781b13a4ee88c7bf9696b30673a0a0b890e8c6",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/attempt-1-native-upgrade.log",
+      "bytes": 46626,
+      "sha256": "b4c1730270132b10ead1c287d7d3e0c401f598dead947873f31887553f4f8296",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/attempt-1-rollback.json",
+      "bytes": 72,
+      "sha256": "8a9ed5f943fec0c4e19a5e72b5babd03b344cb3e679f850a3dbf60f4ed0cf7cc",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/backup-clone.json",
+      "bytes": 56,
+      "sha256": "1fb657ee668893cc701de3410d133cea204408454ca9b4ade4c4981e14432f3d",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/backup-clone.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/backup-files.json",
+      "bytes": 17525054,
+      "sha256": "aa3d1bf08d5131e09b95f195c88346e78d4a47ba6b8d269a444d93aacc9ec889",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/backup-verification.json",
+      "bytes": 280,
+      "sha256": "f6d8469c83e4fa9825fc7d5f43f1979788e90dc49c47e737c81cb23058ed3e16",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/baseline-pip-check.json",
+      "bytes": 62,
+      "sha256": "e506a7f1863dee4e18cbbe49c13d71b14617486aa86cd531f799532051c1b0f6",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/baseline-pip-check.log",
+      "bytes": 30,
+      "sha256": "9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/candidate-full-test-headless.json",
+      "bytes": 15471,
+      "sha256": "c3ce7555802748e4895cf68d157ec2d92ab4f7dbf9904cc9a3fd9949e833925d",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/candidate-full-test.json",
+      "bytes": 16185,
+      "sha256": "4e15a2d393b7e001ca3ef5e7d08c2f8f4baba13e9a42fd1cccfeea402bfe5316",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/deployment.json",
+      "bytes": 280,
+      "sha256": "a235916766ad20f0afe10d08070886bd887c8ea9bfa8410ecd31c83ee47c4d3f",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/download-wheels.json",
+      "bytes": 59,
+      "sha256": "b14a8a0ef0c504f87c391d5ed1d5ce58a768529a2285ff7e3368f9a023f35df4",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/download-wheels.log",
+      "bytes": 27485,
+      "sha256": "fa4ad7c4a6c3c664a2c8f08fe47390d5a2914eae70c4e4cbecdf0f7a0a8bd036",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/engage-hold.json",
+      "bytes": 55,
+      "sha256": "589eb1cc96049eac7408eca8a8b1ebd6f704152910f649d72813266f996d5d45",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/engage-hold.log",
+      "bytes": 882,
+      "sha256": "19566be922f80db97c0c01a2d57aa70128264d7a3af7451bfbf57d002ce209ca",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/freeze-installed-lock.json",
+      "bytes": 65,
+      "sha256": "a1a36e75ebf1bb858fd9211d81e0246eb19c796dc0b8141d8f493328ef950c29",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/freeze-installed-lock.log",
+      "bytes": 92,
+      "sha256": "2983b1f35607fa827262b51726bc3861b84372b0f6f77f29cb2b756525f356bc",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/installed-after.json",
+      "bytes": 6408,
+      "sha256": "ce6e1f4c1e20de175add59018219b29a982bc71a08e1d04359c5ea9d96d5af03",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/installed-before.json",
+      "bytes": 6393,
+      "sha256": "669f385ce0f25fe96de9836b11d87d47f9fa10fe95e1ee5a61bba068aab5aea7",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/lock-verification.json",
+      "bytes": 229,
+      "sha256": "bff8f326ca4ba9958b9ab0f6793b185fc104d2f5e2548bd451f83870c3c63290",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/locks-before/config/requirements.lock.txt",
+      "bytes": 4621,
+      "sha256": "41b1537ad457ea8cb5c7922b1f5b98f58d190d6c913cef9937040348881c21c4",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/locks-before/config/runtime_profiles/live.lock.txt",
+      "bytes": 397,
+      "sha256": "e1f61f7026bb974021794cb223aa28f77cf2ca38b0f5bc80a91f01dc497d4c5b",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/locks-before/config/runtime_profiles/media.lock.txt",
+      "bytes": 241,
+      "sha256": "3b25ca4ccb144fcd2fef4458626ab3a1eee187149ea7b24b9dc2fbbef23e31d8",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/locks-before/config/runtime_profiles/ops.lock.txt",
+      "bytes": 3408,
+      "sha256": "40a24227c9d22d78303b09531ecbbe7b27fe9f1326efaaac044a9f68cd1e85e0",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/locks-before/config/runtime_profiles/research.lock.txt",
+      "bytes": 685,
+      "sha256": "0ab9cbbc0fe5b447d76f6e65658aa0ee42cd4aa8215e133ec6b0839e066475f7",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/native-transaction.json",
+      "bytes": 72603,
+      "sha256": "006ad0ac7a516224fa35b637ed27f37519803a9197b95700db626ab497c28b6e",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/native-upgrade.json",
+      "bytes": 58,
+      "sha256": "0f6deda5588cce4b13c98be5969707dc9763c337a2d4cd8a9c58345038ad97b9",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/native-upgrade.log",
+      "bytes": 64155,
+      "sha256": "60020817e1263ed3555fe09ed27d8f19f04bd402ea93258472026eaecc86bca4",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.daily_auto_verify.json",
+      "bytes": 83,
+      "sha256": "4d5af7b5631e7fd8db3142891a11cd89db1290ab4a451c815f5448154b0eaefd",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.daily_auto_verify.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.livefeed-local.json",
+      "bytes": 80,
+      "sha256": "fe51528aeb4095369c2f7afbed5920130a8706056cf820ad6091766f8e95e2e0",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.livefeed-local.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.livefeed_heavy_guarded.json",
+      "bytes": 88,
+      "sha256": "bfe49723047fdf283a467eca9b34f9535e9e99dfa19c141557e4559584e1ecb5",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.livefeed_heavy_guarded.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.mac_notification_watch.json",
+      "bytes": 88,
+      "sha256": "743a818d0a0f18784bbd8b7b97b2003f69dd9fbb5fb35815107b8ae6feac1ccd",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.mac_notification_watch.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.observability_exporter.json",
+      "bytes": 88,
+      "sha256": "12a11f90183f99cb3b1fa24628f7edc8132c94173790bba94a72924ae61ee71b",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.observability_exporter.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.adaptive_ops_recovery_policy.json",
+      "bytes": 98,
+      "sha256": "be0e3fd1e99987230592b289e9d575e3221a0b9184a6f77bd22eb15cfd71c4ce",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.adaptive_ops_recovery_policy.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.adaptive_regression_guard.json",
+      "bytes": 95,
+      "sha256": "1c3ed528bf38ee2ae101d10f7633616e560674b4fb02db1e917049e94a5c3eb8",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.adaptive_regression_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.bot_quality_autopilot.json",
+      "bytes": 91,
+      "sha256": "8baba61d2abe06d3d19b70f7c6c2e72f4fe4cfb05e5e52f586668e8d89ed3ed1",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.bot_quality_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.canary_tuner.json",
+      "bytes": 82,
+      "sha256": "3f74e25fbbfca10f23d254975ef54544c70f0f11a3d3c8bd0b8017d9af4f3f50",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.canary_tuner.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.chrome_headless_guard.json",
+      "bytes": 91,
+      "sha256": "a09577913946921bbe6b96284e43c01df9fe8f82e10cb3b41a7964174818fcd4",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.chrome_headless_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.command_validity.json",
+      "bytes": 86,
+      "sha256": "f520bc04a5c74088234ac9897e6aa528b66193ffdd0e96f2eb048a43c47df553",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.command_validity.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.creative_cotenant_guard.json",
+      "bytes": 93,
+      "sha256": "e05b47810e81e1b75a9e3c7131500267a5635885d41174e470d88a0c12a6633f",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.creative_cotenant_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.daily_report.json",
+      "bytes": 82,
+      "sha256": "830f5bb6b299bfd0f8a523dd83b071f68b6a07bbefd7198bbf25e6662aebccd9",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.daily_report.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.data_retention.json",
+      "bytes": 84,
+      "sha256": "a151d5f5e3771dcf2b815e743a388174a97fb603e2bfd9616ef1bba7d7e640db",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.data_retention.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.external_backlog_retry.json",
+      "bytes": 92,
+      "sha256": "b6442e130dddf8709c5f9f379ddc3a91e49d714d60091c88d0bd74fd9e23e589",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.external_backlog_retry.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.fx_market_context.json",
+      "bytes": 87,
+      "sha256": "daeea562bef147efec70121fec41cc1e77958b5bce5dfb51a33562e264b077d9",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.fx_market_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.grade_regression_autopilot.json",
+      "bytes": 96,
+      "sha256": "22ccd7327e4447a409a88d0149c4be35956c218a6c6739e547bc1344611fa9d6",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.grade_regression_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.infrastructure_autofix.json",
+      "bytes": 92,
+      "sha256": "f1b8493c86516ecb6f3bd356d16a7c0571a0dedf90750b09e173106809d14045",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.infrastructure_autofix.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.local_sql_shard_standby_prune.json",
+      "bytes": 99,
+      "sha256": "a2cc62718bc974779d6d23e28bb9b4e3ad6b2f0467774a525fc90a42e5891d4c",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.local_sql_shard_standby_prune.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.local_storage_reserve_guard.json",
+      "bytes": 97,
+      "sha256": "b3ccca3a8717a5508e8799a37084672c5b336ca4ac4400a78a9ae00a3dfdad18",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.local_storage_reserve_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.maintenance_strategy_reloader.json",
+      "bytes": 99,
+      "sha256": "7b32b216e1b91c3810a6fd00e4e4a6b43eec98aa70b334ee65e3abdda7d062a8",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.maintenance_strategy_reloader.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.market_crypto_correlation.json",
+      "bytes": 95,
+      "sha256": "ab027587791065c232ab653359fef9d60159f66237a599f431eabe7d94014058",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.market_crypto_correlation.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.master_infrastructure_supervisor.json",
+      "bytes": 102,
+      "sha256": "a096c11349a569c16a42b6dc7da19f9107e47beda7ffb43b651d57c5424f9e71",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.master_infrastructure_supervisor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.official_macro_context.json",
+      "bytes": 92,
+      "sha256": "6b9ef7c1969667161c8a435cb5c2a19f28f17852ff830c14ce125418a4ce9fe4",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.official_macro_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.one_numbers_refresh.json",
+      "bytes": 89,
+      "sha256": "47f3711b8906dc8f275ebc3fc582f8a80af7f93c780ea09800286df57c123070",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.one_numbers_refresh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.one_numbers_regression_guard.json",
+      "bytes": 98,
+      "sha256": "ae1a3a31a1ae06ebd3aaeedfa50576faeecd7c742e0882041bc1b8326c4d7730",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.one_numbers_regression_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.options_flow_context.json",
+      "bytes": 90,
+      "sha256": "632bd867646608714a53b5ee2fae9cd60c603565fb1a84ded348cdba20c68547",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.options_flow_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.process_fanout_guard.json",
+      "bytes": 90,
+      "sha256": "86ae28959e29071a04e4add5e2b323ac57830e375b111f0188e7a23063e2cfdb",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.process_fanout_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.production_hardening_watch.json",
+      "bytes": 96,
+      "sha256": "73e72d9cd82b2bb744991abe35c52ce5e69f1f7bad4325f0f892bc6e5a4e7994",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.production_hardening_watch.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.production_resilience_control.json",
+      "bytes": 99,
+      "sha256": "4853ddd05bcce04be1d26a497500ca27bb57b0a811256993dee64df78d7ae9e6",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.production_resilience_control.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.promotion_pipeline.json",
+      "bytes": 88,
+      "sha256": "0afe6fff8b97940f97c39854000d04ed732f5d197f8a0e5bed4234f3bb7f1e44",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.promotion_pipeline.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.runtime_smooth_mode.json",
+      "bytes": 89,
+      "sha256": "996a8c552d37824fbc1cb8931397c9918fb209392481f480cccf92e963b9f3f5",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.runtime_smooth_mode.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.schwab_auth_supervisor.json",
+      "bytes": 92,
+      "sha256": "01e3035158aa9e0057ce8f14b619e931112d022c39f9ba2f06f55c5e9f396af9",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.schwab_auth_supervisor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.schwab_education_context.json",
+      "bytes": 94,
+      "sha256": "5b89b2b109bd0b643ce796a8c30c52cf705217a81e9d7260b58ab31b07c670ce",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.schwab_education_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.section_grade_autopilot.json",
+      "bytes": 93,
+      "sha256": "ff2dd0c3296d13465d36008990e4ed191ec452853a9bbf7fcdc31fac5b6daad7",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.section_grade_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.soak_reliability_sentinel.json",
+      "bytes": 95,
+      "sha256": "47413b7f19da5454fa19bc1bf0702315f5726ca9c505265a85dbf9bf529e6262",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.soak_reliability_sentinel.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.soak_self_healing.json",
+      "bytes": 87,
+      "sha256": "58109625d7cf55487c4b8438ee45349ad13c0dc0b075e52784ff51a783f8ef53",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.soak_self_healing.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.storage_backpressure_autopilot.json",
+      "bytes": 100,
+      "sha256": "c1d3c3a4339305efd9583aec4d2405ddb8329a93b223588b2c0afa5df3dd816f",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.storage_backpressure_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.storage_pressure_clearance.json",
+      "bytes": 96,
+      "sha256": "e09bce03e08d0ba5e4c119da04a72aa72bda5197c6e08d90bf08cbb80542c00a",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.storage_pressure_clearance.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.storage_reconnect_infrabot.json",
+      "bytes": 96,
+      "sha256": "42f92389dc5a68a4ae53a7d36346df6cb5d5cd81676e86d3515c126f89c93abb",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.storage_reconnect_infrabot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.storage_standby_prune.json",
+      "bytes": 91,
+      "sha256": "02d00c1e0d67fd6d5e1b8dc147bc9cd08b3218deba67b425da1f81f8dbbd0090",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.storage_standby_prune.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.swap_pressure_governor.json",
+      "bytes": 92,
+      "sha256": "5379c3cfd0915e083d79afa1834fc200046a146f07e6779e687075dbf7cb0e31",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.swap_pressure_governor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.system_cell_federation.json",
+      "bytes": 92,
+      "sha256": "de5423568f8840e7972b81ad372c3b3daf45572b1cc8de37c828d1d27b3750d3",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.system_cell_federation.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.system_drift_autopilot.json",
+      "bytes": 92,
+      "sha256": "fd34f85cbe85505fbd42e1ab3d00977f65c9c305e74de52f6e8e55b01d3a0e1e",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.system_drift_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.system_drift_guard.json",
+      "bytes": 88,
+      "sha256": "78d85221a32148595ff7e4b5d6e8827a6a5ffb496cc2b86303a83f3fdc5b6f6d",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.system_drift_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.system_summary_autopilot.json",
+      "bytes": 94,
+      "sha256": "7aa140c9bb826b3d8aacdcb2fee5b5a85d0d4ae8ec05c22e20491f790a0aada9",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.system_summary_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.training_drain_autopilot.json",
+      "bytes": 94,
+      "sha256": "81b6d00213c422f75a6688567247fc74e97a8ac156fba7dfe60bc2d56d7177e5",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.ops.training_drain_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.premarket_token_guard.json",
+      "bytes": 87,
+      "sha256": "424d018a5d8c7cb0390728f1f996e67d24a66d03701b464246b843ec1068506d",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.premarket_token_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.retrain.daily_small.json",
+      "bytes": 85,
+      "sha256": "2e24b770e50dd2a4eded23f0accab0020572ae2a9a0a7b2f5fd7163427f8b586",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.retrain.daily_small.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.retrain.weekly_full.json",
+      "bytes": 85,
+      "sha256": "6bbafbb9fe132bd94cb43154d6d3ebdb39b0b2b0d04b5e8c835cc4a18d9df861",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.retrain.weekly_full.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.sqlite_maintenance.json",
+      "bytes": 84,
+      "sha256": "72d8f1662d765ce8be0f32f7388b20d4bb1a3e7f42aeea29ae8ee3b4beab5620",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.sqlite_maintenance.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.startup_start_prompt.json",
+      "bytes": 86,
+      "sha256": "fad686015e5f7e3b8ef0860101fbb9e0e55b31fba73257a4ff4d7f830781cccc",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.startup_start_prompt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.storage_disaster_recovery.json",
+      "bytes": 91,
+      "sha256": "eaf3d020dee5c79fc70453ed13b5bdf1d16c583a2cd50bb469e1a8997a692c22",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.storage_disaster_recovery.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.storage_eject_guard.json",
+      "bytes": 85,
+      "sha256": "1a57adcd32d8a9b32e94ad6a751bb7e360371e4e4ea846dc328420e80c380e4d",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.storage_eject_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.strategy_market_fit_infrabot.json",
+      "bytes": 94,
+      "sha256": "0c733c2c0835dc4b45f7ad1fbac35e3495cb4a2925e73d8f7739192704f2f56f",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dankingsley.strategy_market_fit_infrabot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dkingsley.schwabtradingbot.institutional-decision-flow-shadow.json",
+      "bytes": 115,
+      "sha256": "21b02e6ee5ce263ccae0c8b3e9f877232b9ab4b680f06d653b74173c6818bda1",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-com.dkingsley.schwabtradingbot.institutional-decision-flow-shadow.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/pause-state.json",
+      "bytes": 83316,
+      "sha256": "33950411c4b9380c9ee55ddc2a7444f388466ce58686ca095fb8ac7ff4cde856",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/paused-process-check.json",
+      "bytes": 22,
+      "sha256": "248afd97220ee28ab828cf639eef0e36889f6bbccb13dfab15fa5489fb249d4c",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/post-lock-tests.json",
+      "bytes": 59,
+      "sha256": "2551cbf8b6441c2f3d0cffa15aa00e4997816e958af9ce0e14d6876ba2652654",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/post-lock-tests.log",
+      "bytes": 99,
+      "sha256": "a350bca063c7a5c4089f6ef4401cf87b263030c794349f2bdf6709609c0c6e12",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/refresh-runtime-profiles.json",
+      "bytes": 68,
+      "sha256": "146d49380bd188e20ed237bd815c5c03937a1d177279839f7a8882ef85176525",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/refresh-runtime-profiles.log",
+      "bytes": 7671,
+      "sha256": "7fe6a8b78387adc32629ba6944ba8389d49b8a0f50f24d032eb15d31f1c9766a",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/release-for-native-resume.json",
+      "bytes": 69,
+      "sha256": "54d0633315fa82788eababda85749cddf0f023704617e17cdd1a918f772db1af",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/release-for-native-resume.log",
+      "bytes": 1109,
+      "sha256": "10f133b74e5bb7eca5261f748323f8ae8e7842c4d072e829d0d67be95a192ea7",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-clone-check.json",
+      "bytes": 63,
+      "sha256": "7211ddd0eecfde1c98718231a42725d9b6153770b025493a7c2aecea908e7d87",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-clone-check.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.daily_auto_verify.json",
+      "bytes": 100,
+      "sha256": "69981c1f87366279f0c0e566e26e7a0f5ed9afd82fbb0362080459f72f4f70d5",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.daily_auto_verify.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.daily_log_refresh.json",
+      "bytes": 100,
+      "sha256": "4a1b73120394d777c65c876424b70a7af53e9a14d2a290e60f3c679364d2c3ff",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.daily_log_refresh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.failover_hot_standby.json",
+      "bytes": 103,
+      "sha256": "916830287ad002b860c69dff41240140ac91a4bad40e5d7a984e584c04aa05f0",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.failover_hot_standby.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.livefeed-local.json",
+      "bytes": 97,
+      "sha256": "56eab73afb7e580d3b4a9f48b5a37270b029b7a570318be2950e1afe62518497",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.livefeed-local.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.livefeed_heavy_guarded.json",
+      "bytes": 105,
+      "sha256": "ae3b4190805150db23c4975087e0616994dc5599040830d2f5003495abf4bead",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.livefeed_heavy_guarded.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.mac_notification_watch.json",
+      "bytes": 105,
+      "sha256": "31fa1e50f80f25a5eba175445d31a0a240ebe6fd60ab74a9d2264664c8dd2314",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.mac_notification_watch.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.macro_auto_watch.json",
+      "bytes": 99,
+      "sha256": "2a7ea2af735ee69f398783130d9c0e463ec1277d7725eca43eb941b1ceddc917",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.macro_auto_watch.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.observability_exporter.json",
+      "bytes": 105,
+      "sha256": "7fc8987035f5621a0511a996881764a9dbd44f7169e3e38bb6990f3d4c93f3fe",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.observability_exporter.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.adaptive_ops_recovery_policy.json",
+      "bytes": 115,
+      "sha256": "fa321c3fcf5da46fd135706f9ec716f8eb7995921088286f2e6034c76b31ee5a",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.adaptive_ops_recovery_policy.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.adaptive_regression_guard.json",
+      "bytes": 112,
+      "sha256": "ec90ebbeac27c69f953c55b5d2ec121ed0d0a471d17691aad85366ba327b5439",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.adaptive_regression_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.bot_quality_autopilot.json",
+      "bytes": 108,
+      "sha256": "a46a521228f5017521ae0737e914936b9d9717a349ec2d05c27407b0032872a8",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.bot_quality_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.canary_tuner.json",
+      "bytes": 99,
+      "sha256": "9741aff54a263336612ff8657046c502aa7806ffb81c42f68f2af9ecf0b08277",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.canary_tuner.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.chrome_headless_guard.json",
+      "bytes": 108,
+      "sha256": "6a4330db82e8e32c3f8f9e3e80e0a47867ace0444d2c69e9d71e3e98942cf56c",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.chrome_headless_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.command_validity.json",
+      "bytes": 103,
+      "sha256": "faed3284593cb6764b24f2c5947662a97ad27fb43c7cb0e52d921f41d474a490",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.command_validity.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.creative_cotenant_guard.json",
+      "bytes": 110,
+      "sha256": "101f33ae315e9592edcbe925f0cf35909fa3c6edbbd936893d46c2d03a12f1b9",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.creative_cotenant_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.daily_report.json",
+      "bytes": 99,
+      "sha256": "0bd621d1f87297ba45213d4ae040127fa00af73bf65aa3809c20fdd5405e4525",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.daily_report.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.data_retention.json",
+      "bytes": 101,
+      "sha256": "1434dccc294920f28ca2e74d95fcfb9bbfdc9a9830cfd9e0a41c9341ac93b75d",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.data_retention.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.external_backlog_retry.json",
+      "bytes": 109,
+      "sha256": "18d781e30954a27cdf721863cf4173f0ce2297c48d0278b89947458add7d4743",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.external_backlog_retry.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.fx_market_context.json",
+      "bytes": 104,
+      "sha256": "fa93b76efdd5ee783887733fbbef759b0a2e7fc3f6144c1643fd58b66914be13",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.fx_market_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.grade_regression_autopilot.json",
+      "bytes": 113,
+      "sha256": "2f951e9eb5b0c5ff3c9cfab247b902374ac7af4ac041865f6253867fc88d4882",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.grade_regression_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.infrastructure_autofix.json",
+      "bytes": 109,
+      "sha256": "3c964bb92db3233a3bf2d8bb4d9416c54d4fbe203ba2b39d1a49d5e1ca52f5f7",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.infrastructure_autofix.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.local_sql_shard_standby_prune.json",
+      "bytes": 116,
+      "sha256": "70684615e6773362852e9a0edd2d1f597c8b319d49147b0c0650fecb0384fe37",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.local_sql_shard_standby_prune.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.local_storage_reserve_guard.json",
+      "bytes": 114,
+      "sha256": "386b65a713bdacf30520c6532a77afca43cb5383beee70f24e1b5594ba656371",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.local_storage_reserve_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.maintenance_strategy_reloader.json",
+      "bytes": 116,
+      "sha256": "240255f8758840639d456c4c188f5d0156b6e18aa75d8a064125499d3602341e",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.maintenance_strategy_reloader.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.market_crypto_correlation.json",
+      "bytes": 112,
+      "sha256": "e87e14ae72718e5d2f77fc29d73f9e5cb2152a135e40ff38e76dfdd1829e03be",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.market_crypto_correlation.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.master_infrastructure_supervisor.json",
+      "bytes": 119,
+      "sha256": "977962a7f6f542da42c522d68f54ff596e7dbaaa0e63dd85f0fa1ee75dbae3e7",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.master_infrastructure_supervisor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.official_macro_context.json",
+      "bytes": 109,
+      "sha256": "9e89e48db82673ccf8dcfb81dede15886a80cf61e51947e10838ddd591580a1c",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.official_macro_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.one_numbers_refresh.json",
+      "bytes": 106,
+      "sha256": "96bfe94e281ad9935177fcc0435f03c70d185614e4300022fcef4a898d02efb5",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.one_numbers_refresh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.one_numbers_regression_guard.json",
+      "bytes": 115,
+      "sha256": "72a359c881bea3d1cad394e79449cd866d7cc8ccb5a5df61a847f2af3e57cef4",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.one_numbers_regression_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.options_flow_context.json",
+      "bytes": 107,
+      "sha256": "99c134537205ad95beba96c759449ab48f0fee3fbdcd56e0d042cdf72d185c4d",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.options_flow_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.process_fanout_guard.json",
+      "bytes": 107,
+      "sha256": "e0909c44cb074d5b05a4902ede40cecaca4b9bcb7587081a8c8ff95564b47706",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.process_fanout_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.production_hardening_watch.json",
+      "bytes": 113,
+      "sha256": "21153a5635f726073c22b0b62fe15bf3fbd1bb231ced88c93fae7d8286eba504",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.production_hardening_watch.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.production_resilience_control.json",
+      "bytes": 116,
+      "sha256": "9602820b3dfb7eb03cf191cb8f4dad5ad5f78d8daf3eb39dcd8b5868bf914268",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.production_resilience_control.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.promotion_pipeline.json",
+      "bytes": 105,
+      "sha256": "580c55336e36ef5c1f2fbf9ab0435ad9ba283fb2224fba68e0c88911c29a67ec",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.promotion_pipeline.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.runtime_smooth_mode.json",
+      "bytes": 106,
+      "sha256": "6db9b4078548e5aebedebff2001fd36a267667ccc04bb111c0e737c6849647e7",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.runtime_smooth_mode.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.schwab_auth_supervisor.json",
+      "bytes": 109,
+      "sha256": "1c5c0ec994199503601434e27ee78af0b05381b5f2cfc43a0b97ffb044341b0a",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.schwab_auth_supervisor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.schwab_education_context.json",
+      "bytes": 111,
+      "sha256": "bbd22f03dcf941b585271efbcc742674de0c2ebce6edf371c2ea651b929da2dc",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.schwab_education_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.section_grade_autopilot.json",
+      "bytes": 110,
+      "sha256": "ae3629fb5eab79a1b0fafb434694ad9aeee721e491074e95b283013d26d5670d",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.section_grade_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.soak_reliability_sentinel.json",
+      "bytes": 112,
+      "sha256": "0e2d627e89d0dc37582e1aa9f297131e87984076d591c7e0c3ce227a0dcf40db",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.soak_reliability_sentinel.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.soak_self_healing.json",
+      "bytes": 104,
+      "sha256": "1c5caf68d0f3bfb8854796844fcc507be31b258ba8e04d8aaeadb91bb175bb73",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.soak_self_healing.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.sql_link_writer.json",
+      "bytes": 102,
+      "sha256": "d9cf9ee74c049af1f04a2a3df4f063c3c520b179ec18fd595a5bbacdb12663b0",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.sql_link_writer.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.storage_backpressure_autopilot.json",
+      "bytes": 117,
+      "sha256": "578b77553f50421892fa7b5168427a9c46d24156f4dc18ee3a354ee30d276c6f",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.storage_backpressure_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.storage_pressure_clearance.json",
+      "bytes": 113,
+      "sha256": "e46064912dae90a502417ac502ee1bedc04f4a4b3d5e78693b65411e32dc3750",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.storage_pressure_clearance.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.storage_reconnect_infrabot.json",
+      "bytes": 113,
+      "sha256": "7ec31b0f36acc105f7458a459cc4b54f92e164221b41dafc5fd958ede5eee8c3",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.storage_reconnect_infrabot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.storage_standby_prune.json",
+      "bytes": 108,
+      "sha256": "08f6311311ff1d283b7d4a83e3d6a8c54e656be4f1c6b607126c9d07da47f674",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.storage_standby_prune.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.swap_pressure_governor.json",
+      "bytes": 109,
+      "sha256": "9b84ac369b8d7c9a1d478bb5308e77b1a3a2e7dfb0527fcdc1b4a131c6047e78",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.swap_pressure_governor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.system_cell_federation.json",
+      "bytes": 109,
+      "sha256": "2ac9455ac4cf4f720d870fdc2993269c4855599444ab4ab261add5f3ec6cb220",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.system_cell_federation.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.system_drift_autopilot.json",
+      "bytes": 109,
+      "sha256": "4134111f3204be2c15befcf553135c74c434cd36cd95046827f38c5d76e73424",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.system_drift_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.system_drift_guard.json",
+      "bytes": 105,
+      "sha256": "29226d6f60560fc5cb03982842b5aba30192248a27601558a2658eda6076ed6f",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.system_drift_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.system_summary_autopilot.json",
+      "bytes": 111,
+      "sha256": "077f65930081ce41eb35dd8421c30d0bea613f38e2a8e9a24e594b6a2a9743aa",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.system_summary_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.training_drain_autopilot.json",
+      "bytes": 111,
+      "sha256": "342a287370fd25a5f5add082e51a7672b41a8ecc8999f78679647404cc3ad862",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.training_drain_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.watchdog.json",
+      "bytes": 95,
+      "sha256": "1fd664a741b74e86a8d0c8f7a1fc4e6f9f3c03803b0c8284b24233d08d1d89bb",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.ops.watchdog.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.premarket_token_guard.json",
+      "bytes": 104,
+      "sha256": "f9ba0c2168e4ffe990b14f213f58d1fbf0e8260318f69080632669651751473c",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.premarket_token_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.project_timeline_autoupdate.json",
+      "bytes": 110,
+      "sha256": "50341fb0e8316206616f51acbd41b7c4bdb9bc0b253094fb21784242464f3479",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.project_timeline_autoupdate.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.reboot_resilience_guard.json",
+      "bytes": 106,
+      "sha256": "626153f21c90e35a999643d307516ca803153f2b8f8ccbd820d55c40fdcdb7b4",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.reboot_resilience_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.retrain.daily_small.json",
+      "bytes": 102,
+      "sha256": "687733768bc13a59f9b2938a595fd4b23342072ace230f34c8a962f5ae6ceaaa",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.retrain.daily_small.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.retrain.weekly_full.json",
+      "bytes": 102,
+      "sha256": "67d8595a8664b1a46735b1cdfa2f9080c9ebd113020a9796cf33629d73443502",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.retrain.weekly_full.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.shadow_watchdog.json",
+      "bytes": 98,
+      "sha256": "3ba66823fef4f04bd80b7062cc141c6bfd1771bfa496ef0310803148ce41e954",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.shadow_watchdog.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.sqlite_maintenance.json",
+      "bytes": 101,
+      "sha256": "9d818e417d9588b05ba4fb9e86d75f0457dbf1d9aa981c8bbe4530c4bbf4bd0e",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.sqlite_maintenance.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.startup_start_prompt.json",
+      "bytes": 103,
+      "sha256": "bbe3a75ab570fa6092b2f84408d075816c704bfae32f848c6bbc093be44dcae6",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.startup_start_prompt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.storage_disaster_recovery.json",
+      "bytes": 108,
+      "sha256": "b3d804f9bb0d3a0f5d0f38e29b9ad3eb2adbf9bea8e9a83a798ede5194b1fec9",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.storage_disaster_recovery.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.storage_eject_guard.json",
+      "bytes": 102,
+      "sha256": "1ed5f1feb9146740c7956f45a3e8a072006b9c86b3436adbe3a6ffc3e892f407",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.storage_eject_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.strategy_market_fit_infrabot.json",
+      "bytes": 111,
+      "sha256": "cdd0b54eef0ae1047725366abea1755ce1ee6b9d59d787ea82efcf3b86b8ec81",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dankingsley.strategy_market_fit_infrabot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dkingsley.schwabtradingbot.institutional-decision-flow-shadow.json",
+      "bytes": 132,
+      "sha256": "385f66c10b866f52d7a4f06976261406868e9eef6285161a06ff56ae45d31fbb",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-disabled-state-com.dkingsley.schwabtradingbot.institutional-decision-flow-shadow.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-original-environment.json",
+      "bytes": 72,
+      "sha256": "bad70b3552746990b88c7626e901210990819eceae474857a5c6d189749705da",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restore-original-environment.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restored-backup-pip-check.json",
+      "bytes": 69,
+      "sha256": "2b425645eb47666f55a5608876c87a91cc23217c1cf15e0abe800c8bf4df3881",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/restored-backup-pip-check.log",
+      "bytes": 30,
+      "sha256": "9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-agent-verification.json",
+      "bytes": 42,
+      "sha256": "bf6148b0e4c7428e7b4734586a314d0856eb91194ae5869d5f56f7ffb93d3194",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.daily_auto_verify.json",
+      "bytes": 91,
+      "sha256": "43242b14b95ac64a22fdd6de90e5c784afee48388444a5afd982a7a623b9fa9f",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.daily_auto_verify.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.livefeed-local.json",
+      "bytes": 88,
+      "sha256": "e7deb259cc83482520b38d0d935d8c972ea946ac8fb443db34d7b88b4d19ee71",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.livefeed-local.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.livefeed_heavy_guarded.json",
+      "bytes": 96,
+      "sha256": "d5abb5be2f3d1e7851c5903a21c95e872868ad96c3482579d7309ac189c073bc",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.livefeed_heavy_guarded.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.mac_notification_watch.json",
+      "bytes": 96,
+      "sha256": "2dbe1bc12369525c170e4223a6bcd19a2d31c9e2a65705610b5d73c0f60a1be8",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.mac_notification_watch.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.observability_exporter.json",
+      "bytes": 96,
+      "sha256": "e42213f5a307679b69c6b7ee70da7f0e9f249ee15818065ebe402210718ff30a",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.observability_exporter.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.adaptive_ops_recovery_policy.json",
+      "bytes": 106,
+      "sha256": "45212378a8b4ac90101985114fe083e9b728c1f4b5777f0e068f9ecd4951fd7a",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.adaptive_ops_recovery_policy.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.adaptive_regression_guard.json",
+      "bytes": 103,
+      "sha256": "c6e8f3a54f867be87f058d84a51fff5370096d192da70a9249b21ead5482b4e6",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.adaptive_regression_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.bot_quality_autopilot.json",
+      "bytes": 99,
+      "sha256": "b70d2841913fa21e67893363c4de3bd64e1e585038308295a9f7bca9b1cd6157",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.bot_quality_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.canary_tuner.json",
+      "bytes": 90,
+      "sha256": "1e8649fc2b6b3c3eb29ee09db8bd8b1499e4a9ae2d301b51b3b2812650dfd00e",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.canary_tuner.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.chrome_headless_guard.json",
+      "bytes": 99,
+      "sha256": "5f39c476f03a876f3c4da537ae041fa29816eecc2e0afa5a0f55774ae48c8c8e",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.chrome_headless_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.command_validity.json",
+      "bytes": 94,
+      "sha256": "d4faf0fe6cc08b983f9a105a0c81703b8e137fb3b52ca85bef7b9d70c54a8cc0",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.command_validity.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.creative_cotenant_guard.json",
+      "bytes": 101,
+      "sha256": "d3704549370e56840d5b139299ea98a86557c8d5554ad0f1366c0830b8bc2201",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.creative_cotenant_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.daily_report.json",
+      "bytes": 90,
+      "sha256": "218584b87567f05f675fcc173921bb841eaec876c7fad2e06bb5f7a78df50155",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.daily_report.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.data_retention.json",
+      "bytes": 92,
+      "sha256": "554ee6c5350e34c73e925618595c93592a3275b728d6b592b4081d2169ec2d86",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.data_retention.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.external_backlog_retry.json",
+      "bytes": 100,
+      "sha256": "069711f04d7579434c53dcbb462738d725918495bc22c7698fe2b004c1eb7c8f",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.external_backlog_retry.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.fx_market_context.json",
+      "bytes": 95,
+      "sha256": "e970398ebba0d61ed970a0e6edca65b717f47ded9377e90fe37a2e966d60b0a0",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.fx_market_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.grade_regression_autopilot.json",
+      "bytes": 104,
+      "sha256": "d2ff393566bd87cce9395e303db4a2edb0d94a4875a942722898668bbc18d832",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.grade_regression_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.infrastructure_autofix.json",
+      "bytes": 100,
+      "sha256": "8238ebbe4fed855d6cb08e48734d706caccee3295bfac5fb252733e45ed3d3a2",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.infrastructure_autofix.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.local_sql_shard_standby_prune.json",
+      "bytes": 107,
+      "sha256": "240d958c6706b0fc9ea007f3fb07498a8045cda60cbe439a12e0be98f0f241d1",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.local_sql_shard_standby_prune.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.local_storage_reserve_guard.json",
+      "bytes": 105,
+      "sha256": "21aa1f0f96576d1ef697169d76e7a6246a401e4912d8df5eecb2ddfa4d389095",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.local_storage_reserve_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.maintenance_strategy_reloader.json",
+      "bytes": 107,
+      "sha256": "451c91a4f129dbba77225cff7b55b800bb27eba0e37e8d45aae53b1fedea6cdd",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.maintenance_strategy_reloader.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.market_crypto_correlation.json",
+      "bytes": 103,
+      "sha256": "8d20b94892cd1f302b8cc5caa586865b59d6d09bc08ef36ecc22aad99c435a12",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.market_crypto_correlation.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.master_infrastructure_supervisor.json",
+      "bytes": 110,
+      "sha256": "a75282a5a09070f0a60122a39c8250bf446c1c4f539e2f7cb0a0c63b3684000b",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.master_infrastructure_supervisor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.official_macro_context.json",
+      "bytes": 100,
+      "sha256": "acd9fbeae350ad7d8955ce250376873eb4bf928ce0745deb0315376321f46f9b",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.official_macro_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.one_numbers_refresh.json",
+      "bytes": 97,
+      "sha256": "be2c3f40e94b5ad61fa99c1ad4120dffe1cef4398fdf77dff3a74fe99299cf20",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.one_numbers_refresh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.one_numbers_regression_guard.json",
+      "bytes": 106,
+      "sha256": "b5195442ac223ca4049c53e23c1b681a6d7b613396c853a438974b98b231cdc9",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.one_numbers_regression_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.options_flow_context.json",
+      "bytes": 98,
+      "sha256": "e2c4a09aca7f111dd8a4fbb6875f4979ec8565096cc3b78127777b94c9627883",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.options_flow_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.process_fanout_guard.json",
+      "bytes": 98,
+      "sha256": "46fcf41fa80a21bc270df0a908bbf90a5b56a76a6af998587df9d608a268edab",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.process_fanout_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.production_hardening_watch.json",
+      "bytes": 104,
+      "sha256": "e12a210eb2c4ad6159f92ca1b152af6dfc49d94740b1c653abaedb19a1ed5314",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.production_hardening_watch.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.production_resilience_control.json",
+      "bytes": 107,
+      "sha256": "e6d35cf2b623ab5cedb8ff607bfd006427071665993dda36b94860ada1b57620",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.production_resilience_control.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.promotion_pipeline.json",
+      "bytes": 96,
+      "sha256": "5d7b7f45836afa068ec1b0ff7a615b33fe4ac8d986ad68e8d6b9dd58247f7ff0",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.promotion_pipeline.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.runtime_smooth_mode.json",
+      "bytes": 97,
+      "sha256": "3038f1c4732b325a7e83566663476c1c5b7b9a04168ecf47a8407121288766b3",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.runtime_smooth_mode.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.schwab_auth_supervisor.json",
+      "bytes": 100,
+      "sha256": "15f9ffcf15f90f561b49e9785ed9b3eb9cd5e6ff25ec6717fc3e1d9f8af5312a",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.schwab_auth_supervisor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.schwab_education_context.json",
+      "bytes": 102,
+      "sha256": "90b53d3dfd5bd0bfb5515787ad6077a6462c6eb37edc33aecae2030e41136ba0",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.schwab_education_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.section_grade_autopilot.json",
+      "bytes": 101,
+      "sha256": "74c588c37edc7d262cc1a8d5c40947147bd7e5272998800aa83fe5e7e68a4795",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.section_grade_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.soak_reliability_sentinel.json",
+      "bytes": 103,
+      "sha256": "e658d9454477f9cc8235988b7981b4faa1eba007d2cce523bac0ed012214ab79",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.soak_reliability_sentinel.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.soak_self_healing.json",
+      "bytes": 95,
+      "sha256": "5eefdff24a21f5e5f236c7b2ab979b21dabb38a209a39cab4c727b0f09e4a56c",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.soak_self_healing.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.storage_backpressure_autopilot.json",
+      "bytes": 108,
+      "sha256": "b591fe1b614a5facb043c43d13830d41e4cd657d840966c7b03c700019374689",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.storage_backpressure_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.storage_pressure_clearance.json",
+      "bytes": 104,
+      "sha256": "2ccc92c3706069f8de9efa39c6017c55a81fe77351b209a4a46ab404e155f853",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.storage_pressure_clearance.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.storage_reconnect_infrabot.json",
+      "bytes": 104,
+      "sha256": "e77fdfa8f8ee7f642f65a9163a483176ac9db3766dd1771b4e8757363b810552",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.storage_reconnect_infrabot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.storage_standby_prune.json",
+      "bytes": 99,
+      "sha256": "8e9799c866bea7cb7c458469d0237f17bbc2513ed16a99764a8496b1383b8a3f",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.storage_standby_prune.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.swap_pressure_governor.json",
+      "bytes": 100,
+      "sha256": "37d5af7996abe84f3f788d25bb3579d882491774f84cbf32dd1298dcce0b2cb8",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.swap_pressure_governor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.system_cell_federation.json",
+      "bytes": 100,
+      "sha256": "3788f1f5b50d930a9a68a6e632d8c46c60168f3ff94f653521a99c204e429023",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.system_cell_federation.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.system_drift_autopilot.json",
+      "bytes": 100,
+      "sha256": "d7eeaebbea394f5bafac2ae692b437597b128a7662accd9b9e6a5e28856baefc",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.system_drift_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.system_drift_guard.json",
+      "bytes": 96,
+      "sha256": "0b56dac759adebf7ab587aa6da7be29b4a9fdbb1e569498b5479e7d189364cac",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.system_drift_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.system_summary_autopilot.json",
+      "bytes": 102,
+      "sha256": "743eaccf4c0e9dac47d3bef5de3188e845dc829bddd40bb08dfc6bdfd7090511",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.system_summary_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.training_drain_autopilot.json",
+      "bytes": 102,
+      "sha256": "530abeb4ddcecb3000d0de0a543eb8df1739c1123eecb2b61b9078f488bc3d3e",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.ops.training_drain_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.premarket_token_guard.json",
+      "bytes": 95,
+      "sha256": "f9be5cda4dd0411d26b59164165392c8fbf38b49b0b6f2243078af2b3bda405b",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.premarket_token_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.retrain.daily_small.json",
+      "bytes": 93,
+      "sha256": "a270bd4f2d35f40d1ae2e6a241edd9902ee2dc4a8c78369b40d5f84651d98571",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.retrain.daily_small.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.retrain.weekly_full.json",
+      "bytes": 93,
+      "sha256": "48415f92455417e94b5302bd8e19f24699eed4a4e66708832654286f2d2128c2",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.retrain.weekly_full.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.sqlite_maintenance.json",
+      "bytes": 92,
+      "sha256": "cb9a3685d7b32582a670d0f53605d52696815aaf8291ad66ccb844e288dae419",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.sqlite_maintenance.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.startup_start_prompt.json",
+      "bytes": 94,
+      "sha256": "7e7185028b932dc7a316e7c593ac8101402cefba789fcb7076583ed81ab7f522",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.startup_start_prompt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.storage_disaster_recovery.json",
+      "bytes": 99,
+      "sha256": "6a503a16e2a8dbd2ce55c991eb9632aca1dc97d091f823bfa79cb3571cbb94ef",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.storage_disaster_recovery.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.storage_eject_guard.json",
+      "bytes": 93,
+      "sha256": "7129b4807316467545558c8edb6e61de41d2c6fe110b24e60ac64f2a56d88678",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.storage_eject_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.strategy_market_fit_infrabot.json",
+      "bytes": 102,
+      "sha256": "3991f222490a0ed7f0bc510a8106065e08021c5efd4b2494c67703d002a40dea",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dankingsley.strategy_market_fit_infrabot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dkingsley.schwabtradingbot.institutional-decision-flow-shadow.json",
+      "bytes": 123,
+      "sha256": "404992c07f17a8d8c48508d45972146578a5ef6fcff21c3d703675b6426f7504",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-enable-com.dkingsley.schwabtradingbot.institutional-decision-flow-shadow.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.daily_auto_verify.json",
+      "bytes": 89,
+      "sha256": "4dffe486d2fbbdfd6bdc03ca21ed7f510a92bb364becb0a20d59cb3ab1f38286",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.daily_auto_verify.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.livefeed-local.json",
+      "bytes": 86,
+      "sha256": "b0d0f78c9b41ff9218b6d1fb3f75485ee83a275aeae853ca009510c3fc794d07",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.livefeed-local.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.livefeed_heavy_guarded.json",
+      "bytes": 94,
+      "sha256": "2f0983425aaf070a3cce505cc5848c41f5dbb9a2c3e45c69239da7f788ba746b",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.livefeed_heavy_guarded.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.mac_notification_watch.json",
+      "bytes": 94,
+      "sha256": "be7be815b47a685654d861c32d4dfb489e3923bb1961e020019300d1bf843b88",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.mac_notification_watch.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.observability_exporter.json",
+      "bytes": 94,
+      "sha256": "41c0d5e835d9b829c09e03113b0d5d3afc5c778c8893d285d208a0afe631f812",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.observability_exporter.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.adaptive_ops_recovery_policy.json",
+      "bytes": 104,
+      "sha256": "9c29a2148184cf37defe98991f55171556e5cd4cc45ea46d4d11536a78a99c25",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.adaptive_ops_recovery_policy.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.adaptive_regression_guard.json",
+      "bytes": 101,
+      "sha256": "3f5a98f75c8729c1aa52fc966eef1e70b61572e693b4ab32baef5506b6e9f134",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.adaptive_regression_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.bot_quality_autopilot.json",
+      "bytes": 97,
+      "sha256": "60a7f94e32123d35c858641ac27c93e0200536d97257280ed48603f1da1e75d5",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.bot_quality_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.canary_tuner.json",
+      "bytes": 88,
+      "sha256": "505de8931be69a2ea71687472d97e4cbb594f8e89bd2b98808ca98bc82c74c19",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.canary_tuner.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.chrome_headless_guard.json",
+      "bytes": 97,
+      "sha256": "011316f830ed65eb66cac72ce4135f28ab882d5f761a05baa9b1740dd3b584c9",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.chrome_headless_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.command_validity.json",
+      "bytes": 92,
+      "sha256": "84531f39fc3af4a4607f2ad7c1c69119dac57ca06b18e69dac65eb514f71e8da",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.command_validity.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.creative_cotenant_guard.json",
+      "bytes": 99,
+      "sha256": "649ca9e60faec19a2547e6a64064dadbce0b999222157307e6bc7317c783a4dc",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.creative_cotenant_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.daily_report.json",
+      "bytes": 88,
+      "sha256": "ce75efddb06b730358f824b2bbcccc7af6e48c06a0cb179d60df69cb4ba4acf8",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.daily_report.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.data_retention.json",
+      "bytes": 90,
+      "sha256": "12aed5e404eefa2bd230bd37e569cf69dff3ee8cf713315773170c17eb8cb7b1",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.data_retention.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.external_backlog_retry.json",
+      "bytes": 98,
+      "sha256": "7d4b70b11d1a7702074e3083cf129b97b5f8c272f0e35b3f4f019b43989c38bd",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.external_backlog_retry.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.fx_market_context.json",
+      "bytes": 93,
+      "sha256": "3f567d5e93d5345992236c9592d3a1fd601325a0aefb4707708d1fe5afb24484",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.fx_market_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.grade_regression_autopilot.json",
+      "bytes": 102,
+      "sha256": "d582713e4f24596771befab67cf3e50cfc3ab6b1d4446c8b31397b5c54f46a00",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.grade_regression_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.infrastructure_autofix.json",
+      "bytes": 98,
+      "sha256": "00e059e2aa8ca1a2f9e9e3cd8679b14ffa72faa22d3206eec6bf65ceaa3e402c",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.infrastructure_autofix.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.local_sql_shard_standby_prune.json",
+      "bytes": 105,
+      "sha256": "ede9f9c2f902e4b1332be64b09b69bf1f116baa01b4f06db4df1f6ad66256e4e",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.local_sql_shard_standby_prune.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.local_storage_reserve_guard.json",
+      "bytes": 103,
+      "sha256": "263628d557c05b51293d10288f3bdc9da241303340726790674ecfb04e66beb2",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.local_storage_reserve_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.maintenance_strategy_reloader.json",
+      "bytes": 105,
+      "sha256": "2e799aa59fb377663f4735fbe71fef321ece915332813c4d3543f803b539fb14",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.maintenance_strategy_reloader.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.market_crypto_correlation.json",
+      "bytes": 101,
+      "sha256": "c61ad7b44b44e7e1ec3cd3615c0b89e299367c0cce79cdfeb003d6066540c287",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.market_crypto_correlation.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.master_infrastructure_supervisor.json",
+      "bytes": 108,
+      "sha256": "60cf0780c9e139623712e03a2da1ffbc6da0d596dbc122946a6faf3e157386ea",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.master_infrastructure_supervisor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.official_macro_context.json",
+      "bytes": 98,
+      "sha256": "a0b8b34a3572b48f0324e98f68815f80ed79015bdd843e47760e2e951c391026",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.official_macro_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.one_numbers_refresh.json",
+      "bytes": 95,
+      "sha256": "6cbe1f476b2efae5e2a80e5cc2bad1f479cb5b4f342e870526bc7deb86b1b0bb",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.one_numbers_refresh.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.one_numbers_regression_guard.json",
+      "bytes": 104,
+      "sha256": "accef509219c417f43dfcca45fd038a6c268f18ec368a04ee5a24c5da3af0dbd",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.one_numbers_regression_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.options_flow_context.json",
+      "bytes": 96,
+      "sha256": "93bd58c6a332e8cc7e738a6ca8000339b7c91cf0dd39024f271df8867a6e8832",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.options_flow_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.process_fanout_guard.json",
+      "bytes": 96,
+      "sha256": "78966865293ad047c001bfd7e4c6b43d97cf5ead49afa26bc4f1ad9c52652182",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.process_fanout_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.production_hardening_watch.json",
+      "bytes": 102,
+      "sha256": "bcef520c1f2cbc68af77081bd44c119e3e7a4a0c119f072f3527a88b2e91ca7e",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.production_hardening_watch.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.production_resilience_control.json",
+      "bytes": 105,
+      "sha256": "52e89bcf460f423356471177a4fd344ed59f440b854e258b693a88de39a8480d",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.production_resilience_control.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.promotion_pipeline.json",
+      "bytes": 94,
+      "sha256": "2f611f28b83867a62c2d6887b5e3450bb0e19d467aae5d46e957a61d879d1e2e",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.promotion_pipeline.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.runtime_smooth_mode.json",
+      "bytes": 95,
+      "sha256": "13b087a043bc2f357956368bee477e314da81f0c574eedf376419cc232cfae2d",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.runtime_smooth_mode.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.schwab_auth_supervisor.json",
+      "bytes": 98,
+      "sha256": "2575c8dc25a22c6b7dac7d2d17c77af4d9d77d098f7fcf971adfd41e1e82d1b7",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.schwab_auth_supervisor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.schwab_education_context.json",
+      "bytes": 100,
+      "sha256": "db12f95449cebc19ea99db68b5e8bdd4757c01bedb41d9a7968eb4029838cc75",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.schwab_education_context.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.section_grade_autopilot.json",
+      "bytes": 99,
+      "sha256": "fcc67acd7a392b1a2878fabce1599336870ee962c9f8637494739b6722e61c31",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.section_grade_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.soak_reliability_sentinel.json",
+      "bytes": 101,
+      "sha256": "6a056835043132c66284c884772814a2cdf3cffadbed8a18198d50c6fccca419",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.soak_reliability_sentinel.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.soak_self_healing.json",
+      "bytes": 93,
+      "sha256": "837f4ff988ff27fe994c6adad1de93dfaed7cb5f26e3876e990db64286344bba",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.soak_self_healing.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.storage_backpressure_autopilot.json",
+      "bytes": 106,
+      "sha256": "8782cc02a0c051d943bd8800a86d737bed9fff66c2f2b82918942ea885011b70",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.storage_backpressure_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.storage_pressure_clearance.json",
+      "bytes": 102,
+      "sha256": "2c34e7a6eb7ce3b5637f9965bb4024bbb1f338689cd61ead2d649bfcecf5f10a",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.storage_pressure_clearance.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.storage_reconnect_infrabot.json",
+      "bytes": 102,
+      "sha256": "df80bdc44d7b7b59ab6437e9128e7425575438611ddfb46e976d2965646b0947",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.storage_reconnect_infrabot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.storage_standby_prune.json",
+      "bytes": 97,
+      "sha256": "32a68a1f80e0ccd4e13f35f321b8e6601d32764543e5bc8220e4641dd510c8ee",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.storage_standby_prune.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.swap_pressure_governor.json",
+      "bytes": 98,
+      "sha256": "8d35f9a63379351bb0dbcf3b648747614380bc24fbc006a721156882237ec62f",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.swap_pressure_governor.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.system_cell_federation.json",
+      "bytes": 98,
+      "sha256": "93cdf7523b7e5dbaa04243bda4053b4b475fe66ea2fecce6e4ab832eef8fd49e",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.system_cell_federation.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.system_drift_autopilot.json",
+      "bytes": 98,
+      "sha256": "6139f6d0d48b7520d48e9c0c943e6b60f7e90a36b4c5141bcf8aac8ab6c2e0fc",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.system_drift_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.system_drift_guard.json",
+      "bytes": 94,
+      "sha256": "58ab542db5a534b7bc2a354a250ccd6321b6b187d229cb4fe1efcb6481a40e20",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.system_drift_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.system_summary_autopilot.json",
+      "bytes": 100,
+      "sha256": "4f1fca2c040ba3528530bb326ccd1270de58a926edb2916a2ac196f42bca2ce0",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.system_summary_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.training_drain_autopilot.json",
+      "bytes": 100,
+      "sha256": "3e5d1f527253358da7a7ef71af49ce7e03079ec6d9c7ec2bdf4016b5f5d23d6c",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.ops.training_drain_autopilot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.premarket_token_guard.json",
+      "bytes": 93,
+      "sha256": "227d3ba5424fc2268e96332f4640b04dd90265f9f14865749b567e7aa2bcbc13",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.premarket_token_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.retrain.daily_small.json",
+      "bytes": 91,
+      "sha256": "418c733481f5a0ba87d23e26a67eb778886fd1fbb57de243e8602139871cd017",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.retrain.daily_small.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.retrain.weekly_full.json",
+      "bytes": 91,
+      "sha256": "5c1e0c4b0bea171a81c574e4464ba47f861cce13875214c583a0baa762b5d368",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.retrain.weekly_full.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.sqlite_maintenance.json",
+      "bytes": 90,
+      "sha256": "c448e4e178882c5436028d2ef13cd34860ebb49d6d38eeb4d373c52313c3de8a",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.sqlite_maintenance.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.startup_start_prompt.json",
+      "bytes": 92,
+      "sha256": "5868f35f483791400be8113019b683e6fb414debbc4037798d47441304fa4240",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.startup_start_prompt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.storage_disaster_recovery.json",
+      "bytes": 97,
+      "sha256": "4f48b62b24593b9fa5df18d27a206af4d9380de14a06a36fd699835b86d1e3cd",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.storage_disaster_recovery.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.storage_eject_guard.json",
+      "bytes": 91,
+      "sha256": "534cf3f6c089585822614443791ed7e5887f8ed4beb9e528306657ef15d115e4",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.storage_eject_guard.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.strategy_market_fit_infrabot.json",
+      "bytes": 100,
+      "sha256": "0491d68bb858d5eb487dc9c1bd078ba0902648e64029809cc925640a00c73a42",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dankingsley.strategy_market_fit_infrabot.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dkingsley.schwabtradingbot.institutional-decision-flow-shadow.json",
+      "bytes": 121,
+      "sha256": "1ed3527cdbaa812e3801dba923ebf3d98f7e18cf77a45c383b6a78ac3debcc80",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-load-com.dkingsley.schwabtradingbot.institutional-decision-flow-shadow.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-native-stack.json",
+      "bytes": 63,
+      "sha256": "0c2ac791fdd680a0aba1935671329e3bff862d68c9802eecebda3ad56fc2e558",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-native-stack.log",
+      "bytes": 477913,
+      "sha256": "0a4990d39ce9f1190e27f2910c4991784d8e8cd2d3c669652aac88e8cd5dd4d5",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-watchdog-after-hold-release.json",
+      "bytes": 78,
+      "sha256": "7ff1dc170375f615bd6e0bef3171b6b9b5b9a127322f85b6d9ff5a70d89596d0",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume-watchdog-after-hold-release.log",
+      "bytes": 30899,
+      "sha256": "fc7c7ba05ad4961bdb90c64f2106625f013af3129814a487ca005c7a458e26c7",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/resume.json",
+      "bytes": 10613,
+      "sha256": "3f0c8eecf6809edf990c5eda6d4dfab43fc1c064cda4f507ded2d5032af542ab",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/rollback-pip-check.json",
+      "bytes": 62,
+      "sha256": "a0bfb269c3e3c694e23178d41bdb7beb70e082abad5605a11c3a6887057a53b7",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/rollback-pip-check.log",
+      "bytes": 30,
+      "sha256": "9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/scratch-cleanup.json",
+      "bytes": 264,
+      "sha256": "b2fc78d70c014feda6ce9f075cce8d5720cd0bfc070dbd1fb01688238ef8c41e",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/stop-stack.json",
+      "bytes": 54,
+      "sha256": "07ed056d42559efcc5c71bcfe435e7dae61947eb7717b0314dd8294d0b6a2c0a",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/stop-stack.log",
+      "bytes": 23,
+      "sha256": "9274afef3e66e239c0a385026c3a6d2e2ed9497c4ab0e43ba4cbef1ed0d6b81f",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/verified-wheels.json",
+      "bytes": 7451,
+      "sha256": "d68d1afd96431b0ab83fbeed9f0269743a5ae8f49f6fcd0e5abe584d13df9553",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/version-snapshots/requirements_before_20260924T202734Z.txt",
+      "bytes": 4621,
+      "sha256": "41b1537ad457ea8cb5c7922b1f5b98f58d190d6c913cef9937040348881c21c4",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    },
+    {
+      "path": "work/library_upgrade_apply_20260924_2018/version-snapshots/requirements_before_20260924T211422Z.txt",
+      "bytes": 4621,
+      "sha256": "41b1537ad457ea8cb5c7922b1f5b98f58d190d6c913cef9937040348881c21c4",
+      "hash_scope": "file_bytes",
+      "disposition": "retained_local_generated_upgrade_evidence"
+    }
+  ]
+}

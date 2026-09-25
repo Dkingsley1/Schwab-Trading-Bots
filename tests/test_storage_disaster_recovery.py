@@ -1,8 +1,9 @@
 import json
+import hashlib
 import sqlite3
 import sys
+import pytest
 from pathlib import Path
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -16,14 +17,20 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
-def test_probe_storage_skips_external_io_when_hot_route_is_pinned_local(monkeypatch) -> None:
+def test_probe_storage_skips_external_io_when_hot_route_is_pinned_local(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "0")
     monkeypatch.setenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/unresponsive")
-    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "/Volumes/unresponsive/schwab_trading_bot")
+    monkeypatch.setenv(
+        "BOT_LOGS_EXTERNAL_PROJECT_ROOT", "/Volumes/unresponsive/schwab_trading_bot"
+    )
     monkeypatch.setattr(
         src,
         "resolve_external_storage",
-        lambda: (_ for _ in ()).throw(AssertionError("external filesystem must not be probed")),
+        lambda: (_ for _ in ()).throw(
+            AssertionError("external filesystem must not be probed")
+        ),
     )
 
     probe = src._probe_storage()
@@ -33,15 +40,21 @@ def test_probe_storage_skips_external_io_when_hot_route_is_pinned_local(monkeypa
     assert probe["external_required_for_hot_path"] is False
 
 
-def test_storage_disaster_recovery_plans_mount_local_switch_and_snapshot(monkeypatch, tmp_path: Path) -> None:
+def test_storage_disaster_recovery_plans_mount_local_switch_and_snapshot(
+    monkeypatch, tmp_path: Path
+) -> None:
     health = tmp_path / "governance" / "health"
     _write_json(health / "storage_failback_sync_latest.json", {"mode": "external"})
-    _write_json(health / "storage_mount_guard_latest.json", {"storage_mode": "external"})
+    _write_json(
+        health / "storage_mount_guard_latest.json", {"storage_mode": "external"}
+    )
     local_root = tmp_path / "local_fallback_storage"
     (local_root / "governance").mkdir(parents=True)
     (local_root / "logs").mkdir(parents=True)
     (local_root / "data").mkdir(parents=True)
-    (local_root / "data" / "snapshot_context.sqlite3").write_text("db", encoding="utf-8")
+    (local_root / "data" / "snapshot_context.sqlite3").write_text(
+        "db", encoding="utf-8"
+    )
 
     probe = {
         "external_available": False,
@@ -69,10 +82,16 @@ def test_storage_disaster_recovery_plans_mount_local_switch_and_snapshot(monkeyp
     assert any("local fallback" in action for action in payload["recommended_actions"])
 
 
-def test_storage_disaster_recovery_applies_restore_when_external_returns(monkeypatch, tmp_path: Path) -> None:
+def test_storage_disaster_recovery_applies_restore_when_external_returns(
+    monkeypatch, tmp_path: Path
+) -> None:
     health = tmp_path / "governance" / "health"
-    _write_json(health / "storage_failback_sync_latest.json", {"mode": "local_fallback"})
-    _write_json(health / "storage_mount_guard_latest.json", {"storage_mode": "local_fallback"})
+    _write_json(
+        health / "storage_failback_sync_latest.json", {"mode": "local_fallback"}
+    )
+    _write_json(
+        health / "storage_mount_guard_latest.json", {"storage_mode": "local_fallback"}
+    )
 
     probes = iter(
         [
@@ -117,9 +136,30 @@ def test_storage_disaster_recovery_applies_restore_when_external_returns(monkeyp
         return {"attempted": True, "ok": True, "target_mode": target_mode}
 
     monkeypatch.setattr(src, "_switch_storage_mode", _fake_switch)
-    monkeypatch.setattr(src, "_transactional_curated_restore", lambda source_root, external_root, *, apply, project_root=src.PROJECT_ROOT: {"attempted": True, "ok": True, "source_root": str(source_root), "target_root": str(external_root)})
-    monkeypatch.setattr(src, "_sync_storage_target_override", lambda project_root, probe, *, apply: {"attempted": True, "ok": True, "changed": True})
-    monkeypatch.setattr(src, "_sync_finder_shortcuts", lambda project_root, *, apply: {"attempted": True, "ok": True})
+    monkeypatch.setattr(
+        src,
+        "_transactional_curated_restore",
+        lambda source_root, external_root, *, apply, project_root=src.PROJECT_ROOT: {
+            "attempted": True,
+            "ok": True,
+            "source_root": str(source_root),
+            "target_root": str(external_root),
+        },
+    )
+    monkeypatch.setattr(
+        src,
+        "_sync_storage_target_override",
+        lambda project_root, probe, *, apply: {
+            "attempted": True,
+            "ok": True,
+            "changed": True,
+        },
+    )
+    monkeypatch.setattr(
+        src,
+        "_sync_finder_shortcuts",
+        lambda project_root, *, apply: {"attempted": True, "ok": True},
+    )
 
     payload, _state = src.build_payload(
         tmp_path,
@@ -136,9 +176,61 @@ def test_storage_disaster_recovery_applies_restore_when_external_returns(monkeyp
     assert payload["overall_status"] == "ready"
 
 
-def test_storage_disaster_recovery_preserves_pinned_local_route(monkeypatch, tmp_path: Path) -> None:
+def test_storage_disaster_recovery_skips_restore_for_certified_external_route(
+    monkeypatch, tmp_path: Path
+) -> None:
+    external_root = tmp_path / "external"
+    for relative_path in src.TRACKED_SQLITE_ROUTES:
+        target = external_root / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"db")
+        route = tmp_path / relative_path
+        route.parent.mkdir(parents=True, exist_ok=True)
+        route.symlink_to(target)
+    probe = {
+        "external_available": True,
+        "external_root": str(external_root),
+        "external_unavailable_reason": "ok",
+    }
+    monkeypatch.setattr(src, "_probe_storage", lambda: dict(probe))
+    monkeypatch.setattr(
+        src,
+        "_transactional_curated_restore",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("certified external route must not be restored again")
+        ),
+    )
+    monkeypatch.setattr(
+        src,
+        "_sync_storage_target_override",
+        lambda project_root, probe, *, apply: {
+            "attempted": False,
+            "ok": True,
+            "changed": False,
+        },
+    )
+
+    payload, _state = src.build_payload(
+        tmp_path,
+        apply=True,
+        recovery_root=tmp_path / "recovery",
+        state_path=tmp_path / "state.json",
+        mount_cooldown_seconds=120.0,
+        snapshot_cooldown_seconds=3600.0,
+    )
+
+    assert payload["current_storage_mode"] == "external"
+    assert payload["overall_status"] == "ready"
+    assert payload["curated_restore"]["skipped_reason"] == "not_required"
+
+
+def test_storage_disaster_recovery_preserves_pinned_local_route(
+    monkeypatch, tmp_path: Path
+) -> None:
     health = tmp_path / "governance" / "health"
-    _write_json(health / "storage_failback_sync_latest.json", {"mode": "local_fallback"})
+    _write_json(
+        health / "storage_failback_sync_latest.json", {"mode": "local_fallback"}
+    )
     override = tmp_path / "config" / ".env.storage_override"
     override.parent.mkdir(parents=True)
     override.write_text("BOT_LOGS_PREFER_EXTERNAL=0\n", encoding="utf-8")
@@ -162,12 +254,18 @@ def test_storage_disaster_recovery_preserves_pinned_local_route(monkeypatch, tmp
     monkeypatch.setattr(
         src,
         "_switch_storage_mode",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("local pin must suppress external failback")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("local pin must suppress external failback")
+        ),
     )
     monkeypatch.setattr(
         src,
         "_sync_storage_target_override",
-        lambda project_root, probe, *, apply: {"attempted": False, "ok": True, "changed": False},
+        lambda project_root, probe, *, apply: {
+            "attempted": False,
+            "ok": True,
+            "changed": False,
+        },
     )
 
     payload, _state = src.build_payload(
@@ -186,9 +284,13 @@ def test_storage_disaster_recovery_preserves_pinned_local_route(monkeypatch, tmp
     assert payload["durability_contract"]["ready"] is False
 
 
-def test_pinned_local_snapshot_stays_online_when_external_probe_is_suppressed(monkeypatch, tmp_path: Path) -> None:
+def test_pinned_local_snapshot_stays_online_when_external_probe_is_suppressed(
+    monkeypatch, tmp_path: Path
+) -> None:
     health = tmp_path / "governance" / "health"
-    _write_json(health / "storage_failback_sync_latest.json", {"mode": "local_fallback"})
+    _write_json(
+        health / "storage_failback_sync_latest.json", {"mode": "local_fallback"}
+    )
     override = tmp_path / "config" / ".env.storage_override"
     override.parent.mkdir(parents=True)
     override.write_text("BOT_LOGS_PREFER_EXTERNAL=0\n", encoding="utf-8")
@@ -253,7 +355,107 @@ def test_current_storage_mode_prefers_physical_local_routes_over_stale_external_
     assert mode == "local_fallback"
 
 
-def test_take_curated_snapshot_copies_only_important_paths(monkeypatch, tmp_path: Path) -> None:
+def test_current_storage_mode_certifies_fresh_verified_mixed_route(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        src,
+        "_physical_sqlite_route_mode",
+        lambda project_root, probe=None: "local_fallback_split_brain",
+    )
+    monkeypatch.setattr(
+        src.storage_failback_src,
+        "build_sqlite_route_verification",
+        lambda *args, **kwargs: {
+            "summary": {
+                "active_local_count": 1,
+                "active_external_count": 2,
+                "active_passthrough_count": 0,
+            },
+            "route_verification": {
+                "verification_state": "ready",
+                "tracked_count": 3,
+                "ready_count": 3,
+                "verified_count": 3,
+                "curated_standby_count": 0,
+                "coverage_ratio": 1.0,
+                "mismatches": [],
+            },
+            "entries": [
+                {
+                    "relative_path": relative_path,
+                    "route_verification": {
+                        "state": ("active_local_ready" if index == 0 else "verified")
+                    },
+                    "active_repo": {"exists": True, "size_bytes": 1},
+                }
+                for index, relative_path in enumerate(src.TRACKED_SQLITE_ROUTES)
+            ],
+        },
+    )
+
+    mode, contract = src._current_storage_mode_contract(
+        tmp_path,
+        probe={
+            "external_available": True,
+            "external_root": str(tmp_path / "external"),
+        },
+    )
+
+    assert mode == "external_curated"
+    assert contract["ready"] is True
+    assert contract["fresh_measurement"] is True
+    assert contract["reason"] == "fresh_mixed_route_verified"
+
+
+def test_current_storage_mode_keeps_unverified_mixed_route_degraded(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        src,
+        "_physical_sqlite_route_mode",
+        lambda project_root, probe=None: "local_fallback_split_brain",
+    )
+    monkeypatch.setattr(
+        src.storage_failback_src,
+        "build_sqlite_route_verification",
+        lambda *args, **kwargs: {
+            "summary": {
+                "active_local_count": 1,
+                "active_external_count": 2,
+                "active_passthrough_count": 0,
+            },
+            "route_verification": {
+                "verification_state": "warning",
+                "tracked_count": 3,
+                "ready_count": 2,
+                "verified_count": 2,
+                "curated_standby_count": 0,
+                "coverage_ratio": 0.666667,
+                "mismatches": ["data/jsonl_link.sqlite3"],
+            },
+            "entries": [],
+        },
+    )
+
+    mode, contract = src._current_storage_mode_contract(
+        tmp_path,
+        probe={
+            "external_available": True,
+            "external_root": str(tmp_path / "external"),
+        },
+    )
+
+    assert mode == "local_fallback_split_brain"
+    assert contract["ready"] is False
+    assert contract["reason"] == "fresh_mixed_route_verification_failed"
+
+
+def test_take_curated_snapshot_copies_only_important_paths(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("BOT_LOGS_RECOVERY_MIN_FREE_AFTER_SNAPSHOT_GB", "0")
     local_root = tmp_path / "local_fallback_storage"
     (local_root / "governance").mkdir(parents=True)
@@ -261,7 +463,9 @@ def test_take_curated_snapshot_copies_only_important_paths(monkeypatch, tmp_path
     (local_root / "logs").mkdir(parents=True)
     (local_root / "logs" / "main.log").write_text("log", encoding="utf-8")
     (local_root / "data").mkdir(parents=True)
-    (local_root / "data" / "snapshot_context.sqlite3").write_text("db", encoding="utf-8")
+    (local_root / "data" / "snapshot_context.sqlite3").write_text(
+        "db", encoding="utf-8"
+    )
     (local_root / "data" / "giant_raw.sqlite3").write_text("ignore", encoding="utf-8")
 
     payload = src._take_curated_snapshot(
@@ -281,17 +485,23 @@ def test_take_curated_snapshot_copies_only_important_paths(monkeypatch, tmp_path
     assert not (latest / "data" / "giant_raw.sqlite3").exists()
 
 
-def test_take_curated_snapshot_excludes_symlinked_external_routes(monkeypatch, tmp_path: Path) -> None:
+def test_take_curated_snapshot_excludes_symlinked_external_routes(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("BOT_LOGS_RECOVERY_MIN_FREE_AFTER_SNAPSHOT_GB", "0")
     local_root = tmp_path / "local_fallback_storage"
     external_root = tmp_path / "external"
     (external_root / "governance").mkdir(parents=True)
-    (external_root / "governance" / "external.jsonl").write_text("external", encoding="utf-8")
+    (external_root / "governance" / "external.jsonl").write_text(
+        "external", encoding="utf-8"
+    )
     local_root.mkdir()
     (local_root / "governance").symlink_to(external_root / "governance")
     (local_root / "logs").mkdir()
     (local_root / "logs" / "local.log").write_text("local", encoding="utf-8")
-    (local_root / "logs" / "external.jsonl").symlink_to(external_root / "governance" / "external.jsonl")
+    (local_root / "logs" / "external.jsonl").symlink_to(
+        external_root / "governance" / "external.jsonl"
+    )
 
     payload = src._take_curated_snapshot(
         local_root,
@@ -306,13 +516,17 @@ def test_take_curated_snapshot_excludes_symlinked_external_routes(monkeypatch, t
     assert payload["ok"] is True
     assert selected["governance"]["eligible"] is False
     assert selected["governance"]["skip_reason"] == "outside_local_fallback_root"
-    assert not (tmp_path / "recovery" / "latest" / "governance" / "external.jsonl").exists()
+    assert not (
+        tmp_path / "recovery" / "latest" / "governance" / "external.jsonl"
+    ).exists()
     assert not (tmp_path / "recovery" / "latest" / "logs" / "external.jsonl").exists()
     assert "logs/external.jsonl" in payload["unsafe_skipped_paths"]
     assert (tmp_path / "recovery" / "latest" / "logs" / "local.log").exists()
 
 
-def test_take_curated_snapshot_cleans_abandoned_staging(monkeypatch, tmp_path: Path) -> None:
+def test_take_curated_snapshot_cleans_abandoned_staging(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("BOT_LOGS_RECOVERY_MIN_FREE_AFTER_SNAPSHOT_GB", "0")
     local_root = tmp_path / "local_fallback_storage"
     (local_root / "logs").mkdir(parents=True)
@@ -334,12 +548,16 @@ def test_take_curated_snapshot_cleans_abandoned_staging(monkeypatch, tmp_path: P
     assert not abandoned.exists()
 
 
-def test_take_curated_snapshot_requires_capacity_for_reserve(monkeypatch, tmp_path: Path) -> None:
+def test_take_curated_snapshot_requires_capacity_for_reserve(
+    monkeypatch, tmp_path: Path
+) -> None:
     local_root = tmp_path / "local_fallback_storage"
     (local_root / "logs").mkdir(parents=True)
     (local_root / "logs" / "local.log").write_bytes(b"x" * 1024)
     monkeypatch.setenv("BOT_LOGS_RECOVERY_MIN_FREE_AFTER_SNAPSHOT_GB", "64")
-    monkeypatch.setattr(src.shutil, "disk_usage", lambda _path: type("Usage", (), {"free": 1024})())
+    monkeypatch.setattr(
+        src.shutil, "disk_usage", lambda _path: type("Usage", (), {"free": 1024})()
+    )
 
     payload = src._take_curated_snapshot(
         local_root,
@@ -356,7 +574,9 @@ def test_take_curated_snapshot_requires_capacity_for_reserve(monkeypatch, tmp_pa
     assert not (tmp_path / "recovery" / "latest").exists()
 
 
-def test_sync_storage_target_override_writes_single_source_of_truth(tmp_path: Path) -> None:
+def test_sync_storage_target_override_writes_single_source_of_truth(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True)
     probe = {
@@ -375,18 +595,31 @@ def test_sync_storage_target_override_writes_single_source_of_truth(tmp_path: Pa
     assert "BOT_LOGS_EXTERNAL_VOLUME_UUID=uuid-123" in text
 
 
-def test_model_route_blocks_missing_promoted_model_but_not_paper_collection_gap(tmp_path: Path) -> None:
+def test_model_route_blocks_missing_promoted_model_but_not_paper_collection_gap(
+    tmp_path: Path,
+) -> None:
     _write_json(
         tmp_path / "master_bot_registry.json",
         {
             "sub_bots": [
-                {"bot_id": "paper-only", "active": True, "model_path": "models/paper.joblib"},
-                {"bot_id": "promoted", "active": True, "model_path": "models/promoted.joblib"},
+                {
+                    "bot_id": "paper-only",
+                    "active": True,
+                    "model_path": "models/paper.joblib",
+                },
+                {
+                    "bot_id": "promoted",
+                    "active": True,
+                    "model_path": "models/promoted.joblib",
+                },
             ]
         },
     )
     _write_json(
-        tmp_path / "governance" / "champion_challenger" / "promotion_packet_latest.json",
+        tmp_path
+        / "governance"
+        / "champion_challenger"
+        / "promotion_packet_latest.json",
         {"promotion_scope": {"trained_bot_ids": ["promoted"]}},
     )
     local_root = tmp_path / "local"
@@ -402,10 +635,16 @@ def test_model_route_blocks_missing_promoted_model_but_not_paper_collection_gap(
     assert contract["paper_collection_model_gaps_advisory"] is False
 
 
-def test_model_hydration_copies_available_active_models_with_bounded_route(monkeypatch, tmp_path: Path) -> None:
+def test_model_hydration_copies_available_active_models_with_bounded_route(
+    monkeypatch, tmp_path: Path
+) -> None:
     _write_json(
         tmp_path / "master_bot_registry.json",
-        {"sub_bots": [{"bot_id": "paper", "active": True, "model_path": "models/paper.joblib"}]},
+        {
+            "sub_bots": [
+                {"bot_id": "paper", "active": True, "model_path": "models/paper.joblib"}
+            ]
+        },
     )
     external_project = tmp_path / "external_project"
     (external_project / "models").mkdir(parents=True)
@@ -423,10 +662,16 @@ def test_model_hydration_copies_available_active_models_with_bounded_route(monke
     assert (local_root / "models" / "paper.joblib").read_bytes() == b"model-data"
 
 
-def test_model_hydration_retries_incomplete_attempt_before_success_cooldown(monkeypatch, tmp_path: Path) -> None:
+def test_model_hydration_retries_incomplete_attempt_before_success_cooldown(
+    monkeypatch, tmp_path: Path
+) -> None:
     _write_json(
         tmp_path / "master_bot_registry.json",
-        {"sub_bots": [{"bot_id": "paper", "active": True, "model_path": "models/paper.joblib"}]},
+        {
+            "sub_bots": [
+                {"bot_id": "paper", "active": True, "model_path": "models/paper.joblib"}
+            ]
+        },
     )
     external_project = tmp_path / "external_project"
     (external_project / "models").mkdir(parents=True)
@@ -451,10 +696,16 @@ def test_model_hydration_retries_incomplete_attempt_before_success_cooldown(monk
     assert state["last_model_hydration_missing_after_count"] == 0
 
 
-def test_model_hydration_keeps_long_cooldown_after_success(monkeypatch, tmp_path: Path) -> None:
+def test_model_hydration_keeps_long_cooldown_after_success(
+    monkeypatch, tmp_path: Path
+) -> None:
     _write_json(
         tmp_path / "master_bot_registry.json",
-        {"sub_bots": [{"bot_id": "paper", "active": True, "model_path": "models/paper.joblib"}]},
+        {
+            "sub_bots": [
+                {"bot_id": "paper", "active": True, "model_path": "models/paper.joblib"}
+            ]
+        },
     )
     external_project = tmp_path / "external_project"
     (external_project / "models").mkdir(parents=True)
@@ -476,7 +727,9 @@ def test_model_hydration_keeps_long_cooldown_after_success(monkeypatch, tmp_path
     assert payload["cooldown_basis"] == "successful_hydration"
 
 
-def test_recovery_snapshot_contract_requires_fresh_snapshot_database_and_content_store(tmp_path: Path) -> None:
+def test_recovery_snapshot_contract_requires_fresh_snapshot_database_and_content_store(
+    tmp_path: Path,
+) -> None:
     recovery_root = tmp_path / "recovery"
     (recovery_root / "latest" / "data").mkdir(parents=True)
     (recovery_root / "latest" / "data" / "snapshot_context.sqlite3").write_bytes(b"db")
@@ -485,6 +738,13 @@ def test_recovery_snapshot_contract_requires_fresh_snapshot_database_and_content
         {
             "timestamp_utc": src._utc_now(),
             "copied_paths": ["data/snapshot_context.sqlite3"],
+            "files": [
+                {
+                    "path": "data/snapshot_context.sqlite3",
+                    "size_bytes": 2,
+                    "sha256": hashlib.sha256(b"db").hexdigest(),
+                }
+            ],
             "errors": [],
         },
     )
@@ -500,10 +760,15 @@ def test_recovery_snapshot_contract_requires_fresh_snapshot_database_and_content
     assert contract["snapshot_context_backup_present"] is True
     assert contract["content_store"]["ready"] is True
     assert contract["snapshot_manifest_verification"]["ready"] is True
-    assert len(contract["snapshot_manifest_verification"]["verification_receipt_sha256"]) == 64
+    assert (
+        len(contract["snapshot_manifest_verification"]["verification_receipt_sha256"])
+        == 64
+    )
 
 
-def test_recovery_snapshot_contract_rejects_missing_and_unsafe_manifest_paths(tmp_path: Path) -> None:
+def test_recovery_snapshot_contract_rejects_missing_and_unsafe_manifest_paths(
+    tmp_path: Path,
+) -> None:
     recovery_root = tmp_path / "recovery"
     (recovery_root / "latest" / "data").mkdir(parents=True)
     (recovery_root / "latest" / "data" / "snapshot_context.sqlite3").write_bytes(b"db")
@@ -533,12 +798,104 @@ def test_recovery_snapshot_contract_rejects_missing_and_unsafe_manifest_paths(tm
     assert verification["unsafe_paths"] == ["../outside.txt"]
 
 
-def test_online_curated_snapshot_uses_sqlite_backup_without_writer_quiet(monkeypatch, tmp_path: Path) -> None:
+def _verified_manifest(root):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "state").write_bytes(b"state")
+    return {
+        "timestamp_utc": src._utc_now(),
+        "copied_paths": ["state"],
+        "errors": [],
+        "files": [
+            {
+                "path": "state",
+                "size_bytes": 5,
+                "sha256": hashlib.sha256(b"state").hexdigest(),
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("sha256", ""),
+        ("sha256", "invalid"),
+        ("size_bytes", None),
+        ("size_bytes", True),
+        ("size_bytes", -1),
+    ],
+)
+def test_recovery_requires_complete_typed_integrity_records(tmp_path, field, value):
+    manifest = _verified_manifest(tmp_path)
+    manifest["files"][0][field] = value
+    assert src._verify_snapshot_manifest(tmp_path, manifest)["ready"] is False
+
+
+@pytest.mark.parametrize("field", ["files", "copied_paths"])
+def test_duplicate_manifest_records_fail_closed(tmp_path, field):
+    manifest = _verified_manifest(tmp_path)
+    manifest[field] *= 2
+    result = src._verify_snapshot_manifest(tmp_path, manifest)
+    assert result["ready"] is False
+    assert result["schema_errors"]
+
+
+def test_verification_receipt_binds_actual_contents(tmp_path):
+    manifest = _verified_manifest(tmp_path)
+    first = src._verify_snapshot_manifest(tmp_path, manifest)
+    (tmp_path / "state").write_bytes(b"other")
+    manifest["files"][0]["sha256"] = hashlib.sha256(b"other").hexdigest()
+    second = src._verify_snapshot_manifest(tmp_path, manifest)
+    assert first["ready"] and second["ready"]
+    assert first["verification_receipt_sha256"] != second["verification_receipt_sha256"]
+
+
+def test_manifest_protected_symlink_rejected_before_target_access(
+    tmp_path, monkeypatch
+):
+    manifest = _verified_manifest(tmp_path)
+    (tmp_path / "state").unlink()
+    (tmp_path / "state").symlink_to("/Volumes/VIDEO/state")
+    original = Path.lstat
+
+    def guarded(path, *args, **kwargs):
+        assert not str(path).casefold().startswith("/volumes/video")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", guarded)
+    result = src._verify_snapshot_manifest(tmp_path, manifest)
+    assert result["ready"] is False
+    assert result["unsafe_paths"] == ["state"]
+
+
+@pytest.mark.parametrize("timestamp", [None, "invalid", "2099-01-01T00:00:00+00:00"])
+def test_recovery_manifest_and_control_evidence_require_producer_time(
+    tmp_path, timestamp
+):
+    root = tmp_path / "recovery"
+    manifest = _verified_manifest(root / "latest")
+    content = {"ok": True, "manifest_hash": "a" * 64}
+    manifest.pop("timestamp_utc")
+    if timestamp is not None:
+        manifest["timestamp_utc"] = timestamp
+        content["timestamp_utc"] = timestamp
+    _write_json(root / "recovery_manifest_latest.json", manifest)
+    _write_json(tmp_path / "governance/content_store/latest.json", content)
+    result = src._recovery_snapshot_contract(tmp_path, root)
+    assert "recovery_snapshot_stale" in result["blockers"]
+    assert "immutable_control_plane_evidence_not_current" in result["blockers"]
+
+
+def test_online_curated_snapshot_uses_sqlite_backup_without_writer_quiet(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("BOT_LOGS_RECOVERY_MIN_FREE_AFTER_SNAPSHOT_GB", "0")
     monkeypatch.setattr(
         src,
         "_writer_quiet_point",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("online snapshot must not pause the writer")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("online snapshot must not pause the writer")
+        ),
     )
     local_root = tmp_path / "local"
     database = local_root / "data" / "snapshot_context.sqlite3"
@@ -559,7 +916,9 @@ def test_online_curated_snapshot_uses_sqlite_backup_without_writer_quiet(monkeyp
         require_writer_quiet=False,
     )
 
-    copied_database = tmp_path / "recovery" / "latest" / "data" / "snapshot_context.sqlite3"
+    copied_database = (
+        tmp_path / "recovery" / "latest" / "data" / "snapshot_context.sqlite3"
+    )
     with sqlite3.connect(copied_database) as conn:
         copied_value = conn.execute("SELECT value FROM observations").fetchone()[0]
 
@@ -569,9 +928,14 @@ def test_online_curated_snapshot_uses_sqlite_backup_without_writer_quiet(monkeyp
     assert copied_value == "ready"
 
 
-def test_recovery_objectives_require_verified_rpo_and_measured_rto(tmp_path: Path) -> None:
+def test_isolated_control_drill_does_not_prove_full_platform_rto(
+    tmp_path: Path,
+) -> None:
     _write_json(
-        tmp_path / "governance" / "health" / "production_recovery_drill_harness_latest.json",
+        tmp_path
+        / "governance"
+        / "health"
+        / "production_recovery_drill_harness_latest.json",
         {
             "timestamp_utc": src._utc_now(),
             "ok": True,
@@ -586,7 +950,10 @@ def test_recovery_objectives_require_verified_rpo_and_measured_rto(tmp_path: Pat
         "recovery_snapshot": {
             "age_minutes": 30.0,
             "manifest_path": "recovery/recovery_manifest_latest.json",
-            "snapshot_manifest_verification": {"ready": True, "verification_receipt_sha256": "b" * 64},
+            "snapshot_manifest_verification": {
+                "ready": True,
+                "verification_receipt_sha256": "b" * 64,
+            },
         }
     }
 
@@ -597,13 +964,19 @@ def test_recovery_objectives_require_verified_rpo_and_measured_rto(tmp_path: Pat
         rto_target_seconds=10.0,
     )
 
-    assert objectives["ready"] is True
+    assert objectives["ready"] is False
     assert objectives["rpo"]["met"] is True
-    assert objectives["rto"]["met"] is True
+    assert objectives["rto"]["met"] is False
+    assert objectives["rto"]["observed_max_recovery_seconds"] is None
+    assert objectives["control_drill"]["met"] is True
+    assert objectives["control_drill"]["observed_max_recovery_seconds"] == 8.0
+    assert objectives["control_drill"]["grants_production_restore_credit"] is False
     assert len(objectives["evidence_receipt_sha256"]) == 64
 
 
-def test_recovery_objective_debt_blocks_live_promotion_not_paper_collection(tmp_path: Path) -> None:
+def test_recovery_objective_debt_blocks_live_promotion_not_paper_collection(
+    tmp_path: Path,
+) -> None:
     durability = {
         "recovery_snapshot": {
             "age_minutes": 180.0,
@@ -623,3 +996,21 @@ def test_recovery_objective_debt_blocks_live_promotion_not_paper_collection(tmp_
     assert objectives["live_promotion_blocked"] is True
     assert "recovery_point_objective_not_met" in objectives["blockers"]
     assert "recovery_time_objective_not_met" in objectives["blockers"]
+
+
+@pytest.mark.parametrize("timestamp", [None, "bad", "2099-01-01T00:00:00+00:00"])
+def test_recovery_drill_cannot_use_file_mtime_or_future_time(tmp_path, timestamp):
+    harness = {"ok": True, "recovery_slo": {"met": True, "max_observed_recovery_seconds": 1}}
+    if timestamp is not None:
+        harness["timestamp_utc"] = timestamp
+    _write_json(tmp_path / "governance/health/production_recovery_drill_harness_latest.json", harness)
+    report = src._recovery_objectives(tmp_path, {})
+    assert not report["control_drill"]["met"]
+    assert not report["control_drill"]["freshness"]["fresh"]
+
+
+def test_negative_snapshot_age_cannot_satisfy_rpo(tmp_path):
+    report = src._recovery_objectives(tmp_path, {"recovery_snapshot": {
+        "age_minutes": -10, "snapshot_manifest_verification": {"ready": True}
+    }})
+    assert not report["rpo"]["met"]

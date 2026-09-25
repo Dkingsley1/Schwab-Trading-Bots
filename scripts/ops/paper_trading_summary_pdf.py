@@ -91,7 +91,9 @@ def _date_label(day_utc: Any) -> str:
 
 
 def _money(value: Any) -> str:
-    number = _safe_float(value)
+    number = _safe_float(value, float("nan"))
+    if not math.isfinite(number):
+        return "n/a"
     sign = "+" if number > 0 else ""
     return f"{sign}\\${number:,.2f}"
 
@@ -414,11 +416,20 @@ def _performance_page(pdf: PdfPages, data: dict[str, Any], page_number: int) -> 
     ax3b.set_ylabel("Execs", fontsize=6.5, color=COLORS["gold"])
 
     ax4 = fig.add_axes([0.535, 0.105, 0.390, 0.165], facecolor=COLORS["white"])
-    labels = list(periods.keys())
+    labels = [label for label, value in periods.items() if value is not None]
     values = [periods[label] for label in labels]
     ax4.bar(labels, values, color=[COLORS["green"] if value >= 0 else COLORS["red"] for value in values])
     ax4.axhline(0, color=COLORS["ink"], linewidth=0.8)
     ax4.set_title("Rolling Period Change", loc="left", fontsize=9.5, color=COLORS["ink"], weight="bold")
+    if not labels:
+        ax4.text(
+            0.5,
+            0.5,
+            "No measured period change",
+            ha="center",
+            va="center",
+            transform=ax4.transAxes,
+        )
     ax4.tick_params(axis="x", labelsize=7)
     ax4.tick_params(axis="y", labelsize=6.8)
     ax4.grid(axis="y", color=COLORS["line"], linewidth=0.5)
@@ -572,16 +583,20 @@ def _controls_page(pdf: PdfPages, data: dict[str, Any], page_number: int) -> int
     return _save(pdf, fig, page_number, "Paper Trading Summary")
 
 
-def _periods(paper: dict[str, Any]) -> dict[str, float]:
-    values: dict[str, float] = {}
+def _periods(paper: dict[str, Any]) -> dict[str, float | None]:
+    values: dict[str, float | None] = {}
     for row in _as_list(paper.get("period_change_series")):
         if not isinstance(row, dict):
             continue
         label = str(row.get("label") or "").strip()
         if label:
-            values[label] = _safe_float(row.get("change"))
+            values[label] = (
+                _safe_float(row.get("change"))
+                if row.get("available") is not False and row.get("change") is not None
+                else None
+            )
     for label in ("WTD", "7D", "14D", "21D", "30D"):
-        values.setdefault(label, 0.0)
+        values.setdefault(label, None)
     return {label: values[label] for label in ("WTD", "7D", "14D", "21D", "30D")}
 
 

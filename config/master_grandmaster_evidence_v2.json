@@ -80,6 +80,123 @@
     "source_evidence": 0.1,
     "economic_evidence": 0.05
   },
+  "coordination_success_needs": {
+    "purpose": "Define what sleeve Master bots and the Grandmaster bot need to make useful advisory recommendations beyond raw data collection, while remaining shadow-only and unable to trade, allocate, promote, or claim profitability.",
+    "authority": {
+      "metadata_only": true,
+      "can_submit_order": false,
+      "can_change_trade_logic": false,
+      "can_change_sizing": false,
+      "can_allocate_capital": false,
+      "can_promote_candidate": false,
+      "can_claim_profitability": false,
+      "can_override_halt": false
+    },
+    "master_bot": {
+      "view": "per_sleeve_local_optimizer_and_evidence_curator",
+      "needs": [
+        {
+          "need_id": "sleeve_strategy_taxonomy",
+          "why": "Master bots need each sleeve strategy mapped to a strategy family so local results are compared against the right objective, failure mode, and benchmark.",
+          "evidence_artifacts": ["config/sleeve_strategy_contracts_v1.json.strategy_organization"],
+          "success_signal": "every_trading_sleeve_has_at_least_one_strategy_group"
+        },
+        {
+          "need_id": "candidate_bound_post_cost_by_strategy_group",
+          "why": "Master bots need paper outcomes tied to the current candidate and its strategy group instead of mixed historical ledger PnL.",
+          "evidence_artifacts": ["governance/health/profitability_self_assessment_latest.json", "governance/health/paper_performance_report_latest.json"],
+          "success_signal": "candidate_post_cost_samples_meet_group_threshold_and_positive_lcb"
+        },
+        {
+          "need_id": "regime_fit_by_sleeve",
+          "why": "Master bots need to know whether the current market regime is natural, hostile, or context-only for the sleeve before interpreting a weak result as strategy failure.",
+          "evidence_artifacts": ["governance/health/market_pattern_feedback_latest.json", "governance/health/regime_control_plane_latest.json"],
+          "success_signal": "sleeve_market_route_and_regime_axes_are_present_for_candidate_window"
+        },
+        {
+          "need_id": "execution_cost_and_fill_quality",
+          "why": "Master bots need independent fill, spread, quote-age, latency, and slippage context to separate signal failure from execution drag.",
+          "evidence_artifacts": ["governance/health/independent_fill_acquisition_latest.json", "governance/health/execution_calibration_latest.json"],
+          "success_signal": "independent_fill_records_meet_sleeve_thresholds_with_cost_fields_present"
+        },
+        {
+          "need_id": "risk_budget_and_drawdown_context",
+          "why": "Master bots need sleeve-specific drawdown, gap, margin, premium, borrow, and liquidity constraints before recommending continued collection or quarantine.",
+          "evidence_artifacts": ["governance/health/sleeve_profitability_dashboard_latest.json", "config/sleeve_strategy_contracts_v1.json.sleeve_measurement_parameters"],
+          "success_signal": "sleeve_risk_metrics_are_current_and_inside_objective_specific_bounds"
+        },
+        {
+          "need_id": "symbol_level_driver_attribution",
+          "why": "Master bots need the drivers behind the candidate symbol move so they can tell whether the sleeve caught a repeatable pattern or a one-off impulse.",
+          "evidence_artifacts": ["governance/health/market_move_explainer_latest.json", "governance/health/market_pattern_feedback_latest.json"],
+          "success_signal": "ranked_symbol_drivers_are_available_for_candidate_observation_window"
+        }
+      ],
+      "must_not": [
+        "submit_orders",
+        "increase_size_to_recover_losses",
+        "promote_candidate",
+        "override_grandmaster_policy",
+        "claim_profitability_without_post_cost_evidence"
+      ]
+    },
+    "grandmaster_bot": {
+      "view": "cross_sleeve_allocator_referee_and_policy_coordinator",
+      "needs": [
+        {
+          "need_id": "cross_sleeve_correlation_and_exposure_map",
+          "why": "The Grandmaster needs to see when apparently different sleeves are actually sharing beta, liquidity, venue, event, or factor exposure.",
+          "evidence_artifacts": ["governance/health/master_grandmaster_evidence_v2_latest.json", "governance/health/sleeve_profitability_dashboard_latest.json"],
+          "success_signal": "correlation_clusters_and_exposure_counts_are_current"
+        },
+        {
+          "need_id": "sleeve_conflict_resolution",
+          "why": "The Grandmaster needs a rule for resolving cases where one sleeve wants risk-on exposure while another sleeve is signaling hedge, cash, or event caution.",
+          "evidence_artifacts": ["config/sleeve_strategy_contracts_v1.json.strategy_organization", "governance/health/market_pattern_feedback_latest.json"],
+          "success_signal": "prioritized_downshift_and_context_only_sleeves_are_reported_together"
+        },
+        {
+          "need_id": "portfolio_marginal_contribution",
+          "why": "The Grandmaster needs each qualified sleeve to improve the portfolio after costs, risk, and correlation, not just look good in isolation.",
+          "evidence_artifacts": ["governance/health/sleeve_profitability_dashboard_latest.json", "governance/health/account_positions_latest.json"],
+          "success_signal": "positive_marginal_contribution_is_present_for_any_capital_review_candidate"
+        },
+        {
+          "need_id": "capital_preservation_and_tail_context",
+          "why": "The Grandmaster needs defensive, hedge, volatility, cash, and drawdown context to avoid interpreting loss recovery as permission to add risk.",
+          "evidence_artifacts": ["config/sleeve_strategy_contracts_v1.json.strategy_organization", "governance/health/paper_runtime_profitability_controls_latest.json"],
+          "success_signal": "tail_drawdown_cash_and_hedge_utility_context_is_current"
+        },
+        {
+          "need_id": "promotion_gate_readiness",
+          "why": "The Grandmaster needs promotion gates, source freshness, human review requirements, and live authority separation to stay advisory-only.",
+          "evidence_artifacts": ["governance/health/master_grandmaster_evidence_v2_latest.json", "governance/health/live_canary_readiness_contract_latest.json"],
+          "success_signal": "paper_coordination_ready_can_be_distinguished_from_human_live_review_ready"
+        },
+        {
+          "need_id": "operator_risk_intent_and_account_constraints",
+          "why": "The Grandmaster needs account constraints, route compatibility, and operator risk posture before any human review can interpret sleeve recommendations.",
+          "evidence_artifacts": ["governance/health/account_positions_latest.json", "config/system_role_contracts_v1.json.operator_brain_boundary"],
+          "success_signal": "account_route_and_operator_authority_boundaries_are_current"
+        }
+      ],
+      "must_not": [
+        "submit_orders",
+        "allocate_capital_automatically",
+        "force_trade_for_evidence",
+        "reinterpret_loss_recovery_as_profitability",
+        "grant_live_authority"
+      ]
+    },
+    "hardening_invariants": {
+      "metadata_authority_must_remain_true": true,
+      "authority_false_fields": ["can_submit_order", "can_change_trade_logic", "can_change_sizing", "can_allocate_capital", "can_promote_candidate", "can_claim_profitability", "can_override_halt"],
+      "required_need_fields": ["need_id", "why", "evidence_artifacts", "success_signal"],
+      "minimum_need_count_per_tier": 6,
+      "master_and_grandmaster_views_required": true,
+      "master_and_grandmaster_must_not_lists_required": true
+    }
+  },
   "recommendation_contract": {
     "allowed_recommendations": [
       "continue_paper_collection",

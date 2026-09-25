@@ -100,6 +100,8 @@ def _spawn_profile(
     cmd = [
         str(VENV_PY),
         str(SHADOW_LOOP),
+        "--runtime-cpu-class",
+        "market_decision",
         "--broker",
         broker,
         "--interval-seconds",

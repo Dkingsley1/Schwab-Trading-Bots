@@ -10,6 +10,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import health_fast, pressure_relief_control
 
 
+def test_pressure_relief_never_renices_critical_process_watchdog() -> None:
+    assert "scripts/ops/process_watchdog.py" not in pressure_relief_control.SUPPORT_RENICE_PATTERNS
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")

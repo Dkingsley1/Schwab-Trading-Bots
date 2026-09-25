@@ -41,6 +41,24 @@ def test_isolated_harness_cadence_prevents_repeated_heavy_runs(tmp_path: Path) -
     assert forced["due"] is True
 
 
+def test_cached_isolated_harness_is_republished_without_replaying_drills(tmp_path: Path) -> None:
+    state_path = tmp_path / "runtime" / "chaos_state.json"
+    harness_path = tmp_path / "health" / "production_recovery_drill_harness_latest.json"
+    original = src._record_isolated_harness(
+        tmp_path,
+        state_path=state_path,
+        harness_path=harness_path,
+    )
+
+    assert src._republish_cached_isolated_harness(harness_path) is True
+
+    republished = json.loads(harness_path.read_text(encoding="utf-8"))
+    assert republished["run_sha256"] == original["run_sha256"]
+    assert republished["evidence_generated_at_utc"] == original["timestamp_utc"]
+    assert republished["cache_revalidated_at_utc"] == republished["timestamp_utc"]
+    assert republished["cadence_reuse"] is True
+
+
 def test_recorded_recovery_time_above_slo_fails_closed(tmp_path: Path) -> None:
     state_path = tmp_path / "runtime" / "chaos_state.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)

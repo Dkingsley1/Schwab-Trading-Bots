@@ -1,0 +1,632 @@
+{
+  "schema_version": 1,
+  "policy_id": "authoritative_systems_v1",
+  "purpose": "Translate public primary-source design patterns into locally owned, testable controls without treating source count as trading evidence or granting execution authority.",
+  "authority": {
+    "influence_only": true,
+    "can_create_order_intent": false,
+    "can_change_signal": false,
+    "can_change_quantity": false,
+    "can_change_risk_limits": false,
+    "can_promote_live": false,
+    "can_submit_live_order": false
+  },
+  "required_control_ids": [
+    "broker_capability_conformance",
+    "order_state_idempotency",
+    "point_in_time_validity",
+    "event_time_watermarks",
+    "causal_attribution",
+    "paper_live_equivalence",
+    "execution_fault_simulation",
+    "end_to_end_traceability",
+    "exchange_sequence_integrity",
+    "atomic_archive_snapshots",
+    "formal_safety_specification",
+    "build_provenance_attestation",
+    "canonical_trade_lifecycle",
+    "independent_pricing_risk_oracle",
+    "constrained_portfolio_advisory",
+    "declarative_data_quality",
+    "research_data_platform_contract",
+    "institutional_research_extensions_contract"
+  ],
+  "controls": {
+    "broker_capability_conformance": {
+      "owner": "core/brokers/capability_contract.py",
+      "test": "tests/test_broker_capability_contract.py",
+      "description": "Separate market-data, paper, live, asset-class, order-type, time-in-force, precision, and production eligibility claims."
+    },
+    "order_state_idempotency": {
+      "owner": "core/live_order_ledger.py",
+      "test": "tests/test_live_order_ledger.py",
+      "description": "Persist legal order transitions, immutable broker identity, monotonic fills, terminal-state immutability, duplicate-submit protection, startup recovery, and reconciliation-only handling after ambiguous broker mutations."
+    },
+    "point_in_time_validity": {
+      "owner": "core/strategy_validity.py",
+      "test": "tests/test_strategy_validity.py",
+      "description": "Reject high-confidence lookahead patterns and prove suffix invariance and recursive warmup stability.",
+      "scan_paths": [
+        "core/base_trader.py",
+        "core/institutional_decision_flow.py",
+        "core/profitability_hardening.py",
+        "core/sleeve_strategy_specialization.py",
+        "scripts/run_shadow_training_loop.py",
+        "scripts/paper_performance_report.py",
+        "scripts/quantitative_challenger_report.py"
+      ]
+    },
+    "event_time_watermarks": {
+      "owner": "core/event_time_control.py",
+      "test": "tests/test_event_time_control.py",
+      "description": "Classify bounded out-of-order events, quarantine late or future-skewed events, and restore deterministic watermarks."
+    },
+    "causal_attribution": {
+      "owner": "core/causal_attribution.py",
+      "test": "tests/test_causal_attribution.py",
+      "description": "Attribute signal, sizing, risk, execution, cost, and outcome observations without inventing unavailable values."
+    },
+    "paper_live_equivalence": {
+      "owner": "core/paper_live_equivalence.py",
+      "test": "tests/test_paper_live_equivalence.py",
+      "description": "Compare mode-invariant intent semantics while explicitly allowing broker fill and latency differences."
+    },
+    "execution_fault_simulation": {
+      "owner": "core/execution_scenarios.py",
+      "test": "tests/test_execution_scenarios.py",
+      "description": "Exercise latency, submit disconnect, duplicate intent, progressive partial fill, halt, gap, and cancel-race behavior."
+    },
+    "end_to_end_traceability": {
+      "owner": "core/causal_attribution.py",
+      "test": "tests/test_causal_attribution.py",
+      "description": "Carry deterministic trace identity and a hash-linked source-to-outcome stage chain in existing execution artifacts."
+    },
+    "exchange_sequence_integrity": {
+      "owner": "core/exchange_sequence_control.py",
+      "test": "tests/test_exchange_sequence_control.py",
+      "description": "Apply explicit channel, session, sequence-gap, duplicate-conflict, recovery-range, and deterministic restore semantics without claiming native ITCH or OUCH connectivity."
+    },
+    "atomic_archive_snapshots": {
+      "owner": "core/archive_snapshot_control.py",
+      "test": "tests/test_archive_snapshot_control.py",
+      "description": "Hash archive manifests, compare-and-swap snapshot heads, preserve readable lineage, and require verified replacement before any source retirement."
+    },
+    "formal_safety_specification": {
+      "owner": "core/formal_safety_invariants.py",
+      "test": "tests/test_formal_safety_invariants.py",
+      "description": "Mirror order safety invariants in a bounded executable model and a TLA+ specification while keeping TLC execution and independent review as explicit proof debt."
+    },
+    "build_provenance_attestation": {
+      "owner": "core/build_provenance.py",
+      "test": "tests/test_build_provenance.py",
+      "description": "Produce and verify SLSA-shaped subject and material digests without treating an unsigned local statement as trusted CI provenance."
+    },
+    "canonical_trade_lifecycle": {
+      "owner": "core/trade_lifecycle.py",
+      "test": "tests/test_trade_lifecycle.py",
+      "description": "Enforce immutable product economics and hash-linked execution, confirmation, allocation, settlement, exercise, expiration, and cancellation transitions."
+    },
+    "independent_pricing_risk_oracle": {
+      "owner": "core/independent_risk_oracle.py",
+      "test": "tests/test_independent_risk_oracle.py",
+      "description": "Reconcile candidate-bound valuation and risk measures against a distinct signed provider while ensuring synthetic probes never become independent evidence."
+    },
+    "constrained_portfolio_advisory": {
+      "owner": "core/portfolio_advisory.py",
+      "test": "tests/test_portfolio_advisory.py",
+      "description": "Build candidate-bound multi-period advisory weights only from mature low-correlation sleeves under cash, concentration, turnover, and post-cost edge constraints."
+    },
+    "declarative_data_quality": {
+      "owner": "core/data_quality_checkpoints.py",
+      "test": "tests/test_data_quality_checkpoints.py",
+      "description": "Run declarative schema, type, range, uniqueness, monotonicity, future-time, and freshness checks with row quarantine and fail-closed actions."
+    },
+    "research_data_platform_contract": {
+      "owner": "core/research_data_platform.py",
+      "test": "tests/test_research_data_platform.py",
+      "description": "Unify catalog, permitted use, point-in-time access, bitemporal revisions, alpha lifecycle, source value, portfolio advisory, simulation semantics, feed SLOs, and reproducibility without granting trading authority."
+    },
+    "institutional_research_extensions_contract": {
+      "owner": "core/institutional_research_extensions.py",
+      "test": "tests/test_institutional_research_extensions.py",
+      "description": "Join factor benchmarks, pipeline incident ownership, material-change review, candidate risk schedules, execution speed-cost frontiers, checkpointable research DAGs, versioned datasets, and cross-engine valuation without granting trading authority."
+    }
+  },
+  "references": [
+    {
+      "id": "quantconnect_lean",
+      "name": "LEAN Engine",
+      "organization": "QuantConnect",
+      "category": "trading_engine",
+      "official_url": "https://www.quantconnect.com/docs/v2/writing-algorithms/reality-modeling/key-concepts",
+      "supplementary_urls": [],
+      "adopted_controls": ["broker_capability_conformance", "paper_live_equivalence", "causal_attribution"],
+      "principles": ["explicit reality models", "brokerage-specific behavior", "fee slippage and fill modeling"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "nautilus_trader",
+      "name": "NautilusTrader",
+      "organization": "NautilusTrader",
+      "category": "trading_engine",
+      "official_url": "https://nautilustrader.io/docs/latest/concepts/execution/",
+      "supplementary_urls": [],
+      "adopted_controls": ["order_state_idempotency", "broker_capability_conformance", "end_to_end_traceability"],
+      "principles": ["execution state machines", "order event reconciliation", "adapter boundaries"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "microsoft_qlib",
+      "name": "Qlib",
+      "organization": "Microsoft",
+      "category": "quant_research",
+      "official_url": "https://qlib.readthedocs.io/en/stable/component/workflow.html",
+      "supplementary_urls": [],
+      "adopted_controls": ["point_in_time_validity", "causal_attribution"],
+      "principles": ["recorded research workflows", "dataset model and record separation", "reproducible experiments"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "hummingbot",
+      "name": "Hummingbot",
+      "organization": "Hummingbot Foundation",
+      "category": "execution_framework",
+      "official_url": "https://hummingbot.org/strategies/v2-strategies/",
+      "supplementary_urls": ["https://hummingbot.org/connectors/connectors/api_throttler/"],
+      "adopted_controls": ["broker_capability_conformance", "order_state_idempotency", "execution_fault_simulation"],
+      "principles": ["controller and executor separation", "finite executor lifecycles", "pooled weighted rate limits"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "freqtrade",
+      "name": "Freqtrade",
+      "organization": "Freqtrade",
+      "category": "strategy_validation",
+      "official_url": "https://docs.freqtrade.io/en/stable/lookahead-analysis/",
+      "supplementary_urls": ["https://docs.freqtrade.io/en/stable/recursive-analysis/"],
+      "adopted_controls": ["point_in_time_validity"],
+      "principles": ["sliced-signal lookahead analysis", "recursive startup stability", "fail-closed strategy validation"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "vnpy",
+      "name": "vn.py",
+      "organization": "VeighNa",
+      "category": "trading_framework",
+      "official_url": "https://www.vnpy.com/",
+      "supplementary_urls": [],
+      "adopted_controls": ["broker_capability_conformance", "end_to_end_traceability"],
+      "principles": ["gateway isolation", "event-driven components", "multi-venue extensibility"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "zipline_reloaded",
+      "name": "Zipline Reloaded",
+      "organization": "ML4Trading",
+      "category": "backtesting",
+      "official_url": "https://zipline.ml4trading.io/",
+      "supplementary_urls": [],
+      "adopted_controls": ["point_in_time_validity", "paper_live_equivalence"],
+      "principles": ["event-driven backtesting", "calendar-aware simulation", "data portal boundaries"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "abides",
+      "name": "ABIDES",
+      "organization": "ABIDES Project",
+      "category": "market_simulation",
+      "official_url": "https://github.com/abides-sim/abides",
+      "supplementary_urls": [],
+      "adopted_controls": ["execution_fault_simulation", "causal_attribution"],
+      "principles": ["discrete-event market simulation", "latency modeling", "reproducible agent scenarios"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "finrl",
+      "name": "FinRL",
+      "organization": "AI4Finance Foundation",
+      "category": "machine_learning",
+      "official_url": "https://finrl.readthedocs.io/_/downloads/en/stable/pdf/",
+      "supplementary_urls": [],
+      "adopted_controls": ["point_in_time_validity", "causal_attribution"],
+      "principles": ["train validate test separation", "market-friction-aware environments", "reproducible pipelines"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "quantrocket",
+      "name": "QuantRocket",
+      "organization": "QuantRocket",
+      "category": "research_and_execution",
+      "official_url": "https://www.quantrocket.com/docs/",
+      "supplementary_urls": [],
+      "adopted_controls": ["broker_capability_conformance", "paper_live_equivalence", "causal_attribution"],
+      "principles": ["service boundaries", "data lineage", "paper and live workflow separation"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "fix_trading_community",
+      "name": "FIX Order State Changes",
+      "organization": "FIX Trading Community",
+      "category": "execution_standard",
+      "official_url": "https://www.fixtrading.org/online-specification/order-state-changes/",
+      "supplementary_urls": [],
+      "adopted_controls": ["order_state_idempotency", "paper_live_equivalence"],
+      "principles": ["explicit order states", "execution type versus order status", "terminal and pending transition semantics"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "apache_flink",
+      "name": "Apache Flink",
+      "organization": "Apache Software Foundation",
+      "category": "stream_processing",
+      "official_url": "https://nightlies.apache.org/flink/flink-docs-stable/docs/learn-flink/streaming_analytics/",
+      "supplementary_urls": ["https://nightlies.apache.org/flink/flink-docs-stable/docs/learn-flink/fault_tolerance/"],
+      "adopted_controls": ["event_time_watermarks", "execution_fault_simulation"],
+      "principles": ["event time and watermarks", "bounded out-of-order handling", "checkpointed state recovery"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "apache_kafka",
+      "name": "Apache Kafka",
+      "organization": "Apache Software Foundation",
+      "category": "event_log",
+      "official_url": "https://kafka.apache.org/43/design/design/",
+      "supplementary_urls": [],
+      "adopted_controls": ["order_state_idempotency", "event_time_watermarks", "end_to_end_traceability"],
+      "principles": ["durable ordered logs", "idempotent production", "transactional processing semantics"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "temporal",
+      "name": "Temporal",
+      "organization": "Temporal Technologies",
+      "category": "durable_workflows",
+      "official_url": "https://docs.temporal.io/",
+      "supplementary_urls": ["https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/"],
+      "adopted_controls": ["order_state_idempotency", "execution_fault_simulation", "end_to_end_traceability"],
+      "principles": ["durable workflow state", "crash recovery", "activity idempotency"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "mlflow",
+      "name": "MLflow Tracking",
+      "organization": "MLflow",
+      "category": "experiment_tracking",
+      "official_url": "https://mlflow.org/docs/latest/ml/tracking/",
+      "supplementary_urls": [],
+      "adopted_controls": ["causal_attribution", "end_to_end_traceability", "point_in_time_validity"],
+      "principles": ["parameter metric and artifact lineage", "run identity", "reproducible experiment records"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "feast",
+      "name": "Feast",
+      "organization": "Feast",
+      "category": "feature_store",
+      "official_url": "https://docs.feast.dev/getting-started/components/overview",
+      "supplementary_urls": ["https://docs.feast.dev/reference/offline-stores/overview"],
+      "adopted_controls": ["point_in_time_validity", "event_time_watermarks", "end_to_end_traceability"],
+      "principles": ["offline and online feature consistency", "point-in-time joins", "feature service contracts"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "openlineage",
+      "name": "OpenLineage",
+      "organization": "OpenLineage",
+      "category": "data_lineage",
+      "official_url": "https://openlineage.io/docs/spec/run-cycle/",
+      "supplementary_urls": [],
+      "adopted_controls": ["causal_attribution", "end_to_end_traceability"],
+      "principles": ["run job and dataset identity", "run lifecycle events", "input output lineage"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "opentelemetry",
+      "name": "OpenTelemetry",
+      "organization": "Cloud Native Computing Foundation",
+      "category": "observability",
+      "official_url": "https://opentelemetry.io/docs/concepts/observability-primer/",
+      "supplementary_urls": [],
+      "adopted_controls": ["causal_attribution", "end_to_end_traceability", "execution_fault_simulation"],
+      "principles": ["traces metrics and logs", "context propagation", "causal span relationships"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "sec_rule_15c3_5",
+      "name": "SEC Market Access Rule 15c3-5",
+      "organization": "U.S. Securities and Exchange Commission",
+      "category": "market_access_control",
+      "official_url": "https://www.sec.gov/rules-regulations/2011/06/risk-management-controls-brokers-or-dealers-market-access",
+      "supplementary_urls": ["https://www.finra.org/industry/notices/15-09"],
+      "adopted_controls": ["broker_capability_conformance", "order_state_idempotency", "execution_fault_simulation"],
+      "principles": ["pre-trade financial and regulatory controls", "restricted access", "regular review and post-trade reporting"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "nist_csf_2",
+      "name": "NIST Cybersecurity Framework 2.0",
+      "organization": "National Institute of Standards and Technology",
+      "category": "operational_resilience",
+      "official_url": "https://www.nist.gov/cyberframework",
+      "supplementary_urls": [],
+      "adopted_controls": ["execution_fault_simulation", "end_to_end_traceability", "broker_capability_conformance"],
+      "principles": ["govern identify protect detect respond recover", "risk governance", "continuous improvement"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "nasdaq_itch_ouch",
+      "name": "Nasdaq ITCH and OUCH Specifications",
+      "organization": "Nasdaq",
+      "category": "exchange_protocol_semantics",
+      "official_url": "https://www.nasdaqtrader.com/Trader.aspx?id=FeedMIPS",
+      "supplementary_urls": [],
+      "adopted_controls": ["exchange_sequence_integrity", "event_time_watermarks", "order_state_idempotency"],
+      "principles": ["explicit sessions and sequence numbers", "gap recovery before reuse", "market data and order entry remain separate protocols"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "apache_iceberg",
+      "name": "Apache Iceberg Table Specification",
+      "organization": "Apache Software Foundation",
+      "category": "snapshot_archive_format",
+      "official_url": "https://iceberg.apache.org/spec/",
+      "supplementary_urls": [],
+      "adopted_controls": ["atomic_archive_snapshots", "end_to_end_traceability"],
+      "principles": ["immutable manifests", "atomic snapshot replacement", "schema and partition evolution with retained lineage"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "tla_plus",
+      "name": "TLA+",
+      "organization": "Leslie Lamport",
+      "category": "formal_methods",
+      "official_url": "https://lamport.azurewebsites.net/tla/book.html?back-link=learning.html",
+      "supplementary_urls": [],
+      "adopted_controls": ["formal_safety_specification", "order_state_idempotency", "execution_fault_simulation"],
+      "principles": ["state-machine specifications", "invariant checking", "safety and liveness claims require model-check receipts"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "slsa",
+      "name": "SLSA v1.2",
+      "organization": "OpenSSF",
+      "category": "software_supply_chain",
+      "official_url": "https://slsa.dev/spec/v1.2/",
+      "supplementary_urls": [],
+      "adopted_controls": ["build_provenance_attestation", "end_to_end_traceability"],
+      "principles": ["subject and material digests", "identified builders", "unsigned local metadata is not trusted provenance"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "finos_common_domain_model",
+      "name": "FINOS Common Domain Model",
+      "organization": "FINOS",
+      "category": "trade_lifecycle_model",
+      "official_url": "https://cdm.finos.org/docs/event-model/",
+      "supplementary_urls": [],
+      "adopted_controls": ["canonical_trade_lifecycle", "causal_attribution", "end_to_end_traceability"],
+      "principles": ["before and after state lineage", "immutable economic identity", "explicit business-event lifecycle"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "opengamma_strata",
+      "name": "OpenGamma Strata",
+      "organization": "OpenGamma",
+      "category": "pricing_and_risk",
+      "official_url": "https://strata.opengamma.io/docs/",
+      "supplementary_urls": [],
+      "adopted_controls": ["independent_pricing_risk_oracle", "canonical_trade_lifecycle"],
+      "principles": ["independent valuation measures", "scenario-based risk", "product and market-data separation"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "cvxportfolio",
+      "name": "CVXPortfolio",
+      "organization": "Stanford University",
+      "category": "portfolio_optimization",
+      "official_url": "https://www.cvxportfolio.com/en/1.5.0/_static/cvx_portfolio.pdf",
+      "supplementary_urls": [],
+      "adopted_controls": ["constrained_portfolio_advisory", "causal_attribution"],
+      "principles": ["multi-period optimization", "explicit transaction and holding costs", "constraints are first-class model inputs"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "great_expectations",
+      "name": "Great Expectations Validation Definitions",
+      "organization": "Great Expectations",
+      "category": "data_quality",
+      "official_url": "https://docs.greatexpectations.io/docs/core/run_validations/create_a_validation_definition/",
+      "supplementary_urls": [],
+      "adopted_controls": ["declarative_data_quality", "point_in_time_validity", "event_time_watermarks"],
+      "principles": ["declarative expectations", "named validation checkpoints", "invalid rows remain observable and quarantined"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "trexquant_research_platform",
+      "name": "Trexquant Public Research Platform Signals",
+      "organization": "Trexquant Investment LP",
+      "category": "systematic_research_data_platform",
+      "official_url": "https://trexquant.com/",
+      "supplementary_urls": [
+        "https://trexquant.com/careers/13A32AB65C",
+        "https://trexquant.com/careers/6D8F95262F"
+      ],
+      "adopted_controls": [
+        "research_data_platform_contract",
+        "declarative_data_quality",
+        "point_in_time_validity",
+        "constrained_portfolio_advisory",
+        "paper_live_equivalence",
+        "causal_attribution"
+      ],
+      "principles": [
+        "data variables progress through alpha signals and strategies before portfolio construction",
+        "data feeds require validity timeliness lineage and observability",
+        "research simulation and portfolio construction are distinct controlled stages"
+      ],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "point72_cubist_trade_lifecycle",
+      "name": "Cubist Quant Academy Trade Lifecycle",
+      "organization": "Point72 / Cubist",
+      "category": "systematic_trade_lifecycle",
+      "official_url": "https://point72.com/blog/five-years-of-the-cubist-quant-academy/",
+      "supplementary_urls": [],
+      "adopted_controls": ["institutional_research_extensions_contract", "end_to_end_traceability", "causal_attribution"],
+      "principles": ["market data through research portfolio construction execution and post-trade are distinct stages", "research and production boundaries remain explicit"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "point72_cubist_data_reliability",
+      "name": "Cubist Data Reliability Engineering",
+      "organization": "Point72 / Cubist",
+      "category": "data_reliability",
+      "official_url": "https://careers.point72.com/CSJobDetail?jobCode=CSS-0014985&jobName=data-reliability-engineer&locale=English&location=New+York&retURL=%2FCSCareerSearch",
+      "supplementary_urls": [],
+      "adopted_controls": ["institutional_research_extensions_contract", "declarative_data_quality", "event_time_watermarks"],
+      "principles": ["mission-critical pipelines need named ownership", "validation incident management and entitlements are operating controls"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "point72_risk_governance",
+      "name": "Point72 Europe Risk Governance Disclosure",
+      "organization": "Point72",
+      "category": "risk_governance",
+      "official_url": "https://point72.com/wp-content/uploads/2025/08/Point72-Europe-London-LLP-MIFIDPRU-8-Public-Disclosure-2025.pdf",
+      "supplementary_urls": [],
+      "adopted_controls": ["institutional_research_extensions_contract", "constrained_portfolio_advisory", "independent_pricing_risk_oracle"],
+      "principles": ["position drawdown and buying-power limits are independently monitored", "launch and material strategy changes require review"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "aqr_data_library",
+      "name": "AQR Data Library",
+      "organization": "AQR Capital Management",
+      "category": "factor_research",
+      "official_url": "https://www.aqr.com/Insights/Datasets/About-the-AQR-Data-Library",
+      "supplementary_urls": ["https://www.aqr.com/Insights/Datasets"],
+      "adopted_controls": ["institutional_research_extensions_contract", "point_in_time_validity", "research_data_platform_contract"],
+      "principles": ["factor return series provide independent research benchmarks", "published series can be revised and need version-aware use"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "man_group_arcticdb",
+      "name": "ArcticDB",
+      "organization": "Man Group",
+      "category": "versioned_time_series_storage",
+      "official_url": "https://github.com/man-group/ArcticDB",
+      "supplementary_urls": [],
+      "adopted_controls": ["institutional_research_extensions_contract", "atomic_archive_snapshots", "research_data_platform_contract"],
+      "principles": ["time-series data benefits from snapshots versioning and time travel", "production dependency adoption requires explicit license review"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "man_ahl_speed_cost",
+      "name": "The Need for Speed in Trend-Following Strategies",
+      "organization": "Man AHL",
+      "category": "execution_cost_research",
+      "official_url": "https://www.man.com/documents/download/c6197-d1843-5316b-7b14c/Man_Perspective_The_Need_for_Speed_in_Trend-Following_Strategies_English_%28United_States%29_04-01-2023.pdf",
+      "supplementary_urls": [],
+      "adopted_controls": ["institutional_research_extensions_contract", "causal_attribution", "constrained_portfolio_advisory"],
+      "principles": ["signal speed has turnover and trading-cost consequences", "parameter choice should compare net outcomes rather than gross responsiveness"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "two_sigma_engineering",
+      "name": "Two Sigma Engineering",
+      "organization": "Two Sigma",
+      "category": "research_engineering",
+      "official_url": "https://www.twosigma.com/careers/engineering/",
+      "supplementary_urls": [],
+      "adopted_controls": ["institutional_research_extensions_contract", "build_provenance_attestation", "end_to_end_traceability"],
+      "principles": ["research tooling and production engineering are connected disciplines", "reproducibility and operational ownership are first-class"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "two_sigma_uberjob",
+      "name": "uberjob",
+      "organization": "Two Sigma",
+      "category": "workflow_composition",
+      "official_url": "https://github.com/twosigma/uberjob",
+      "supplementary_urls": [],
+      "adopted_controls": ["institutional_research_extensions_contract", "build_provenance_attestation"],
+      "principles": ["workflow call graphs make dependencies explicit", "stage identity enables bounded recomputation and inspection"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "deshaw_versioned_hdf5",
+      "name": "Versioned HDF5",
+      "organization": "D. E. Shaw Research",
+      "category": "versioned_research_storage",
+      "official_url": "https://github.com/deshaw/versioned-hdf5",
+      "supplementary_urls": ["https://github.com/deshaw"],
+      "adopted_controls": ["institutional_research_extensions_contract", "atomic_archive_snapshots", "research_data_platform_contract"],
+      "principles": ["research datasets need immutable historical versions", "historical snapshots must remain directly addressable"],
+      "primary_source": true,
+      "influence_only": true
+    },
+    {
+      "id": "goldman_sachs_gs_quant",
+      "name": "GS Quant",
+      "organization": "Goldman Sachs",
+      "category": "pricing_and_risk_toolkit",
+      "official_url": "https://github.com/goldmansachs/gs-quant",
+      "supplementary_urls": [],
+      "adopted_controls": ["institutional_research_extensions_contract", "independent_pricing_risk_oracle", "canonical_trade_lifecycle"],
+      "principles": ["pricing and risk measures use explicit product model and market-data contracts", "connected institutional APIs and credentials are not assumed locally"],
+      "primary_source": true,
+      "influence_only": true
+    }
+  ],
+  "readiness_semantics": {
+    "reference_count_is_not_evidence": true,
+    "implementation_ready_is_not_live_ready": true,
+    "paper_live_equivalence_requires_observed_pairs": true,
+    "profitability_requires_candidate_bound_forward_post_cost_evidence": true,
+    "live_execution_remains_independently_gated": true,
+    "synthetic_probe_is_not_external_evidence": true,
+    "unsigned_local_provenance_is_not_trusted_attestation": true,
+    "advisory_allocation_has_no_order_authority": true,
+    "catalog_presence_and_source_count_are_not_alpha_evidence": true,
+    "public_firm_influence_is_not_proprietary_replication": true,
+    "institutional_extension_structure_is_not_candidate_evidence": true
+  }
+}

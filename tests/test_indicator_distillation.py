@@ -2,8 +2,8 @@ import json
 from pathlib import Path
 import sys
 
-import mlx.core as mx
 import numpy as np
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CORE_ROOT = PROJECT_ROOT / "core"
@@ -11,6 +11,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 if str(CORE_ROOT) not in sys.path:
     sys.path.insert(0, str(CORE_ROOT))
+
+from core.mlx_runtime_guard import mlx_modules
+
+mx, _nn, _optim, _mlx_import_error = mlx_modules()
+pytestmark = pytest.mark.skipif(
+    mx is None,
+    reason=f"MLX runtime unavailable: {_mlx_import_error!r}",
+)
 
 from core import indicator_bot_common as common
 
@@ -61,7 +69,9 @@ def test_teacher_soft_targets_align_to_student_anchors(monkeypatch) -> None:
             "feature_builder": lambda panel: np.zeros((32, 1), dtype=np.float32),
         }
 
-    def fake_make_windowed_dataset(features, close, window, horizon, *, return_anchor_index=False):
+    def fake_make_windowed_dataset(
+        features, close, window, horizon, *, return_anchor_index=False
+    ):
         x = mx.array(np.array([[0.0], [1.0], [2.0]], dtype=np.float32))
         y = mx.array(np.array([[0.0], [1.0], [1.0]], dtype=np.float32))
         anchors = np.array([10, 12, 15], dtype=np.int64)
@@ -91,7 +101,11 @@ def test_teacher_soft_targets_align_to_student_anchors(monkeypatch) -> None:
 
     assert used == ["brain_refinery_v10_seasonal"]
     assert soft is not None
-    np.testing.assert_allclose(soft[[0, 2, 3]], np.array([0.5, 0.7310586, 0.8807971], dtype=np.float32), rtol=1e-5)
+    np.testing.assert_allclose(
+        soft[[0, 2, 3]],
+        np.array([0.5, 0.7310586, 0.8807971], dtype=np.float32),
+        rtol=1e-5,
+    )
     assert np.isnan(soft[1])
 
 
@@ -100,7 +114,13 @@ def test_strategy_generation_context_requires_manifest_and_keeps_authority_off(
     monkeypatch,
 ) -> None:
     candidate_id = "strategy_g0001_abcdef123456"
-    manifest = tmp_path / "governance" / "strategy_generations" / "generations" / "strategy_generation_0001.json"
+    manifest = (
+        tmp_path
+        / "governance"
+        / "strategy_generations"
+        / "generations"
+        / "strategy_generation_0001.json"
+    )
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         json.dumps(
@@ -125,7 +145,9 @@ def test_strategy_generation_context_requires_manifest_and_keeps_authority_off(
     monkeypatch.setenv("STRATEGY_GENERATION_CANDIDATE_ID", candidate_id)
     monkeypatch.setenv("STRATEGY_GENERATION_MANIFEST", str(manifest))
 
-    context = common._strategy_generation_context(tmp_path, "brain_refinery_v10_seasonal")
+    context = common._strategy_generation_context(
+        tmp_path, "brain_refinery_v10_seasonal"
+    )
 
     assert context["offspring_id"] == candidate_id
     assert context["execution_authority"] is False
@@ -172,7 +194,9 @@ def test_paper_loss_hard_negative_context_reads_latest_report(tmp_path: Path) ->
         encoding="utf-8",
     )
 
-    context = common._paper_loss_hard_negative_context(tmp_path, "brain_refinery_v43_intraday_ultrafast_proxy")
+    context = common._paper_loss_hard_negative_context(
+        tmp_path, "brain_refinery_v43_intraday_ultrafast_proxy"
+    )
 
     assert context["enabled"] is True
     assert context["matched_profiles"] == ["intraday_aggressive"]
@@ -191,13 +215,18 @@ def test_runtime_training_autofix_plan_expands_scope_when_enabled(monkeypatch) -
 
     assert plan[0]["reason"] == "base"
     assert any(row["reason"] == "widen_lookback" for row in plan)
-    assert any(row["reason"] == "broaden_symbol_scope" and row["symbol_allowlist"] == [] for row in plan)
+    assert any(
+        row["reason"] == "broaden_symbol_scope" and row["symbol_allowlist"] == []
+        for row in plan
+    )
     assert any(int(row["sample_stride"]) == 1 for row in plan)
 
 
 def test_require_mlx_runtime_message_mentions_portable_mode(monkeypatch) -> None:
     monkeypatch.setattr(common, "_MLX_AVAILABLE", False)
-    monkeypatch.setattr(common, "_MLX_IMPORT_ERROR", ModuleNotFoundError("mlx unavailable"))
+    monkeypatch.setattr(
+        common, "_MLX_IMPORT_ERROR", ModuleNotFoundError("mlx unavailable")
+    )
     monkeypatch.setenv("BOT_RUNTIME_ACCESS_MODE", "portable")
     monkeypatch.setenv("BOT_ML_RUNTIME_OPTIONAL", "1")
     monkeypatch.setenv("BOT_ML_BACKEND", "portable_auto")
@@ -214,7 +243,9 @@ def test_require_mlx_runtime_message_mentions_portable_mode(monkeypatch) -> None
     assert "runtime training" in text
 
 
-def test_resolve_training_guard_profile_adapts_to_weak_live_behavior(tmp_path: Path) -> None:
+def test_resolve_training_guard_profile_adapts_to_weak_live_behavior(
+    tmp_path: Path,
+) -> None:
     report_path = tmp_path / "governance" / "health" / "paper_performance_latest.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(
@@ -253,7 +284,9 @@ def test_resolve_training_guard_profile_adapts_to_weak_live_behavior(tmp_path: P
     assert profile["max_acted_coverage"] < 0.48
 
 
-def test_resolve_training_guard_profile_bond_family_adapts_with_weaker_coverage(tmp_path: Path) -> None:
+def test_resolve_training_guard_profile_bond_family_adapts_with_weaker_coverage(
+    tmp_path: Path,
+) -> None:
     report_path = tmp_path / "governance" / "health" / "paper_performance_latest.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(
@@ -292,8 +325,15 @@ def test_resolve_training_guard_profile_bond_family_adapts_with_weaker_coverage(
     assert profile["min_acted_coverage"] >= 0.02
 
 
-def test_resolve_learned_acted_threshold_applies_family_and_bot_overrides(tmp_path: Path) -> None:
-    override_path = tmp_path / "governance" / "health" / "calibration_abstention_overrides_latest.json"
+def test_resolve_learned_acted_threshold_applies_family_and_bot_overrides(
+    tmp_path: Path,
+) -> None:
+    override_path = (
+        tmp_path
+        / "governance"
+        / "health"
+        / "calibration_abstention_overrides_latest.json"
+    )
     override_path.parent.mkdir(parents=True, exist_ok=True)
     override_path.write_text(
         json.dumps(
@@ -328,7 +368,9 @@ def test_resolve_learned_acted_threshold_applies_family_and_bot_overrides(tmp_pa
     assert meta["applied_sources"][1]["scope"] == "bot"
 
 
-def test_resolve_runtime_training_path_profile_relaxes_sample_starved_intraday_bot(tmp_path: Path) -> None:
+def test_resolve_runtime_training_path_profile_relaxes_sample_starved_intraday_bot(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "master_bot_registry.json").write_text(
         json.dumps(
             {
@@ -345,7 +387,9 @@ def test_resolve_runtime_training_path_profile_relaxes_sample_starved_intraday_b
     )
     diagnostics_dir = tmp_path / "governance" / "training_diagnostics"
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
-    (diagnostics_dir / "brain_refinery_v43_intraday_ultrafast_proxy_latest.json").write_text(
+    (
+        diagnostics_dir / "brain_refinery_v43_intraday_ultrafast_proxy_latest.json"
+    ).write_text(
         json.dumps(
             {
                 "status": "deferred_sample_starved",
@@ -389,7 +433,9 @@ def test_resolve_runtime_training_path_profile_relaxes_sample_starved_intraday_b
     assert abs(profile["autofix_min_confidence_floor"] - 0.18) < 1e-9
 
 
-def test_resolve_runtime_training_path_profile_uses_infrastructure_role_overlay(tmp_path: Path) -> None:
+def test_resolve_runtime_training_path_profile_uses_infrastructure_role_overlay(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "master_bot_registry.json").write_text(
         json.dumps(
             {
@@ -431,7 +477,9 @@ def test_resolve_runtime_training_path_profile_uses_infrastructure_role_overlay(
     assert profile["min_negative_samples"] == 14
 
 
-def test_resolve_runtime_training_path_profile_applies_memory_caps(tmp_path: Path, monkeypatch) -> None:
+def test_resolve_runtime_training_path_profile_applies_memory_caps(
+    tmp_path: Path, monkeypatch
+) -> None:
     (tmp_path / "master_bot_registry.json").write_text(
         json.dumps(
             {
@@ -514,7 +562,9 @@ def test_resolve_runtime_training_path_profile_coverage_canary_can_override_memo
     assert profile["memory_efficiency"]["sample_stride_floor"] == 1
 
 
-def test_resolve_runtime_training_path_profile_honors_lookback_cap(tmp_path: Path, monkeypatch) -> None:
+def test_resolve_runtime_training_path_profile_honors_lookback_cap(
+    tmp_path: Path, monkeypatch
+) -> None:
     (tmp_path / "master_bot_registry.json").write_text(
         json.dumps(
             {
@@ -552,7 +602,9 @@ def test_resolve_runtime_training_path_profile_honors_lookback_cap(tmp_path: Pat
     assert profile["memory_efficiency"]["lookback_cap"] == 45
 
 
-def test_train_runtime_indicator_bot_applies_training_path_before_autofix(monkeypatch) -> None:
+def test_train_runtime_indicator_bot_applies_training_path_before_autofix(
+    monkeypatch,
+) -> None:
     captured = {}
 
     monkeypatch.setattr(
@@ -602,7 +654,9 @@ def test_train_runtime_indicator_bot_applies_training_path_before_autofix(monkey
             }
         ]
 
-    def _fake_load_sequences(project_root, *, lookback_days, mode_allowlist, symbol_allowlist):
+    def _fake_load_sequences(
+        project_root, *, lookback_days, mode_allowlist, symbol_allowlist
+    ):
         captured["load_sequences"] = {
             "lookback_days": int(lookback_days),
             "mode_allowlist": list(mode_allowlist or []),
@@ -630,13 +684,17 @@ def test_train_runtime_indicator_bot_applies_training_path_before_autofix(monkey
         )
 
     monkeypatch.setattr(common, "_runtime_training_autofix_plan", _fake_autofix_plan)
-    monkeypatch.setattr(common, "load_runtime_observation_sequences", _fake_load_sequences)
+    monkeypatch.setattr(
+        common, "load_runtime_observation_sequences", _fake_load_sequences
+    )
     monkeypatch.setattr(common, "make_runtime_windowed_dataset", _fake_make_dataset)
 
     result = common.train_runtime_indicator_bot(
         run_tag="brain_refinery_v43_intraday_ultrafast_proxy",
         feature_names=["x"],
-        runtime_feature_builder=lambda sequence, index: np.zeros((1,), dtype=np.float32),
+        runtime_feature_builder=lambda sequence, index: np.zeros(
+            (1,), dtype=np.float32
+        ),
         runtime_label_builder=lambda sequence, index, horizon: 1.0,
         mode_allowlist=["intraday_aggressive"],
         symbol_allowlist=["SPY"],
@@ -673,10 +731,17 @@ def test_deferred_sample_starved_reason_writes_diagnostics(tmp_path: Path) -> No
         sample_count=12,
         eligible_sequences=1,
         positive_rate=0.01,
-        autofix_attempts=[{"reason": "full_recovery", "lookback_days": 60, "sample_stride": 1}],
+        autofix_attempts=[
+            {"reason": "full_recovery", "lookback_days": 60, "sample_stride": 1}
+        ],
     )
 
-    latest = tmp_path / "governance" / "training_diagnostics" / "brain_refinery_v43_intraday_ultrafast_proxy_latest.json"
+    latest = (
+        tmp_path
+        / "governance"
+        / "training_diagnostics"
+        / "brain_refinery_v43_intraday_ultrafast_proxy_latest.json"
+    )
     payload = json.loads(latest.read_text(encoding="utf-8"))
 
     assert "defer_runtime_training_until_more_data" in message
@@ -709,4 +774,7 @@ def test_deferred_quality_guard_reason_preserves_quality_status(tmp_path: Path) 
     assert "defer_runtime_training_until_more_data" not in message
     assert payload["status"] == "deferred_quality_guard"
     assert payload["quality_deferred"] is True
-    assert payload["failure_categories"] == ["quality_guard_failure", "acted_coverage_tuning"]
+    assert payload["failure_categories"] == [
+        "quality_guard_failure",
+        "acted_coverage_tuning",
+    ]

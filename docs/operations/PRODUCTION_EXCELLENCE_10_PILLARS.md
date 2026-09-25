@@ -4,8 +4,8 @@ This contract separates a healthy paper runtime from proof that the system is re
 
 ## The Ten Pillars
 
-1. Frozen production candidate with per-scope source fingerprints and a hash-chained acceptance log.
-2. Clean 720-hour soak against that unchanged candidate, including a seven-day checkpoint.
+1. Frozen production candidate with complete runtime-source coverage, per-file manifests, per-scope fingerprints, and a hash-chained acceptance log.
+2. Scope-aware unchanged-candidate validation: operations require 72 hours and three completed XNYS sessions; data and dependencies require 120 hours and five sessions; promotion logic requires 336 hours and ten sessions; strategy, execution, and risk remain at 720 hours and twenty sessions.
 3. Ten verified recovery drills covering auth, broker network, process, reboot, disk, external storage, memory, database, market data, and the order lifecycle.
 4. Durable live execution with pre-trade limits, read-only release boundaries, and a transactional order-intent ledger.
 5. Independent fill evidence that excludes model-derived fills and pre-candidate samples.
@@ -17,7 +17,7 @@ This contract separates a healthy paper runtime from proof that the system is re
 
 ## Candidate Workflow
 
-Freeze the intended candidate only after its source changes are committed:
+Initialize the first intended candidate after its source is reviewed:
 
 ```bash
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
@@ -28,9 +28,10 @@ Inspect without mutating state:
 
 ```bash
 ./scripts/ops/opsctl.sh production-excellence --json
+./scripts/ops/opsctl.sh source-mutation-guard --json
 ```
 
-When a reviewed source change is necessary, accept it explicitly:
+When a reviewed source change is necessary, run focused regressions and accept the exact working-tree fingerprint explicitly before committing it. The pre-commit hook blocks candidate-scoped source that does not match the accepted fingerprint:
 
 ```bash
 ./scripts/ops/opsctl.sh production-excellence --apply \
@@ -39,7 +40,9 @@ When a reviewed source change is necessary, accept it explicitly:
   --json
 ```
 
-Acceptance creates a new candidate generation. Only scopes affected by the changed source fingerprint restart their evidence windows. Historical raw profitability remains intact; the system measures a separate post-candidate forward cohort instead of rewriting old losses.
+Acceptance creates a new candidate generation. The event records the exact added, modified, and removed files, source-coverage receipt, affected scopes, and reason. Only scopes affected by the changed source fingerprint restart their evidence windows. Historical raw profitability remains intact; the system measures a separate post-candidate forward cohort instead of rewriting old losses.
+
+Candidate acceptance is intentionally never a self-healing action. The periodic source guard, readiness refresh, cross-system drift mesh, and pre-commit hook may detect, report, and fail closed on drift, but only an explicit operator-reviewed command may advance the immutable generation. A newly added runtime source must match the declared inventory and belong to at least one scope; otherwise acceptance is refused.
 
 ## Live-Order Safety
 
@@ -82,6 +85,10 @@ Run the same evidence protocol for every required drill listed in `config/produc
 
 ## Soak Semantics
 
-The initial candidate freeze begins a new 30-day production-excellence evidence window. Operational paper health is reported separately and continues collecting during evidence buildup. A later accepted change resets only the affected scopes, but the full soak uses the newest start among all soak scopes. Unaccepted drift blocks the soak clock until it is reviewed.
+`config/candidate_scope_validation_v1.json` is the canonical elapsed-evidence policy. Every blocking scope must satisfy both its credited wall-clock requirement and its completed-session requirement. Partial market sessions do not count. Planned maintenance preserves evidence earned before the event, but offline hours and maintenance-interrupted sessions earn no credit. If the XNYS calendar or policy cannot be verified, session credit is zero. An unknown scope inherits the strict `material_trading` tier.
+
+Candidate acceptance resets only the scopes touched by the reviewed source fingerprint. Operations-only changes therefore stop restarting strategy, execution, and risk evidence, while any material trading change still carries the full 720-hour and twenty-session burden. Exact generated outputs declared by the generated-artifact policy do not mutate the candidate; canonical documentation, tests, policy, and runtime source still require explicit acceptance and at least the operations tier.
+
+The cumulative segmented main-soak clock remains visible for developmental and operating-history review, but it is not promotion credit. The scope-aware receipt in `governance/health/continuous_soak_integrity_control_latest.json` is authoritative for elapsed candidate validation. The separate seven-day sustained-all-gates canary interlock remains in force after scope validation; neither receipt grants order authority.
 
 The livefeed row `[production-excellence]` is advisory to paper runtime and authoritative for live-money consideration. A blocked pillar therefore means "evidence is not yet sufficient for live money," not "stop healthy paper collection."

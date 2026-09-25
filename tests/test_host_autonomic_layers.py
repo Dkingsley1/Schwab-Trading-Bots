@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.ops import autonomic_resource_governor as governor
 from scripts.ops import host_capability_contract as host_contract
+
+
+def test_host_storage_probe_never_enumerates_protected_mounts(monkeypatch, tmp_path):
+    monkeypatch.setattr(host_contract, "PROJECT_ROOT", tmp_path.resolve())
+    alias = tmp_path / "protected-alias"
+    alias.symlink_to("/Volumes/VIDEO")
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_MOUNT", str(alias))
+    commands = []
+    monkeypatch.setattr(host_contract, "_run_capture", lambda command: commands.append(command) or "")
+    monkeypatch.setattr(host_contract, "_mount_rows", lambda: (_ for _ in ()).throw(AssertionError("all-mount census forbidden")))
+    payload = host_contract._storage_layout()
+    assert commands == [["df", "-kP", str(tmp_path.resolve())]]
+    assert payload["inventory_scope"] == "project_and_configured_archive_routes_only"
 from scripts.ops import host_self_benchmark
 from scripts.ops import memory_pressure_intelligence
 from scripts.ops import migration_readiness_report
@@ -16,13 +29,45 @@ from scripts.ops import workload_class_registry
 
 
 def _write_json(path: Path, payload: dict) -> None:
+    payload = {"timestamp_utc": datetime.now(timezone.utc).isoformat(), **payload}
+    if (path.name == "memory_pressure_intelligence_latest.json" and "snapshot" in payload and "reopen_gate" in payload) or (path.name == "autonomic_resource_governor_latest.json" and "stability_state" in payload):
+        # Recovery fixtures represent an earlier healthy sample beyond the minute dwell.
+        payload = {**payload, "timestamp_utc": (datetime.now(timezone.utc) - timedelta(seconds=61)).isoformat()}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def _ready_market_pattern_feedback(health: Path) -> None:
+    # Baseline fixtures need the same static, fail-closed contracts as production.
+    project_root = Path(__file__).resolve().parents[1]
+    for name in (
+        "system_role_contracts_v1.json",
+        "sleeve_strategy_contracts_v1.json",
+        "master_grandmaster_evidence_v2.json",
+        "paper_evidence_collection_controls_v1.json",
+    ):
+        _write_json(
+            health.parents[1] / "config" / name,
+            json.loads((project_root / "config" / name).read_text(encoding="utf-8")),
+        )
+    _write_json(health / "market_pattern_feedback_latest.json", {
+        "overall_status": "ready",
+        "patterns": [{"pattern_id": "bounded_trend_context"}],
+        "observable_dimension_count": 1,
+        "platform_feedback_contract": {"can_route_paper_collection_priority": True},
+    })
+
+
+def test_system_needs_keeps_missing_market_pattern_evidence_visible(tmp_path: Path) -> None:
+    payload = system_needs_intelligence.build_payload(
+        tmp_path, fix_log_path=tmp_path / "governance/health/fixes.jsonl"
+    )
+    assert "market_pattern_feedback_missing" in {row["blocker"] for row in payload["needs"]}
+
+
 def _host_payload() -> dict:
     return {
-        "timestamp_utc": "2026-05-20T00:00:00+00:00",
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "schema_version": 1,
         "ok": True,
         "overall_status": "ready",
@@ -200,6 +245,10 @@ def test_autonomic_governor_honors_six_p_core_user_reserve_target(monkeypatch, t
 
 def test_autonomic_governor_steps_up_collectors_and_training_when_backlog_is_green(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
+    _write_json(health / "memory_pressure_intelligence_latest.json", {
+        "classification": {"status": "clear", "recommended_p_core_worker_cap": 6},
+        "reopen_gate": {"safe_for_training": True, "safe_to_widen_p_core_workers": True},
+    })
     _write_json(health / "host_capability_contract_latest.json", _host_payload())
     _write_json(health / "os_adapter_layer_latest.json", os_adapter_layer.build_payload(host=_host_payload()))
     _write_json(health / "workload_class_registry_latest.json", workload_class_registry.build_payload())
@@ -1150,6 +1199,8 @@ def test_memory_pressure_intelligence_reserves_headroom_for_creative_apps(tmp_pa
     assert payload["classification"]["status"] == "foreground_headroom"
     assert payload["classification"]["recommended_p_core_worker_cap"] == 3
     assert payload["multitasking_headroom"]["level"] == "realtime_creative"
+    assert payload["operational_status"] == "ready"
+    assert payload["operational_ok"] is True
     assert payload["multitasking_headroom"]["training_allowed_by_multitasking"] is False
     assert payload["reopen_gate"]["safe_for_training"] is False
 
@@ -1184,7 +1235,7 @@ def test_memory_pressure_intelligence_treats_safe_media_headroom_as_managed_cont
     )
     _write_json(
         health / "computer_task_intelligence_latest.json",
-        {"timestamp_utc": "2099-01-01T00:00:00+00:00", "session_context": {"open_apps": ["Music"], "creative_level": "active"}},
+        {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "session_context": {"open_apps": ["Music"], "creative_level": "active"}},
     )
     _write_json(
         health / "memory_pressure_intelligence_latest.json",
@@ -1402,7 +1453,7 @@ def test_memory_pressure_intelligence_ignores_stale_host_foreground_when_compute
     _write_json(
         health / "computer_task_intelligence_latest.json",
         {
-            "timestamp_utc": "2026-05-21T00:00:00+00:00",
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "session_context": {
                 "open_apps": [],
                 "creative_level": "none",
@@ -2412,6 +2463,7 @@ def test_system_needs_intelligence_preserves_fix_frames(tmp_path: Path) -> None:
 
 def test_system_needs_includes_green_gate_and_migration_binder_frames(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
+    _ready_market_pattern_feedback(health)
     _write_json(
         health / "autonomic_resource_governor_latest.json",
         {
@@ -2457,6 +2509,7 @@ def test_system_needs_includes_runtime_pressure_attribution_frames(tmp_path: Pat
 
 def test_system_needs_falls_back_to_health_surface_repairs(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
+    _ready_market_pattern_feedback(health)
     _write_json(health / "autonomic_resource_governor_latest.json", {"what_do_you_need": {"items": []}})
     _write_json(
         health / "health_fast_latest.json",
@@ -2503,6 +2556,7 @@ def test_system_needs_falls_back_to_health_surface_repairs(tmp_path: Path) -> No
 
 def test_system_needs_surfaces_ready_batch20_training_action(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
+    _ready_market_pattern_feedback(health)
     _write_json(
         health / "autonomic_resource_governor_latest.json",
         {
@@ -2573,6 +2627,7 @@ def test_system_needs_turns_training_runtime_blockers_into_exact_needs(tmp_path:
 
 def test_system_needs_manages_training_expansion_blockers_during_green_soak(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
+    _ready_market_pattern_feedback(health)
     _write_json(health / "autonomic_resource_governor_latest.json", {"what_do_you_need": {"items": []}})
     _write_json(
         health / "unattended_soak_readiness_latest.json",
@@ -2634,6 +2689,7 @@ def test_system_needs_manages_training_expansion_blockers_during_green_soak(tmp_
 
 def test_system_needs_manages_optional_mlx_cap_during_green_soak(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
+    _ready_market_pattern_feedback(health)
     _write_json(
         health / "autonomic_resource_governor_latest.json",
         {
@@ -2686,6 +2742,7 @@ def test_system_needs_manages_optional_mlx_cap_during_green_soak(tmp_path: Path)
 
 def test_system_needs_manages_foreground_memory_headroom_during_green_soak(tmp_path: Path) -> None:
     health = tmp_path / "governance" / "health"
+    _ready_market_pattern_feedback(health)
     _write_json(health / "autonomic_resource_governor_latest.json", {"what_do_you_need": {"items": []}})
     _write_json(
         health / "memory_pressure_intelligence_latest.json",

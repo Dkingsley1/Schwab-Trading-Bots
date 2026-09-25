@@ -6,6 +6,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
@@ -54,6 +55,12 @@ PAPER_CONTROL_TOKENS = frozenset(
 )
 PAPER_CONTROL_TRAINING_LANES = frozenset({"governance_effect", "operational_effect"})
 PAPER_CONTROL_OBJECTIVES = frozenset({"governance_effect", "operational_effect", "control_outcome"})
+
+_PROMOTION_COHORT_CACHE: dict[str, Any] = {
+    "path": "",
+    "fingerprint": None,
+    "payload": {},
+}
 
 FUTURES_CONTRACT_MULTIPLIERS: dict[str, float] = {
     "ES": 50.0,
@@ -116,6 +123,195 @@ def _parse_utc(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def load_staged_promotion_cohort(project_root: str | Path) -> dict[str, Any]:
+    """Load and validate the single active paper-promotion stage."""
+
+    policy_path = (
+        Path(project_root) / "config" / "profitability_self_assessment_v1.json"
+    )
+    try:
+        stat = policy_path.stat()
+        fingerprint: tuple[int, int] | None = (int(stat.st_mtime_ns), int(stat.st_size))
+    except OSError:
+        fingerprint = None
+
+    if (
+        _PROMOTION_COHORT_CACHE.get("path") == str(policy_path)
+        and _PROMOTION_COHORT_CACHE.get("fingerprint") == fingerprint
+    ):
+        return dict(_PROMOTION_COHORT_CACHE.get("payload") or {})
+
+    try:
+        document = json.loads(policy_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        document = {}
+    policy = document.get("promotion_cohort") if isinstance(document, Mapping) else {}
+    policy = dict(policy) if isinstance(policy, Mapping) else {}
+    configured = bool(policy.get("enabled", False))
+    try:
+        active_stage_number = int(policy.get("active_stage", 0) or 0)
+    except (TypeError, ValueError):
+        active_stage_number = 0
+    stages = [
+        dict(row) for row in (policy.get("stages") or []) if isinstance(row, Mapping)
+    ]
+    active_stages = [
+        row
+        for row in stages
+        if int(_float(row.get("stage"), 0.0)) == active_stage_number
+    ]
+    blockers: list[str] = []
+    if not configured:
+        blockers.append("promotion_cohort_not_enabled")
+    if configured and not str(policy.get("cohort_id") or "").strip():
+        blockers.append("cohort_id_missing")
+    if configured and not str(policy.get("profile") or "").strip():
+        blockers.append("profile_missing")
+    if configured and len(active_stages) != 1:
+        blockers.append("exactly_one_active_stage_required")
+    active_stage = active_stages[0] if len(active_stages) == 1 else {}
+    if configured and not str(active_stage.get("symbol") or "").strip():
+        blockers.append("active_stage_symbol_missing")
+    if configured and not str(active_stage.get("strategy_id") or "").strip():
+        blockers.append("active_stage_strategy_missing")
+    if configured and int(_float(policy.get("maximum_active_stages"), 0.0)) != 1:
+        blockers.append("maximum_active_stages_must_equal_one")
+    if configured and int(_float(policy.get("maximum_active_strategies"), 0.0)) != 1:
+        blockers.append("maximum_active_strategies_must_equal_one")
+    if configured and int(_float(policy.get("maximum_symbols_per_stage"), 0.0)) != 1:
+        blockers.append("maximum_symbols_per_stage_must_equal_one")
+    if configured and bool(policy.get("live_execution_allowed", True)):
+        blockers.append("live_execution_must_remain_disabled")
+    if configured and bool(policy.get("automatic_stage_advancement_allowed", True)):
+        blockers.append("automatic_stage_advancement_must_remain_disabled")
+
+    receipt_payload = {
+        "cohort_id": str(policy.get("cohort_id") or ""),
+        "profile": str(policy.get("profile") or "").strip().lower(),
+        "sleeve_id": str(policy.get("sleeve_id") or "").strip().lower(),
+        "active_stage": active_stage_number,
+        "active_symbol": str(active_stage.get("symbol") or "").strip().upper(),
+        "active_strategy_id": str(active_stage.get("strategy_id") or "").strip(),
+        "direction_policy": str(policy.get("direction_policy") or "").strip().lower(),
+    }
+    receipt_sha256 = hashlib.sha256(
+        json.dumps(receipt_payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    result = {
+        "policy_present": policy_path.is_file(),
+        "configured": configured,
+        "valid": bool(configured and not blockers),
+        **receipt_payload,
+        "policy_path": str(policy_path),
+        "policy_receipt_sha256": receipt_sha256,
+        "blockers": blockers,
+        "broad_fleet_mode": str(policy.get("broad_fleet_mode") or ""),
+        "historical_book_policy": str(policy.get("historical_book_policy") or ""),
+        "automatic_stage_advancement_allowed": bool(
+            policy.get("automatic_stage_advancement_allowed", False)
+        ),
+        "live_execution_allowed": bool(policy.get("live_execution_allowed", False)),
+    }
+    _PROMOTION_COHORT_CACHE.update(
+        {
+            "path": str(policy_path),
+            "fingerprint": fingerprint,
+            "payload": result,
+        }
+    )
+    return dict(result)
+
+
+def evaluate_staged_promotion_cohort(
+    *,
+    project_root: str | Path,
+    enforcement_required: bool,
+    profile: Any,
+    sleeve_id: Any,
+    symbol: Any,
+    strategy_id: Any,
+    action: Any,
+    exposure_change: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Permit one candidate entry at a time while preserving reduce-only exits."""
+
+    if not enforcement_required:
+        return {
+            "required": False,
+            "allowed": True,
+            "disposition": "not_required",
+            "reasons": [],
+        }
+
+    cohort = load_staged_promotion_cohort(project_root)
+    exposure = dict(exposure_change) if isinstance(exposure_change, Mapping) else {}
+    reduction_exit = bool(
+        exposure.get("reduces_or_closes", False)
+        and not exposure.get("increases_exposure", False)
+        and not exposure.get("crosses_through_flat", False)
+    )
+    actual = {
+        "profile": str(profile or "").strip().lower(),
+        "sleeve_id": str(sleeve_id or "").strip().lower(),
+        "symbol": str(symbol or "").strip().upper(),
+        "strategy_id": str(strategy_id or "").strip(),
+        "action": str(action or "").strip().upper(),
+    }
+    expected = {
+        "profile": str(cohort.get("profile") or ""),
+        "sleeve_id": str(cohort.get("sleeve_id") or ""),
+        "symbol": str(cohort.get("active_symbol") or ""),
+        "strategy_id": str(cohort.get("active_strategy_id") or ""),
+    }
+    reasons: list[str] = []
+    if not bool(cohort.get("valid", False)):
+        reasons.extend(str(reason) for reason in (cohort.get("blockers") or []))
+        if not reasons:
+            reasons.append("promotion_cohort_policy_invalid")
+    elif reduction_exit:
+        return {
+            "required": True,
+            "allowed": True,
+            "disposition": "historical_position_reduce_only_exit",
+            "reasons": [],
+            "cohort": cohort,
+            "actual": actual,
+            "expected": expected,
+            "exposure_change": exposure,
+            "reduction_exit": True,
+            "live_execution_authority": False,
+        }
+    else:
+        for key in ("profile", "sleeve_id", "symbol", "strategy_id"):
+            if actual[key] != expected[key]:
+                reasons.append(f"outside_active_promotion_{key}")
+        if str(cohort.get("direction_policy") or "") == "long_only":
+            if actual["action"] != "BUY":
+                reasons.append("long_only_candidate_new_exposure_requires_buy")
+            if bool(exposure.get("crosses_through_flat", False)):
+                reasons.append("candidate_order_crosses_through_flat")
+
+    allowed = not reasons
+    return {
+        "required": True,
+        "allowed": allowed,
+        "disposition": (
+            "active_promotion_stage_entry"
+            if allowed
+            else "collection_only_outside_active_promotion_stage"
+        ),
+        "reasons": reasons,
+        "cohort": cohort,
+        "actual": actual,
+        "expected": expected,
+        "exposure_change": exposure,
+        "reduction_exit": False,
+        "live_execution_authority": False,
+    }
 
 
 def evaluate_paper_execution_authority(
@@ -621,7 +817,23 @@ def coalesce_paper_intents(
         base_weight = max(_float(row.get("weight"), 0.0), 0.01)
         accuracy = _clamp01(row.get("test_accuracy", 0.5))
         features = row.get("features") if isinstance(row.get("features"), Mapping) else {}
-        strategy_size = _clamp01(features.get("paper_profitability_strategy_size_multiplier_norm", 1.0))
+        strategy_size = (
+            1.0
+            if action == "SELL"
+            else min(
+                max(
+                    _float(
+                        features.get(
+                            "paper_profitability_strategy_size_multiplier_norm",
+                            1.0,
+                        ),
+                        1.0,
+                    ),
+                    0.0,
+                ),
+                1.10,
+            )
+        )
         regime_fit = _clamp01(features.get("profitability_regime_fit_norm", 1.0))
         execution_quality = _clamp01(
             features.get(
@@ -778,15 +990,33 @@ def coalesce_paper_intents(
     score_distance = min(max(0.055 + 0.30 * net_vote_ratio, 0.055), 0.45)
     score = 0.5 + direction * score_distance if direction else 0.5
     weighted_size = sum(
-        _clamp01(
-            (row.get("features") or {}).get("paper_profitability_strategy_size_multiplier_norm", 1.0)
-            if isinstance(row.get("features"), Mapping)
-            else 1.0
+        (
+            1.0
+            if action == "SELL"
+            else min(
+                max(
+                    _float(
+                        (row.get("features") or {}).get(
+                            "paper_profitability_strategy_size_multiplier_norm",
+                            1.0,
+                        )
+                        if isinstance(row.get("features"), Mapping)
+                        else 1.0,
+                        1.0,
+                    ),
+                    0.0,
+                ),
+                1.10,
+            )
         )
         * _float(row.get("effective_weight"))
         for row in eligible
     ) / total_weight
-    quantity_multiplier = _clamp01(weighted_size * (0.55 + 0.45 * consensus_ratio)) if action != "HOLD" else 0.0
+    quantity_multiplier = (
+        min(max(weighted_size * (0.55 + 0.45 * consensus_ratio), 0.0), 1.10)
+        if action != "HOLD"
+        else 0.0
+    )
     reason = (
         "portfolio_consensus"
         if action != "HOLD"

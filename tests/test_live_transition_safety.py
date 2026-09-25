@@ -98,7 +98,16 @@ def test_transition_chaos_harness_covers_all_required_faults(tmp_path) -> None:
 
     assert payload["ok"] is True
     assert payload["grade"] == "A+"
-    assert payload["scenario_count"] == 7
+    assert payload["scenario_count"] == 12
+    names = {row["scenario"] for row in payload["scenarios"]}
+    assert {
+        "token_expiry",
+        "provider_outage_with_valid_auth",
+        "partial_connected_account_response",
+        "duplicate_identical_order_intent",
+        "duplicate_conflicting_order_intent",
+        "schwab_capability_drift",
+    }.issubset(names)
 
 
 def test_transition_auth_signals_accept_current_nested_supervisor_schema() -> None:

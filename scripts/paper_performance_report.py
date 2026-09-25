@@ -29,6 +29,7 @@ from scripts.ops.artifact_generation_lock import (
     paper_profitability_generation_lock,
 )
 from core.profitability_statistics import clustered_post_cost_statistics
+from core.storage_router import inspect_storage_path
 
 DEFAULT_JSON_PATH = PROJECT_ROOT / "governance" / "health" / "paper_performance_latest.json"
 DEFAULT_MD_PATH = PROJECT_ROOT / "exports" / "reports" / "paper_performance_latest.md"
@@ -204,11 +205,16 @@ def _sync_profitability_control(
     source_contract = control.get("paper_performance_input_contract")
     source_contract = source_contract if isinstance(source_contract, dict) else {}
     current_hash = _file_sha256(performance_path)
+    usable_for_grade = bool(source_contract.get("usable_for_profitability_grade", False))
+    qualification_blockers = list(source_contract.get("blockers") or [])
+    evidence_pending_only = qualification_blockers == ["paper_performance_has_no_execution_evidence"]
     synchronized = bool(
         rc == 0
         and current_hash
         and current_hash == performance_hash
-        and source_contract.get("usable_for_profitability_grade", False)
+        and source_contract.get("source_fresh", False)
+        and source_contract.get("source_stable_during_read", False)
+        and (usable_for_grade or evidence_pending_only)
         and str(source_contract.get("sha256") or "") == current_hash
     )
     result.update(
@@ -217,12 +223,19 @@ def _sync_profitability_control(
             "ok": synchronized,
             "overall_status": "ready" if synchronized else "degraded",
             "attempted": True,
-            "reason": "hash_bound" if synchronized else "profitability_generation_sync_failed",
+            "reason": (
+                "hash_bound" if synchronized and usable_for_grade
+                else "hash_bound_evidence_pending" if synchronized
+                else "profitability_generation_sync_failed"
+            ),
+            "publication_verified": synchronized,
+            "qualification_ready": synchronized and usable_for_grade,
+            "qualification_blockers": qualification_blockers,
             "return_code": rc,
             "duration_seconds": round(time.monotonic() - started, 3),
             "paper_performance_sha256_after": current_hash,
             "profitability_source_sha256": str(source_contract.get("sha256") or ""),
-            "source_usable_for_grade": bool(source_contract.get("usable_for_profitability_grade", False)),
+            "source_usable_for_grade": usable_for_grade,
             "stdout_tail": stdout_tail,
             "stderr_tail": stderr_tail,
         }
@@ -327,47 +340,111 @@ def _day_key(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y%m%d")
 
 
-def _paper_source_files(project_root: Path) -> tuple[list[Path], str, int]:
+def _paper_source_files(
+    project_root: Path, *, audit: dict[str, Any] | None = None
+) -> tuple[list[Path], str, int]:
+    audit = audit if audit is not None else {}
+    audit.setdefault("discovery_error_count", 0)
+    audit.setdefault("discovery_errors", [])
+    audit.setdefault("unmaterialized_source_count", 0)
+
+    def route(path: Path) -> Path | None:
+        observed = inspect_storage_path(path)
+        if observed["status"] == "missing":
+            audit["unmaterialized_source_count"] += 1
+            return None
+        if observed["status"] != "present":
+            audit["discovery_error_count"] += 1
+            if len(audit["discovery_errors"]) < 10:
+                audit["discovery_errors"].append(
+                    {"path": str(path), "reason": observed["status"]}
+                )
+            return None
+        return Path(str(observed["resolved_path"]))
+
+    def children(root: Path, *, recursive: bool) -> Iterable[Path]:
+        pending = [root]
+        while pending:
+            directory = pending.pop()
+            try:
+                for child in directory.iterdir():
+                    # Never follow a child directory alias during discovery.
+                    if child.is_symlink():
+                        resolved = route(child)
+                        if resolved is not None and resolved.is_file():
+                            yield child
+                    elif child.is_dir():
+                        if recursive:
+                            pending.append(child)
+                    else:
+                        yield child
+            except OSError as exc:
+                audit["discovery_error_count"] += 1
+                if len(audit["discovery_errors"]) < 10:
+                    audit["discovery_errors"].append(
+                        {"path": str(directory), "reason": type(exc).__name__}
+                    )
+
     trade_logs_roots = [
         project_root / "exports" / "trade_logs",
         project_root / "local_fallback_storage" / "exports" / "trade_logs",
     ]
-    configured_external = str(os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or "").strip()
+    configured_external = str(
+        os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "") or ""
+    ).strip()
     if configured_external:
-        trade_logs_roots.append(Path(configured_external).expanduser() / "exports" / "trade_logs")
-    elif project_root.resolve(strict=False) == SOURCE_PROJECT_ROOT.resolve(strict=False):
-        external_mount = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")).expanduser()
+        trade_logs_roots.append(
+            Path(configured_external).expanduser() / "exports" / "trade_logs"
+        )
+    elif project_root.absolute() == SOURCE_PROJECT_ROOT.absolute():
+        external_mount = Path(
+            os.getenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/BOT_LOGS")
+        ).expanduser()
         external_project = str(
-            os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot") or "schwab_trading_bot"
+            os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot")
+            or "schwab_trading_bot"
         ).strip()
-        trade_logs_roots.append(external_mount / external_project / "exports" / "trade_logs")
+        trade_logs_roots.append(
+            external_mount / external_project / "exports" / "trade_logs"
+        )
 
     all_trade_log_paths: list[Path] = []
     reconciliation_paths: list[Path] = []
     seen_trade_roots: set[str] = set()
     for trade_logs_root in trade_logs_roots:
-        root_key = str(trade_logs_root.resolve(strict=False))
-        if root_key in seen_trade_roots or not trade_logs_root.exists():
+        resolved_root = route(trade_logs_root)
+        if resolved_root is None or str(resolved_root) in seen_trade_roots:
             continue
-        seen_trade_roots.add(root_key)
-        all_trade_log_paths.extend(trade_logs_root.rglob("paper_trades_*.jsonl"))
-        all_trade_log_paths.extend(trade_logs_root.rglob("paper_trades_*.jsonl.gz"))
-        reconciliation_paths.extend(trade_logs_root.rglob("paper_trades_*.jsonl.local_fallback*"))
-        reconciliation_paths.extend(trade_logs_root.rglob("paper_trades_*.jsonl.gz.local_fallback*"))
+        seen_trade_roots.add(str(resolved_root))
+        for path in children(resolved_root, recursive=True):
+            if path.match("paper_trades_*.jsonl") or path.match(
+                "paper_trades_*.jsonl.gz"
+            ):
+                all_trade_log_paths.append(path)
+            elif path.match("paper_trades_*.jsonl.local_fallback*") or path.match(
+                "paper_trades_*.jsonl.gz.local_fallback*"
+            ):
+                reconciliation_paths.append(path)
     all_trade_log_paths = sorted(set(all_trade_log_paths))
     reconciliation_paths = sorted(set(reconciliation_paths))
     trade_log_paths = [
-        path
-        for path in all_trade_log_paths
-        if "independent_fills" not in path.parts
+        path for path in all_trade_log_paths if "independent_fills" not in path.parts
     ]
+    bridge_root = route(project_root / "exports" / "paper_broker_bridge" / "paper")
+    bridge_paths = (
+        []
+        if bridge_root is None
+        else [
+            path
+            for path in children(bridge_root, recursive=False)
+            if path.match("paper_bridge_orders_*.jsonl")
+            or path.match("paper_bridge_orders_*.jsonl.gz")
+        ]
+    )
     source_groups = [
         (
             "paper_broker_bridge",
-            sorted(
-                list((project_root / "exports" / "paper_broker_bridge" / "paper").glob("paper_bridge_orders_*.jsonl"))
-                + list((project_root / "exports" / "paper_broker_bridge" / "paper").glob("paper_bridge_orders_*.jsonl.gz"))
-            ),
+            sorted(bridge_paths),
         ),
         (
             "trade_logs",
@@ -379,7 +456,10 @@ def _paper_source_files(project_root: Path) -> tuple[list[Path], str, int]:
         ),
         (
             "root_paper_trades",
-            sorted(list(project_root.glob("paper_trades_*.jsonl")) + list(project_root.glob("paper_trades_*.jsonl.gz"))),
+            sorted(
+                list(project_root.glob("paper_trades_*.jsonl"))
+                + list(project_root.glob("paper_trades_*.jsonl.gz"))
+            ),
         ),
     ]
 
@@ -390,11 +470,15 @@ def _paper_source_files(project_root: Path) -> tuple[list[Path], str, int]:
         if paths:
             kinds.append(kind)
         for candidate in paths:
-            key = str(candidate.resolve())
+            resolved = route(candidate)
+            if resolved is None:
+                continue
+            key = str(resolved)
             if key in seen:
                 continue
             seen.add(key)
-            files.append(candidate)
+            files.append(resolved)
+
     def _source_priority(item: Path) -> tuple[int, str]:
         text = str(item)
         if "/exports/trade_logs/" in text:
@@ -404,10 +488,16 @@ def _paper_source_files(project_root: Path) -> tuple[list[Path], str, int]:
         return 1, text
 
     files.sort(key=_source_priority)
-    return files, ",".join(kinds) if kinds else "none", len(all_trade_log_paths) - len(trade_log_paths)
+    return (
+        files,
+        ",".join(kinds) if kinds else "none",
+        len(all_trade_log_paths) - len(trade_log_paths),
+    )
 
 
-def _active_shadow_profiles(project_root: Path, *, day: str) -> dict[str, dict[str, Any]]:
+def _active_shadow_profiles(
+    project_root: Path, *, day: str
+) -> dict[str, dict[str, Any]]:
     health_dir = project_root / "governance" / "health"
     latest: dict[str, dict[str, Any]] = {}
     for path in sorted(health_dir.glob("shadow_loop_*_*.json")):
@@ -448,8 +538,16 @@ def _paper_row_signature(row: dict[str, Any]) -> str:
 
 def _paper_execution_identity(row: dict[str, Any]) -> str:
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-    intent = row.get("order_intent_evidence") if isinstance(row.get("order_intent_evidence"), dict) else {}
-    semantic_order = intent.get("semantic_order") if isinstance(intent.get("semantic_order"), dict) else {}
+    intent = (
+        row.get("order_intent_evidence")
+        if isinstance(row.get("order_intent_evidence"), dict)
+        else {}
+    )
+    semantic_order = (
+        intent.get("semantic_order")
+        if isinstance(intent.get("semantic_order"), dict)
+        else {}
+    )
     execution_id = str(
         row.get("execution_id")
         or row.get("fill_id")
@@ -466,25 +564,39 @@ def _paper_execution_identity(row: dict[str, Any]) -> str:
         or ""
     ).strip()
     if decision_id:
-        book_id = str(row.get("paper_book_id") or metadata.get("paper_book_id") or "unbound-book").strip()
+        book_id = str(
+            row.get("paper_book_id") or metadata.get("paper_book_id") or "unbound-book"
+        ).strip()
         return f"paper-decision:{book_id}:{decision_id}"
     return f"content:{_paper_row_signature(row)}"
 
 
 def _calibration_only_paper_row_reason(row: dict[str, Any]) -> str:
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-    provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
-    if bool(row.get("independent_fill_evidence", False)) or bool(metadata.get("independent_fill_evidence", False)):
+    provenance = (
+        row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+    )
+    if bool(row.get("independent_fill_evidence", False)) or bool(
+        metadata.get("independent_fill_evidence", False)
+    ):
         return "independent_fill_evidence"
-    fill_source = str(row.get("paper_fill_source") or metadata.get("paper_fill_source") or "").strip().lower()
+    fill_source = (
+        str(row.get("paper_fill_source") or metadata.get("paper_fill_source") or "")
+        .strip()
+        .lower()
+    )
     if fill_source in {"market_replay_fill", "independent_fill_evidence"}:
         return fill_source
-    account_mode = str(
-        row.get("account_mode")
-        or metadata.get("account_mode")
-        or provenance.get("account_mode")
-        or ""
-    ).strip().lower()
+    account_mode = (
+        str(
+            row.get("account_mode")
+            or metadata.get("account_mode")
+            or provenance.get("account_mode")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     if account_mode == "replay":
         return "replay_account_mode"
     return ""
@@ -493,7 +605,7 @@ def _calibration_only_paper_row_reason(row: dict[str, Any]) -> str:
 def _iter_rows(
     files: Iterable[Path],
     *,
-    deduplication: dict[str, int] | None = None,
+    deduplication: dict[str, Any] | None = None,
     evidence_through: datetime | None = None,
 ) -> Iterable[dict[str, Any]]:
     seen_rows: set[str] = set()
@@ -503,10 +615,20 @@ def _iter_rows(
     counters.setdefault("mirrored_records_suppressed", 0)
     counters.setdefault("calibration_records_excluded", 0)
     counters.setdefault("post_snapshot_records_deferred", 0)
+    for key in (
+        "source_files_opened",
+        "source_read_error_count",
+        "invalid_json_rows",
+        "non_object_rows",
+        "invalid_timestamp_rows",
+    ):
+        counters.setdefault(key, 0)
+    counters.setdefault("source_read_errors", [])
     for path in files:
         opener = gzip.open if ".jsonl.gz" in path.name else Path.open
         try:
-            with opener(path, "rt", encoding="utf-8", errors="ignore") as handle:
+            with opener(path, "rt", encoding="utf-8") as handle:
+                counters["source_files_opened"] += 1
                 for raw in handle:
                     line = raw.strip()
                     if not line:
@@ -514,15 +636,26 @@ def _iter_rows(
                     try:
                         row = json.loads(line)
                     except Exception:
+                        counters["invalid_json_rows"] += 1
                         continue
                     if not isinstance(row, dict):
+                        counters["non_object_rows"] += 1
                         continue
                     counters["records_read"] += 1
                     if _calibration_only_paper_row_reason(row):
                         counters["calibration_records_excluded"] += 1
                         continue
-                    timestamp = _parse_ts(row.get("timestamp_utc") or row.get("timestamp"))
-                    if evidence_through is not None and timestamp is not None and timestamp > evidence_through:
+                    timestamp = _parse_ts(
+                        row.get("timestamp_utc") or row.get("timestamp")
+                    )
+                    if timestamp is None:
+                        counters["invalid_timestamp_rows"] += 1
+                        continue
+                    if (
+                        evidence_through is not None
+                        and timestamp is not None
+                        and timestamp > evidence_through
+                    ):
                         counters["post_snapshot_records_deferred"] += 1
                         continue
                     identity = _paper_execution_identity(row)
@@ -531,8 +664,15 @@ def _iter_rows(
                         continue
                     seen_rows.add(identity)
                     counters["records_emitted"] += 1
+                    if not row.get("timestamp_utc"):
+                        row = {**row, "timestamp_utc": timestamp.isoformat()}
                     yield row
-        except Exception:
+        except Exception as exc:
+            counters["source_read_error_count"] += 1
+            if len(counters["source_read_errors"]) < 10:
+                counters["source_read_errors"].append(
+                    {"path": str(path), "error_type": type(exc).__name__}
+                )
             continue
 
 
@@ -547,10 +687,23 @@ def _profile_of(row: dict[str, Any]) -> str:
 
 
 def _strategy_of(row: dict[str, Any]) -> str:
-    text = str(row.get("strategy") or "").strip()
+    meta = row.get("metadata")
+    if isinstance(meta, dict):
+        specialization = meta.get("strategy_specialization")
+        if isinstance(specialization, dict):
+            contract_text = str(
+                specialization.get("selected_strategy_id") or ""
+            ).strip()
+            if contract_text:
+                return contract_text
+        contract = meta.get("strategy_contract")
+        if isinstance(contract, dict):
+            contract_text = str(contract.get("strategy_id") or "").strip()
+            if contract_text:
+                return contract_text
+    text = str(row.get("paper_strategy") or row.get("strategy") or "").strip()
     if text:
         return text
-    meta = row.get("metadata")
     if isinstance(meta, dict):
         meta_text = str(meta.get("strategy_id") or meta.get("bot_id") or "").strip()
         if meta_text:
@@ -721,30 +874,49 @@ def _build_period_history_series(
 def _build_period_change_series(
     *,
     selected_day: str,
-    selected_net: float,
-    week_to_date_change: float,
+    selected_net: float | None,
+    week_to_date_change: float | None,
     all_days: list[str],
     history_by_day: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     selected_date = datetime.strptime(selected_day, "%Y%m%d").date()
+    week_start = (selected_date - timedelta(days=selected_date.weekday())).strftime(
+        "%Y%m%d"
+    )
     period_rows: list[dict[str, Any]] = [
         {
             "label": "WTD",
             "window_days": int(selected_date.weekday() + 1),
-            "change": round(float(week_to_date_change), 6),
+            "available_days": sum(
+                1 for day in all_days if week_start <= day <= selected_day
+            ),
+            "available": week_to_date_change is not None,
+            "change": (
+                round(week_to_date_change, 6)
+                if week_to_date_change is not None
+                else None
+            ),
         }
     ]
     for window_days in (7, 14, 21, 30):
         start_day = (selected_date - timedelta(days=window_days - 1)).strftime("%Y%m%d")
         prior_day = max((d for d in all_days if d < start_day), default="")
-        prior_net = float((history_by_day.get(prior_day) or {}).get("ending_net_pnl_total", 0.0) or 0.0)
+        prior_net = float(
+            (history_by_day.get(prior_day) or {}).get("ending_net_pnl_total", 0.0)
+            or 0.0
+        )
         available_days = sum(1 for d in all_days if start_day <= d <= selected_day)
         period_rows.append(
             {
                 "label": f"{window_days}D",
                 "window_days": int(window_days),
                 "available_days": int(available_days),
-                "change": round(float(selected_net - prior_net), 6),
+                "available": selected_net is not None,
+                "change": (
+                    round(selected_net - prior_net, 6)
+                    if selected_net is not None
+                    else None
+                ),
             }
         )
     return period_rows
@@ -982,7 +1154,113 @@ def _candidate_profitability_cutoff(project_root: Path) -> datetime | None:
     return _candidate_profitability_context(project_root).get("cutoff_utc")
 
 
-def _post_cost_flow_view(rows: Iterable[dict[str, Any]], *, scope: str) -> dict[str, Any]:
+def _promotion_cohort_context(project_root: Path) -> dict[str, Any]:
+    policy_path = project_root / "config" / "profitability_self_assessment_v1.json"
+    try:
+        payload = json.loads(policy_path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    policy = payload.get("promotion_cohort") if isinstance(payload, dict) else {}
+    policy = policy if isinstance(policy, dict) else {}
+    enabled = bool(policy.get("enabled", False))
+    try:
+        active_stage_number = int(policy.get("active_stage", 0) or 0)
+    except (TypeError, ValueError):
+        active_stage_number = 0
+    stages = [row for row in (policy.get("stages") or []) if isinstance(row, dict)]
+    active_stages = [
+        row
+        for row in stages
+        if int(_safe_float(row.get("stage"), 0.0)) == active_stage_number
+    ]
+    blockers: list[str] = []
+    if enabled and not str(policy.get("cohort_id") or "").strip():
+        blockers.append("cohort_id_missing")
+    if enabled and not str(policy.get("profile") or "").strip():
+        blockers.append("profile_missing")
+    if enabled and len(active_stages) != 1:
+        blockers.append("exactly_one_active_stage_required")
+    active_stage = dict(active_stages[0]) if len(active_stages) == 1 else {}
+    if enabled and not str(active_stage.get("symbol") or "").strip():
+        blockers.append("active_stage_symbol_missing")
+    if enabled and not str(active_stage.get("strategy_id") or "").strip():
+        blockers.append("active_stage_strategy_missing")
+    if enabled and int(_safe_float(policy.get("maximum_active_stages"), 0.0)) != 1:
+        blockers.append("maximum_active_stages_must_equal_one")
+    if enabled and int(_safe_float(policy.get("maximum_active_strategies"), 0.0)) != 1:
+        blockers.append("maximum_active_strategies_must_equal_one")
+    if enabled and int(_safe_float(policy.get("maximum_symbols_per_stage"), 0.0)) != 1:
+        blockers.append("maximum_symbols_per_stage_must_equal_one")
+    if enabled and bool(policy.get("live_execution_allowed", True)):
+        blockers.append("live_execution_must_remain_disabled")
+    if enabled and bool(policy.get("automatic_stage_advancement_allowed", True)):
+        blockers.append("automatic_stage_advancement_must_remain_disabled")
+    return {
+        "configured": enabled,
+        "valid": bool(enabled and not blockers),
+        "policy_path": str(policy_path),
+        "cohort_id": str(policy.get("cohort_id") or ""),
+        "profile": str(policy.get("profile") or "").strip().lower(),
+        "sleeve_id": str(policy.get("sleeve_id") or "").strip().lower(),
+        "active_stage": active_stage_number,
+        "active_symbol": str(active_stage.get("symbol") or "").strip().upper(),
+        "active_strategy_id": str(active_stage.get("strategy_id") or "").strip(),
+        "stage_count": len(stages),
+        "blockers": blockers,
+        "broad_fleet_mode": str(policy.get("broad_fleet_mode") or ""),
+        "non_cohort_candidate_rows": str(policy.get("non_cohort_candidate_rows") or ""),
+        "stage_advancement": str(policy.get("stage_advancement") or ""),
+        "automatic_stage_advancement_allowed": bool(
+            policy.get("automatic_stage_advancement_allowed", False)
+        ),
+        "live_execution_allowed": bool(policy.get("live_execution_allowed", False)),
+    }
+
+
+def _promotion_cohort_row_eligibility(
+    row: dict[str, Any], cohort: dict[str, Any]
+) -> tuple[bool, str]:
+    if not cohort.get("configured", False):
+        return True, "cohort_not_configured"
+    if not cohort.get("valid", False):
+        return False, "promotion_cohort_policy_invalid"
+    if _profile_of(row) != str(cohort.get("profile") or ""):
+        return False, "profile_outside_promotion_cohort"
+    symbol = str(row.get("symbol") or "").strip().upper()
+    if symbol != str(cohort.get("active_symbol") or ""):
+        return False, "symbol_outside_active_stage"
+    strategy_id = _strategy_of(row)
+    if strategy_id != str(cohort.get("active_strategy_id") or ""):
+        return False, "strategy_outside_active_stage"
+    sleeve_id = ""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    specialization = (
+        metadata.get("strategy_specialization")
+        if isinstance(metadata.get("strategy_specialization"), dict)
+        else {}
+    )
+    contract = (
+        metadata.get("strategy_contract")
+        if isinstance(metadata.get("strategy_contract"), dict)
+        else {}
+    )
+    sleeve_id = (
+        str(specialization.get("sleeve_id") or contract.get("sleeve_id") or "")
+        .strip()
+        .lower()
+    )
+    if not sleeve_id and strategy_id.startswith("sleeve::"):
+        parts = strategy_id.split("::")
+        sleeve_id = parts[1].strip().lower() if len(parts) > 1 else ""
+    required_sleeve = str(cohort.get("sleeve_id") or "")
+    if required_sleeve and sleeve_id != required_sleeve:
+        return False, "sleeve_identity_mismatch"
+    return True, "active_promotion_stage_match"
+
+
+def _post_cost_flow_view(
+    rows: Iterable[dict[str, Any]], *, scope: str
+) -> dict[str, Any]:
     values: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict) or _pnl_schema_version(row) < 2:
@@ -1020,6 +1298,7 @@ def _post_cost_flow_view(rows: Iterable[dict[str, Any]], *, scope: str) -> dict[
         "scope": scope,
         "schema_version": 2,
         "sample_count": len(values),
+        "row_count": len(values),
         "observed_days": len({value.date().isoformat() for value in observed}),
         "first_observation_utc": min(observed).isoformat() if observed else "",
         "last_observation_utc": max(observed).isoformat() if observed else "",
@@ -1029,6 +1308,296 @@ def _post_cost_flow_view(rows: Iterable[dict[str, Any]], *, scope: str) -> dict[
         "candidate_ids": candidate_ids,
         "accounting_policy": "flow deltas are additive within this scope; ending book totals are not mixed across candidate vintages",
     }
+
+
+def _production_candidate_identity(row: dict[str, Any]) -> tuple[str, int]:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    candidate_id = str(metadata.get("production_candidate_id") or "").strip()
+    try:
+        generation = int(metadata.get("production_candidate_generation", 0) or 0)
+    except (TypeError, ValueError):
+        generation = 0
+    return candidate_id, generation
+
+
+def _developmental_generation_flow_ledger(
+    rows: Iterable[dict[str, Any]],
+    *,
+    current_candidate_id: str,
+) -> dict[str, Any]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    unbound_sample_count = 0
+    for row in rows:
+        if not isinstance(row, dict) or _pnl_schema_version(row) < 2:
+            continue
+        if "post_cost_pnl_delta" not in row:
+            continue
+        candidate_id, _ = _production_candidate_identity(row)
+        if not candidate_id:
+            unbound_sample_count += 1
+            continue
+        grouped[candidate_id].append(row)
+
+    generation_flows: list[dict[str, Any]] = []
+    metadata_conflict_count = 0
+    candidate_bound_sample_count = 0
+    for candidate_id, candidate_rows in sorted(grouped.items()):
+        generations = {
+            generation
+            for _, generation in (
+                _production_candidate_identity(row) for row in candidate_rows
+            )
+            if generation > 0
+        }
+        generation = next(iter(generations)) if len(generations) == 1 else 0
+        generation_consistent = bool(
+            len(generations) == 1
+            and all(
+                _production_candidate_identity(row)[1] == generation
+                for row in candidate_rows
+            )
+        )
+        if not generation_consistent:
+            metadata_conflict_count += 1
+        flow = _post_cost_flow_view(
+            candidate_rows,
+            scope=f"accepted_generation:{candidate_id}",
+        )
+        candidate_bound_sample_count += int(flow.get("sample_count", 0) or 0)
+        generation_flows.append(
+            {
+                **flow,
+                "candidate_id": candidate_id,
+                "candidate_generation": generation,
+                "candidate_generation_consistent": generation_consistent,
+                "current_candidate": bool(
+                    current_candidate_id and candidate_id == current_candidate_id
+                ),
+                "profile_count": len({_profile_of(row) for row in candidate_rows}),
+                "strategy_count": len({_strategy_of(row) for row in candidate_rows}),
+                "symbol_count": len(
+                    {
+                        str(row.get("symbol") or "").strip().upper()
+                        for row in candidate_rows
+                        if str(row.get("symbol") or "").strip()
+                    }
+                ),
+                "developmental_attribution_eligible": generation_consistent,
+                "promotion_grade_eligible_from_this_view": False,
+            }
+        )
+
+    return {
+        "schema_version": 1,
+        "generation_flows": generation_flows,
+        "generation_flow_count": len(generation_flows),
+        "candidate_bound_sample_count": candidate_bound_sample_count,
+        "unbound_schema_v2_sample_count": unbound_sample_count,
+        "metadata_conflict_count": metadata_conflict_count,
+        "historical_generation_flow_is_developmental_only": True,
+        "current_candidate_promotion_uses_candidate_forward_flow": True,
+        "policy": (
+            "identity-stamped post-cost rows remain grouped by accepted candidate generation for "
+            "developmental comparison; this ledger cannot grade promotion or establish causation"
+        ),
+    }
+
+
+def _candidate_post_cost_daily_series(
+    rows: Iterable[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    buckets: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or _pnl_schema_version(row) < 2:
+            continue
+        timestamp = _parse_ts(row.get("timestamp_utc"))
+        if timestamp is None:
+            continue
+        profile = _profile_of(row)
+        day = _day_key(timestamp)
+        profile_rows = buckets.setdefault(profile, {})
+        bucket = profile_rows.setdefault(
+            day,
+            {
+                "day_utc": day,
+                "sample_count": 0,
+                "post_cost_pnl_delta_total": 0.0,
+                "post_cost_return_bps_total": 0.0,
+                "symbols": set(),
+                "strategies": set(),
+            },
+        )
+        bucket["sample_count"] += 1
+        bucket["post_cost_pnl_delta_total"] += _safe_float(
+            row.get("post_cost_pnl_delta"),
+            0.0,
+        )
+        bucket["post_cost_return_bps_total"] += _safe_float(
+            row.get("post_cost_return_bps"),
+            0.0,
+        )
+        symbol = str(row.get("symbol") or "").strip().upper()
+        strategy = _strategy_of(row)
+        if symbol:
+            bucket["symbols"].add(symbol)
+        if strategy:
+            bucket["strategies"].add(strategy)
+
+    result: dict[str, list[dict[str, Any]]] = {}
+    for profile, by_day in sorted(buckets.items()):
+        result[profile] = []
+        for day, bucket in sorted(by_day.items()):
+            sample_count = max(int(bucket.get("sample_count", 0) or 0), 1)
+            result[profile].append(
+                {
+                    "day_utc": day,
+                    "sample_count": sample_count,
+                    "post_cost_pnl_delta_total": round(
+                        float(bucket.get("post_cost_pnl_delta_total", 0.0) or 0.0),
+                        8,
+                    ),
+                    "post_cost_return_bps_total": round(
+                        float(bucket.get("post_cost_return_bps_total", 0.0) or 0.0),
+                        8,
+                    ),
+                    "mean_post_cost_return_bps": round(
+                        float(bucket.get("post_cost_return_bps_total", 0.0) or 0.0)
+                        / sample_count,
+                        8,
+                    ),
+                    "unique_symbol_count": len(bucket.get("symbols") or set()),
+                    "unique_strategy_count": len(bucket.get("strategies") or set()),
+                }
+            )
+    return result
+
+
+def _candidate_strategy_post_cost_daily_series(
+    rows: Iterable[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    buckets: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or _pnl_schema_version(row) < 2:
+            continue
+        timestamp = _parse_ts(row.get("timestamp_utc"))
+        if timestamp is None:
+            continue
+        strategy = _strategy_of(row)
+        day = _day_key(timestamp)
+        strategy_rows = buckets.setdefault(strategy, {})
+        bucket = strategy_rows.setdefault(
+            day,
+            {
+                "day_utc": day,
+                "sample_count": 0,
+                "post_cost_pnl_delta_total": 0.0,
+                "post_cost_return_bps_total": 0.0,
+                "profiles": set(),
+                "symbols": set(),
+            },
+        )
+        bucket["sample_count"] += 1
+        bucket["post_cost_pnl_delta_total"] += _safe_float(
+            row.get("post_cost_pnl_delta"), 0.0
+        )
+        bucket["post_cost_return_bps_total"] += _safe_float(
+            row.get("post_cost_return_bps"), 0.0
+        )
+        bucket["profiles"].add(_profile_of(row))
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol:
+            bucket["symbols"].add(symbol)
+
+    result: dict[str, list[dict[str, Any]]] = {}
+    for strategy, by_day in sorted(buckets.items()):
+        result[strategy] = []
+        for day, bucket in sorted(by_day.items()):
+            sample_count = max(int(bucket.get("sample_count", 0) or 0), 1)
+            result[strategy].append(
+                {
+                    "day_utc": day,
+                    "sample_count": sample_count,
+                    "post_cost_pnl_delta_total": round(
+                        float(bucket.get("post_cost_pnl_delta_total", 0.0) or 0.0), 8
+                    ),
+                    "post_cost_return_bps_total": round(
+                        float(bucket.get("post_cost_return_bps_total", 0.0) or 0.0), 8
+                    ),
+                    "mean_post_cost_return_bps": round(
+                        float(bucket.get("post_cost_return_bps_total", 0.0) or 0.0)
+                        / sample_count,
+                        8,
+                    ),
+                    "profiles": sorted(bucket.get("profiles") or set()),
+                    "unique_symbol_count": len(bucket.get("symbols") or set()),
+                }
+            )
+    return result
+
+
+def _strategy_specialization_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = row.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    value = metadata.get("strategy_specialization")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _strategy_post_cost_latest(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if isinstance(row, dict) and _pnl_schema_version(row) >= 2:
+            grouped[_strategy_of(row)].append(row)
+    output: list[dict[str, Any]] = []
+    for strategy_id, strategy_rows in sorted(grouped.items()):
+        latest = max(
+            strategy_rows,
+            key=lambda row: _parse_ts(row.get("timestamp_utc")) or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        specialization = _strategy_specialization_metadata(latest)
+        timestamps = [
+            timestamp
+            for timestamp in (_parse_ts(row.get("timestamp_utc")) for row in strategy_rows)
+            if timestamp is not None
+        ]
+        output.append(
+            {
+                "strategy_id": strategy_id,
+                "strategy_name": str(
+                    specialization.get("selected_strategy_name") or strategy_id
+                ),
+                "profile": _profile_of(latest),
+                "source_kind": str(specialization.get("source_kind") or "legacy"),
+                "objective_class": str(
+                    specialization.get("objective_class") or "unclassified"
+                ),
+                "contract_complete": bool(
+                    specialization.get("contract_complete", False)
+                ),
+                "contract_receipt_sha256": str(
+                    specialization.get("contract_receipt_sha256") or ""
+                ),
+                "regime_assessment": dict(
+                    specialization.get("regime_assessment")
+                    if isinstance(specialization.get("regime_assessment"), dict)
+                    else {}
+                ),
+                "sample_count": len(strategy_rows),
+                "independent_day_count": len({_day_key(value) for value in timestamps}),
+                "independent_symbol_count": len(
+                    {
+                        str(row.get("symbol") or "").strip().upper()
+                        for row in strategy_rows
+                        if str(row.get("symbol") or "").strip()
+                    }
+                ),
+                "first_observation_utc": min(timestamps).isoformat() if timestamps else "",
+                "last_observation_utc": max(timestamps).isoformat() if timestamps else "",
+                "post_cost_expectancy": _post_cost_expectancy(strategy_rows),
+                "authority": "evidence_only_no_decision_sizing_promotion_or_live_authority",
+            }
+        )
+    return output
 
 
 def _post_cost_expectancy(
@@ -1065,14 +1634,59 @@ def _post_cost_expectancy(
             "promotion_evidence_sufficient": False,
             "positive_clustered_lower_confidence_bound_95": False,
             "promotion_blockers": ["no_post_cost_observations"],
+            "expected_value_decomposition": {
+                "available": False,
+                "win_probability": None,
+                "average_win": None,
+                "loss_probability": None,
+                "average_loss_abs": None,
+                "expected_value": None,
+                "mean_identity_error": None,
+            },
+            "payoff_asymmetry": {
+                "available": False,
+                "positive_sample_count": 0,
+                "negative_sample_count": 0,
+                "average_win_to_average_loss_ratio": None,
+                "profit_factor": None,
+            },
         }
 
     pnl_values = [item[0] for item in samples]
     return_values = [item[1] for item in samples]
+    positive_pnl_values = [value for value in pnl_values if value > 0.0]
+    negative_pnl_values = [value for value in pnl_values if value < 0.0]
+    positive_return_values = [value for value in return_values if value > 0.0]
+    negative_return_values = [value for value in return_values if value < 0.0]
     mean_pnl = _mean(pnl_values)
     mean_return = _mean(return_values)
-    pnl_se = _sample_stddev(pnl_values) / math.sqrt(sample_count) if sample_count > 1 else 0.0
-    return_se = _sample_stddev(return_values) / math.sqrt(sample_count) if sample_count > 1 else 0.0
+    win_probability = len(positive_pnl_values) / sample_count
+    loss_probability = len(negative_pnl_values) / sample_count
+    average_win = _mean(positive_pnl_values) if positive_pnl_values else 0.0
+    average_loss_abs = abs(_mean(negative_pnl_values)) if negative_pnl_values else 0.0
+    expected_value = win_probability * average_win - loss_probability * average_loss_abs
+    return_win_probability = len(positive_return_values) / sample_count
+    return_loss_probability = len(negative_return_values) / sample_count
+    average_win_return_bps = (
+        _mean(positive_return_values) if positive_return_values else 0.0
+    )
+    average_loss_return_bps_abs = (
+        abs(_mean(negative_return_values)) if negative_return_values else 0.0
+    )
+    expected_return_bps = (
+        return_win_probability * average_win_return_bps
+        - return_loss_probability * average_loss_return_bps_abs
+    )
+    pnl_se = (
+        _sample_stddev(pnl_values) / math.sqrt(sample_count)
+        if sample_count > 1
+        else 0.0
+    )
+    return_se = (
+        _sample_stddev(return_values) / math.sqrt(sample_count)
+        if sample_count > 1
+        else 0.0
+    )
     pnl_lcb = mean_pnl - (1.96 * pnl_se)
     return_lcb = mean_return - (1.96 * return_se)
     evidence_sufficient = sample_count >= required
@@ -1133,7 +1747,78 @@ def _post_cost_expectancy(
         "first_sample_timestamp_utc": min(timestamps).isoformat().replace("+00:00", "Z") if timestamps else "",
         "last_sample_timestamp_utc": max(timestamps).isoformat().replace("+00:00", "Z") if timestamps else "",
         "positive_sample_count": int(sum(1 for value in pnl_values if value > 0.0)),
-        "positive_sample_rate": round(float(sum(1 for value in pnl_values if value > 0.0) / sample_count), 6),
+        "positive_sample_rate": round(
+            float(sum(1 for value in pnl_values if value > 0.0) / sample_count), 6
+        ),
+        "expected_value_decomposition": {
+            "available": True,
+            "win_probability": round(float(win_probability), 8),
+            "average_win": round(float(average_win), 8),
+            "loss_probability": round(float(loss_probability), 8),
+            "average_loss_abs": round(float(average_loss_abs), 8),
+            "flat_probability": round(
+                float(1.0 - win_probability - loss_probability), 8
+            ),
+            "expected_value": round(float(expected_value), 8),
+            "observed_mean": round(float(mean_pnl), 8),
+            "mean_identity_error": round(float(mean_pnl - expected_value), 12),
+            "return_bps": {
+                "win_probability": round(float(return_win_probability), 8),
+                "average_win": round(float(average_win_return_bps), 8),
+                "loss_probability": round(float(return_loss_probability), 8),
+                "average_loss_abs": round(float(average_loss_return_bps_abs), 8),
+                "expected_value": round(float(expected_return_bps), 8),
+                "observed_mean": round(float(mean_return), 8),
+                "mean_identity_error": round(
+                    float(mean_return - expected_return_bps), 12
+                ),
+            },
+            "formula": "p_win*average_win - p_loss*average_loss_abs",
+        },
+        "payoff_asymmetry": {
+            "available": bool(
+                any(value > 0.0 for value in pnl_values)
+                and any(value < 0.0 for value in pnl_values)
+            ),
+            "positive_sample_count": int(
+                sum(1 for value in pnl_values if value > 0.0)
+            ),
+            "negative_sample_count": int(
+                sum(1 for value in pnl_values if value < 0.0)
+            ),
+            "average_positive_post_cost_pnl_delta": round(
+                _mean([value for value in pnl_values if value > 0.0]),
+                8,
+            )
+            if any(value > 0.0 for value in pnl_values)
+            else None,
+            "average_negative_post_cost_pnl_delta_abs": round(
+                abs(_mean([value for value in pnl_values if value < 0.0])),
+                8,
+            )
+            if any(value < 0.0 for value in pnl_values)
+            else None,
+            "average_win_to_average_loss_ratio": round(
+                _mean([value for value in pnl_values if value > 0.0])
+                / max(
+                    abs(_mean([value for value in pnl_values if value < 0.0])),
+                    1e-12,
+                ),
+                8,
+            )
+            if any(value > 0.0 for value in pnl_values)
+            and any(value < 0.0 for value in pnl_values)
+            else None,
+            "profit_factor": round(
+                sum(value for value in pnl_values if value > 0.0)
+                / max(abs(sum(value for value in pnl_values if value < 0.0)), 1e-12),
+                8,
+            )
+            if any(value > 0.0 for value in pnl_values)
+            and any(value < 0.0 for value in pnl_values)
+            else None,
+            "policy": "payoff asymmetry is measured only from candidate-bound post-cost wins and losses; independent-sample sufficiency remains a separate live gate",
+        },
         "total_post_cost_pnl_delta": round(float(sum(pnl_values)), 6),
         "mean_post_cost_pnl_delta": round(float(mean_pnl), 6),
         "standard_error_post_cost_pnl_delta": round(float(pnl_se), 6),
@@ -1611,11 +2296,12 @@ def _summarize_day(
             "buy_count": int(stats.get("buy_count", 0)),
             "sell_count": int(stats.get("sell_count", 0)),
             "unique_symbols": int(len(stats.get("symbols", {}))),
-            "change_vs_previous_day": 0.0,
-            "realized_change_vs_previous_day": 0.0,
-            "ending_realized_pnl_total": 0.0,
-            "ending_unrealized_pnl_total": 0.0,
-            "ending_net_pnl_total": 0.0,
+            "change_vs_previous_day": None,
+            "realized_change_vs_previous_day": None,
+            "ending_realized_pnl_total": None,
+            "ending_unrealized_pnl_total": None,
+            "ending_net_pnl_total": None,
+            "unavailable_reason": "selected_day_has_no_book_snapshot",
             "top_profiles": _rank_counter(stats.get("profiles", Counter())),
             "top_symbols": _rank_counter(stats.get("symbols", Counter())),
             "top_strategies": _rank_counter(stats.get("strategies", Counter())),
@@ -1636,7 +2322,9 @@ def _summarize_day(
         "sell_count": int(stats.get("sell_count", 0)),
         "unique_symbols": int(len(stats.get("symbols", {}))),
         "change_vs_previous_day": round(float(ending_net - previous_net), 6),
-        "realized_change_vs_previous_day": round(float(ending_realized - previous_realized), 6),
+        "realized_change_vs_previous_day": round(
+            float(ending_realized - previous_realized), 6
+        ),
         "ending_realized_pnl_total": round(float(ending_realized), 6),
         "ending_unrealized_pnl_total": round(float(ending_unrealized), 6),
         "ending_net_pnl_total": round(float(ending_net), 6),
@@ -1648,26 +2336,134 @@ def _summarize_day(
     }
 
 
-def build_paper_performance_report(project_root: Path, *, day: str, week_days: int = 7) -> dict[str, Any]:
+def _paper_execution_context(project_root: Path) -> dict[str, Any]:
+    from core.status_label_contract import read_paper_hold_labels
+
+    sources = {}
+    holds: list[str] = []
+    evidence_holds: list[str] = []
+    for name, filename, max_age in (
+        ("execution", "execution_lane_paper_latest.json", 120),
+        ("storage", "local_storage_reserve_guard_latest.json", 180),
+        (
+            "profitability_control",
+            "paper_runtime_profitability_controls_latest.json",
+            3600,
+        ),
+    ):
+        route = inspect_storage_path(project_root / "governance/health" / filename)
+        payload = {}
+        error = ""
+        try:
+            if route["status"] != "present":
+                raise OSError(str(route["status"]))
+            with Path(str(route["resolved_path"])).open("rb") as handle:
+                raw = handle.read(2 * 1024 * 1024 + 1)
+            if len(raw) > 2 * 1024 * 1024:
+                raise ValueError("context_receipt_too_large")
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise ValueError("context_receipt_not_object")
+        except (OSError, ValueError) as exc:
+            error = str(exc)
+            payload = {}
+        try:
+            stamp = datetime.fromisoformat(
+                str(payload.get("timestamp_utc", "")).replace("Z", "+00:00")
+            )
+            if stamp.tzinfo is None:
+                stamp = None
+        except ValueError:
+            stamp = None
+        age = (_utc_now() - stamp).total_seconds() if stamp else None
+        fresh = age is not None and 0 <= age <= max_age
+        source = {
+            "timestamp_utc": payload.get("timestamp_utc"),
+            "fresh": fresh,
+            "age_seconds": age,
+            "error": error,
+        }
+        sources[name] = source
+        if not fresh:
+            continue
+        if name == "execution":
+            hold = payload.get("execution_safety_hold")
+            breaker = payload.get("runtime_execution_breaker")
+            hold = hold if isinstance(hold, dict) else {}
+            breaker = breaker if isinstance(breaker, dict) else {}
+            source.update(
+                processed_count=payload.get("processed_count"),
+                accepting_new_exposure=payload.get("accepting_new_exposure"),
+                pending_rows_known=not bool(payload.get("pending_rows_unknown", True)),
+                result_activity_status=payload.get("result_activity_status"),
+            )
+            if hold.get("active"):
+                holds.append(str(hold.get("reason") or "execution_safety_hold"))
+            if breaker.get("active"):
+                holds.extend(str(reason) for reason in breaker.get("reasons", []))
+        elif name == "storage":
+            reserve = payload.get("local_storage_reserve")
+            reserve = reserve if isinstance(reserve, dict) else {}
+            source.update(
+                free_gb=reserve.get("free_gb"),
+                pressure_free_gb=reserve.get("pressure_free_gb"),
+                target_free_gb=reserve.get("target_free_gb"),
+            )
+            if reserve.get("pressure_active"):
+                holds.append("local_storage_reserve_pressure")
+        else:
+            source["safe_hold_active"] = payload.get("safe_hold_active", False)
+            source["scope"] = "profitability_evidence_not_execution_receipt"
+            source["execution_hold_observed"] = payload.get("execution_hold_observed")
+            if source["safe_hold_active"]:
+                evidence_holds.append(
+                    str(
+                        payload.get("safe_hold_reason")
+                        or "profitability_control_safe_hold"
+                    )
+                )
+    return {
+        "sources": sources,
+        "hold_labels": read_paper_hold_labels(project_root),
+        "fresh_reported_holds": sorted(set(holds)),
+        "fresh_reported_evidence_holds": sorted(set(evidence_holds)),
+        "scope": "advisory_runtime_receipts_not_trade_or_causal_proof",
+        "execution_authority": False,
+    }
+
+
+def build_paper_performance_report(
+    project_root: Path, *, day: str, week_days: int = 7
+) -> dict[str, Any]:
     evidence_through = _utc_now()
-    files, source_kind, calibration_source_files_excluded = _paper_source_files(project_root)
+    source_discovery: dict[str, Any] = {}
+    files, source_kind, calibration_source_files_excluded = _paper_source_files(
+        project_root, audit=source_discovery
+    )
     active_shadow_profiles = _active_shadow_profiles(project_root, day=day)
-    latest_by_day_profile: dict[str, dict[str, dict[str, tuple[datetime, dict[str, Any]]]]] = defaultdict(lambda: defaultdict(dict))
+    latest_by_day_profile: dict[
+        str, dict[str, dict[str, tuple[datetime, dict[str, Any]]]]
+    ] = defaultdict(lambda: defaultdict(dict))
     stats_by_day: dict[str, dict[str, Any]] = defaultdict(_empty_stats)
     post_cost_rows_by_profile: dict[str, list[dict[str, Any]]] = defaultdict(list)
     all_post_cost_rows: list[dict[str, Any]] = []
+    candidate_research_post_cost_rows: list[dict[str, Any]] = []
     lifetime_post_cost_rows: list[dict[str, Any]] = []
     current_day_post_cost_rows: list[dict[str, Any]] = []
     candidate_context = _candidate_profitability_context(project_root)
     profitability_cutoff = candidate_context.get("cutoff_utc")
     current_candidate_id = str(candidate_context.get("candidate_id") or "").strip()
+    promotion_cohort = _promotion_cohort_context(project_root)
+    promotion_cohort_exclusions: Counter[str] = Counter()
     candidate_binding_mismatch_rows = 0
-    deduplication: dict[str, int] = {
+    deduplication: dict[str, Any] = {
         "calibration_source_files_excluded": int(calibration_source_files_excluded),
         "reconciliation_source_files_included": sum(
             1 for path in files if ".local_fallback" in path.name
         ),
     }
+    outcome_counts: Counter[str] = Counter()
+    latest_outcome: datetime | None = None
 
     for row in _iter_rows(
         files,
@@ -1677,6 +2473,12 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         ts = _parse_ts(row.get("timestamp_utc"))
         if ts is None:
             continue
+        outcome_counts["timestamped_rows"] += 1
+        latest_outcome = max(ts, latest_outcome) if latest_outcome else ts
+        if profitability_cutoff is not None and ts < profitability_cutoff:
+            outcome_counts["rows_before_candidate_cutoff"] += 1
+        else:
+            outcome_counts["rows_in_candidate_time_window"] += 1
         dkey = _day_key(ts)
         profile = _profile_of(row)
         strategy = _paper_snapshot_key(row)
@@ -1686,22 +2488,50 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
             and "post_cost_pnl_delta" in row
             and "post_cost_return_bps" in row
         ):
+            if not all(
+                math.isfinite(_safe_float(row.get(key), float("nan")))
+                for key in ("post_cost_pnl_delta", "post_cost_return_bps")
+            ):
+                outcome_counts["invalid_post_cost_values_rows"] += 1
+                continue
             lifetime_post_cost_rows.append(row)
             if dkey == day:
                 current_day_post_cost_rows.append(row)
-            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-            row_candidate_id = str(metadata.get("production_candidate_id") or "").strip()
-            timestamp_eligible = profitability_cutoff is None or ts >= profitability_cutoff
+            metadata = (
+                row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            )
+            row_candidate_id = str(
+                metadata.get("production_candidate_id") or ""
+            ).strip()
+            timestamp_eligible = (
+                profitability_cutoff is None or ts >= profitability_cutoff
+            )
             candidate_id_eligible = (
                 row_candidate_id == current_candidate_id
                 if current_candidate_id
                 else True
             )
             if timestamp_eligible and candidate_id_eligible:
-                post_cost_rows_by_profile[profile].append(row)
-                all_post_cost_rows.append(row)
+                candidate_research_post_cost_rows.append(row)
+                cohort_eligible, cohort_reason = _promotion_cohort_row_eligibility(
+                    row, promotion_cohort
+                )
+                if cohort_eligible:
+                    post_cost_rows_by_profile[profile].append(row)
+                    all_post_cost_rows.append(row)
+                else:
+                    promotion_cohort_exclusions[cohort_reason] += 1
             elif timestamp_eligible and current_candidate_id:
                 candidate_binding_mismatch_rows += 1
+                outcome_counts[
+                    (
+                        "candidate_identity_mismatch_rows"
+                        if row_candidate_id
+                        else "candidate_identity_missing_rows"
+                    )
+                ] += 1
+        else:
+            outcome_counts["rows_without_post_cost_fields_or_schema"] += 1
         current = latest_by_day_profile[dkey][profile].get(strategy)
         if current is None or ts > current[0]:
             latest_by_day_profile[dkey][profile][strategy] = (ts, row)
@@ -1721,7 +2551,9 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
     selected_date = datetime.strptime(day, "%Y%m%d").date()
     week_start_date = selected_date - timedelta(days=selected_date.weekday())
     week_start = week_start_date.strftime("%Y%m%d")
-    rolling_start = (selected_date - timedelta(days=max(int(week_days), 1) - 1)).strftime("%Y%m%d")
+    rolling_start = (
+        selected_date - timedelta(days=max(int(week_days), 1) - 1)
+    ).strftime("%Y%m%d")
     prior_week_day = max((d for d in all_days if d < week_start), default="")
     prior_rolling_day = max((d for d in all_days if d < rolling_start), default="")
 
@@ -1742,24 +2574,43 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         week_symbols.update(day_stats.get("symbols", Counter()))
         week_strategies.update(day_stats.get("strategies", Counter()))
 
-    history_series = _build_history_series(all_days, latest_by_day_profile, stats_by_day)
-    history_by_day = {str(row.get("day_utc", "")): row for row in history_series if isinstance(row, dict)}
+    history_series = _build_history_series(
+        all_days, latest_by_day_profile, stats_by_day
+    )
+    history_by_day = {
+        str(row.get("day_utc", "")): row
+        for row in history_series
+        if isinstance(row, dict)
+    }
     for dkey in sorted(d for d in all_days if rolling_start <= d <= day):
         row = history_by_day.get(dkey)
         if isinstance(row, dict):
             rolling_series.append(
                 {
                     "day_utc": dkey,
-                    "ending_net_pnl_total": round(float(row.get("ending_net_pnl_total", 0.0) or 0.0), 6),
-                    "change_vs_previous_day": round(float(row.get("change_vs_previous_day", 0.0) or 0.0), 6),
+                    "ending_net_pnl_total": round(
+                        float(row.get("ending_net_pnl_total", 0.0) or 0.0), 6
+                    ),
+                    "change_vs_previous_day": round(
+                        float(row.get("change_vs_previous_day", 0.0) or 0.0), 6
+                    ),
                 }
             )
 
     selected_net = float(day_summary.get("ending_net_pnl_total", 0.0) or 0.0)
     selected_realized = float(day_summary.get("ending_realized_pnl_total", 0.0) or 0.0)
-    prior_week_net = float((history_by_day.get(prior_week_day) or {}).get("ending_net_pnl_total", 0.0) or 0.0)
-    prior_week_realized = float((history_by_day.get(prior_week_day) or {}).get("ending_realized_pnl_total", 0.0) or 0.0)
-    prior_rolling_net = float((history_by_day.get(prior_rolling_day) or {}).get("ending_net_pnl_total", 0.0) or 0.0)
+    prior_week_net = float(
+        (history_by_day.get(prior_week_day) or {}).get("ending_net_pnl_total", 0.0)
+        or 0.0
+    )
+    prior_week_realized = float(
+        (history_by_day.get(prior_week_day) or {}).get("ending_realized_pnl_total", 0.0)
+        or 0.0
+    )
+    prior_rolling_net = float(
+        (history_by_day.get(prior_rolling_day) or {}).get("ending_net_pnl_total", 0.0)
+        or 0.0
+    )
     weekly_history_series = _build_weekly_history_series(history_series)
     monthly_history_series = _build_period_history_series(
         history_series,
@@ -1777,20 +2628,32 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         key_builder=_week_start_key,
         label_name="week",
     )
-    week_to_date_change = round(float(selected_net - prior_week_net), 6)
+    selected_available = bool(day_summary.get("available", False))
+    week_to_date_change = (
+        round(selected_net - prior_week_net, 6) if selected_available else None
+    )
 
     week_summary = {
         "week_start_day_utc": week_start,
         "week_end_day_utc": day,
         "available": bool(day_summary.get("available", False)),
+        "unavailable_reason": (
+            "" if selected_available else "selected_day_has_no_book_snapshot"
+        ),
         "executions": int(week_exec),
         "buy_count": int(week_buys),
         "sell_count": int(week_sells),
         "week_to_date_change": week_to_date_change,
-        "week_to_date_realized_change": round(float(selected_realized - prior_week_realized), 6),
+        "week_to_date_realized_change": (
+            round(selected_realized - prior_week_realized, 6)
+            if selected_available
+            else None
+        ),
         "rolling_change_days": int(max(int(week_days), 1)),
-        "rolling_change": round(float(selected_net - prior_rolling_net), 6),
-        "ending_net_pnl_total": round(float(selected_net), 6),
+        "rolling_change": (
+            round(selected_net - prior_rolling_net, 6) if selected_available else None
+        ),
+        "ending_net_pnl_total": round(selected_net, 6) if selected_available else None,
         "top_profiles": _rank_counter(week_profiles),
         "top_symbols": _rank_counter(week_symbols),
         "top_strategies": _rank_counter(week_strategies),
@@ -1820,40 +2683,139 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
     active_book_net = sum(
         _safe_float(row.get("ending_net_pnl_total"), 0.0) for row in active_book_rows
     )
+    developmental_generation_flows = _developmental_generation_flow_ledger(
+        lifetime_post_cost_rows,
+        current_candidate_id=current_candidate_id,
+    )
+    source_scan_complete = not (
+        source_discovery.get("discovery_error_count", 0)
+        or any(deduplication.get(key, 0) for key in ("source_read_error_count", "invalid_json_rows", "non_object_rows", "invalid_timestamp_rows"))
+        or outcome_counts["invalid_post_cost_values_rows"]
+    )
+    execution_context = _paper_execution_context(project_root)
+    if not source_scan_complete:
+        evidence_status = "source_scan_incomplete"
+    elif not outcome_counts["rows_in_candidate_time_window"]:
+        evidence_status = "no_outcomes_in_candidate_time_window"
+    elif not candidate_research_post_cost_rows:
+        evidence_status = "current_rows_not_candidate_bound_post_cost_evidence"
+    elif not all_post_cost_rows:
+        evidence_status = "candidate_outcomes_outside_active_promotion_cohort"
+    else:
+        evidence_status = "candidate_outcomes_observed"
+    expectancy = _post_cost_expectancy(all_post_cost_rows)
+    expectancy["source_scan_complete"] = source_scan_complete
+    if not source_scan_complete:
+        expectancy.update(evidence_sufficient=False, promotion_evidence_sufficient=False)
+        expectancy["promotion_blockers"] = list(dict.fromkeys([*expectancy.get("promotion_blockers", []), "source_scan_incomplete"]))
 
     return {
         "timestamp_utc": _utc_now().isoformat(),
         "schema_version": 1,
-        "ok": bool(selected_latest) or bool(active_shadow_profiles),
+        "ok": source_scan_complete
+        and (bool(selected_latest) or bool(active_shadow_profiles)),
+        "outcome_evidence_diagnostics": {
+            "schema_version": 1,
+            "status": evidence_status,
+            "source_scan_complete": source_scan_complete,
+            "source_discovery": source_discovery,
+            "counts": dict(outcome_counts),
+            "latest_observed_outcome_utc": (
+                latest_outcome.isoformat() if latest_outcome else None
+            ),
+            "candidate_id": current_candidate_id,
+            "candidate_cutoff_utc": (
+                profitability_cutoff.isoformat() if profitability_cutoff else None
+            ),
+            "candidate_bound_post_cost_rows": len(candidate_research_post_cost_rows),
+            "promotion_cohort_post_cost_rows": len(all_post_cost_rows),
+            "promotion_cohort_exclusions": dict(promotion_cohort_exclusions),
+            "execution_context": execution_context,
+            "no_outcomes_hold_requires_review": not candidate_research_post_cost_rows
+            and "paper_performance_input_not_gradeable"
+            in execution_context["fresh_reported_evidence_holds"]
+            and execution_context["sources"]["profitability_control"].get(
+                "execution_hold_observed"
+            )
+            is not False,
+            "history_relabeling_authority": False,
+            "execution_authority": False,
+        },
         "source_kind": source_kind,
         "source_files_scanned": int(len(files)),
         "source_files": [str(path) for path in files[:10]],
         "execution_deduplication": {
             **deduplication,
             "identity_policy": "execution_id_else_paper_book_and_decision_id_else_content_hash",
-            "canonical_source_priority": ["trade_logs", "root_paper_trades", "paper_broker_bridge"],
+            "canonical_source_priority": [
+                "trade_logs",
+                "root_paper_trades",
+                "paper_broker_bridge",
+            ],
             "calibration_evidence_policy": "independent/replay fill evidence is reserved for execution calibration and excluded from the realized paper P&L ledger",
         },
         "active_paper_profile_count_today": int(len(active_shadow_profiles)),
-        "active_paper_profiles_today": [dict(active_shadow_profiles[key]) for key in sorted(active_shadow_profiles.keys())],
+        "active_paper_profiles_today": [
+            dict(active_shadow_profiles[key])
+            for key in sorted(active_shadow_profiles.keys())
+        ],
         "available_days": all_days[-14:],
         "history_daily_series": history_series[-60:],
         "weekly_history_series": weekly_history_series[-16:],
         "monthly_history_series": monthly_history_series[-18:],
         "quarterly_history_series": quarterly_history_series[-16:],
-        "sleeve_daily_series": {profile: rows[-60:] for profile, rows in sorted(sleeve_daily_series.items())},
-        "sleeve_weekly_history_series": {profile: rows[-16:] for profile, rows in sorted(sleeve_weekly_history_series.items())},
+        "sleeve_daily_series": {
+            profile: rows[-60:] for profile, rows in sorted(sleeve_daily_series.items())
+        },
+        "sleeve_weekly_history_series": {
+            profile: rows[-16:]
+            for profile, rows in sorted(sleeve_weekly_history_series.items())
+        },
         "sleeve_latest": sleeve_latest_summary,
         "period_change_series": _build_period_change_series(
             selected_day=day,
-            selected_net=float(selected_net),
-            week_to_date_change=float(week_to_date_change),
+            selected_net=selected_net if selected_available else None,
+            week_to_date_change=week_to_date_change,
             all_days=all_days,
             history_by_day=history_by_day,
         ),
         "day": day_summary,
         "week": week_summary,
-        "post_cost_expectancy": _post_cost_expectancy(all_post_cost_rows),
+        "post_cost_expectancy": expectancy,
+        "candidate_post_cost_daily_series": _candidate_post_cost_daily_series(
+            all_post_cost_rows
+        ),
+        "candidate_strategy_post_cost_daily_series": (
+            _candidate_strategy_post_cost_daily_series(all_post_cost_rows)
+        ),
+        "candidate_research_post_cost_daily_series": (
+            _candidate_post_cost_daily_series(candidate_research_post_cost_rows)
+        ),
+        "candidate_research_strategy_post_cost_daily_series": (
+            _candidate_strategy_post_cost_daily_series(
+                candidate_research_post_cost_rows
+            )
+        ),
+        "developmental_generation_flows": developmental_generation_flows,
+        "strategy_latest": _strategy_post_cost_latest(all_post_cost_rows),
+        "candidate_research_strategy_latest": _strategy_post_cost_latest(
+            candidate_research_post_cost_rows
+        ),
+        "promotion_cohort": {
+            **promotion_cohort,
+            "candidate_bound_research_sample_count": len(
+                candidate_research_post_cost_rows
+            ),
+            "promotion_grade_sample_count": len(all_post_cost_rows),
+            "diagnostic_only_sample_count": (
+                len(candidate_research_post_cost_rows) - len(all_post_cost_rows)
+            ),
+            "exclusion_reasons": dict(sorted(promotion_cohort_exclusions.items())),
+            "promotion_grade_scope": "one_active_stage_one_strategy_one_symbol",
+            "broad_collection_continues": True,
+            "automatic_promotion_authority": False,
+            "live_execution_authority": False,
+        },
         "accounting_views": {
             "lifetime_flow": _post_cost_flow_view(
                 lifetime_post_cost_rows,
@@ -1869,15 +2831,43 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
                     scope=f"candidate_forward:{candidate_context.get('candidate_id') or 'unknown'}",
                 ),
                 "candidate_id": str(candidate_context.get("candidate_id") or ""),
-                "candidate_generation": int(candidate_context.get("generation", 0) or 0),
+                "candidate_generation": int(
+                    candidate_context.get("generation", 0) or 0
+                ),
                 "candidate_cutoff_utc": (
-                    profitability_cutoff.isoformat() if isinstance(profitability_cutoff, datetime) else ""
+                    profitability_cutoff.isoformat()
+                    if isinstance(profitability_cutoff, datetime)
+                    else ""
                 ),
                 "candidate_state_receipt_sha256": str(
                     candidate_context.get("state_receipt_sha256") or ""
                 ),
                 "candidate_binding_required": bool(current_candidate_id),
-                "candidate_binding_mismatch_rows_excluded": int(candidate_binding_mismatch_rows),
+                "candidate_binding_mismatch_rows_excluded": int(
+                    candidate_binding_mismatch_rows
+                ),
+                "promotion_cohort_id": str(promotion_cohort.get("cohort_id") or ""),
+                "promotion_stage": int(promotion_cohort.get("active_stage", 0) or 0),
+                "promotion_symbol": str(promotion_cohort.get("active_symbol") or ""),
+                "promotion_strategy_id": str(
+                    promotion_cohort.get("active_strategy_id") or ""
+                ),
+                "promotion_cohort_valid": bool(promotion_cohort.get("valid", False)),
+                "non_cohort_rows_excluded": int(
+                    sum(promotion_cohort_exclusions.values())
+                ),
+            },
+            "candidate_research_forward_flow": {
+                **_post_cost_flow_view(
+                    candidate_research_post_cost_rows,
+                    scope=f"candidate_research_forward:{candidate_context.get('candidate_id') or 'unknown'}",
+                ),
+                "candidate_id": str(candidate_context.get("candidate_id") or ""),
+                "candidate_generation": int(
+                    candidate_context.get("generation", 0) or 0
+                ),
+                "promotion_grade_eligible": False,
+                "policy": "all candidate-bound rows remain visible for research, but only the active staged cohort may grade promotion",
             },
             "active_book_snapshot": {
                 "scope": "lifetime_active_paper_inventory",
@@ -1891,13 +2881,27 @@ def build_paper_performance_report(project_root: Path, *, day: str, week_days: i
         "profitability_evidence_window": {
             "candidate_id": str(candidate_context.get("candidate_id") or ""),
             "candidate_generation": int(candidate_context.get("generation", 0) or 0),
-            "candidate_cutoff_utc": profitability_cutoff.isoformat() if profitability_cutoff is not None else "",
+            "candidate_cutoff_utc": (
+                profitability_cutoff.isoformat()
+                if profitability_cutoff is not None
+                else ""
+            ),
             "evidence_through_utc": evidence_through.isoformat(),
             "candidate_filter_active": profitability_cutoff is not None,
             "candidate_binding_required": bool(current_candidate_id),
-            "candidate_binding_mismatch_rows_excluded": int(candidate_binding_mismatch_rows),
+            "candidate_binding_mismatch_rows_excluded": int(
+                candidate_binding_mismatch_rows
+            ),
+            "promotion_cohort_filter_active": bool(
+                promotion_cohort.get("configured", False)
+            ),
+            "promotion_cohort_valid": bool(promotion_cohort.get("valid", False)),
+            "promotion_cohort_id": str(promotion_cohort.get("cohort_id") or ""),
+            "promotion_stage": int(promotion_cohort.get("active_stage", 0) or 0),
+            "promotion_grade_sample_count": len(all_post_cost_rows),
+            "candidate_research_sample_count": len(candidate_research_post_cost_rows),
             "snapshot_watermark_active": True,
-            "policy": "post-cost promotion evidence excludes samples before the latest affected candidate scope window and defers rows after the published scan watermark",
+            "policy": "post-cost promotion evidence excludes samples before the latest affected candidate scope window, requires exact active cohort identity, and defers rows after the published scan watermark",
         },
     }
 
@@ -2116,12 +3120,54 @@ def render_paper_performance_graphs(
     }
 
 
+def _render_bundle_storage_unavailable(
+    *,
+    exc: OSError,
+    daily_chart_path: Path,
+    weekly_chart_path: Path,
+    monthly_chart_path: Path,
+    quarterly_chart_path: Path,
+    sleeves_chart_path: Path,
+) -> dict[str, Any]:
+    return {
+        "available": False,
+        "mode": "render_bundle_storage_unavailable",
+        "error": f"{type(exc).__name__}:{exc}",
+        "daily_png": "",
+        "weekly_png": "",
+        "monthly_png": "",
+        "quarterly_png": "",
+        "sleeves_png": "",
+        "intended_paths": {
+            "daily_png": str(daily_chart_path),
+            "weekly_png": str(weekly_chart_path),
+            "monthly_png": str(monthly_chart_path),
+            "quarterly_png": str(quarterly_chart_path),
+            "sleeves_png": str(sleeves_chart_path),
+        },
+    }
+
+
+def _format_pnl(value: Any, digits: int = 6) -> str:
+    number = _safe_float(value, float("nan"))
+    return f"{number:.{digits}f}" if math.isfinite(number) else "unavailable"
+
+
 def render_paper_performance_markdown(payload: dict[str, Any]) -> str:
+    evidence = payload.get("outcome_evidence_diagnostics") or {}
     day = payload.get("day") if isinstance(payload.get("day"), dict) else {}
     week = payload.get("week") if isinstance(payload.get("week"), dict) else {}
     graphs = payload.get("graphs") if isinstance(payload.get("graphs"), dict) else {}
-    sleeve_latest = payload.get("sleeve_latest") if isinstance(payload.get("sleeve_latest"), list) else []
-    active_profiles = payload.get("active_paper_profiles_today") if isinstance(payload.get("active_paper_profiles_today"), list) else []
+    sleeve_latest = (
+        payload.get("sleeve_latest")
+        if isinstance(payload.get("sleeve_latest"), list)
+        else []
+    )
+    active_profiles = (
+        payload.get("active_paper_profiles_today")
+        if isinstance(payload.get("active_paper_profiles_today"), list)
+        else []
+    )
     display_rows = _sleeve_display_rows(sleeve_latest)
 
     lines = [
@@ -2131,25 +3177,35 @@ def render_paper_performance_markdown(payload: dict[str, Any]) -> str:
         f"- source_kind: {payload.get('source_kind', '')}",
         f"- source_files_scanned: {int(payload.get('source_files_scanned', 0) or 0)}",
         "",
+        "## Outcome Evidence",
+        "",
+        f"- status: {evidence.get('status', 'not_reported')}",
+        f"- source_scan_complete: {evidence.get('source_scan_complete', 'unknown')}",
+        f"- latest_observed_outcome_utc: {evidence.get('latest_observed_outcome_utc') or 'unavailable'}",
+        f"- current_candidate_post_cost_rows: {evidence.get('candidate_bound_post_cost_rows', 'unknown')}",
+        f"- active_cohort_post_cost_rows: {evidence.get('promotion_cohort_post_cost_rows', 'unknown')}",
+        f"- current_reported_holds: {', '.join((evidence.get('execution_context') or {}).get('fresh_reported_holds', [])) or 'none_reported'}",
+        f"- no_outcomes_hold_requires_review: {evidence.get('no_outcomes_hold_requires_review', False)}",
+        "",
         "## End Of Day",
         "",
         f"- day_utc: {day.get('day_utc', '')}",
         f"- available: {bool(day.get('available', False))}",
         f"- executions: {int(day.get('executions', 0) or 0)}",
         f"- buys/sells: {int(day.get('buy_count', 0) or 0)}/{int(day.get('sell_count', 0) or 0)}",
-        f"- ending_realized_pnl_total: {float(day.get('ending_realized_pnl_total', 0.0) or 0.0):.6f}",
-        f"- ending_unrealized_pnl_total: {float(day.get('ending_unrealized_pnl_total', 0.0) or 0.0):.6f}",
-        f"- ending_net_pnl_total: {float(day.get('ending_net_pnl_total', 0.0) or 0.0):.6f}",
-        f"- change_vs_previous_day: {float(day.get('change_vs_previous_day', 0.0) or 0.0):.6f}",
+        f"- ending_realized_pnl_total: {_format_pnl(day.get('ending_realized_pnl_total'))}",
+        f"- ending_unrealized_pnl_total: {_format_pnl(day.get('ending_unrealized_pnl_total'))}",
+        f"- ending_net_pnl_total: {_format_pnl(day.get('ending_net_pnl_total'))}",
+        f"- change_vs_previous_day: {_format_pnl(day.get('change_vs_previous_day'))}",
         "",
         "## Week",
         "",
         f"- week_start_day_utc: {week.get('week_start_day_utc', '')}",
         f"- week_end_day_utc: {week.get('week_end_day_utc', '')}",
         f"- executions: {int(week.get('executions', 0) or 0)}",
-        f"- week_to_date_change: {float(week.get('week_to_date_change', 0.0) or 0.0):.6f}",
-        f"- week_to_date_realized_change: {float(week.get('week_to_date_realized_change', 0.0) or 0.0):.6f}",
-        f"- rolling_{int(week.get('rolling_change_days', 7) or 7)}d_change: {float(week.get('rolling_change', 0.0) or 0.0):.6f}",
+        f"- week_to_date_change: {_format_pnl(week.get('week_to_date_change'))}",
+        f"- week_to_date_realized_change: {_format_pnl(week.get('week_to_date_realized_change'))}",
+        f"- rolling_{int(week.get('rolling_change_days', 7) or 7)}d_change: {_format_pnl(week.get('rolling_change'))}",
         "",
         "## Graphs",
         "",
@@ -2355,15 +3411,15 @@ def render_paper_performance_html(payload: dict[str, Any], *, source_path: Path,
           <h2>End Of Day</h2>
           <p>day_utc: {html.escape(str(day.get('day_utc', '')))}</p>
           <p>executions: {int(day.get('executions', 0) or 0)}</p>
-          <p>ending_net_pnl_total: {float(day.get('ending_net_pnl_total', 0.0) or 0.0):.6f}</p>
-          <p>change_vs_previous_day: {float(day.get('change_vs_previous_day', 0.0) or 0.0):.6f}</p>
+          <p>ending_net_pnl_total: {_format_pnl(day.get('ending_net_pnl_total'))}</p>
+          <p>change_vs_previous_day: {_format_pnl(day.get('change_vs_previous_day'))}</p>
         </div>
         <div class="stat-block">
           <h2>Week</h2>
           <p>week_start_day_utc: {html.escape(str(week.get('week_start_day_utc', '')))}</p>
           <p>week_end_day_utc: {html.escape(str(week.get('week_end_day_utc', '')))}</p>
-          <p>week_to_date_change: {float(week.get('week_to_date_change', 0.0) or 0.0):.6f}</p>
-          <p>rolling_{int(week.get('rolling_change_days', 7) or 7)}d_change: {float(week.get('rolling_change', 0.0) or 0.0):.6f}</p>
+          <p>week_to_date_change: {_format_pnl(week.get('week_to_date_change'))}</p>
+          <p>rolling_{int(week.get('rolling_change_days', 7) or 7)}d_change: {_format_pnl(week.get('rolling_change'))}</p>
         </div>
       </div>
     </section>
@@ -2474,35 +3530,53 @@ def main() -> int:
             "detail": "skipped_json_only",
         }
     else:
-        md_path.parent.mkdir(parents=True, exist_ok=True)
-        html_path.parent.mkdir(parents=True, exist_ok=True)
-        pdf_path.parent.mkdir(parents=True, exist_ok=True)
-        payload["graphs"] = render_paper_performance_graphs(
-            payload,
-            daily_chart_path=daily_chart_path,
-            weekly_chart_path=weekly_chart_path,
-            monthly_chart_path=monthly_chart_path,
-            quarterly_chart_path=quarterly_chart_path,
-            sleeves_chart_path=sleeves_chart_path,
-        )
-        generated_utc = str(payload.get("timestamp_utc") or _utc_now().isoformat())
-        md_text = render_paper_performance_markdown(payload)
-        html_text = render_paper_performance_html(payload, source_path=out_path, generated_utc=generated_utc)
-        md_path.write_text(md_text, encoding="utf-8")
-        html_path.write_text(html_text, encoding="utf-8")
-        if pdf_path.exists():
-            pdf_path.unlink()
-        pdf_ok, pdf_detail = _render_pdf_from_html(
-            html_path,
-            pdf_path,
-            allow_gui_renderer=bool(args.allow_gui_pdf_renderer),
-        )
-        payload["pdf"] = {
-            "available": bool(pdf_ok),
-            "html_report_path": str(html_path),
-            "pdf_path": str(pdf_path),
-            "detail": str(pdf_detail),
-        }
+        try:
+            md_path.parent.mkdir(parents=True, exist_ok=True)
+            html_path.parent.mkdir(parents=True, exist_ok=True)
+            pdf_path.parent.mkdir(parents=True, exist_ok=True)
+            payload["graphs"] = render_paper_performance_graphs(
+                payload,
+                daily_chart_path=daily_chart_path,
+                weekly_chart_path=weekly_chart_path,
+                monthly_chart_path=monthly_chart_path,
+                quarterly_chart_path=quarterly_chart_path,
+                sleeves_chart_path=sleeves_chart_path,
+            )
+            generated_utc = str(payload.get("timestamp_utc") or _utc_now().isoformat())
+            md_text = render_paper_performance_markdown(payload)
+            html_text = render_paper_performance_html(
+                payload, source_path=out_path, generated_utc=generated_utc
+            )
+            md_path.write_text(md_text, encoding="utf-8")
+            html_path.write_text(html_text, encoding="utf-8")
+            if pdf_path.exists():
+                pdf_path.unlink()
+            pdf_ok, pdf_detail = _render_pdf_from_html(
+                html_path,
+                pdf_path,
+                allow_gui_renderer=bool(args.allow_gui_pdf_renderer),
+            )
+            payload["pdf"] = {
+                "available": bool(pdf_ok),
+                "html_report_path": str(html_path),
+                "pdf_path": str(pdf_path),
+                "detail": str(pdf_detail),
+            }
+        except OSError as exc:
+            payload["graphs"] = _render_bundle_storage_unavailable(
+                exc=exc,
+                daily_chart_path=daily_chart_path,
+                weekly_chart_path=weekly_chart_path,
+                monthly_chart_path=monthly_chart_path,
+                quarterly_chart_path=quarterly_chart_path,
+                sleeves_chart_path=sleeves_chart_path,
+            )
+            payload["pdf"] = {
+                "available": False,
+                "html_report_path": "",
+                "pdf_path": str(pdf_path),
+                "detail": f"render_bundle_storage_unavailable:{type(exc).__name__}:{exc}",
+            }
     canonical_performance_path = PROJECT_ROOT / "governance" / "health" / "paper_performance_latest.json"
     sync_result: dict[str, Any] = {
         "ok": True,
@@ -2543,9 +3617,9 @@ def main() -> int:
         print(
             "paper_performance "
             f"day={day_summary.get('day_utc', '')} "
-            f"eod_net={float(day_summary.get('ending_net_pnl_total', 0.0) or 0.0):.4f} "
-            f"day_change={float(day_summary.get('change_vs_previous_day', 0.0) or 0.0):.4f} "
-            f"wtd_change={float(week_summary.get('week_to_date_change', 0.0) or 0.0):.4f}"
+            f"eod_net={_format_pnl(day_summary.get('ending_net_pnl_total'), 4)} "
+            f"day_change={_format_pnl(day_summary.get('change_vs_previous_day'), 4)} "
+            f"wtd_change={_format_pnl(week_summary.get('week_to_date_change'), 4)}"
         )
     if not payload.get("ok"):
         return 2

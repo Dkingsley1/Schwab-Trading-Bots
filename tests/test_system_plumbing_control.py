@@ -20,7 +20,10 @@ def _seed_plumbing(
     storage_severity: str = "stable",
 ) -> None:
     health = project_root / "governance" / "health"
-    _write_json(health / "process_watchdog_latest.json", {"overall_status": "ready", "alerts": [], "safety_pause": {"active": False}})
+    _write_json(
+        health / "process_watchdog_latest.json",
+        {"overall_status": "ready", "alerts": [], "safety_pause": {"active": False}},
+    )
     _write_json(
         health / "ingestion_storage_control_latest.json",
         {
@@ -29,8 +32,12 @@ def _seed_plumbing(
             "pressure_index": pressure_index,
             "backpressure_quality_score": 100,
             "backpressure": {
-                "core_pending_lines": overlay_total if overlay_total is not None else raw_total,
-                "total_pending_lines": overlay_total if overlay_total is not None else raw_total,
+                "core_pending_lines": (
+                    overlay_total if overlay_total is not None else raw_total
+                ),
+                "total_pending_lines": (
+                    overlay_total if overlay_total is not None else raw_total
+                ),
                 "overlay_adjusted": overlay_total is not None,
                 "overlay_pressure_clear": overlay_total is not None,
                 "raw_live": {
@@ -47,14 +54,23 @@ def _seed_plumbing(
                 "mismatches": [],
             },
             "storage_resilience": {"unresolved_split_brain_conflicts": 0},
-            "storage_plane_contract": {"disk_contract": {"external_disk": {"exists": True, "available_gb": 62.0}}},
+            "storage_plane_contract": {
+                "disk_contract": {
+                    "external_disk": {"exists": True, "available_gb": 62.0}
+                }
+            },
         },
     )
     _write_json(
         health / "external_backlog_drain_latest.json",
-        {"overall_status": "blocked", "blocked_reasons": ["external_storage_unavailable"]},
+        {
+            "overall_status": "blocked",
+            "blocked_reasons": ["external_storage_unavailable"],
+        },
     )
-    _write_json(health / "storage_failback_sync_latest.json", {"split_brain_conflicts": 0})
+    _write_json(
+        health / "storage_failback_sync_latest.json", {"split_brain_conflicts": 0}
+    )
     _write_json(
         health / "writer_process_intelligence_latest.json",
         {
@@ -72,7 +88,10 @@ def _seed_plumbing(
             "safety_envelope": {"single_writer_only": True},
         },
     )
-    _write_json(health / "writer_cycle_coordinator_latest.json", {"overall_status": "waiting_for_writer"})
+    _write_json(
+        health / "writer_cycle_coordinator_latest.json",
+        {"overall_status": "waiting_for_writer"},
+    )
     _write_json(
         health / "data_plane_recovery_controller_latest.json",
         {
@@ -86,9 +105,17 @@ def _seed_plumbing(
             "writer_handoff_contract": {"writer_service_active": True},
         },
     )
-    _write_json(health / "ingestion_priority_queue_latest.json", {"lane_counts": {"core": {"pending_lines": raw_total}}})
-    _write_json(health / "runtime_throttle_control_latest.json", {"overall_status": "ready", "memory_pressure_level": "normal"})
-    _write_json(health / "memory_efficiency_control_latest.json", {"overall_status": "ready"})
+    _write_json(
+        health / "ingestion_priority_queue_latest.json",
+        {"lane_counts": {"core": {"pending_lines": raw_total}}},
+    )
+    _write_json(
+        health / "runtime_throttle_control_latest.json",
+        {"overall_status": "ready", "memory_pressure_level": "normal"},
+    )
+    _write_json(
+        health / "memory_efficiency_control_latest.json", {"overall_status": "ready"}
+    )
     _write_json(
         health / "global_halt_auto_clear_latest.json",
         {
@@ -100,7 +127,9 @@ def _seed_plumbing(
     )
 
 
-def test_system_plumbing_relieves_bounded_write_path_recovery_for_paper(tmp_path: Path) -> None:
+def test_system_plumbing_relieves_bounded_write_path_recovery_for_paper(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     _seed_plumbing(project_root)
 
@@ -122,7 +151,9 @@ def test_system_plumbing_relieves_bounded_write_path_recovery_for_paper(tmp_path
     assert payload["managed_advisories"]["unmanaged"] == []
 
 
-def test_system_plumbing_blocks_write_relief_when_live_execution_is_expected(tmp_path: Path) -> None:
+def test_system_plumbing_blocks_write_relief_when_live_execution_is_expected(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     _seed_plumbing(project_root, execution_expected=True)
 
@@ -134,7 +165,9 @@ def test_system_plumbing_blocks_write_relief_when_live_execution_is_expected(tmp
     assert payload["global_clear_relief"]["active"] is False
 
 
-def test_system_plumbing_blocks_when_raw_live_queue_is_not_clear(tmp_path: Path) -> None:
+def test_system_plumbing_blocks_when_raw_live_queue_is_not_clear(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     _seed_plumbing(project_root, raw_total=22000)
 
@@ -146,15 +179,22 @@ def test_system_plumbing_blocks_when_raw_live_queue_is_not_clear(tmp_path: Path)
     assert payload["root_cause"]["primary"] == "queue_backpressure_blocked"
 
 
-def test_system_plumbing_treats_overlay_pressure_band_as_paper_advisory(tmp_path: Path) -> None:
+def test_system_plumbing_treats_overlay_pressure_band_as_paper_advisory(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
-    _seed_plumbing(project_root, pressure_index=0.334, raw_total=2172, overlay_total=5156)
+    _seed_plumbing(
+        project_root, pressure_index=0.334, raw_total=2172, overlay_total=5156
+    )
 
     payload = src.build_payload(project_root)
 
     assert payload["ok"] is True
     assert payload["overall_status"] == "ready"
-    assert payload["sections"]["queue_backpressure"]["status"] == "storage_pressure_advisory"
+    assert (
+        payload["sections"]["queue_backpressure"]["status"]
+        == "storage_pressure_advisory"
+    )
     assert payload["sections"]["queue_backpressure"]["pressure_advisory"] is True
     assert payload["sections"]["queue_backpressure"]["overlay_relief"]["active"] is True
     assert "storage_pressure_hysteresis_advisory" in payload["warnings"]
@@ -165,7 +205,9 @@ def test_system_plumbing_treats_overlay_pressure_band_as_paper_advisory(tmp_path
     assert payload["paper_ramp_relief_contract"]["bounded_write_recovery"] is True
 
 
-def test_system_plumbing_treats_sql_overlay_only_critical_storage_as_advisory(tmp_path: Path) -> None:
+def test_system_plumbing_treats_sql_overlay_only_critical_storage_as_advisory(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     _seed_plumbing(
         project_root,
@@ -189,7 +231,40 @@ def test_system_plumbing_treats_sql_overlay_only_critical_storage_as_advisory(tm
     assert payload["root_cause"]["status"] == "advisory"
 
 
-def test_system_plumbing_manages_deferred_off_hours_backlog_for_paper(tmp_path: Path) -> None:
+def test_system_plumbing_consumes_soak_managed_pressure_relief(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    _seed_plumbing(project_root, pressure_index=0.733, raw_total=10818)
+    health = project_root / "governance" / "health"
+    storage_path = health / "ingestion_storage_control_latest.json"
+    storage = json.loads(storage_path.read_text(encoding="utf-8"))
+    storage["backpressure"]["core_pending_lines"] = 1626
+    storage["backpressure"]["raw_live"]["core_pending_lines"] = 1626
+    storage["continuous_run_soak_contract"] = {
+        "status": "watch",
+        "soak_ready": True,
+        "blockers": [],
+        "inputs": {
+            "pressure_only_writer_lag_relief_safe": True,
+            "managed_deep_cold_backlog_relief_soak_watch": False,
+            "bounded_sparse_reserve_soak_watch": False,
+        },
+    }
+    _write_json(storage_path, storage)
+
+    payload = src.build_payload(project_root)
+    queue = payload["sections"]["queue_backpressure"]
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "ready"
+    assert queue["status"] == "bounded_soak_pressure_advisory"
+    assert queue["pressure_hard"] is False
+    assert queue["bounded_soak_pressure_relief"]["active"] is True
+    assert "queue_backpressure_blocked" not in payload["blockers"]
+
+
+def test_system_plumbing_manages_deferred_off_hours_backlog_for_paper(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     _seed_plumbing(project_root, raw_total=38667)
     health = project_root / "governance" / "health"
@@ -221,9 +296,16 @@ def test_system_plumbing_manages_deferred_off_hours_backlog_for_paper(tmp_path: 
                 "sql_overlay_oversize_payloads": 0,
                 "sql_overlay_ops_write_failures": 0,
             },
-            "writer_shedding": {"hard_breaches": ["deferred"], "elevated_breaches": ["core", "deferred"]},
+            "writer_shedding": {
+                "hard_breaches": ["deferred"],
+                "elevated_breaches": ["core", "deferred"],
+            },
             "storage_resilience": {"unresolved_split_brain_conflicts": 0},
-            "storage_plane_contract": {"disk_contract": {"external_disk": {"exists": True, "available_gb": 560.0}}},
+            "storage_plane_contract": {
+                "disk_contract": {
+                    "external_disk": {"exists": True, "available_gb": 560.0}
+                }
+            },
         },
     )
     _write_json(
@@ -238,7 +320,10 @@ def test_system_plumbing_manages_deferred_off_hours_backlog_for_paper(tmp_path: 
             "writer_handoff_contract": {"writer_service_active": True},
         },
     )
-    _write_json(health / "ingestion_priority_queue_latest.json", {"lane_counts": {"core": {"pending_lines": 38667}}})
+    _write_json(
+        health / "ingestion_priority_queue_latest.json",
+        {"lane_counts": {"core": {"pending_lines": 38667}}},
+    )
     _write_json(
         health / "runtime_throttle_control_latest.json",
         {
@@ -267,7 +352,10 @@ def test_system_plumbing_manages_deferred_off_hours_backlog_for_paper(tmp_path: 
             "halt_required": True,
             "would_rehalt": True,
             "halt_posture": "unlatched_halt_required",
-            "clear_blockers": ["write_path_recovery_pending", "queue_backpressure_active"],
+            "clear_blockers": [
+                "write_path_recovery_pending",
+                "queue_backpressure_active",
+            ],
             "metrics": {"execution_expected": False},
         },
     )
@@ -276,16 +364,115 @@ def test_system_plumbing_manages_deferred_off_hours_backlog_for_paper(tmp_path: 
 
     assert payload["ok"] is True
     assert payload["overall_status"] == "ready"
-    assert payload["sections"]["queue_backpressure"]["status"] == "managed_deferred_backlog_advisory"
-    assert payload["sections"]["runtime_memory"]["status"] == "managed_deferred_backlog_advisory"
+    assert (
+        payload["sections"]["queue_backpressure"]["status"]
+        == "managed_deferred_backlog_advisory"
+    )
+    assert (
+        payload["sections"]["runtime_memory"]["status"]
+        == "managed_deferred_backlog_advisory"
+    )
     assert payload["sections"]["data_plane_recovery"]["bounded_write_recovery"] is True
-    assert payload["global_clear_relief"]["status"] == "managed_deferred_backpressure_advisory"
+    assert (
+        payload["global_clear_relief"]["status"]
+        == "managed_deferred_backpressure_advisory"
+    )
     assert payload["paper_ramp_relief_contract"]["managed_deferred_backlog"] is True
     assert "managed_deferred_backlog_advisory" in payload["warnings"]
     assert payload["managed_advisories"]["all_managed"] is True
 
 
-def test_system_plumbing_consumes_runtime_external_high_compute_relief_for_paper(tmp_path: Path) -> None:
+def test_system_plumbing_treats_active_residual_deferred_drain_as_advisory(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _seed_plumbing(project_root, raw_total=15669, pressure_index=0.252)
+    health = project_root / "governance" / "health"
+    storage_path = health / "ingestion_storage_control_latest.json"
+    storage = json.loads(storage_path.read_text(encoding="utf-8"))
+    storage["overall_status"] = "ready"
+    storage["severity"] = "stable"
+    storage["pressure_index"] = 0.252
+    storage["backpressure"].update(
+        {
+            "core_pending_lines": 1236,
+            "support_pending_lines": 0,
+            "deferred_pending_lines": 14433,
+            "total_pending_lines": 15669,
+            "pending_lines_threshold": 15000,
+            "raw_live": {
+                "core_pending_lines": 1236,
+                "total_pending_lines": 15669,
+                "oldest_pending_age_seconds": 60.46,
+            },
+        }
+    )
+    storage["storage"] = {"backlog_drain_status": "drain_active"}
+    storage["data_integrity"] = {
+        "sql_invalid_lines": 0,
+        "sql_overlay_invalid_lines": 0,
+        "sql_overlay_oversize_payloads": 0,
+        "sql_overlay_ops_write_failures": 0,
+    }
+    storage["writer_shedding"] = {"hard_breaches": [], "elevated_breaches": []}
+    _write_json(storage_path, storage)
+    _write_json(
+        health / "data_plane_recovery_controller_latest.json",
+        {
+            "overall_status": "degraded",
+            "recovery_state": "recovering_under_guard",
+            "write_failure_count": 6,
+            "raw_write_failure_count": 6,
+            "account_snapshot_failure_count": 0,
+            "queue_depth": 15669,
+            "current_storage_write_ready": True,
+            "writer_handoff_contract": {"writer_service_active": True},
+        },
+    )
+    _write_json(
+        health / "global_halt_auto_clear_latest.json",
+        {
+            "halt": False,
+            "halt_required": True,
+            "would_rehalt": True,
+            "halt_posture": "unlatched_halt_required",
+            "clear_blockers": [
+                "write_path_recovery_pending",
+                "queue_backpressure_active",
+            ],
+            "metrics": {"execution_expected": False},
+        },
+    )
+
+    payload = src.build_payload(project_root)
+    queue = payload["sections"]["queue_backpressure"]
+    data_plane = payload["sections"]["data_plane_recovery"]
+
+    assert payload["ok"] is True
+    assert payload["overall_status"] == "ready"
+    assert payload["plumbing_score"] == 100
+    assert queue["raw_live"]["ok"] is False
+    assert queue["status"] == "residual_deferred_backlog_advisory"
+    assert queue["residual_deferred_backlog_relief"]["active"] is True
+    assert data_plane["bounded_write_recovery"] is True
+    assert data_plane["residual_deferred_backlog_relief"]["active"] is True
+    assert (
+        payload["global_clear_relief"]["status"]
+        == "residual_deferred_backpressure_advisory"
+    )
+    assert (
+        payload["paper_ramp_relief_contract"]["residual_deferred_backlog"] is True
+    )
+    assert "queue_backpressure_blocked" not in payload["blockers"]
+    assert "data_plane_recovery_blocked" not in payload["blockers"]
+    assert "global_clear_blockers_unbounded" not in payload["blockers"]
+    assert "residual_deferred_backlog_advisory" in payload["warnings"]
+    assert payload["managed_advisories"]["all_managed"] is True
+
+
+def test_system_plumbing_consumes_runtime_external_high_compute_relief_for_paper(
+    tmp_path: Path,
+) -> None:
     project_root = tmp_path / "project"
     _seed_plumbing(project_root)
     health = project_root / "governance" / "health"
@@ -300,7 +487,9 @@ def test_system_plumbing_consumes_runtime_external_high_compute_relief_for_paper
                 "active": True,
                 "to_status": "advisory",
                 "reason": "external_high_compute_with_bounded_storage_overlay_is_capacity_limited_advisory",
-                "thresholds": {"max_guarded_external_high_compute_host_saturation_score": 75.0},
+                "thresholds": {
+                    "max_guarded_external_high_compute_host_saturation_score": 75.0
+                },
                 "measurements": {
                     "external_high_compute_guarded": True,
                     "bounded_storage_overlay_guarded": True,
@@ -318,7 +507,10 @@ def test_system_plumbing_consumes_runtime_external_high_compute_relief_for_paper
             },
         },
     )
-    _write_json(health / "memory_efficiency_control_latest.json", {"overall_status": "needs_work"})
+    _write_json(
+        health / "memory_efficiency_control_latest.json",
+        {"overall_status": "needs_work"},
+    )
 
     payload = src.build_payload(project_root)
     runtime = payload["sections"]["runtime_memory"]

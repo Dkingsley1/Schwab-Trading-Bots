@@ -50,6 +50,151 @@ class _SnapshotTrader:
         return []
 
 
+def test_shared_snapshot_preserves_last_good_across_failed_refresh(tmp_path) -> None:
+    success = {
+        "ok": True,
+        "account_count": 1,
+        "payload": {"accounts": [{"securitiesAccount": {"positions": []}}]},
+    }
+    failure = {
+        "ok": False,
+        "error": "account_discovery_provider_unavailable",
+        "status_code": 500,
+        "provider_failure": True,
+        "provider_failure_class": "provider_unavailable",
+    }
+
+    assert loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path), broker="schwab", fetched=success
+    )
+    assert loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path), broker="schwab", fetched=failure
+    )
+
+    latest = json.loads(
+        loop._broker_truth_shared_snapshot_cache_path(str(tmp_path), "schwab").read_text(
+            encoding="utf-8"
+        )
+    )
+    last_good = json.loads(
+        loop._broker_truth_shared_snapshot_last_good_path(str(tmp_path), "schwab").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert latest["fetched"]["ok"] is False
+    assert last_good["fetched"]["ok"] is True
+    assert last_good["fetched"]["account_count"] == 1
+
+
+def test_shared_snapshot_redacts_account_credentials_and_is_owner_only(
+    tmp_path,
+) -> None:
+    fetched = {
+        "ok": True,
+        "accessToken": "secret-access-token",
+        "payload": {
+            "accounts": [
+                {
+                    "_broker_account": {
+                        "account_number_tail": "6789",
+                        "account_reference_present": True,
+                        "account_reference": "secret-account-hash",
+                    },
+                    "securitiesAccount": {
+                        "accountNumber": "123456789",
+                        "hashValue": "secret-account-hash",
+                        "positions": [],
+                    },
+                }
+            ]
+        },
+    }
+
+    assert loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path), broker="schwab", fetched=fetched
+    )
+    cache_path = loop._broker_truth_shared_snapshot_cache_path(
+        str(tmp_path), "schwab"
+    )
+    raw = cache_path.read_text(encoding="utf-8")
+    payload = json.loads(raw)
+
+    assert "123456789" not in raw
+    assert "secret-account-hash" not in raw
+    assert "secret-access-token" not in raw
+    assert payload["redaction"]["raw_account_number_emitted"] is False
+    assert (
+        payload["fetched"]["payload"]["accounts"][0]["_broker_account"]
+        ["account_number_tail"]
+        == "6789"
+    )
+    assert cache_path.stat().st_mode & 0o077 == 0
+
+
+def test_shared_snapshot_serves_bounded_last_good_only_in_collection_mode(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(loop, "PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("MARKET_DATA_ONLY", "1")
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
+    success = {
+        "ok": True,
+        "account_count": 1,
+        "payload": {"accounts": [{"securitiesAccount": {"positions": []}}]},
+    }
+    failure = {
+        "ok": False,
+        "error": "account_discovery_provider_unavailable",
+        "status_code": 500,
+        "provider_failure": True,
+        "provider_failure_class": "provider_unavailable",
+    }
+    loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path), broker="schwab", fetched=success
+    )
+    loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path), broker="schwab", fetched=failure
+    )
+
+    fetched = loop._shared_broker_truth_accounts_payload(
+        trader=_FailingTrader(), broker="schwab"
+    )
+
+    assert fetched["ok"] is True
+    assert fetched["_shared_snapshot_stale_fallback"] is True
+    assert fetched["_shared_snapshot_current_failure"] == "account_discovery_provider_unavailable"
+    assert fetched["provider_failure"] is True
+    assert fetched["soft_failure"] is True
+
+
+def test_shared_snapshot_never_serves_last_good_to_live_execution(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(loop, "PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("MARKET_DATA_ONLY", "0")
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
+    loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path),
+        broker="schwab",
+        fetched={"ok": True, "account_count": 1, "payload": {"accounts": []}},
+    )
+    loop._write_broker_truth_shared_snapshot(
+        project_root=str(tmp_path),
+        broker="schwab",
+        fetched={
+            "ok": False,
+            "error": "account_discovery_provider_unavailable",
+            "status_code": 500,
+            "provider_failure": True,
+        },
+    )
+
+    fetched = loop._shared_broker_truth_accounts_payload(
+        trader=_FailingTrader(), broker="schwab"
+    )
+
+    assert fetched["ok"] is False
+    assert fetched.get("_shared_snapshot_stale_fallback") is not True
+
+
 def test_shared_broker_truth_snapshot_reuses_recent_cached_payload(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(loop, "PROJECT_ROOT", str(tmp_path))
     cache_path = loop._broker_truth_shared_snapshot_cache_path(str(tmp_path), "schwab")
@@ -196,6 +341,8 @@ def test_fetch_broker_truth_snapshot_v2_tracks_balance_orders_and_deltas(tmp_pat
     assert v2["order_truth"]["filled_order_count"] == 1
     assert v2["order_truth"]["pending_order_count"] == 1
     assert v2["paper_ledger_delta"]["delta_symbol_count"] == 1
+    assert v2["account_identity"]["redacted_account_markers"] == ["****6789"]
+    assert "123456789" not in json.dumps(v2)
 
 
 def test_clear_critical_alert_latest_removes_matching_broker_truth_alert(tmp_path, monkeypatch) -> None:

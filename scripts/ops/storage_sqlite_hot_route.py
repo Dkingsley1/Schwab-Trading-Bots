@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import gc
 import hashlib
 import json
@@ -11,7 +12,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -24,24 +25,82 @@ if __package__ in {None, ""}:
     from core.runtime_maintenance import (
         engage_maintenance_hold,
         maintenance_hold_snapshot,
+        maintenance_hold_token_authorized,
         release_maintenance_hold,
     )
     from core.storage_mounts import resolve_external_storage
     from scripts.ops import writer_cycle_coordinator as writer_state
+    from scripts.ops.sql_writer_lock_path import configured_sql_writer_lock_path
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     from core.runtime_python import resolve_runtime_python
     from core.runtime_maintenance import (
         engage_maintenance_hold,
         maintenance_hold_snapshot,
+        maintenance_hold_token_authorized,
         release_maintenance_hold,
     )
     from core.storage_mounts import resolve_external_storage
     from scripts.ops import writer_cycle_coordinator as writer_state
+    from scripts.ops.sql_writer_lock_path import configured_sql_writer_lock_path
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_sqlite_hot_route_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "storage_sqlite_hot_route_latest.json"
+)
+_REBUILD_DEADLINE: float | None = None
+
+
+def _capacity_probe(path: Path) -> Path:
+    from core.storage_router import inspect_storage_path
+
+    route = inspect_storage_path(path)
+    if route.get("status") not in {"present", "missing"} or route.get("symlinks"):
+        raise ValueError("unsafe_cache_storage_route")
+    absolute = path.absolute()
+    if absolute.parts[:2] == ("/", "Volumes"):
+        mount = Path(*absolute.parts[:3])
+        if not mount.is_mount():
+            raise ValueError("cache_storage_volume_not_mounted")
+    probe = absolute
+    while not probe.exists():
+        probe = probe.parent
+    if not probe.is_dir():
+        probe = probe.parent
+    return probe
+
+
+def _cold_capacity_budget(
+    cold_root: Path, staging_root: Path, reserved_staging: int, reserve: int
+) -> dict[str, Any]:
+    probe = _capacity_probe(cold_root)
+    staging_probe = _capacity_probe(staging_root)
+    shared = probe.stat().st_dev == staging_probe.stat().st_dev
+    minimum = reserve + (reserved_staging if shared else 0)
+    free = _disk_free_bytes(probe)
+    return {
+        "ready": free is not None and free >= minimum,
+        "probe_path": str(probe),
+        "same_filesystem_as_staging": shared,
+        "free_bytes": free,
+        "minimum_free_after_bytes": minimum,
+    }
+
+
+def _remaining_seconds(limit: float) -> float:
+    remaining = (
+        float(limit)
+        if _REBUILD_DEADLINE is None
+        else min(float(limit), _REBUILD_DEADLINE - time.monotonic())
+    )
+    if remaining <= 0:
+        raise TimeoutError("cache_rebuild_operation_deadline")
+    return remaining
+
+
+def _operation_expired() -> bool:
+    return _REBUILD_DEADLINE is not None and time.monotonic() >= _REBUILD_DEADLINE
 
 
 def _utc_now() -> datetime:
@@ -55,10 +114,17 @@ def _iso(dt: datetime | None = None) -> str:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+    )
     with tmp.open("rb") as handle:
         os.fsync(handle.fileno())
     os.replace(tmp, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -94,6 +160,33 @@ def _source_signature(path: Path) -> dict[str, Any]:
     }
 
 
+def _source_family_signature(path: Path) -> dict[str, Any]:
+    wal = Path(f"{path}-wal")
+    wal_signature = _source_signature(wal) if wal.exists() else None
+    # A read-only WAL connection may create an empty coordination file. Only
+    # nonempty WAL content can contain changes to the checkpointed source.
+    if wal_signature and wal_signature["size_bytes"] == 0:
+        wal_signature = None
+    return {
+        "database": _source_signature(path),
+        "wal": wal_signature,
+    }
+
+
+@contextmanager
+def _exclusive_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(f"maintenance_lock_busy:{path.name}") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _path_is_within(path: Path, root: Path) -> bool:
     try:
         path.absolute().relative_to(root.absolute())
@@ -102,9 +195,15 @@ def _path_is_within(path: Path, root: Path) -> bool:
     return True
 
 
-def _discard_partial_datasets(transaction: dict[str, Any], cold_export_root: Path) -> list[str]:
+def _discard_partial_datasets(
+    transaction: dict[str, Any], cold_export_root: Path
+) -> list[str]:
     deleted: list[str] = []
-    for raw in transaction.get("partial_datasets", []) if isinstance(transaction.get("partial_datasets"), list) else []:
+    for raw in (
+        transaction.get("partial_datasets", [])
+        if isinstance(transaction.get("partial_datasets"), list)
+        else []
+    ):
         candidate = Path(str(raw or "")).expanduser()
         if (
             candidate.name.startswith(".")
@@ -122,7 +221,9 @@ def _sidecars(path: Path) -> list[Path]:
     return [Path(f"{path}{suffix}") for suffix in ("-wal", "-shm")]
 
 
-def _table_exists(conn: sqlite3.Connection, table: str, *, schema: str = "main") -> bool:
+def _table_exists(
+    conn: sqlite3.Connection, table: str, *, schema: str = "main"
+) -> bool:
     row = conn.execute(
         f"SELECT 1 FROM {schema}.sqlite_master WHERE type='table' AND name=?",
         (table,),
@@ -130,7 +231,9 @@ def _table_exists(conn: sqlite3.Connection, table: str, *, schema: str = "main")
     return row is not None
 
 
-def _table_columns(conn: sqlite3.Connection, table: str, *, schema: str = "main") -> list[tuple[str, str]]:
+def _table_columns(
+    conn: sqlite3.Connection, table: str, *, schema: str = "main"
+) -> list[tuple[str, str]]:
     return [
         (str(row[1]), str(row[2] or "TEXT"))
         for row in conn.execute(f"PRAGMA {schema}.table_info({table})").fetchall()
@@ -155,27 +258,175 @@ def _arrow_type(sql_type: str):
     return pa.string()
 
 
-def _connect(path: Path, *, readonly: bool = False, timeout_seconds: float = 60.0) -> sqlite3.Connection:
+def _connect(
+    path: Path, *, readonly: bool = False, timeout_seconds: float = 60.0
+) -> sqlite3.Connection:
     if readonly:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=max(float(timeout_seconds), 1.0))
+        conn = sqlite3.connect(
+            f"{path.absolute().as_uri()}?mode=ro",
+            uri=True,
+            timeout=max(float(timeout_seconds), 1.0),
+        )
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(path), timeout=max(float(timeout_seconds), 1.0))
     conn.row_factory = sqlite3.Row
     conn.execute(f"PRAGMA busy_timeout={int(max(float(timeout_seconds), 1.0) * 1000)}")
+    conn.set_progress_handler(lambda: int(_operation_expired()), 1000)
     return conn
+
+
+def _inspect_source(
+    path: Path, cutoff: str, source_bytes: int, timeout_seconds: float
+) -> tuple[dict[str, Any], int, dict[str, int]]:
+    deadline = time.monotonic() + min(max(float(timeout_seconds), 1.0), 60.0)
+    with closing(
+        _connect(path, readonly=True, timeout_seconds=min(timeout_seconds, 1.0))
+    ) as conn:
+        conn.set_progress_handler(
+            lambda: int(time.monotonic() >= deadline or _operation_expired()), 1000
+        )
+        conn.execute("BEGIN")
+        counts = _source_counts(conn, cutoff)
+        observation: dict[str, int] = {}
+        estimate = _estimated_hot_db_bytes(
+            conn, cutoff, source_bytes, counts, observation=observation
+        )
+        return counts, estimate, observation
+
+
+def _restore_row_encoder():
+    try:
+        import msgpack
+    except ImportError:
+        msgpack = None
+    if msgpack is not None and msgpack.Packer.__module__ == "msgpack._cmsgpack":
+        # Explicit scalar tags avoid JSON-escaping large payload strings again.
+        packer = msgpack.Packer(
+            use_bin_type=True, use_single_float=False, strict_types=True, autoreset=True
+        )
+        return lambda row: packer.pack(list(row)), "msgpack_sqlite_scalars_v1"
+
+    def encode(row):
+        return (
+            json.dumps(
+                [
+                    (type(v).__name__, v.hex() if isinstance(v, bytes) else v)
+                    for v in row
+                ],
+                ensure_ascii=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("ascii")
+
+    return encode, "json_type_pairs_ascii_v1"
+
+
+def _verify_cold_export(
+    source_db: Path, export: dict[str, Any], cutoff: str, timeout_seconds: float
+) -> dict[str, Any]:
+    import pyarrow.parquet as pq
+
+    deadline = time.monotonic() + max(float(timeout_seconds), 1.0)
+    table = str(export["table"])
+    expected_rows = int(export.get("rows_exported", 0))
+    source_hash, restored_hash = hashlib.sha256(), hashlib.sha256()
+    encode, row_encoding = _restore_row_encoder()
+    if row_encoding != "json_type_pairs_ascii_v1":
+        domain = (row_encoding + "\n").encode("ascii")
+        source_hash.update(domain)
+        restored_hash.update(domain)
+    raw_path = str(export.get("output_path") or "")
+    path = Path(raw_path) if raw_path else None
+    files = (
+        sorted(path.glob("part_*.parquet"))
+        if path and path.is_dir()
+        else [path] if path else []
+    )
+    order = "id" if path and path.is_dir() else "ingested_at, id"
+
+    verified = 0
+    with closing(
+        _connect(source_db, readonly=True, timeout_seconds=min(timeout_seconds, 1.0))
+    ) as conn:
+        conn.set_progress_handler(
+            lambda: int(time.monotonic() >= deadline or _operation_expired()), 1000
+        )
+        if not _table_exists(conn, table):
+            if expected_rows:
+                raise RuntimeError(f"cold_restore_missing_source_table:{table}")
+            return {"ok": True, "rows_verified": 0, "validation": "source_table_absent"}
+        columns = [name for name, _ in _table_columns(conn, table)]
+        quoted = ", ".join(_quote_ident(name) for name in columns)
+        cursor = conn.execute(
+            f"SELECT {quoted} FROM {_quote_ident(table)} WHERE ingested_at < ? ORDER BY {order}",
+            (cutoff,),
+        )
+        for file in files:
+            if file.is_symlink():
+                raise RuntimeError("cold_restore_symlink_rejected")
+            with pq.ParquetFile(file) as parquet:
+                if parquet.schema_arrow.names != columns:
+                    raise RuntimeError(f"cold_restore_schema_mismatch:{table}")
+                for batch in parquet.iter_batches(batch_size=100, use_threads=False):
+                    if time.monotonic() >= deadline or _operation_expired():
+                        raise TimeoutError("cold_restore_verification_deadline")
+                    for row in batch.to_pylist():
+                        original = cursor.fetchone()
+                        restored = encode([row[name] for name in columns])
+                        original_encoded = (
+                            encode(original) if original is not None else None
+                        )
+                        if original_encoded != restored:
+                            raise RuntimeError(f"cold_restore_content_mismatch:{table}")
+                        source_hash.update(original_encoded)
+                        restored_hash.update(restored)
+                        verified += 1
+        if cursor.fetchone() is not None or verified != expected_rows:
+            raise RuntimeError(f"cold_restore_coverage_mismatch:{table}")
+    return {
+        "ok": True,
+        "rows_verified": verified,
+        "source_sha256": source_hash.hexdigest(),
+        "restored_sha256": restored_hash.hexdigest(),
+        "validation": "full_typed_row_restore_sha256",
+        "row_encoding": row_encoding,
+    }
 
 
 def _quick_check(path: Path, *, timeout_seconds: float) -> dict[str, Any]:
     if not path.exists():
         return {"ok": False, "result": "missing"}
     try:
-        with closing(_connect(path, readonly=False, timeout_seconds=timeout_seconds)) as conn:
+        deadline = time.monotonic() + _remaining_seconds(timeout_seconds)
+        with closing(
+            _connect(path, readonly=True, timeout_seconds=min(timeout_seconds, 1.0))
+        ) as conn:
+            conn.set_progress_handler(
+                lambda: int(time.monotonic() >= deadline or _operation_expired()), 1000
+            )
             row = conn.execute("PRAGMA quick_check").fetchone()
             result = str(row[0] if row else "")
     except Exception as exc:
         return {"ok": False, "result": str(exc), "error_type": type(exc).__name__}
     return {"ok": result.lower() == "ok", "result": result}
+
+
+def _timestamp_indexed_table(conn: sqlite3.Connection, table: str) -> str:
+    # A stale planner estimate can choose a source-rel skip scan for this range.
+    candidates = []
+    for index in conn.execute(f"PRAGMA index_list({_quote_ident(table)})"):
+        if len(index) > 4 and index[4]:
+            continue
+        name = str(index[1])
+        columns = list(conn.execute(f"PRAGMA index_info({_quote_ident(name)})"))
+        if columns and columns[0][2] == "ingested_at":
+            candidates.append((len(columns), name))
+    source = _quote_ident(table)
+    if candidates:
+        source += f" INDEXED BY {_quote_ident(min(candidates)[1])}"
+    return source
 
 
 def _source_counts(conn: sqlite3.Connection, cutoff: str) -> dict[str, Any]:
@@ -184,58 +435,118 @@ def _source_counts(conn: sqlite3.Connection, cutoff: str) -> dict[str, Any]:
         if not _table_exists(conn, table):
             continue
         cols = [name for name, _ in _table_columns(conn, table)]
-        total = int(conn.execute(f"SELECT COUNT(*) FROM {_quote_ident(table)}").fetchone()[0] or 0)
+        source = _timestamp_indexed_table(conn, table)
+        total = int(
+            conn.execute(f"SELECT COUNT(*) FROM {source}").fetchone()[0]
+            or 0
+        )
         bucket: dict[str, Any] = {"total_rows": total}
         if "ingested_at" in cols:
             hot = int(
                 conn.execute(
-                    f"SELECT COUNT(*) FROM {_quote_ident(table)} WHERE ingested_at >= ?",
+                    f"SELECT COUNT(*) FROM {source} WHERE ingested_at >= ?",
                     (cutoff,),
                 ).fetchone()[0]
                 or 0
             )
             bucket["hot_rows"] = hot
             bucket["cold_rows"] = max(total - hot, 0)
-            row = conn.execute(
-                f"SELECT MIN(ingested_at), MAX(ingested_at) FROM {_quote_ident(table)}"
-            ).fetchone()
-            bucket["min_ingested_at"] = str(row[0] or "") if row else ""
-            bucket["max_ingested_at"] = str(row[1] or "") if row else ""
+            for aggregate, key in (("MIN", "min_ingested_at"), ("MAX", "max_ingested_at")):
+                row = conn.execute(f"SELECT {aggregate}(ingested_at) FROM {source}").fetchone()
+                bucket[key] = str(row[0] or "") if row else ""
         out[table] = bucket
     return out
 
 
-def _estimated_hot_db_bytes(conn: sqlite3.Connection, cutoff: str, source_bytes: int) -> int:
+def _estimated_hot_db_bytes(
+    conn: sqlite3.Connection,
+    cutoff: str,
+    source_bytes: int,
+    counts: dict[str, Any] | None = None,
+    *,
+    observation: dict[str, int] | None = None,
+) -> int:
     payload_bytes = 0
     hot_rows = 0
     total_rows = 0
+    counts = counts if counts is not None else _source_counts(conn, cutoff)
+    try:
+        conn.execute("SELECT octet_length('')").fetchone()
+        byte_length = lambda name: f"OCTET_LENGTH({_quote_ident(name)})"
+    except sqlite3.OperationalError:
+        byte_length = lambda name: f"LENGTH(CAST({_quote_ident(name)} AS BLOB))"
     for table in ("jsonl_records", "json_file_records"):
         if not _table_exists(conn, table):
             continue
         columns = [name for name, _ in _table_columns(conn, table)]
         if "ingested_at" not in columns:
             continue
-        total_rows += int(conn.execute(f"SELECT COUNT(*) FROM {_quote_ident(table)}").fetchone()[0] or 0)
-        hot_rows += int(
-            conn.execute(
-                f"SELECT COUNT(*) FROM {_quote_ident(table)} WHERE ingested_at >= ?",
-                (cutoff,),
-            ).fetchone()[0]
-            or 0
-        )
-        payload_columns = [name for name in columns if name in {"payload_json", "payload_sha1", "source_file", "source_rel"}]
+        total_rows += int(counts.get(table, {}).get("total_rows", 0))
+        hot_rows += int(counts.get(table, {}).get("hot_rows", 0))
+        payload_columns = [
+            name
+            for name in columns
+            if name in {"payload_json", "payload_sha1", "source_file", "source_rel"}
+        ]
         if payload_columns:
-            expression = " + ".join(f"COALESCE(LENGTH({_quote_ident(name)}), 0)" for name in payload_columns)
+            expression = " + ".join(
+                f"COALESCE({byte_length(name)}, 0)" for name in payload_columns
+            )
+            source = _timestamp_indexed_table(conn, table)
             payload_bytes += int(
                 conn.execute(
-                    f"SELECT COALESCE(SUM({expression}), 0) FROM {_quote_ident(table)} WHERE ingested_at >= ?",
+                    f"SELECT COALESCE(SUM({expression}), 0) FROM {source} WHERE ingested_at >= ?",
                     (cutoff,),
                 ).fetchone()[0]
                 or 0
             )
-    ratio_estimate = int(max(int(source_bytes), 0) * (float(hot_rows) / float(max(total_rows, 1))) * 1.5)
+    ratio_estimate = int(
+        max(int(source_bytes), 0) * (float(hot_rows) / float(max(total_rows, 1))) * 1.5
+    )
     payload_estimate = int(max(payload_bytes, 0) * 2.25)
+    if observation is not None:
+        observation.update(
+            hot_payload_bytes=payload_bytes, hot_rows=hot_rows, total_rows=total_rows
+        )
     return max(ratio_estimate, payload_estimate, 64 * 1024**2)
+
+
+def _hot_staging_budget(
+    estimate, payload_bytes, local_free, external_free, local_reserve, external_reserve
+):
+    """Cap the derived database without treating an estimate as allocated bytes."""
+    overhead = 256 * 1024**2
+    if (
+        type(estimate) is not int
+        or estimate <= 0
+        or type(payload_bytes) is not int
+        or payload_bytes < 0
+        or type(local_free) is not int
+        or type(external_free) is not int
+    ):
+        return {"ready": False, "reason": "staging_capacity_unknown"}
+    ceiling = max(
+        0,
+        min(
+            estimate,
+            local_free - local_reserve - overhead,
+            external_free - external_reserve - overhead,
+        ),
+    )
+    ceiling = ceiling // 4096 * 4096
+    # Payload is only a lower bound. SQLite must reject an undersized attempt.
+    ready = ceiling >= max(payload_bytes, 64 * 1024**2)
+    return {
+        "ready": ready,
+        "reason": "ready" if ready else "staging_capacity_below_payload",
+        "estimated_hot_db_bytes": estimate,
+        "hot_payload_bytes": payload_bytes,
+        "max_database_bytes": ceiling,
+        "overhead_bytes": overhead,
+        "reserved_staging_bytes": ceiling + overhead,
+        "estimate_exceeds_capacity": estimate > ceiling,
+        "enforcement": "sqlite_max_page_count_plus_live_free_space_checks",
+    }
 
 
 def _export_cold_table_to_parquet(
@@ -253,12 +564,22 @@ def _export_cold_table_to_parquet(
     import pyarrow.parquet as pq
 
     if not _table_exists(src, table):
-        return {"table": table, "rows_exported": 0, "output_path": str(out_path), "skipped_reason": "table_missing"}
+        return {
+            "table": table,
+            "rows_exported": 0,
+            "output_path": str(out_path),
+            "skipped_reason": "table_missing",
+        }
 
     col_specs = _table_columns(src, table)
     col_names = [name for name, _ in col_specs]
     if "ingested_at" not in col_names:
-        return {"table": table, "rows_exported": 0, "output_path": str(out_path), "skipped_reason": "no_ingested_at"}
+        return {
+            "table": table,
+            "rows_exported": 0,
+            "output_path": str(out_path),
+            "skipped_reason": "no_ingested_at",
+        }
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     quoted_cols = ", ".join(_quote_ident(name) for name in col_names)
@@ -270,7 +591,9 @@ def _export_cold_table_to_parquet(
         (cutoff,),
     )
     col_types = {name: _arrow_type(sql_type) for name, sql_type in col_specs}
-    max_batch_rows = max(int(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_MAX_EXPORT_BATCH_ROWS", "2000")), 100)
+    max_batch_rows = max(
+        int(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_MAX_EXPORT_BATCH_ROWS", "2000")), 100
+    )
     effective_batch_size = min(max(int(batch_size), 100), max_batch_rows)
     memory_pool = pa.system_memory_pool()
     writer = None
@@ -287,10 +610,14 @@ def _export_cold_table_to_parquet(
             arrays = {}
             for idx, name in enumerate(col_names):
                 values = [row[idx] for row in rows]
-                arrays[name] = pa.array(values, type=col_types[name], memory_pool=memory_pool)
+                arrays[name] = pa.array(
+                    values, type=col_types[name], memory_pool=memory_pool
+                )
             batch = pa.Table.from_pydict(arrays)
             if writer is None:
-                writer = pq.ParquetWriter(str(out_path), batch.schema, compression=str(compression or "zstd"))
+                writer = pq.ParquetWriter(
+                    str(out_path), batch.schema, compression=str(compression or "zstd")
+                )
             writer.write_table(batch)
             rows_exported += len(rows)
             batches_written += 1
@@ -303,8 +630,16 @@ def _export_cold_table_to_parquet(
             if ingested:
                 batch_min = min(ingested)
                 batch_max = max(ingested)
-                min_ingested_at = batch_min if not min_ingested_at or batch_min < min_ingested_at else min_ingested_at
-                max_ingested_at = batch_max if not max_ingested_at or batch_max > max_ingested_at else max_ingested_at
+                min_ingested_at = (
+                    batch_min
+                    if not min_ingested_at or batch_min < min_ingested_at
+                    else min_ingested_at
+                )
+                max_ingested_at = (
+                    batch_max
+                    if not max_ingested_at or batch_max > max_ingested_at
+                    else max_ingested_at
+                )
             del batch, arrays, rows, values
             if batches_written % 8 == 0:
                 gc.collect()
@@ -354,10 +689,20 @@ def _export_cold_table_to_parquet_duckdb(
 
     with closing(_connect(source_db, readonly=True)) as sqlite_conn:
         if not _table_exists(sqlite_conn, table):
-            return {"table": table, "rows_exported": 0, "output_path": "", "skipped_reason": "table_missing"}
+            return {
+                "table": table,
+                "rows_exported": 0,
+                "output_path": "",
+                "skipped_reason": "table_missing",
+            }
         columns = [name for name, _ in _table_columns(sqlite_conn, table)]
         if "ingested_at" not in columns:
-            return {"table": table, "rows_exported": 0, "output_path": "", "skipped_reason": "no_ingested_at"}
+            return {
+                "table": table,
+                "rows_exported": 0,
+                "output_path": "",
+                "skipped_reason": "no_ingested_at",
+            }
         if "id" in columns:
             bounds = sqlite_conn.execute(
                 f"SELECT MIN(id), MAX(id) FROM {_quote_ident(table)} WHERE ingested_at < ?",
@@ -388,12 +733,20 @@ def _export_cold_table_to_parquet_duckdb(
         raise RuntimeError("duckdb_export_target_already_exists")
     partial_root.mkdir(parents=True)
     spill_root.mkdir(parents=True, exist_ok=True)
-    memory_limit = str(os.getenv("BOT_LOGS_SQLITE_DUCKDB_EXPORT_MEMORY_LIMIT", "1024MB") or "1024MB")
+    memory_limit = str(
+        os.getenv("BOT_LOGS_SQLITE_DUCKDB_EXPORT_MEMORY_LIMIT", "1024MB") or "1024MB"
+    )
     threads = max(int(os.getenv("BOT_LOGS_SQLITE_DUCKDB_EXPORT_THREADS", "1")), 1)
-    row_group_size = max(int(os.getenv("BOT_LOGS_SQLITE_DUCKDB_EXPORT_ROW_GROUP_SIZE", "2048")), 2048)
+    row_group_size = max(
+        int(os.getenv("BOT_LOGS_SQLITE_DUCKDB_EXPORT_ROW_GROUP_SIZE", "2048")), 2048
+    )
     row_group_size = max((row_group_size // 2048) * 2048, 2048)
-    id_span = max(int(os.getenv("BOT_LOGS_SQLITE_DUCKDB_EXPORT_ID_SPAN", "25000")), 2048)
-    min_id_span = max(int(os.getenv("BOT_LOGS_SQLITE_DUCKDB_EXPORT_MIN_ID_SPAN", "2048")), 1)
+    id_span = max(
+        int(os.getenv("BOT_LOGS_SQLITE_DUCKDB_EXPORT_ID_SPAN", "25000")), 2048
+    )
+    min_id_span = max(
+        int(os.getenv("BOT_LOGS_SQLITE_DUCKDB_EXPORT_MIN_ID_SPAN", "2048")), 1
+    )
     codec = str(compression or "zstd").strip().upper()
     if codec not in {"ZSTD", "SNAPPY", "GZIP", "LZ4", "UNCOMPRESSED"}:
         raise ValueError(f"unsupported parquet compression: {compression}")
@@ -411,10 +764,12 @@ def _export_cold_table_to_parquet_duckdb(
             conn.execute(f"SET threads={threads}")
             conn.execute("SET preserve_insertion_order=false")
             conn.execute(f"SET temp_directory={_sql_literal(spill_root)}")
-            conn.execute(f"ATTACH {_sql_literal(source_db)} AS sqlite_source (TYPE sqlite, READ_ONLY)")
+            conn.execute(
+                f"ATTACH {_sql_literal(source_db)} AS sqlite_source (TYPE sqlite, READ_ONLY)"
+            )
             conn.execute(
                 f"COPY (SELECT * FROM sqlite_source.{_quote_ident(table)} "
-                f"WHERE ingested_at < {_sql_literal(cutoff)} AND id >= {int(start_id)} AND id < {int(end_id)}) "
+                f"WHERE ingested_at < {_sql_literal(cutoff)} AND id >= {int(start_id)} AND id < {int(end_id)} ORDER BY id) "
                 f"TO {_sql_literal(part_path)} (FORMAT PARQUET, COMPRESSION {codec}, ROW_GROUP_SIZE {row_group_size})"
             )
         except Exception as exc:
@@ -501,6 +856,7 @@ def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            _remaining_seconds(1800)
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -545,11 +901,15 @@ def repair_final_manifest_paths(manifest_path: Path, *, apply: bool) -> dict[str
         canonical = dataset_root / original.name
         canonical_text = str(canonical)
         if canonical_text in seen_paths:
-            result["errors"].append(f"part_{index}:duplicate_output_path:{canonical.name}")
+            result["errors"].append(
+                f"part_{index}:duplicate_output_path:{canonical.name}"
+            )
             continue
         seen_paths.add(canonical_text)
         if not canonical.is_file():
-            result["errors"].append(f"part_{index}:canonical_part_missing:{canonical.name}")
+            result["errors"].append(
+                f"part_{index}:canonical_part_missing:{canonical.name}"
+            )
             continue
         expected_size = int(receipt.get("size_bytes", 0) or 0)
         actual_size = _size_bytes(canonical)
@@ -580,9 +940,19 @@ def repair_final_manifest_paths(manifest_path: Path, *, apply: bool) -> dict[str
             if isinstance(row, dict)
         }
         repaired["range_receipts"] = [
-            dict(by_range.get((int(row.get("start_id", 0) or 0), int(row.get("end_id", 0) or 0)), row))
-            if isinstance(row, dict)
-            else row
+            (
+                dict(
+                    by_range.get(
+                        (
+                            int(row.get("start_id", 0) or 0),
+                            int(row.get("end_id", 0) or 0),
+                        ),
+                        row,
+                    )
+                )
+                if isinstance(row, dict)
+                else row
+            )
             for row in repaired["range_receipts"]
         ]
     repaired["status"] = str(repaired.get("status") or "complete")
@@ -594,12 +964,15 @@ def repair_final_manifest_paths(manifest_path: Path, *, apply: bool) -> dict[str
         "repaired_at_utc": _iso(),
         "validated_part_count": int(result["validated_part_count"]),
         "validation": "canonical_path_size_and_sha256",
-        "legacy_manifest_schema_preserved": int(payload.get("schema_version", 0) or 0) < 2,
+        "legacy_manifest_schema_preserved": int(payload.get("schema_version", 0) or 0)
+        < 2,
     }
     if apply:
         _write_json(path, repaired)
     result["ok"] = True
-    result["overall_status"] = "repaired" if apply and result["changed_path_count"] else "verified"
+    result["overall_status"] = (
+        "repaired" if apply and result["changed_path_count"] else "verified"
+    )
     result["legacy_schema_preserved"] = int(payload.get("schema_version", 0) or 0) < 2
     return result
 
@@ -635,7 +1008,9 @@ def _export_arrow_id_range(
             (int(start_id), int(end_id), cutoff),
         )
         memory_pool = pa.system_memory_pool()
-        max_batch = max(int(os.getenv("BOT_LOGS_SQLITE_ARROW_WORKER_BATCH_ROWS", "100")), 100)
+        max_batch = max(
+            int(os.getenv("BOT_LOGS_SQLITE_ARROW_WORKER_BATCH_ROWS", "100")), 100
+        )
         effective_batch = min(max(int(batch_size), 100), max_batch)
         writer = None
         rows_exported = 0
@@ -650,10 +1025,18 @@ def _export_arrow_id_range(
                 arrays = []
                 for index, (_, sql_type) in enumerate(columns):
                     values = [row[index] for row in rows]
-                    arrays.append(pa.array(values, type=_arrow_type(sql_type), memory_pool=memory_pool))
+                    arrays.append(
+                        pa.array(
+                            values, type=_arrow_type(sql_type), memory_pool=memory_pool
+                        )
+                    )
                 table_batch = pa.Table.from_arrays(arrays, names=names)
                 if writer is None:
-                    writer = pq.ParquetWriter(str(out_path), table_batch.schema, compression=None if codec == "none" else codec)
+                    writer = pq.ParquetWriter(
+                        str(out_path),
+                        table_batch.schema,
+                        compression=None if codec == "none" else codec,
+                    )
                 writer.write_table(table_batch, row_group_size=len(rows))
                 rows_exported += len(rows)
                 batches_written += 1
@@ -703,7 +1086,12 @@ def _export_cold_table_to_parquet_isolated(
 ) -> dict[str, Any]:
     with closing(_connect(source_db, readonly=True, timeout_seconds=300)) as conn:
         if not _table_exists(conn, table):
-            return {"table": table, "rows_exported": 0, "output_path": "", "skipped_reason": "table_missing"}
+            return {
+                "table": table,
+                "rows_exported": 0,
+                "output_path": "",
+                "skipped_reason": "table_missing",
+            }
         columns = [name for name, _ in _table_columns(conn, table)]
         if "id" not in columns or "ingested_at" not in columns:
             raise RuntimeError(f"isolated_arrow_required_columns_missing:{table}")
@@ -714,16 +1102,28 @@ def _export_cold_table_to_parquet_isolated(
     min_id = int(bounds[0]) if bounds and bounds[0] is not None else None
     max_id = int(bounds[1]) if bounds and bounds[1] is not None else None
     if min_id is None or max_id is None:
-        return {"table": table, "rows_exported": 0, "output_path": "", "size_bytes": 0, "engine": "isolated_pyarrow"}
+        return {
+            "table": table,
+            "rows_exported": 0,
+            "output_path": "",
+            "size_bytes": 0,
+            "engine": "isolated_pyarrow",
+        }
 
     free_before = _disk_free_bytes(free_guard_root)
     if free_before is None or free_before < max(int(min_free_after_bytes), 0):
         raise RuntimeError("cold_export_free_space_guard")
     partial_root = out_path.with_name(f".{out_path.name}.partial_dataset")
     id_span = max(int(os.getenv("BOT_LOGS_SQLITE_ARROW_WORKER_ID_SPAN", "50000")), 1000)
-    min_id_span = max(int(os.getenv("BOT_LOGS_SQLITE_ARROW_WORKER_MIN_ID_SPAN", "1000")), 100)
-    batch_size = max(int(os.getenv("BOT_LOGS_SQLITE_ARROW_WORKER_BATCH_ROWS", "100")), 100)
-    timeout_seconds = max(int(os.getenv("BOT_LOGS_SQLITE_ARROW_WORKER_TIMEOUT_SECONDS", "1800")), 60)
+    min_id_span = max(
+        int(os.getenv("BOT_LOGS_SQLITE_ARROW_WORKER_MIN_ID_SPAN", "1000")), 100
+    )
+    batch_size = max(
+        int(os.getenv("BOT_LOGS_SQLITE_ARROW_WORKER_BATCH_ROWS", "100")), 100
+    )
+    timeout_seconds = max(
+        int(os.getenv("BOT_LOGS_SQLITE_ARROW_WORKER_TIMEOUT_SECONDS", "1800")), 60
+    )
     source_signature = _source_signature(source_db)
     checkpoint_path = partial_root / "_checkpoint.json"
 
@@ -741,7 +1141,9 @@ def _export_cold_table_to_parquet_isolated(
         return receipt
 
     def metadata_matches(payload: dict[str, Any]) -> bool:
-        config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
+        config = (
+            payload.get("config") if isinstance(payload.get("config"), dict) else {}
+        )
         return bool(
             int(payload.get("schema_version", 0) or 0) >= 2
             and str(payload.get("engine") or "") == "isolated_pyarrow"
@@ -759,20 +1161,32 @@ def _export_cold_table_to_parquet_isolated(
     def validated_receipts(payload: dict[str, Any], root: Path) -> list[dict[str, Any]]:
         raw_receipts = payload.get("range_receipts")
         if not isinstance(raw_receipts, list):
-            raw_receipts = payload.get("parts") if isinstance(payload.get("parts"), list) else []
+            raw_receipts = (
+                payload.get("parts") if isinstance(payload.get("parts"), list) else []
+            )
         valid: list[dict[str, Any]] = []
         previous_end = min_id
         for raw in sorted(
             (row for row in raw_receipts if isinstance(row, dict)),
-            key=lambda row: (int(row.get("start_id", 0) or 0), int(row.get("end_id", 0) or 0)),
+            key=lambda row: (
+                int(row.get("start_id", 0) or 0),
+                int(row.get("end_id", 0) or 0),
+            ),
         ):
             receipt = canonical_receipt(raw, root)
             start = int(receipt["start_id"])
             end = int(receipt["end_id"])
             rows = int(receipt["rows_exported"])
-            if start < min_id or end > max_id + 1 or end <= start or start < previous_end:
+            if (
+                start < min_id
+                or end > max_id + 1
+                or end <= start
+                or start < previous_end
+            ):
                 continue
-            part_path = Path(str(receipt.get("output_path") or "")) if rows > 0 else None
+            part_path = (
+                Path(str(receipt.get("output_path") or "")) if rows > 0 else None
+            )
             if rows > 0:
                 if part_path is None or not part_path.is_file():
                     continue
@@ -787,7 +1201,9 @@ def _export_cold_table_to_parquet_isolated(
             previous_end = end
         return valid
 
-    def uncovered_ranges(start_id: int, end_id: int, rows: list[dict[str, Any]]) -> list[tuple[int, int]]:
+    def uncovered_ranges(
+        start_id: int, end_id: int, rows: list[dict[str, Any]]
+    ) -> list[tuple[int, int]]:
         cursor = int(start_id)
         gaps: list[tuple[int, int]] = []
         for receipt in rows:
@@ -825,7 +1241,9 @@ def _export_cold_table_to_parquet_isolated(
             "cutoff_utc": cutoff,
             "min_id": min_id,
             "max_id": max_id,
-            "rows_exported": sum(int(row.get("rows_exported", 0) or 0) for row in canonical),
+            "rows_exported": sum(
+                int(row.get("rows_exported", 0) or 0) for row in canonical
+            ),
             "part_count": len(parts),
             "range_count": len(canonical),
             "config": {
@@ -846,25 +1264,37 @@ def _export_cold_table_to_parquet_isolated(
         if metadata_matches(completed_manifest):
             completed_receipts = validated_receipts(completed_manifest, out_path)
             if not uncovered_ranges(min_id, max_id + 1, completed_receipts):
-                rows_exported = sum(int(row.get("rows_exported", 0) or 0) for row in completed_receipts)
+                rows_exported = sum(
+                    int(row.get("rows_exported", 0) or 0) for row in completed_receipts
+                )
                 return {
                     "table": table,
                     "rows_exported": rows_exported,
                     "output_path": str(out_path),
-                    "size_bytes": sum(int(row.get("size_bytes", 0) or 0) for row in completed_receipts),
+                    "size_bytes": sum(
+                        int(row.get("size_bytes", 0) or 0) for row in completed_receipts
+                    ),
                     "engine": "isolated_pyarrow",
                     "id_span": id_span,
                     "min_id_span": min_id_span,
                     "batch_size": batch_size,
                     "min_id": min_id,
                     "max_id": max_id,
-                    "part_count": sum(1 for row in completed_receipts if int(row.get("rows_exported", 0) or 0) > 0),
+                    "part_count": sum(
+                        1
+                        for row in completed_receipts
+                        if int(row.get("rows_exported", 0) or 0) > 0
+                    ),
                     "range_count": len(completed_receipts),
                     "resumed_range_count": len(completed_receipts),
                     "reused_completed_dataset": True,
                     "adaptive_split_count": 0,
                     "max_worker_rss_bytes": max(
-                        (int(row.get("max_rss_bytes", 0) or 0) for row in completed_receipts), default=0
+                        (
+                            int(row.get("max_rss_bytes", 0) or 0)
+                            for row in completed_receipts
+                        ),
+                        default=0,
                     ),
                     "manifest_path": str(out_path / "_manifest.json"),
                     "free_bytes_before": free_before,
@@ -916,7 +1346,14 @@ def _export_cold_table_to_parquet_isolated(
             str(batch_size),
             "--json",
         ]
-        proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, check=False, timeout=timeout_seconds)
+        proc = subprocess.run(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_remaining_seconds(timeout_seconds),
+        )
         worker_payload: dict[str, Any] = {}
         for line in reversed((proc.stdout or "").splitlines()):
             try:
@@ -934,10 +1371,21 @@ def _export_cold_table_to_parquet_isolated(
                 export_range(start_id, midpoint)
                 export_range(midpoint, end_id)
                 return
-            error = str(worker_payload.get("error") or (proc.stderr or "").strip() or f"worker_rc={proc.returncode}")
-            raise RuntimeError(f"isolated_arrow_worker_failed:{start_id}:{end_id}:{error}")
+            error = str(
+                worker_payload.get("error")
+                or (proc.stderr or "").strip()
+                or f"worker_rc={proc.returncode}"
+            )
+            raise RuntimeError(
+                f"isolated_arrow_worker_failed:{start_id}:{end_id}:{error}"
+            )
         receipts.append(canonical_receipt(worker_payload, partial_root))
-        receipts.sort(key=lambda row: (int(row.get("start_id", 0) or 0), int(row.get("end_id", 0) or 0)))
+        receipts.sort(
+            key=lambda row: (
+                int(row.get("start_id", 0) or 0),
+                int(row.get("end_id", 0) or 0),
+            )
+        )
         write_checkpoint()
         free_now = _disk_free_bytes(free_guard_root)
         if free_now is None or free_now < max(int(min_free_after_bytes), 0):
@@ -947,7 +1395,9 @@ def _export_cold_table_to_parquet_isolated(
         range_start = min_id
         while range_start <= max_id:
             range_end = min(range_start + id_span, max_id + 1)
-            for gap_start, gap_end in uncovered_ranges(range_start, range_end, receipts):
+            for gap_start, gap_end in uncovered_ranges(
+                range_start, range_end, receipts
+            ):
                 export_range(gap_start, gap_end)
             range_start = range_end
         remaining = uncovered_ranges(min_id, max_id + 1, receipts)
@@ -978,19 +1428,25 @@ def _export_cold_table_to_parquet_isolated(
         "batch_size": batch_size,
         "min_id": min_id,
         "max_id": max_id,
-        "part_count": sum(1 for row in receipts if int(row.get("rows_exported", 0) or 0) > 0),
+        "part_count": sum(
+            1 for row in receipts if int(row.get("rows_exported", 0) or 0) > 0
+        ),
         "range_count": len(receipts),
         "resumed_range_count": resumed_range_count,
         "reused_completed_dataset": False,
         "adaptive_split_count": adaptive_splits,
-        "max_worker_rss_bytes": max((int(row.get("max_rss_bytes", 0) or 0) for row in receipts), default=0),
+        "max_worker_rss_bytes": max(
+            (int(row.get("max_rss_bytes", 0) or 0) for row in receipts), default=0
+        ),
         "manifest_path": str(out_path / "_manifest.json"),
         "free_bytes_before": free_before,
         "free_bytes_after": free_after,
     }
 
 
-def _schema_rows(src: sqlite3.Connection, kind: str, *, schema: str = "main") -> list[sqlite3.Row]:
+def _schema_rows(
+    src: sqlite3.Connection, kind: str, *, schema: str = "main"
+) -> list[sqlite3.Row]:
     if schema not in {"main", "src"}:
         raise ValueError(f"unsupported sqlite schema: {schema}")
     return list(
@@ -1014,6 +1470,9 @@ def _build_hot_db(
     dest_tmp: Path,
     cutoff: str,
     timeout_seconds: float,
+    free_guard_root: Path | None = None,
+    min_free_after_bytes: int = 0,
+    max_database_bytes: int | None = None,
 ) -> dict[str, Any]:
     if dest_tmp.exists():
         dest_tmp.unlink()
@@ -1022,11 +1481,41 @@ def _build_hot_db(
             sidecar.unlink()
 
     dest = _connect(dest_tmp, readonly=False, timeout_seconds=timeout_seconds)
+    deadline = time.monotonic() + max(float(timeout_seconds), 1.0)
+    next_capacity_check = 0.0
+
+    def should_stop() -> int:
+        nonlocal next_capacity_check
+        now = time.monotonic()
+        if now >= deadline or _operation_expired():
+            return 1
+        if free_guard_root is not None and now >= next_capacity_check:
+            free = _disk_free_bytes(free_guard_root)
+            if free is None or free < min_free_after_bytes + 64 * 1024**2:
+                return 1
+            next_capacity_check = now + 0.25
+        return 0
+
+    dest.set_progress_handler(should_stop, 1000)
     try:
         dest.execute("PRAGMA journal_mode=OFF")
         dest.execute("PRAGMA synchronous=OFF")
         dest.execute("PRAGMA temp_store=FILE")
-        dest.execute("ATTACH DATABASE ? AS src", (str(source_db),))
+        if max_database_bytes is not None:
+            if type(max_database_bytes) is not int or max_database_bytes <= 0:
+                raise ValueError("invalid_staged_database_limit")
+            page_size = int(dest.execute("PRAGMA main.page_size").fetchone()[0])
+            page_limit = max_database_bytes // page_size
+            if page_limit < 1:
+                raise ValueError("staged_database_limit_below_page_size")
+            applied_limit = dest.execute(
+                f"PRAGMA main.max_page_count={page_limit}"
+            ).fetchone()
+            if applied_limit is None or int(applied_limit[0]) != page_limit:
+                raise RuntimeError("staged_database_page_limit_not_applied")
+        dest.execute(
+            "ATTACH DATABASE ? AS src", (f"{source_db.absolute().as_uri()}?mode=ro",)
+        )
 
         tables = []
         for row in _schema_rows(dest, "table", schema="src"):
@@ -1037,6 +1526,17 @@ def _build_hot_db(
             dest.execute(sql)
             tables.append(name)
 
+        # Maintain indexes while each wide row is already loaded, avoiding a
+        # separate overflow-page scan for every expression or trailing column.
+        indexes = []
+        for row in _schema_rows(dest, "index", schema="src"):
+            sql = str(row["sql"] or "").strip()
+            name = str(row["name"] or "")
+            if not sql or not name:
+                continue
+            dest.execute(sql)
+            indexes.append(name)
+
         copied: dict[str, int] = {}
         for table in tables:
             cols = [name for name, _ in _table_columns(dest, table, schema="src")]
@@ -1046,35 +1546,58 @@ def _build_hot_db(
             has_ingested = "ingested_at" in cols
             if table in {"jsonl_records", "json_file_records"} and has_ingested:
                 sql = (
-                    f"INSERT OR IGNORE INTO main.{_quote_ident(table)} ({quoted_cols}) "
+                    f"INSERT INTO main.{_quote_ident(table)} ({quoted_cols}) "
                     f"SELECT {quoted_cols} FROM src.{_quote_ident(table)} WHERE ingested_at >= ?"
                 )
                 dest.execute(sql, (cutoff,))
             else:
                 sql = (
-                    f"INSERT OR IGNORE INTO main.{_quote_ident(table)} ({quoted_cols}) "
+                    f"INSERT INTO main.{_quote_ident(table)} ({quoted_cols}) "
                     f"SELECT {quoted_cols} FROM src.{_quote_ident(table)}"
                 )
                 dest.execute(sql)
-            copied[table] = int(dest.execute(f"SELECT COUNT(*) FROM main.{_quote_ident(table)}").fetchone()[0] or 0)
+            copied[table] = int(
+                dest.execute(
+                    f"SELECT COUNT(*) FROM main.{_quote_ident(table)}"
+                ).fetchone()[0]
+                or 0
+            )
+            expected = int(
+                dest.execute(
+                    f"SELECT COUNT(*) FROM src.{_quote_ident(table)}"
+                    + (
+                        " WHERE ingested_at >= ?"
+                        if table in {"jsonl_records", "json_file_records"}
+                        and has_ingested
+                        else ""
+                    ),
+                    (
+                        (cutoff,)
+                        if table in {"jsonl_records", "json_file_records"}
+                        and has_ingested
+                        else ()
+                    ),
+                ).fetchone()[0]
+            )
+            if copied[table] != expected:
+                raise RuntimeError(f"hot_copy_row_coverage_mismatch:{table}")
             dest.commit()
 
-        indexes = []
-        for row in _schema_rows(dest, "index", schema="src"):
-            sql = str(row["sql"] or "").strip()
-            name = str(row["name"] or "")
-            if not sql or not name:
-                continue
-            try:
-                dest.execute(sql)
-                indexes.append(name)
-            except sqlite3.OperationalError as exc:
-                if "already exists" not in str(exc).lower():
-                    raise
+        if _table_exists(dest, "sqlite_sequence", schema="src"):
+            dest.execute("DELETE FROM main.sqlite_sequence")
+            dest.execute(
+                "INSERT INTO main.sqlite_sequence SELECT * FROM src.sqlite_sequence"
+            )
+
+        dest.commit()
+        for kind in ("view", "trigger"):
+            for row in _schema_rows(dest, kind, schema="src"):
+                dest.execute(str(row["sql"]))
         dest.commit()
         try:
-            dest.execute("ANALYZE")
-            dest.execute("PRAGMA optimize")
+            dest.execute("PRAGMA analysis_limit=1000")
+            dest.execute("ANALYZE main")
+            dest.execute("PRAGMA main.optimize")
             dest.commit()
         except Exception:
             pass
@@ -1083,13 +1606,30 @@ def _build_hot_db(
         dest.close()
 
     quick = _quick_check(dest_tmp, timeout_seconds=timeout_seconds)
+    if max_database_bytes is not None and _size_bytes(dest_tmp) > max_database_bytes:
+        raise RuntimeError("staged_database_limit_exceeded")
     return {
         "path": str(dest_tmp),
         "size_bytes": _size_bytes(dest_tmp),
         "copied_rows": copied,
         "indexes_created": indexes,
+        "index_build_strategy": "maintained_during_row_copy",
         "quick_check": quick,
+        "max_database_bytes": max_database_bytes,
     }
+
+
+def _copy_staged_cache(source: Path, target: Path, *, reserve_bytes: int) -> None:
+    with source.open("rb") as reader, target.open("xb") as writer:
+        while chunk := reader.read(16 * 1024**2):
+            _remaining_seconds(60)
+            free = _disk_free_bytes(target.parent)
+            if free is None or free - len(chunk) < reserve_bytes:
+                raise RuntimeError("local_free_during_copy_below_guard")
+            writer.write(chunk)
+        writer.flush()
+        os.fsync(writer.fileno())
+    shutil.copystat(source, target)
 
 
 def _safe_replace_symlink(link: Path, target: Path) -> str:
@@ -1102,13 +1642,17 @@ def _safe_replace_symlink(link: Path, target: Path) -> str:
     return str(target)
 
 
-def _switch_repo_links(project_root: Path, external_db: Path, relative_path: str) -> dict[str, Any]:
+def _switch_repo_links(
+    project_root: Path, external_db: Path, relative_path: str
+) -> dict[str, Any]:
     repo_db = project_root / relative_path
     switched = {"primary": _safe_replace_symlink(repo_db, external_db), "sidecars": {}}
     for suffix in ("-wal", "-shm"):
         repo_sidecar = Path(f"{repo_db}{suffix}")
         external_sidecar = Path(f"{external_db}{suffix}")
-        switched["sidecars"][suffix] = _safe_replace_symlink(repo_sidecar, external_sidecar)
+        switched["sidecars"][suffix] = _safe_replace_symlink(
+            repo_sidecar, external_sidecar
+        )
     return switched
 
 
@@ -1125,12 +1669,18 @@ def _unlink_artifact(path: Path) -> dict[str, Any]:
             deleted.append(str(candidate))
         except Exception as exc:
             errors.append(f"{candidate}:{type(exc).__name__}:{exc}")
-    return {"deleted_paths": deleted, "deleted_bytes": int(deleted_bytes), "errors": errors}
+    return {
+        "deleted_paths": deleted,
+        "deleted_bytes": int(deleted_bytes),
+        "errors": errors,
+    }
 
 
 def _move_sqlite_family(source: Path, destination: Path) -> list[dict[str, str]]:
     moved: list[dict[str, str]] = []
-    for src, dst in zip([source, *_sidecars(source)], [destination, *_sidecars(destination)]):
+    for src, dst in zip(
+        [source, *_sidecars(source)], [destination, *_sidecars(destination)]
+    ):
         if not src.exists():
             continue
         src.replace(dst)
@@ -1138,7 +1688,38 @@ def _move_sqlite_family(source: Path, destination: Path) -> list[dict[str, str]]
     return moved
 
 
-def build_local_cache_payload(
+def build_local_cache_payload(project_root: Path, **kwargs) -> dict[str, Any]:
+    global _REBUILD_DEADLINE
+    operation_seconds = min(
+        max(float(kwargs.pop("operation_seconds", 1800)), 1.0), 1800.0
+    )
+    if not kwargs.get("apply", False):
+        return _build_local_cache_payload(project_root, **kwargs)
+    previous_deadline = _REBUILD_DEADLINE
+    _REBUILD_DEADLINE = time.monotonic() + operation_seconds
+    try:
+        with _exclusive_lock(
+            project_root / "governance/locks/storage_maintenance.lock"
+        ):
+            payload = _build_local_cache_payload(project_root, **kwargs)
+            payload["started_at_utc"] = payload.get("timestamp_utc")
+            payload["timestamp_utc"] = _iso()
+            payload["assessment_completed_at_utc"] = payload["timestamp_utc"]
+            return payload
+    except RuntimeError as exc:
+        if not str(exc).startswith("maintenance_lock_busy:"):
+            raise
+        return {
+            "ok": False,
+            "overall_status": "blocked",
+            "blockers": [str(exc)],
+            "apply": True,
+        }
+    finally:
+        _REBUILD_DEADLINE = previous_deadline
+
+
+def _build_local_cache_payload(
     project_root: Path,
     *,
     relative_path: str,
@@ -1154,14 +1735,32 @@ def build_local_cache_payload(
     timeout_seconds: float,
     external_root: Path | None = None,
 ) -> dict[str, Any]:
-    relative_path = str(relative_path or "data/jsonl_link.sqlite3").replace("\\", "/").lstrip("./")
+    relative = Path(str(relative_path or "data/jsonl_link.sqlite3").replace("\\", "/"))
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or relative.parts[:1] != ("data",)
+    ):
+        raise ValueError("cache_relative_path_outside_data")
+    relative_path = str(relative)
     source_db = project_root / "local_fallback_storage" / relative_path
     repo_db = project_root / relative_path
     external_root = external_root or resolve_external_storage().external_root
     cold_export_root = cold_export_root.expanduser()
-    transaction_path = project_root / "governance" / "health" / "storage_sqlite_hot_route_transaction.json"
+    # Validate physical destinations before inspecting sources or resuming cleanup.
+    _capacity_probe(source_db)
+    _capacity_probe(external_root)
+    _capacity_probe(cold_export_root)
+    transaction_path = (
+        project_root
+        / "governance"
+        / "health"
+        / "storage_sqlite_hot_route_transaction.json"
+    )
     previous_transaction = _load_json(transaction_path) if apply else {}
-    source_signature_before = _source_signature(source_db) if source_db.is_file() else {}
+    source_signature_before = (
+        _source_signature(source_db) if source_db.is_file() else {}
+    )
     transaction_resumed = False
     discarded_partial_datasets: list[str] = []
     now = _utc_now()
@@ -1170,10 +1769,16 @@ def build_local_cache_payload(
     cutoff = cutoff_dt.isoformat()
     if previous_transaction:
         compatible = bool(
-            str(previous_transaction.get("mode") or "") == "rebuild_local_compatibility_cache"
+            str(previous_transaction.get("mode") or "")
+            == "rebuild_local_compatibility_cache"
             and str(previous_transaction.get("relative_path") or "") == relative_path
-            and str(previous_transaction.get("cold_export_root") or "") == str(cold_export_root)
-            and abs(float(previous_transaction.get("hot_hours", -1.0) or -1.0) - float(hot_hours)) < 1e-9
+            and str(previous_transaction.get("cold_export_root") or "")
+            == str(cold_export_root)
+            and abs(
+                float(previous_transaction.get("hot_hours", -1.0) or -1.0)
+                - float(hot_hours)
+            )
+            < 1e-9
             and previous_transaction.get("source_signature") == source_signature_before
         )
         if compatible:
@@ -1185,17 +1790,28 @@ def build_local_cache_payload(
             except Exception:
                 transaction_resumed = False
         if not transaction_resumed:
-            discarded_partial_datasets = _discard_partial_datasets(previous_transaction, cold_export_root)
+            discarded_partial_datasets = _discard_partial_datasets(
+                previous_transaction, cold_export_root
+            )
             transaction_path.unlink(missing_ok=True)
-    external_tmp = external_root / "data" / "maintenance_staging" / f"{source_db.name}.local_cache_{run_id}.tmp"
+    external_tmp = (
+        external_root
+        / "data"
+        / "maintenance_staging"
+        / f"{source_db.name}.local_cache_{run_id}.tmp"
+    )
     local_staged = source_db.with_name(f".{source_db.name}.local_cache_{run_id}.tmp")
     old_cache = source_db.with_name(f"{source_db.name}.pre_local_cache_{run_id}.bak")
     writer_snapshot = writer_state.writer_state_snapshot(project_root)
     writer_idle = not bool(writer_snapshot.get("active", False))
     local_free_before = _disk_free_bytes(source_db.parent)
     external_free_before = _disk_free_bytes(external_root)
-    min_local_free_after_bytes = int(max(float(min_local_free_after_gb), 0.0) * (1024**3))
-    min_external_free_after_bytes = int(max(float(min_external_free_after_gb), 0.0) * (1024**3))
+    min_local_free_after_bytes = int(
+        max(float(min_local_free_after_gb), 32.0) * (1024**3)
+    )
+    min_external_free_after_bytes = int(
+        max(float(min_external_free_after_gb), 64.0) * (1024**3)
+    )
     source_bytes = _size_bytes(source_db)
     payload: dict[str, Any] = {
         "timestamp_utc": _iso(),
@@ -1225,9 +1841,15 @@ def build_local_cache_payload(
         "writer_state": writer_snapshot,
         "source_role": "compatibility_cache",
         "authority_policy": "cold rows are exported with exact row coverage before the verified derived cache is replaced",
-        "cold_export_engine": str(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_EXPORT_ENGINE", "isolated_pyarrow") or "isolated_pyarrow").strip().lower(),
+        "cold_export_engine": str(
+            os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_EXPORT_ENGINE", "isolated_pyarrow")
+            or "isolated_pyarrow"
+        )
+        .strip()
+        .lower(),
         "source_counts": {},
         "estimated_hot_db_bytes": 0,
+        "hot_size_observation": {},
         "cold_exports": [],
         "hot_db": {},
         "coverage_check": {},
@@ -1246,18 +1868,44 @@ def build_local_cache_payload(
         payload["blockers"].append("external_root_not_writable")
     if require_writer_idle and not writer_idle:
         payload["blockers"].append("writer_not_idle")
-    if external_free_before is None or external_free_before < min_external_free_after_bytes:
+    if (
+        external_free_before is None
+        or external_free_before < min_external_free_after_bytes
+    ):
         payload["blockers"].append("external_free_below_guard")
     if source_db.is_file():
         try:
-            with closing(_connect(source_db, readonly=True, timeout_seconds=timeout_seconds)) as src:
-                payload["source_counts"] = _source_counts(src, cutoff)
-                payload["estimated_hot_db_bytes"] = _estimated_hot_db_bytes(src, cutoff, source_bytes)
+            (
+                payload["source_counts"],
+                payload["estimated_hot_db_bytes"],
+                payload["hot_size_observation"],
+            ) = _inspect_source(source_db, cutoff, source_bytes, timeout_seconds)
         except Exception as exc:
-            payload["blockers"].append(f"source_inspection_error:{type(exc).__name__}:{exc}")
+            payload["blockers"].append(
+                f"source_inspection_error:{type(exc).__name__}:{exc}"
+            )
     estimated_hot_bytes = int(payload.get("estimated_hot_db_bytes", 0) or 0)
-    if local_free_before is None or local_free_before - estimated_hot_bytes < min_local_free_after_bytes:
-        payload["blockers"].append("local_free_after_staged_cache_below_guard")
+    staging = _hot_staging_budget(
+        estimated_hot_bytes,
+        payload["hot_size_observation"].get("hot_payload_bytes"),
+        local_free_before,
+        external_free_before,
+        min_local_free_after_bytes,
+        min_external_free_after_bytes,
+    )
+    payload["staging_budget"] = staging
+    if not staging["ready"]:
+        payload["blockers"].append(staging["reason"])
+    reserved_staging_bytes = int(staging.get("reserved_staging_bytes", 0))
+    cold_capacity = _cold_capacity_budget(
+        cold_export_root,
+        external_root,
+        reserved_staging_bytes,
+        min_external_free_after_bytes,
+    )
+    payload["cold_export_capacity"] = cold_capacity
+    if not cold_capacity["ready"]:
+        payload["blockers"].append("cold_export_destination_free_below_guard")
     if payload["blockers"]:
         payload["overall_status"] = "blocked"
         return payload
@@ -1268,16 +1916,23 @@ def build_local_cache_payload(
     external_tmp.parent.mkdir(parents=True, exist_ok=True)
     cold_export_root.mkdir(parents=True, exist_ok=True)
     export_paths = {
-        table: cold_export_root / f"{table}_cold_before_{cutoff_dt.strftime('%Y%m%dT%H%M%SZ')}_{run_id}.parquet"
+        table: cold_export_root
+        / f"{table}_cold_before_{cutoff_dt.strftime('%Y%m%dT%H%M%SZ')}_{run_id}.parquet"
         for table in ("jsonl_records", "json_file_records")
     }
     try:
         if not transaction_resumed:
-            with closing(_connect(source_db, readonly=False, timeout_seconds=timeout_seconds)) as conn:
+            with closing(
+                _connect(source_db, readonly=False, timeout_seconds=timeout_seconds)
+            ) as conn:
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
         source_signature_after_checkpoint = _source_signature(source_db)
-        if transaction_resumed and source_signature_after_checkpoint != source_signature_before:
+        family_signature = _source_family_signature(source_db)
+        if (
+            transaction_resumed
+            and source_signature_after_checkpoint != source_signature_before
+        ):
             raise RuntimeError("source_changed_while_resuming_archive_transaction")
         transaction = {
             "schema_version": 1,
@@ -1293,18 +1948,23 @@ def build_local_cache_payload(
             "cold_export_root": str(cold_export_root),
             "export_paths": {name: str(path) for name, path in export_paths.items()},
             "partial_datasets": [
-                str(path.with_name(f".{path.name}.partial_dataset")) for path in export_paths.values()
+                str(path.with_name(f".{path.name}.partial_dataset"))
+                for path in export_paths.values()
             ],
             "completed_exports": [],
         }
         if transaction_resumed:
-            transaction["completed_exports"] = list(previous_transaction.get("completed_exports", []))
+            transaction["completed_exports"] = list(
+                previous_transaction.get("completed_exports", [])
+            )
         _write_json(transaction_path, transaction)
 
         export_engine = str(payload["cold_export_engine"])
         if export_engine not in {"isolated_pyarrow", "duckdb", "pyarrow"}:
             raise ValueError(f"unsupported cold export engine: {export_engine}")
-        with closing(_connect(source_db, readonly=True, timeout_seconds=timeout_seconds)) as src:
+        with closing(
+            _connect(source_db, readonly=True, timeout_seconds=timeout_seconds)
+        ) as src:
             for table in ("jsonl_records", "json_file_records"):
                 export_path = export_paths[table]
                 if export_engine == "isolated_pyarrow":
@@ -1314,8 +1974,8 @@ def build_local_cache_payload(
                         cutoff=cutoff,
                         out_path=export_path,
                         compression=compression,
-                        free_guard_root=external_root,
-                        min_free_after_bytes=min_external_free_after_bytes,
+                        free_guard_root=Path(cold_capacity["probe_path"]),
+                        min_free_after_bytes=cold_capacity["minimum_free_after_bytes"],
                     )
                 elif export_engine == "duckdb":
                     export = _export_cold_table_to_parquet_duckdb(
@@ -1324,8 +1984,8 @@ def build_local_cache_payload(
                         cutoff=cutoff,
                         out_path=export_path,
                         compression=compression,
-                        free_guard_root=external_root,
-                        min_free_after_bytes=min_external_free_after_bytes,
+                        free_guard_root=Path(cold_capacity["probe_path"]),
+                        min_free_after_bytes=cold_capacity["minimum_free_after_bytes"],
                     )
                 else:
                     export = _export_cold_table_to_parquet(
@@ -1335,21 +1995,39 @@ def build_local_cache_payload(
                         out_path=export_path,
                         batch_size=max(int(batch_size), 1000),
                         compression=compression,
-                        free_guard_root=external_root,
-                        min_free_after_bytes=min_external_free_after_bytes,
+                        free_guard_root=Path(cold_capacity["probe_path"]),
+                        min_free_after_bytes=cold_capacity["minimum_free_after_bytes"],
                     )
+                export["restore_verification"] = _verify_cold_export(
+                    source_db, export, cutoff, timeout_seconds
+                )
                 payload["cold_exports"].append(export)
                 transaction["completed_exports"] = sorted(
-                    {str(item) for item in [*transaction.get("completed_exports", []), table] if str(item)}
+                    {
+                        str(item)
+                        for item in [*transaction.get("completed_exports", []), table]
+                        if str(item)
+                    }
                 )
                 transaction["updated_at_utc"] = _iso()
                 _write_json(transaction_path, transaction)
 
+        if _source_family_signature(source_db) != family_signature:
+            raise RuntimeError("source_changed_during_cold_export")
+        free_before_hot = _disk_free_bytes(external_root)
+        if (
+            free_before_hot is None
+            or free_before_hot - reserved_staging_bytes < min_external_free_after_bytes
+        ):
+            raise RuntimeError("external_free_before_hot_build_below_guard")
         hot_db = _build_hot_db(
             source_db=source_db,
             dest_tmp=external_tmp,
             cutoff=cutoff,
             timeout_seconds=timeout_seconds,
+            free_guard_root=external_root,
+            min_free_after_bytes=min_external_free_after_bytes,
+            max_database_bytes=staging["max_database_bytes"],
         )
         payload["hot_db"] = hot_db
         if not bool((hot_db.get("quick_check") or {}).get("ok", False)):
@@ -1357,7 +2035,11 @@ def build_local_cache_payload(
             return payload
 
         source_counts = payload["source_counts"]
-        copied_rows = hot_db.get("copied_rows") if isinstance(hot_db.get("copied_rows"), dict) else {}
+        copied_rows = (
+            hot_db.get("copied_rows")
+            if isinstance(hot_db.get("copied_rows"), dict)
+            else {}
+        )
         exported_by_table = {
             str(row.get("table")): int(row.get("rows_exported", 0) or 0)
             for row in payload["cold_exports"]
@@ -1365,25 +2047,39 @@ def build_local_cache_payload(
         }
         coverage_errors = []
         for table in ("jsonl_records", "json_file_records"):
-            bucket = source_counts.get(table) if isinstance(source_counts.get(table), dict) else {}
+            bucket = (
+                source_counts.get(table)
+                if isinstance(source_counts.get(table), dict)
+                else {}
+            )
             if not bucket:
                 continue
             expected = int(bucket.get("total_rows", 0) or 0)
-            covered = int(copied_rows.get(table, 0) or 0) + int(exported_by_table.get(table, 0) or 0)
+            covered = int(copied_rows.get(table, 0) or 0) + int(
+                exported_by_table.get(table, 0) or 0
+            )
             if expected != covered:
                 coverage_errors.append(f"{table}:expected={expected}:covered={covered}")
-        payload["coverage_check"] = {"ok": not coverage_errors, "errors": coverage_errors}
+        payload["coverage_check"] = {
+            "ok": not coverage_errors,
+            "errors": coverage_errors,
+        }
         if coverage_errors:
             payload["overall_status"] = "coverage_check_failed"
             return payload
 
         staged_bytes = _size_bytes(external_tmp)
         current_local_free = _disk_free_bytes(source_db.parent)
-        if current_local_free is None or current_local_free - staged_bytes < min_local_free_after_bytes:
+        if (
+            current_local_free is None
+            or current_local_free - staged_bytes < min_local_free_after_bytes
+        ):
             payload["overall_status"] = "local_free_before_copy_below_guard"
             payload["blockers"].append("local_free_before_copy_below_guard")
             return payload
-        shutil.copy2(external_tmp, local_staged)
+        _copy_staged_cache(
+            external_tmp, local_staged, reserve_bytes=min_local_free_after_bytes
+        )
         with local_staged.open("rb") as handle:
             os.fsync(handle.fileno())
         staged_quick = _quick_check(local_staged, timeout_seconds=timeout_seconds)
@@ -1392,19 +2088,56 @@ def build_local_cache_payload(
             payload["overall_status"] = "local_staged_quick_check_failed"
             return payload
 
-        moved_old = _move_sqlite_family(source_db, old_cache)
-        try:
-            local_staged.replace(source_db)
-            route_quick = _quick_check(repo_db, timeout_seconds=timeout_seconds)
-            payload["route_quick_check"] = route_quick
-            if not bool(route_quick.get("ok", False)):
-                raise RuntimeError(f"replacement_route_quick_check_failed:{route_quick.get('result')}")
-        except Exception:
-            failed_replacement = source_db.with_name(f"{source_db.name}.failed_local_cache_{run_id}")
-            if source_db.exists():
-                source_db.replace(failed_replacement)
-            _move_sqlite_family(old_cache, source_db)
-            raise
+        staged_hash, copied_hash = _sha256(external_tmp), _sha256(local_staged)
+        if staged_hash != copied_hash:
+            raise RuntimeError("local_staged_copy_sha256_mismatch")
+        payload["staged_copy_verification"] = {
+            "ok": True,
+            "external_sha256": staged_hash,
+            "local_sha256": copied_hash,
+            "logical_bytes": staged_bytes,
+        }
+        free_after_copy = _disk_free_bytes(source_db.parent)
+        if free_after_copy is None or free_after_copy < min_local_free_after_bytes:
+            raise RuntimeError("local_free_after_copy_below_guard")
+        if _source_family_signature(source_db) != family_signature:
+            raise RuntimeError("source_changed_before_cache_switch")
+        proof_path = cold_export_root / f"cache_rebuild_{run_id}_verified.json"
+        _write_json(
+            proof_path,
+            {
+                "source_signature": family_signature,
+                "cutoff_utc": cutoff,
+                "cold_exports": payload["cold_exports"],
+                "coverage_check": payload["coverage_check"],
+                "staging_budget": staging,
+                "staged_copy_verification": payload["staged_copy_verification"],
+                "status": "verified_before_switch",
+            },
+        )
+        payload["restore_proof_path"] = str(proof_path)
+
+        with _exclusive_lock(configured_sql_writer_lock_path(project_root)):
+            _remaining_seconds(timeout_seconds)
+            if _source_family_signature(source_db) != family_signature:
+                raise RuntimeError("source_changed_at_cache_switch")
+            moved_old = _move_sqlite_family(source_db, old_cache)
+            try:
+                local_staged.replace(source_db)
+                route_quick = _quick_check(repo_db, timeout_seconds=timeout_seconds)
+                payload["route_quick_check"] = route_quick
+                if not bool(route_quick.get("ok", False)):
+                    raise RuntimeError(
+                        f"replacement_route_quick_check_failed:{route_quick.get('result')}"
+                    )
+            except Exception:
+                failed_replacement = source_db.with_name(
+                    f"{source_db.name}.failed_local_cache_{run_id}"
+                )
+                if source_db.exists():
+                    source_db.replace(failed_replacement)
+                _move_sqlite_family(old_cache, source_db)
+                raise
         payload["atomic_switch"] = {
             "old_cache_moves": moved_old,
             "new_cache_path": str(source_db),
@@ -1417,11 +2150,15 @@ def build_local_cache_payload(
                 payload["overall_status"] = "switched_prune_errors"
                 return payload
         payload["new_cache_size_bytes"] = _size_bytes(source_db)
-        payload["reclaimed_bytes"] = max(source_bytes - _size_bytes(source_db), 0) if prune_old_cache else 0
+        payload["reclaimed_bytes"] = (
+            max(source_bytes - _size_bytes(source_db), 0) if prune_old_cache else 0
+        )
         payload["local_free_bytes_after"] = _disk_free_bytes(source_db.parent)
         payload["external_free_bytes_after"] = _disk_free_bytes(external_root)
         payload["ok"] = True
-        payload["overall_status"] = "rebuilt_pruned" if prune_old_cache else "rebuilt_backup_retained"
+        payload["overall_status"] = (
+            "rebuilt_pruned" if prune_old_cache else "rebuilt_backup_retained"
+        )
         payload["transaction"]["status"] = "complete"
         transaction_path.unlink(missing_ok=True)
         return payload
@@ -1456,7 +2193,9 @@ def build_payload(
     require_writer_idle: bool,
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    relative_path = str(relative_path or "data/jsonl_link.sqlite3").replace("\\", "/").lstrip("./")
+    relative_path = (
+        str(relative_path or "data/jsonl_link.sqlite3").replace("\\", "/").lstrip("./")
+    )
     source_db = project_root / "local_fallback_storage" / relative_path
     repo_db = project_root / relative_path
     external_root = resolve_external_storage().external_root
@@ -1470,8 +2209,12 @@ def build_payload(
 
     free_before = _disk_free_bytes(external_root)
     source_bytes = _size_bytes(source_db)
-    min_external_free_after_bytes = int(max(float(min_external_free_after_gb), 0.0) * (1024**3))
-    projected_free_after_full_tmp = None if free_before is None else int(free_before - source_bytes)
+    min_external_free_after_bytes = int(
+        max(float(min_external_free_after_gb), 0.0) * (1024**3)
+    )
+    projected_free_after_full_tmp = (
+        None if free_before is None else int(free_before - source_bytes)
+    )
 
     payload: dict[str, Any] = {
         "timestamp_utc": _iso(),
@@ -1514,12 +2257,17 @@ def build_payload(
         payload["blockers"].append("writer_not_idle")
     if free_before is None:
         payload["blockers"].append("external_free_unknown")
-    elif projected_free_after_full_tmp is not None and projected_free_after_full_tmp < min_external_free_after_bytes:
+    elif (
+        projected_free_after_full_tmp is not None
+        and projected_free_after_full_tmp < min_external_free_after_bytes
+    ):
         payload["blockers"].append("external_free_after_full_tmp_below_guard")
 
     if source_db.exists():
         try:
-            with closing(_connect(source_db, readonly=True, timeout_seconds=timeout_seconds)) as src:
+            with closing(
+                _connect(source_db, readonly=True, timeout_seconds=timeout_seconds)
+            ) as src:
                 payload["source_counts"] = _source_counts(src, cutoff)
         except Exception as exc:
             payload["blockers"].append(f"source_count_error:{type(exc).__name__}:{exc}")
@@ -1535,9 +2283,14 @@ def build_payload(
     cold_export_root.mkdir(parents=True, exist_ok=True)
     external_db.parent.mkdir(parents=True, exist_ok=True)
 
-    with closing(_connect(source_db, readonly=True, timeout_seconds=timeout_seconds)) as src:
+    with closing(
+        _connect(source_db, readonly=True, timeout_seconds=timeout_seconds)
+    ) as src:
         for table in ("jsonl_records", "json_file_records"):
-            export_path = cold_export_root / f"{table}_cold_before_{cutoff_dt.strftime('%Y%m%dT%H%M%SZ')}_{run_id}.parquet"
+            export_path = (
+                cold_export_root
+                / f"{table}_cold_before_{cutoff_dt.strftime('%Y%m%dT%H%M%SZ')}_{run_id}.parquet"
+            )
             export = _export_cold_table_to_parquet(
                 src,
                 table=table,
@@ -1559,8 +2312,14 @@ def build_payload(
         payload["overall_status"] = "hot_db_quick_check_failed"
         return payload
 
-    source_counts = payload.get("source_counts") if isinstance(payload.get("source_counts"), dict) else {}
-    copied_rows = hot_db.get("copied_rows") if isinstance(hot_db.get("copied_rows"), dict) else {}
+    source_counts = (
+        payload.get("source_counts")
+        if isinstance(payload.get("source_counts"), dict)
+        else {}
+    )
+    copied_rows = (
+        hot_db.get("copied_rows") if isinstance(hot_db.get("copied_rows"), dict) else {}
+    )
     exported_by_table = {
         str(row.get("table")): int(row.get("rows_exported", 0) or 0)
         for row in payload["cold_exports"]
@@ -1568,11 +2327,17 @@ def build_payload(
     }
     coverage_errors = []
     for table in ("jsonl_records", "json_file_records"):
-        bucket = source_counts.get(table) if isinstance(source_counts.get(table), dict) else {}
+        bucket = (
+            source_counts.get(table)
+            if isinstance(source_counts.get(table), dict)
+            else {}
+        )
         if not bucket:
             continue
         expected = int(bucket.get("total_rows", 0) or 0)
-        actual = int(copied_rows.get(table, 0) or 0) + int(exported_by_table.get(table, 0) or 0)
+        actual = int(copied_rows.get(table, 0) or 0) + int(
+            exported_by_table.get(table, 0) or 0
+        )
         if actual != expected:
             coverage_errors.append(f"{table}:expected={expected}:covered={actual}")
     payload["coverage_check"] = {"ok": not coverage_errors, "errors": coverage_errors}
@@ -1581,7 +2346,9 @@ def build_payload(
         return payload
 
     if external_db.exists():
-        backup_existing = external_db.with_name(f"{external_db.name}.pre_hot_route_{run_id}.bak")
+        backup_existing = external_db.with_name(
+            f"{external_db.name}.pre_hot_route_{run_id}.bak"
+        )
         external_db.replace(backup_existing)
         payload["previous_external_backup"] = str(backup_existing)
     temp_db.replace(external_db)
@@ -1638,16 +2405,50 @@ def _wait_for_writer_idle(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build a compact external hot SQLite route and optional cold parquet archive for jsonl_link.sqlite3.")
+    parser = argparse.ArgumentParser(
+        description="Build a compact external hot SQLite route and optional cold parquet archive for jsonl_link.sqlite3."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--relative-path", default="data/jsonl_link.sqlite3")
-    parser.add_argument("--hot-hours", type=float, default=float(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_HOURS", "18")))
-    parser.add_argument("--cold-export-root", default=os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_COLD_ROOT", ""))
-    parser.add_argument("--batch-size", type=int, default=int(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_BATCH_SIZE", "25000")))
-    parser.add_argument("--compression", default=os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_COMPRESSION", "zstd"))
-    parser.add_argument("--min-external-free-after-gb", type=float, default=float(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_MIN_FREE_AFTER_GB", "40")))
-    parser.add_argument("--min-local-free-after-gb", type=float, default=float(os.getenv("BOT_LOGS_SQLITE_LOCAL_CACHE_MIN_FREE_AFTER_GB", "32")))
-    parser.add_argument("--sqlite-timeout-seconds", type=float, default=float(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_TIMEOUT_SECONDS", "300")))
+    parser.add_argument(
+        "--hot-hours",
+        type=float,
+        default=float(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_HOURS", "18")),
+    )
+    parser.add_argument(
+        "--cold-export-root",
+        default=os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_COLD_ROOT", ""),
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=int(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_BATCH_SIZE", "25000")),
+    )
+    parser.add_argument(
+        "--compression",
+        default=os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_COMPRESSION", "zstd"),
+    )
+    parser.add_argument(
+        "--min-external-free-after-gb",
+        type=float,
+        default=float(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_MIN_FREE_AFTER_GB", "40")),
+    )
+    parser.add_argument(
+        "--min-local-free-after-gb",
+        type=float,
+        default=float(os.getenv("BOT_LOGS_SQLITE_LOCAL_CACHE_MIN_FREE_AFTER_GB", "32")),
+    )
+    parser.add_argument(
+        "--sqlite-timeout-seconds",
+        type=float,
+        default=float(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_TIMEOUT_SECONDS", "300")),
+    )
+    parser.add_argument(
+        "--operation-seconds",
+        type=float,
+        default=1800,
+        help="Cooperative local rebuild budget, capped at 1800 seconds; partial proof work is retained.",
+    )
     parser.add_argument("--no-require-writer-idle", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--prune-local", action="store_true")
@@ -1661,22 +2462,32 @@ def main() -> int:
     parser.add_argument(
         "--writer-drain-timeout-seconds",
         type=float,
-        default=float(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_WRITER_DRAIN_TIMEOUT_SECONDS", "900")),
+        default=float(
+            os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_WRITER_DRAIN_TIMEOUT_SECONDS", "900")
+        ),
     )
     parser.add_argument(
         "--writer-drain-poll-seconds",
         type=float,
-        default=float(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_WRITER_DRAIN_POLL_SECONDS", "5")),
+        default=float(
+            os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_WRITER_DRAIN_POLL_SECONDS", "5")
+        ),
     )
-    parser.add_argument("--export-part-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--export-part-worker", action="store_true", help=argparse.SUPPRESS
+    )
     parser.add_argument("--worker-source-db", default="", help=argparse.SUPPRESS)
     parser.add_argument("--worker-table", default="", help=argparse.SUPPRESS)
     parser.add_argument("--worker-cutoff", default="", help=argparse.SUPPRESS)
-    parser.add_argument("--worker-start-id", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--worker-start-id", type=int, default=0, help=argparse.SUPPRESS
+    )
     parser.add_argument("--worker-end-id", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--worker-out-path", default="", help=argparse.SUPPRESS)
     parser.add_argument("--worker-compression", default="zstd", help=argparse.SUPPRESS)
-    parser.add_argument("--worker-batch-size", type=int, default=100, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--worker-batch-size", type=int, default=100, help=argparse.SUPPRESS
+    )
     parser.add_argument(
         "--repair-final-manifest",
         action="append",
@@ -1738,7 +2549,9 @@ def main() -> int:
         else external_root / "data" / "cold_archives" / "jsonl_link_hot_route"
     )
     if args.rebuild_local_cache:
-        coordination_enabled = bool(args.apply and not args.no_coordinate_maintenance_hold)
+        coordination_enabled = bool(
+            args.apply and not args.no_coordinate_maintenance_hold
+        )
         coordination: dict[str, Any] = {
             "enabled": coordination_enabled,
             "owned_hold": False,
@@ -1750,11 +2563,17 @@ def main() -> int:
         if coordination_enabled:
             hold_before = maintenance_hold_snapshot(project_root)
             coordination["hold_before"] = hold_before
-            if bool(hold_before.get("active", False)) and not bool(hold_before.get("valid", False)):
+            if bool(hold_before.get("active", False)) and not maintenance_hold_token_authorized(hold_before):
                 payload = {
                     "ok": False,
                     "overall_status": "blocked",
-                    "blockers": ["runtime_maintenance_hold_invalid"],
+                    "blockers": [
+                        (
+                            "runtime_maintenance_hold_invalid"
+                            if not hold_before.get("valid", False)
+                            else "runtime_maintenance_hold_not_authorized"
+                        )
+                    ],
                     "maintenance_coordination": coordination,
                 }
             else:
@@ -1765,7 +2584,11 @@ def main() -> int:
                         project_root,
                         reason="transactional_local_compatibility_cache_rebuild",
                         owner="storage_sqlite_hot_route",
-                        ttl_seconds=max(int(float(args.writer_drain_timeout_seconds)) + 12 * 60 * 60, 3600),
+                        ttl_seconds=max(
+                            int(float(args.writer_drain_timeout_seconds)), 0
+                        )
+                        + min(max(int(args.operation_seconds), 1), 1800)
+                        + 60,
                     )
                     coordination["hold_engaged"] = engaged
                     coordination["owned_hold"] = True
@@ -1773,7 +2596,9 @@ def main() -> int:
                 try:
                     handoff = _wait_for_writer_idle(
                         project_root,
-                        timeout_seconds=max(float(args.writer_drain_timeout_seconds), 0.0),
+                        timeout_seconds=max(
+                            float(args.writer_drain_timeout_seconds), 0.0
+                        ),
                         poll_seconds=max(float(args.writer_drain_poll_seconds), 0.1),
                     )
                     coordination["writer_handoff"] = handoff
@@ -1786,17 +2611,22 @@ def main() -> int:
                     else:
                         payload = build_local_cache_payload(
                             project_root,
+                            operation_seconds=args.operation_seconds,
                             relative_path=str(args.relative_path),
                             hot_hours=float(args.hot_hours),
                             apply=True,
                             prune_old_cache=bool(args.prune_old_cache),
                             min_local_free_after_gb=float(args.min_local_free_after_gb),
-                            min_external_free_after_gb=float(args.min_external_free_after_gb),
+                            min_external_free_after_gb=float(
+                                args.min_external_free_after_gb
+                            ),
                             cold_export_root=cold_root,
                             batch_size=max(int(args.batch_size), 1000),
                             compression=str(args.compression or "zstd"),
                             require_writer_idle=not bool(args.no_require_writer_idle),
-                            timeout_seconds=max(float(args.sqlite_timeout_seconds), 1.0),
+                            timeout_seconds=max(
+                                float(args.sqlite_timeout_seconds), 1.0
+                            ),
                         )
                 finally:
                     if owned_token:
@@ -1808,6 +2638,7 @@ def main() -> int:
         else:
             payload = build_local_cache_payload(
                 project_root,
+                operation_seconds=args.operation_seconds,
                 relative_path=str(args.relative_path),
                 hot_hours=float(args.hot_hours),
                 apply=bool(args.apply),

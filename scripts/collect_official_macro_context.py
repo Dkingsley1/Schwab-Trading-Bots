@@ -51,7 +51,9 @@ SOURCE_QUALITY = {
     "Bureau of Labor Statistics": 0.96,
     "Bureau of Economic Analysis": 0.95,
 }
-HTML_LINK_RE = re.compile(r"""(?is)<a\b[^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>""")
+HTML_LINK_RE = re.compile(
+    r"""(?is)<a\b[^>]*\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*>(.*?)</a>"""
+)
 _ET_ZONE = ZoneInfo("America/New_York") if ZoneInfo is not None else None
 
 
@@ -342,7 +344,8 @@ def _parse_news_links_from_html(page_text: str, source_name: str, page_url: str)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     current_ts = datetime.now(timezone.utc).isoformat()
-    for href, title_html in HTML_LINK_RE.findall(page_text or ""):
+    for double_quoted_href, single_quoted_href, unquoted_href, title_html in HTML_LINK_RE.findall(page_text or ""):
+        href = double_quoted_href or single_quoted_href or unquoted_href
         candidate = urljoin(page_url, href.strip())
         if not candidate.lower().startswith(("http://", "https://")):
             continue

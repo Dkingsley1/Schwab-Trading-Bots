@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "policy_id": "candidate_bound_alpha_generation_control_v1",
+  "operating_mode": "paper_only_evidence_and_advisory_allocation",
+  "primary_objective": "positive_candidate_bound_post_cost_residual_alpha_with_conservative_confidence",
+  "candidate_binding": {
+    "state_path": "governance/runtime/production_candidate_state.json",
+    "required_channels": [
+      "decision",
+      "execution",
+      "execution_guard",
+      "risk"
+    ],
+    "scope_names": [
+      "strategy",
+      "execution",
+      "risk",
+      "data",
+      "promotion",
+      "dependencies"
+    ],
+    "cache_seconds": 5,
+    "historical_relabeling_allowed": false,
+    "mismatched_identity_overwrite_allowed": false
+  },
+  "net_edge": {
+    "gross_edge_fields": [
+      "expected_gross_edge_bps",
+      "gross_edge_bps",
+      "expected_edge_bps"
+    ],
+    "explicit_post_cost_edge_fields": [
+      "expected_post_cost_edge_bps",
+      "post_cost_edge_bps"
+    ],
+    "required_cost_components": [
+      "half_spread",
+      "fees",
+      "slippage",
+      "market_impact"
+    ],
+    "uncertainty_buffer_bps": 1.0,
+    "minimum_conservative_net_edge_bps": 0.0,
+    "spread_charge_fraction": 0.5,
+    "missing_component_policy": "non_estimable",
+    "model_score_to_edge_conversion_allowed": false,
+    "unknown_cost_defaults_allowed": false
+  },
+  "statistical_validation": {
+    "minimum_post_cost_samples": 200,
+    "minimum_independent_days": 30,
+    "minimum_effective_samples": 100,
+    "minimum_symbols": 10,
+    "minimum_regimes": 3,
+    "minimum_deflated_sharpe_probability": 0.95,
+    "maximum_probability_of_backtest_overfitting": 0.2,
+    "fdr_alpha": 0.05,
+    "positive_clustered_lower_confidence_bound_required": true
+  },
+  "training_labels": {
+    "materialization_path": "governance/training_labeling_intelligence/all_bot_label_materialization_latest.json",
+    "minimum_route_coverage_ratio": 1.0,
+    "strict_maturity_required": true,
+    "point_in_time_outcomes_required": true,
+    "sleeve_specific_horizons_required": true,
+    "generic_directional_fallback_may_grade_promotion": false
+  },
+  "regime_evidence": {
+    "artifact_path": "governance/health/regime_control_plane_latest.json",
+    "minimum_daily_points": 30,
+    "minimum_distinct_regimes": 3,
+    "minimum_candidate_observations_per_regime": 20,
+    "thin_regime_evidence_may_allocate": false
+  },
+  "champion_challenger": {
+    "artifact_path": "governance/health/bot_profitability_scalability_latest.json",
+    "candidate_bound_forward_rank_required": true,
+    "positive_post_cost_lcb_required": true,
+    "marginal_alpha_after_peer_correlation_required": true,
+    "automatic_champion_replacement_allowed": false,
+    "human_promotion_required": true
+  },
+  "cross_sleeve_alpha": {
+    "shared_context_families": [
+      "market_regime",
+      "liquidity_state",
+      "macro_policy",
+      "cross_asset_risk",
+      "factor_and_crowding",
+      "execution_cost_surface"
+    ],
+    "shared_trade_logic_allowed": false,
+    "ownership_key": [
+      "symbol",
+      "horizon",
+      "alpha_family"
+    ],
+    "ownership_policy": "highest_candidate_bound_positive_residual_lcb_owns_exposure_peers_remain_context_hedge_or_challenger",
+    "minimum_profitable_sleeves": 4,
+    "minimum_common_days": 30,
+    "maximum_pairwise_correlation": 0.5,
+    "maximum_tail_correlation": 0.6,
+    "maximum_single_sleeve_weight": 0.25,
+    "conflicting_exposures_are_netted": true,
+    "automatic_allocation_allowed": false
+  },
+  "strategy_expansion_freeze": {
+    "enabled": true,
+    "block_new_offspring_until_candidate_evidence_ready": true,
+    "required_economic_evidence_grade": "A+",
+    "required_statistical_evidence_ready": true,
+    "required_regime_evidence_ready": true,
+    "required_cross_sleeve_map_ready": true,
+    "existing_collection_and_paper_observation_continue": true
+  },
+  "authority_contract": {
+    "changes_runtime_decisions": false,
+    "changes_runtime_sizing": false,
+    "automatic_allocation": false,
+    "automatic_promotion": false,
+    "live_execution_authority": false,
+    "profitability_guaranteed": false
+  },
+  "soak_contract": {
+    "preserve_cumulative_runtime_history": true,
+    "preserve_pre_candidate_history_as_diagnostic_only": true,
+    "candidate_forward_evidence_starts_at_current_scope_cutoff": true,
+    "configuration_change_requires_candidate_lineage_event_not_cumulative_soak_reset": true
+  }
+}

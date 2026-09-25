@@ -27,5 +27,11 @@ if [[ "${SQLITE_LAUNCHD_ALLOW_AUTO_VACUUM:-0}" != "1" ]]; then
 fi
 
 "$PROJECT_ROOT/scripts/ops/run_guarded_maintenance.sh" sqlite_maintenance \
-  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/sqlite_performance_maintenance.py" \
-  "${sqlite_args[@]}"
+  /bin/zsh -c '
+    set -euo pipefail
+    cycle_python="$1"
+    cycle_root="$2"
+    shift 2
+    "$cycle_python" "$cycle_root/scripts/ops/sqlite_reclaim_control.py" --apply --json
+    exec "$cycle_python" "$cycle_root/scripts/sqlite_performance_maintenance.py" "$@"
+  ' sqlite_maintenance_cycle "$PYTHON_BIN" "$PROJECT_ROOT" "${sqlite_args[@]}"

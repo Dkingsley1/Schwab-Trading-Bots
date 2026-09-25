@@ -1,5 +1,6 @@
 import base64
 import json
+import signal
 
 from scripts.ops import python314_canary as src
 
@@ -53,10 +54,96 @@ def test_import_step_marks_module_not_found_as_failure(monkeypatch) -> None:
 
     monkeypatch.setattr(src, "_run", fake_run)
 
-    step = src._import_step("mlx_core_import", src.DEFAULT_VENV / "bin" / "python", "import mlx.core as mx")
+    step = src._import_step(
+        "mlx_core_import", src.DEFAULT_VENV / "bin" / "python", "import mlx.core as mx"
+    )
 
     assert step["ok"] is False
     assert step["stderr_tail"] == "ModuleNotFoundError: No module named 'mlx'"
+    assert step["command"].startswith(
+        str(src.DEFAULT_VENV / "bin" / "python") + " -I -c"
+    )
+
+
+def test_import_smokes_stop_after_native_abort(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_import_step(name, _venv_py, _code):
+        calls.append(name)
+        if name == "mlx_core_import":
+            return {
+                "name": name,
+                "ok": False,
+                "failure_kind": "native_signal",
+                "termination_signal": "SIGABRT",
+            }
+        return {"name": name, "ok": True, "failure_kind": "none"}
+
+    monkeypatch.setattr(src, "_import_step", fake_import_step)
+    results = src._run_import_smokes(
+        src.DEFAULT_VENV / "bin" / "python",
+        (
+            ("mlx_core_import", "import mlx.core"),
+            ("mlx_lm_import", "import mlx_lm"),
+            ("pytest_import", "import pytest"),
+        ),
+    )
+
+    assert calls == ["mlx_core_import"]
+    assert results[1]["failure_kind"] == "prerequisite_blocked"
+    assert results[2]["blocked_by"] == "mlx_core_import"
+
+
+def test_step_classifies_native_abort(monkeypatch) -> None:
+    monkeypatch.setattr(
+        src,
+        "_run",
+        lambda _cmd: (-signal.SIGABRT, "", "nanobind: critical error"),
+    )
+
+    result = src._step("mlx_core_import", ["python", "-I", "-c", "pass"])
+
+    assert result["ok"] is False
+    assert result["failure_kind"] == "native_signal"
+    assert result["termination_signal"] == "SIGABRT"
+
+
+def test_runtime_override_loads_only_allowlisted_defaults(
+    tmp_path, monkeypatch
+) -> None:
+    for key in src.RUNTIME_OVERRIDE_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    override = tmp_path / ".env.python314_runtime_override"
+    override.write_text(
+        "BOT_TRAINING_RUNTIME_LANE=canary314\n"
+        "BOT_TRAINING_PYTHON_VERSION=3.14.5\n"
+        "PY314_RUNTIME_FLIP_APPROVED=1\n"
+        "PY314_RETIRE_312_ANCHOR=1\n"
+        "UNRELATED_SECRET=do_not_load\n",
+        encoding="utf-8",
+    )
+
+    loaded = src._load_runtime_override(override)
+
+    assert loaded == {
+        "BOT_TRAINING_RUNTIME_LANE": "canary314",
+        "BOT_TRAINING_PYTHON_VERSION": "3.14.5",
+        "PY314_RUNTIME_FLIP_APPROVED": "1",
+        "PY314_RETIRE_312_ANCHOR": "1",
+    }
+    assert "UNRELATED_SECRET" not in loaded
+
+
+def test_runtime_override_does_not_replace_operator_environment(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("BOT_TRAINING_RUNTIME_LANE", "operator_lane")
+    override = tmp_path / ".env.python314_runtime_override"
+    override.write_text("BOT_TRAINING_RUNTIME_LANE=canary314\n", encoding="utf-8")
+
+    loaded = src._load_runtime_override(override)
+
+    assert loaded["BOT_TRAINING_RUNTIME_LANE"] == "operator_lane"
 
 
 def test_installer_artifact_step_checks_hash_and_sigstore_digest(tmp_path) -> None:
@@ -136,7 +223,12 @@ def test_transition_readiness_allows_approved_runtime_flip() -> None:
         {
             "name": "py314_compatibility_alignment",
             "ok": True,
-            "exempt_missing_packages": ["mlx-cluster", "mlx-data", "mlx-graphs", "pandas-ta"],
+            "exempt_missing_packages": [
+                "mlx-cluster",
+                "mlx-data",
+                "mlx-graphs",
+                "pandas-ta",
+            ],
             "version_mismatch_count": 63,
         },
         {"name": "critical_runtime_packages", "ok": True, "missing_packages": []},

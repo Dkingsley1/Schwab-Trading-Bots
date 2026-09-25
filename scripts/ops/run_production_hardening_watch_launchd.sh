@@ -6,7 +6,7 @@ PROFILE="${BOT_RUNTIME_PROFILE:-live}"
 WATCH_NICE="${PRODUCTION_HARDENING_WATCH_NICE:-15}"
 LOCK_ROOT="${PRODUCTION_HARDENING_WATCH_LOCK_ROOT:-${TMPDIR:-/tmp}/schwab_trading_bot}"
 LOCK_DIR="$LOCK_ROOT/production_hardening_watch_launchd.lock"
-LOCK_STALE_SECONDS="${PRODUCTION_HARDENING_WATCH_LOCK_STALE_SECONDS:-300}"
+LOCK_FILE="$LOCK_ROOT/production_hardening_watch_launchd.lockfile"
 
 cd "$PROJECT_ROOT"
 
@@ -25,31 +25,42 @@ export BOT_UNATTENDED_SOAK_ACTIVE="${BOT_UNATTENDED_SOAK_ACTIVE:-1}"
 
 mkdir -p "$LOCK_ROOT"
 
-acquire_lock() {
-  if mkdir "$LOCK_DIR" 2>/dev/null; then
-    return 0
+# An older wrapper may still own the directory lease. Never steal it by age.
+if [[ -d "$LOCK_DIR" ]]; then
+  print -u2 "production_hardening_watch deferred=legacy_lock_present"
+  exit 75
+fi
+zmodload zsh/system
+: >> "$LOCK_FILE"
+if zsystem flock -t 0.01 -f LOCK_FD "$LOCK_FILE"; then
+  :
+else
+  lock_rc=$?
+  print -u2 "production_hardening_watch deferred=wrapper_lock_unavailable rc=$lock_rc"
+  if [[ "$lock_rc" == "2" ]]; then
+    exit 0
   fi
-
-  local now_epoch lock_epoch
-  now_epoch="$(date +%s)"
-  lock_epoch="$(stat -f %m "$LOCK_DIR" 2>/dev/null || stat -c %Y "$LOCK_DIR" 2>/dev/null || echo 0)"
-  if [[ "$now_epoch" == <-> ]] && [[ "$lock_epoch" == <-> ]] \
-    && (( now_epoch - lock_epoch > LOCK_STALE_SECONDS )); then
-    rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
-    mkdir "$LOCK_DIR" 2>/dev/null
-    return $?
-  fi
-  return 1
-}
-
-if ! acquire_lock; then
-  exit 0
+  exit "$lock_rc"
 fi
 
-cleanup() {
-  rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+cycle_rc=0
+run_observation_stage() {
+  local stage="$1" stage_rc=0
+  shift
+  if "$@"; then
+    print "production_hardening_watch stage=$stage rc=0"
+  else
+    stage_rc=$?
+    print -u2 "production_hardening_watch stage=$stage rc=$stage_rc continuing_independent_observations=1"
+    if [[ "$cycle_rc" == "0" ]]; then
+      cycle_rc=$stage_rc
+    fi
+  fi
+  return 0
 }
-trap cleanup EXIT INT TERM
 
 WATCH_ARGS=(
   production-hardening-watch
@@ -60,16 +71,8 @@ WATCH_ARGS=(
   --json
 )
 
-if [[ "${PRODUCTION_HARDENING_WATCH_EXECUTE_SAFE_REPAIRS:-0}" == "1" ]]; then
-  WATCH_ARGS+=(--execute-safe-repairs)
-fi
-
-if [[ "${PRODUCTION_HARDENING_WATCH_EXECUTE_ON_WATCH:-0}" == "1" ]]; then
-  WATCH_ARGS+=(--execute-on-watch)
-fi
-
 if [[ "${PRODUCTION_HARDENING_WATCH_REFRESH_EVIDENCE:-1}" == "1" ]]; then
-  /usr/bin/nice -n "$WATCH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" \
+  run_observation_stage accrual /usr/bin/nice -n "$WATCH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" \
     readiness-evidence-refresh \
     --apply \
     --profile "${READINESS_EVIDENCE_REFRESH_PROFILE:-accrual}" \
@@ -79,7 +82,7 @@ if [[ "${PRODUCTION_HARDENING_WATCH_REFRESH_EVIDENCE:-1}" == "1" ]]; then
 fi
 
 if [[ "${PRODUCTION_PILLAR_REFRESH_ENABLED:-1}" == "1" ]]; then
-  /usr/bin/nice -n "$WATCH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" \
+  run_observation_stage production /usr/bin/nice -n "$WATCH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" \
     readiness-evidence-refresh \
     --apply \
     --profile production \
@@ -88,4 +91,15 @@ if [[ "${PRODUCTION_PILLAR_REFRESH_ENABLED:-1}" == "1" ]]; then
     --json
 fi
 
-/usr/bin/nice -n "$WATCH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" "${WATCH_ARGS[@]}"
+if [[ "$cycle_rc" == "0" ]]; then
+  if [[ "${PRODUCTION_HARDENING_WATCH_EXECUTE_SAFE_REPAIRS:-0}" == "1" ]]; then
+    WATCH_ARGS+=(--execute-safe-repairs)
+  fi
+  if [[ "${PRODUCTION_HARDENING_WATCH_EXECUTE_ON_WATCH:-0}" == "1" ]]; then
+    WATCH_ARGS+=(--execute-on-watch)
+  fi
+else
+  print -u2 "production_hardening_watch repair_execution=disabled upstream_refresh_failed=1"
+fi
+run_observation_stage watcher /usr/bin/nice -n "$WATCH_NICE" "$PROJECT_ROOT/scripts/ops/opsctl.sh" "${WATCH_ARGS[@]}"
+exit "$cycle_rc"
