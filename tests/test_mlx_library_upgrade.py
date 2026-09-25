@@ -169,7 +169,12 @@ def test_snapshot_never_reinstalls_running_pip(tmp_path: Path, monkeypatch) -> N
 
     def fake_result(_name: str, command: list[str], **_kwargs):
         observed.extend(command)
-        return {"ok": True, "stdout": "mlx==0.32.2\n", "stdout_tail": "", "stderr_tail": ""}
+        return {
+            "ok": True,
+            "stdout": "mlx==0.32.2\n",
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
 
     monkeypatch.setattr(src, "_command_result", fake_result)
 
@@ -203,3 +208,97 @@ def test_validation_commands_include_full_suite_and_quant_capability() -> None:
         "pytest",
         "-q",
     ]
+
+
+def test_isolated_test_command_excludes_runtime_overrides_and_credentials(monkeypatch):
+    monkeypatch.setenv("BOT_RUNTIME_PROFILE", "live")
+    monkeypatch.setenv("SCHWAB_APP_SECRET", "test-secret-not-a-real-credential")
+    monkeypatch.setenv("SQL_LINK_SERVICE_MAINTENANCE_HOLD_TOKEN", "test-token")
+    monkeypatch.setenv("PYTHONPATH", "/production-only")
+    monkeypatch.setenv("MPLBACKEND", "MacOSX")
+    monkeypatch.setenv("OMP_NUM_THREADS", "1")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-p no:cacheprovider")
+    monkeypatch.setenv("LIBRARY_RESEARCH_TEST_PYTHON", "/research/bin/python")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("LC_ALL", "C")
+    captured = {}
+
+    def fake_run(_command, **kwargs):
+        captured.update(kwargs["env"])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(src.subprocess, "run", fake_run)
+    result = src._command_result("pytest_validation", ["python"], inherit_env=False)
+
+    assert result["ok"] is True
+    for key in (
+        "BOT_RUNTIME_PROFILE",
+        "SCHWAB_APP_SECRET",
+        "SQL_LINK_SERVICE_MAINTENANCE_HOLD_TOKEN",
+        "PYTHONPATH",
+    ):
+        assert key not in captured
+    for key in (
+        "PATH",
+        "HOME",
+        "OMP_NUM_THREADS",
+        "PYTEST_ADDOPTS",
+        "LIBRARY_RESEARCH_TEST_PYTHON",
+        "HF_HUB_OFFLINE",
+        "LC_ALL",
+    ):
+        assert captured[key] == src.os.environ[key]
+    assert captured["PYTHONNOUSERSITE"] == "1"
+    assert captured["MPLBACKEND"] == "Agg"
+    assert src.os.environ["BOT_RUNTIME_PROFILE"] == "live"
+
+
+def test_native_command_retains_operational_environment(monkeypatch):
+    monkeypatch.setenv("BOT_RUNTIME_PROFILE", "live")
+    captured = {}
+
+    def fake_run(_command, **kwargs):
+        captured.update(kwargs["env"])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(src.subprocess, "run", fake_run)
+    src._command_result("mlx_runtime_audit", ["python"])
+
+    assert captured["BOT_RUNTIME_PROFILE"] == "live"
+
+
+def test_transaction_isolates_only_pytest_validation(tmp_path, monkeypatch):
+    lock = tmp_path / "requirements.lock.txt"
+    lock.write_text("mlx==0.32.2\n", encoding="utf-8")
+    monkeypatch.setattr(src, "transaction_preflight", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(
+        src, "_installed_versions", lambda python: ({"mlx": "0.32.2"}, {"ok": True})
+    )
+    monkeypatch.setattr(
+        src, "_snapshot_environment", lambda *args: (lock, {"ok": True})
+    )
+    calls = {}
+
+    def fake_result(name, command, **kwargs):
+        calls[name] = kwargs.get("inherit_env", True)
+        return {"ok": True}
+
+    monkeypatch.setattr(src, "_command_result", fake_result)
+    result = src.apply_transaction(
+        {"install_command": ["python"]},
+        python_bin=Path("/venv/bin/python"),
+        lock_path=lock,
+        backup_dir=tmp_path,
+        maintenance_token="test-token",
+        acknowledge_maintenance=True,
+        full_test=True,
+        rollback_on_failure=True,
+    )
+
+    assert result["transaction_status"] == "validated"
+    assert calls == {
+        "install_locked_dependencies": True,
+        "pip_check": True,
+        "mlx_runtime_audit": True,
+        "pytest_validation": False,
+    }

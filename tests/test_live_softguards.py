@@ -35,6 +35,8 @@ def _reset_paper_profitability_guard_cache() -> None:
 
 
 def _allow_production_order_firewall(monkeypatch) -> None:
+    # These fake-client tests isolate retry/order-spec behavior, not activation.
+    monkeypatch.setattr(base_src, "check_live_execution_switch", lambda *a, **k: {"allowed": True})
     monkeypatch.setenv("SCHWAB_ACCOUNT_HASH", "redacted-test-account-hash")
     monkeypatch.setenv("SCHWAB_ACCOUNT_HASH_AUTO_DISCOVER", "0")
     unscoped_from_env = base_src.LiveRiskConfig.from_env

@@ -13,6 +13,11 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import sql_analytics_mirror as src
 
 
+@pytest.fixture(autouse=True)
+def admitted_fixture_storage(monkeypatch):
+    monkeypatch.setattr(src, "_check_headroom", lambda root: None)
+
+
 def test_sql_analytics_mirror_builds_materialized_summaries_and_heat(
     tmp_path: Path,
 ) -> None:

@@ -470,6 +470,7 @@ class LiveOrderLedger:
         broker_status: Any,
         filled_quantity: float | None = None,
         average_fill_price: float | None = None,
+        execution_evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         broker_id = str(broker_order_id or "").strip()
         if not broker_id:
@@ -502,13 +503,18 @@ class LiveOrderLedger:
         current = str(row["state"])
         if target == "submit_unknown" and current != "submitting":
             return self._row_dict(row)
+        details = {"broker_status": str(broker_status or "")}
+        if execution_evidence is not None:
+            if len(_canonical_json(execution_evidence).encode()) > 256 * 1024:
+                raise ValueError("execution_evidence_budget_exceeded")
+            details["decision_chart_execution"] = execution_evidence
         return self.transition(
             intent_id=str(row["intent_id"]),
             to_state=target,
             broker_order_id=broker_id,
             filled_quantity=reported_filled,
             average_fill_price=reported_average,
-            details={"broker_status": str(broker_status or "")},
+            details=details,
         )
 
     def mark_cancel_pending(self, broker_order_id: str) -> dict[str, Any]:

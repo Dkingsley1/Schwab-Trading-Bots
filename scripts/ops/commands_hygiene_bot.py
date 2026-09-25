@@ -180,9 +180,9 @@ def _alphabetized_inventory(sections: Iterable[dict[str, Any]]) -> list[dict[str
     sorted_sections.sort(
         key=lambda section: (
             (
-                0
-                if _normalize_key(str(section.get("heading") or "")) == "most used"
-                else 1
+                {"live execution control": 0, "most used": 1}.get(
+                    _normalize_key(str(section.get("heading") or "")), 2
+                )
             ),
             _normalize_key(str(section.get("heading") or "")),
         )
@@ -796,6 +796,30 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
     ]
     return [
         _section(
+            "Live Execution Control",
+            _command_entry(
+                project_root, "Live Execution OFF - block new live orders",
+                ["./scripts/ops/opsctl.sh live-execution off --json"],
+                notes=["Blocks new placements and replacements, including exits, in processes loaded with switch support. Does not cancel pending or in-flight orders, sell holdings, or stop paper/data collection. Check the broker directly for outstanding orders."],
+            ),
+            _command_entry(
+                project_root, "Live Execution ON - guarded permission only",
+                ["./scripts/ops/opsctl.sh live-execution on"],
+                notes=["Interactive scope, symbol and exact confirmation; expires after 30 minutes. Native technical checks must pass. Supervised tests still collect fresh attestation and exact per-order approval. No halt clearance, environment arming, source acceptance or order submission. Use --session AM or --session PM only for a permitted supervised extended-hours test."],
+            ),
+            _command_entry(
+                project_root, "Live Execution status - read the current permission",
+                ["./scripts/ops/opsctl.sh live-execution status --json"],
+                notes=["Reads current persisted permission, scope, expiry and blockers. ON is not proof that all execution gates pass or that any order was submitted. Missing, corrupt, expired or candidate/policy-mismatched state fails closed."],
+            ),
+            intro_lines=[
+                "> **WARNING: REAL MONEY - LIVE ORDER PERMISSION**",
+                "> This is separate from system power. ON does not authorize an order or bypass safety checks. OFF also blocks new exit orders; it does not cancel pending orders, recall in-flight requests or liquidate positions. Keep independent Schwab access.",
+                "> **Deployment warning:** existing processes must load the switch-enabled release before they enforce it. A saved OFF state alone does not certify that older processes are stopped.",
+                "> ON/OFF commands send a Live Execution state notification after verification. Blocked changes and delivery failures remain explicit. Clicking opens this command list, never an order.",
+            ],
+        ),
+        _section(
             "Most Used",
             _command_entry(
                 project_root,
@@ -827,6 +851,30 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             _command_entry(project_root, "Observe Bitcoin day and swing movements",
                 ["./scripts/ops/opsctl.sh bitcoin-price-watch --json"],
                 notes=["Three observe-only profiles share two bounded public candle reads on the existing 15-minute accrual cadence. No Coinbase credentials, orders, capital allocation, or profitability credit; current account fees and net-of-cost forward evidence remain required."]),
+            _command_entry(
+                project_root,
+                "Review raw-inventory cleanup controls",
+                ["./scripts/ops/opsctl.sh raw-inventory-cleanup --help"],
+                notes=["Requires an explicitly reviewed inventory. Empty files do not override active-control or archive-custody protection; candidate duplicate fingerprints are not full-content proof. Apply preserves required lookup paths and durable retirement evidence. No trading or source-release authority."],
+            ),
+            _command_entry(
+                project_root,
+                "Review targeted collection gaps",
+                ["./scripts/ops/opsctl.sh collection-gap-census --help"],
+                notes=["Explicit bounded sources and exact missing intervals only. Plans GETs but does not download, certify lifetime coverage, or turn backfilled history into historical live evidence."],
+            ),
+            _command_entry(
+                project_root,
+                "Pull a decision chart report",
+                ["./scripts/ops/opsctl.sh decision-chart-report --help"],
+                notes=["All shared-logger decisions can bind provider candle context. Schwab equity and Coinbase spot charts show recorded indicator reasoning separately from review calculations. Select an original decision ID/log or --bitcoin-bot ID. Uncaptured historical context stays unavailable; verified Schwab fills only, never inferred Coinbase executions."],
+            ),
+            _command_entry(
+                project_root,
+                "Capture read-only decision candles",
+                ["./scripts/ops/opsctl.sh decision-candle-capture --help"],
+                notes=["Explicit equity symbol, bounded Schwab market-data GETs only. Reuses the shared capture store. Coinbase BTC candles are retained by the native Bitcoin observer. No orders or trading authority."],
+            ),
             _command_entry(
                 project_root,
                 "Start the full live stack",
@@ -1324,6 +1372,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ],
                 notes=[
                     "Status is offline. Preview and observe are broker-read-only; no attestation or order is issued. O buy-and-hold is bounded to $300, five whole shares, and a $57.09 maximum buy limit; a lower fresh bid may be proposed without claiming undervaluation.",
+                    "Observe separates verified additional broker purchases from test fills using fresh, complete account-bound transaction evidence. Outside reductions and ambiguous activity remain pending; the original sell lifecycle, test quantity and cash/settlement gates are unchanged.",
                     "The separate submit command requires an interactive operator, current personal review, and exact order confirmation. It retains technical safety gates and durable single-attempt accounting; production soak/profitability promotion is not waived or credited. No automatic sell, rebuy, repricing, or reinvestment.",
                     "See docs/operations/SUPERVISED_BROKER_TEST.md before any operator-controlled test. Cash/fee, position, dividend, and profitability evidence remain distinct.",
                     "SCHD manual/AM/PM stays LIMIT/DAY. Explicit --bot-market requires a native decision, NORMAL/DAY, fresh two-sided evidence and separate operator confirmation per side. No automatic exit, retry, price guarantee, source acceptance or trading activation. Readiness refreshes owners; checklist does not attest.",
@@ -1447,7 +1496,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 "Test Mac notification click actions",
                 ["./scripts/ops/opsctl.sh notify-test --disable-imessage"],
                 notes=[
-                    "Click the test alert to open the current watchdog report. Schwab auth alerts instead launch one supervised browser sign-in session; other alerts open their matching diagnostic reports. Requires terminal-notifier and macOS notification permission. Old delivered alerts and phone iMessages are not retrofitted with local click actions.",
+                    "Click the test alert to open the current watchdog report. Only confirmed Schwab refresh-token rejection offers supervised sign-in; routine refresh warnings open diagnostics. Fresh automatic renewal supersedes older expiry alerts, and healthy-token HTTP 429 cooldowns do not request reauth. Obsolete native auth alerts are dismissed when supported; old auth clicks recheck recovery. Broker cooldowns and trading gates stay unchanged. Requires terminal-notifier and macOS notification permission; phone iMessages cannot be retracted or gain local click actions.",
                     "Notification clicks never place orders, clear halts, prune data, or restart the platform. See docs/operations/NOTIFICATION_ACTIONS.md for the mappings and transport verification.",
                 ],
             ),
@@ -1828,6 +1877,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ],
                 notes=[
                     "The existing operations coordinator owns routine refreshes. This command refreshes operational summaries from primary history before updating the analytical cache; do not use it to bypass maintenance admission during storage pressure.",
+                    "Primary aggregation streams compact fields without raw-JSON sorting, with 250,000-row, 32 MiB projection and 20-second bounds. A singleton child has a 35-second process-group deadline. Admission requires 1 GiB above the pressure floor (at least 65 GiB free), rechecked during scanning. Incomplete scans roll back both operational summaries; deferred or timed-out observations never certify the old cache as fresh.",
                     "Stream and symbol summaries share one read-only SQLite snapshot and one DuckDB publication transaction. A failed load preserves the previous complete mirror, and a first-load failure rolls back the schema. No new service, ledger authority, source deletion or migration is implied.",
                     "Database direction: keep SQLite and DuckDB/Parquet; evaluate PostgreSQL for demonstrated concurrent-writer or multi-host needs; defer Redis/NoSQL pending a measured cache bottleneck and freshness/invalidation contract. This command does not install a backend or perform that evaluation. Under storage pressure, no unadmitted services, migration copies or history scans are allowed. See docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md#database-direction.",
                 ],
@@ -1841,6 +1891,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "`staging_budget` separates the estimate from the enforced main-database ceiling. Fresh headroom can admit a smaller capped attempt when the measured hot payload fits; a verified SQLite `max_page_count` rejects excess growth. Cold export reserves the ceiling plus 256 MiB overhead, and live disk checks protect temporary work. Local staging/copy preserves at least 32 GiB and external staging at least 64 GiB, even when a lower argument is supplied. The local copy rechecks space per 16 MiB chunk and after verification. Unknown observations, oversized actual output, exhausted capacity or interrupted proofs cannot replace the source or count as recovery.",
                     "The existing self-healing owner schedules apply after maintenance admission and writer handoff. Read-only inspection is capped at 60 seconds; --operation-seconds cooperatively caps rebuild work at 1800 seconds. Cold exports require full typed-row restoration hashes, hot staging reserves external space above a 64 GiB floor, and verified replacement preserves source stability, IDs, schema and merge cursors under storage/writer locks. A preview or interrupted run is not reclaimed space or snapshot completion.",
                     "The separate guarded storage-maintenance lane now enables the retention work deferred by ordinary one-pass writers, with 1000-row batches, 5000 rows and 120 seconds per database. Archive allocation has a 64 GiB floor plus scratch; no inline vacuum or archive expiry runs in that bounded batch. Failed retention cannot count as successful maintenance merely because ingestion succeeded. Each child has a 1800-second process-group deadline and bounded cleanup, including stopped workers. Timeout rejects partial success and older receipts. The separate data-retention command uses --skip-sqlite-vacuum and --no-archive-prune-vacuum; its expiry policy is unchanged. Missing current child evidence remains an error.",
+                    "Nine previously uncovered shards now declare seven-day hot windows for equities trading, runtime and API-ingress, and fourteen-day windows for governance and watchdog history. Their rules use daily shard archives, 1000-row batches, 5000-row passes and a five-minute minimum interval. Archive-expiry zero is preserved explicitly; these rules do not expire archived history or request inline vacuum. Size triggers are not hard caps, and assigning rules does not bypass maintenance admission or prove disk recovery. See docs/operations/SOURCE_AND_STORAGE_MAINTENANCE.md#shard-hot-retention-coverage.",
                 ],
             ),
             _command_entry(
@@ -1851,7 +1902,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                     "The verification budget counts compressed input as well as raw and restored bytes, including padding and empty gzip members. Tier-2 conflict/quarantine moves are advisory here and remain with verified offload owners; cross-filesystem source removal cannot use a plain move. Post-unlink persistence failures report removal separately from durable completion.",
                     "Only ordinary logs/ pairs qualify. SQL payload domains and unknown roots are excluded regardless of checkpoint contents and remain with their writer-aware compaction owners. Assessment shares the same deadline; an expired empty pass cannot claim completion.",
                     "The existing hourly data-retention job checks local fallback and external storage. The existing 15-minute reserve-recovery pass also offers local cleanup under normal admission, excluding quick and compression-only relief modes. Each target is bounded to four files, 0.5 GiB deletion, 1 GiB raw/restored verification and 45 seconds; shared storage ownership, fresh resource checks and pressure-recovery cooldowns remain. Actual intervals include scheduler/admission delays. No new scheduler or Codex automation is used.",
-                    "Preview selection is metadata-only and is not deletion proof. Apply requires closed-date inactive raw/gzip pairs, full SHA-256 and exact restored length, gzip integrity, idle handles, stable single-link identities and durable pre-release evidence in governance/storage_recovery/verified_duplicate_cleanup.jsonl. Prefix verification cannot authorize deletion. Retained archives, latest/training artifacts, current-day files and protected/symlink routes are excluded. Age-only stale-stage deletion is disabled here; data-retention retains manifest/hash/protected-evidence/expiry ownership. Capacity readiness and completed cleanup are separate; no empty pass grants headroom or trading authority.",
+                    "Preview selection is metadata-only and is not deletion proof. Apply requires closed-date inactive raw/gzip pairs, full SHA-256 and exact restored length, gzip integrity, idle handles, stable single-link identities and durable pre-release evidence in governance/storage_recovery/verified_duplicate_cleanup.jsonl. Prefix verification cannot authorize deletion. Retained archives, latest/training artifacts, current-day files and protected/symlink routes are excluded. Age-only stale-stage deletion is disabled here; data-retention retains manifest/hash/protected-evidence/expiry ownership. Stale retirement now preserves manifest replay order, blocks corrupt receipts, reapplies current evidence protection and budgets selection before hashing; the native reaper rejects unlimited settings and preserves the active owner's receipt on lock contention. See docs/operations/SOURCE_AND_STORAGE_MAINTENANCE.md#retention-safety-audit. Capacity readiness and completed cleanup are separate; no empty pass grants headroom or trading authority.",
                 ],
             ),
             _command_entry(
@@ -1898,6 +1949,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 notes=[
                     "Recovery receipts separate measured owner reclamation, net local headroom change, and remaining capacity shortfall. Successful empty/unmeasured compactor passes use per-owner exponential backoff capped at one hour, reset by positive measured reclamation; they do not open failure circuits or certify reserves.",
                     "The existing 15-minute launcher adds `--rebuild-reserve` to the recovery-only apply pass. Preview with `./scripts/ops/opsctl.sh soak-self-heal --storage-recovery-only --rebuild-reserve --json`; add `--apply` for guarded recovery. It starts below the configured 125 GiB target and aims for 135 GiB, while the quick emergency lane keeps its existing 64 GiB pressure threshold. The modes cannot be combined. Capacity and full system readiness remain separately measured, and no heavy rebuild is admitted by this flag.",
+                    "Elevated-load recovery requires a current storage-recovery lease and stays within 240 seconds, four files and 60 seconds per compactor. Quick recovery retains its 90-second limit. Both load windows, holds and required leases are rechecked between steps; memory is renewed after 60 seconds. The recovery receipt reports pressure/trigger/target deficits, actual owner progress, empty/deferred/failed work and per-owner retry times. An empty pass cannot clear capacity debt or bypass a repair circuit.",
                     "The existing pressure-recovery owner also runs a 32-file/180-second lifecycle-backup compression batch with a 15-minute cooldown. Fresh workload-specific recovery admission can raise only the outer compression load allowance to 0.85 per logical CPU; this path excludes heavier telemetry, offload and database work. Reserve reconciliation and the writer's independent storage admission still follow.",
                     "The existing launchd owner runs bounded pressure relief before its heavy-maintenance gate. Apply keeps the shared self-healing lock, fresh typed memory admission, cold writer handoff, and destination reserve; it cannot run cache rebuilds, training, candidate acceptance, or trading. Verified disk-only yellow pressure can admit this lane with raw source age <=90 seconds, free memory >=85%, swap <=8 GiB, resident compressor <=1 GiB, and zero throttled pages; the host verdict and other workload gates stay blocked. A completed storage-pressure assessment is not a failed memory repair; legacy observation-circuit revalidation retains its prior state."
                 ],
@@ -1933,6 +1985,14 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ["./scripts/ops/opsctl.sh sqlite-reclaim-control --json"],
                 notes=[
                     "Use --db PATH and --scratch-dir PATH for a specific shard. Apply retains the same source/scratch capacity, memory, maintenance ownership, and single-writer guards."
+                ],
+            ),
+            _command_entry(
+                project_root,
+                "Prepare the new primary data SSD",
+                ["./scripts/ops/opsctl.sh external-drive-preflight --json"],
+                notes=[
+                    "Read-only preparation for primary platform data, large shards, datasets, models, reports and eligible cold archives. With an explicit --mount /Volumes/NAME and operator-reviewed --expected-uuid UUID, checks only that selected volume's metadata, APFS and headroom. Never enumerates disks, adopts a drive, formats, writes to it or switches routes. A metadata pass is not activation clearance. Existing BOT_LOGS and VIDEO remain unchanged; see docs/operations/EXTERNAL_DRIVE_ONBOARDING.md for the supervised handoff and rollback checklist.",
                 ],
             ),
             _command_entry(
@@ -2217,6 +2277,7 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
                 ],
                 notes=[
                     "The dry run plans either the MLX-only bundle or the complete exact lock from `config/requirements.lock.txt`. Apply is fail-closed: an active maintenance hold, its matching token, a stopped runtime stack, and explicit acknowledgement are required. The transaction snapshots the current environment, installs the lock, runs dependency and native-runtime audits plus capability smoke tests, optionally runs the full suite, and automatically rolls back if any validation fails. Never pass credentials or broker tokens as the maintenance token.",
+                    "Pytest runs with an allowlisted environment so production governor overrides, credentials, maintenance tokens and Python import overrides cannot contaminate test fixtures. OS paths/locales, explicit test options, the research interpreter, thread limits and offline model settings are preserved; test charts use the headless Agg backend. Installation and native runtime audits still inherit the operational environment; this isolation grants no trading or release authority.",
                 ],
             ),
             _command_entry(
@@ -2606,6 +2667,16 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
         ),
         _section(
             "Strategy Research",
+            _command_entry(
+                project_root,
+                "Compare the offline research libraries",
+                ["./scripts/ops/opsctl.sh library-research --research-python /Library/Frameworks/Python.framework/Versions/3.14/bin/python3.14 --self-test --json"],
+                notes=[
+                    "Reuses the downloaded research packages in an explicit separate interpreter, without adding global packages to the live Python path. One 90-second, single-thread child compares TA-Lib/Polars indicators and Backtrader/VectorBT next-open fills, then checks in-memory Parquet restoration and DuckDB counts. No broker access, new service or native bot decision.",
+                    "Also checks Pandas TA Classic native indicators and Backtesting.py zero-cost timing against a separate reference, reports QuantStats cost-inclusive per-bar diagnostics, and fits one arch GARCH model capped at 1000 returns and 100 iterations. Missing/flat histories, failed fits and stationarity warnings remain explicit; no optimizer search or annualized/trade-win-rate claim. The additions-only lock is config/library_research_extras.lock.txt; Backtesting.py licensing requires review before redistribution.",
+                    "For local Schwab-shaped history, replace --self-test with --input /absolute/local/candles.json --bar-seconds 3600 (use the actual bar duration). Input is limited to 4 MiB and 5,000 closed ordered candles. --out-file writes an optional small report. A synthetic pass is compatibility evidence, not profitability or release clearance. See docs/operations/LIBRARY_RESEARCH.md.",
+                ],
+            ),
             _command_entry(
                 project_root,
                 "Review the 10-layer deep quant advisory upgrade",
@@ -3366,7 +3437,7 @@ def render_commands_markdown(project_root: Path = PROJECT_ROOT) -> str:
         f"Command contract hash: `{contract['contract_hash']}`.",
         "Command contract artifact: `governance/health/commands_contract_latest.json`.",
         "",
-        "This file is intentionally trimmed down with Most Used pinned first and the remaining sections alphabetized by section and command title:",
+        "Live Execution Control is pinned above Most Used; the remaining sections are alphabetized by section and command title:",
         "- paper mode is the operating default",
         "- no simulate variants are listed",
         "- no duplicate restart commands are listed when a broader command already covers them",

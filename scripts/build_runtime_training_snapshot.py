@@ -36,6 +36,7 @@ from scripts.ops.long_runtime_common import (
 )
 from core.storage_router import inspect_storage_path
 from scripts.sql_dataset_io import _json_loads
+from scripts import sql_dataset_io
 
 DEFAULT_ROWS_PATH = PROJECT_ROOT / "exports" / "training" / "runtime_training_snapshot_latest.jsonl"
 DEFAULT_HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_training_snapshot_latest.json"
@@ -91,6 +92,25 @@ def _snapshot_rows_match(summary: dict[str, Any]) -> bool:
     return _sha256_file(rows_path) == expected
 
 
+def _snapshot_row_bytes(row: dict[str, Any]) -> bytes:
+    backend = sql_dataset_io._fast_json
+    if backend is not None:
+        try:
+            encoded = backend.dumps(
+                row,
+                option=(backend.OPT_PASSTHROUGH_DATETIME
+                        | backend.OPT_PASSTHROUGH_DATACLASS
+                        | backend.OPT_PASSTHROUGH_SUBCLASS),
+            )
+            # orjson maps nonfinite floats to null. Retain stdlib semantics
+            # whenever that conversion is possible, including nested values.
+            if b"null" not in encoded:
+                return encoded + b"\n"
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return (json.dumps(row, ensure_ascii=True) + "\n").encode("utf-8")
+
+
 def _publish_snapshot_rows(rows_path: Path, sequences: dict) -> tuple[int, int, str]:
     rows_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = rows_path.with_name(f".{rows_path.name}.building")
@@ -104,12 +124,7 @@ def _publish_snapshot_rows(rows_path: Path, sequences: dict) -> tuple[int, int, 
             os.fchmod(handle.fileno(), 0o600)
             for (mode, symbol), rows in sorted(sequences.items()):
                 for row in rows:
-                    encoded = (
-                        json.dumps(
-                            {"mode": mode, "symbol": symbol, **row}, ensure_ascii=True
-                        )
-                        + "\n"
-                    ).encode("utf-8")
+                    encoded = _snapshot_row_bytes({"mode": mode, "symbol": symbol, **row})
                     handle.write(encoded)
                     digest.update(encoded)
                     row_count += 1
@@ -694,6 +709,7 @@ def _iter_recent_json_rows_newest_first(
     block_bytes: int = 256 * 1024,
 ) -> Iterable[dict[str, Any]]:
     parsed_rows = 0
+    now_utc = datetime.now(timezone.utc)
     for path in paths:
         if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
             if stats is not None:
@@ -707,7 +723,7 @@ def _iter_recent_json_rows_newest_first(
                 stats=stats,
             ):
                 timestamp = _parse_ts(row.get("timestamp_utc"))
-                if timestamp is not None and timestamp >= since_utc:
+                if timestamp is not None and since_utc <= timestamp <= now_utc:
                     parsed_rows += 1
                     yield row
             continue
@@ -716,7 +732,6 @@ def _iter_recent_json_rows_newest_first(
                 handle.seek(0, 2)
                 position = handle.tell()
                 pending = b""
-                seen_recent = False
                 while position > 0:
                     if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                         if stats is not None:
@@ -756,18 +771,12 @@ def _iter_recent_json_rows_newest_first(
                         timestamp = _parse_ts(row.get("timestamp_utc"))
                         if timestamp is None:
                             continue
-                        if timestamp < since_utc:
-                            if seen_recent:
-                                break
+                        if timestamp < since_utc or timestamp > now_utc:
                             continue
-                        seen_recent = True
                         parsed_rows += 1
                         if stats is not None:
                             stats["candidate_json_row_count"] = int(stats.get("candidate_json_row_count", 0) or 0) + 1
                         yield row
-                    else:
-                        continue
-                    break
         except Exception:
             if stats is not None:
                 stats["candidate_file_error_count"] = int(stats.get("candidate_file_error_count", 0) or 0) + 1

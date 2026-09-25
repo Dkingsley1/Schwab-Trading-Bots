@@ -63,6 +63,22 @@ def test_repository_wires_role_contract_into_freshness_refresh_dashboard_and_liv
     assert capabilities["system_role_contract"]["required"] is True
 
 
+def test_live_switch_owner_has_no_order_submission_authority(tmp_path: Path) -> None:
+    contract = _copy_contract(tmp_path)
+    owner = contract["control_surface_bindings"]["live_execution_switch"]
+    component = next(row for row in contract["components"] if row["component_id"] == owner)
+    assert "core/live_execution_switch.py" in component["source_paths"]
+    assert "scripts/ops/live_execution_switch.py" in component["source_paths"]
+    domain = next(row for row in contract["state_domains"] if row["domain_id"] == "live_canary_operator_boundary")
+    assert domain["writer_component_id"] == owner
+    assert "governance/runtime/live_execution_switch_state.json" in domain["resource_patterns"]
+    denied = evaluate_component_action(
+        tmp_path, component_id=owner, action="live_submit", state_domain="live_order_submission"
+    )
+    assert denied["ok"] is False
+    assert "component_action_not_allowed" in denied["blockers"]
+
+
 def test_runtime_authority_allows_only_the_declared_execution_owner(tmp_path: Path) -> None:
     _copy_contract(tmp_path)
 

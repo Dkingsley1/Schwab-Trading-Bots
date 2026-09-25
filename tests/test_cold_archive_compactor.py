@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import shutil
 import signal
 import sqlite3
@@ -12,6 +13,60 @@ import pytest
 
 import scripts.ops.cold_archive_compactor as compactor
 from scripts.ops.cold_archive_compactor import archive_root_available, build_payload, writer_blocks_compaction
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_compression_preserves_source_rewritten_after_verification(tmp_path, monkeypatch, existing):
+    source = tmp_path / "closed.jsonl"
+    target = tmp_path / "closed.jsonl.gz"
+    source.write_bytes(b"old data\n")
+    if existing:
+        target.write_bytes(gzip.compress(source.read_bytes()))
+    original = compactor._stream_hash
+    calls = 0
+
+    def hash_then_change(stream):
+        nonlocal calls
+        result = original(stream)
+        calls += 1
+        if calls == (2 if existing else 1):
+            source.write_bytes(b"new data\n")
+        return result
+
+    monkeypatch.setattr(compactor, "_stream_hash", hash_then_change)
+    result = compactor._compress_jsonl(source, target, compression_level=1)
+    assert source.exists()
+    assert source.read_bytes() == b"new data\n"
+    assert result["status"] not in {"compacted_verified", "released_verified_duplicate"}
+
+
+def test_compression_does_not_overwrite_target_created_during_verification(tmp_path, monkeypatch):
+    source = tmp_path / "closed.jsonl"
+    target = tmp_path / "closed.jsonl.gz"
+    source.write_bytes(b"old data\n")
+    original = compactor._stream_hash
+
+    def hash_then_create(stream):
+        result = original(stream)
+        target.write_bytes(b"other owner's archive")
+        return result
+
+    monkeypatch.setattr(compactor, "_stream_hash", hash_then_create)
+    result = compactor._compress_jsonl(source, target, compression_level=1)
+    assert target.read_bytes() == b"other owner's archive"
+    assert source.exists()
+    assert result["status"] == "error"
+
+
+def test_compression_rejects_linked_source(tmp_path):
+    source = tmp_path / "closed.jsonl"
+    target = tmp_path / "closed.jsonl.gz"
+    source.write_bytes(b"data\n")
+    os.link(source, tmp_path / "held")
+    result = compactor._compress_jsonl(source, target, compression_level=1)
+    assert source.exists()
+    assert not target.exists()
+    assert result["status"] == "error"
 
 
 def test_soft_stop_unwinds_cleanup_and_restores_handler(monkeypatch):

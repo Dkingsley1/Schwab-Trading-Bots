@@ -11,6 +11,22 @@ import pytest
 from scripts.ops import raw_training_compaction_intelligence as raw_compaction
 
 
+def test_inventory_separates_empty_slots_from_qualified_evidence():
+    rows = [
+        {"size_bytes": 0, "training_candidate": True, "training_eligible": False},
+        {"size_bytes": 12, "training_candidate": True, "training_eligible": True},
+        {"size_bytes": 7, "training_candidate": True, "training_eligible": False},
+    ]
+    summary = raw_compaction._summary(rows, [], [])
+    assert summary["raw_jsonl_count"] == 3
+    assert summary["empty_source_count"] == 1
+    assert summary["nonempty_source_count"] == 2
+    assert summary["eligible_training_source_count"] == 1
+    assert summary["source_qualification"] == "candidate_metadata_only_not_training_readiness"
+    assert summary["full_content_verified"] is False
+    assert summary["unique_event_count"] is None
+
+
 @pytest.fixture(autouse=True)
 def sufficient_compaction_scratch(monkeypatch, tmp_path):
     usage = raw_compaction.shutil.disk_usage(tmp_path)

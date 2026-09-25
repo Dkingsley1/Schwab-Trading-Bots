@@ -53,6 +53,13 @@
     ]
   },
   "package_profile_overrides": {
+    "pandas-ta-classic": ["research"],
+    "backtesting": ["research"],
+    "quantstats": ["research"],
+    "arch": ["research"],
+    "ta-lib": ["research"],
+    "backtrader": ["research"],
+    "vectorbt": ["research"],
     "exchange-calendars": ["live", "research"],
     "pandas-market-calendars": ["live", "research"],
     "feedparser": ["live", "ops"],
@@ -83,6 +90,7 @@
     "pytest-rerunfailures": ["ops"]
   },
   "initial_activation_batches": {
+    "offline_library_comparison": ["ta-lib", "backtrader", "vectorbt", "polars", "duckdb", "pyarrow", "msgspec", "pandas-ta-classic", "backtesting", "quantstats", "arch"],
     "production_core_safe": [
       "aiolimiter",
       "cachetools",

@@ -65,7 +65,9 @@ def bounded_refresh_admitted(project_root: Path, payload: dict[str, Any]) -> boo
         measured = datetime.fromisoformat(str(payload.get("timestamp_utc", "")).replace("Z", "+00:00"))
         if measured.tzinfo is None or not 0 <= (now - measured).total_seconds() <= 120:
             return False
-        if payload.get("throttle_profile") != "soft_cap" or payload.get("memory_pressure_level") != "normal":
+        # Backlog can select protect_live even with safe host headroom. Do not
+        # starve overdue risk evidence solely because of that aggregate label.
+        if payload.get("throttle_profile") not in {"soft_cap", "protect_live"} or payload.get("memory_pressure_level") != "normal":
             return False
         if payload.get("compute_pressure_level") not in {"normal", "elevated"}:
             return False

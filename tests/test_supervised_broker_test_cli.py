@@ -574,6 +574,10 @@ def test_interactive_flow_uses_only_mock_broker_and_exact_confirmation(
     setup, monkeypatch, scenario
 ):
     root, kwargs = setup
+    from core import live_execution_switch
+    monkeypatch.setattr(live_execution_switch, "_readiness", lambda *a, **k: {
+        "blockers": [], "candidate_id": json.loads((root / live_execution_switch.CANDIDATE).read_text())["candidate_id"]})
+    live_execution_switch.switch_on(root, purpose=PURPOSE, symbol="O", session="NORMAL")
     calls = []
     monkeypatch.setattr(cli, "PROJECT_ROOT", root)
     monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)

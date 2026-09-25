@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shlex
@@ -27,6 +28,7 @@ SWAP_PRESSURE_GOVERNOR_PATH = HEALTH_DIR / "swap_pressure_governor_latest.json"
 RUNTIME_THROTTLE_PATH = HEALTH_DIR / "runtime_throttle_control_latest.json"
 AUTH_LEASE_PATH = HEALTH_DIR / "auth_lease_manager_latest.json"
 SCHWAB_AUTH_SUPERVISOR_PATH = HEALTH_DIR / "schwab_auth_supervisor_latest.json"
+PREMARKET_TOKEN_GUARD_PATH = HEALTH_DIR / "premarket_token_guard_latest.json"
 GLOBAL_HALT_PATH = HEALTH_DIR / "GLOBAL_TRADING_HALT.flag"
 HALT_RECOVERY_PATH = HEALTH_DIR / "shadow_watchdog_halt_recovery_latest.json"
 INCIDENT_AUTO_HALT_PATH = ALERTS_DIR / "incident_auto_halt_latest.json"
@@ -357,6 +359,8 @@ def _notification_action_hint(key: str, message: str) -> str:
     if normalized_key.startswith("system_talk:"):
         return "Action: run the suggested safe command or ask Codex to inspect."
     if normalized_key.startswith("auth_lease:"):
+        if normalized_key != "auth_lease:critical:interactive_refresh_required":
+            return "Action: inspect automatic refresh diagnostics before starting a new sign-in."
         return (
             "Action: click to sign in with Schwab. Manual fallback: "
             "./scripts/ops/opsctl.sh token-refresh-interactive --force --json"
@@ -524,17 +528,33 @@ def _terminal_notifier_path() -> str:
 
 
 def _notification_execute_target(key: str) -> str:
-    if str(key).strip().lower() not in {
-        "auth_lease:critical:interactive_refresh_required",
-        "auth_lease:critical:blocked",
-        "auth_lease:warn:lease_warning",
-    }:
+    if str(key).strip().lower() != "auth_lease:critical:interactive_refresh_required":
         return ""
     # Only a fixed, local auth launcher may execute; never a report-supplied command.
     return shlex.join([
         str(PROJECT_ROOT / ".venv314/bin/python"),
         str(PROJECT_ROOT / "scripts/ops/schwab_reauth_action.py"),
     ])
+
+
+def _dismiss_auth_notification(key: str) -> Dict[str, Any]:
+    if key not in {
+        "auth_lease:critical:interactive_refresh_required",
+        "auth_lease:critical:blocked",
+        "auth_lease:warn:lease_warning",
+    }:
+        return {"ok": False, "reason": "not_owned_auth_notification"}
+    notifier = _terminal_notifier_path()
+    if not notifier:
+        return {"ok": False, "reason": "native_notification_transport_unavailable"}
+    try:
+        result = subprocess.run(
+            [notifier, "-remove", key], capture_output=True, text=True,
+            check=False, timeout=5,
+        )
+        return {"ok": result.returncode == 0, "returncode": result.returncode, "group_key": key}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "reason": type(exc).__name__, "group_key": key}
 
 
 def _notify_mac(
@@ -1285,16 +1305,103 @@ def _swap_pressure_event(
     return (f"swap_pressure:{event}:{key_tier}", message)
 
 
+def _auth_observed_at(
+    payload: Dict[str, Any], max_age_seconds: float,
+) -> datetime | None:
+    try:
+        stamp = datetime.fromisoformat(str(payload["timestamp_utc"]).replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            return None
+        age = (datetime.now(timezone.utc) - stamp).total_seconds()
+        limit = min(max_age_seconds, DEFAULT_MAX_ALERT_AGE_SECONDS)
+        return stamp if 0 <= age <= limit else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _auth_guard_healthy_at(
+    payload: Dict[str, Any], max_age_seconds: float,
+) -> datetime | None:
+    """Only current, same-token post-refresh evidence can retire an auth alert."""
+    try:
+        stamp = _auth_observed_at(payload, max_age_seconds)
+        if stamp is None:
+            return None
+        now = datetime.now(timezone.utc)
+        age = (now - stamp).total_seconds()
+        token = payload["token_after"]
+        auth = payload["auth"]
+        if not all(isinstance(item, dict) for item in (token, auth, payload.get("network"))):
+            return None
+        if (
+            payload.get("ok") is not True or payload.get("token_ready_after") is not True
+            or payload["network"].get("ok") is not True or auth.get("ok") is not True
+            or auth.get("reason") not in {"not_needed", "auth_success", "refresh_token_grant_success"}
+            or token.get("exists") is not True
+            or token.get("token_path") != str(PROJECT_ROOT / "token.json")
+        ):
+            return None
+        remaining = float(token["expires_in_seconds"]) - age
+        absolute_remaining = float(token["expires_at"]) - now.timestamp()
+        floor = float(payload["ready_min_expires_seconds"])
+        if not all(math.isfinite(value) for value in (remaining, absolute_remaining, floor)):
+            return None
+        if min(remaining, absolute_remaining) < max(floor, 900.0):
+            return None
+        return stamp
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _refresh_rejected(reason: Any) -> bool:
+    text = str(reason or "").lower()
+    return "invalid_grant" in text or "refresh token is invalid" in text
+
+
 def _auth_lease_event(
     lease_payload: Dict[str, Any],
     supervisor_payload: Dict[str, Any],
     max_age_seconds: float,
+    guard_payload: Dict[str, Any] | None = None,
 ) -> Tuple[str, str] | None:
+    lease_payload = lease_payload if isinstance(lease_payload, dict) else {}
+    supervisor_payload = supervisor_payload if isinstance(supervisor_payload, dict) else {}
+    guard = guard_payload if isinstance(guard_payload, dict) else {}
+    healthy_at = _auth_guard_healthy_at(guard, max_age_seconds)
+    guard_auth = guard.get("auth") if isinstance(guard.get("auth"), dict) else {}
+    refresh_grant = guard_auth.get("refresh_grant")
+    refresh_grant = refresh_grant if isinstance(refresh_grant, dict) else {}
+    guard_rejected = bool(
+        _auth_observed_at(guard, max_age_seconds)
+        and guard_auth.get("ok") is False
+        and (_refresh_rejected(guard_auth.get("reason")) or _refresh_rejected(refresh_grant.get("reason")))
+    )
+    renewed = bool(
+        healthy_at and guard_auth.get("attempted") is True
+        and guard_auth.get("reason") in {"auth_success", "refresh_token_grant_success"}
+    )
+    # A later refresh supersedes old expiry evidence, not newer failures or unrelated faults.
+    if healthy_at:
+        lease_stamp = _parse_timestamp(lease_payload)
+        broker = lease_payload.get("broker_state")
+        broker = broker if isinstance(broker, dict) else {}
+        if lease_stamp and healthy_at > lease_stamp and (renewed or not _refresh_rejected(broker.get("auth_reason"))):
+            lease_payload = {}
+        supervisor_stamp = _parse_timestamp(supervisor_payload)
+        reasons = supervisor_payload.get("findings")
+        reasons = reasons if isinstance(reasons, list) else []
+        renewable_findings = bool(reasons) and all(
+            str(reason).startswith(("token_not_ready:", "token_refresh_recommended:", "auth_lease_"))
+            or reason == "token_refresh_watch_paper_soak_ready"
+            for reason in reasons
+        )
+        if supervisor_stamp and healthy_at > supervisor_stamp and renewable_findings:
+            supervisor_payload = {}
     lease_recent = bool(lease_payload and _is_recent(lease_payload, max_age_seconds))
     supervisor_recent = bool(
         supervisor_payload and _is_recent(supervisor_payload, max_age_seconds)
     )
-    if not lease_recent and not supervisor_recent:
+    if not lease_recent and not supervisor_recent and not guard_rejected:
         return None
 
     current_lease = lease_payload if lease_recent else {}
@@ -1326,22 +1433,21 @@ def _auth_lease_event(
         for item in findings_rows
         if str(item or "").strip()
     }
-    followup_rows = (
-        current_supervisor.get("operator_followups")
-        if isinstance(current_supervisor.get("operator_followups"), list)
-        else []
-    )
-    operator_followups = {
-        str(item or "").strip().lower()
-        for item in followup_rows
-        if str(item or "").strip()
-    }
+    if healthy_at and supervisor_status == "degraded" and token_ready is True and findings and all(
+        item == "schwab_provider_cooldown_http_429"
+        or item == "token_refresh_watch_paper_soak_ready"
+        or item.startswith("token_refresh_recommended:")
+        for item in findings
+    ):
+        # Rate limits remain in provider diagnostics; signing in cannot fix them.
+        supervisor_status = "ready"
 
     critical = bool(
         lease_state == "critical"
         or lease_status == "blocked"
         or supervisor_status == "blocked"
         or token_ready is False
+        or guard_rejected
     )
     warning = bool(
         lease_state == "warning"
@@ -1354,27 +1460,25 @@ def _auth_lease_event(
     interactive_required = bool(
         critical
         and (
-            "invalid_grant" in auth_reason
-            or "refresh token is invalid" in auth_reason
-            or any("token_not_ready" in item for item in findings)
-            or any("token-refresh-interactive" in item for item in operator_followups)
+            _refresh_rejected(auth_reason)
+            or guard_rejected
         )
     )
     if critical:
         state = "interactive_refresh_required" if interactive_required else "blocked"
         reason = (
-            "Schwab sign-in is required; the saved refresh token is no longer usable."
+            "Schwab sign-in is required; automatic token refresh was rejected."
             if interactive_required
-            else "Schwab authorization is blocked."
+            else "Schwab access is not ready; automatic refresh needs attention."
         )
         return (
             f"auth_lease:critical:{state}",
-            f"{reason}\nPaper execution and broker reconciliation are paused.",
+            reason,
         )
 
     return (
         "auth_lease:warn:lease_warning",
-        "Schwab authorization is nearing its critical lease floor.\nPaper collection remains active.",
+        "Schwab authorization needs attention.\nCheck automatic refresh status before signing in.",
     )
 
 
@@ -1556,6 +1660,7 @@ def _event_candidates(max_age_seconds: float) -> List[Tuple[str, str]]:
             _read_json(AUTH_LEASE_PATH),
             _read_json(SCHWAB_AUTH_SUPERVISOR_PATH),
             max_age_seconds,
+            _read_json(PREMARKET_TOKEN_GUARD_PATH),
         ),
         _codex_handoff_event(_read_json(CODEX_HANDOFF_PATH), max_age_seconds),
         _incident_auto_halt_event(_read_json(INCIDENT_AUTO_HALT_PATH), max_age_seconds),
@@ -1584,6 +1689,7 @@ def _run_watch_loop(
         (state.get("pending_confirmations") or {})
     )
     last_delivery = state.get("last_delivery")
+    last_auth_dismissal = state.get("last_auth_dismissal")
     max_age_seconds = _env_float(
         MAX_ALERT_AGE_SECONDS_ENV, DEFAULT_MAX_ALERT_AGE_SECONDS
     )
@@ -1686,6 +1792,10 @@ def _run_watch_loop(
             if key not in active_keys:
                 if _retain_routine_notification_memory(sent_signatures.get(key, ""), last_sent_at.get(key, ""), datetime.now(timezone.utc)):
                     continue
+                if key.startswith("auth_lease:") and _auth_guard_healthy_at(
+                    _read_json(PREMARKET_TOKEN_GUARD_PATH), max_age_seconds
+                ):
+                    last_auth_dismissal = _dismiss_auth_notification(key)
                 sent.pop(key, None)
                 sent_signatures.pop(key, None)
                 last_sent_at.pop(key, None)
@@ -1712,6 +1822,7 @@ def _run_watch_loop(
                 "min_repeat_seconds": min_repeat_seconds,
                 "storage_confirmation_observations": storage_confirmations,
                 "last_delivery": last_delivery,
+                "last_auth_dismissal": last_auth_dismissal,
                 "notification_click_actions": {
                     "transport_installed": bool(_terminal_notifier_path()),
                     "scope": "mac_desktop_notifications_only",

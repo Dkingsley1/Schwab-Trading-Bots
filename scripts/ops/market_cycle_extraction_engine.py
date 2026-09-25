@@ -17,6 +17,8 @@ else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
 
 
+from scripts.jsonl_codec import loads as load_jsonl_record
+
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "market_cycle_state_latest.json"
 DEFAULT_HISTORY_PATH = PROJECT_ROOT / "governance" / "market_cycle" / "market_cycle_state_history.jsonl"
 
@@ -111,7 +113,7 @@ def _parse_jsonl_lines(lines: list[bytes], *, limit: int) -> list[dict[str, Any]
         if not raw:
             continue
         try:
-            payload = json.loads(raw.decode("utf-8"))
+            payload = load_jsonl_record(raw.decode("utf-8"))
         except Exception:
             continue
         if isinstance(payload, dict):

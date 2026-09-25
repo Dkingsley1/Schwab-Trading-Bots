@@ -46,6 +46,19 @@ def start(packet):
     )
 
 
+def test_original_chart_sidecar_link_is_separate_from_simulated_fills(packet):
+    state = start(packet)
+    state["decision_chart_report"] = {
+        "report_path": "/tmp/decision-chart.html",
+        "status": "available",
+        "execution_status": "unavailable",
+    }
+    text = render_markdown(state)
+    assert "[Open decision chart report](/tmp/decision-chart.html)" in text
+    assert "Proposed actions are not broker fills" in text
+    assert state["orders"] == []
+
+
 def step(state, packet, seconds=0, now=None):
     now = now or timestamp("2026-09-23T15:05:01+00:00") + timedelta(seconds=seconds)
     return advance(state, packet, now=now, implementation_sha256="source")

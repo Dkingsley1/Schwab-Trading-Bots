@@ -461,7 +461,7 @@ def _iter_candidate_files(stale_root: Path, *, min_size_bytes: int) -> list[Path
             continue
         if size < min_size_bytes:
             continue
-        if path.name == DEFAULT_MANIFEST_NAME:
+        if path.name in {DEFAULT_MANIFEST_NAME, "stale_manifest.jsonl", "backlog_quarantine_manifest.jsonl"} or path.name.endswith(("_state.json", "_latest.json", ".lock")):
             continue
         rows.append(path)
     return sorted(rows, key=lambda item: (-_safe_int(item.stat().st_size if item.exists() else 0), str(item)))

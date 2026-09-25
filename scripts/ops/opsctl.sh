@@ -820,6 +820,9 @@ case "$cmd" in
   system-power|system-switch)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/system_power.py" "$@"
     ;;
+  live-execution)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/live_execution_switch.py" "$@"
+    ;;
   self-healing-gaps)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/self_healing_gap_audit.py" "$@"
     ;;
@@ -828,6 +831,18 @@ case "$cmd" in
     ;;
   emergency-storage-thin)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/emergency_storage_thin.py" "$@"
+    ;;
+  raw-inventory-cleanup)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/raw_inventory_cleanup.py" "$@"
+    ;;
+  collection-gap-census)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/collection_gap_census.py" "$@"
+    ;;
+  decision-chart-report)
+    exec "$PY" -m scripts.ops.decision_chart_report "$@"
+    ;;
+  decision-candle-capture)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/decision_candle_capture.py" "$@"
     ;;
   storage-route-verify)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_failback_sync.py" --verify-only "$@"
@@ -1174,6 +1189,9 @@ case "$cmd" in
     ;;
   dependency-activation-smoke|dependency-smoke|library-activation-smoke)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/dependency_activation_smoke.py" "$@"
+    ;;
+  library-research)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/library_research.py" "$@"
     ;;
   production-readiness|prod-readiness|production-readiness-control)
     run_then_refresh_self_model "$PY" "$PROJECT_ROOT/scripts/ops/production_readiness_control.py" "$@"
@@ -2938,6 +2956,9 @@ case "$cmd" in
   storage-sqlite-local-failover|sqlite-local-failover|storage-local-sqlite)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_sqlite_local_failover.py" "$@"
     ;;
+  external-drive-preflight)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/external_drive_preflight.py" "$@"
+    ;;
   storage-disaster-recovery|storage-recovery-bot)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_disaster_recovery.py" "$@"
     ;;
@@ -3266,9 +3287,15 @@ opsctl commands:
   start-sim [--force-restart] [--no-coinbase] [--disable-circuit-breakers] [--run-all-sleeves]
   start-live [--force-restart] [--no-coinbase] [--paper|--schwab-paper] [--coinbase-paper] [--coinbase-live-data] [--disable-circuit-breakers] [--run-all-sleeves]
   stop
+  live-execution [status|off|on] [--purpose supervised_broker_test|production_canary] [--symbol SYMBOL] [--session NORMAL|AM|PM] [--minutes 1..60] [--json]
+    Real-money interlock only. ON requires an interactive review; existing gates remain. OFF does not cancel pending orders or sell holdings.
   system-power|system-switch [status|on|off|clear-halts] [--json]
   self-healing-gaps [--json]
   bitcoin-price-watch [--json]
+  raw-inventory-cleanup --audit PATH [--verify-only|--apply]  # reviewed raw inventory only; preserves protected control/evidence files
+  collection-gap-census --manifest PATH
+  decision-chart-report --decision-log PATH --decision-id ID [--executions-json PATH] [--review-capture-sha256 HASH]
+  decision-candle-capture --symbol SYMBOL
   storage-fallback-repair [--apply] [--json]
   emergency-storage-thin [--apply] [--json]
   storage-route-verify [--json]
@@ -3324,6 +3351,7 @@ opsctl commands:
   mlx-intelligence-router|mlx-compute-brain|mlx-utilization [--apply] [--json]
   library-utilization-router|library-router|non-mlx-library-router [--apply] [--json]
   dependency-activation-smoke|dependency-smoke|library-activation-smoke [--batch NAME] [--profile NAME] [--import-smoke] [--json]
+  library-research --self-test|--input FILE [--bar-seconds N] [--research-python PATH] [--out-file FILE] [--json]
   production-readiness|prod-readiness|production-readiness-control [--apply] [--json]
   production-level-upgrades|prod-level-upgrades|production-20 [--apply] [--check] [--json]
   production-soak-enhancement|prod-soak|soak-enhancement [--apply] [--dependency-batch NAME] [--json]
@@ -3654,6 +3682,7 @@ opsctl commands:
   mlx-intelligence-router|mlx-compute-brain|mlx-utilization [--apply] [--json]
   library-utilization-router|library-router|non-mlx-library-router [--apply] [--json]
   dependency-activation-smoke|dependency-smoke|library-activation-smoke [--batch NAME] [--profile NAME] [--import-smoke] [--json]
+  library-research --self-test|--input FILE [--bar-seconds N] [--research-python PATH] [--out-file FILE] [--json]
   production-readiness|prod-readiness|production-readiness-control [--apply] [--json]
   production-level-upgrades|prod-level-upgrades|production-20 [--apply] [--check] [--json]
   production-soak-enhancement|prod-soak|soak-enhancement [--apply] [--dependency-batch NAME] [--json]
@@ -3701,6 +3730,7 @@ opsctl commands:
   storage-prune-standby [--apply] [--include-curated-standby] [--min-route-soak-hours N] [--relative-path PATH] [--json]
   local-sql-shard-standby-prune [--apply] [--max-delete-gb N] [--min-age-minutes N] [--json]
   storage-transition-coordinator [--transition-mode local|external] [--apply] [--json]
+  external-drive-preflight [--mount /Volumes/NAME] [--expected-uuid UUID] [--json]
   storage-disaster-recovery|storage-recovery-bot [--apply] [--json]
   storage-safe-eject [--no-refresh] [--no-eject]
   soak-self-heal|soak-self-healing [--apply] [--target-days N] [--daily-max-age-minutes N] [--json]

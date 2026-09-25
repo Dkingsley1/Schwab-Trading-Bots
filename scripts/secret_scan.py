@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -94,14 +95,23 @@ def _staged_files() -> list[Path]:
 
 def _all_repo_files() -> list[Path]:
     out = []
-    for p in PROJECT_ROOT.rglob("*"):
-        if not p.is_file():
+    for root, directories, files in os.walk(PROJECT_ROOT, followlinks=False):
+        # Renamed rollback environments are still dependencies, not authored source.
+        if "pyvenv.cfg" in files:
+            directories[:] = []
             continue
-        if _should_skip_repo_file(p):
-            continue
-        if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".npz", ".sqlite", ".sqlite3", ".db"}:
-            continue
-        out.append(p)
+        directories[:] = [
+            name for name in directories
+            if not _should_skip_repo_file(Path(root) / name)
+            and not (Path(root) / name).is_symlink()
+        ]
+        for name in files:
+            p = Path(root) / name
+            if p.is_symlink() or _should_skip_repo_file(p) or not p.is_file():
+                continue
+            if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".npz", ".sqlite", ".sqlite3", ".db"}:
+                continue
+            out.append(p)
     return out
 
 

@@ -9,7 +9,9 @@ import json
 import os
 import signal
 import sqlite3
+import stat
 import sys
+import tempfile
 import time
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
@@ -451,12 +453,38 @@ def _stream_hash(handle: Any) -> tuple[str, int, int]:
     return digest.hexdigest(), total, lines
 
 
+def _closed_file_identity(path: Path) -> tuple[int, ...]:
+    route = inspect_storage_path(path)
+    if route.get("status") != "present" or route.get("symlinks"):
+        raise RuntimeError("closed_file_route_unavailable_or_linked")
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise RuntimeError("closed_regular_single_link_file_required")
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _sync_archive_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _compress_jsonl(source: Path, target: Path, *, compression_level: int) -> dict[str, Any]:
     started = iso_now()
+    try:
+        before = _closed_file_identity(source)
+        target_route = inspect_storage_path(target)
+        if target_route.get("status") not in {"present", "missing"} or target_route.get("symlinks"):
+            raise RuntimeError("archive_target_route_unavailable_or_linked")
+    except (OSError, RuntimeError) as exc:
+        return {"status": "error", "source": str(source), "target": str(target), "error": str(exc)}
     source_stat = source.stat()
-    source_size = int(source_stat.st_size)
+    source_size = before[2]
     if target.exists():
         try:
+            target_before = _closed_file_identity(target)
             with gzip.open(target, "rb") as existing:
                 target_hash, target_raw_bytes, target_lines = _stream_hash(existing)
             with source.open("rb") as current:
@@ -466,7 +494,13 @@ def _compress_jsonl(source: Path, target: Path, *, compression_level: int) -> di
                 and target_raw_bytes == current_bytes
                 and target_lines == current_lines
             ):
+                with target.open("rb") as retained:
+                    os.fsync(retained.fileno())
+                _sync_archive_directory(target.parent)
+                if _closed_file_identity(source) != before or _closed_file_identity(target) != target_before:
+                    raise RuntimeError("source_or_archive_changed_during_verification")
                 source.unlink()
+                _sync_archive_directory(source.parent)
                 return {
                     "status": "released_verified_duplicate",
                     "source": str(source),
@@ -496,12 +530,13 @@ def _compress_jsonl(source: Path, target: Path, *, compression_level: int) -> di
             }
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(f".{target.name}.cold_compact_{os.getpid()}.tmp")
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.cold_compact_", suffix=".tmp", dir=target.parent)
+    tmp = Path(temporary)
     source_hash = hashlib.sha256()
     raw_bytes = 0
     line_count = 0
     try:
-        with source.open("rb") as src, tmp.open("wb") as raw_out:
+        with os.fdopen(descriptor, "wb") as raw_out, source.open("rb") as src:
             with gzip.GzipFile(
                 filename=target.name.removesuffix(".gz"),
                 mode="wb",
@@ -517,7 +552,7 @@ def _compress_jsonl(source: Path, target: Path, *, compression_level: int) -> di
             raw_out.flush()
             os.fsync(raw_out.fileno())
 
-        if raw_bytes != source_size or source.stat().st_size != source_size:
+        if raw_bytes != source_size or _closed_file_identity(source) != before:
             raise RuntimeError("source_changed_during_compaction")
         with gzip.open(tmp, "rb") as verify:
             verify_hash, verify_bytes, verify_lines = _stream_hash(verify)
@@ -525,9 +560,18 @@ def _compress_jsonl(source: Path, target: Path, *, compression_level: int) -> di
         if verify_hash != digest or verify_bytes != raw_bytes or verify_lines != line_count:
             raise RuntimeError("gzip_restore_proof_mismatch")
 
-        os.replace(tmp, target)
-        os.utime(target, (source_stat.st_atime, source_stat.st_mtime))
+        if _closed_file_identity(source) != before:
+            raise RuntimeError("source_changed_during_verification")
+        os.utime(tmp, (source_stat.st_atime, source_stat.st_mtime))
+        # Publish without replacing an archive that appeared after the first probe.
+        os.link(tmp, target, follow_symlinks=False)
+        tmp.unlink()
+        target_before = _closed_file_identity(target)
+        _sync_archive_directory(target.parent)
+        if _closed_file_identity(source) != before or _closed_file_identity(target) != target_before:
+            raise RuntimeError("source_or_archive_changed_before_release")
         source.unlink()
+        _sync_archive_directory(source.parent)
         return {
             "status": "compacted_verified",
             "source": str(source),

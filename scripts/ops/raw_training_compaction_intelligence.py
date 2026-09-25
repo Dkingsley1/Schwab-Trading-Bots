@@ -1036,6 +1036,11 @@ def _summary(
     return {
         "raw_jsonl_count": raw_count,
         "raw_jsonl_gb": round(raw_bytes / (1024**3), 6),
+        "empty_source_count": sum(_safe_int(row.get("size_bytes"), 0) == 0 for row in rows),
+        "nonempty_source_count": sum(_safe_int(row.get("size_bytes"), 0) > 0 for row in rows),
+        "source_qualification": "candidate_metadata_only_not_training_readiness",
+        "full_content_verified": False,
+        "unique_event_count": None,
         "training_candidate_count": len(training_candidate_rows),
         "training_candidate_gb": round(
             sum(_safe_int(row.get("size_bytes"), 0) for row in training_candidate_rows)
@@ -1329,6 +1334,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "policy": {
             "copy_raw_payload": False,
             "manifest_only_training_queue": True,
+            "inventory_scope": "raw_jsonl_in_declared_roots_not_all_collection_history",
+            "fingerprint_scope": "bounded_prefix_not_full_content",
+            "training_eligible_semantics": "nonempty_candidate_path_not_schema_label_or_point_in_time_verification",
             "hard_delete_raw_without_compressed_evidence": False,
             "protected_volumes": list(PROTECTED_VOLUME_PREFIXES),
             "current_day_protected": True,

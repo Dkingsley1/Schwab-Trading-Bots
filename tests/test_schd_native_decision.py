@@ -82,6 +82,22 @@ def write_rows(root, rows, *, day="20260923", suffix=b""):
     return path
 
 
+def test_compressed_decision_is_read_without_admission_bypass(tmp_path, fixture_data):
+    import gzip
+    row, _, _, now = deepcopy(fixture_data)
+    path = write_rows(tmp_path, [row], day=now.strftime("%Y%m%d"))
+    archived = Path(str(path) + ".gz")
+    archived.write_bytes(gzip.compress(path.read_bytes()))
+    path.unlink()
+    selected, receipt, scan = read_latest(tmp_path, now=now)
+    assert selected["decision_id"] == row["decision_id"]
+    assert receipt["offset_basis"] == "decompressed_bytes"
+    assert not scan["issues"]
+    selected, _, scan = read_latest(tmp_path, now=now, max_bytes=20)
+    assert selected is None
+    assert "native_compressed_scan_budget_exhausted" in scan["issues"]
+
+
 def packet_from(root, rows, candidate, market, now):
     write_rows(root, rows)
     selected, receipt, scan = read_latest(root, now=now)

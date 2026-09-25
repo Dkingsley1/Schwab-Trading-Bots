@@ -1,6 +1,7 @@
 import json
 import sys
 import shlex
+import pytest
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ def test_auth_action_is_fixed_and_other_alerts_cannot_execute(tmp_path, monkeypa
     assert shlex.split(command) == [str(watch.PROJECT_ROOT / ".venv314/bin/python"),
                                   str(watch.PROJECT_ROOT / "scripts/ops/schwab_reauth_action.py")]
     for key in ("global_halt", "restart_storm:coinbase", "storage_mount_missing",
+                "auth_lease:critical:blocked", "auth_lease:warn:lease_warning",
                 "auth_lease:critical:blocked; execute bad", "system_talk:run_command"):
         assert watch._notification_execute_target(key) == ""
 
@@ -498,7 +500,8 @@ def test_auth_lease_event_surfaces_interactive_schwab_refresh() -> None:
     key, message = event
     assert key == "auth_lease:critical:interactive_refresh_required"
     assert "Schwab sign-in is required" in message
-    assert "Paper execution and broker reconciliation are paused" in message
+    assert "automatic token refresh was rejected" in message
+    assert "are paused" not in message
     assert watch._event_severity(key, message) == "critical"
     assert watch._notification_heading(key, message) == (
         "Trading Bot Critical",
@@ -521,7 +524,7 @@ def test_auth_lease_event_surfaces_warning_without_claiming_paper_is_paused() ->
 
     assert event == (
         "auth_lease:warn:lease_warning",
-        "Schwab authorization is nearing its critical lease floor.\nPaper collection remains active.",
+        "Schwab authorization needs attention.\nCheck automatic refresh status before signing in.",
     )
     assert watch._event_severity(event[0], event[1]) == "warn"
     assert watch._notification_heading(event[0], event[1]) == (
@@ -582,6 +585,174 @@ def test_auth_notification_repeat_floor_defaults_to_thirty_minutes(monkeypatch) 
 
     assert watch._event_repeat_seconds("auth_lease:critical:blocked", 300.0) == 1800.0
     assert watch._event_repeat_seconds("tripwire:all_sleeves", 300.0) == 300.0
+
+
+def _healthy_guard(now, *, refreshed=True):
+    return {
+        "timestamp_utc": now.isoformat(), "ok": True, "token_ready_after": True,
+        "ready_min_expires_seconds": 900, "network": {"ok": True},
+        "auth": {"attempted": refreshed, "ok": True,
+                 "reason": "refresh_token_grant_success" if refreshed else "not_needed"},
+        "token_after": {"exists": True, "token_path": str(watch.PROJECT_ROOT / "token.json"),
+                        "expires_in_seconds": 1800, "expires_at": now.timestamp() + 1800},
+    }
+
+
+def _expired_auth(now):
+    return (
+        {"timestamp_utc": now.isoformat(), "overall_status": "blocked",
+         "lease_state": "critical", "broker_state": {"auth_reason": "invalid_grant"}},
+        {"timestamp_utc": now.isoformat(), "overall_status": "blocked",
+         "token": {"ready": False}, "findings": ["token_not_ready:token_expired"]},
+    )
+
+
+def test_new_successful_refresh_supersedes_old_reauth_reports():
+    now = datetime.now(timezone.utc)
+    lease, supervisor = _expired_auth(now - timedelta(minutes=2))
+    assert watch._auth_lease_event(lease, supervisor, 900, _healthy_guard(now)) is None
+
+
+@pytest.mark.parametrize("delta", [0, 30])
+def test_refresh_does_not_hide_simultaneous_or_newer_rejection(delta):
+    now = datetime.now(timezone.utc)
+    lease, supervisor = _expired_auth(now)
+    event = watch._auth_lease_event(lease, supervisor, 900, _healthy_guard(now - timedelta(seconds=delta)))
+    assert event[0] == "auth_lease:critical:interactive_refresh_required"
+
+
+def test_valid_access_without_renewal_does_not_clear_rejected_refresh_token():
+    now = datetime.now(timezone.utc)
+    lease, supervisor = _expired_auth(now - timedelta(seconds=30))
+    event = watch._auth_lease_event(lease, supervisor, 900, _healthy_guard(now, refreshed=False))
+    assert event[0] == "auth_lease:critical:interactive_refresh_required"
+
+
+@pytest.mark.parametrize("fault", ["stale", "future", "naive", "missing", "wrong_scope", "expired", "relative_expired", "nan", "floor", "not_ready", "network", "failed", "malformed"])
+def test_invalid_recovery_evidence_cannot_clear_reauth(fault):
+    now = datetime.now(timezone.utc)
+    guard = _healthy_guard(now)
+    if fault == "stale":
+        guard["timestamp_utc"] = (now - timedelta(hours=1)).isoformat()
+    elif fault == "future":
+        guard["timestamp_utc"] = (now + timedelta(seconds=30)).isoformat()
+    elif fault == "naive":
+        guard["timestamp_utc"] = now.replace(tzinfo=None).isoformat()
+    elif fault == "missing":
+        guard.pop("timestamp_utc")
+    elif fault == "wrong_scope":
+        guard["token_after"]["token_path"] = "/different/token.json"
+    elif fault == "expired":
+        guard["token_after"]["expires_at"] = now.timestamp() - 1
+    elif fault == "relative_expired":
+        guard["token_after"]["expires_in_seconds"] = -1
+    elif fault == "nan":
+        guard["token_after"]["expires_at"] = "nan"
+    elif fault == "floor":
+        guard["ready_min_expires_seconds"] = 2000
+    elif fault == "not_ready":
+        guard["token_ready_after"] = False
+    elif fault == "network":
+        guard["network"]["ok"] = False
+    elif fault == "failed":
+        guard["auth"]["ok"] = False
+    elif fault == "malformed":
+        guard["token_after"] = []
+    lease, supervisor = _expired_auth(now - timedelta(seconds=30))
+    assert watch._auth_guard_healthy_at(guard, 900) is None
+    assert watch._auth_lease_event(lease, supervisor, 900, guard) is not None
+
+
+@pytest.mark.parametrize("code", [401, 403, 429])
+def test_provider_cooldown_is_not_reauth_when_auto_refresh_is_healthy(code):
+    now = datetime.now(timezone.utc)
+    lease = {"timestamp_utc": now.isoformat(), "lease_state": "healthy", "overall_status": "ready"}
+    supervisor = {"timestamp_utc": now.isoformat(), "overall_status": "degraded",
+                  "token": {"ready": True}, "findings": [f"schwab_provider_cooldown_http_{code}"]}
+    event = watch._auth_lease_event(lease, supervisor, 900, _healthy_guard(now - timedelta(seconds=10), refreshed=False))
+    if code == 429:
+        assert event is None
+    else:
+        assert event is not None
+        assert watch._notification_execute_target(event[0]) == ""
+
+
+def test_429_does_not_mask_additional_auth_faults_or_missing_guard():
+    now = datetime.now(timezone.utc)
+    supervisor = {"timestamp_utc": now.isoformat(), "overall_status": "degraded",
+                  "token": {"ready": True}, "findings": ["schwab_provider_cooldown_http_429"]}
+    assert watch._auth_lease_event({}, supervisor, 900) is not None
+    supervisor["overall_status"] = "blocked"
+    assert watch._auth_lease_event({}, supervisor, 900, _healthy_guard(now)) is not None
+    supervisor["overall_status"] = "degraded"
+    supervisor["findings"].append("recent_schwab_auth_errors")
+    assert watch._auth_lease_event({}, supervisor, 900, _healthy_guard(now)) is not None
+
+
+def test_expired_access_token_alone_does_not_claim_refresh_token_is_revoked():
+    now = datetime.now(timezone.utc)
+    _, supervisor = _expired_auth(now)
+    supervisor["operator_followups"] = ["./scripts/ops/opsctl.sh token-refresh-interactive --force --json"]
+    key, message = watch._auth_lease_event({}, supervisor, 900)
+    assert key == "auth_lease:critical:blocked"
+    assert "automatic refresh" in message
+    assert "sign-in is required" not in message
+    assert watch._notification_execute_target(key) == ""
+    assert "click to sign in" not in watch._notification_body(key, message)
+
+
+def test_current_refresh_rejection_alerts_without_waiting_for_summary_owners():
+    now = datetime.now(timezone.utc)
+    guard = _healthy_guard(now)
+    guard.update(ok=False, token_ready_after=False)
+    guard["auth"] = {"ok": False, "reason": "browser_auth_disabled",
+                     "refresh_grant": {"ok": False, "reason": "invalid_grant"}}
+    assert watch._auth_lease_event({}, {}, 900, guard)[0] == "auth_lease:critical:interactive_refresh_required"
+    guard["timestamp_utc"] = (now + timedelta(minutes=1)).isoformat()
+    assert watch._auth_lease_event({}, {}, 900, guard) is None
+
+
+def test_dismiss_only_owned_auth_notifications(monkeypatch):
+    monkeypatch.setattr(watch, "_terminal_notifier_path", lambda: "/native/notifier")
+    calls = []
+    monkeypatch.setattr(watch.subprocess, "run", lambda cmd, **kw: calls.append((cmd, kw)) or SimpleNamespace(returncode=0))
+    assert not watch._dismiss_auth_notification("ALL")["ok"]
+    assert not calls
+    assert watch._dismiss_auth_notification("auth_lease:warn:lease_warning")["ok"]
+    assert calls[0][0] == ["/native/notifier", "-remove", "auth_lease:warn:lease_warning"]
+    assert calls[0][1]["timeout"] == 5
+
+
+def test_dismiss_failure_is_reported_without_another_transport(monkeypatch):
+    monkeypatch.setattr(watch, "_terminal_notifier_path", lambda: "/native/notifier")
+    calls = []
+    def timeout(cmd, **kwargs):
+        calls.append(cmd)
+        raise watch.subprocess.TimeoutExpired(cmd, 5)
+    monkeypatch.setattr(watch.subprocess, "run", timeout)
+    assert not watch._dismiss_auth_notification("auth_lease:warn:lease_warning")["ok"]
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("healthy", [False, True])
+def test_watcher_dismisses_obsolete_auth_only_with_current_recovery(tmp_path, monkeypatch, healthy):
+    key = "auth_lease:warn:lease_warning"
+    monkeypatch.setattr(watch, "_load_state", lambda p: {"sent": {key: "old alert"}})
+    monkeypatch.setattr(watch, "_event_candidates", lambda age: [])
+    monkeypatch.setattr(watch, "_read_json", lambda p: _healthy_guard(datetime.now(timezone.utc)) if healthy else {})
+    monkeypatch.setattr(watch, "_terminal_notifier_path", lambda: "")
+    dismissed, written = [], []
+    monkeypatch.setattr(watch, "_dismiss_auth_notification", lambda k: dismissed.append(k) or {"ok": True})
+    monkeypatch.setattr(watch, "_write_json", lambda p, value: written.append(value))
+    class StopLoop(Exception):
+        pass
+    def stop(seconds):
+        raise StopLoop
+    monkeypatch.setattr(watch.time, "sleep", stop)
+    with pytest.raises(StopLoop):
+        watch._run_watch_loop(tmp_path / "state.json", 30)
+    assert dismissed == ([key] if healthy else [])
+    assert not written[0]["sent"]
 
 
 def test_routine_nvda_delivery_uses_material_signature_and_six_hour_repeat():

@@ -5,6 +5,8 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
+import gzip
+import io
 import json
 import os
 from pathlib import Path
@@ -53,14 +55,36 @@ def read_latest(root, *, now, max_bytes=MAX_SCAN_BYTES, max_seconds=SCAN_SECONDS
             root,
         )
         if not path.exists():
-            continue
+            path = checked(Path(str(path) + ".gz"), root)
+            if not path.exists():
+                continue
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as handle:
-            before = os.fstat(handle.fileno())
+        with os.fdopen(fd, "rb") as source_handle:
+            handle = source_handle
+            before = os.fstat(source_handle.fileno())
             if not stat.S_ISREG(before.st_mode):
                 raise ValueError("native_decision_regular_file_required")
             remaining = budget - scan["bytes_read"]
-            start = max(0, before.st_size - remaining)
+            boundary = before.st_size
+            if path.suffix == ".gz":
+                decoded = bytearray()
+                try:
+                    with gzip.GzipFile(fileobj=source_handle) as archive:
+                        while len(decoded) <= remaining:
+                            if time.monotonic() >= deadline:
+                                raise ValueError("native_scan_budget_exhausted")
+                            chunk = archive.read(min(65536, remaining + 1 - len(decoded)))
+                            if not chunk:
+                                break
+                            decoded.extend(chunk)
+                    if len(decoded) > remaining:
+                        raise ValueError("native_compressed_scan_budget_exhausted")
+                except (OSError, EOFError, ValueError) as exc:
+                    scan["issues"].append(str(exc) if isinstance(exc, ValueError) else "native_compressed_source_invalid")
+                    break
+                boundary = len(decoded)
+                handle = io.BytesIO(decoded)
+            start = max(0, boundary - remaining)
             handle.seek(start)
             if start:
                 skipped = handle.readline(min(MAX_ROW_BYTES + 1, remaining))
@@ -68,7 +92,6 @@ def read_latest(root, *, now, max_bytes=MAX_SCAN_BYTES, max_seconds=SCAN_SECONDS
                 if not skipped.endswith(b"\n"):
                     scan["issues"].append("native_partial_row_exceeds_bound")
                     break
-            boundary = before.st_size
             while handle.tell() < boundary:
                 if time.monotonic() >= deadline or scan["bytes_read"] >= budget:
                     scan["issues"].append("native_scan_budget_exhausted")
@@ -125,6 +148,7 @@ def read_latest(root, *, now, max_bytes=MAX_SCAN_BYTES, max_seconds=SCAN_SECONDS
                     selected_receipt = {
                         "source_path": str(path),
                         "byte_offset": offset,
+                        "offset_basis": "decompressed_bytes" if path.suffix == ".gz" else "file_bytes",
                         "row_bytes": len(line),
                         "raw_row_sha256": hashlib.sha256(line).hexdigest(),
                         "row_sha256": fingerprint,
@@ -133,7 +157,7 @@ def read_latest(root, *, now, max_bytes=MAX_SCAN_BYTES, max_seconds=SCAN_SECONDS
                         "file_size_at_scan": boundary,
                         "observed_at_utc": now.isoformat(),
                     }
-            after = os.fstat(handle.fileno())
+            after = os.fstat(source_handle.fileno())
             identity = checked(path, root).lstat()
             if (identity.st_dev, identity.st_ino) != (
                 before.st_dev,

@@ -287,6 +287,13 @@ def render_markdown(state, chart_paths=None):
         f"Wait reason: {state.get('wait_reason', 'none')}.",
     ]
     reports = [order["decision_evidence"] for order in state["orders"]]
+    chart = state.get("decision_chart_report") or {}
+    if chart.get("report_path"):
+        lines += [
+            "", "## Original Decision Chart", "",
+            f"[Open decision chart report]({chart['report_path']})",
+            "This sidecar preserves original decision-time evidence. Proposed actions are not broker fills.",
+        ]
     if state.get("last_report") and not any(
         r["input_sha256"] == state["last_report"]["input_sha256"] for r in reports
     ):

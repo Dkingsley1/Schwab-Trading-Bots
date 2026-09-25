@@ -509,11 +509,21 @@ def _storage_recovery_progress(name: str, result: dict[str, Any]) -> dict[str, A
         value = _as_dict(value).get(key)
     valid = type(value) in (int, float) and math.isfinite(value) and value >= 0
     reclaimed = int(value) if valid else 0
+    owner_reason = str(payload.get("reason") or "")
+    owner_deferred = bool(
+        payload.get("batch_complete") is False
+        or (
+            _status(payload) in {"deferred", "blocked", "planned"}
+            and owner_reason not in {"no_eligible_cold_logs", "eligible_files_exhausted", "headroom_sufficient", "target_reached"}
+        )
+    )
     return {
         "made_progress": reclaimed > 0,
         "reported_reclaimed_bytes": reclaimed,
         "measurement_present": valid,
         "owner_status": _status(payload),
+        "owner_reason": owner_reason,
+        "owner_deferred": owner_deferred,
         "reason": "measured_reclamation" if reclaimed > 0 else "no_measured_reclamation",
         "proves_local_reserve_recovered": False,
     }
@@ -944,6 +954,148 @@ def _cache_rebuild_command(
     )
 
 
+def _storage_load_admission(project_root: Path) -> dict[str, Any]:
+    """Keep the legacy low-load lane separate from leased compression capacity."""
+    try:
+        cpus = os.cpu_count()
+        loads = os.getloadavg()[:2]
+        valid = (
+            type(cpus) is int
+            and cpus > 0
+            and len(loads) == 2
+            and all(
+                type(value) in (int, float) and math.isfinite(value) and value >= 0
+                for value in loads
+            )
+        )
+        load_ratio = max(loads) / cpus if valid else None
+    except (OSError, ValueError, TypeError, OverflowError):
+        load_ratio = None
+    path = project_root / "governance/health/runtime_throttle_control_latest.json"
+    runtime = {} if _protected_storage_path(path) else load_json(path)
+    admission = _as_dict(runtime.get("workload_admission"))
+    lease = current_lease(admission, "storage_recovery")
+    lease_row = _as_dict(_as_dict(admission.get("workloads")).get("storage_recovery"))
+    reasons = [
+        value for value in _as_list(lease_row.get("reasons")) if isinstance(value, str)
+    ]
+    if not lease and not reasons:
+        reasons = ["storage_recovery_lease_missing_stale_or_invalid"]
+    low_load = load_ratio is not None and load_ratio <= 0.62
+    compression_only = bool(
+        load_ratio is not None
+        and 0.62 < load_ratio <= POLICIES["storage_recovery"]["load"]
+        and lease
+    )
+    if low_load or compression_only:
+        reason = "load_admitted"
+    elif load_ratio is None:
+        reason = "host_load_measurement_unavailable"
+    elif load_ratio <= POLICIES["storage_recovery"]["load"]:
+        reason = "storage_recovery_lease_not_ready"
+    else:
+        reason = "host_load_above_recovery_budget"
+    return {
+        "admitted": low_load or compression_only,
+        "lane": (
+            "low_load"
+            if low_load
+            else "leased_compression" if compression_only else "deferred"
+        ),
+        "load_per_cpu": load_ratio,
+        "load_basis": "max_one_and_five_minute_load",
+        "baseline_max_load_per_cpu": 0.62,
+        "compression_max_load_per_cpu": POLICIES["storage_recovery"]["load"],
+        "storage_recovery_lease_current": lease,
+        "lease_reasons": reasons,
+        "reason": reason,
+    }
+
+
+def _storage_recovery_outcome(
+    steps: list[dict[str, Any]],
+    *,
+    state: dict[str, Any],
+    free_after: float,
+    pressure_threshold: float,
+    trigger: float,
+    target: float,
+    admitted: bool,
+    reason: str,
+) -> dict[str, Any]:
+    repairs = [
+        row
+        for row in steps
+        if row["name"] not in {STORAGE_MEMORY_STEP, "local_disk_reserve_recheck"}
+    ]
+    attempted = [row for row in repairs if row.get("executed")]
+    progress = [
+        row["name"]
+        for row in attempted
+        if _as_dict(row.get("storage_recovery_progress")).get("made_progress")
+    ]
+    empty = [
+        row["name"]
+        for row in attempted
+        if _as_dict(row.get("storage_recovery_progress")).get("measurement_present")
+        and not _as_dict(row.get("storage_recovery_progress")).get("made_progress")
+    ]
+    failed = [row["name"] for row in attempted if not row.get("ok")]
+    deferred = [
+        row["name"]
+        for row in repairs
+        if not row.get("executed")
+        or _as_dict(row.get("storage_recovery_progress")).get("owner_deferred")
+    ]
+    retry = {}
+    for row in repairs:
+        prior = _as_dict(_as_dict(state.get("steps")).get(row["name"]))
+        deadlines = [
+            parse_iso_utc(prior.get(key))
+            for key in ("cooldown_until_utc", "circuit_until_utc")
+        ]
+        active = [value for value in deadlines if value and value > _utc_now()]
+        if active:
+            retry[row["name"]] = max(active).isoformat()
+    if free_after >= target:
+        outcome = "target_recovered"
+    elif free_after >= trigger and not admitted:
+        outcome = "within_hysteresis"
+    elif failed:
+        outcome = "repair_failed"
+    elif progress:
+        outcome = "progress_capacity_unmet"
+    elif not attempted or reason != "bounded_storage_recovery" or deferred:
+        outcome = "deferred"
+    elif len(empty) == len(attempted):
+        outcome = "no_measured_progress_in_completed_pass"
+    else:
+        outcome = "reclamation_not_measured"
+    next_action = {
+        "target_recovered": "continue_native_reserve_monitoring",
+        "within_hysteresis": "continue_native_reserve_monitoring",
+        "repair_failed": "inspect_failed_owner_receipts_preserve_failure_circuits",
+        "progress_capacity_unmet": "continue_bounded_recovery_after_fresh_admission",
+        "deferred": "wait_for_named_admission_or_owner_retry_conditions",
+        "no_measured_progress_in_completed_pass": "review_additional_capacity_or_owner_retention_candidates_without_relaxing_reserves",
+        "reclamation_not_measured": "inspect_owner_receipts_before_claiming_reclamation",
+    }[outcome]
+    return {
+        "outcome": outcome,
+        "measured_progress_steps": progress,
+        "no_progress_steps": empty,
+        "failed_steps": failed,
+        "deferred_steps": deferred,
+        "owner_retry_not_before_utc": retry,
+        "pressure_shortfall_gb": round(max(pressure_threshold - free_after, 0), 3),
+        "trigger_shortfall_gb": round(max(trigger - free_after, 0), 3),
+        "capacity_shortfall_gb": round(max(target - free_after, 0), 3),
+        "next_action": next_action,
+        "successful_exit_is_not_recovery": True,
+        "no_progress_backoff_max_seconds": 3600,
+    }
+
+
 def build_storage_recovery_payload(
     project_root: Path = PROJECT_ROOT,
     *,
@@ -953,7 +1105,8 @@ def build_storage_recovery_payload(
 ) -> dict[str, Any]:
     """Pressure relief only; never inherit heavy maintenance or release authority."""
     deadline_seconds = 90 if quick_bounded else 1800
-    recovery_deadline = time.monotonic() + deadline_seconds
+    started = time.monotonic()
+    recovery_deadline = started + deadline_seconds
     project_root = Path(project_root)
     if _protected_storage_path(project_root):
         return {
@@ -983,21 +1136,21 @@ def build_storage_recovery_payload(
     reason = "headroom_above_pressure_threshold"
     admitted = False
     adaptive_compression_only = False
+    load_admission: dict[str, Any] = {}
+    latest_load_admission: dict[str, Any] = {}
+    memory_observed_at = started
     if apply and free_before < trigger:
         hold = maintenance_hold_snapshot(project_root)
-        try:
-            load_ratio = os.getloadavg()[1] / max(os.cpu_count() or 1, 1)
-        except Exception:
-            load_ratio = float("inf")
-        runtime = load_json(health_root / "runtime_throttle_control_latest.json")
-        adaptive_compression_only = bool(
-            math.isfinite(load_ratio) and 0.62 < load_ratio <= POLICIES["storage_recovery"]["load"]
-            and current_lease(runtime.get("workload_admission"), "storage_recovery")
-        )
+        load_admission = _storage_load_admission(project_root)
+        latest_load_admission = load_admission
+        adaptive_compression_only = load_admission["lane"] == "leased_compression"
+        if adaptive_compression_only:
+            deadline_seconds = min(deadline_seconds, POLICIES["storage_recovery"]["seconds"])
+            recovery_deadline = started + deadline_seconds
         if hold.get("active"):
             reason = "existing_maintenance_hold"
-        elif not math.isfinite(load_ratio) or load_ratio < 0 or (load_ratio > 0.62 and not adaptive_compression_only):
-            reason = "host_load_above_recovery_budget"
+        elif not load_admission["admitted"]:
+            reason = load_admission["reason"]
         else:
             memory = _run_step(
                 steps,
@@ -1018,6 +1171,7 @@ def build_storage_recovery_payload(
                 and memory.get("ok")
                 and memory.get("admission_ready")
             )
+            memory_observed_at = time.monotonic()
             reason = (
                 "bounded_storage_recovery" if admitted else "memory_admission_not_ready"
             )
@@ -1073,23 +1227,23 @@ def build_storage_recovery_payload(
                 600,
             )
         ]
-        if adaptive_compression_only:
-            commands = commands[:2]
-        if quick_bounded:
+        if quick_bounded or adaptive_compression_only:
+            seconds = "25" if quick_bounded else "60"
+            timeout = 30 if quick_bounded else 65
             commands = [
                 (
                     "local_disk_cold_evidence_compaction",
                     _cmd(opsctl, "cold-evidence-compactor", "--apply",
                          "--target-free-gb", str(threshold), "--max-files", "4",
-                         "--seconds", "25", "--json"),
-                    30,
+                         "--seconds", seconds, "--json"),
+                    timeout,
                 ),
                 (
                     "local_disk_lifecycle_backup_compaction",
                     _cmd(opsctl, "governance-lifecycle-compactor", "--apply",
                          "--max-files", "4", "--target-free-gb", "2",
-                         "--seconds", "25", "--json"),
-                    30,
+                         "--seconds", seconds, "--json"),
+                    timeout,
                 ),
             ]
         if cold.get("configured") and cold.get("redundancy_ready"):
@@ -1201,18 +1355,45 @@ def build_storage_recovery_payload(
             if maintenance_hold_snapshot(project_root).get("active"):
                 reason = "existing_maintenance_hold"
                 break
+            assessment_reserve = 10 if quick_bounded else 15 if adaptive_compression_only else 60
+            if recovery_deadline - time.monotonic() - assessment_reserve < (15 if quick_bounded else 30):
+                reason = "storage_recovery_deadline"
+                break
+            latest_load_admission = _storage_load_admission(project_root)
+            if not latest_load_admission["admitted"]:
+                reason = latest_load_admission["reason"]
+                break
+            if adaptive_compression_only and not latest_load_admission["storage_recovery_lease_current"]:
+                reason = "storage_recovery_lease_not_ready"
+                break
+            if not adaptive_compression_only and latest_load_admission["lane"] != "low_load":
+                reason = "host_load_above_full_recovery_budget"
+                break
+            if time.monotonic() - memory_observed_at >= 60:
+                remaining = int(recovery_deadline - time.monotonic()) - 15
+                if remaining < 10:
+                    reason = "storage_recovery_deadline"
+                    break
+                memory = _run_step(
+                    steps, name=STORAGE_MEMORY_STEP,
+                    cmd=_cmd(resolve_runtime_python(project_root), project_root / "scripts/ops/memory_efficiency_control.py", "status", "--json"),
+                    project_root=project_root, timeout_sec=min(10, remaining), env=env, state=state,
+                )
+                memory_observed_at = time.monotonic()
+                if not (memory.get("executed") and memory.get("ok") and memory.get("admission_ready")):
+                    reason = "memory_admission_not_ready"
+                    break
             remaining = int(recovery_deadline - time.monotonic()) - (
-                10 if quick_bounded else 60
+                10 if quick_bounded else 15 if adaptive_compression_only else 60
             )
             if remaining < (15 if quick_bounded else 30):
                 reason = "storage_recovery_deadline"
                 break
             if (
-                name
-                in {
+                (quick_bounded or adaptive_compression_only or name in {
                     "local_disk_cold_sqlite_compression",
                     "local_compatibility_cache_rebuild",
-                }
+                })
                 and remaining < timeout
             ):
                 steps.append(
@@ -1239,7 +1420,7 @@ def build_storage_recovery_payload(
                         "OPENBLAS_NUM_THREADS": "1",
                         "VECLIB_MAXIMUM_THREADS": "1",
                     }
-                    if name == "local_compatibility_cache_rebuild"
+                    if name == "local_compatibility_cache_rebuild" or adaptive_compression_only or quick_bounded
                     else env
                 ),
                 state=state,
@@ -1269,7 +1450,7 @@ def build_storage_recovery_payload(
                     "--json",
                 ),
                 project_root=project_root,
-                timeout_sec=min(10 if quick_bounded else 60, remaining),
+                timeout_sec=min(10 if quick_bounded or adaptive_compression_only else 60, remaining),
                 env=env,
             )
             steps.append(
@@ -1288,20 +1469,18 @@ def build_storage_recovery_payload(
         "reason": reason,
         "admitted": admitted,
         "adaptive_compression_only": adaptive_compression_only,
+        "load_admission": load_admission,
+        "latest_load_admission": latest_load_admission,
         "quick_bounded": quick_bounded,
         "rebuild_reserve": rebuild_reserve,
         "steps": steps,
         "local_free_before_gb": round(free_before, 3),
         "local_free_after_gb": round(free_after, 3),
         "net_local_headroom_change_gb": round(free_after - free_before, 3),
-        "recovery_effectiveness": {
-            "measured_progress_steps": [step["name"] for step in steps if _as_dict(step.get("storage_recovery_progress")).get("made_progress")],
-            "no_progress_steps": [step["name"] for step in steps if isinstance(step.get("storage_recovery_progress"), dict) and not step["storage_recovery_progress"]["made_progress"]],
-            "capacity_shortfall_gb": round(max(threshold - free_after, 0), 3),
-            "next_action": "reserve_recovered" if free_after >= threshold else "continue_admitted_recovery_owners; retain_capacity_blocker_if_no_eligible_work",
-            "successful_exit_is_not_recovery": True,
-            "no_progress_backoff_max_seconds": 3600,
-        },
+        "recovery_effectiveness": _storage_recovery_outcome(
+            steps, state=state, free_after=free_after, pressure_threshold=pressure_threshold,
+            trigger=trigger, target=threshold, admitted=admitted, reason=reason,
+        ),
         "pressure_free_gb": pressure_threshold,
         "recovery_trigger_free_gb": trigger,
         "recovery_target_free_gb": threshold,

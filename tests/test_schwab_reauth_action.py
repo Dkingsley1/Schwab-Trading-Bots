@@ -1,6 +1,8 @@
 import fcntl
 import os
+import json
 import shlex
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -59,3 +61,31 @@ def test_fifo_lock_is_rejected(tmp_path):
     os.mkfifo(lock)
     with pytest.raises(ValueError, match="regular_file"):
         action.run_auth(tmp_path)
+
+
+def test_old_notification_click_rechecks_successful_auto_refresh(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(action.notifications, "PROJECT_ROOT", tmp_path)
+    now = datetime.now(timezone.utc)
+    guard = {
+        "timestamp_utc": now.isoformat(), "ok": True, "token_ready_after": True,
+        "network": {"ok": True}, "ready_min_expires_seconds": 900,
+        "auth": {"attempted": False, "ok": True, "reason": "not_needed"},
+        "token_after": {"exists": True, "token_path": str(tmp_path / "token.json"),
+                        "expires_at": now.timestamp() + 1800, "expires_in_seconds": 1800},
+    }
+    path = tmp_path / "governance/health/premarket_token_guard_latest.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(guard))
+    monkeypatch.setattr(action.subprocess, "run", lambda *a, **kw: pytest.fail("unneeded sign-in"))
+    monkeypatch.setattr(action, "callback_busy", lambda: pytest.fail("unneeded callback probe"))
+    assert action.run_auth(tmp_path) == 0
+    assert "already renewed automatically" in capsys.readouterr().out
+
+
+def test_recovery_check_refuses_symlink_report(tmp_path):
+    path = tmp_path / "governance/health/auth_lease_manager_latest.json"
+    path.parent.mkdir(parents=True)
+    target = tmp_path / "elsewhere.json"
+    target.write_text("{}")
+    path.symlink_to(target)
+    assert not action._already_recovered(tmp_path)

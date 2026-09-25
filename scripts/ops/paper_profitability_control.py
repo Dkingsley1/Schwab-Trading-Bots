@@ -35,6 +35,7 @@ from core.paper_behavior_interventions import (
     validate_runtime_overlay as validate_behavior_runtime_overlay,
 )
 from core.operating_contracts import build_operating_contract
+from scripts.jsonl_codec import loads as load_jsonl_record
 
 DEFAULT_OUT_PATH = (
     PROJECT_ROOT / "governance" / "health" / "paper_profitability_control_latest.json"
@@ -6059,7 +6060,7 @@ def _iter_jsonl_records(path: Path, *, max_records: int = 60_000):
                     continue
                 count += 1
                 try:
-                    row = json.loads(text)
+                    row = load_jsonl_record(text)
                 except Exception:
                     continue
                 if isinstance(row, dict):

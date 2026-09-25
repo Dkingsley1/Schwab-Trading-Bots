@@ -364,6 +364,10 @@ def test_interactive_handoff_rechecks_decision_before_mock_dispatch(
 ):
     from scripts.ops import supervised_broker_test as cli
     from scripts.ops import schd_bot_handoff as reader
+    from core import live_execution_switch
+
+    # Isolate decision revalidation; actual switch dispatch has separate coverage.
+    monkeypatch.setattr(live_execution_switch, "check_live_execution_switch", lambda *a, **k: {"allowed": True})
 
     plan, packet, quote, now, handoff = deepcopy(ready)
 

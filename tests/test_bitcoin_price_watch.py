@@ -88,3 +88,22 @@ def test_fifo_lock_is_rejected_without_fetch(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="observer_lock_requires_regular_file"):
         watch.run(tmp_path)
     assert not (tmp_path / watch.OUT).exists()
+
+
+@pytest.mark.parametrize("accepted", [True, False])
+def test_native_decision_history_reports_writer_acceptance(tmp_path, monkeypatch, accepted):
+    from core import accountability
+    build = watch.build
+    monkeypatch.setattr(watch, "build", lambda **kwargs: build(now=NOW, fetcher=candles))
+    rows = []
+    def append(path, row, **kwargs):
+        rows.append(row)
+        return accepted
+    monkeypatch.setattr(accountability, "safe_append_channel_event", append)
+    result = watch.run(tmp_path)
+    assert len(rows) == 3
+    assert all(r["action"] == "HOLD" and r["decision"] == "OBSERVE_ONLY" for r in rows)
+    assert all(r["metadata"]["indicator_reasoning"]["rules"] for r in rows)
+    assert result["decision_history"]["accepted_by_native_writer"] == (3 if accepted else 0)
+    assert result["decision_history"]["durability_certified"] is False
+    assert result["ok"] is accepted

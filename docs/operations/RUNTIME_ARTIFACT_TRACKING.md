@@ -26,6 +26,13 @@ asserted. A retained report may change after this point-in-time inventory.
 
 ## Boundaries
 
+The September 25 inventory at
+`docs/releases/2026-09-25-library-upgrade-artifact-inventory.json` records 522
+generated library-upgrade receipts, logs and backup snapshots. All remain in the
+exact ignored `work/library_upgrade_apply_20260924_2018/` directory. No payloads
+were deleted or copied into source. Hashes establish only the observed bytes,
+not successful tests, current dependency health or backup restorability.
+
 - `.gitignore` excludes root `work/*.json`, `work/*.log`, the named writer sample,
   and generated `backups/master_bot_registry_before_*.json.gz` entries. Source,
   tests, configuration, and the inventory itself remain tracked.

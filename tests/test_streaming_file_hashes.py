@@ -197,7 +197,7 @@ def test_incremental_reader_tails_new_rows_before_row_budget(tmp_path) -> None:
 
 
 def test_incremental_merge_fair_shares_global_budget_across_sources(tmp_path, monkeypatch) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc) - timedelta(seconds=10)
     paths: list[Path] = []
     for symbol in ("SPY", "QQQ"):
         path = tmp_path / symbol / "decision_explanations.jsonl"
@@ -351,7 +351,7 @@ def test_incremental_snapshot_sequences_marks_partial_when_candidate_row_budget_
 
     new_path = tmp_path / "decision_explanations" / "shadow_crypto" / "decision_explanations_20260413.jsonl"
     new_path.parent.mkdir(parents=True, exist_ok=True)
-    new_ts = datetime.now(timezone.utc)
+    new_ts = datetime.now(timezone.utc) - timedelta(seconds=10)
     new_path.write_text(
         "\n".join(
             [

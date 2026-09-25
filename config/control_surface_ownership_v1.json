@@ -3,6 +3,16 @@
   "policy_id": "control_surface_ownership_v1",
   "controls": [
     {
+      "control_id": "live_execution_switch",
+      "resource_path": "governance/runtime/live_execution_switch_state.json",
+      "owner_source": "core/live_execution_switch.py",
+      "owner_command": ["./scripts/ops/opsctl.sh", "live-execution", "status", "--json"],
+      "owner_marker": "live_execution_switch_state.json",
+      "mutation_mode": "explicit_operator_atomic_snapshot",
+      "coordination": "file_lock",
+      "lock_path": "governance/runtime/live_execution_switch.lock"
+    },
+    {
       "control_id": "production_candidate_state",
       "resource_path": "governance/runtime/production_candidate_state.json",
       "owner_source": "scripts/ops/production_excellence_control.py",

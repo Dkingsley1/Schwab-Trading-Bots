@@ -684,6 +684,7 @@ def observe(
     cash = broker_cash_observation(trader, reference)
     now = datetime.now(timezone.utc)
     source = transaction_observations(trader, reference, plan, ledger, now=now)
+    now = datetime.now(timezone.utc)
     transactions = dividend_observations(
         trader, reference, plan, ledger, now=now, source=source
     )
@@ -695,6 +696,7 @@ def observe(
         account_captured_at=str(study.get("timestamp_utc") or ""),
         now=now,
         dividend_events=transactions["events"],
+        transactions=source,
     )
     result["dividend_tracking"] = {
         key: value for key, value in transactions.items() if key != "events"
@@ -776,6 +778,8 @@ def transaction_observations(
         }
     return {
         "rows": rows,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "account_reference_sha256": account_digest(reference),
         "source_complete": len(rows) < 1000 and start == origin,
         "window_start_utc": start.isoformat(),
         "window_end_utc": now.isoformat(),
@@ -1096,6 +1100,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             if args.command == "preview" or not review["technical_ready"]:
                 return review
+            from core.live_execution_switch import check_live_execution_switch
+
+            switch_context = {"purpose": PURPOSE, "symbol": plan["symbol"], "session": request["session"]}
+            switch_check = check_live_execution_switch(
+                root, broker="schwab", operation="place_order", context=switch_context,
+            )
+            if not switch_check["allowed"]:
+                return {"ok": False, "state": "blocked", "blockers": switch_check["blockers"],
+                        "broker_mutation_attempted": False, **AUTHORITY}
             phrase = approval_phrase(plan, request)
             print(
                 json.dumps(
@@ -1201,6 +1214,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 return review
             review["cash_balance_observation"] = cash_baseline
             review["market_order_price_risk_reviewed"] = bot_market
+            switch_check = check_live_execution_switch(
+                root, broker="schwab", operation="place_order", context=switch_context,
+            )
+            if not switch_check["allowed"]:
+                return {"ok": False, "state": "blocked", "blockers": switch_check["blockers"],
+                        "broker_mutation_attempted": False, **AUTHORITY}
             result = dispatch_once(
                 plan=plan,
                 request=request,
@@ -1218,6 +1237,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         "purpose": PURPOSE,
                         "symbol": plan["symbol"],
                         "action": args.action,
+                        "session": request["session"],
                     },
                 ),
             )

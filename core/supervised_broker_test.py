@@ -490,6 +490,7 @@ def dispatch_once(
             **AUTHORITY,
         }
     ledger.mark_submitting(key)
+    mutation_attempted = True
     try:
         result = dict(dispatch(dict(request)))
         broker_id = str(result.get("order_id") or "")
@@ -498,6 +499,9 @@ def dispatch_once(
             result.get("ok") is True and 200 <= status < 300 and bool(broker_id)
         )
         rejected = 400 <= status < 500 and status not in {408, 409, 425, 429}
+        if result.get("error") == "live_execution_switch_blocked" and result.get("broker_mutation_attempted") is False:
+            mutation_attempted = False
+            rejected = True
     except Exception:
         broker_id, acknowledged, rejected = "", False, False
     state = ledger.mark_submit_result(
@@ -511,11 +515,43 @@ def dispatch_once(
         "ok": acknowledged,
         "intent_id": key,
         "state": state["state"],
-        "broker_mutation_attempted": True,
+        "broker_mutation_attempted": mutation_attempted,
         "reconciliation_required": state["state"] not in TERMINAL_STATES,
         "automatic_retry_allowed": False,
         **AUTHORITY,
     }
+
+
+def chart_execution_receipt(payload, broker_order, *, observed_at):
+    """Retain actual response provenance only for the bound native decision."""
+    from core.decision_price_evidence import digest
+
+    try:
+        handoff = payload.get("bot_handoff", {})
+        packet = handoff["packet"]
+        decision = packet["decision"]
+        if (
+            handoff.get("packet_sha256") != digest(packet)
+            or not decision.get("decision_id")
+            or decision.get("symbol") != payload.get("symbol")
+            or decision.get("action") != payload.get("action")
+            or number(broker_order.get("filledQuantity", 0)) <= 0
+        ):
+            return None
+        receipt = {
+            "owner": "supervised_broker_test.reconcile_order",
+            "provider": "schwab", "mode": "live", "reconciled": True,
+            "decision_id": decision["decision_id"],
+            "broker_order_id": str(broker_order["orderId"]),
+            "observed_at_utc": observed_at.isoformat(),
+            "broker_order_sha256": digest(broker_order),
+            "broker_order": dict(broker_order),
+        }
+        # Missing chart detail must not undo an otherwise valid reconciliation.
+        raw = json.dumps(receipt, sort_keys=True, allow_nan=False)
+        return json.loads(raw) if len(raw.encode()) <= 256 * 1024 else None
+    except (KeyError, TypeError, ValueError, ArithmeticError):
+        return None
 
 
 def reconcile_order(
@@ -616,6 +652,9 @@ def reconcile_order(
         broker_status=status,
         filled_quantity=float(filled),
         average_fill_price=float(average),
+        execution_evidence=chart_execution_receipt(
+            payload, broker_order, observed_at=datetime.now(timezone.utc)
+        ),
     )
 
 
@@ -628,10 +667,12 @@ def holding_observation(
     account_captured_at: str,
     now: datetime,
     dividend_events: list[dict[str, Any]] | None = None,
+    transactions: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     validate_policy(plan)
     entry, exit_row = (ledger.get(intent_id(plan, side)) for side in ("BUY", "SELL"))
     blockers: list[str] = []
+    position_reconciliation: dict[str, Any] = {}
     if not ledger.verify_integrity().get("ok"):
         blockers.append("order_ledger_integrity_failed")
     if not fresh(account_captured_at, now, 30):
@@ -650,8 +691,28 @@ def holding_observation(
         bought = number(entry["filled_quantity"])
         sold = number(exit_row.get("filled_quantity", 0))
         expected = number(payload.get("baseline_position_quantity", 0)) + bought - sold
-        if number(position_quantity) != expected or sold > bought:
+        if transactions is not None and bought > 0:
+            from core.broker_test_accounting import reconcile_position_observation
+
+            position_reconciliation = reconcile_position_observation(
+                plan=plan,
+                orders=[row for row in (entry, exit_row) if row],
+                transactions=transactions,
+                reference=account_reference,
+                position_quantity=position_quantity,
+                account_captured_at=account_captured_at,
+                now=now,
+            )
+        if (number(position_quantity) != expected or sold > bought) and (
+            position_reconciliation.get("state") != "reconciled"
+        ):
             blockers.append("broker_position_does_not_match_test_fills")
+        if (
+            transactions is not None
+            and bought > 0
+            and position_reconciliation.get("state") != "reconciled"
+        ):
+            blockers.append("broker_position_activity_reconciliation_required")
         latest_fill = max(
             timestamp(row["updated_at_utc"]) for row in (entry, exit_row) if row
         )
@@ -704,6 +765,7 @@ def holding_observation(
         "blockers": blockers,
         "entry_state": entry.get("state", "not_started"),
         "exit_state": exit_row.get("state", "not_tested"),
+        "position_reconciliation": position_reconciliation,
         "buy_fill_observed": bool(
             entry and number(entry.get("filled_quantity", 0)) > 0
         ),

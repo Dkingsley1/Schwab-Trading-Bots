@@ -17,6 +17,143 @@ from core.supervised_broker_test import (
 )
 
 
+def reconcile_position_observation(
+    *,
+    plan: Mapping[str, Any],
+    orders: list[Mapping[str, Any]],
+    transactions: Mapping[str, Any],
+    reference: str,
+    position_quantity: Any,
+    account_captured_at: str,
+    now: datetime,
+) -> dict[str, Any]:
+    """Explain additional purchases without assigning outside lots to the test."""
+    pending: list[str] = []
+    extra = Decimal(0)
+    hashes: list[str] = []
+    expected = None
+    test_remaining = None
+    baseline = None
+    try:
+        entry = next(
+            row for row in orders if intent_payload(row).get("action") == "BUY"
+        )
+        payload = intent_payload(entry)
+        start = timestamp(entry["created_at_utc"])
+        captured = timestamp(account_captured_at)
+        baseline = number(payload.get("baseline_position_quantity", 0))
+        test_remaining = sum(
+            (
+                number(row.get("filled_quantity", 0))
+                * (1 if intent_payload(row).get("action") == "BUY" else -1)
+            )
+            for row in orders
+        )
+        if (
+            transactions.get("source_complete") is not True
+            or transactions.get("account_reference_sha256") != account_digest(reference)
+            or not fresh(transactions.get("timestamp_utc"), now, 30)
+            or timestamp(transactions.get("timestamp_utc")) > now
+            or not fresh(account_captured_at, now, 30)
+            or captured > now
+            or timestamp(transactions.get("window_start_utc")) > start
+            or not captured <= timestamp(transactions.get("window_end_utc")) <= now
+            or test_remaining < 0
+        ):
+            raise ValueError("fresh_complete_account_bound_position_window_required")
+        known_orders = {str(row.get("broker_order_id")) for row in orders}
+        rows = transactions.get("rows")
+        if not isinstance(rows, list) or len(rows) >= 1000:
+            raise ValueError("complete_position_transactions_required")
+        unique: dict[str, Mapping[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("position_transaction_invalid")
+            identity = str(row.get("activityId") or row.get("transactionId") or "")
+            if not identity or (identity in unique and dict(unique[identity]) != row):
+                raise ValueError("position_transaction_identity_missing_or_conflicting")
+            items = row.get("transferItems")
+            if not isinstance(items, list) or not all(
+                isinstance(item, dict) and isinstance(item.get("instrument"), dict)
+                for item in items
+            ):
+                raise ValueError("position_transaction_legs_missing")
+            unique[identity] = row
+        test_cash = reconcile_test_accounting(
+            plan=plan,
+            orders=orders,
+            transactions=transactions,
+            reference=reference,
+            position_consistent=True,
+            now=now,
+        )
+        if not test_cash["trade_cash_reconciled"]:
+            raise ValueError("verified_test_execution_postings_required")
+        for row in unique.values():
+            items = row["transferItems"]
+            legs = [
+                item
+                for item in items
+                if item.get("instrument", {}).get("symbol") == plan["symbol"]
+            ]
+            if not legs:
+                continue
+            when = timestamp(
+                row.get("time") or row.get("transactionDate") or row.get("tradeDate")
+            )
+            if when < start:
+                continue
+            if when > captured or row.get("status") != "VALID":
+                raise ValueError("posted_position_transaction_within_snapshot_required")
+            if str(row.get("orderId") or "") in known_orders:
+                continue
+            # Dividends with zero security quantity are not new lots. Corporate
+            # actions, transfers and outside reductions need separate attribution.
+            if row.get("type") == "DIVIDEND_OR_INTEREST" and all(
+                number(item.get("amount")) == 0 for item in legs
+            ):
+                continue
+            securities = [
+                item
+                for item in items
+                if item.get("instrument", {}).get("assetType") != "CURRENCY"
+            ]
+            if (
+                row.get("type") != "TRADE"
+                or not row.get("orderId")
+                or len(legs) != 1
+                or len(securities) != 1
+                or legs[0].get("instrument", {}).get("assetType") != "EQUITY"
+                or number(legs[0].get("price")) <= 0
+                or number(row.get("netAmount")) >= 0
+            ):
+                raise ValueError("non_test_position_activity_requires_review")
+            quantity = number(legs[0].get("amount"))
+            if quantity <= 0:
+                raise ValueError("non_test_position_reduction_requires_lot_review")
+            extra += quantity
+            hashes.append(canonical_payload_sha256(row))
+        expected = baseline + test_remaining + extra
+        if number(position_quantity) != expected:
+            pending.append("broker_position_does_not_match_verified_activity")
+    except (TypeError, ValueError, KeyError, StopIteration) as exc:
+        pending.append(str(exc) or "position_evidence_invalid")
+    return {
+        "state": "reconciled" if not pending else "pending",
+        "broker_position_quantity": str(position_quantity),
+        "baseline_position_quantity": str(baseline) if baseline is not None else None,
+        "test_remaining_quantity": (
+            str(test_remaining) if test_remaining is not None else None
+        ),
+        "additional_purchase_quantity": str(extra),
+        "expected_account_quantity": str(expected) if expected is not None else None,
+        "additional_transaction_sha256s": sorted(hashes),
+        "additional_shares_attributed_to_test": False,
+        "sell_authority": False,
+        "pending": sorted(set(pending)),
+    }
+
+
 def reconcile_test_accounting(
     *,
     plan: Mapping[str, Any],

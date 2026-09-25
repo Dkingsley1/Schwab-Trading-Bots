@@ -55,6 +55,40 @@ MLX_PACKAGE_NAMES = {
     "parakeet-mlx",
 }
 QUANT_CAPABILITY_PACKAGES = {"cvxpy", "linearmodels", "river"}
+TEST_ENV_KEYS = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "TZ",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "PYTEST_ADDOPTS",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
+        "PYTHONDONTWRITEBYTECODE",
+        "LIBRARY_RESEARCH_TEST_PYTHON",
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "POLARS_MAX_THREADS",
+        "HF_HUB_OFFLINE",
+        "TRANSFORMERS_OFFLINE",
+        "TOKENIZERS_PARALLELISM",
+        "HF_HOME",
+        "HF_HUB_CACHE",
+        "XDG_CACHE_HOME",
+    }
+)
 
 
 def _normalize(name: str) -> str:
@@ -84,11 +118,19 @@ def _command_result(
     *,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     env: dict[str, str] | None = None,
+    inherit_env: bool = True,
 ) -> dict[str, Any]:
     started = datetime.now(timezone.utc)
-    merged_env = os.environ.copy()
+    # opsctl loads production overrides; tests must select their own runtime policy.
+    merged_env = {
+        key: value
+        for key, value in os.environ.items()
+        if inherit_env or key in TEST_ENV_KEYS or key.startswith("LC_")
+    }
     merged_env.setdefault("PYTHONNOUSERSITE", "1")
     merged_env.setdefault("PYTHONFAULTHANDLER", "1")
+    if not inherit_env:
+        merged_env["MPLBACKEND"] = "Agg"
     if env:
         merged_env.update(env)
     try:
@@ -506,7 +548,12 @@ def apply_transaction(
             full_test=full_test,
             quant_capability=quant_capability,
         ):
-            step = _command_result(name, command, timeout_seconds=timeout_seconds)
+            step = _command_result(
+                name,
+                command,
+                timeout_seconds=timeout_seconds,
+                inherit_env=name != "pytest_validation",
+            )
             step.pop("stdout", None)
             validation_steps.append(step)
             if not step["ok"]:

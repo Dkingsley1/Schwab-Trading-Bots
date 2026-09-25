@@ -298,7 +298,6 @@ PACKAGE_LANE_OVERRIDES: dict[str, str] = {
     "duckdb": "storage_sql",
     "duckdb-engine": "storage_sql",
     "peewee": "storage_sql",
-    "redis": "storage_sql",
     "pyarrow": "storage_sql",
     "deltalake": "storage_sql",
     "ibis-framework": "storage_sql",

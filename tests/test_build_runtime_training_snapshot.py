@@ -5,6 +5,7 @@ from pathlib import Path
 
 from scripts import build_runtime_training_snapshot as src
 import hashlib
+import gzip
 import json
 import sys
 import subprocess
@@ -12,6 +13,41 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+
+
+@pytest.mark.parametrize("block_bytes", [1024, 8192])
+def test_incremental_reverse_scan_keeps_unordered_recent_rows(tmp_path, block_bytes):
+    now = datetime.now(timezone.utc)
+    path = tmp_path / "decisions.jsonl"
+    records = [
+        {"timestamp_utc": (now - timedelta(minutes=20)).isoformat(), "id": "earlier", "padding": "x" * 1200},
+        {"timestamp_utc": (now - timedelta(days=2)).isoformat(), "id": "late_old", "padding": "x" * 1200},
+        {"timestamp_utc": (now - timedelta(minutes=10)).isoformat(), "id": "latest", "padding": "x" * 1200},
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in records))
+    rows = list(src._iter_recent_json_rows_newest_first(
+        [path], since_utc=now - timedelta(hours=1), block_bytes=block_bytes,
+    ))
+    assert [row["id"] for row in rows] == ["latest", "earlier"]
+    stats = {}
+    limited = list(src._iter_recent_json_rows_newest_first(
+        [path], since_utc=now - timedelta(hours=1), max_rows=1, stats=stats,
+    ))
+    assert [row["id"] for row in limited] == ["latest"]
+    assert stats["row_limit_hit"] is True
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_incremental_reader_rejects_future_observations(tmp_path, compressed):
+    now = datetime.now(timezone.utc)
+    path = tmp_path / ("rows.jsonl.gz" if compressed else "rows.jsonl")
+    data = "".join(json.dumps({"timestamp_utc": timestamp.isoformat(), "id": name}) + "\n"
+                   for name, timestamp in [("valid", now - timedelta(minutes=1)), ("future", now + timedelta(days=1))]).encode()
+    path.write_bytes(gzip.compress(data) if compressed else data)
+    rows = list(src._iter_recent_json_rows_newest_first(
+        [path], since_utc=now - timedelta(hours=1),
+    ))
+    assert [row["id"] for row in rows] == ["valid"]
 
 
 def test_real_snapshot_worker_publishes_matching_manifest_and_rows(tmp_path):
@@ -535,6 +571,46 @@ def test_atomic_publication_returns_digest_of_exact_bytes(tmp_path):
     assert (row_count, sequence_count) == (1, 1)
     assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("backend", ["accelerated", "unavailable", "rejected"])
+def test_snapshot_publication_encoder_preserves_values_and_hash(tmp_path, monkeypatch, backend):
+    import math
+    from scripts import sql_dataset_io
+
+    actual = sql_dataset_io._fast_json
+    if backend == "accelerated" and actual is None:
+        pytest.skip("optional orjson unavailable")
+    if backend == "unavailable":
+        monkeypatch.setattr(sql_dataset_io, "_fast_json", None)
+    elif backend == "rejected":
+        class Rejected:
+            OPT_PASSTHROUGH_DATETIME = OPT_PASSTHROUGH_DATACLASS = OPT_PASSTHROUGH_SUBCLASS = 0
+
+            @staticmethod
+            def dumps(*args, **kwargs):
+                raise TypeError("unsupported accelerator input")
+
+        monkeypatch.setattr(sql_dataset_io, "_fast_json", Rejected)
+    records = [
+        {"timestamp_utc": "2026-09-24T21:19:06+00:00", "features": {"price": 100.123456789, "label": "caf\u00e9", "negative_zero": -0.0}},
+        {"features": {"missing": None, "large": 2 ** 80}},
+        {"features": {"nan": float("nan"), "positive_inf": float("inf"), "negative_inf": -float("inf")}},
+    ]
+    path = tmp_path / "rows.jsonl"
+    count, sequences, digest = src._publish_snapshot_rows(path, {("paper", "SPY"): records})
+    raw = path.read_bytes()
+    decoded = [json.loads(line) for line in raw.splitlines()]
+    assert (count, sequences) == (3, 1)
+    assert digest == hashlib.sha256(raw).hexdigest()
+    assert decoded[0] == {"mode": "paper", "symbol": "SPY", **records[0]}
+    assert math.copysign(1, decoded[0]["features"]["negative_zero"]) == -1
+    assert decoded[1]["features"] == records[1]["features"]
+    assert math.isnan(decoded[2]["features"]["nan"])
+    assert decoded[2]["features"]["positive_inf"] == float("inf")
+    assert decoded[2]["features"]["negative_inf"] == -float("inf")
+    with pytest.raises(TypeError):
+        src._snapshot_row_bytes({"unsupported_datetime": datetime.now(timezone.utc)})
 
 
 def test_reader_rejects_torn_rows_and_health_generations(tmp_path):

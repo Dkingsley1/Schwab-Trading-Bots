@@ -47,8 +47,8 @@ FETCH_FAILURE_REASONS = {
 }
 
 
-def normalize_schwab_candles(payload, *, minutes, asof):
-    if not isinstance(payload, dict) or payload.get("symbol") != "SCHD":
+def normalize_schwab_candles(payload, *, minutes, asof, symbol="SCHD"):
+    if not isinstance(payload, dict) or payload.get("symbol") != symbol:
         raise ValueError("unexpected_price_history_symbol")
     raw = payload.get("candles")
     if not isinstance(raw, list) or not raw or len(raw) > 6000:
@@ -99,12 +99,16 @@ def normalize_schwab_quote(payload):
     }
 
 
-def fetch_with_client(client, *, now, include_quote=False):
+def fetch_with_client(client, *, now, include_quote=False, symbol="SCHD"):
+    from core.decision_candle_store import identity
+    identity("schwab", symbol)
+    if include_quote and symbol != "SCHD":
+        raise ValueError("generic_capture_is_candles_only")
     result = {
         "candles": {},
         "source": {
             "provider": "schwab",
-            "symbol": "SCHD",
+            "symbol": symbol,
             "fetch_started_at_utc": now.isoformat(),
             "daily_timestamp_mapping": "Provider epoch milliseconds mapped to America/New_York trading date, then XNYS open/close",
             "price_adjustment_basis": "provider_as_returned_not_independently_verified",
@@ -123,7 +127,7 @@ def fetch_with_client(client, *, now, include_quote=False):
     )
     for name, minutes, method, start in calls:
         response = method(
-            "SCHD",
+            symbol,
             start_datetime=start,
             end_datetime=now,
             need_extended_hours_data=False,
@@ -131,7 +135,7 @@ def fetch_with_client(client, *, now, include_quote=False):
         )
         response.raise_for_status()
         payload = response.json()
-        bars, excluded = normalize_schwab_candles(payload, minutes=minutes, asof=now)
+        bars, excluded = normalize_schwab_candles(payload, minutes=minutes, asof=now, symbol=symbol)
         result["candles"][name] = bars
         result["source"]["requests"].append(
             {
@@ -153,7 +157,7 @@ def fetch_with_client(client, *, now, include_quote=False):
     return result
 
 
-def fetch_child(root, *, include_quote=False):
+def fetch_child(root, *, include_quote=False, symbol="SCHD"):
     # This child exposes market-data GETs only. Never call an account/order API.
     os.environ.update(READ_ONLY_ENV)
     from core.provider_access_guard import provider_access_status, provider_request_slot
@@ -167,10 +171,10 @@ def fetch_child(root, *, include_quote=False):
         trader = build_schwab_trader(root, mode="shadow")
         client = trader.authenticate()
         with provider_request_slot(
-            root, "schwab", "SCHD", slot_count=2, wait_seconds=10
+            root, "schwab", symbol, slot_count=2, wait_seconds=10
         ):
             return fetch_with_client(
-                client, now=datetime.now(timezone.utc), include_quote=include_quote
+                client, now=datetime.now(timezone.utc), include_quote=include_quote, symbol=symbol
             )
 
 
@@ -246,7 +250,7 @@ def render_charts(report, *, directory, prefix, checked_path):
         "SYNTHETIC TEST DATA"
         if report["evidence_kind"] == "synthetic"
         else (
-            "SCHWAB API"
+            str(report["chart_source"].get("provider", "unknown")).upper() + " API"
             if report.get("chart_source")
             else "IMPORTED DATA - provenance declared"
         )
@@ -293,6 +297,40 @@ def render_charts(report, *, directory, prefix, checked_path):
                         linewidth=0.8,
                         label=f"{label}: {frame[key]:.3f}",
                     )
+            outside = []
+            for event in report.get("decision_chart_markers", []):
+                when = timestamp(event["timestamp_utc"])
+                x = None
+                for index, candle in enumerate(rows):
+                    start = timestamp(candle["start_utc"])
+                    end = timestamp(candle["end_utc"])
+                    if start <= when < end or (index == len(rows) - 1 and when == end):
+                        x = index - 0.5 + (when - start).total_seconds() / (end - start).total_seconds()
+                        break
+                proposed = event["kind"] == "proposed"
+                color = "#00695c" if event["action"] == "BUY" else "#b52342"
+                label = f"{'PROPOSED' if proposed else 'EXECUTED'} {event['action']}"
+                if proposed:
+                    label += " (time only; no price)"
+                detail = label + " " + event["timestamp_utc"]
+                if not proposed:
+                    detail += f" | {event['quantity']:g} @ {event['price']:g}"
+                if x is None:
+                    outside.append(detail)
+                    continue
+                options = dict(
+                    marker="D" if proposed else ("^" if event["action"] == "BUY" else "v"),
+                    s=65, facecolors="none" if proposed else color,
+                    edgecolors=color, label=label, zorder=5,
+                )
+                if proposed:
+                    price_ax.scatter(x, 0.82, transform=price_ax.get_xaxis_transform(), **options)
+                    price_ax.axvline(x, color=color, linestyle=":", linewidth=0.8)
+                else:
+                    price_ax.scatter(x, event["price"], **options)
+            if outside:
+                fig.text(0.08, 0.06, "Outside displayed candle intervals (not plotted):\n"
+                         + "\n".join(outside), fontsize=7, color="#555555")
             if price_ax.get_legend_handles_labels()[0]:
                 price_ax.legend(loc="best", fontsize=8, ncol=2)
             ticks = sorted(
@@ -321,13 +359,15 @@ def render_charts(report, *, directory, prefix, checked_path):
             price_ax.set_ylabel("Price (USD)")
             volume_ax.set_ylabel("Volume", fontsize=8)
             volume_ax.set_xlabel(
-                "Closed-candle time (UTC); non-trading gaps compressed"
+                "Closed-candle time (UTC); missing intervals not synthesized"
+                if report.get("chart_source", {}).get("provider") == "coinbase"
+                else "Closed-candle time (UTC); non-trading gaps compressed"
             )
             title = (
                 "180 calendar-day aggregate (one window)" if name == "180d" else name
             )
             fig.suptitle(
-                f"SCHD | {title} | {source}",
+                f"{report.get('symbol', 'SCHD')} | {title} | {source}",
                 x=0.08,
                 ha="left",
                 fontsize=13,
@@ -341,11 +381,18 @@ def render_charts(report, *, directory, prefix, checked_path):
             fig.text(
                 0.08,
                 0.015,
-                "Closed bars only. Price-adjustment and dividend context require review. Charts do not authorize orders.",
+                (f"Recorded: {report.get('recorded_action')} / {report.get('recorded_gate_decision')}. "
+                 "Dashed levels are review calculations, not claimed bot inputs."
+                 if report.get("recorded_action") else
+                 "Closed bars only. Price-adjustment and dividend context require review. Charts do not authorize orders."),
                 fontsize=8,
                 color="#555555",
             )
-            fig.tight_layout(rect=(0, 0.035, 1, 0.95))
+            footer = 0.10 + len(outside) * 0.025 if outside else 0.035
+            if report.get("review_kind") == "retrospective_execution_review":
+                price_ax.set_title("RETROSPECTIVE EXECUTION REVIEW - NOT DECISION INPUT | "
+                                   + price_ax.get_title(loc="left"), loc="left", fontsize=8)
+            fig.tight_layout(rect=(0, footer, 1, 0.95))
             # Atomic replacement keeps a interrupted renderer from publishing a half PNG.
             fd, temporary = tempfile.mkstemp(
                 prefix=f".{prefix}_{name}.", suffix=".png", dir=directory

@@ -89,6 +89,17 @@ def submit(
     )
 
 
+def test_switch_rejection_before_dispatch_is_not_an_unknown_broker_outcome(plan, ledger):
+    result = submit(plan, ledger, dispatch=lambda spec: {
+        "ok": False, "error": "live_execution_switch_blocked", "broker_mutation_attempted": False,
+    })
+    assert result["broker_mutation_attempted"] is False
+    assert result["state"] == "rejected"
+    assert result["reconciliation_required"] is False
+    assert result["automatic_retry_allowed"] is False
+    assert submit(plan, ledger)["blockers"] == ["test_order_attempt_already_consumed"]
+
+
 def order_payload(
     request, *, status="FILLED", filled=5, fill_price="57.08", broker_id="broker-test-1"
 ):
@@ -385,6 +396,61 @@ def test_hold_rejects_wrong_account_and_position_drift(plan, ledger, reference, 
         now=now,
     )
     assert result["state"] == "blocked"
+
+
+def test_hold_recognizes_verified_outside_buy_without_expanding_sell_scope(
+    plan, ledger
+):
+    entry = filled_entry(plan, ledger)
+    now = datetime.now(timezone.utc) + timedelta(seconds=2)
+    started = datetime.fromisoformat(entry["created_at_utc"])
+    trade = {
+        "activityId": "test-fill",
+        "orderId": entry["broker_order_id"],
+        "status": "VALID",
+        "type": "TRADE",
+        "time": (started + timedelta(milliseconds=10)).isoformat(),
+        "netAmount": "-285.40",
+        "transferItems": [
+            {
+                "amount": 5,
+                "price": "57.08",
+                "instrument": {"symbol": "O", "assetType": "EQUITY"},
+            }
+        ],
+    }
+    extra = {**trade, "activityId": "extra", "orderId": "manual-purchase"}
+    source = {
+        "source_complete": True,
+        "timestamp_utc": now.isoformat(),
+        "account_reference_sha256": account_digest("roth-test-hash"),
+        "window_start_utc": entry["created_at_utc"],
+        "window_end_utc": now.isoformat(),
+        "rows": [trade, extra],
+    }
+    result = holding_observation(
+        plan=plan,
+        ledger=ledger,
+        account_reference="roth-test-hash",
+        position_quantity=10,
+        account_captured_at=now.isoformat(),
+        now=now,
+        transactions=source,
+    )
+    assert result["state"] == "holding_observed"
+    assert result["position_reconciliation"]["additional_purchase_quantity"] == "5"
+    assert result["live_execution_authority"] is False
+    assert len(ledger.intents()) == 1
+    sell = build_request(plan, action="SELL", quantity=5, limit_price="57.09")
+    assert lifecycle_check(
+        plan,
+        sell,
+        ledger,
+        account_reference="roth-test-hash",
+        position_quantity=10,
+        unencumbered_quantity=10,
+        account_captured_at=now.isoformat(),
+    )
 
 
 def test_sell_only_after_verified_own_test_fill(plan, ledger):

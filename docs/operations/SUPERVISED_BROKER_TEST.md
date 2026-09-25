@@ -42,6 +42,16 @@ cannot issue attestation or submit/cancel/replace orders. `observe` reads broker
 order/position/transaction truth and reconciles the already-existing test. It
 does not require production promotion or create an order.
 
+An additional purchase outside the test no longer has to look like unexplained
+position drift. The observer reports the broker total, original test remainder,
+and additional purchase quantity separately. It requires fresh account-bound,
+complete transaction coverage, verified original test postings and individually
+identified valid equity purchases to explain the total. Identical transaction
+IDs are deduplicated; conflicting IDs, outside reductions, transfers, corporate
+actions and incomplete evidence still require review. This is observation only:
+the original sell lifecycle remains unchanged, outside shares cannot be sold by
+the test, and cash/settlement proof is not implied by position reconciliation.
+
 The separate native [purchase-proposal observer](PURCHASE_PROPOSALS.md) schedules
 this read-only observation under the existing evidence cadence. It never invokes
 submit. Observation now includes exact transaction/net-cash matching, settlement,

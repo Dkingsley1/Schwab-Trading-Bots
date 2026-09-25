@@ -54,12 +54,27 @@ def summarize(rows, profile, now):
     }
 
 
-def build(*, now=None, fetcher=fetch_candles):
+def build(*, now=None, fetcher=fetch_candles, capture_sink=None):
     now = now or datetime.now(timezone.utc)
     profiles = {}
+    capture = {"source": {"provider": "coinbase", "symbol": "BTC-USD",
+                           "fetch_started_at_utc": now.isoformat(), "requests": []},
+               "candles": {}}
     for name in PROFILES:
         try:
-            profiles[name] = summarize(fetcher(name, now=now), name, now)
+            raw = fetcher(name, now=now)
+            profiles[name] = summarize(raw, name, now)
+            step = PROFILES[name]["granularity"]
+            end = int(now.timestamp()) // step * step
+            rows = validate_candles(raw, start=end-PROFILES[name]["bars"]*step, end=end, step=step)
+            frame = "5m" if step == 300 else "6h"
+            capture["candles"][frame] = [dict(
+                start_utc=datetime.fromtimestamp(r[0], timezone.utc).isoformat(),
+                end_utc=datetime.fromtimestamp(r[0]+step, timezone.utc).isoformat(),
+                low=r[1], high=r[2], open=r[3], close=r[4], volume=r[5]) for r in rows]
+            from core.decision_price_evidence import digest
+            capture["source"]["requests"].append(dict(timeframe=frame,
+                endpoint="/products/BTC-USD/candles", payload_sha256=digest(raw), closed_bars=len(rows)))
         except Exception as exc:
             # Never reuse an old signal or expose provider response bodies as errors.
             profiles[name] = {"state": "unavailable", "error_type": type(exc).__name__,
@@ -80,6 +95,39 @@ def build(*, now=None, fetcher=fetch_candles):
                      "mode": "observe_only", "source_timestamp_utc": data["source_timestamp_utc"],
                      "order_requested": False})
     ready = all(data["state"] == "observed" for data in profiles.values())
+    chart_context = {"state": "unavailable", "reason": "capture_sink_not_configured"}
+    if capture_sink and capture["candles"]:
+        try:
+            capture["source"]["observed_at_utc"] = datetime.now(timezone.utc).isoformat()
+            chart_context = capture_sink(capture)
+        except (OSError, ValueError, KeyError, TypeError):
+            chart_context = {"state": "unavailable", "reason": "bounded_capture_publication_failed"}
+    for bot in bots:
+        bot["candle_context"] = chart_context
+        from core.decision_price_evidence import digest
+        data = profiles[bot["profile"]]
+        bot["decision"] = {
+            "timestamp_utc": chart_context.get("observed_at_utc", now.isoformat()),
+            "decision_id": "bitcoin-observation:" + digest({"bot": bot["bot_id"], "at": now.isoformat()}),
+            "symbol": "BTC-USD", "action": "HOLD", "decision": "OBSERVE_ONLY",
+            "strategy": bot["bot_id"], "quantity": 0,
+            "reasons": [bot["observation"]], "gates": {"orders_authorized": False},
+            "features": {k: data[k] for k in ("last_closed_price", "ema20", "ema50", "trend", "above_prior_12_bar_high", "prior_20_bar_zscore", "return_12_bars_bps") if k in data},
+            "metadata": {"candle_context": chart_context},
+        }
+        if data["state"] == "observed":
+            if "breakout" in bot["bot_id"]:
+                rule = {"rule": "last close > prior 12-bar high", "result": data["above_prior_12_bar_high"]}
+            elif "pullback" in bot["bot_id"]:
+                rule = {"rule": "prior 20-bar z-score <= -2", "value": data["prior_20_bar_zscore"],
+                        "threshold": -2, "result": bot["observation"] == "lower_range_observed"}
+            else:
+                rule = {"rule": "up: close > EMA20 > EMA50; down: close < EMA20 < EMA50; otherwise mixed",
+                        "result": data["trend"]}
+            bot["decision"]["metadata"]["indicator_reasoning"] = {
+                "timeframe_seconds": data["timeframe_seconds"], "rules": [rule],
+                "authority_reason": "Observation only; these conditions do not authorize an entry or exit.",
+            }
     return {
         "schema_version": 1, "timestamp_utc": now.isoformat(),
         "ok": ready, "overall_status": "observing" if ready else "data_unavailable",
@@ -91,7 +139,8 @@ def build(*, now=None, fetcher=fetch_candles):
                           "loss_limits_and_live_execution_not_authorized"],
         "live_execution_authority": False, "paper_execution_authority": False,
         "profitability_proven": False, "account_credentials_used": False,
-        "history_policy": "one_bounded_latest_report_no_raw_candle_duplication",
+        "chart_context": chart_context,
+        "history_policy": "shared_bounded_hash_captures_not_per_bot_raw_duplication",
     }
 
 
@@ -117,7 +166,23 @@ def run(root=ROOT):
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {"ok": False, "reason": "observer_busy", "live_execution_authority": False}
-        payload = build()
+        from core.decision_candle_store import publish
+        payload = build(capture_sink=lambda capture: publish(root, capture))
+        from core.accountability import safe_append_channel_event
+        from core.path_registry import decision_log_path
+        day = datetime.fromisoformat(payload["timestamp_utc"]).strftime("%Y%m%d")
+        accepted = 0
+        for bot in payload["bots"]:
+            accepted += bool(safe_append_channel_event(
+                decision_log_path(str(root), "decisions/coinbase_observers", day=day),
+                bot["decision"], project_root=str(root), source="bitcoin_price_watch",
+                channel="decision", schema="decision",
+            ))
+        payload["decision_history"] = {"accepted_by_native_writer": accepted,
+                                       "expected": len(payload["bots"]),
+                                       "durability_certified": False}
+        if accepted != len(payload["bots"]):
+            payload.update(ok=False, overall_status="decision_history_write_incomplete")
         write_payload(output, payload)
         return payload
 

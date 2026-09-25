@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.storage_router import inspect_storage_path
+from scripts.ops import mac_notification_watch as notifications
 
 
 def terminal_command(root=ROOT):
@@ -41,6 +42,22 @@ def callback_busy():
         return False
 
 
+def _already_recovered(root):
+    reports = []
+    for name in ("auth_lease_manager_latest.json", "schwab_auth_supervisor_latest.json", "premarket_token_guard_latest.json"):
+        path = root / "governance/health" / name
+        route = inspect_storage_path(path, boundary_root=root, allow_external=False)
+        if route["status"] not in {"present", "missing"} or route.get("symlinks"):
+            return False
+        payload = notifications._read_json(path)
+        reports.append(payload if isinstance(payload, dict) else {})
+    lease, supervisor, guard = reports
+    return bool(
+        notifications._auth_guard_healthy_at(guard, 900)
+        and notifications._auth_lease_event(lease, supervisor, 900, guard) is None
+    )
+
+
 def run_auth(root=ROOT):
     lock = root / "governance/locks/schwab_reauth_action.lock"
     route = inspect_storage_path(lock, boundary_root=root, allow_external=False)
@@ -56,6 +73,9 @@ def run_auth(root=ROOT):
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             print("Schwab sign-in is already in progress. Use the existing browser window.")
+            return 0
+        if _already_recovered(root):
+            print("Schwab authentication has already renewed automatically. No new sign-in was started.")
             return 0
         if callback_busy():
             print("The Schwab callback port is already in use. Finish the existing login; no new flow was started.")

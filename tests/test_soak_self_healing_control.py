@@ -647,8 +647,9 @@ def test_adaptive_pressure_entry_is_compression_only(tmp_path, monkeypatch, leas
         "runtime-training-snapshot", "cold-evidence-compactor", "governance-lifecycle-compactor", "local-storage-reserve-guard"
     ]
     lifecycle = calls[3]
-    assert lifecycle[lifecycle.index("--max-files") + 1] == "32"
-    assert lifecycle[lifecycle.index("--seconds") + 1] == "180"
+    assert lifecycle[lifecycle.index("--max-files") + 1] == "4"
+    assert lifecycle[lifecycle.index("--seconds") + 1] == "60"
+    assert payload["shared_deadline_seconds"] == 240
     assert "--include-current-day" not in lifecycle
 
 

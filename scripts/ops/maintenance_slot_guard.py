@@ -452,7 +452,12 @@ def _begin(args: argparse.Namespace) -> int:
             max_saturation_score=float(args.smooth_gate_max_saturation_score),
             exempt_slots=_csv_set(str(args.smooth_gate_exempt_slots), DEFAULT_SMOOTH_GATE_EXEMPT_SLOTS),
         )
-        if smooth_blocked and not (adaptive["active"] and adaptive["workload"] == "observer"):
+        bounded_risk_label_only = (
+            bounded_risk_refresh
+            and smooth_reason == "runtime_smooth_gate:fluidity_band=protect"
+            and smooth_gate_payload.get("support_pause_recommended") is False
+        )
+        if smooth_blocked and not bounded_risk_label_only and not (adaptive["active"] and adaptive["workload"] == "observer"):
             reasons.append(smooth_reason)
     for label, lock_path in (("bundle", bundle_lock), ("slot", slot_lock)):
         age = _lock_age_seconds(lock_path)

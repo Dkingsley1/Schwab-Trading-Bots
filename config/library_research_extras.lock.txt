@@ -1,0 +1,8 @@
+# Optional additions to the separate research interpreter, not the live lock.
+# Existing dependencies must satisfy these packages; do not install extras/all.
+pandas-ta-classic==0.8.32
+backtesting==0.6.6
+quantstats==0.0.81
+arch==8.0.0
+bokeh==3.10.0
+xyzservices==2026.9.1

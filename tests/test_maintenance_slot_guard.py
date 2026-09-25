@@ -177,7 +177,8 @@ def test_runtime_maintenance_hold_blocks_even_sql_writer_slot(tmp_path: Path, mo
     ("one_numbers_refresh", True, True, 75),
     ("daily_auto_verify", True, False, 75),
 ])
-def test_bounded_risk_launch_admission_is_slot_specific_and_keeps_holds(tmp_path, monkeypatch, slot, admitted, hold, expected):
+@pytest.mark.parametrize("smooth_reason", ["runtime_smooth_gate:fluidity_band=protect", "runtime_smooth_gate:fluidity_band=strained", "runtime_smooth_gate:support_pause_recommended"])
+def test_bounded_risk_launch_admission_is_slot_specific_and_keeps_holds(tmp_path, monkeypatch, slot, admitted, hold, expected, smooth_reason):
     for name, path in {
         "PROJECT_ROOT": tmp_path, "RUNTIME_ROOT": tmp_path / "runtime",
         "LOCK_ROOT": tmp_path / "runtime/locks", "STATE_ROOT": tmp_path / "runtime/state",
@@ -192,12 +193,17 @@ def test_bounded_risk_launch_admission_is_slot_specific_and_keeps_holds(tmp_path
     monkeypatch.setattr(src, "_load_macro_status", lambda: {})
     monkeypatch.setattr(src, "_process_running", lambda *args: False)
     monkeypatch.setattr(src, "maintenance_hold_snapshot", lambda *args: {"active": hold})
+    monkeypatch.setattr(src, "_smooth_mode_blocked", lambda *args, **kwargs: (
+        True, smooth_reason, {"support_pause_recommended": smooth_reason.endswith("support_pause_recommended")}
+    ))
+    if smooth_reason != "runtime_smooth_gate:fluidity_band=protect":
+        expected = 75
     args = argparse.Namespace(
         slot=slot, max_load_ratio=0.72, max_five_min_load_ratio=0.62, max_one_min_load=0,
         min_interval_seconds=None, stale_seconds=1800, protect_macro_before_minutes=180,
         protect_macro_after_minutes=75, allow_during_macro_event=False, defer_while_sql_link_active=True,
         quiet_windows_enabled=False, defer_outside_quiet_window=False, quiet_start_hour=21, quiet_end_hour=6,
-        smooth_gate_enabled=False, smooth_gate_max_saturation_score=68, smooth_gate_exempt_slots="", skip_exit_code=75, json=True,
+        smooth_gate_enabled=True, smooth_gate_max_saturation_score=68, smooth_gate_exempt_slots="", skip_exit_code=75, json=True,
     )
     assert src._begin(args) == expected
     if expected == 0:

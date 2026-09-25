@@ -72,6 +72,7 @@ def implementation_digest(root=ROOT):
         "core/execution_simulator.py",
         "scripts/ops/schd_decision_rehearsal.py",
         "scripts/ops/schd_candle_report.py",
+        "scripts/ops/decision_chart_report.py",
         "scripts/ops/schd_native_decision.py",
     ):
         sources[relative] = hashlib.sha256(
@@ -327,6 +328,16 @@ def run(
                 )
                 if state.get("last_report"):
                     state["last_report"]["chart_source"] = original_market.get("source", {})
+                from scripts.ops.decision_chart_report import publish_decision_chart
+
+                # This is the report worker, never the trading loop. The original
+                # decision and its source timestamps remain unchanged.
+                state["decision_chart_report"] = publish_decision_chart(
+                    root, row, now=observed_at
+                )
+                chart_path = state["decision_chart_report"].get("report_path")
+                if chart_path:
+                    state["decision_chart_report"]["report_path"] = str(root / chart_path)
             else:
                 state = state or initial_state(
                     candidate_id=candidate.get("candidate_id")

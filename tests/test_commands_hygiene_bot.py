@@ -77,6 +77,13 @@ def test_commands_hygiene_bot_authors_commands_surface_and_runbook(tmp_path: Pat
     for entry in contract_payload["entries"]:
         assert f"search-entry:{entry['fingerprint']}" in search_index
         assert f"title:{entry['title']}" in search_index
+    assert commands_text.index("## Live Execution Control") < commands_text.index("## Most Used")
+    live_section = commands_text.split("## Live Execution Control", 1)[1].split("## Most Used", 1)[0]
+    assert "WARNING: REAL MONEY" in live_section
+    assert "live-execution off --json" in live_section
+    assert "live-execution on" in live_section
+    assert "live-execution status --json" in live_section
+    assert "notification" in live_section
     assert commands_text.index("## Most Used") < commands_text.index("## Data Context Syncs")
     assert commands_text.index("**Search Bar**") < commands_text.index("## Most Used")
     most_used = commands_text.split("## Most Used", 1)[1].split("\n## Accounts And Positions", 1)[0]

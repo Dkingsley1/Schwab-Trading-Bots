@@ -12,6 +12,7 @@ from core.master_grandmaster_evidence import (
 from core.regime_taxonomy import classify_regime_profile
 from scripts.ops import (
     artifact_freshness_slo,
+    bot_organization_control,
     master_grandmaster_evidence_control,
     runtime_artifact_refresh,
     runtime_gate_dashboard,
@@ -378,15 +379,32 @@ def test_control_build_is_path_isolated_and_does_not_write(tmp_path: Path) -> No
     assert not packet_out.exists()
 
 
-def test_repository_build_covers_every_organized_bot() -> None:
-    health, catalog = master_grandmaster_evidence_control.build_payload(PROJECT_ROOT)
+def test_repository_synthesis_covers_every_organized_bot_with_fixture_evidence() -> None:
+    organization, hierarchy = bot_organization_control.build_payload(PROJECT_ROOT)
+    inputs = _inputs()
+    # Build current repository assignments in memory; do not depend on live reports.
+    inputs["bot_organization_health"] = {**organization, "timestamp_utc": TIMESTAMP}
+    inputs["bot_hierarchy"] = {**hierarchy, "timestamp_utc": TIMESTAMP}
 
-    assert health["ok"] is True
-    assert health["structural_grade"] == "A+"
-    assert health["organized_bot_count"] >= 1000
-    assert catalog["organized_bot_count"] == health["organized_bot_count"]
-    assert catalog["sleeve_master_count"] == len(catalog["sleeve_masters"])
-    assert catalog["authority"]["live_order_authority"] is False
+    result = _synthesize(inputs)
+
+    assert result["ok"] is True, result["integrity_blockers"]
+    assert result["structural_grade"] == "A+"
+    assert result["organized_bot_count"] >= 1000
+    assert result["organized_bot_count"] == organization["registry_bot_count"]
+    assert result["sleeve_master_count"] == len(result["sleeve_masters"])
+    assert result["authority"]["live_order_authority"] is False
+
+
+def test_mismatched_hierarchy_receipt_fails_closed() -> None:
+    inputs = _inputs()
+    inputs["bot_hierarchy"]["assignment_receipt_sha256"] = "another-generation"
+
+    result = _synthesize(inputs)
+
+    assert result["ok"] is False
+    assert "master_grandmaster_hierarchy_receipt_mismatch" in result["integrity_blockers"]
+    assert result["authority"]["live_order_authority"] is False
 
 
 def test_repository_wiring_requires_fresh_owned_evidence() -> None:

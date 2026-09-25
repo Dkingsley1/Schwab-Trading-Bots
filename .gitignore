@@ -72,6 +72,8 @@ paper_trades_*.jsonl
 /work/*.json
 /work/*.log
 /work/last_issues_writer_sample.txt
+# Retained upgrade evidence; payload-free inventory is tracked in docs/releases.
+/work/library_upgrade_apply_20260924_2018/
 
 # Legacy root duplicates
 Brain Refinery 2

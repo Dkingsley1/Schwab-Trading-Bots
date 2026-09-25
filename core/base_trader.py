@@ -45,6 +45,7 @@ from core.live_execution_envelope import (
 from core.live_canary_allowlist import evaluate_live_canary_allowlist
 from core.live_canary_preflight import evaluate_live_canary_preflight
 from core.live_order_ledger import LiveOrderLedger
+from core.live_execution_switch import check_live_execution_switch
 from core.order_intent import (
     build_order_intent_evidence,
     canonical_payload_sha256,
@@ -3227,6 +3228,7 @@ class BaseTrader:
             },
             "safety": safety or {},
             "metadata": decision_entry.get("metadata", {}),
+            "original_decision_timestamp_utc": decision_entry.get("timestamp_utc"),
         }
 
         jsonl_path, text_path = self._explanation_log_paths()
@@ -3699,6 +3701,19 @@ class BaseTrader:
 
         return ""
 
+    def _live_switch_block(self, operation, context=None):
+        check = check_live_execution_switch(
+            self.project_root, broker=str(self.broker_name or "").strip().lower(),
+            operation=operation, context=context,
+        )
+        if check["allowed"]:
+            return None
+        return {
+            "ok": False, "operation": operation, "error": "live_execution_switch_blocked",
+            "live_execution_switch": check, "broker_mutation_attempted": False,
+            "attempts_made": 0, "automatic_retry_allowed": False,
+        }
+
     def _invoke_client_candidates(
         self,
         *,
@@ -3706,6 +3721,9 @@ class BaseTrader:
         candidates: List[Tuple[str, Tuple[Any, ...], Dict[str, Any]]],
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        switch_block = self._live_switch_block(operation, context)
+        if switch_block is not None:
+            return switch_block
         if self.client is None:
             out = {
                 "ok": False,
@@ -3831,6 +3849,10 @@ class BaseTrader:
                         "retry_contract": retry_contract,
                         "rate_limit": rate_limit,
                     }
+                # Re-read after any rate-limit wait; ON is never cached.
+                switch_block = self._live_switch_block(operation, context)
+                if switch_block is not None:
+                    return switch_block
                 try:
                     response = fn(*args, **kwargs)
                     status_code = self._as_int(getattr(response, "status_code", 0), 0)
@@ -5495,6 +5517,11 @@ class BaseTrader:
         # The mock adapter never reaches a broker and is used to exercise PAPER
         # execution contracts. Every real broker still passes the live firewall.
         real_broker = str(self.broker_name or "").strip().lower() != "mock"
+        switch_block = self._live_switch_block(
+            "place_order", {"symbol": str(symbol).upper(), "session": order_spec.get("session", "NORMAL")}
+        )
+        if switch_block is not None:
+            return switch_block
         account_binding = self.broker_adapter.validate_live_account_reference(
             order_request.account_reference
         )
@@ -5668,6 +5695,7 @@ class BaseTrader:
                 "symbol": str(symbol).upper(),
                 "action": str(action).upper(),
                 "quantity": float(quantity),
+                "session": order_request.order_spec.get("session", "NORMAL"),
             },
         )
         if ledger is not None:
@@ -5675,8 +5703,11 @@ class BaseTrader:
             status_code = self._as_float(out.get("status_code"), 0.0)
             definitive_rejection = bool(
                 not out.get("ok", False)
-                and 400 <= int(status_code) < 500
-                and int(status_code) not in {408, 409, 425, 429}
+                and (
+                    (400 <= int(status_code) < 500 and int(status_code) not in {408, 409, 425, 429})
+                    or (out.get("error") == "live_execution_switch_blocked"
+                        and out.get("broker_mutation_attempted") is False)
+                )
             )
             ledger_state = ledger.mark_submit_result(
                 intent_id=durable_intent_id,
@@ -5784,6 +5815,7 @@ class BaseTrader:
                 "symbol": str(symbol).upper(),
                 "action": str(action).upper(),
                 "quantity": float(quantity),
+                "session": order_request.order_spec.get("session", "NORMAL"),
             },
         )
         out["order_request"] = order_request.to_dict()

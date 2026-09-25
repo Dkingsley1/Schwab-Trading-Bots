@@ -1,8 +1,42 @@
 # Schwab Trading Bot
 
+Overdue risk-summary refresh can use its existing bounded maintenance exception
+under backlog-selected `protect_live`, subject to the same fresh CPU, memory,
+thermal and resource-admission checks. This prevents stale risk evidence from
+being trapped behind an aggregate workload label without relaxing trading gates.
+
+`COMMANDS.md` has a separate **Live Execution Control** section above Most Used,
+with a real-money warning, OFF, guarded ON, status, and transition notifications.
+This permission never submits orders or bypasses native checks. Existing
+processes must adopt the reviewed switch-enabled release before enforcing it.
+See [Live Execution Control](docs/operations/LIVE_EXECUTION_SWITCH.md).
+
+Raw-source inventory counts now distinguish empty file slots from nonempty
+candidate sources. Prefix fingerprints and `training_eligible` metadata do not
+certify full-file integrity, unique events, labels or point-in-time training
+readiness; the raw-only inventory is not the lifetime collection catalog.
+
+Reviewed empty-file retirement, full-byte duplicate consolidation, targeted data
+reconciliation and shared Schwab/Coinbase decision-chart sidecars are documented in
+[Collection Reconciliation](docs/operations/COLLECTION_RECONCILIATION.md). These
+controls preserve custody, source times and the distinction between a proposed
+action and a confirmed broker fill; they do not grant trading authority.
+
+The incoming primary-data SSD can be prepared with `./scripts/ops/opsctl.sh external-drive-preflight --json`. The staged plan includes large SQL shards, datasets, models, logs, reports and eligible cold archives, while keeping source, Python environments, credentials and small active control records internal. It never adopts, formats or writes to a drive and does not change current routes. See [External Drive Onboarding](docs/operations/EXTERNAL_DRIVE_ONBOARDING.md) for identity checks and the supervised database handoff.
+
+Selected downloaded libraries now have a bounded [offline research command](docs/operations/LIBRARY_RESEARCH.md): TA-Lib/Polars indicator parity, Backtrader/VectorBT next-open simulation comparison, and PyArrow/DuckDB restore checks. It reuses an explicitly selected research interpreter and cannot place orders or establish profitability. Optional Msgspec decoding accelerates two existing JSONL readers with standard-library fallback. Ray/Redis are not platform dependencies; the normal reviewed source-release process remains required.
+
+The same offline command now includes Pandas TA Classic native indicator checks, a separately labeled zero-cost Backtesting.py timing control, QuantStats equity diagnostics and bounded `arch` GARCH estimates. Unavailable forecasts, optimizer failures and stationarity warnings stay explicit; no annualized performance, trade win rate or economic validation is inferred. These additions leave the live environment and bot decisions unchanged.
+
+Reviewed platform dependency upgrades use `./scripts/ops/opsctl.sh mlx-library-upgrade --scope all` with a maintenance hold and stopped runtime for application. Its pytest child uses an allowlisted environment, excluding production governor settings and credentials while retaining explicit test, offline and thread-budget settings and rendering charts headlessly. Native dependency/runtime audits keep their operational context. Validation does not accept a source release or enable trading; see the upgrade entry in [COMMANDS.md](COMMANDS.md).
+
 Snapshot light verification uses the existing optional accelerated JSON reader with its standard-library fallback. Full-byte SHA-256, exact row counts, source identity, memory limits and the 15-second verification deadline remain mandatory; parser acceleration does not certify current ingestion or grant training/trading authority.
 
 Storage recovery distinguishes a completed offload pass from restoring the reserve. Verified partial progress does not accrue repair-failure debt solely because the space target remains unmet. Empty passes use no-progress backoff; actual failures, invalid receipts and active repair circuits remain blocking.
+
+Native stale-stage retirement now preserves manifest replay order and unavailable-path records, blocks corrupt manifests, reapplies current evidence protection, and verifies only budget-selected files. Cold JSONL compression rejects changed sources and publishes without replacing an existing archive. See [retention safety](docs/operations/SOURCE_AND_STORAGE_MAINTENANCE.md#retention-safety-audit) for scope and remaining operational checks; these repairs do not certify free-space recovery.
+
+The native reaper recognizes only the router-owned local stale-stage alias and can restore a mistakenly offloaded active manifest with bounded copy/hash verification while preserving the archive. Deep-cold offload excludes active retention manifests, latest/state controls and locks. Full source secret scans prune standard Python environments identified by `pyvenv.cfg`, including renamed rollback environments, without excluding other working files or relaxing secret patterns.
 
 Candidate audit readers verify retained archive order using the original hash links, not filename suffixes. They preserve partition contents and reject missing links, altered events, forks and within-partition replays; reading compressed history never resets validation windows.
 
@@ -123,6 +157,8 @@ The existing adaptive-ops cadence owns SCHD candle maintenance: every 60 seconds
 
 Collector diagnostics retain gate-pause reasons in both heartbeat and ingress evidence. Interval-wait observations separate the adaptive interval, temporary external pressure floor and collection duty cycle; temporary pressure no longer raises the persistent adaptive interval. The maintenance report includes only scope-checked producer observations no older than five minutes, separately from decision freshness. A pause is not a stalled-worker diagnosis or restart permission, and does not waive event, session, storage or provider gates. The existing launcher can recycle read-only collectors after its code-watch settle window; maintenance never requests that restart, and code adoption is not release acceptance or trading clearance.
 
+The supervised holding observer separates original test fills from additional broker-verified purchases of the same symbol. Fresh, complete, account-bound transaction evidence must explain the total position; outside reductions or ambiguous activity remain pending. Additional shares never acquire test sell authority, and cash/settlement certification remains independent.
+
 The separate one-share SCHD supervised scope supports explicitly selected AM/PM LIMIT/DAY orders with two-sided quote age/size checks, exchange-calendar boundaries and dispatch-time expiry. Every side still needs fresh operator confirmation and all technical gates; production and the existing O holding are unchanged. See the [session test runbook](docs/operations/SUPERVISED_BROKER_TEST.md).
 
 The explicit SCHD `--bot-market` handoff supports only a native dividend-sleeve decision for one share in NORMAL/DAY, with separate interactive confirmation per side and the same lifetime-attempt ledger. HOLDs, vetoes, stale/changed quotes, missing original context and unverified adjustments block it. Quote-time/raw-price capture and candle-context hashes now originate at the collector. `readiness` refreshes the existing risk/tax/release/ledger owners; `attestation-checklist` only lists required confirmations. MARKET prices and a profitable exit are not guaranteed. The implementation remains unarmed until source release, evidence and operator gates are satisfied; no running collector is restarted by these commands.
@@ -237,7 +273,7 @@ Hot-cache rebuilds create the source's exact explicit indexes before copying row
 
 Local storage uses a `125 GiB` warning target and a `135 GiB` recovery target by default, preventing repeated clear/retrigger cycles at the boundary. Cold-archive automation must use an explicitly configured non-protected route; an operator-reserved volume is rejected rather than silently selected. The normal guarded self-healing pass also invokes cold evidence compression toward its configured recovery target, so pressure relief at 64 GiB does not end reserve rebuilding.
 
-The existing DuckDB analytics mirror reads stream and symbol summaries from one SQLite snapshot, closes that source connection, and publishes both tables in one DuckDB transaction. A failed refresh rolls back to the previous complete mirror. It remains an analytical cache maintained by the native operations coordinator, not an authoritative ledger or a new database service.
+The existing DuckDB analytics mirror reads stream and symbol summaries from one SQLite snapshot, closes that source connection, and publishes both tables in one DuckDB transaction. Primary summary refresh streams compact fields instead of sorting raw JSON, bounded to 250,000 rows, 32 MiB of projections and 20 seconds. The singleton command has a 35-second child deadline with process-group cleanup and requires at least 1 GiB above the existing pressure floor (minimum 65 GiB free). Incomplete passes cannot replace either operational summary; failed DuckDB loads preserve the previous complete mirror. It remains an analytical cache maintained by the native operations coordinator, not an authoritative ledger or a new database service.
 
 The database direction is to keep SQLite and DuckDB/Parquet for local operations and analytics, evaluate PostgreSQL for demonstrated concurrent-writer or multi-host needs, and defer Redis/NoSQL until a measured cache bottleneck justifies its freshness and invalidation responsibilities. PostgreSQL evaluation is not installation or migration; current capacity constraints prohibit unadmitted new services and migration copies. See [Database Direction](docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md#database-direction) for the evaluation and authority boundaries.
 
@@ -285,7 +321,7 @@ Native write-path recovery now distinguishes fresh writer admission, verified pa
 
 Routine NVIDIA covered-call roll-window notifications use six-hour reminders and stable material-change signatures. Quote noise and daily DTE changes no longer trigger repeats; contract, coverage, quantity, risk-category and urgency changes remain visible immediately. This changes notification delivery only, not the underlying health severity or trading controls.
 
-Mac alerts have [context-specific click actions](docs/operations/NOTIFICATION_ACTIONS.md): Schwab authorization opens one supervised sign-in flow; operational and risk alerts open their diagnostic reports. The native transport requires notification permission, preserves deduplication, and reports non-actionable fallback delivery honestly. Clicking never grants trading authority or clears a halt.
+Mac alerts have [context-specific click actions](docs/operations/NOTIFICATION_ACTIONS.md): confirmed Schwab refresh-token rejection opens one supervised sign-in flow; routine refresh warnings, operational and risk alerts open their diagnostic reports. Fresh post-refresh token evidence supersedes older expiry alerts; a rate-limit-only degradation is not a reauth request. The watcher attempts to dismiss obsolete native auth alerts after recovery, and old clicks recheck recovery before starting sign-in. The native transport requires notification permission, preserves deduplication, and reports non-actionable fallback delivery honestly. Clicking never grants trading authority or clears a halt.
 
 The walk-forward seed producer preserves the existing queue inode and modification time when a bounded-buffer, full-byte comparison finds unchanged content and a stable source identity. Changed queues still publish atomically after fsync. This prevents redundant source generations without granting ingestion or coverage credit.
 
@@ -299,11 +335,13 @@ The ingestion definition now separates source payloads, append-only evidence, ve
 
 Shared SQLite connections now respect caller lock budgets, reject stale resource evidence for aggressive settings, and preserve committed WAL visibility in read-only probes. Integrity checks have cooperative query deadlines; routine planner maintenance uses bounded optimization instead of default full ANALYZE. The native sharded writer follows successful measured progress with fresh backlog checks and bounded follow-up passes; the legacy writer remains one-pass. Existing storage and writer holds stay intact. These are connection/maintenance upgrades, not a database migration or SQLite binary replacement. See [Storage And Ingestion](docs/architecture/STORAGE_AND_INGESTION_CONTRACT.md).
 
+Nine previously uncovered SQL shards now have explicit hot-retention defaults: seven days for equities trading, runtime and API-ingress history; fourteen days for governance and watchdog history. Their existing verified archive path uses daily shard partitions, 1,000-row batches and at most 5,000 rows per pass. Archive expiry is disabled for these new rules, with explicit zero preserved instead of becoming a 365-day default. Ordinary one-pass writers still defer retention to admitted maintenance; no inline vacuum, new scheduler, route change or immediate disk-recovery claim is introduced. See [Shard Hot-Retention Coverage](docs/operations/SOURCE_AND_STORAGE_MAINTENANCE.md#shard-hot-retention-coverage).
+
 Scheduled sharded drains use 5-15 second follow-up delays, at most eight cycles and a 180-second next-cycle admission window inside the existing job deadline. Missing or stale measurements, failed cycles, no progress and near-empty debt stop follow-through. `scheduled_sql_drain_latest.json` records the measured decision; incoming live data can still raise the queue between passes. Maintenance explicitly covers the full shard set without consuming a focused ingestion request. Running shadow loops check the existing memory/swap cache budgets every five seconds and trim existing entries; processes started before this change need one controlled reload. This does not purge macOS compressed memory or guarantee its immediate release.
 
 Outside hard protection, the runtime governor requests its already-admitted accelerator budget above 1,000 core or 2,500 total pending rows, or when a nonempty core tail exceeds 60 seconds. This aligns small-debt handling with scheduled follow-through instead of waiting for the prior 5,000-row trigger. Hard-pressure behavior and fresh host-selected worker ceilings remain unchanged; an accelerator request is still not evidence of actual execution.
 
-The existing 15-minute recovery owner now offers `--storage-recovery-only --rebuild-reserve` before its heavy-work gate: start below 125 GiB and aim for 135 GiB, retaining the independent 64 GiB writer floor, host admission, cooldowns and verification. Full storage readiness remains separate from pressure relief. Archive inventory and vacuum explicitly close SQLite handles, and filesystem probe failures are distinguished from confirmed unsupported formats. No reserve, history-verification, training, promotion or trading gate is weakened.
+The existing 15-minute recovery owner now offers `--storage-recovery-only --rebuild-reserve` before its heavy-work gate: start below 125 GiB and aim for 135 GiB, retaining the independent 64 GiB writer floor, host admission, cooldowns and verification. Its elevated-load compression lane is capped at 240 seconds, four files and 60 seconds per compactor; the quick lane stays at 90 seconds. Admission is rechecked between steps, using both recent load windows and renewed memory evidence. Recovery receipts distinguish deferred work, empty passes, measured progress and remaining capacity debt, retaining per-owner retry times. Full storage readiness remains separate from pressure relief. Archive inventory and vacuum explicitly close SQLite handles, and filesystem probe failures are distinguished from confirmed unsupported formats. No reserve, history-verification, training, promotion or trading gate is weakened. See [Automatic Recovery Controls](docs/operations/SOURCE_AND_STORAGE_MAINTENANCE.md#automatic-recovery-controls).
 
 Compatibility-cache recovery previews select an available full timestamp-leading index, reuse row counts, and measure encoded payload bytes without scanning text overflow pages on modern SQLite. The 60-second inspection deadline and all staging reserves remain unchanged. Storage-backpressure receipts retain at most 4,000 characters per diagnostic stream; structured child status and failure evidence remain intact.
 

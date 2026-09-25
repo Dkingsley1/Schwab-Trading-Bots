@@ -1171,7 +1171,7 @@ def test_commands_start_stop_section_uses_stack_entrypoint() -> None:
     assert "./scripts/ops/opsctl.sh livefeed-refresh" in text
     assert "### Stop the stack" in text
     assert "### Validate documented commands" in text
-    assert "./scripts/ops/opsctl.sh command-validity --json" in text
+    assert "./scripts/ops/opsctl.sh command-validity --safe-audit --summary-json" in text
     assert "### Review the cross-system drift mesh" in text
     assert "./scripts/ops/opsctl.sh system-drift-guard --json" in text
     assert "### Repair safe cross-system drift surfaces" in text

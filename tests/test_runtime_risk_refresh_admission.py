@@ -51,8 +51,10 @@ def admitted(tmp_path, monkeypatch):
     return tmp_path, row, payload
 
 
-def test_overdue_risk_report_can_finish_with_bounded_resource_admission(admitted):
+@pytest.mark.parametrize("profile", ["soft_cap", "protect_live"])
+def test_overdue_risk_report_can_finish_with_bounded_resource_admission(admitted, profile):
     root, row, payload = admitted
+    payload["throttle_profile"] = profile
     assert control._risk_refresh_pause_exempt(root, row, payload)
 
 
@@ -61,7 +63,7 @@ def test_overdue_risk_report_can_finish_with_bounded_resource_admission(admitted
     [
         ("memory_pressure_level", "high"),
         ("compute_pressure_level", "high"),
-        ("throttle_profile", "protect_live"),
+        ("throttle_profile", "hard_cap"),
         ("host_saturation_score", 61),
         ("host_saturation_score", float("nan")),
         ("mac_fluidity_contract", {"support_pause_recommended": True}),

@@ -1,4 +1,5 @@
 import csv
+import gzip
 import io
 import json
 import zipfile
@@ -14,6 +15,7 @@ from core.research_context_expansion import (
     research_context_ready,
 )
 from scripts.collect_research_context_expansion import (
+    load_recent_decisions,
     build_bis_global_liquidity_context,
     build_cross_asset_breadth_context,
     build_earnings_event_context,
@@ -56,6 +58,99 @@ def _row(
 
 def _capabilities(payload: dict) -> dict[str, dict]:
     return {row["capability_id"]: row for row in payload["capabilities"]}
+
+
+def test_decision_tail_reads_gzip_preserving_source_time_and_rejecting_future(tmp_path):
+    source = tmp_path / "decisions" / "shadow" / "trade_decisions_20260824.jsonl.gz"
+    source.parent.mkdir(parents=True)
+    records = [_row("SPY", {"last_price": 100}, minute=-1),
+               _row("QQQ", {"last_price": 200}, minute=1)]
+    source.write_bytes(gzip.compress("".join(json.dumps(row) + "\n" for row in records).encode()))
+    rows, report = load_recent_decisions(tmp_path, now=NOW)
+    assert [row["symbol"] for row in rows] == ["SPY"]
+    assert rows[0]["timestamp_utc"] == records[0]["timestamp_utc"]
+    assert rows[0]["_collector_source_path"].endswith(".jsonl.gz")
+    assert report["latest_observed_at_utc"] == records[0]["timestamp_utc"]
+    assert report["scan_gaps"] == []
+
+
+def test_decision_tail_prefers_plain_source_without_duplicate_archive(tmp_path):
+    source = tmp_path / "decisions" / "shadow" / "trade_decisions_20260824.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text(json.dumps(_row("SPY", {}, minute=-1)) + "\n")
+    source.with_suffix(".jsonl.gz").write_bytes(gzip.compress(source.read_bytes()))
+    rows, report = load_recent_decisions(tmp_path, now=NOW)
+    assert len(rows) == 1
+    assert report["candidate_file_count"] == 1
+    assert report["files"] == [str(source.relative_to(tmp_path))]
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_decision_tail_reports_unreadable_or_oversized_archive(tmp_path, corrupt):
+    source = tmp_path / "decisions" / "shadow" / "trade_decisions_20260824.jsonl.gz"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"not gzip" if corrupt else gzip.compress(
+        (json.dumps(_row("SPY", {}, minute=-1)) + "\n").encode() * 20))
+    rows, report = load_recent_decisions(tmp_path, now=NOW, max_bytes_per_file=512)
+    assert rows == []
+    reason = "file_error" if corrupt else "archive_byte_limit_hit"
+    assert report["scan_gaps"][0][reason] is True
+    assert report["latest_observed_at_utc"] is None
+
+
+def test_decision_tail_does_not_accept_budget_truncated_record(tmp_path):
+    source = tmp_path / "decisions" / "shadow" / "trade_decisions_20260824.jsonl"
+    source.parent.mkdir(parents=True)
+    # A parseable suffix is still part of a larger unfinished record.
+    suffix = json.dumps(_row("SPY", {}, minute=-1))
+    source.write_text("x" * 512 + suffix)
+    rows, report = load_recent_decisions(tmp_path, now=NOW, max_bytes_per_file=len(suffix))
+    assert rows == []
+    assert report["scan_gaps"][0]["record_byte_limit_hit"] is True
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_decision_tail_accepts_complete_final_json_without_newline(tmp_path, compressed):
+    source = tmp_path / "decisions" / "shadow" / ("trade_decisions_20260824.jsonl.gz" if compressed else "trade_decisions_20260824.jsonl")
+    source.parent.mkdir(parents=True)
+    data = json.dumps(_row("SPY", {}, minute=-1)).encode()
+    source.write_bytes(gzip.compress(data) if compressed else data)
+    rows, report = load_recent_decisions(tmp_path, now=NOW)
+    assert len(rows) == 1
+    assert report["scan_gaps"] == []
+
+
+def test_decision_tail_allows_configured_external_alias(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    external = tmp_path / "configured-external"
+    source = external / "decisions" / "shadow" / "trade_decisions_20260824.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text(json.dumps(_row("SPY", {}, minute=-1)))
+    (project / "decisions").symlink_to(external / "decisions", target_is_directory=True)
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(external))
+    rows, report = load_recent_decisions(project, now=NOW)
+    assert len(rows) == 1
+    assert report["scan_gaps"] == []
+
+
+@pytest.mark.parametrize("protected", [False, True])
+def test_decision_tail_rejects_unknown_and_protected_alias_before_metadata(tmp_path, monkeypatch, protected):
+    project = tmp_path / "project"
+    project.mkdir()
+    target = Path("/Volumes/VIDEO/decisions") if protected else tmp_path / "unknown" / "decisions"
+    (project / "decisions").symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(tmp_path / "configured"))
+    original = Path.lstat
+
+    def guarded_lstat(path, *args, **kwargs):
+        assert not path.is_relative_to(target.parent), "unapproved metadata access"
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", guarded_lstat)
+    rows, report = load_recent_decisions(project, now=NOW)
+    assert rows == []
+    assert report["scan_gaps"][0]["reason"] == "source_route_unavailable"
 
 
 def _assert_observation_only(payload: dict) -> None:

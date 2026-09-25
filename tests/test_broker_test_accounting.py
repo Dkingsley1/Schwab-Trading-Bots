@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from core.broker_test_accounting import reconcile_test_accounting
+from core.broker_test_accounting import (
+    reconcile_test_accounting,
+    reconcile_position_observation,
+)
 from core.supervised_broker_test import account_digest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -88,6 +91,110 @@ def test_full_accounting_needs_cash_execution_settlement_and_position(evidence):
     assert "private-transaction" not in json.dumps(result)
     assert "private-order" not in json.dumps(result)
     assert "private-account" not in json.dumps(result)
+
+
+def position_evidence(evidence):
+    source = copy.deepcopy(evidence["transactions"])
+    source.update(
+        timestamp_utc=NOW.isoformat(),
+        account_reference_sha256=account_digest(evidence["reference"]),
+    )
+    extra = copy.deepcopy(source["rows"][0])
+    extra.update(
+        activityId="outside-purchase",
+        orderId="outside-order",
+        time=(NOW - timedelta(seconds=10)).isoformat(),
+    )
+    source["rows"].append(extra)
+    return dict(
+        plan=evidence["plan"],
+        orders=evidence["orders"],
+        transactions=source,
+        reference=evidence["reference"],
+        position_quantity=10,
+        account_captured_at=NOW.isoformat(),
+        now=NOW,
+    )
+
+
+def test_additional_purchase_is_verified_but_not_attributed_to_test(evidence):
+    args = position_evidence(evidence)
+    before = copy.deepcopy(args)
+    result = reconcile_position_observation(**args)
+    assert result["state"] == "reconciled"
+    assert result["test_remaining_quantity"] == "5"
+    assert result["additional_purchase_quantity"] == "5"
+    assert result["expected_account_quantity"] == "10"
+    assert result["sell_authority"] is False
+    assert result["additional_shares_attributed_to_test"] is False
+    assert args == before
+    assert "outside-purchase" not in json.dumps(result)
+    assert "private-account" not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"source_complete": False},
+        {"account_reference_sha256": "wrong"},
+        {"timestamp_utc": (NOW - timedelta(seconds=31)).isoformat()},
+        {"timestamp_utc": (NOW + timedelta(seconds=1)).isoformat()},
+        {"window_start_utc": NOW.isoformat()},
+        {"window_end_utc": (NOW - timedelta(seconds=1)).isoformat()},
+        {"rows": []},
+        {"rows": [None]},
+    ],
+)
+def test_position_requires_complete_fresh_account_bound_history(evidence, change):
+    args = position_evidence(evidence)
+    args["transactions"].update(change)
+    assert reconcile_position_observation(**args)["state"] == "pending"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"status": "PENDING"},
+        {"activityId": ""},
+        {"orderId": ""},
+        {"type": "TRANSFER"},
+        {"netAmount": "100"},
+        {"transferItems": None},
+        {"transferItems": [{"instrument": None}]},
+        {"time": (NOW + timedelta(seconds=1)).isoformat()},
+    ],
+)
+def test_unverified_outside_activity_stays_pending(evidence, change):
+    args = position_evidence(evidence)
+    args["transactions"]["rows"][1].update(change)
+    assert reconcile_position_observation(**args)["state"] == "pending"
+
+
+def test_identical_duplicate_deduped_conflicting_duplicate_blocks(evidence):
+    args = position_evidence(evidence)
+    extra = args["transactions"]["rows"][1]
+    args["transactions"]["rows"].append(copy.deepcopy(extra))
+    assert reconcile_position_observation(**args)["additional_purchase_quantity"] == "5"
+    args["transactions"]["rows"][-1]["netAmount"] = "-285"
+    assert reconcile_position_observation(**args)["state"] == "pending"
+
+
+def test_outside_reductions_do_not_certify_remaining_test_lots(evidence):
+    args = position_evidence(evidence)
+    extra = args["transactions"]["rows"][1]
+    extra["transferItems"][0]["amount"] = -1
+    extra["netAmount"] = "56.93"
+    args["position_quantity"] = 4
+    assert reconcile_position_observation(**args)["state"] == "pending"
+
+
+def test_wrong_position_and_invalid_original_fill_do_not_reconcile(evidence):
+    args = position_evidence(evidence)
+    args["position_quantity"] = 11
+    assert reconcile_position_observation(**args)["state"] == "pending"
+    args["position_quantity"] = 10
+    args["transactions"]["rows"][0]["transferItems"][0]["amount"] = 4
+    assert reconcile_position_observation(**args)["state"] == "pending"
 
 
 def test_legacy_cash_proxy_cannot_be_backfilled_by_numeric_match(evidence):

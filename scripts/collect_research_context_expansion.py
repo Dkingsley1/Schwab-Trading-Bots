@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import hashlib
 import io
 import json
@@ -26,6 +27,7 @@ from core.research_context_expansion import (  # noqa: E402
     COLLECTOR_BY_ID,
     COLLECTOR_IDS,
 )
+from core.storage_router import inspect_storage_path, _configured_external_project_root_no_io
 
 EXTERNAL_CONTEXT_ROOT = PROJECT_ROOT / "exports" / "external_context"
 HEALTH_ROOT = PROJECT_ROOT / "governance" / "health"
@@ -199,18 +201,60 @@ def _capability_payload(
     return payload
 
 
-def _tail_lines(path: Path, *, max_bytes: int, max_lines: int) -> list[str]:
+def _decision_source_readable(path: Path, project_root: Path) -> bool:
+    route = inspect_storage_path(path, boundary_root=project_root)
+    if route["status"] == "present":
+        return True
+    if route["status"] != "boundary_escape" or not route["symlinks"]:
+        return False
+    # Resolve only the rejected local alias, then let the router walk the
+    # configured external boundary. Unknown targets receive no metadata probe.
+    link = route["symlinks"][-1]
+    link_path = Path(link["path"])
     try:
-        size = path.stat().st_size
-        with path.open("rb") as handle:
-            handle.seek(max(size - max(int(max_bytes), 1), 0))
-            data = handle.read(max(int(max_bytes), 1))
-    except OSError:
+        remainder = path.relative_to(link_path)
+    except ValueError:
+        return False
+    target = Path(link["target"])
+    if not target.is_absolute():
+        target = link_path.parent / target
+    target = Path(os.path.abspath(target / remainder))
+    return inspect_storage_path(
+        target, boundary_root=_configured_external_project_root_no_io()
+    )["status"] == "present"
+
+
+def _tail_lines(
+    path: Path, *, max_bytes: int, max_lines: int,
+    stats: dict[str, Any] | None = None,
+) -> list[str]:
+    stats = stats if stats is not None else {}
+    byte_limit = max(int(max_bytes), 1)
+    try:
+        if path.suffix == ".gz":
+            # Gzip cannot seek to its tail without decompressing the prefix.
+            # Reject an incomplete scan instead of calling that prefix a tail.
+            with gzip.open(path, "rb") as handle:
+                data = handle.read(byte_limit)
+                if handle.read(1):
+                    stats["archive_byte_limit_hit"] = True
+                    return []
+            size = len(data)
+        else:
+            size = path.stat().st_size
+            with path.open("rb") as handle:
+                handle.seek(max(size - byte_limit, 0))
+                data = handle.read(byte_limit)
+    except (OSError, EOFError):
+        stats["file_error"] = True
         return []
-    if size > max_bytes:
+    if size > byte_limit:
         newline = data.find(b"\n")
-        if newline >= 0:
-            data = data[newline + 1 :]
+        if newline < 0:
+            stats["record_byte_limit_hit"] = True
+            return []
+        data = data[newline + 1 :]
+    # Complete EOF JSON is legal without a newline; the caller parses it.
     return data.decode("utf-8", errors="ignore").splitlines()[-max(int(max_lines), 1) :]
 
 
@@ -224,23 +268,45 @@ def load_recent_decisions(
     max_bytes_per_file: int = 1_048_576,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     root = project_root / "decisions"
+    scan_gaps: list[dict[str, Any]] = []
+    chosen: dict[Path, Path] = {}
     try:
+        if not _decision_source_readable(root, project_root):
+            scan_gaps.append({"path": "decisions", "reason": "source_route_unavailable"})
+        else:
+            for directory in root.iterdir():
+                if not _decision_source_readable(directory, project_root):
+                    scan_gaps.append({"path": str(directory.relative_to(project_root)), "reason": "source_route_unavailable"})
+                    continue
+                if not directory.is_dir():
+                    continue
+                for pattern in ("trade_decisions_*.jsonl", "trade_decisions_*.jsonl.gz"):
+                    for path in directory.glob(pattern):
+                        if not _decision_source_readable(path, project_root):
+                            scan_gaps.append({"path": str(path.relative_to(project_root)), "reason": "source_route_unavailable"})
+                            continue
+                        logical_path = path.with_suffix("") if path.suffix == ".gz" else path
+                        if logical_path not in chosen or path.suffix != ".gz":
+                            chosen[logical_path] = path
         candidates = sorted(
-            root.glob("*/trade_decisions_*.jsonl"),
+            chosen.values(),
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )[: max(int(max_files), 1)]
     except OSError:
         candidates = []
+        scan_gaps.append({"path": "decisions", "reason": "source_discovery_failed"})
     cutoff = now.timestamp() - max(float(lookback_hours), 0.25) * 3600.0
     rows: list[dict[str, Any]] = []
     paths_used: list[str] = []
     latest_observed: datetime | None = None
     for path in candidates:
         accepted_from_file = 0
-        for raw in reversed(
-            _tail_lines(path, max_bytes=max_bytes_per_file, max_lines=160)
-        ):
+        scan_stats: dict[str, Any] = {}
+        lines = _tail_lines(path, max_bytes=max_bytes_per_file, max_lines=160, stats=scan_stats)
+        if scan_stats:
+            scan_gaps.append({"path": str(path.relative_to(project_root)), **scan_stats})
+        for raw in reversed(lines):
             try:
                 row = json.loads(raw)
             except Exception:
@@ -250,7 +316,7 @@ def load_recent_decisions(
             timestamp = _parse_ts(
                 row.get("timestamp_utc") or row.get("generated_at_utc")
             )
-            if timestamp is None or timestamp.timestamp() < cutoff:
+            if timestamp is None or timestamp.timestamp() < cutoff or timestamp > now:
                 continue
             row["_collector_source_path"] = str(path.relative_to(project_root))
             rows.append(row)
@@ -271,6 +337,10 @@ def load_recent_decisions(
             latest_observed.isoformat() if latest_observed else None
         ),
         "bounded": True,
+        "candidate_file_count": len(chosen),
+        "selected_file_count": len(candidates),
+        "scan_gaps": scan_gaps,
+        "archive_byte_budget_semantics": "decompressed_bytes_plus_one_eof_probe",
         "max_files": int(max_files),
         "max_rows": int(max_rows),
         "max_bytes_per_file": int(max_bytes_per_file),

@@ -26,7 +26,6 @@ PROFILE_RULES = {
         "polars",
         "polars-runtime-32",
         "pyarrow",
-        "redis",
         "requests",
         "schwab-py",
         "sqlalchemy",

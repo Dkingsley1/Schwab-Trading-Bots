@@ -163,12 +163,18 @@ def describe_candle(row):
     )
 
 
-def metrics(rows, *, asof, minutes, incomplete=0):
+def metrics(rows, *, asof, minutes, incomplete=0, continuous=False):
     if not rows:
         return {"status": "missing", "closed_bars": 0, "issues": ["missing_candles"]}
     closes = [r["close"] for r in rows]
     last, issues = closes[-1], []
-    expected = latest_closed_end(asof, minutes)
+    if continuous:
+        if not minutes or minutes <= 0:
+            raise ValueError("continuous_interval_required")
+        step = minutes * 60
+        expected = datetime.fromtimestamp(int(asof.timestamp()) // step * step, timezone.utc)
+    else:
+        expected = latest_closed_end(asof, minutes)
     end = timestamp(rows[-1]["end_utc"])
     if end != expected:
         issues.append("latest_closed_candle_missing")
@@ -177,9 +183,10 @@ def metrics(rows, *, asof, minutes, incomplete=0):
     # Each adjacent bar must be the next complete exchange interval. Partial
     # end-of-session hourly buckets are deliberately not counted as full hours.
     gaps = sum(
-        latest_closed_end(timestamp(b["end_utc"]) - timedelta(microseconds=1), minutes)
-        != timestamp(a["end_utc"])
-        for a, b in zip(rows, rows[1:])
+        (timestamp(b["start_utc"]) != timestamp(a["end_utc"])) if continuous else (
+            latest_closed_end(timestamp(b["end_utc"]) - timedelta(microseconds=1), minutes)
+            != timestamp(a["end_utc"])
+        ) for a, b in zip(rows, rows[1:])
     )
     if gaps:
         issues.append("candle_gaps")

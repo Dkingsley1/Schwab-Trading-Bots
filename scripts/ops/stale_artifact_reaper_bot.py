@@ -5,6 +5,7 @@ import argparse
 import ctypes
 import fcntl
 import json
+import math
 import os
 import sys
 from datetime import datetime, timezone
@@ -163,10 +164,9 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _same_root(left: Path, right: Path) -> bool:
-    try:
-        return left.resolve(strict=False) == right.resolve(strict=False)
-    except Exception:
-        return str(left) == str(right)
+    left_route = retention.inspect_storage_path(left)
+    right_route = retention.inspect_storage_path(right)
+    return str(left_route.get("resolved_path") or left) == str(right_route.get("resolved_path") or right)
 
 
 def _merge_additional_root(payload: dict[str, Any], additional: dict[str, Any]) -> dict[str, Any]:
@@ -234,7 +234,7 @@ def _merge_additional_root(payload: dict[str, Any], additional: dict[str, Any]) 
     return merged
 
 
-def build_payload(
+def _build_payload(
     project_root: Path,
     *,
     stale_stage_root: Path,
@@ -255,6 +255,7 @@ def build_payload(
     oversized_reindex_min_age_days: float = 3.0,
 ) -> dict[str, Any]:
     manifest_path = retention._stale_manifest_path(stale_stage_root, stale_stage_manifest)
+    manifest_restore = retention._restore_offloaded_stale_manifest(project_root, manifest_path)
     legacy_reindex = retention._reindex_legacy_stale_stage(
         stale_root=stale_stage_root,
         manifest_path=manifest_path,
@@ -322,11 +323,35 @@ def build_payload(
         },
         "purge": purge,
         "legacy_manifest_reindex": legacy_reindex,
+        "manifest_restore": manifest_restore,
         "artifacts": {
             "stale_root": str(stale_stage_root),
             "stale_manifest": str(manifest_path),
         },
     }
+
+
+def build_payload(project_root: Path, **options: Any) -> dict[str, Any]:
+    """Keep owner failures visible and reject accidental unlimited cleanup settings."""
+    try:
+        for key, value in options.items():
+            if key.startswith("max_"):
+                scale = 1024**3 if key.endswith("_gb") else 1
+                minimum = 0 if "oversized" in key else 1
+                if not math.isfinite(float(value)) or float(value) < 0 or int(float(value) * scale) < minimum:
+                    raise ValueError(f"invalid_bounded_retention_budget:{key}")
+        return _build_payload(project_root, **options)
+    except (OSError, ValueError, RuntimeError) as exc:
+        return {
+            "timestamp_utc": _utc_now(),
+            "project_root": str(project_root),
+            "ok": False,
+            "busy": False,
+            "reason": "stale_retention_failed_closed",
+            "error": f"{type(exc).__name__}:{exc}",
+            "summary": {"delete_errors": 1, "work_totals_complete": False},
+            "artifacts": {"stale_root": str(options.get("stale_stage_root", ""))},
+        }
 
 
 def main() -> int:
@@ -358,9 +383,11 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    project_root = Path(args.project_root).resolve()
+    project_root = Path(args.project_root).expanduser()
     out_file = Path(args.out_file).expanduser()
     lock_file = Path(args.lock_file).expanduser()
+    for path in (project_root, out_file, lock_file):
+        retention._stale_route(path, missing=True)
     lock_file.parent.mkdir(parents=True, exist_ok=True)
 
     payload: dict[str, Any] = {
@@ -382,7 +409,7 @@ def main() -> int:
                     "scheduler_intent": _inactive_scheduler_intent("already_running"),
                 }
             )
-            _write_json(out_file, payload)
+            # A contender must not replace the active owner's canonical receipt.
             if args.json:
                 print(json.dumps(payload, ensure_ascii=True))
             else:
@@ -412,7 +439,8 @@ def main() -> int:
         )
         if args.include_external_stale_root:
             external_stale_root = retention._resolve_external_project_root() / "data" / "stale_stage"
-            if external_stale_root.exists() and not _same_root(primary_stale_root, external_stale_root):
+            external_route = retention.inspect_storage_path(external_stale_root)
+            if external_route.get("status") != "missing" and not _same_root(primary_stale_root, external_stale_root):
                 additional = build_payload(
                     project_root,
                     stale_stage_root=external_stale_root,

@@ -7,7 +7,8 @@ trading platform merely because a notification is delivered.
 
 | Alert | Click Destination |
 | --- | --- |
-| Schwab auth expired, blocked, or nearing expiry | Terminal-owned supervised Schwab sign-in, opening Chrome with a live OAuth callback listener |
+| Schwab refresh token rejected (`invalid_grant`) | Terminal-owned supervised Schwab sign-in, opening Chrome with a live OAuth callback listener |
+| Schwab access-token refresh warning or unresolved auth diagnostics | Current auth-supervisor report; no forced sign-in |
 | Restart storms, missing sleeves, lid/sleep events | Current process watchdog report |
 | Storage disconnect | Storage mount guard report |
 | Swap/memory pressure | Swap pressure governor report |
@@ -25,6 +26,25 @@ halts, deletes data, changes risk limits or restarts the platform. Report text
 never becomes an executable command. Auth uses a fixed local launcher with a
 kernel lock, rejects an occupied callback port, and preserves live-money locks.
 The localhost callback belongs to this Mac, not the user's phone.
+
+## Automatic Renewal
+
+The watcher reads `premarket_token_guard_latest.json` alongside the lease and
+supervisor reports. It requires a fresh, timezone-aware observation of the same
+configured token, successful auth/network checks, and unexpired absolute and
+relative expiry evidence above the readiness floor. A newer confirmed renewal
+can supersede an older rejected-refresh report. A healthy access-token check
+alone cannot clear an explicitly rejected refresh token; newer failures and
+unrelated supervisor findings remain visible. Missing, stale, future or malformed
+recovery evidence never clears an auth alert.
+
+HTTP 429 alone with verified current token health is a provider cooldown, not a
+sign-in request. Provider cooldowns and all broker/trading gates remain unchanged.
+When an auth alert becomes obsolete after verified recovery, the watcher attempts
+bounded removal of its exact terminal-notifier group and records the outcome in
+`last_auth_dismissal`. It cannot retract old iMessages or AppleScript fallback
+notifications. Clicking a legacy auth alert rechecks recovery under the existing
+sign-in lock and skips the browser flow when authorization is already healthy.
 
 ## Native Transport
 

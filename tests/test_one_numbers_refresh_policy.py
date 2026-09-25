@@ -9,9 +9,41 @@ from pathlib import Path
 import pytest
 
 from scripts.ops.one_numbers_refresh_policy import refresh_policy
+from scripts.ops.one_numbers_refresh_policy import bounded_refresh_admitted
 
 NOW = datetime(2026, 9, 8, 21, tzinfo=timezone.utc)
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("profile", ["soft_cap", "protect_live", "hard_cap", "unknown"])
+def test_overdue_risk_refresh_uses_headroom_not_backlog_profile_label(tmp_path, monkeypatch, profile):
+    from scripts import resource_guard
+    monkeypatch.setattr(resource_guard, "evaluate_refresh_job", lambda resource: (True, [], {}))
+    now = datetime.now(timezone.utc).isoformat()
+    path = tmp_path / "governance/health/resource_guard_latest.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"timestamp_utc": now, "memory_pressure_state": "green", "load1_per_core": 0.8}))
+    payload = {
+        "timestamp_utc": now, "throttle_profile": profile,
+        "memory_pressure_level": "normal", "compute_pressure_level": "elevated",
+        "host_saturation_score": 45,
+        "mac_fluidity_contract": {"support_pause_recommended": False},
+        "runtime_snapshot": {"thermal": {
+            "thermal_warning_active": False, "performance_warning_active": False,
+            "cpu_power_warning_active": False}},
+    }
+    assert bounded_refresh_admitted(tmp_path, payload) == (profile in {"soft_cap", "protect_live"})
+    if profile != "protect_live":
+        return
+    for key, value in (("memory_pressure_level", "critical"),
+                       ("compute_pressure_level", "critical"),
+                       ("host_saturation_score", 61),
+                       ("timestamp_utc", "2000-01-01T00:00:00+00:00")):
+        assert not bounded_refresh_admitted(tmp_path, {**payload, key: value})
+    assert not bounded_refresh_admitted(tmp_path, {**payload, "mac_fluidity_contract": {"support_pause_recommended": True}})
+    assert not bounded_refresh_admitted(tmp_path, {**payload, "runtime_snapshot": {"thermal": {"thermal_warning_active": True}}})
+    monkeypatch.setattr(resource_guard, "evaluate_refresh_job", lambda resource: (False, ["disk_reserve"], {}))
+    assert not bounded_refresh_admitted(tmp_path, payload)
 
 
 def policy(tmp_path, timestamp, *, interval=3600, deadline=600, auth_age=120):

@@ -281,6 +281,17 @@ DEFAULT_SHARD_DEFS = {
         "merge_max_json_file_rows": 64,
     },
     "crypto_governance": {
+        "hot_retention_enabled": True,
+        "hot_retention_hot_days": 14,
+        "hot_retention_max_db_gb": 16.0,
+        "hot_retention_trigger_growth_gb": 2.0,
+        "hot_retention_trigger_rows": 100000,
+        "hot_retention_archive_period": "day",
+        "hot_retention_archive_retention_days": 0,
+        "hot_retention_batch_size": 1000,
+        "hot_retention_max_rows": 5000,
+        "hot_retention_vacuum_threshold_gb": 0.0,
+        "hot_retention_min_interval_seconds": 300,
         "include_streams": "governance_events,governance_watchdog,governance,governance_walk_forward,governance_distillation,governance_canary",
         "path_contains": "shadow_crypto/,shadow_crypto_futures_crypto/,default_crypto_coinbase,crypto_futures_crypto_coinbase,default_crypto_schwab,crypto_futures_crypto_schwab",
         "path_not_contains": (
@@ -298,6 +309,17 @@ DEFAULT_SHARD_DEFS = {
         "merge_max_json_file_rows": 128,
     },
     "crypto_api_ingress": {
+        "hot_retention_enabled": True,
+        "hot_retention_hot_days": 7,
+        "hot_retention_max_db_gb": 1.0,
+        "hot_retention_trigger_growth_gb": 0.25,
+        "hot_retention_trigger_rows": 100000,
+        "hot_retention_archive_period": "day",
+        "hot_retention_archive_retention_days": 0,
+        "hot_retention_batch_size": 1000,
+        "hot_retention_max_rows": 5000,
+        "hot_retention_vacuum_threshold_gb": 0.0,
+        "hot_retention_min_interval_seconds": 300,
         "include_streams": "governance",
         "path_contains": (
             "governance/channels/api/default_crypto_schwab/,"
@@ -313,6 +335,17 @@ DEFAULT_SHARD_DEFS = {
         "merge_to_primary": False,
     },
     "api_ingress": {
+        "hot_retention_enabled": True,
+        "hot_retention_hot_days": 7,
+        "hot_retention_max_db_gb": 1.0,
+        "hot_retention_trigger_growth_gb": 0.25,
+        "hot_retention_trigger_rows": 100000,
+        "hot_retention_archive_period": "day",
+        "hot_retention_archive_retention_days": 0,
+        "hot_retention_batch_size": 1000,
+        "hot_retention_max_rows": 5000,
+        "hot_retention_vacuum_threshold_gb": 0.0,
+        "hot_retention_min_interval_seconds": 300,
         "include_streams": "governance",
         "path_contains": "governance/channels/api/,governance/channels/ingress/",
         "path_not_contains": (
@@ -328,6 +361,17 @@ DEFAULT_SHARD_DEFS = {
         "merge_to_primary": False,
     },
     "crypto_runtime": {
+        "hot_retention_enabled": True,
+        "hot_retention_hot_days": 7,
+        "hot_retention_max_db_gb": 2.0,
+        "hot_retention_trigger_growth_gb": 0.5,
+        "hot_retention_trigger_rows": 100000,
+        "hot_retention_archive_period": "day",
+        "hot_retention_archive_retention_days": 0,
+        "hot_retention_batch_size": 1000,
+        "hot_retention_max_rows": 5000,
+        "hot_retention_vacuum_threshold_gb": 0.0,
+        "hot_retention_min_interval_seconds": 300,
         "include_streams": "governance",
         "path_contains": (
             "governance/channels/runtime/default_crypto_coinbase/,"
@@ -409,6 +453,17 @@ DEFAULT_SHARD_DEFS = {
         "hot_retention_min_interval_seconds": 120,
     },
     "governance": {
+        "hot_retention_enabled": True,
+        "hot_retention_hot_days": 14,
+        "hot_retention_max_db_gb": 16.0,
+        "hot_retention_trigger_growth_gb": 2.0,
+        "hot_retention_trigger_rows": 100000,
+        "hot_retention_archive_period": "day",
+        "hot_retention_archive_retention_days": 0,
+        "hot_retention_batch_size": 1000,
+        "hot_retention_max_rows": 5000,
+        "hot_retention_vacuum_threshold_gb": 0.0,
+        "hot_retention_min_interval_seconds": 300,
         "include_streams": "governance_events,governance_watchdog,governance,governance_walk_forward,governance_distillation,governance_canary",
         "path_not_contains": (
             "shadow_pnl_attribution_,"
@@ -432,6 +487,17 @@ DEFAULT_SHARD_DEFS = {
         "merge_max_json_file_rows": 128,
     },
     "support_watchdog": {
+        "hot_retention_enabled": True,
+        "hot_retention_hot_days": 14,
+        "hot_retention_max_db_gb": 2.0,
+        "hot_retention_trigger_growth_gb": 0.5,
+        "hot_retention_trigger_rows": 100000,
+        "hot_retention_archive_period": "day",
+        "hot_retention_archive_retention_days": 0,
+        "hot_retention_batch_size": 1000,
+        "hot_retention_max_rows": 5000,
+        "hot_retention_vacuum_threshold_gb": 0.0,
+        "hot_retention_min_interval_seconds": 300,
         "include_streams": "governance_watchdog",
         "path_contains": "governance/watchdog/",
         "skip_json_files": True,
@@ -607,6 +673,17 @@ DEFAULT_SHARD_DEFS = {
         "merge_to_primary": False,
     },
     "runtime": {
+        "hot_retention_enabled": True,
+        "hot_retention_hot_days": 7,
+        "hot_retention_max_db_gb": 4.0,
+        "hot_retention_trigger_growth_gb": 0.5,
+        "hot_retention_trigger_rows": 100000,
+        "hot_retention_archive_period": "day",
+        "hot_retention_archive_retention_days": 0,
+        "hot_retention_batch_size": 1000,
+        "hot_retention_max_rows": 5000,
+        "hot_retention_vacuum_threshold_gb": 0.0,
+        "hot_retention_min_interval_seconds": 300,
         "include_streams": "governance",
         "path_contains": "governance/channels/runtime/",
         "path_not_contains": (
@@ -666,6 +743,17 @@ DEFAULT_SHARD_DEFS = {
         "hot_retention_max_rows": 250000,
     },
     "aggressive_trading": {
+        "hot_retention_enabled": True,
+        "hot_retention_hot_days": 7,
+        "hot_retention_max_db_gb": 32.0,
+        "hot_retention_trigger_growth_gb": 4.0,
+        "hot_retention_trigger_rows": 100000,
+        "hot_retention_archive_period": "day",
+        "hot_retention_archive_retention_days": 0,
+        "hot_retention_batch_size": 1000,
+        "hot_retention_max_rows": 5000,
+        "hot_retention_vacuum_threshold_gb": 0.0,
+        "hot_retention_min_interval_seconds": 300,
         "include_streams": "decisions,trade_logs",
         "path_contains": "shadow_aggressive_,shadow_intraday_aggressive_,shadow_swing_aggressive_",
         "path_not_contains": "shadow_crypto/,shadow_crypto_futures_crypto/,default_crypto_coinbase,crypto_futures_crypto_coinbase,default_crypto_schwab,crypto_futures_crypto_schwab",
@@ -678,6 +766,17 @@ DEFAULT_SHARD_DEFS = {
         "merge_max_jsonl_rows": 16000,
     },
     "trading": {
+        "hot_retention_enabled": True,
+        "hot_retention_hot_days": 7,
+        "hot_retention_max_db_gb": 32.0,
+        "hot_retention_trigger_growth_gb": 4.0,
+        "hot_retention_trigger_rows": 100000,
+        "hot_retention_archive_period": "day",
+        "hot_retention_archive_retention_days": 0,
+        "hot_retention_batch_size": 1000,
+        "hot_retention_max_rows": 5000,
+        "hot_retention_vacuum_threshold_gb": 0.0,
+        "hot_retention_min_interval_seconds": 300,
         "include_streams": "decisions,trade_logs",
         "path_not_contains": "shadow_crypto/,shadow_crypto_futures_crypto/,default_crypto_coinbase,crypto_futures_crypto_coinbase,default_crypto_schwab,crypto_futures_crypto_schwab,shadow_aggressive_,shadow_intraday_aggressive_,shadow_swing_aggressive_",
         "skip_json_files": True,
@@ -4354,7 +4453,6 @@ def _build_shards(shard_names: list[str]) -> list[dict[str, object]]:
                         _shard_env(safe_name, "HOT_RETENTION_ARCHIVE_RETENTION_DAYS"),
                         int(
                             defaults.get("hot_retention_archive_retention_days", 365)
-                            or 365
                         ),
                     ),
                     0,
@@ -5797,7 +5895,6 @@ def main() -> int:
                             ),
                             archive_retention_days=int(
                                 shard.get("hot_retention_archive_retention_days", 365)
-                                or 365
                             ),
                             archive_prune_vacuum=True,
                             cold_export_root=str(
