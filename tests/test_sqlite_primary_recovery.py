@@ -68,6 +68,87 @@ def test_explicit_recovery_preserves_both_payload_copies(committed):
     assert primary.observe(root)["ok"]
 
 
+def test_quiet_retires_readonly_orphan_without_changing_database(committed):
+    root, source, target, arguments = committed
+    path = source / "jsonl_link.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.close()
+    before = primary._identity(path)
+    payload = path.read_bytes()
+    conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+    conn.execute("SELECT * FROM evidence").fetchall()
+    conn.close()
+    assert Path(str(path) + "-shm").stat().st_size > 0
+    recovery._quiet(source, target, [{"relative": path.name}], {path.name: before})
+    assert not Path(str(path) + "-shm").exists()
+    assert path.read_bytes() == payload
+    assert primary._identity(path) == before
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-journal"])
+def test_quiet_never_checkpoints_nonempty_transaction_journal(
+    committed, monkeypatch, suffix
+):
+    root, source, target, arguments = committed
+    path = source / "jsonl_link.sqlite3"
+    sidecar = Path(str(path) + suffix)
+    sidecar.write_bytes(b"pending")
+    Path(str(path) + "-shm").write_bytes(b"bookkeeping")
+    monkeypatch.setattr(
+        recovery.sqlite3, "connect", lambda *a, **k: pytest.fail("must not open")
+    )
+    with pytest.raises(ValueError, match="nonempty_journal"):
+        recovery._quiet(
+            source,
+            target,
+            [{"relative": path.name}],
+            {path.name: primary._identity(path)},
+        )
+    assert sidecar.read_bytes() == b"pending"
+
+
+def test_quiet_repeated_shared_memory_fails_without_another_cleanup(
+    committed, monkeypatch
+):
+    root, source, target, arguments = committed
+    path = source / "jsonl_link.sqlite3"
+    Path(str(path) + "-shm").write_bytes(b"bookkeeping")
+    monkeypatch.setattr(
+        recovery.sqlite3, "connect", lambda *a, **k: pytest.fail("must not open")
+    )
+    with pytest.raises(ValueError, match="shared_memory_reappeared"):
+        recovery._quiet(
+            source,
+            target,
+            [{"relative": path.name}],
+            {path.name: primary._identity(path)},
+            cleanup_orphan=False,
+        )
+
+
+def test_orphan_cleanup_requires_owned_hold(committed, monkeypatch):
+    root, source, target, arguments = committed
+    path = source / "jsonl_link.sqlite3"
+    Path(str(path) + "-shm").write_bytes(b"bookkeeping")
+
+    def lost_hold(checked_root):
+        assert checked_root == root
+        raise RuntimeError("hold lost")
+
+    monkeypatch.setattr(primary, "_hold", lost_hold)
+    monkeypatch.setattr(
+        recovery.sqlite3, "connect", lambda *a, **k: pytest.fail("must not open")
+    )
+    with pytest.raises(RuntimeError, match="hold lost"):
+        recovery._quiet(
+            source,
+            target,
+            [{"relative": path.name}],
+            {path.name: primary._identity(path)},
+        )
+
+
 def test_unchanged_bytes_reuse_committed_integrity_only_after_full_hash(
     committed, monkeypatch
 ):

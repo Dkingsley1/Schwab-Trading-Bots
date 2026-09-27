@@ -101,7 +101,12 @@ history. It runs fresh full hashes over the exact primary inventory under a
 and an expired or lost maintenance hold still prevents publication. Only an exact
 match to the committed, integrity-checked
 snapshot may reuse its structural proof; changed bytes require a fresh SQLite
-integrity check. The receipt distinguishes both bases. It rechecks quiet identities and
+integrity check. The receipt distinguishes both bases. Under the owned hold, an
+orphan SHM left by a closed read-only probe may be retired by SQLite only when no
+handles or nonempty WAL/rollback journal exist. Database identity must remain
+unchanged, and a second quiet-point check rejects recurring interference. This
+does not admit pending transactions or authorize manual sidecar deletion.
+It rechecks quiet identities and
 publishes through the same journaled link transaction. It never adopts foreign
 links, discards conflicting rows, deletes payloads, or automatically replays a
 crashed transaction. Normal ingestion must be tested again afterward.

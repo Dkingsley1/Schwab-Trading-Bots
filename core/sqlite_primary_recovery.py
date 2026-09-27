@@ -14,7 +14,8 @@ from core.sqlite_primary_retirement import _owned_json
 from core.write_path_recovery import durable_json
 
 
-def _quiet(source, target, rows, source_identities):
+def _quiet(source, target, rows, source_identities, *, cleanup_orphan=True):
+    cleaned = False
     for base in (source, target / "data"):
         result = subprocess.run(
             ["lsof", "+D", str(base)], capture_output=True, timeout=30
@@ -29,11 +30,41 @@ def _quiet(source, target, rows, source_identities):
         if actual != source_identities[relative]:
             raise ValueError("primary_recovery_standby_changed")
         for base in (source, target / "data"):
-            primary._physical((base / relative).parent)
-            for suffix in ("-wal", "-shm", "-journal"):
-                sidecar = Path(str(base / relative) + suffix)
+            database = base / relative
+            primary._physical(database.parent)
+            for suffix in ("-wal", "-journal"):
+                sidecar = Path(str(database) + suffix)
                 if os.path.lexists(sidecar) and primary._identity(sidecar)[2]:
                     raise ValueError("primary_recovery_nonempty_journal")
+            shared_memory = Path(str(database) + "-shm")
+            if os.path.lexists(shared_memory) and primary._identity(shared_memory)[2]:
+                if not cleanup_orphan:
+                    raise ValueError("primary_recovery_shared_memory_reappeared")
+                # Read-only WAL probes can leave bookkeeping with no transactions.
+                # Only SQLite may retire it, and it must not change payload bytes.
+                primary._hold(source.parents[1])
+                before = primary._identity(database)
+                connection = sqlite3.connect(
+                    database.as_uri() + "?mode=rw", uri=True, timeout=0
+                )
+                try:
+                    status = connection.execute(
+                        "PRAGMA wal_checkpoint(TRUNCATE)"
+                    ).fetchone()
+                    if status is None or status[0] != 0:
+                        raise ValueError("primary_recovery_checkpoint_busy")
+                finally:
+                    connection.close()
+                if primary._identity(database) != before:
+                    raise ValueError("primary_recovery_checkpoint_changed_database")
+                for suffix in ("-wal", "-shm", "-journal"):
+                    sidecar = Path(str(database) + suffix)
+                    if os.path.lexists(sidecar) and primary._identity(sidecar)[2]:
+                        raise ValueError("primary_recovery_nonempty_journal")
+                cleaned = True
+    if cleaned:
+        # Require a fresh quiet point after SQLite has closed its cleanup handle.
+        _quiet(source, target, rows, source_identities, cleanup_orphan=False)
 
 
 def restore_committed_routes(
