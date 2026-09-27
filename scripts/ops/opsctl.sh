@@ -3728,7 +3728,7 @@ opsctl commands:
   storage-switch-external [--no-refresh]
   storage-sqlite-local-failover [--apply] [--json]
   storage-prune-standby [--apply] [--include-curated-standby] [--min-route-soak-hours N] [--relative-path PATH] [--json]
-  local-sql-shard-standby-prune [--apply] [--max-delete-gb N] [--min-age-minutes N] [--json]
+  local-sql-shard-standby-prune [--apply] [--max-delete-gb N] [--min-age-minutes N] [--independent-backup-receipt PATH] [--json]
   storage-transition-coordinator [--transition-mode local|external] [--apply] [--json]
   external-drive-preflight [--mount /Volumes/NAME] [--expected-uuid UUID] [--json]
   storage-disaster-recovery|storage-recovery-bot [--apply] [--json]

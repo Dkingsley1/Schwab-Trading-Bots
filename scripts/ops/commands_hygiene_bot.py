@@ -1870,6 +1870,12 @@ def _commands_inventory(project_root: Path) -> list[dict[str, Any]]:
             "Storage",
             _command_entry(
                 project_root,
+                "Review independently backed-up SQLite standby retirement",
+                ["./scripts/ops/opsctl.sh local-sql-shard-standby-prune --independent-backup-receipt governance/storage_recovery/sqlite_primary_independent_backups.json --json"],
+                notes=["Explicit maintenance-owner operation, not a scheduled cleanup. Requires trading OFF, completed sqlite_primary handoff, routed queue I/O proof, unchanged idle originals and fully restored independent-drive backup hashes. Reviews at most two named shards; --apply retires only those verified originals. VIDEO is forbidden. See docs/operations/EXTERNAL_DRIVE_ONBOARDING.md; logical retired bytes do not certify physical free-space recovery."],
+            ),
+            _command_entry(
+                project_root,
                 "Refresh analytical SQL summaries",
                 [
                     'PY="$(zsh ./scripts/ops/runtime_python.sh)"',

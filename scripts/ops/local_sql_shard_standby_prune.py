@@ -428,6 +428,7 @@ def main() -> int:
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--lock-file", default=str(DEFAULT_LOCK_PATH))
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--independent-backup-receipt", default="", help="Explicit sqlite_primary retirement under an authorized maintenance hold; requires full independent backup proof")
     parser.add_argument("--max-delete-gb", type=float, default=512.0)
     parser.add_argument("--min-age-minutes", type=float, default=0.0)
     parser.add_argument("--allow-unmirrored", action="store_true")
@@ -456,15 +457,23 @@ def main() -> int:
                 print("local_sql_shard_standby_prune overall_status=busy")
             return 2
 
-        payload = build_payload(
-            Path(args.project_root),
-            external_root=str(args.external_root or ""),
-            apply=bool(args.apply),
-            max_delete_gb=float(args.max_delete_gb),
-            min_age_minutes=float(args.min_age_minutes),
-            require_external_counterpart=not bool(args.allow_unmirrored),
-            lsof_timeout_seconds=float(args.lsof_timeout_seconds),
-        )
+        if args.independent_backup_receipt:
+            from core.sqlite_primary_retirement import retire_standbys
+
+            payload = retire_standbys(
+                Path(args.project_root), Path(args.independent_backup_receipt),
+                apply=bool(args.apply),
+            )
+        else:
+            payload = build_payload(
+                Path(args.project_root),
+                external_root=str(args.external_root or ""),
+                apply=bool(args.apply),
+                max_delete_gb=float(args.max_delete_gb),
+                min_age_minutes=float(args.min_age_minutes),
+                require_external_counterpart=not bool(args.allow_unmirrored),
+                lsof_timeout_seconds=float(args.lsof_timeout_seconds),
+            )
         payload["lock_path"] = str(lock_path)
         write_payload(Path(args.out_file).expanduser(), payload)
 

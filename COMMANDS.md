@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `afa29d0c64a1f9d685c1323b4fdbbe0958b24d2f22433233827be3f43d668e44`.
+Command contract hash: `4882c00a5c42b5ff530492202ec57b4a568ae68efe1a7a0aa4cb5fe4604e4ab7`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 Live Execution Control is pinned above Most Used; the remaining sections are alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `276` generated command entries from the current command contract.
+Search coverage: `277` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Live Execution OFF - block new live orders (Live Execution Control)"></option>
@@ -289,6 +289,7 @@ Search coverage: `276` generated command entries from the current command contra
   <option value="Repair external SSD disconnect and reconnect protection (Storage)"></option>
   <option value="Repair local stateful storage regressions (Storage)"></option>
   <option value="Review external SSD disconnect and reconnect protection (Storage)"></option>
+  <option value="Review independently backed-up SQLite standby retirement (Storage)"></option>
   <option value="Review or prune eligible local standby SQLite copies after BOT_LOGS soak (Storage)"></option>
   <option value="Run the storage disaster recovery bot (Storage)"></option>
   <option value="Safe force-clear storage pressure supervisor (Storage)"></option>
@@ -305,7 +306,7 @@ Search coverage: `276` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (276 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (277 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -572,6 +573,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:61cddf2d4d223c807bee6f12073ff67618a4baed263cc079219aa7112746691a section:`Storage` section_key:`storage` title:Repair external SSD disconnect and reconnect protection title_key:`repair-external-ssd-disconnect-and-reconnect-protection` opsctl:`storage-reconnect-infrabot` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:7162b1728aa0badca09eeab49bafe5d36d327687a0c9f6a6c059cd95e147c9c3 section:`Storage` section_key:`storage` title:Repair local stateful storage regressions title_key:`repair-local-stateful-storage-regressions` opsctl:`stateful-storage-regression-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:bba5d29fe51d33f0fa94b5fec7520164361e1aa9ab5990d00b553bd4cbbe29c6 section:`Storage` section_key:`storage` title:Review external SSD disconnect and reconnect protection title_key:`review-external-ssd-disconnect-and-reconnect-protection` opsctl:`storage-reconnect-regression-guard` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:db37bc1201511793c1e201f06d79c3162f6114b6de41ad5335acfaeaa018cd14 section:`Storage` section_key:`storage` title:Review independently backed-up SQLite standby retirement title_key:`review-independently-backed-up-sqlite-standby-retirement` opsctl:`local-sql-shard-standby-prune` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e8dce5198877685a4116a8d493aabd0e79f722defb26ff3e3ba27bf329fee8b0 section:`Storage` section_key:`storage` title:Review or prune eligible local standby SQLite copies after BOT_LOGS soak title_key:`review-or-prune-eligible-local-standby-sqlite-copies-after-bot-logs-soak` opsctl:`storage-prune-standby` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:8abb179beed85141e8937968e8cf4c59f087200b63c0574248d16b70591e8e8d section:`Storage` section_key:`storage` title:Run the storage disaster recovery bot title_key:`run-the-storage-disaster-recovery-bot` opsctl:`storage-disaster-recovery` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e56085c5fc172d09c7961f2369158a78fb4dd363adad9cc85bea1574485fd5a6 section:`Storage` section_key:`storage` title:Safe force-clear storage pressure supervisor title_key:`safe-force-clear-storage-pressure-supervisor` opsctl:`storage-pressure-clearance` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -2967,6 +2969,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 Semantically typechecks the Swift guard, verifies its compiled runtime binary and LaunchAgent, and reports the last atomic disconnect/failover transition.
+
+### Review independently backed-up SQLite standby retirement
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh local-sql-shard-standby-prune --independent-backup-receipt governance/storage_recovery/sqlite_primary_independent_backups.json --json
+```
+
+Explicit maintenance-owner operation, not a scheduled cleanup. Requires trading OFF, completed sqlite_primary handoff, routed queue I/O proof, unchanged idle originals and fully restored independent-drive backup hashes. Reviews at most two named shards; --apply retires only those verified originals. VIDEO is forbidden. See docs/operations/EXTERNAL_DRIVE_ONBOARDING.md; logical retired bytes do not certify physical free-space recovery.
 
 ### Review or prune eligible local standby SQLite copies after BOT_LOGS soak
 ```bash

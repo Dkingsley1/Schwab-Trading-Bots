@@ -86,6 +86,26 @@ ingestion continuity and restoration. Metadata readiness is not integrity,
 independent backup or safe-deletion proof. No live cutover or retirement is
 certified by unit tests.
 
+### Independently Backed-Up Standby Retirement
+
+The native `local-sql-shard-standby-prune` owner has a separate explicit
+`--independent-backup-receipt PATH` mode for this profile. The default legacy
+pruner still cannot delete anything under `sqlite_primary`. Review and pass an
+owned `governance/storage_recovery` receipt, first without `--apply`, under an
+authorized maintenance hold with trading OFF. No scheduler supplies this option.
+
+This mode is limited to two named inactive shard originals. It requires the
+complete handoff receipt, actual routed queue write/read/ack proof, unchanged
+quiesced originals, and Zstandard recovery copies on a UUID-verified different
+physical drive. It rehashes each original and the entire decompressed backup
+within 1,800 seconds, verifies active routes, journals the selected custody,
+then rechecks the hold, source identities, independent drive and idle journals
+before each unlink. It preserves active databases, recovery copies, raw history
+and all other originals. Protected VIDEO paths are rejected before inspection.
+A partial retirement journal requires review; no automatic retry or blanket
+deletion authority is granted. Measure actual free space afterward: logical
+bytes retired are not necessarily physical bytes recovered.
+
 ## Read-Only Preparation Command
 
 ```sh

@@ -151,7 +151,8 @@ def test_command_invokes_target_ignores_watchdog_embedded_start_cmd() -> None:
     assert src._command_invokes_target(watchdog, target) is False
 
 
-def test_sql_writable_uses_nonblocking_probe_file(tmp_path: Path) -> None:
+def test_sql_writable_uses_nonblocking_probe_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(src, "PROJECT_ROOT", tmp_path)
     original_db = src.DB_PATH
     try:
         db_path = tmp_path / "data" / "jsonl_link.sqlite3"

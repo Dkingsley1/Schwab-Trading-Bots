@@ -2,12 +2,16 @@ import argparse
 import json
 import os
 import sqlite3
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from core.sqlite_runtime import connect_sqlite
 STORAGE_CONTROL_BACKPRESSURE_OVERRIDE_MAX_AGE_SECONDS = 1800.0
 CURRENT_RAW_STREAM_MAX_AGE_SECONDS = 15 * 60
 RAW_FRESHNESS_TAIL_BYTES = 64 * 1024
@@ -111,14 +115,14 @@ def _path_size_gb(path: Path) -> float:
         return 0.0
 
 
-def _sqlite_live_size_gb(path: Path) -> float:
+def _sqlite_live_size_gb(path: Path, *, project_root: Path = PROJECT_ROOT) -> float:
     try:
         logical_bytes = float(path.stat().st_size)
     except Exception:
         return 0.0
 
     try:
-        conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=1)
+        conn = connect_sqlite(path, project_root=project_root, readonly=True, timeout_seconds=1)
         try:
             page_size_row = conn.execute('PRAGMA page_size').fetchone()
             page_count_row = conn.execute('PRAGMA page_count').fetchone()
@@ -143,7 +147,7 @@ def _priority_shard_live_db_size_gb(project_root: Path, shard_name: str) -> floa
     db_path = project_root / 'data' / 'sql_link_shards' / f'jsonl_link_{safe_name}.sqlite3'
     if not db_path.exists():
         return None
-    size_gb = _sqlite_live_size_gb(db_path)
+    size_gb = _sqlite_live_size_gb(db_path, project_root=project_root)
     return float(size_gb) if size_gb > 0.0 else 0.0
 
 
