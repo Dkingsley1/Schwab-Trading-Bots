@@ -358,6 +358,45 @@ def test_stored_coverage_uses_existing_json_accelerator_with_safe_fallback(
     assert bool(calls) == (backend != "unavailable")
 
 
+@pytest.mark.parametrize("size_mib,expected", [(0, 15), (1, 15), (480, 15), (1024, 32), (1920, 60), (8192, 60)])
+def test_light_coverage_budget_scales_with_size_and_stays_bounded(size_mib, expected):
+    assert src._light_coverage_runtime_budget(size_mib * 1024 * 1024) == expected
+
+
+@pytest.mark.parametrize("owner_seconds,elapsed,accepted", [(40, 20, True), (18, 20, False), (90, 60, False)])
+def test_extended_light_coverage_budget_preserves_owner_deadline(
+    tmp_path, monkeypatch, owner_seconds, elapsed, accepted
+):
+    summary = _stored_coverage_fixture(tmp_path)
+    clock = [10.0]
+    monkeypatch.setattr(src.time, "monotonic", lambda: clock[0])
+    sizes = []
+
+    def large_budget(size_bytes):
+        sizes.append(size_bytes)
+        return 60.0
+
+    monkeypatch.setattr(src, "_light_coverage_runtime_budget", large_budget)
+    record = src._record_recent_row
+
+    def spend_time(*args, **kwargs):
+        result = record(*args, **kwargs)
+        clock[0] += elapsed
+        return result
+
+    monkeypatch.setattr(src, "_record_recent_row", spend_time)
+    result = src._verified_stored_coverage_windows(
+        summary, now=datetime.now(timezone.utc), deadline_monotonic=10.0 + owner_seconds
+    )
+    assert sizes == [Path(summary["rows_path"]).stat().st_size]
+    assert bool(result) is accepted
+    if accepted:
+        proof = result["recent_windows_verification"]
+        assert proof["max_runtime_seconds"] == owner_seconds
+        assert proof["rows_sha256"] == summary["rows_sha256"]
+        assert result["current_ingestion_verified"] is False
+
+
 @pytest.mark.parametrize("failure", [
     "hash", "count_short", "count_long", "missing_hash", "legacy", "invalid_timestamp",
     "missing_symbol", "malformed", "truncated", "nested_sequence",

@@ -42,7 +42,9 @@ DEFAULT_ROWS_PATH = PROJECT_ROOT / "exports" / "training" / "runtime_training_sn
 DEFAULT_HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "runtime_training_snapshot_latest.json"
 DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "runtime_training_snapshot.lock"
 _FILE_HASH_CHUNK_BYTES = 1024 * 1024
-_LIGHT_COVERAGE_MAX_SECONDS = 15.0
+_LIGHT_COVERAGE_MIN_SECONDS = 15.0
+_LIGHT_COVERAGE_MAX_SECONDS = 60.0
+_LIGHT_COVERAGE_BYTES_PER_SECOND = 32 * 1024 * 1024
 _LIGHT_COVERAGE_MAX_LINE_BYTES = 2 * 1024 * 1024
 _LIGHT_COVERAGE_MAX_INDEX_BYTES = 128 * 1024 * 1024
 
@@ -1307,13 +1309,20 @@ def _recent_windows_payload(
     }
 
 
+def _light_coverage_runtime_budget(size_bytes: int) -> float:
+    return min(
+        _LIGHT_COVERAGE_MAX_SECONDS,
+        max(_LIGHT_COVERAGE_MIN_SECONDS, size_bytes / _LIGHT_COVERAGE_BYTES_PER_SECOND),
+    )
+
+
 def _verified_stored_coverage_windows(
     summary: dict[str, Any], *, now: datetime,
     deadline_monotonic: float | None = None,
     max_bytes: int | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
-    deadline = started + _LIGHT_COVERAGE_MAX_SECONDS
+    deadline = started + _LIGHT_COVERAGE_MIN_SECONDS
     if deadline_monotonic is not None:
         deadline = min(deadline, deadline_monotonic)
 
@@ -1346,6 +1355,10 @@ def _verified_stored_coverage_windows(
             byte_limit = before.st_size if max_bytes is None else min(before.st_size, max_bytes)
             if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= byte_limit:
                 return reject("byte_budget")
+            # Size only extends the local scan allowance, never the owner's deadline.
+            deadline = started + _light_coverage_runtime_budget(before.st_size)
+            if deadline_monotonic is not None:
+                deadline = min(deadline, deadline_monotonic)
             while bytes_read < byte_limit:
                 if time.monotonic() >= deadline:
                     return reject("deadline")
@@ -1385,7 +1398,7 @@ def _verified_stored_coverage_windows(
         "recent_windows_verification": {
             "status": "complete", "rows_sha256": expected_hash,
             "row_count": row_count, "bytes_read": bytes_read, "byte_limit": byte_limit,
-            "max_runtime_seconds": _LIGHT_COVERAGE_MAX_SECONDS,
+            "max_runtime_seconds": max(0.0, deadline - started),
         },
     }
 
