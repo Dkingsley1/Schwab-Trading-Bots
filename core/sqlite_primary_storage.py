@@ -225,6 +225,18 @@ def observe(project_root: Path) -> dict:
         result["ok"] = not result["blockers"]
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         result["blockers"].append(str(exc))
+    result["route_verification"] = {
+        "verification_state": "ready" if result["ok"] else "blocked",
+        "certified_mode": result["mode"],
+        "scope": "declared_sqlite_routes_only",
+        "tracked_count": len(LINKS),
+        "ready_count": len(LINKS) if result["ok"] else 0,
+        "coverage_ratio": 1.0 if result["ok"] else 0.0,
+        "mismatches": list(result["mismatches"]),
+        "blockers": list(result["blockers"]),
+        "integrity_verified": False,
+        "ingestion_verified": False,
+    }
     return result
 
 

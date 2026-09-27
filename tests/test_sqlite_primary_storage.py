@@ -61,6 +61,28 @@ def test_saved_target_is_context_local_and_honors_spaces(tmp_path, monkeypatch):
     assert not src.enabled(other)
 
 
+def test_route_health_contract_is_scoped_and_fail_closed(cohort):
+    root, source, target, receipt = cohort
+    pending = src.observe(root)["route_verification"]
+    assert pending["verification_state"] == "blocked"
+    assert pending["ready_count"] == 0
+    assert pending["blockers"]
+    src.commit_routes(root, receipt)
+    ready = src.observe(root)["route_verification"]
+    assert ready["verification_state"] == "ready"
+    assert ready["certified_mode"] == "sqlite_primary"
+    assert ready["scope"] == "declared_sqlite_routes_only"
+    assert ready["ready_count"] == ready["tracked_count"] == len(src.LINKS)
+    assert ready["coverage_ratio"] == 1.0
+    assert ready["integrity_verified"] is False
+    assert ready["ingestion_verified"] is False
+    (root / src.LINKS[0]).unlink()
+    failed = src.observe(root)["route_verification"]
+    assert failed["verification_state"] == "blocked"
+    assert failed["coverage_ratio"] == 0.0
+    assert failed["mismatches"]
+
+
 @pytest.mark.parametrize("damage", ["duplicate", "incomplete", "oversized", "symlink"])
 def test_invalid_saved_selection_cannot_fall_back_to_legacy(
     tmp_path, monkeypatch, damage

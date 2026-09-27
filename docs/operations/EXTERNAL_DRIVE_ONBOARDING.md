@@ -86,6 +86,12 @@ modify `os.environ`, and cannot authorize a route change. Malformed or aliased
 configuration fails closed. The scheduled reserve guard also uses opsctl so its
 other managed settings remain current.
 
+Route reports retain the common `route_verification` envelope for ingestion
+health, explicitly scoped to declared SQLite routes. A ready route requires the
+validated volume and every managed link; it is not integrity, ingestion, warm
+standby, or trading-readiness evidence. Missing or conflicting links remain
+blocked.
+
 For an operator-reviewed reversal of an already committed primary, the explicit
 `core.sqlite_primary_recovery.restore_committed_routes` owner requires the old
 committed journal, original handoff, documented retired standbys and reconciled
