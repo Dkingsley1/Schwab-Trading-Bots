@@ -96,7 +96,10 @@ For an operator-reviewed reversal of an already committed primary, the explicit
 `core.sqlite_primary_recovery.restore_committed_routes` owner requires the old
 committed journal, original handoff, documented retired standbys and reconciled
 history. It runs fresh full hashes over the exact primary inventory under a
-2,400-second budget. Only an exact match to the committed, integrity-checked
+2,400-second budget by default. A supervised call may explicitly select the
+7,200-second large-inventory verification budget; routine jobs do not inherit it,
+and an expired or lost maintenance hold still prevents publication. Only an exact
+match to the committed, integrity-checked
 snapshot may reuse its structural proof; changed bytes require a fresh SQLite
 integrity check. The receipt distinguishes both bases. It rechecks quiet identities and
 publishes through the same journaled link transaction. It never adopts foreign

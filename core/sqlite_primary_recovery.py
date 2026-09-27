@@ -42,8 +42,13 @@ def restore_committed_routes(
     handoff_path: Path,
     transaction_path: Path,
     retirement_path: Path,
-    reconciliation_path: Path
+    reconciliation_path: Path,
+    verification_timeout_seconds: int = 2400,
 ) -> dict:
+    if type(
+        verification_timeout_seconds
+    ) is not int or verification_timeout_seconds not in {2400, 7200}:
+        raise ValueError("primary_recovery_verification_budget_invalid")
     root = Path(root).absolute()
     if not primary.enabled(root):
         raise ValueError("primary_recovery_profile_required")
@@ -89,7 +94,7 @@ def restore_committed_routes(
         ):
             raise ValueError("primary_recovery_path_invalid")
         expected.add(str(rel))
-    deadline = time.monotonic() + 2400
+    deadline = time.monotonic() + verification_timeout_seconds
     source_ids = {}
     retired_rows = {r["relative"]: r for r in retired.get("verified", [])}
     for row in rows:
@@ -192,6 +197,7 @@ def restore_committed_routes(
             "live_execution_authority": False,
             "source_retired": False,
             "ingestion_verified": False,
+            "verification_timeout_seconds": verification_timeout_seconds,
         }
         path = (
             root / "governance/storage_recovery/sqlite_primary_recovery_verified.json"

@@ -103,6 +103,29 @@ def test_changed_bytes_require_fresh_sqlite_integrity(committed):
     assert row["integrity_basis"] == "fresh_sqlite_quick_check"
 
 
+@pytest.mark.parametrize("budget", [0, -1, 2401, 7201, True, None])
+def test_unrecognized_verification_budget_rejected_before_io(tmp_path, budget):
+    with pytest.raises(ValueError, match="verification_budget_invalid"):
+        recovery.restore_committed_routes(
+            tmp_path,
+            handoff_path=tmp_path / "missing",
+            transaction_path=tmp_path / "missing",
+            retirement_path=tmp_path / "missing",
+            reconciliation_path=tmp_path / "missing",
+            verification_timeout_seconds=budget,
+        )
+
+
+def test_explicit_extended_verification_retains_all_proof_requirements(committed):
+    root, source, target, arguments = committed
+    result = recovery.restore_committed_routes(
+        root, **arguments, verification_timeout_seconds=7200
+    )
+    assert result["verification_timeout_seconds"] == 7200
+    assert result["routes_restored"] and result["files"]
+    assert result["live_execution_authority"] is False
+
+
 @pytest.mark.parametrize(
     "damage",
     [
