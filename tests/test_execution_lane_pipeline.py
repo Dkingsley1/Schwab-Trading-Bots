@@ -196,7 +196,7 @@ def test_channel_queue_schema_check_rejects_locked_unverified_db(
     )
 
     with pytest.raises(sqlite3.OperationalError, match="channel_queue_schema_unverified_locked"):
-        ChannelQueue(queue_path)
+        ChannelQueue(queue_path, project_root=tmp_path)
     assert queue_path.read_text(encoding="utf-8") == "placeholder"
 
 
@@ -232,7 +232,7 @@ def test_channel_queue_connect_tolerates_locked_wal_pragma(
 
     monkeypatch.setattr(sqlite3, "connect", _connect)
 
-    queue = ChannelQueue(queue_path)
+    queue = ChannelQueue(queue_path, project_root=tmp_path)
     conn = queue._connect()
 
     assert conn is holder["conn"]
@@ -242,7 +242,7 @@ def test_channel_queue_connect_tolerates_locked_wal_pragma(
 
 
 def test_channel_queue_stale_prefix_stops_before_fresh_intent(tmp_path: Path) -> None:
-    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue = ChannelQueue(default_queue_db_path(tmp_path), project_root=tmp_path)
     future_ts = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
     queue.enqueue(
         channel=EXECUTION_INTENT_CHANNEL,
@@ -280,7 +280,7 @@ def test_channel_queue_quarantines_corrupt_db_and_recreates_schema(
     queue_path.write_bytes(b"not a sqlite database")
     Path(f"{queue_path}-wal").write_text("stale wal", encoding="utf-8")
 
-    queue = ChannelQueue(queue_path)
+    queue = ChannelQueue(queue_path, project_root=tmp_path)
     message_id = queue.enqueue(
         channel=EXECUTION_INTENT_CHANNEL,
         payload={"message_id": "intent-corrupt-repair", "symbol": "BTC-USD"},
@@ -316,7 +316,7 @@ def test_channel_queue_repairs_symlinked_external_target_without_replacing_link(
     link = repo_data / "bot_channel_queue.sqlite3"
     link.symlink_to(target)
 
-    queue = ChannelQueue(link)
+    queue = ChannelQueue(link, project_root=tmp_path)
     queue.enqueue(
         channel=EXECUTION_INTENT_CHANNEL,
         payload={"message_id": "intent-symlink-repair", "symbol": "ETH-USD"},
@@ -730,7 +730,7 @@ def test_publish_execution_intent_enqueues_channel_message(tmp_path: Path) -> No
         },
     )
 
-    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue = ChannelQueue(default_queue_db_path(tmp_path), project_root=tmp_path)
     messages = queue.read_from_cursor(
         consumer="pytest", channel=EXECUTION_INTENT_CHANNEL, limit=10
     )
@@ -760,7 +760,7 @@ def test_publish_execution_intent_enqueues_channel_message(tmp_path: Path) -> No
 
 
 def test_channel_processing_claim_is_durable_and_single_owner(tmp_path: Path) -> None:
-    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue = ChannelQueue(default_queue_db_path(tmp_path), project_root=tmp_path)
     message = ChannelMessage(
         id=17,
         channel=EXECUTION_INTENT_CHANNEL,
@@ -814,7 +814,7 @@ def test_channel_processing_claim_is_durable_and_single_owner(tmp_path: Path) ->
 def test_processing_claim_stats_uses_bounded_read_connection(
     tmp_path: Path, monkeypatch
 ) -> None:
-    queue = ChannelQueue(tmp_path / "queue.sqlite3")
+    queue = ChannelQueue(tmp_path / "queue.sqlite3", project_root=tmp_path)
     monkeypatch.setattr(
         queue,
         "_connect",
@@ -829,7 +829,7 @@ def test_processing_claim_stats_uses_bounded_read_connection(
 
 
 def test_channel_cursor_ack_never_moves_backwards(tmp_path: Path) -> None:
-    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue = ChannelQueue(default_queue_db_path(tmp_path), project_root=tmp_path)
 
     queue.ack_through(
         consumer="execution_lane_paper",
@@ -899,7 +899,7 @@ def test_replay_suppression_publishes_a_durable_result(tmp_path: Path) -> None:
         message=message,
         prior_claim={"state": "processing"},
     )
-    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue = ChannelQueue(default_queue_db_path(tmp_path), project_root=tmp_path)
     rows = queue.read_from_cursor(
         consumer="pytest-replay",
         channel=EXECUTION_RESULT_CHANNEL,
@@ -966,7 +966,7 @@ def test_successful_promotion_uses_distinct_child_id_and_reaches_live_queue(
         mode="paper",
         message=message,
     )
-    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue = ChannelQueue(default_queue_db_path(tmp_path), project_root=tmp_path)
     result_rows = queue.read_from_cursor(
         consumer="pytest-results-31", channel=EXECUTION_RESULT_CHANNEL, limit=10
     )
@@ -1094,7 +1094,7 @@ def test_publish_execution_intent_retries_locked_queue(
         },
     )
 
-    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue = ChannelQueue(default_queue_db_path(tmp_path), project_root=tmp_path)
     messages = queue.read_from_cursor(
         consumer="pytest_retry", channel=EXECUTION_INTENT_CHANNEL, limit=10
     )
@@ -1145,7 +1145,7 @@ def test_execution_lane_contains_poison_message_and_publishes_dead_letter(
         queue_db_override="",
     )
 
-    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue = ChannelQueue(default_queue_db_path(tmp_path), project_root=tmp_path)
     results = queue.read_from_cursor(
         consumer="pytest_dead_letter", channel=EXECUTION_RESULT_CHANNEL, limit=10
     )
@@ -1310,7 +1310,7 @@ def test_process_execution_intent_paper_executes_but_never_promotes_master_direc
         message=message,
     )
 
-    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue = ChannelQueue(default_queue_db_path(tmp_path), project_root=tmp_path)
     result_rows = queue.read_from_cursor(
         consumer="pytest_results", channel=EXECUTION_RESULT_CHANNEL, limit=10
     )
@@ -1419,7 +1419,7 @@ def test_process_execution_intent_blocks_promotion_on_stale_realism_fill(
         message=message,
     )
 
-    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue = ChannelQueue(default_queue_db_path(tmp_path), project_root=tmp_path)
     promoted_rows = queue.read_from_cursor(
         consumer="pytest_live_stale", channel=EXECUTION_PROMOTED_CHANNEL, limit=10
     )
@@ -1839,7 +1839,7 @@ def test_paper_standard_gateway_binds_consensus_to_current_candidate(
 def test_update_lane_health_marks_stale_consumer_with_backlog(
     tmp_path: Path, monkeypatch
 ) -> None:
-    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue = ChannelQueue(default_queue_db_path(tmp_path), project_root=tmp_path)
     queue.enqueue(
         channel=EXECUTION_INTENT_CHANNEL,
         payload={
@@ -1887,7 +1887,7 @@ def test_update_lane_health_marks_stale_consumer_with_backlog(
 def test_update_lane_health_does_not_mark_stale_when_consumer_is_caught_up(
     tmp_path: Path, monkeypatch
 ) -> None:
-    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue = ChannelQueue(default_queue_db_path(tmp_path), project_root=tmp_path)
     queue.enqueue(
         channel=EXECUTION_INTENT_CHANNEL,
         payload={
@@ -1938,7 +1938,7 @@ def test_update_lane_health_does_not_mark_stale_when_consumer_is_caught_up(
 def test_update_lane_health_allows_active_backlog_grace_before_marking_stale(
     tmp_path: Path, monkeypatch
 ) -> None:
-    queue = ChannelQueue(default_queue_db_path(tmp_path))
+    queue = ChannelQueue(default_queue_db_path(tmp_path), project_root=tmp_path)
     queue.enqueue(
         channel=EXECUTION_INTENT_CHANNEL,
         payload={

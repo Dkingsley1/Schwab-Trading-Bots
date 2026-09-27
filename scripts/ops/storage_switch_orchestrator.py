@@ -468,7 +468,7 @@ def build_payload(
 ) -> dict[str, Any]:
     existing_hold = maintenance_hold_snapshot(project_root)
     from core import sqlite_primary_storage as primary
-    if primary.enabled():
+    if primary.enabled(project_root):
         return primary.protected_owner_observation(project_root, "storage_switch_orchestrator")
     if bool(existing_hold.get("active", False)):
         return {

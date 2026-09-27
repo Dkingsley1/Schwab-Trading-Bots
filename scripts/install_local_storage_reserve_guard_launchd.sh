@@ -7,7 +7,6 @@ UID_NUM="$(id -u)"
 LOG_DIR="${BOT_OPS_LAUNCHD_LOG_DIR:-/tmp/schwab_trading_bot/launchd_ops}"
 PLIST="$AGENTS_DIR/com.dankingsley.ops.local_storage_reserve_guard.plist"
 LABEL="com.dankingsley.ops.local_storage_reserve_guard"
-PYTHON_BIN="$PROJECT_ROOT/.venv314/bin/python"
 INTERVAL="${BOT_LOCAL_STORAGE_GUARD_INTERVAL_SECONDS:-60}"
 TARGET_FREE="${BOT_LOCAL_STORAGE_TARGET_FREE_GB:-125}"
 PRESSURE_FREE="${BOT_LOCAL_STORAGE_PRESSURE_FREE_GB:-64}"
@@ -22,8 +21,9 @@ cat > "$PLIST" <<PLIST
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key><array>
-    <string>$PYTHON_BIN</string>
-    <string>$PROJECT_ROOT/scripts/ops/local_storage_reserve_guard.py</string>
+    <string>/bin/zsh</string>
+    <string>$PROJECT_ROOT/scripts/ops/opsctl.sh</string>
+    <string>local-storage-reserve-guard</string>
     <string>--apply</string>
     <string>--json</string>
   </array>

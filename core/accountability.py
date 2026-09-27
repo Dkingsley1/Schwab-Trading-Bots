@@ -1066,7 +1066,7 @@ def _queue_publish(
             return
 
         db_path = queue_db_path or default_queue_db_path(project_root)
-        q = ChannelQueue(db_path)
+        q = ChannelQueue(db_path, project_root=Path(project_root))
 
         require_consumer = os.getenv("BOT_CHANNEL_QUEUE_REQUIRE_RECENT_CONSUMER", "1").strip().lower() in {"1", "true", "yes", "on"}
         consumer_max_age_seconds = max(int(os.getenv("BOT_CHANNEL_QUEUE_CONSUMER_MAX_AGE_SECONDS", "86400")), 60)

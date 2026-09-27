@@ -323,7 +323,7 @@ def _execution_transport_payload(
 def execution_lane_root(project_root: str | Path) -> Path:
     root = Path(project_root)
     from core import sqlite_primary_storage as primary
-    if primary.enabled():
+    if primary.enabled(root):
         from core.storage_router import inspect_storage_path
         path = root / "governance" / "execution_lanes"
         if inspect_storage_path(path, boundary_root=root, allow_external=False)["status"] not in {"present", "missing"}:
@@ -591,7 +591,7 @@ def _enqueue_channel(
     queue_db_override: str = "",
     source_path: str = "",
 ) -> str:
-    queue = ChannelQueue(queue_db_path(project_root, queue_db_override))
+    queue = ChannelQueue(queue_db_path(project_root, queue_db_override), project_root=Path(project_root))
     attempts = max(int(os.getenv("EXECUTION_LANE_QUEUE_ENQUEUE_RETRIES", "8") or 8), 1)
     base_sleep = max(
         float(os.getenv("EXECUTION_LANE_QUEUE_ENQUEUE_SLEEP_SECONDS", "0.25") or 0.25),
@@ -2067,7 +2067,7 @@ def update_lane_health(
     health_queue = _HEALTH_QUEUE_CACHE.get(queue_path)
     if health_queue is None:
         try:
-            health_queue = ChannelQueue(queue_path)
+            health_queue = ChannelQueue(queue_path, project_root=Path(project_root))
             _HEALTH_QUEUE_CACHE[queue_path] = health_queue
         except Exception:
             health_queue = None

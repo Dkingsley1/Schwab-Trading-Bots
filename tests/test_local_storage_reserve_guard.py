@@ -13,12 +13,19 @@ from core.local_storage_reserve import GIB, local_storage_reserve_contract
 from scripts.ops import local_storage_reserve_guard as guard
 
 
+def test_scheduled_reserve_guard_loads_managed_storage_profile():
+    source = (PROJECT_ROOT / "scripts/install_local_storage_reserve_guard_launchd.sh").read_text()
+    assert '<string>$PROJECT_ROOT/scripts/ops/opsctl.sh</string>' in source
+    assert '<string>local-storage-reserve-guard</string>' in source
+    assert '<string>$PROJECT_ROOT/scripts/ops/local_storage_reserve_guard.py</string>' not in source
+
+
 def test_sqlite_primary_internal_buffer_routes_require_real_primary_and_paths(
     tmp_path, monkeypatch
 ):
     from core import sqlite_primary_storage as primary
 
-    monkeypatch.setattr(primary, "enabled", lambda: True)
+    monkeypatch.setattr(primary, "enabled", lambda *args: True)
     monkeypatch.setattr(primary, "observe", lambda root: {"ok": True})
     for relative in guard.TELEMETRY_ROUTE_PATHS:
         if relative != "governance/channels/decision":
@@ -40,7 +47,7 @@ def test_sqlite_primary_internal_buffer_routes_require_real_primary_and_paths(
 def test_sqlite_primary_rejects_unknown_buffer_alias(tmp_path, monkeypatch):
     from core import sqlite_primary_storage as primary
 
-    monkeypatch.setattr(primary, "enabled", lambda: True)
+    monkeypatch.setattr(primary, "enabled", lambda *args: True)
     monkeypatch.setattr(primary, "observe", lambda root: {"ok": True})
     monkeypatch.setattr(
         guard, "TELEMETRY_ROUTE_PATHS", ("local_fallback_storage/decisions",)

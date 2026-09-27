@@ -80,6 +80,21 @@ changes remain visible as rollback conflicts. Process death can leave a prepared
 journal and partial routes: leave maintenance engaged and review the journal;
 there is no automatic crash replay or source retirement.
 
+Storage owners read the persisted target contract directly, including when a
+LaunchAgent has an older environment. That selection is context-local, does not
+modify `os.environ`, and cannot authorize a route change. Malformed or aliased
+configuration fails closed. The scheduled reserve guard also uses opsctl so its
+other managed settings remain current.
+
+For an operator-reviewed reversal of an already committed primary, the explicit
+`core.sqlite_primary_recovery.restore_committed_routes` owner requires the old
+committed journal, original handoff, documented retired standbys and reconciled
+history. It runs fresh SQLite integrity checks and full hashes over the exact
+primary inventory under a 2,400-second budget, rechecks quiet identities and
+publishes through the same journaled link transaction. It never adopts foreign
+links, discards conflicting rows, deletes payloads, or automatically replays a
+crashed transaction. Normal ingestion must be tested again afterward.
+
 After an approved handoff, use `./scripts/ops/opsctl.sh storage-route-verify`
 for route observation, then separately test actual I/O, restart/reconnect,
 ingestion continuity and restoration. Metadata readiness is not integrity,

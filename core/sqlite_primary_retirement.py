@@ -112,7 +112,7 @@ def _idle(path):
 
 def retire_standbys(root: Path, receipt_path: Path, *, apply: bool = False) -> dict:
     root = Path(root).absolute()
-    if not primary.enabled():
+    if not primary.enabled(root):
         raise RuntimeError("retirement_requires_sqlite_primary")
     primary._hold(root)
     primary.require_ready(root)
@@ -126,7 +126,7 @@ def retire_standbys(root: Path, receipt_path: Path, *, apply: bool = False) -> d
         receipt.get("purpose") != "sqlite_primary_independent_backups"
         or cutover.get("target_root") != str(target)
         or cutover.get("source_root") != str(root / "local_fallback_storage/data")
-        or cutover.get("volume_uuid") != os.environ.get("BOT_LOGS_EXTERNAL_VOLUME_UUID")
+        or cutover.get("volume_uuid") != primary._getenv("BOT_LOGS_EXTERNAL_VOLUME_UUID")
         or handoff.get("target_root") != str(target)
         or handoff.get("ok") is not True
         or handoff.get("route_mutation_performed") is not True
@@ -135,7 +135,7 @@ def retire_standbys(root: Path, receipt_path: Path, *, apply: bool = False) -> d
         or io.get("queue_write_read_ack_verified") is not True
         or io.get("standby_unchanged") is not True
         or io.get("target_root") != str(target)
-        or io.get("volume_uuid") != os.environ.get("BOT_LOGS_EXTERNAL_VOLUME_UUID")
+        or io.get("volume_uuid") != primary._getenv("BOT_LOGS_EXTERNAL_VOLUME_UUID")
     ):
         raise ValueError("retirement_handoff_or_io_proof_missing")
     rows = receipt.get("files", [])

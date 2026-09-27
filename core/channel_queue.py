@@ -98,7 +98,7 @@ class ChannelQueue:
 
     def _check_storage_route(self) -> None:
         from core import sqlite_primary_storage as primary
-        if primary.enabled():
+        if primary.enabled(self.project_root):
             logical = primary.logical_database_path(self.project_root, self.db_path)
             if logical != self.project_root.absolute() / "data/bot_channel_queue.sqlite3":
                 raise RuntimeError("sqlite_primary_queue_override_conflict")
@@ -822,7 +822,7 @@ class ChannelQueue:
 
 def default_queue_db_path(project_root: str | Path) -> str:
     from core import sqlite_primary_storage as primary
-    if primary.enabled():
+    if primary.enabled(project_root):
         override = os.getenv("BOT_CHANNEL_QUEUE_DB", "").strip()
         if override and primary.logical_database_path(Path(project_root), override) != Path(project_root).absolute() / "data/bot_channel_queue.sqlite3":
             raise RuntimeError("sqlite_primary_queue_override_conflict")

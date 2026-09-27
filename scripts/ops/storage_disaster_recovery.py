@@ -1952,7 +1952,7 @@ def build_payload(
     snapshot_cooldown_seconds: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     from core import sqlite_primary_storage as primary
-    if primary.enabled():
+    if primary.enabled(project_root):
         return primary.protected_owner_observation(project_root, "storage_disaster_recovery"), _load_json(state_path)
     state = _load_json(state_path)
     route_policy = _route_policy(project_root)

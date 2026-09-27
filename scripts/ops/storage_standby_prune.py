@@ -262,7 +262,7 @@ def build_payload(
 ) -> dict[str, Any]:
     relative_paths = {str(item).strip() for item in (relative_paths or set()) if str(item).strip()}
     from core import sqlite_primary_storage as primary
-    if primary.enabled():
+    if primary.enabled(project_root):
         return primary.protected_owner_observation(project_root, "storage_standby_prune")
 
     failback_result = (

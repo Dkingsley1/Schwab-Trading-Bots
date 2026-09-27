@@ -446,7 +446,7 @@ def build_payload(
 ) -> dict[str, Any]:
     project_root = project_root.resolve()
     from core import sqlite_primary_storage as primary
-    if primary.enabled():
+    if primary.enabled(project_root):
         observation = primary.observe(project_root)
         return {
             "timestamp_utc": iso_now(), "schema_version": 1,

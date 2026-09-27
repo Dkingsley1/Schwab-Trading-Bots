@@ -283,7 +283,7 @@ def build_payload(
 ) -> dict[str, Any]:
     project_root = project_root.resolve()
     from core import sqlite_primary_storage as primary
-    if primary.enabled():
+    if primary.enabled(project_root):
         return primary.protected_owner_observation(project_root, "local_sql_shard_standby_prune")
     external = _external_project_root(project_root, external_root)
     active_link = project_root / "data" / "sql_link_shards"

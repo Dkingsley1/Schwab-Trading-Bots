@@ -96,7 +96,7 @@ def test_channel_queue_handoff_requires_registered_consumers_to_be_fully_acked(
     tmp_path,
 ):
     queue_path = tmp_path / "bot_channel_queue.sqlite3"
-    queue = ChannelQueue(queue_path)
+    queue = ChannelQueue(queue_path, project_root=tmp_path)
     queue.enqueue(channel="execution_intent", payload={"symbol": "SPY"})
     messages = queue.read_from_cursor(
         consumer="execution_lane_paper",
@@ -136,8 +136,8 @@ def test_build_sqlite_skip_report_accepts_drained_larger_queue_standby(
 
     local_queue_path = local_data / "bot_channel_queue.sqlite3"
     external_queue_path = external_data / "bot_channel_queue.sqlite3"
-    local_queue = ChannelQueue(local_queue_path)
-    external_queue = ChannelQueue(external_queue_path)
+    local_queue = ChannelQueue(local_queue_path, project_root=project_root)
+    external_queue = ChannelQueue(external_queue_path, project_root=project_root)
     del external_queue
     local_queue.enqueue(
         channel="execution_intent",
@@ -549,7 +549,7 @@ def test_local_queue_route_does_not_require_an_external_standby(monkeypatch, tmp
         (local_data / name).write_bytes(b'local-db')
         (repo_data / name).symlink_to(local_data / name)
     queue_path = local_data / 'bot_channel_queue.sqlite3'
-    ChannelQueue(queue_path).enqueue(channel='observations', payload={'value': 1})
+    ChannelQueue(queue_path, project_root=project_root).enqueue(channel='observations', payload={'value': 1})
     (repo_data / 'bot_channel_queue.sqlite3').write_bytes(b'inactive-repo-queue')
     monkeypatch.setenv('BOT_LOGS_LOCAL_FALLBACK_ROOT', str(local_root))
     monkeypatch.setenv('BOT_CHANNEL_QUEUE_DB', str(queue_path))

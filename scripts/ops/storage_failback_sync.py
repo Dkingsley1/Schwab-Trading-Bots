@@ -1081,7 +1081,7 @@ def main() -> int:
     parser.add_argument("--sqlite-primary-receipt", type=Path, help="Owned, verified quiet-point handoff receipt; requires --apply and an authorized maintenance hold.")
     args = parser.parse_args()
     from core import sqlite_primary_storage as primary
-    if args.sqlite_primary_receipt and (not args.apply or args.verify_only or not primary.enabled()):
+    if args.sqlite_primary_receipt and (not args.apply or args.verify_only or not primary.enabled(PROJECT_ROOT)):
         parser.error("SQLite handoff requires sqlite_primary profile and --apply, without --verify-only")
     if args.verify_only and args.repair_local_fallback_aliases:
         parser.error("choose observation or fallback repair")
@@ -1109,7 +1109,7 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=True))
         return 0
 
-    if primary.enabled():
+    if primary.enabled(PROJECT_ROOT):
         try:
             if args.repair_local_fallback_aliases:
                 raise RuntimeError("sqlite_primary_legacy_fallback_repair_forbidden")

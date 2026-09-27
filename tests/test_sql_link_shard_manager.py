@@ -16,7 +16,9 @@ import scripts.ops.sql_link_shard_manager as shard_manager
 
 
 @pytest.fixture(autouse=True)
-def isolated_storage_admission(monkeypatch):
+def isolated_storage_admission(monkeypatch, tmp_path):
+    monkeypatch.setattr(shard_manager, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(shard_manager, "LOCAL_FALLBACK_ROOT", tmp_path / "local_fallback_storage")
     monkeypatch.setattr(
         shard_manager, "storage_admission", lambda _: {"writer_start_allowed": True}
     )

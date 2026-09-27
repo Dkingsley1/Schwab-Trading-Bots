@@ -15,6 +15,72 @@ from core import sqlite_primary_storage as src
 UUID = "CF28B097-41B2-4A8B-8E9F-210FC6DE7D8D"
 
 
+def managed_config(root):
+    from core.storage_target_override import build_storage_target_override_text
+
+    path = root / "config/.env.storage_target_override"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        build_storage_target_override_text(
+            mount_root="/Volumes/Fixture SSD",
+            volume_uuid=UUID,
+            route_profile="sqlite_primary",
+        )
+    )
+    return path
+
+
+def test_saved_profile_prevents_stale_launcher_route_reversal(cohort, monkeypatch):
+    from core.storage_router import route_runtime_storage
+
+    root, source, target, receipt = cohort
+    managed_config(root)
+    monkeypatch.setenv("BOT_STORAGE_ROUTE_PROFILE", "")
+    monkeypatch.setenv("BOT_LOGS_PREFER_EXTERNAL", "0")
+    before = {name: os.readlink(root / name) for name in src.LINKS}
+    with pytest.raises(RuntimeError, match="sqlite_primary_deferred"):
+        route_runtime_storage(root)
+    assert before == {name: os.readlink(root / name) for name in src.LINKS}
+    src.commit_routes(root, receipt)
+    result = route_runtime_storage(root)
+    assert result.mode == "sqlite_primary"
+    assert all(
+        (root / name).resolve(strict=False) == target / name for name in src.LINKS
+    )
+    assert os.environ["BOT_STORAGE_ROUTE_PROFILE"] == ""
+
+
+def test_saved_target_is_context_local_and_honors_spaces(tmp_path, monkeypatch):
+    first, other = tmp_path / "one", tmp_path / "two"
+    managed_config(first)
+    monkeypatch.setenv("BOT_STORAGE_ROUTE_PROFILE", "")
+    monkeypatch.setenv("BOT_LOGS_EXTERNAL_MOUNT", "/Volumes/Old")
+    assert src.enabled(first)
+    assert src.configured_target() == Path("/Volumes/Fixture SSD/schwab_trading_bot")
+    assert os.environ["BOT_LOGS_EXTERNAL_MOUNT"] == "/Volumes/Old"
+    assert not src.enabled(other)
+
+
+@pytest.mark.parametrize("damage", ["duplicate", "incomplete", "oversized", "symlink"])
+def test_invalid_saved_selection_cannot_fall_back_to_legacy(
+    tmp_path, monkeypatch, damage
+):
+    path = managed_config(tmp_path)
+    monkeypatch.delenv("BOT_STORAGE_ROUTE_PROFILE", raising=False)
+    if damage == "duplicate":
+        path.write_text(path.read_text() + "BOT_STORAGE_ROUTE_PROFILE=\n")
+    elif damage == "incomplete":
+        path.write_text("BOT_STORAGE_ROUTE_PROFILE=sqlite_primary\n")
+    elif damage == "oversized":
+        path.write_text("#" * 20000)
+    else:
+        other = tmp_path / "target"
+        path.rename(other)
+        path.symlink_to(other)
+    with pytest.raises(ValueError):
+        src.enabled(tmp_path)
+
+
 @pytest.fixture
 def cohort(tmp_path, monkeypatch):
     root, target = tmp_path / "project", tmp_path / "mount" / "platform"

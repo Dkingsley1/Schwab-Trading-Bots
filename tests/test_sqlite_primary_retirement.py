@@ -72,7 +72,7 @@ def cohort(tmp_path, monkeypatch):
         )
     )
     monkeypatch.setenv("BOT_LOGS_EXTERNAL_VOLUME_UUID", "uuid")
-    monkeypatch.setattr(src.primary, "enabled", lambda: True)
+    monkeypatch.setattr(src.primary, "enabled", lambda *args: True)
     monkeypatch.setattr(src.primary, "_hold", lambda root: None)
     monkeypatch.setattr(src.primary, "require_ready", lambda root: target)
     monkeypatch.setattr(src.primary, "_validated_target", lambda: target)

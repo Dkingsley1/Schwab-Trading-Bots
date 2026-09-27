@@ -333,7 +333,7 @@ def connect_sqlite(
             raise RuntimeError("sqlite_runtime_maintenance_hold")
     from core import sqlite_primary_storage as primary
 
-    if primary.enabled() and not memory_database:
+    if not memory_database and primary.enabled(project_root):
         primary.check_database_open(project_root, path, readonly=readonly)
     if memory_database and readonly:
         raise ValueError(

@@ -389,7 +389,7 @@ def cap_launchd_log_roots(
 def telemetry_route_contract(project_root: Path) -> dict[str, Any]:
     from core import sqlite_primary_storage as primary
 
-    if primary.enabled():
+    if primary.enabled(project_root):
         observation = primary.observe(project_root)
         rows = []
         for relative in TELEMETRY_ROUTE_PATHS:

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import fcntl
+from contextvars import ContextVar
 import hashlib
 import json
 import os
 import plistlib
 import shutil
+import shlex
 import stat
 import subprocess
 import time
@@ -15,6 +17,9 @@ import uuid
 from pathlib import Path
 
 PROFILE = "sqlite_primary"
+_managed_settings: ContextVar[dict | None] = ContextVar(
+    "sqlite_primary_settings", default=None
+)
 DATABASES = (
     "jsonl_link.sqlite3",
     "bot_channel_queue.sqlite3",
@@ -25,16 +30,72 @@ LINKS = ("data/sql_link_shards",) + tuple(
 )
 
 
-def enabled() -> bool:
-    profile = os.getenv("BOT_STORAGE_ROUTE_PROFILE", "").strip()
+def _load_managed_profile(project_root: Path) -> dict | None:
+    path = Path(project_root).absolute() / "config/.env.storage_target_override"
+    if not os.path.lexists(path):
+        return
+    _physical(path.parent)
+    before = _identity(path)
+    if before[2] > 16384:
+        raise ValueError("sqlite_primary_target_config_oversized")
+    values = {}
+    with path.open() as stream:
+        for line in stream:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, separator, raw = line.partition("=")
+            if not separator or key in values:
+                raise ValueError("sqlite_primary_target_config_invalid")
+            parts = shlex.split(raw, comments=True)
+            if len(parts) > 1:
+                raise ValueError("sqlite_primary_target_config_invalid")
+            values[key] = parts[0] if parts else ""
+    if _identity(path) != before:
+        raise ValueError("sqlite_primary_target_config_changed")
+    profile = values.get("BOT_STORAGE_ROUTE_PROFILE", "")
+    if profile not in {"", PROFILE}:
+        raise ValueError("unsupported_storage_route_profile")
+    if profile == PROFILE:
+        required = {
+            "BOT_STORAGE_ROUTE_PROFILE",
+            "BOT_LOGS_EXTERNAL_MOUNT",
+            "BOT_LOGS_EXTERNAL_PROJECT_DIR",
+            "BOT_LOGS_EXTERNAL_PROJECT_ROOT",
+            "BOT_LOGS_EXTERNAL_VOLUME_UUID",
+        }
+        if any(not values.get(key) for key in required):
+            raise ValueError("sqlite_primary_target_config_incomplete")
+        # Persisted operator selection outranks stale launchd environments.
+        # Loading the contract never adopts, repairs or merges database routes.
+        allowed = required | {
+            "BOT_LOGS_EXTERNAL_VOLUME_NAME",
+            "BOT_LOGS_EXTERNAL_MOUNT_CANDIDATES",
+            "BOT_LOGS_EXTERNAL_DISK_IDENTIFIER",
+        }
+        return {key: value for key, value in values.items() if key in allowed}
+    return None
+
+
+def _getenv(key: str, default: str = "") -> str:
+    settings = _managed_settings.get() or {}
+    return settings.get(key, os.getenv(key, default))
+
+
+def enabled(project_root: Path | str | None = None) -> bool:
+    _managed_settings.set(None)
+    _managed_settings.set(
+        _load_managed_profile(Path(project_root)) if project_root is not None else None
+    )
+    profile = _getenv("BOT_STORAGE_ROUTE_PROFILE").strip()
     if profile not in {"", PROFILE}:
         raise ValueError("unsupported_storage_route_profile")
     return profile == PROFILE
 
 
 def configured_target() -> Path:
-    mount = Path(os.getenv("BOT_LOGS_EXTERNAL_MOUNT", ""))
-    project = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot")
+    mount = Path(_getenv("BOT_LOGS_EXTERNAL_MOUNT"))
+    project = _getenv("BOT_LOGS_EXTERNAL_PROJECT_DIR", "schwab_trading_bot")
     if (
         not mount.is_absolute()
         or mount.parent != Path("/Volumes")
@@ -44,7 +105,7 @@ def configured_target() -> Path:
     ):
         raise ValueError("sqlite_primary_invalid_target")
     target = mount / project
-    explicit = os.getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", "")
+    explicit = _getenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT")
     if explicit and Path(explicit) != target:
         raise ValueError("sqlite_primary_target_binding_mismatch")
     return target
@@ -61,7 +122,7 @@ def _physical(path: Path) -> None:
 def _validated_target() -> Path:
     target = configured_target()
     mount = target.parent
-    expected = str(uuid.UUID(os.environ["BOT_LOGS_EXTERNAL_VOLUME_UUID"])).upper()
+    expected = str(uuid.UUID(_getenv("BOT_LOGS_EXTERNAL_VOLUME_UUID"))).upper()
     _physical(target)
     if not os.path.ismount(mount):
         raise ValueError("sqlite_primary_mount_missing")
@@ -95,6 +156,7 @@ def logical_database_path(project_root: Path, path: Path | str) -> Path:
     """Resolve declared aliases without I/O; admission precedes opening a DB."""
     candidate = Path(os.path.abspath(Path(path).expanduser()))
     root = Path(project_root).absolute()
+    enabled(root)
     for base in (root, root / "local_fallback_storage", configured_target()):
         try:
             rel = candidate.relative_to(base)
@@ -118,6 +180,7 @@ def observe(project_root: Path) -> dict:
     from core.storage_router import inspect_storage_path
 
     root = Path(project_root).absolute()
+    enabled(root)
     result = {
         "profile": PROFILE,
         "ok": False,
@@ -279,6 +342,7 @@ def commit_routes(project_root: Path, receipt_path: Path) -> dict:
     block adoption. No payload or original is copied, merged, or deleted here.
     """
     root = Path(project_root).absolute()
+    enabled(root)
     deadline = time.monotonic() + 900
     from core.storage_router import inspect_storage_path
 
@@ -303,7 +367,7 @@ def commit_routes(project_root: Path, receipt_path: Path) -> dict:
         or receipt.get("schema_version") != 1
         or receipt.get("target_root") != str(target)
         or receipt.get("source_root") != str(source)
-        or receipt.get("volume_uuid") != os.environ.get("BOT_LOGS_EXTERNAL_VOLUME_UUID")
+        or receipt.get("volume_uuid") != _getenv("BOT_LOGS_EXTERNAL_VOLUME_UUID")
     ):
         raise ValueError("sqlite_primary_receipt_binding_mismatch")
     rows = receipt["files"]
@@ -378,80 +442,84 @@ def commit_routes(project_root: Path, receipt_path: Path) -> dict:
             )
             if handles.returncode != 1 or handles.stdout or handles.stderr:
                 raise RuntimeError("sqlite_primary_handles_changed_before_commit")
-        originals = {}
-        for rel in LINKS:
-            path = root / rel
-            if os.path.lexists(path) and not path.is_symlink():
-                raise ValueError("sqlite_primary_existing_nonlink_route")
-            originals[rel] = os.readlink(path) if path.is_symlink() else None
-            if originals[rel] is not None:
-                actual = Path(os.path.abspath(path.parent / originals[rel]))
-                if actual not in {root / "local_fallback_storage" / rel, target / rel}:
-                    raise ValueError("sqlite_primary_source_route_mismatch")
-        changed = []
-        from core.write_path_recovery import durable_json
-
-        journal = (
-            root
-            / "governance/storage_recovery"
-            / ("sqlite_primary_transaction_" + uuid.uuid4().hex + ".json")
-        )
-        transaction = {
-            "purpose": "sqlite_primary_route_transaction",
-            "phase": "prepared",
-            "receipt_sha256": hashlib.sha256(raw).hexdigest(),
-            "target_root": str(target),
-            "original_links": originals,
-            "source_retired": False,
-        }
-        durable_json(root, journal, transaction)
-        try:
-            for rel in LINKS:
-                _hold(root)
-                path = root / rel
-                current = os.readlink(path) if path.is_symlink() else None
-                if current != originals[rel] or (
-                    os.path.lexists(path) and not path.is_symlink()
-                ):
-                    raise RuntimeError("sqlite_primary_route_changed_during_handoff")
-                temp = path.with_name("." + path.name + "." + uuid.uuid4().hex)
-                try:
-                    temp.symlink_to(target / rel)
-                    os.replace(temp, path)
-                    changed.append(rel)
-                    _sync_directory(path.parent)
-                finally:
-                    if temp.is_symlink():
-                        temp.unlink()
-            require_ready(root)
-            _hold(root)
-            durable_json(root, journal, {**transaction, "phase": "committed"})
-        except BaseException:
-            rollback_conflicts = []
-            for rel in reversed(changed):
-                path = root / rel
-                if not path.is_symlink() or os.readlink(path) != str(target / rel):
-                    rollback_conflicts.append(rel)
-                    continue
-                path.unlink()
-                if originals[rel] is not None:
-                    path.symlink_to(originals[rel])
-                _sync_directory(path.parent)
-            durable_json(
-                root,
-                journal,
-                {
-                    **transaction,
-                    "phase": (
-                        "rollback_incomplete" if rollback_conflicts else "rolled_back"
-                    ),
-                    "rollback_conflicts": rollback_conflicts,
-                },
-            )
-            raise
+        _publish_verified_links(root, target, hashlib.sha256(raw).hexdigest())
     return {
         **observe(root),
         "route_mutation_performed": True,
         "source_retired": False,
         "payload_hashes_verified": len(rows),
     }
+
+
+def _publish_verified_links(root: Path, target: Path, receipt_sha256: str) -> Path:
+    """Caller holds the route lock and has verified the complete quiet point."""
+    originals = {}
+    for rel in LINKS:
+        path = root / rel
+        if os.path.lexists(path) and not path.is_symlink():
+            raise ValueError("sqlite_primary_existing_nonlink_route")
+        originals[rel] = os.readlink(path) if path.is_symlink() else None
+        if originals[rel] is not None:
+            actual = Path(os.path.abspath(path.parent / originals[rel]))
+            if actual not in {root / "local_fallback_storage" / rel, target / rel}:
+                raise ValueError("sqlite_primary_source_route_mismatch")
+    changed = []
+    from core.write_path_recovery import durable_json
+
+    journal = (
+        root
+        / "governance/storage_recovery"
+        / ("sqlite_primary_transaction_" + uuid.uuid4().hex + ".json")
+    )
+    transaction = {
+        "purpose": "sqlite_primary_route_transaction",
+        "phase": "prepared",
+        "receipt_sha256": receipt_sha256,
+        "target_root": str(target),
+        "original_links": originals,
+        "source_retired": False,
+    }
+    durable_json(root, journal, transaction)
+    try:
+        for rel in LINKS:
+            _hold(root)
+            path = root / rel
+            current = os.readlink(path) if path.is_symlink() else None
+            if current != originals[rel] or (
+                os.path.lexists(path) and not path.is_symlink()
+            ):
+                raise RuntimeError("sqlite_primary_route_changed_during_handoff")
+            temp = path.with_name("." + path.name + "." + uuid.uuid4().hex)
+            try:
+                temp.symlink_to(target / rel)
+                os.replace(temp, path)
+                changed.append(rel)
+                _sync_directory(path.parent)
+            finally:
+                if temp.is_symlink():
+                    temp.unlink()
+        require_ready(root)
+        _hold(root)
+        durable_json(root, journal, {**transaction, "phase": "committed"})
+    except BaseException:
+        conflicts = []
+        for rel in reversed(changed):
+            path = root / rel
+            if not path.is_symlink() or os.readlink(path) != str(target / rel):
+                conflicts.append(rel)
+                continue
+            path.unlink()
+            if originals[rel] is not None:
+                path.symlink_to(originals[rel])
+            _sync_directory(path.parent)
+        durable_json(
+            root,
+            journal,
+            {
+                **transaction,
+                "phase": "rollback_incomplete" if conflicts else "rolled_back",
+                "rollback_conflicts": conflicts,
+            },
+        )
+        raise
+    return journal

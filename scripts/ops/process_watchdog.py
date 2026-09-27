@@ -175,7 +175,7 @@ def _default_require_paper_executor() -> bool:
 
 def _safety_pause_state() -> Dict[str, Any]:
     from core import sqlite_primary_storage as primary
-    primary_route = primary.observe(PROJECT_ROOT) if primary.enabled() else {}
+    primary_route = primary.observe(PROJECT_ROOT) if primary.enabled(PROJECT_ROOT) else {}
     primary_unavailable = bool(primary_route and not primary_route["ok"])
     operator_stop_active = OPERATOR_STOP_FLAG.exists()
     global_halt_active = GLOBAL_HALT_FLAG.exists()

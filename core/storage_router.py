@@ -690,7 +690,7 @@ def inspect_runtime_storage(
     """Resolve the effective route without copying data, changing links, or recording events."""
     root = Path(project_root).resolve()
     from core import sqlite_primary_storage as primary
-    if primary.enabled():
+    if primary.enabled(root):
         observation = primary.observe(root)
         return StorageRoutingResult(
             mode=str(observation["mode"]),
@@ -761,7 +761,7 @@ def route_runtime_storage(
 ) -> StorageRoutingResult:
     root = Path(project_root).resolve()
     from core import sqlite_primary_storage as primary
-    if primary.enabled():
+    if primary.enabled(root):
         target = primary.require_ready(root)
         # Only the explicit maintenance-held handoff owner may alter these links.
         return StorageRoutingResult(

@@ -769,7 +769,7 @@ def main() -> int:
     )
 
     queue_path = queue_db_path(str(PROJECT_ROOT), args.queue_db)
-    queue = ChannelQueue(queue_path)
+    queue = ChannelQueue(queue_path, project_root=PROJECT_ROOT)
     channel = _channel_for_mode(args.mode)
     consumer = f"execution_lane_{args.mode}"
 

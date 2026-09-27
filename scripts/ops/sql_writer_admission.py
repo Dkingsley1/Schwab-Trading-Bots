@@ -21,7 +21,7 @@ def storage_admission(project_root: Path) -> dict:
     blockers = []
     from core import sqlite_primary_storage as primary
     primary_observation = {}
-    if primary.enabled():
+    if primary.enabled(project_root):
         primary_observation = primary.observe(project_root)
         blockers.extend(primary_observation["blockers"])
         if os.getenv("SQL_LINK_SERVICE_FORCE_LOCAL_FALLBACK", "0").strip().lower() in {"1", "true", "yes", "on"}:
