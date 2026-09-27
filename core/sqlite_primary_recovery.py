@@ -135,17 +135,23 @@ def restore_committed_routes(
             before = primary._identity(path)
             if before[:2] != row["target_identity"][:2]:
                 raise ValueError("primary_recovery_target_replaced")
-            conn = sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)
-            try:
-                conn.execute("PRAGMA cache_size=-8192")
-                conn.set_progress_handler(
-                    lambda: int(time.monotonic() >= deadline), 10000
-                )
-                if conn.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
-                    raise ValueError("primary_recovery_integrity_failed")
-            finally:
-                conn.close()
             digest = primary._digest(path, deadline)
+            # Exact fresh byte equality preserves the committed snapshot's
+            # structural proof; metadata equality alone never earns this credit.
+            identical_verified_snapshot = (
+                digest == row.get("sha256") and row.get("quick_check") == "ok"
+            )
+            if not identical_verified_snapshot:
+                conn = sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)
+                try:
+                    conn.execute("PRAGMA cache_size=-8192")
+                    conn.set_progress_handler(
+                        lambda: int(time.monotonic() >= deadline), 10000
+                    )
+                    if conn.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+                        raise ValueError("primary_recovery_integrity_failed")
+                finally:
+                    conn.close()
             if primary._identity(path) != before:
                 raise ValueError("primary_recovery_target_changed")
             verified.append(
@@ -154,6 +160,11 @@ def restore_committed_routes(
                     "identity": before,
                     "sha256": digest,
                     "quick_check": "ok",
+                    "integrity_basis": (
+                        "fresh_full_hash_matches_committed_integrity_checked_snapshot"
+                        if identical_verified_snapshot
+                        else "fresh_sqlite_quick_check"
+                    ),
                 }
             )
             print(

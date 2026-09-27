@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -65,6 +66,41 @@ def test_explicit_recovery_preserves_both_payload_copies(committed):
     assert result["ingestion_verified"] is False
     assert before == {p.name: p.read_bytes() for p in source.glob("*.sqlite3")}
     assert primary.observe(root)["ok"]
+
+
+def test_unchanged_bytes_reuse_committed_integrity_only_after_full_hash(
+    committed, monkeypatch
+):
+    root, source, target, arguments = committed
+    hashed = []
+    real_digest = primary._digest
+
+    def digest(path, deadline):
+        hashed.append(path)
+        return real_digest(path, deadline)
+
+    def unexpected_connect(*args, **kwargs):
+        raise AssertionError("Identical verified bytes need no second structural scan")
+
+    monkeypatch.setattr(primary, "_digest", digest)
+    monkeypatch.setattr(recovery.sqlite3, "connect", unexpected_connect)
+    result = recovery.restore_committed_routes(root, **arguments)
+    assert len(hashed) == len(result["files"])
+    assert all(
+        row["integrity_basis"].startswith("fresh_full_hash_matches_")
+        for row in result["files"]
+    )
+
+
+def test_changed_bytes_require_fresh_sqlite_integrity(committed):
+    root, source, target, arguments = committed
+    path = target / "data/snapshot_context.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE added_after_cutover(value INTEGER)")
+    conn.close()
+    result = recovery.restore_committed_routes(root, **arguments)
+    row = next(r for r in result["files"] if r["relative"] == path.name)
+    assert row["integrity_basis"] == "fresh_sqlite_quick_check"
 
 
 @pytest.mark.parametrize(

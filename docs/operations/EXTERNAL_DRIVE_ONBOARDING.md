@@ -95,8 +95,10 @@ blocked.
 For an operator-reviewed reversal of an already committed primary, the explicit
 `core.sqlite_primary_recovery.restore_committed_routes` owner requires the old
 committed journal, original handoff, documented retired standbys and reconciled
-history. It runs fresh SQLite integrity checks and full hashes over the exact
-primary inventory under a 2,400-second budget, rechecks quiet identities and
+history. It runs fresh full hashes over the exact primary inventory under a
+2,400-second budget. Only an exact match to the committed, integrity-checked
+snapshot may reuse its structural proof; changed bytes require a fresh SQLite
+integrity check. The receipt distinguishes both bases. It rechecks quiet identities and
 publishes through the same journaled link transaction. It never adopts foreign
 links, discards conflicting rows, deletes payloads, or automatically replays a
 crashed transaction. Normal ingestion must be tested again afterward.
