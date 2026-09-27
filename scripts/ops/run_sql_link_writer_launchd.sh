@@ -16,7 +16,16 @@ export BOT_RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-$PROFILE}"
 export MAINTENANCE_SLOT_NICE_LEVEL="${SQL_LINK_WRITER_NICE:-${OPS_SQL_WRITER_NICE:-${OPS_SUPPORT_JOB_NICE:-5}}}"
 export MAINTENANCE_SLOT_BACKGROUND_POLICY="${SQL_LINK_WRITER_BACKGROUND_POLICY:-${OPS_SQL_WRITER_BACKGROUND_POLICY:-0}}"
 export MAINTENANCE_SLOT_SQL_LINK_WRITER_MAX_RUNTIME_SECONDS="${MAINTENANCE_SLOT_SQL_LINK_WRITER_MAX_RUNTIME_SECONDS:-900}"
-export SQL_LINK_SERVICE_FORCE_LOCAL_FALLBACK="${SQL_LINK_SERVICE_FORCE_LOCAL_FALLBACK:-1}"
+if [[ "${BOT_STORAGE_ROUTE_PROFILE:-}" == "sqlite_primary" ]]; then
+  export SQL_LINK_SERVICE_FORCE_LOCAL_FALLBACK="${SQL_LINK_SERVICE_FORCE_LOCAL_FALLBACK:-0}"
+  if ! "$PYTHON_BIN" -c 'import sys; from pathlib import Path; from core.sqlite_primary_storage import observe; sys.exit(0 if observe(Path.cwd())["ok"] else 75)'; then
+    "$PYTHON_BIN" -m scripts.ops.sql_writer_admission >/dev/null || true
+    print -r -- "sql_link_writer status=deferred reason=sqlite_primary_route_unavailable"
+    exit 0
+  fi
+else
+  export SQL_LINK_SERVICE_FORCE_LOCAL_FALLBACK="${SQL_LINK_SERVICE_FORCE_LOCAL_FALLBACK:-1}"
+fi
 # Cold archive export is a separate support lane; the hot SQLite writer never opens VIDEO-backed files.
 export BOT_ALLOW_VIDEO_COLD_ARCHIVE=0
 

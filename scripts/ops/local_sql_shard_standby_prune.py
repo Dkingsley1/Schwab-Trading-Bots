@@ -282,6 +282,9 @@ def build_payload(
     lsof_timeout_seconds: float = 10.0,
 ) -> dict[str, Any]:
     project_root = project_root.resolve()
+    from core import sqlite_primary_storage as primary
+    if primary.enabled():
+        return primary.protected_owner_observation(project_root, "local_sql_shard_standby_prune")
     external = _external_project_root(project_root, external_root)
     active_link = project_root / "data" / "sql_link_shards"
     local_root = project_root / "local_fallback_storage" / "data" / "sql_link_shards"

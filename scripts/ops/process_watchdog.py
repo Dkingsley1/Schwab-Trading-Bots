@@ -174,6 +174,9 @@ def _default_require_paper_executor() -> bool:
 
 
 def _safety_pause_state() -> Dict[str, Any]:
+    from core import sqlite_primary_storage as primary
+    primary_route = primary.observe(PROJECT_ROOT) if primary.enabled() else {}
+    primary_unavailable = bool(primary_route and not primary_route["ok"])
     operator_stop_active = OPERATOR_STOP_FLAG.exists()
     global_halt_active = GLOBAL_HALT_FLAG.exists()
     maintenance_hold = maintenance_hold_snapshot(PROJECT_ROOT)
@@ -203,6 +206,8 @@ def _safety_pause_state() -> Dict[str, Any]:
         pause_reason = "operator_stop_active"
     elif global_halt_active:
         pause_reason = "global_halt_active"
+    elif primary_unavailable:
+        pause_reason = "sqlite_primary_route_unavailable"
     child_fanout_grace_seconds = max(
         float(
             os.getenv("OPS_WATCHDOG_ALL_SLEEVES_CHILD_GRACE_SECONDS", "180") or 180.0
@@ -213,6 +218,8 @@ def _safety_pause_state() -> Dict[str, Any]:
     return {
         "operator_stop_active": bool(operator_stop_active),
         "global_halt_active": bool(global_halt_active),
+        "sqlite_primary_route_unavailable": primary_unavailable,
+        "sqlite_primary_route": primary_route,
         "runtime_maintenance_hold_active": maintenance_hold_active,
         "runtime_maintenance_hold": maintenance_hold,
         "stack_restart_in_progress": restart_fence_blocks,
@@ -222,6 +229,7 @@ def _safety_pause_state() -> Dict[str, Any]:
             or restart_fence_blocks
             or operator_stop_active
             or global_halt_active
+            or primary_unavailable
         ),
         "reason": pause_reason,
     }
@@ -1574,6 +1582,8 @@ def _sql_writer_restart_hold(safety_pause: Dict[str, Any]) -> Dict[str, Any]:
         reason = "local_storage_reserve_pressure"
     elif safety_pause.get("runtime_maintenance_hold_active", False):
         reason = "runtime_maintenance_hold"
+    elif safety_pause.get("sqlite_primary_route_unavailable", False):
+        reason = "sqlite_primary_route_unavailable"
     return {
         "active": bool(reason),
         "reason": reason,

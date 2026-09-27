@@ -1077,8 +1077,12 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--verify-only", action="store_true", help="Refresh read-only route metadata without failback, copying, pruning, or environment changes.")
     parser.add_argument("--repair-local-fallback-aliases", action="store_true")
-    parser.add_argument("--apply", action="store_true", help="Apply the explicit legacy fallback-alias repair mode.")
+    parser.add_argument("--apply", action="store_true", help="Apply an explicit fallback-alias repair or receipt-bound SQLite primary handoff.")
+    parser.add_argument("--sqlite-primary-receipt", type=Path, help="Owned, verified quiet-point handoff receipt; requires --apply and an authorized maintenance hold.")
     args = parser.parse_args()
+    from core import sqlite_primary_storage as primary
+    if args.sqlite_primary_receipt and (not args.apply or args.verify_only or not primary.enabled()):
+        parser.error("SQLite handoff requires sqlite_primary profile and --apply, without --verify-only")
     if args.verify_only and args.repair_local_fallback_aliases:
         parser.error("choose observation or fallback repair")
 
@@ -1104,6 +1108,24 @@ def main() -> int:
         # Only the lock holder may publish canonical route observations.
         print(json.dumps(payload, ensure_ascii=True))
         return 0
+
+    if primary.enabled():
+        try:
+            if args.repair_local_fallback_aliases:
+                raise RuntimeError("sqlite_primary_legacy_fallback_repair_forbidden")
+            payload = (primary.commit_routes(PROJECT_ROOT, args.sqlite_primary_receipt)
+                       if args.sqlite_primary_receipt else primary.observe(PROJECT_ROOT))
+            payload.update(timestamp_utc=datetime.now(timezone.utc).isoformat(),
+                           certified_mode=payload["mode"], observation_only=not bool(args.sqlite_primary_receipt))
+            from core.accountability import safe_write_json_atomic
+            for destination in (out, compat):
+                if safe_write_json_atomic(str(destination), payload, project_root=str(PROJECT_ROOT), source="sqlite_primary_route") is False:
+                    raise RuntimeError("sqlite_primary_report_publication_failed")
+            print(json.dumps(payload))
+            return 0 if payload["ok"] else 2
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            lock_fh.close()
 
     if args.repair_local_fallback_aliases:
         try:

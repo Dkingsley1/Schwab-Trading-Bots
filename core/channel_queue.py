@@ -87,12 +87,22 @@ class ChannelMessage:
 
 
 class ChannelQueue:
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(self, db_path: str | Path, *, project_root: Path | None = None) -> None:
         self.db_path = Path(db_path)
+        self.project_root = project_root or Path(__file__).resolve().parents[1]
+        self._check_storage_route()
         self.last_repair: Dict[str, Any] = {"active": False, "moved": [], "reason": ""}
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         if not self._schema_ready():
             self._ensure_schema()
+
+    def _check_storage_route(self) -> None:
+        from core import sqlite_primary_storage as primary
+        if primary.enabled():
+            logical = primary.logical_database_path(self.project_root, self.db_path)
+            if logical != self.project_root.absolute() / "data/bot_channel_queue.sqlite3":
+                raise RuntimeError("sqlite_primary_queue_override_conflict")
+            primary.check_database_open(self.project_root, self.db_path)
 
     def _wal_retry_count(self) -> int:
         try:
@@ -183,6 +193,7 @@ class ChannelQueue:
         }
 
     def _connect(self) -> sqlite3.Connection:
+        self._check_storage_route()
         conn = sqlite3.connect(str(self.db_path), timeout=30)
         conn.execute("PRAGMA busy_timeout=30000")
         last_locked_error: sqlite3.OperationalError | None = None
@@ -207,6 +218,7 @@ class ChannelQueue:
         """Open a bounded read path without renegotiating SQLite journal mode."""
 
         timeout = min(max(float(timeout_seconds), 0.05), 5.0)
+        self._check_storage_route()
         conn = sqlite3.connect(str(self.db_path), timeout=timeout)
         conn.execute(f"PRAGMA busy_timeout={max(int(timeout * 1000), 50)}")
         conn.execute("PRAGMA query_only=ON")
@@ -809,6 +821,12 @@ class ChannelQueue:
 
 
 def default_queue_db_path(project_root: str | Path) -> str:
+    from core import sqlite_primary_storage as primary
+    if primary.enabled():
+        override = os.getenv("BOT_CHANNEL_QUEUE_DB", "").strip()
+        if override and primary.logical_database_path(Path(project_root), override) != Path(project_root).absolute() / "data/bot_channel_queue.sqlite3":
+            raise RuntimeError("sqlite_primary_queue_override_conflict")
+        return routed_queue_db_path(project_root)
     override = str(os.getenv("BOT_CHANNEL_QUEUE_DB", "") or "").strip()
     if override:
         return str(Path(override).expanduser())

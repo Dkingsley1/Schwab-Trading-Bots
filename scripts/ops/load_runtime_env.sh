@@ -33,6 +33,10 @@ routed_queue_db_default_path() {
 }
 
 default_queue_db_path() {
+  if [[ "${BOT_STORAGE_ROUTE_PROFILE:-}" == "sqlite_primary" ]]; then
+    routed_queue_db_default_path
+    return 0
+  fi
   local prefer_local_raw="${BOT_CHANNEL_QUEUE_PREFER_LOCAL:-}"
   if [[ -n "$prefer_local_raw" ]]; then
     case "${prefer_local_raw:l}" in
@@ -453,6 +457,17 @@ export SQL_LINK_SERVICE_JSON_FILE_SYNC_MIN_INTERVAL_SECONDS="${SQL_LINK_SERVICE_
 QUEUE_DB_DEFAULT_PATH="$(default_queue_db_path)"
 export BOT_CHANNEL_QUEUE_DB="${BOT_CHANNEL_QUEUE_DB:-$QUEUE_DB_DEFAULT_PATH}"
 export SQL_LINK_SERVICE_QUEUE_DB="${SQL_LINK_SERVICE_QUEUE_DB:-${BOT_CHANNEL_QUEUE_DB}}"
+if [[ "${BOT_STORAGE_ROUTE_PROFILE:-}" == "sqlite_primary" ]]; then
+  for queue_path in "$BOT_CHANNEL_QUEUE_DB" "$SQL_LINK_SERVICE_QUEUE_DB"; do
+    case "$queue_path" in
+      "$PROJECT_ROOT/data/bot_channel_queue.sqlite3"|"$PROJECT_ROOT/local_fallback_storage/data/bot_channel_queue.sqlite3"|"${BOT_LOGS_EXTERNAL_PROJECT_ROOT:-}/data/bot_channel_queue.sqlite3") ;;
+      *) print -u2 -r -- "sqlite_primary_queue_override_conflict"; return 2 2>/dev/null || exit 2 ;;
+    esac
+  done
+  export BOT_CHANNEL_QUEUE_DB="$PROJECT_ROOT/data/bot_channel_queue.sqlite3"
+  export SQL_LINK_SERVICE_QUEUE_DB="$BOT_CHANNEL_QUEUE_DB"
+  export SQL_LINK_SERVICE_AUTO_LOCAL_FALLBACK_PRUNE=0
+fi
 export SQL_LINK_SERVICE_QUEUE_PRUNE_ORPHANS="${SQL_LINK_SERVICE_QUEUE_PRUNE_ORPHANS:-1}"
 export SQL_LINK_SERVICE_QUEUE_ORPHAN_DAYS="${SQL_LINK_SERVICE_QUEUE_ORPHAN_DAYS:-14}"
 export SQL_LINK_SERVICE_QUEUE_MAX_DB_GB="${SQL_LINK_SERVICE_QUEUE_MAX_DB_GB:-12}"

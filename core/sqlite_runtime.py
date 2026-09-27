@@ -320,6 +320,9 @@ def connect_sqlite(
     if not math.isfinite(timeout) or timeout < 0:
         raise ValueError("SQLite timeout must be finite and nonnegative")
     memory_database = str(path) == ":memory:"
+    from core import sqlite_primary_storage as primary
+    if primary.enabled() and not memory_database:
+        primary.check_database_open(project_root, path, readonly=readonly)
     if memory_database and readonly:
         raise ValueError(
             "A read-only SQLite connection requires an existing database file"

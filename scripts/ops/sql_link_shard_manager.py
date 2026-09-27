@@ -129,6 +129,9 @@ def _is_broken_symlink(path: Path) -> bool:
 
 def _routed_or_local_fallback_path(path: Path) -> Path:
     candidate = Path(path).expanduser()
+    from core import sqlite_primary_storage as primary
+    if primary.enabled():
+        return primary.logical_database_path(PROJECT_ROOT, candidate)
     force_local = str(
         os.getenv("SQL_LINK_SERVICE_FORCE_LOCAL_FALLBACK", "0") or "0"
     ).strip().lower() in {
@@ -3204,6 +3207,11 @@ def _prune_stale_local_fallback_artifacts(
     older_than_seconds: int,
     max_files: int,
 ) -> dict[str, object]:
+    from core import sqlite_primary_storage as primary
+    if primary.enabled():
+        return {"enabled": False, "deleted_files": 0, "deleted_bytes": 0,
+                "delete_errors": 0, "deleted_paths": [],
+                "reason": "sqlite_primary_standby_retirement_requires_custody_review"}
     candidates = _stale_local_fallback_paths(
         *roots, older_than_seconds=max(int(older_than_seconds), 0)
     )

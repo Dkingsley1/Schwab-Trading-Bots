@@ -2,9 +2,9 @@
 
 ## Prepared Scope
 
-The incoming 2 TB SSD is planned as the platform's **primary bulk-data drive**,
-not just an overflow archive. Nothing is armed or migrated before it arrives.
-The suggested volume name is `BOT_DATA`; a name is never sufficient identity.
+The 2 TB Extreme SSD is planned as the platform's **primary bulk-data drive**,
+not just an overflow archive. Verified staged copies do not activate runtime
+routes or authorize deletion. A volume name is never sufficient identity.
 
 | Placement | Planned Contents |
 | --- | --- |
@@ -12,8 +12,8 @@ The suggested volume name is `BOT_DATA`; a name is never sufficient identity.
 | New SSD: ordinary platform subdirectories | Logs, decisions, explanations, exports, reports and model artifacts |
 | New SSD: `schwab_trading_bot/cold_archive/` | Eligible closed/compressed history and retained cold archives, using existing manifests and retention rules |
 | Internal disk | Source/Git, Python environments, credentials/Keychain, current halt/maintenance flags, small control/health records and a bounded recovery buffer |
-| Existing BOT_LOGS | Preserve its current contents and identity; consider an independent backup role only after separate capacity and verification checks |
-| VIDEO | Untouched and not inspected, enumerated or used for platform migration |
+| Existing BOT_LOGS and LaCie | Selected independent-device backups and rollback copies, subject to capacity and restore verification; do not duplicate every replaceable dataset |
+| VIDEO | User media; excluded from routine platform storage and cleanup. Prior copy-only exceptions do not authorize source deletion |
 
 These are planned placements, not new environment overrides. Dataset family
 names in the preflight are categories rather than an exhaustive path manifest.
@@ -22,6 +22,69 @@ report is explicitly stale and never proves current copy size or reclaimable
 space. Build a fresh, exact manifest before moving anything. Archives already
 linked to another device are separate migration work, not files to follow and
 copy automatically.
+
+BOT_LOGS and VIDEO are partitions of the same physical LaCie device, not two
+independent backups. Confirm physical-device identities before counting backup
+copies. Prioritize irreplaceable raw data, decision/execution evidence and
+current database recovery points; derived datasets and caches can be rebuilt.
+Keep at least 200 GiB free on Extreme SSD (or the larger configured reserve),
+and retain the existing internal and backup-volume reserves. Broad log, model
+and dataset moves remain later, separately verified steps; the first restricted
+runtime handoff covers only the SQLite paths below.
+
+## Restricted SQLite Route
+
+The opt-in `BOT_STORAGE_ROUTE_PROFILE=sqlite_primary` profile is implemented by
+`core/sqlite_primary_storage.py`. It is not enabled by adding these source files.
+The target override writer supports this profile and shell-quotes spaced volume
+names. Bind the exact selected APFS volume UUID, mount and platform root using
+the existing storage-target owner; do not use a blanket external switch.
+
+Only `data/sql_link_shards` and `data/{jsonl_link,bot_channel_queue,snapshot_context}.sqlite3`
+plus their WAL/SHM routes are adopted. Governance, health, maintenance, halt and
+execution-lane controls stay internal. Logs, exports, models and other datasets
+keep their existing routes. Current staged `migration_snapshots` are not active
+database destinations, and changed sources need fresh quiet-point snapshots.
+
+The router and failback verifier observe this profile without adopting it.
+Writer admission and queue/common SQLite opens reject unavailable active routes;
+explicit standby writes are forbidden. Read-only standby inspection still reads
+the requested standby. An unavailable SSD defers the writer and watchdog restart
+attempts without readiness credit or automatic fallback to stale local data.
+Legacy broad switching, disaster recovery and source-pruning owners are blocked
+for this profile rather than allowed to rearrange or retire its files.
+
+The explicit native handoff owner is:
+
+```sh
+.venv314/bin/python scripts/ops/storage_failback_sync.py --apply --sqlite-primary-receipt /absolute/path/to/reviewed-receipt.json
+```
+
+This is a maintenance-only command, not a ready-to-run migration shortcut.
+The receipt must be under the project's physical `governance/storage_recovery`
+directory. It uses schema version 1, purpose `sqlite_primary_cutover`, exact
+`source_root`, `target_root` and `volume_uuid`, and a complete `files` list.
+Each row binds `relative`, quiesced `source_identity` (device, inode, size,
+mtime-ns, ctime-ns), target `sha256`, and SQLite `quick_check: "ok"` evidence.
+Source root is the project's `local_fallback_storage/data`; destination is the
+configured target's `data`. Missing/extra shard entries, aliases (including
+unreconciled historical lookup links), nonempty journals, unknown open-handle
+results, changed files or unrecognized existing routes block the handoff.
+
+An authorized native maintenance hold and live switch OFF are required throughout.
+The owner rechecks full destination hashes, namespace and file identities under
+a 900-second budget, and never copies or deletes payloads. A durable internal
+transaction journal records original links and prepared/committed/rollback
+phases. Caught failures restore only this transaction's links; concurrent foreign
+changes remain visible as rollback conflicts. Process death can leave a prepared
+journal and partial routes: leave maintenance engaged and review the journal;
+there is no automatic crash replay or source retirement.
+
+After an approved handoff, use `./scripts/ops/opsctl.sh storage-route-verify`
+for route observation, then separately test actual I/O, restart/reconnect,
+ingestion continuity and restoration. Metadata readiness is not integrity,
+independent backup or safe-deletion proof. No live cutover or retirement is
+certified by unit tests.
 
 ## Read-Only Preparation Command
 
@@ -95,6 +158,16 @@ drive reliability or independent backup coverage.
    migration or health completion.
 
 ## Existing Owners
+
+Storage-target overrides are shell-sourced. The canonical writer quotes every
+value, including mount and volume names containing spaces; do not hand-write an
+unquoted target assignment. Legacy simple BOT_LOGS assignments remain unchanged.
+
+The stateful storage repair blocks equal-size file collisions rather than
+classifying them as duplicates. Both versions remain at their existing paths at
+the collision; earlier actions in that repair pass are not certified by the
+blocked result. Resolve custody through the verified-retirement owner before
+retrying. File size alone never establishes equal contents or retirement rights.
 
 - `storage_failback_sync.py --verify-only`: read-only route observation.
 - `storage_switch_orchestrator.py`: supervised stop/switch/restart coordination,

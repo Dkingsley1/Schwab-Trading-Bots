@@ -467,6 +467,9 @@ def build_payload(
     wait_timeout_seconds: float = 120.0,
 ) -> dict[str, Any]:
     existing_hold = maintenance_hold_snapshot(project_root)
+    from core import sqlite_primary_storage as primary
+    if primary.enabled():
+        return primary.protected_owner_observation(project_root, "storage_switch_orchestrator")
     if bool(existing_hold.get("active", False)):
         return {
             "timestamp_utc": _utc_now(),

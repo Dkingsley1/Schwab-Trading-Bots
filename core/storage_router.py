@@ -689,6 +689,15 @@ def inspect_runtime_storage(
 ) -> StorageRoutingResult:
     """Resolve the effective route without copying data, changing links, or recording events."""
     root = Path(project_root).resolve()
+    from core import sqlite_primary_storage as primary
+    if primary.enabled():
+        observation = primary.observe(root)
+        return StorageRoutingResult(
+            mode=str(observation["mode"]),
+            active_root=Path(observation.get("target_root", root / DEFAULT_LOCAL_FALLBACK)),
+            switched_links=(), passthrough_paths=(),
+            autosync_skipped_reason="sqlite_primary_observation_only",
+        )
     local_root = Path(
         os.getenv(
             "BOT_LOGS_LOCAL_FALLBACK_ROOT",
@@ -751,6 +760,15 @@ def route_runtime_storage(
     allow_autosync: bool = False,
 ) -> StorageRoutingResult:
     root = Path(project_root).resolve()
+    from core import sqlite_primary_storage as primary
+    if primary.enabled():
+        target = primary.require_ready(root)
+        # Only the explicit maintenance-held handoff owner may alter these links.
+        return StorageRoutingResult(
+            mode=primary.PROFILE, active_root=target, switched_links=(),
+            passthrough_paths=("governance", "logs", "exports", "models", "decisions", "decision_explanations"),
+            autosync_skipped_reason="sqlite_primary_no_automatic_copy_prune_or_relink",
+        )
     maintenance_hold = maintenance_hold_snapshot(root)
     if (
         bool(maintenance_hold.get("active", False))

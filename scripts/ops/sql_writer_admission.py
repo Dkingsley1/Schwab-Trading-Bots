@@ -19,6 +19,13 @@ def storage_admission(project_root: Path) -> dict:
         project_root / "governance/health/local_storage_reserve_guard_latest.json"
     )
     blockers = []
+    from core import sqlite_primary_storage as primary
+    primary_observation = {}
+    if primary.enabled():
+        primary_observation = primary.observe(project_root)
+        blockers.extend(primary_observation["blockers"])
+        if os.getenv("SQL_LINK_SERVICE_FORCE_LOCAL_FALLBACK", "0").strip().lower() in {"1", "true", "yes", "on"}:
+            blockers.append("sqlite_primary_conflicting_force_local_setting")
     policy = {}
     snapshot = {}
     try:
@@ -76,6 +83,7 @@ def storage_admission(project_root: Path) -> dict:
         "reason": "" if not blockers else "local_storage_writer_admission",
         "blockers": blockers,
         "writer_start_allowed": not blockers,
+        "sqlite_primary_route": primary_observation,
         "local_storage_reserve": snapshot,
         "policy_source": str(receipt_path),
         "policy": "fresh disk observation; owner thresholds and explicit pauses cannot be relaxed by recovery requests or maintenance tokens",

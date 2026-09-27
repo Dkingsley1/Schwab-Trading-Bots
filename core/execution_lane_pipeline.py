@@ -322,6 +322,13 @@ def _execution_transport_payload(
 
 def execution_lane_root(project_root: str | Path) -> Path:
     root = Path(project_root)
+    from core import sqlite_primary_storage as primary
+    if primary.enabled():
+        from core.storage_router import inspect_storage_path
+        path = root / "governance" / "execution_lanes"
+        if inspect_storage_path(path, boundary_root=root, allow_external=False)["status"] not in {"present", "missing"}:
+            raise RuntimeError("sqlite_primary_execution_controls_must_remain_internal")
+        return path
     override = os.getenv("EXECUTION_LANE_ROOT", "").strip()
     if override:
         return Path(override).expanduser()
