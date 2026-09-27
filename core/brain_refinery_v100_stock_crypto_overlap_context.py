@@ -240,8 +240,8 @@ def _train_synthetic():
     )
 
 
-def train_brain():
-    return train_runtime_indicator_bot(
+def runtime_training_options():
+    return dict(
         run_tag="brain_refinery_v100_stock_crypto_overlap_context",
         feature_names=[
             "pct_from_close",
@@ -299,6 +299,10 @@ def train_brain():
         min_accuracy_lift_over_majority=0.02,
         min_precision_balance_score=0.24,
     )
+
+
+def train_brain():
+    return train_runtime_indicator_bot(**runtime_training_options())
 
 
 if __name__ == "__main__":

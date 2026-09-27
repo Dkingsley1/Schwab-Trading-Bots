@@ -37,6 +37,15 @@ def _account(label: str, equity: float, cash: float) -> dict:
         "available_funds": cash,
         "account_type": "CASH",
         "flags": {"closing_only": False, "in_margin_call": False},
+        "account_capability_truth": {
+            "operator_classification": {
+                "account_kind": "cash",
+                "tax_wrapper": "taxable",
+                "trading_access": "cash",
+                "classification_complete": True,
+                "borrowing_allowed": False,
+            }
+        },
     }
 
 
@@ -127,6 +136,65 @@ def test_fractional_equities_support_small_accounts_without_whole_share_assumpti
     assert payload["action_count"] == 1
     assert payload["actions"][0]["proposed_quantity_change"] == 0.05
     assert payload["actions"][0]["proposed_notional_change"] == 10.0
+
+
+def test_limited_margin_does_not_expand_available_cash_capacity() -> None:
+    study, opportunities, allocator, risk = _inputs()
+    account = _account("limited", 10_000.0, 200.0)
+    account["account_type"] = "MARGIN"
+    account["available_funds"] = 9_000.0
+    account["account_capability_truth"]["operator_classification"].update(
+        {
+            "trading_access": "limited_margin",
+            "borrowing_allowed": False,
+        }
+    )
+    study["accounts"] = [account]
+    study["positions"] = []
+    policy = _policy()
+    policy["allow_margin_expansion"] = True
+
+    payload = _evaluate(study, opportunities, allocator, risk, policy=policy)
+    plan = payload["accounts"][0]
+
+    assert plan["provider_account_type"] == "MARGIN"
+    assert plan["operator_trading_type"] == "limited_margin"
+    assert plan["borrowing_allowed"] is False
+    assert plan["margin_expansion_requested"] is True
+    assert plan["margin_expansion_allowed"] is False
+    assert plan["addition_funding_capacity"] == 200.0
+    assert "margin_expansion_blocked_by_account_capability" in plan["holds"]
+    assert (
+        payload["regression_contract"]["limited_margin_uses_cash_capacity_only"]
+        is True
+    )
+
+
+def test_unclassified_account_is_observation_only() -> None:
+    study, opportunities, allocator, risk = _inputs()
+    account = _account("unknown", 10_000.0, 10_000.0)
+    account["account_capability_truth"]["operator_classification"] = {
+        "account_kind": "unknown",
+        "tax_wrapper": "unknown",
+        "trading_access": "unknown",
+        "classification_complete": False,
+        "borrowing_allowed": False,
+    }
+    study["accounts"] = [account]
+    study["positions"] = []
+
+    payload = _evaluate(study, opportunities, allocator, risk)
+    plan = payload["accounts"][0]
+
+    assert payload["action_count"] == 0
+    assert plan["plan_state"] == "observe_only_constrained"
+    assert "operator_account_classification_incomplete" in plan["holds"]
+    assert (
+        payload["regression_contract"][
+            "unclassified_accounts_are_observation_only"
+        ]
+        is True
+    )
 
 
 def test_zero_allocator_budget_is_ready_observe_only_not_fake_degradation() -> None:

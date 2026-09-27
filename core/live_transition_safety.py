@@ -6,6 +6,7 @@ from typing import Any, Mapping
 ENTRY_INTERLOCKS = (
     "restart_state_unreconciled",
     "auth_not_ready",
+    "broker_unreachable",
     "auth_generation_changed",
     "quote_stale",
     "decision_source_degraded",
@@ -32,6 +33,7 @@ def evaluate_release_interlock(
     checks = {
         "restart_state_unreconciled": not _truthy(signals, "restart_reconciled"),
         "auth_not_ready": not _truthy(signals, "auth_ready"),
+        "broker_unreachable": not _truthy(signals, "broker_reachable"),
         "auth_generation_changed": not _truthy(signals, "auth_generation_stable"),
         "quote_stale": not _truthy(signals, "quote_fresh"),
         "decision_source_degraded": not _truthy(signals, "sources_ready"),

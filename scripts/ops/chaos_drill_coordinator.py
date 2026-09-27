@@ -89,6 +89,28 @@ def _record_isolated_harness(
     return payload
 
 
+def _republish_cached_isolated_harness(harness_path: Path) -> bool:
+    payload = load_json(harness_path)
+    if not (
+        bool(payload.get("ok", False))
+        and bool(payload.get("production_recovery_evidence", False))
+        and str(payload.get("run_sha256") or "").strip()
+    ):
+        return False
+
+    published_at = iso_now()
+    payload["evidence_generated_at_utc"] = str(
+        payload.get("evidence_generated_at_utc")
+        or payload.get("timestamp_utc")
+        or published_at
+    )
+    payload["timestamp_utc"] = published_at
+    payload["cache_revalidated_at_utc"] = published_at
+    payload["cadence_reuse"] = True
+    write_payload(harness_path, payload)
+    return True
+
+
 def _isolated_run_due(
     state_path: Path,
     *,
@@ -322,6 +344,13 @@ def main() -> int:
             force=bool(args.force_isolated),
         )
         if cadence["due"]:
+            _record_isolated_harness(
+                project_root,
+                state_path=state_path,
+                harness_path=harness_path,
+                max_recovery_seconds=float(args.max_recovery_seconds),
+            )
+        elif not _republish_cached_isolated_harness(harness_path):
             _record_isolated_harness(
                 project_root,
                 state_path=state_path,

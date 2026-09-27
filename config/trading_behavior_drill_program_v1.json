@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "program_id": "trading_behavior_drill_program_v1",
+  "operating_mode": "deterministic_candidate_bound_paper_only",
+  "description": "Runs crisis, adversarial profitability, and paper behavior intervention drills as one bounded evidence program before any paper behavior overlay may be admitted.",
+  "suite_order": [
+    {
+      "suite_id": "profitability_crisis",
+      "policy_path": "config/profitability_crisis_drill_v1.json",
+      "latest_artifact": "governance/research/profitability_crisis_drill_latest.json",
+      "required_for_admission": true,
+      "purpose": "Verify severe-risk abstention, reduce-only exits, and staged recovery re-entry across historical crisis shapes."
+    },
+    {
+      "suite_id": "profitability_adversarial",
+      "policy_path": "config/profitability_adversarial_drill_v1.json",
+      "latest_artifact": "governance/research/profitability_adversarial_drill_latest.json",
+      "required_for_admission": true,
+      "purpose": "Challenge costs, capacity, liquidity, crowding, decay, leakage, data loss, consensus, and path dependency."
+    },
+    {
+      "suite_id": "paper_behavior_intervention",
+      "policy_path": "config/paper_behavior_intervention_drill_v1.json",
+      "latest_artifact": "governance/research/paper_behavior_intervention_drill_latest.json",
+      "required_for_admission": true,
+      "purpose": "Propose monotonic paper-entry blocking or size reduction while preserving HOLD and SELL behavior."
+    }
+  ],
+  "execution_contract": {
+    "deterministic": true,
+    "full_suite_required_for_admission": true,
+    "maximum_runtime_seconds": 180.0,
+    "maximum_total_work_units": 15000,
+    "maximum_history_record_bytes": 262144,
+    "program_artifact_ttl_seconds": 86400,
+    "candidate_state_must_remain_unchanged": true,
+    "stop_admission_on_suite_regression": true,
+    "comparable_run_requires_same_candidate_and_inputs": true,
+    "control_score_regression_tolerance": 0.0,
+    "history_is_summary_only": true
+  },
+  "admission_contract": {
+    "required_suite_count": 3,
+    "required_control_grade": "A+",
+    "required_program_score": 100.0,
+    "behavior_proposal_requires_complete_intervention_pack": true,
+    "single_runtime_writer": "scripts/ops/paper_profitability_control.py",
+    "candidate_forward_post_cost_evidence_required": true,
+    "automatic_risk_widening_allowed": false,
+    "profitability_claim_allowed": false
+  },
+  "authority_contract": {
+    "can_read_candidate_state": true,
+    "can_run_deterministic_diagnostics": true,
+    "can_publish_research_evidence": true,
+    "can_propose_paper_behavior_overlay": true,
+    "can_write_runtime_control": false,
+    "can_submit_paper_orders": false,
+    "can_submit_live_orders": false,
+    "can_access_broker": false,
+    "can_access_network": false,
+    "can_mutate_candidate": false,
+    "can_promote": false,
+    "can_change_allocation": false,
+    "can_relax_risk": false,
+    "can_change_live_execution": false
+  },
+  "positive_behavior_contract": {
+    "allowed_effects": [
+      "block_unsafe_new_paper_entry",
+      "reduce_existing_paper_entry_size",
+      "preserve_existing_hold",
+      "preserve_existing_sell_or_reduce_only_exit",
+      "restore_entry_eligibility_only_after_existing_recovery_conditions_pass"
+    ],
+    "prohibited_effects": [
+      "originate_trade",
+      "increase_entry_size",
+      "reverse_action",
+      "rewrite_historical_outcome",
+      "self_promote_candidate",
+      "submit_order",
+      "enable_live_execution"
+    ],
+    "success_definition": "All deterministic safety and economics checks pass without authority use or candidate mutation, followed by favorable candidate-bound post-cost paper evidence.",
+    "profitability_guaranteed": false
+  },
+  "history_contract": {
+    "directory": "governance/research/trading_behavior_drill_runs",
+    "latest_artifact": "governance/research/trading_behavior_drill_program_latest.json",
+    "record_format": "compact_receipt_and_summary",
+    "detailed_suite_artifacts_are_not_duplicated": true
+  }
+}

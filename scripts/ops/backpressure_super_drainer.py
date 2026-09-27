@@ -461,11 +461,17 @@ def _refresh_storage_command(project_root: Path) -> list[str]:
 
 def _merged_rows_from_coordinator(payload: dict[str, Any]) -> int:
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-    candidates = [_safe_int(summary.get("writer_merged_rows_delta"), 0)]
-    for key in ("writer_state_after_wait", "writer_state_after_remediation", "writer_state_before"):
-        state = payload.get(key) if isinstance(payload.get(key), dict) else {}
-        candidates.append(_safe_int(state.get("merged_rows_this_cycle"), 0))
-    return max(candidates or [0])
+    effectiveness = (
+        payload.get("drain_effectiveness")
+        if isinstance(payload.get("drain_effectiveness"), dict)
+        else {}
+    )
+    # Cycle counters can describe an earlier completed writer; only use this wave's work.
+    return max(
+        0,
+        _safe_int(summary.get("writer_merged_rows_delta"), 0),
+        _safe_int(effectiveness.get("merged_rows"), 0),
+    )
 
 
 def _partial_progress_flag(payload: dict[str, Any]) -> bool:
@@ -473,10 +479,15 @@ def _partial_progress_flag(payload: dict[str, Any]) -> bool:
     if bool(summary.get("partial_progress", False)):
         return True
     steps = payload.get("steps") if isinstance(payload.get("steps"), dict) else {}
-    return any(isinstance(row, dict) and str(row.get("status") or "") == "partial_progress" for row in steps.values())
+    return any(
+        isinstance(row, dict) and str(row.get("status") or "") == "partial_progress"
+        for row in steps.values()
+    )
 
 
-def _wave_status(result: dict[str, Any], payload: dict[str, Any], *, progress_observed: bool) -> str:
+def _wave_status(
+    result: dict[str, Any], payload: dict[str, Any], *, progress_observed: bool
+) -> str:
     if bool(result.get("timed_out", False)):
         return "timed_out_with_progress" if progress_observed else "timed_out"
     if _safe_int(result.get("rc"), 1) == 0:
@@ -487,17 +498,20 @@ def _wave_status(result: dict[str, Any], payload: dict[str, Any], *, progress_ob
     return "error"
 
 
-def _wave_progress(before: dict[str, Any], after: dict[str, Any], coordinator_payload: dict[str, Any], *, min_progress_rows: int) -> dict[str, Any]:
+def _wave_progress(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    coordinator_payload: dict[str, Any],
+    *,
+    min_progress_rows: int,
+) -> dict[str, Any]:
     pending_before = _safe_int(before.get("total_pending_lines"), 0)
     pending_after = _safe_int(after.get("total_pending_lines"), pending_before)
     pending_delta = max(pending_before - pending_after, 0)
     merged_rows = _merged_rows_from_coordinator(coordinator_payload)
     partial_progress = _partial_progress_flag(coordinator_payload)
     progress_observed = bool(
-        pending_delta > 0
-        or merged_rows >= max(int(min_progress_rows), 1)
-        or partial_progress
-        or str(coordinator_payload.get("overall_status") or "") in {"applied", "applied_with_followups", "progressing_waiting_for_writer"}
+        pending_delta > 0 or merged_rows >= max(int(min_progress_rows), 1)
     )
     return {
         "pending_lines_before": int(pending_before),

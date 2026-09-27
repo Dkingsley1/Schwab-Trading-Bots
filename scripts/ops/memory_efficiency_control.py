@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from scripts.ops.long_runtime_common import evidence_freshness, governor_observation_contract, write_payload, write_text_atomic
 DEFAULT_OVERRIDE = PROJECT_ROOT / "config" / ".env.memory_efficiency_override"
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "memory_efficiency_control_latest.json"
 DEFAULT_REGISTRY = PROJECT_ROOT / "master_bot_registry.json"
@@ -939,7 +944,8 @@ def _memory_pressure_clear(resource_guard: dict[str, Any]) -> bool:
     state = str(resource_guard.get("memory_pressure_state") or "").strip().lower()
     kind = str(resource_guard.get("memory_pressure_kind") or "").strip().lower()
     swap_used_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
-    return state in {"", "green", "normal", "ok", "none"} and kind in {"", "none", "green", "normal", "ok"} and swap_used_gb < 8.0
+    allocation_only = bool(resource_guard.get("allocation_only_memory", False))
+    return state in {"", "green", "normal", "ok", "none"} and kind in {"", "none", "green", "normal", "ok"} and (swap_used_gb < 8.0 or allocation_only)
 
 
 def _raw_live_backlog_clear_contract(ingestion_storage: dict[str, Any]) -> dict[str, Any]:
@@ -1222,7 +1228,11 @@ def _safe_int(raw: Any, default: int = 0) -> int:
 
 
 def _memory_truth_reconciliation(resource_guard: dict[str, Any], swap_pressure_payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    from core.memory_pressure_evidence import allocation_only_memory_evidence
+
     effective = dict(resource_guard)
+    allocation_evidence = allocation_only_memory_evidence(resource_guard, swap_pressure_payload)
+    effective["allocation_only_memory"] = allocation_evidence["ready"]
     swap_pressure = swap_pressure_payload.get("swap_pressure") if isinstance(swap_pressure_payload.get("swap_pressure"), dict) else {}
     raw_swap_gb = _safe_float(resource_guard.get("swap_used_gb"), 0.0)
     current_swap_gb = _safe_float(swap_pressure.get("swap_used_gb"), raw_swap_gb)
@@ -1237,6 +1247,8 @@ def _memory_truth_reconciliation(resource_guard: dict[str, Any], swap_pressure_p
     swap_tier = str(swap_pressure.get("tier") or "").strip().lower()
     governor_green = bool(
         swap_pressure
+        and evidence_freshness(swap_pressure_payload, max_age_minutes=2.0)["fresh"]
+        and evidence_freshness(resource_guard, max_age_minutes=2.0)["fresh"]
         and swap_tier == "normal"
         and swap_state in {"green", "normal", "none", "clear"}
         and swap_kind in {"", "none", "normal", "green", "clear"}
@@ -1264,7 +1276,8 @@ def _memory_truth_reconciliation(resource_guard: dict[str, Any], swap_pressure_p
         effective["memory_pressure_kind"] = "none"
         effective["allocation_relief_active"] = True
     return effective, {
-        "active": bool(stale_swap_relief or stale_compression_relief),
+        "active": bool(stale_swap_relief or stale_compression_relief or allocation_evidence["ready"]),
+        "allocation_only_memory_evidence": allocation_evidence,
         "stale_swap_relief": stale_swap_relief,
         "stale_compression_relief": stale_compression_relief,
         "raw_swap_used_gb": round(raw_swap_gb, 3),
@@ -1274,7 +1287,7 @@ def _memory_truth_reconciliation(resource_guard: dict[str, Any], swap_pressure_p
         "compressor_gb": round(compressor_gb, 3),
         "free_pct": round(free_pct, 3),
         "swap_pressure_tier": swap_tier,
-        "reason": "stale_allocation_high_water_reconciled" if stale_swap_relief or stale_compression_relief else "not_applicable",
+        "reason": "allocation_counters_not_resident_pressure" if allocation_evidence["ready"] else "stale_allocation_high_water_reconciled" if stale_swap_relief or stale_compression_relief else "not_applicable",
         "policy": "fresh green swap-pressure evidence can relax stale resource_guard high-water swap/compression while preserving raw telemetry",
     }
 
@@ -1670,11 +1683,12 @@ def _recommended_profile(
         status = "blocked"
         reasons.append("swap_usage_critical")
 
-    if compressed_store_gb >= 28.0 or compressor_gb >= 16.0:
+    compression_pressure_gb = compressor_gb if resource_guard.get("allocation_only_memory", False) else compressed_store_gb
+    if compression_pressure_gb >= 28.0 or compressor_gb >= 16.0:
         recommended = _cap_profile(recommended, "constrained")
         status = "blocked" if status == "blocked" else "needs_work"
         reasons.append("compressed_memory_critical")
-    elif compressed_store_gb >= 18.0 or compressor_gb >= 9.0:
+    elif compression_pressure_gb >= 18.0 or compressor_gb >= 9.0:
         recommended = _cap_profile(recommended, "air_safe")
         if status == "ready":
             status = "needs_work"
@@ -1828,7 +1842,7 @@ def _write_override(path: Path, profile_name: str, env_overrides: dict[str, str]
     current = path.read_text(encoding="utf-8") if path.exists() else ""
     if current == content:
         return False
-    path.write_text(content, encoding="utf-8")
+    write_text_atomic(path, content)
     return True
 
 
@@ -1836,6 +1850,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
     now = datetime.now(timezone.utc)
     health_root = project_root / "governance" / "health"
     resource_guard = _load_json(health_root / "resource_guard_latest.json")
+    observation = governor_observation_contract({"resource_guard": (resource_guard, 120.0)})
     raw_resource_guard = dict(resource_guard)
     swap_pressure_payload = _load_json(health_root / "swap_pressure_governor_latest.json")
     resource_guard, memory_truth = _memory_truth_reconciliation(resource_guard, swap_pressure_payload)
@@ -1926,6 +1941,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
 
     return {
         "timestamp_utc": now.isoformat(),
+        **observation,
         "schema_version": 1,
         "ok": overall_status in {"ready", "advisory"},
         "overall_status": overall_status,
@@ -1941,50 +1957,115 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
         "cotenant_awareness": cotenant_awareness,
         "expansion_session": expansion_session,
         "unified_memory_telemetry": {
-            "memory_architecture": str(unified_memory.get("memory_architecture") or ("unified" if shared_pool else "system_memory")),
+            "memory_architecture": str(
+                unified_memory.get("memory_architecture")
+                or ("unified" if shared_pool else "system_memory")
+            ),
             "shared_cpu_gpu_memory_pool": shared_pool,
-            "estimated_feature_cache_budget_gb": _safe_float(unified_memory.get("estimated_feature_cache_budget_gb"), round(memory_gb * 0.1, 3)),
-            "estimated_live_inference_budget_gb": _safe_float(unified_memory.get("estimated_live_inference_budget_gb"), round(memory_gb * 0.06, 3)),
+            "estimated_feature_cache_budget_gb": _safe_float(
+                unified_memory.get("estimated_feature_cache_budget_gb"),
+                round(memory_gb * 0.1, 3),
+            ),
+            "estimated_live_inference_budget_gb": _safe_float(
+                unified_memory.get("estimated_live_inference_budget_gb"),
+                round(memory_gb * 0.06, 3),
+            ),
             "competitive_advantage_state": competitive_state,
-            "copy_pressure_summary": str(unified_memory.get("copy_avoidance_summary") or ""),
+            "copy_pressure_summary": str(
+                unified_memory.get("copy_avoidance_summary") or ""
+            ),
         },
         "memory_snapshot": {
-            "memory_pressure_state": str(resource_guard.get("memory_pressure_state") or ""),
-            "memory_pressure_kind": str(resource_guard.get("memory_pressure_kind") or ""),
+            "memory_pressure_state": str(
+                resource_guard.get("memory_pressure_state") or ""
+            ),
+            "memory_pressure_kind": str(
+                resource_guard.get("memory_pressure_kind") or ""
+            ),
             "memory_free_pct": _safe_float(resource_guard.get("memory_free_pct"), 0.0),
             "swap_used_gb": _safe_float(resource_guard.get("swap_used_gb"), 0.0),
-            "compressed_store_gb": _safe_float(resource_guard.get("compressed_store_gb"), 0.0),
+            "compressed_store_gb": _safe_float(
+                resource_guard.get("compressed_store_gb"), 0.0
+            ),
             "compressor_gb": _safe_float(resource_guard.get("compressor_gb"), 0.0),
-            "allocation_relief_active": bool(resource_guard.get("allocation_relief_active", False)),
+            "allocation_relief_active": bool(
+                resource_guard.get("allocation_relief_active", False)
+            ),
             "local_disk_free_gb": resource_guard.get("local_disk_free_gb"),
             "local_disk_used_pct": resource_guard.get("local_disk_used_pct"),
         },
         "raw_memory_snapshot": {
-            "memory_pressure_state": str(raw_resource_guard.get("memory_pressure_state") or ""),
-            "memory_pressure_kind": str(raw_resource_guard.get("memory_pressure_kind") or ""),
-            "memory_free_pct": _safe_float(raw_resource_guard.get("memory_free_pct"), 0.0),
+            "memory_pressure_state": str(
+                raw_resource_guard.get("memory_pressure_state") or ""
+            ),
+            "memory_pressure_kind": str(
+                raw_resource_guard.get("memory_pressure_kind") or ""
+            ),
+            "memory_free_pct": _safe_float(
+                raw_resource_guard.get("memory_free_pct"), 0.0
+            ),
             "swap_used_gb": _safe_float(raw_resource_guard.get("swap_used_gb"), 0.0),
-            "compressed_store_gb": _safe_float(raw_resource_guard.get("compressed_store_gb"), 0.0),
+            "compressed_store_gb": _safe_float(
+                raw_resource_guard.get("compressed_store_gb"), 0.0
+            ),
             "compressor_gb": _safe_float(raw_resource_guard.get("compressor_gb"), 0.0),
         },
         "memory_truth_reconciliation": memory_truth,
+        "storage_recovery_memory_observation": {
+            key: raw_resource_guard.get(key)
+            for key in (
+                "timestamp_utc",
+                "input_evidence_ready",
+                "memory_pressure_state",
+                "memory_pressure_kind",
+                "memory_pressure_reasons",
+                "memory_free_pct",
+                "swap_used_gb",
+                "compressor_gb",
+                "pages_throttled",
+            )
+        },
         "local_disk_headroom_contract": local_disk_headroom,
         "compressed_memory_relief_contract": compressed_memory_relief,
         "storage_snapshot": {
             "severity": str(ingestion_storage.get("severity") or ""),
             "pressure_index": _safe_float(ingestion_storage.get("pressure_index"), 0.0),
-            "estimated_core_drain_minutes": ((ingestion_storage.get("backpressure") or {}).get("estimated_core_drain_minutes") if isinstance(ingestion_storage.get("backpressure"), dict) else None),
+            "estimated_core_drain_minutes": (
+                (ingestion_storage.get("backpressure") or {}).get(
+                    "estimated_core_drain_minutes"
+                )
+                if isinstance(ingestion_storage.get("backpressure"), dict)
+                else None
+            ),
             "drain_friendly_sql_active": drain_friendly_sql_active,
-            "bounded_overlay_relief": _bounded_overlay_storage_relief(ingestion_storage),
-            "stateful_sql_soft_quota_relief": _managed_stateful_sql_soft_quota_contract(project_root, ingestion_storage),
+            "bounded_overlay_relief": _bounded_overlay_storage_relief(
+                ingestion_storage
+            ),
+            "stateful_sql_soft_quota_relief": _managed_stateful_sql_soft_quota_contract(
+                project_root, ingestion_storage
+            ),
             "sql_writer_coordination": sql_writer_coordination,
             "local_disk_headroom": local_disk_headroom,
-            "backlog_drain_status": str(((ingestion_storage.get("storage") or {}).get("backlog_drain_status")) if isinstance(ingestion_storage.get("storage"), dict) else ""),
-            "recommended_operating_mode": str(ingestion_storage.get("recommended_operating_mode") or ""),
+            "backlog_drain_status": str(
+                ((ingestion_storage.get("storage") or {}).get("backlog_drain_status"))
+                if isinstance(ingestion_storage.get("storage"), dict)
+                else ""
+            ),
+            "recommended_operating_mode": str(
+                ingestion_storage.get("recommended_operating_mode") or ""
+            ),
         },
         "recommended_env_overrides": recommended_env,
-        "compressed_memory_relief_overrides": COMPRESSED_MEMORY_RELIEF_OVERRIDES if bool(compressed_memory_relief.get("managed", False)) else {},
-        "local_disk_headroom_relief_overrides": LOCAL_DISK_HEADROOM_RELIEF_OVERRIDES if bool(local_disk_headroom.get("active", False)) else {},
+        "compressed_memory_relief_overrides": (
+            COMPRESSED_MEMORY_RELIEF_OVERRIDES
+            if bool(compressed_memory_relief.get("managed", False))
+            else {}
+        ),
+        "local_disk_headroom_relief_overrides": (
+            LOCAL_DISK_HEADROOM_RELIEF_OVERRIDES
+            if bool(local_disk_headroom.get("active", False))
+            else {}
+        ),
         "quant_model_caps": QUANT_MODEL_CAPS_BY_PROFILE.get(recommended_profile, {}),
         "expansion_pressure_overrides": expansion_overlay,
         "recommendations": [
@@ -1999,9 +2080,15 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, action: str, override_pa
         ],
         "source_files": {
             "resource_guard": str(health_root / "resource_guard_latest.json"),
-            "swap_pressure_governor": str(health_root / "swap_pressure_governor_latest.json"),
-            "apple_silicon_profile": str(health_root / "apple_silicon_profile_latest.json"),
-            "ingestion_storage_control": str(health_root / "ingestion_storage_control_latest.json"),
+            "swap_pressure_governor": str(
+                health_root / "swap_pressure_governor_latest.json"
+            ),
+            "apple_silicon_profile": str(
+                health_root / "apple_silicon_profile_latest.json"
+            ),
+            "ingestion_storage_control": str(
+                health_root / "ingestion_storage_control_latest.json"
+            ),
         },
     }
 
@@ -2015,20 +2102,44 @@ def main() -> int:
     args = parser.parse_args()
 
     override_path = Path(args.override_file).expanduser()
-    payload = build_payload(PROJECT_ROOT, action=args.action, override_path=override_path, changed=False)
+    payload = build_payload(
+        PROJECT_ROOT, action=args.action, override_path=override_path, changed=False
+    )
 
-    changed = False
-    if args.action == "apply":
-        changed = _write_override(
-            override_path,
-            str(payload.get("recommended_profile") or "air_safe"),
-            payload.get("recommended_env_overrides") if isinstance(payload.get("recommended_env_overrides"), dict) else {},
-        )
-        payload = build_payload(PROJECT_ROOT, action=args.action, override_path=override_path, changed=changed)
+    payload["apply_result"] = {
+        "requested": args.action == "apply",
+        "applied": False,
+        "override_verified": False,
+    }
+    if args.action == "apply" and payload["input_evidence_ready"]:
+        profile = str(payload.get("recommended_profile") or "air_safe")
+        env = payload.get("recommended_env_overrides")
+        env = env if isinstance(env, dict) else {}
+        expected = ("\n".join(_override_lines(profile, env)) + "\n").encode("utf-8")
+        try:
+            changed = _write_override(override_path, profile, env)
+            actual = override_path.read_bytes()
+            if actual != expected:
+                raise OSError("memory_override_verification_failed")
+            # Publish the decision actually applied, without a second sensor read.
+            payload.update(changed=changed, override_exists=True)
+            payload["apply_result"].update(
+                applied=True,
+                override_verified=True,
+                profile=profile,
+                override_sha256=hashlib.sha256(actual).hexdigest(),
+            )
+        except OSError as exc:
+            payload.update(ok=False, overall_status="apply_failed")
+            payload["apply_result"]["error"] = str(exc)
 
     out_path = Path(args.out_file).expanduser()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    payload["apply_deferred_reason"] = (
+        "" if payload["input_evidence_ready"] else "resource_observation_unavailable"
+    )
+    if not payload["input_evidence_ready"]:
+        payload.update(ok=False, overall_status="evidence_unavailable")
+    write_payload(out_path, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

@@ -400,6 +400,10 @@ def _overlay_only_storage_relief(backpressure: dict[str, Any]) -> dict[str, Any]
     raw_total = _safe_int(raw_live.get("total_pending_lines"), 0)
     raw_oldest = _safe_float(raw_live.get("oldest_pending_age_seconds"), 0.0)
     overlay_adjusted = bool(backpressure.get("overlay_adjusted", False))
+    effective_pressure_contract = bool(
+        backpressure.get("effective_pressure_clear", False)
+        and effective_raw_live
+    )
     raw_live_clear = bool(
         raw_live
         and raw_core <= OVERLAY_RAW_LIVE_MAX_CORE_LINES
@@ -407,8 +411,11 @@ def _overlay_only_storage_relief(backpressure: dict[str, Any]) -> dict[str, Any]
         and raw_oldest <= OVERLAY_RAW_LIVE_MAX_AGE_SECONDS
     )
     return {
-        "active": bool(overlay_adjusted and raw_live_clear),
+        "active": bool(
+            raw_live_clear and (overlay_adjusted or effective_pressure_contract)
+        ),
         "overlay_adjusted": overlay_adjusted,
+        "effective_pressure_contract": effective_pressure_contract,
         "raw_live_clear": raw_live_clear,
         "raw_live_source": str(raw_live.get("source") or raw_live_source),
         "raw_live": {
@@ -443,6 +450,16 @@ def _managed_stateful_sql_storage_relief(memory: dict[str, Any]) -> dict[str, An
 
 def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, Any] | None = None) -> dict[str, Any]:
     backpressure = _dict(storage.get("backpressure"))
+    effective = _dict(backpressure.get("effective_raw_live"))
+    effective_pressure_contract = bool(
+        backpressure.get("effective_pressure_clear", False)
+        and effective
+        and str(storage.get("overall_status") or "").strip().lower()
+        in {"ready", "advisory"}
+        and str(storage.get("severity") or "").strip().lower()
+        in {"", "stable", "low", "normal", "ready"}
+    )
+    pressure_view = effective if effective_pressure_contract else backpressure
     plumbing = _dict(plumbing)
     root_cause = _dict(plumbing.get("root_cause"))
     plumbing_raw_live = _dict(root_cause.get("raw_live"))
@@ -451,11 +468,11 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
     route = _dict(storage.get("external_route_verification"))
     integrity = _dict(storage.get("data_integrity"))
     writer = _dict(storage.get("writer_shedding"))
-    core_pending = _safe_int(backpressure.get("core_pending_lines"), 0)
-    support_pending = _safe_int(backpressure.get("support_pending_lines"), 0)
-    deferred_pending = _safe_int(backpressure.get("deferred_pending_lines"), 0)
-    total_pending = _safe_int(backpressure.get("total_pending_lines"), 0)
-    oldest = _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0)
+    core_pending = _safe_int(pressure_view.get("core_pending_lines"), 0)
+    support_pending = _safe_int(pressure_view.get("support_pending_lines"), 0)
+    deferred_pending = _safe_int(pressure_view.get("deferred_pending_lines"), 0)
+    total_pending = _safe_int(pressure_view.get("total_pending_lines"), 0)
+    oldest = _safe_float(pressure_view.get("oldest_pending_age_seconds"), 0.0)
     pending_threshold = max(_safe_int(backpressure.get("pending_lines_threshold"), 15000), 1)
     route_ready = str(route.get("verification_state") or "").strip().lower() in {"ready", "verified", "ok"}
     integrity_clean = all(
@@ -479,6 +496,7 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
     backlog_status = str(storage_section.get("backlog_drain_status") or storage.get("backlog_drain_status") or "").strip().lower()
     deferred_managed = bool(
         plumbing_managed_deferred
+        or effective_pressure_contract
         or deferred_pending > 0
         and backlog_status in {"waiting_for_off_hours", "off_hours_scheduled", "market_hours_guard", "handoff_requested"}
     )
@@ -494,7 +512,7 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
         and writer_breaches_managed
         and core_pending <= 5000
         and support_pending <= 12000
-        and total_pending >= pending_threshold
+        and (total_pending >= pending_threshold or effective_pressure_contract)
     )
     return {
         "active": active,
@@ -510,6 +528,18 @@ def _paper_hot_path_storage_relief(storage: dict[str, Any], plumbing: dict[str, 
         "deferred_pending_lines": deferred_pending,
         "total_pending_lines": total_pending,
         "oldest_pending_age_seconds": round(oldest, 3),
+        "effective_pressure_contract": effective_pressure_contract,
+        "pressure_view_source": str(
+            backpressure.get("effective_raw_live_source")
+            or effective.get("source")
+            or "raw_backpressure"
+        ),
+        "raw_total_pending_lines": _safe_int(
+            backpressure.get("total_pending_lines"), 0
+        ),
+        "raw_support_pending_lines": _safe_int(
+            backpressure.get("support_pending_lines"), 0
+        ),
         "plumbing_raw_live": plumbing_raw_live,
         "plumbing_paper_relief": plumbing_paper_relief,
         "policy": "paper-only admission may continue when hot-path queues are clean and deferred risk backlog is explicitly held for off-hours drain; live-money canary still consumes the raw backlog as a blocker",
@@ -568,10 +598,24 @@ def _memory_gate(memory: dict[str, Any], storage: dict[str, Any] | None = None, 
 
 def _storage_gate(storage: dict[str, Any], memory: dict[str, Any] | None = None, plumbing: dict[str, Any] | None = None) -> dict[str, Any]:
     backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
+    effective = (
+        backpressure.get("effective_raw_live")
+        if isinstance(backpressure.get("effective_raw_live"), dict)
+        else {}
+    )
+    effective_pressure_contract = bool(
+        backpressure.get("effective_pressure_clear", False)
+        and effective
+        and str(storage.get("overall_status") or "").strip().lower()
+        in {"ready", "advisory"}
+        and str(storage.get("severity") or "").strip().lower()
+        in {"", "stable", "low", "normal", "ready"}
+    )
+    pressure_view = effective if effective_pressure_contract else backpressure
     severity = str(storage.get("severity") or storage.get("overall_status") or "missing").strip().lower()
     pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
-    core_pending = _safe_int(backpressure.get("core_pending_lines"), 0)
-    total_pending = _safe_int(backpressure.get("total_pending_lines"), 0)
+    core_pending = _safe_int(pressure_view.get("core_pending_lines"), 0)
+    total_pending = _safe_int(pressure_view.get("total_pending_lines"), 0)
     overlay_relief = _overlay_only_storage_relief(backpressure)
     deferred_relief = _paper_hot_path_storage_relief(storage, plumbing)
     route = storage.get("external_route_verification") if isinstance(storage.get("external_route_verification"), dict) else {}
@@ -649,6 +693,13 @@ def _storage_gate(storage: dict[str, Any], memory: dict[str, Any] | None = None,
         "pressure_advisory": pressure_advisory,
         "core_pending_lines": core_pending,
         "total_pending_lines": total_pending,
+        "effective_pressure_contract": effective_pressure_contract,
+        "raw_core_pending_lines": _safe_int(
+            backpressure.get("core_pending_lines"), 0
+        ),
+        "raw_total_pending_lines": _safe_int(
+            backpressure.get("total_pending_lines"), 0
+        ),
         "overlay_only_relief": overlay_relief,
         "managed_deferred_backlog_relief": deferred_relief,
         "bounded_raw_live_relief": bounded_raw_live_relief,

@@ -13,9 +13,12 @@ if [[ -f "$PROJECT_ROOT/scripts/ops/load_runtime_env.sh" ]]; then
 fi
 
 export BOT_RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-$PROFILE}"
+SCHEDULE_INTERVAL="${RETENTION_DEBT_SHERIFF_INTERVAL_SECONDS:-300}"
 
 exec "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/retention_debt_sheriff.py" \
   --apply \
+  --scheduled \
+  --schedule-interval-seconds "$SCHEDULE_INTERVAL" \
   --poll-seconds "${RETENTION_DEBT_SHERIFF_POLL_SECONDS:-20}" \
   --wait-timeout-seconds "${RETENTION_DEBT_SHERIFF_WAIT_TIMEOUT_SECONDS:-900}" \
   --command-timeout-seconds "${RETENTION_DEBT_SHERIFF_COMMAND_TIMEOUT_SECONDS:-2400}" \

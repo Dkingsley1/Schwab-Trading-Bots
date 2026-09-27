@@ -1,9 +1,9 @@
 # Intelligence Layers PyCharm Index
 
-- Updated UTC: `2026-08-14T09:34:32.883106+00:00`
+- Updated UTC: `2026-09-15T09:26:33.780486+00:00`
 - Whole-System Status: `degraded`
-- Top Risk: `training_quality`
-- Safe Next Command: `./scripts/ops/opsctl.sh backpressure-super-drainer --apply --max-waves 1 --target-pending-lines 5000 --json`
+- Top Risk: `bot_logs_cleanup`
+- Safe Next Command: `./scripts/ops/opsctl.sh pressure-relief --apply --json`
 
 ## Bot Activity Snapshot
 
@@ -41,32 +41,32 @@
 
 ## Docs Commands Reporting
 
-- Layer Status: `ready`
-- Action: `observe_docs_reporting_contract`
-- Command Contract Entries: `191`
+- Layer Status: `advisory`
+- Action: `run_report_quality_guard_repair`
+- Command Contract Entries: `254`
 - Command Issues: `0`
 - Report Bundle Entries: `38`
 - Report Bundle Errors: `0`
 - Report Permission Errors: `0`
-- PyCharm File Color Status: `ready`
-- PyCharm Active Core Files: `1450`
-- PyCharm Scope Strategy: `brain_refinery_family_with_inactive_exclusions`
-- PyCharm Scope Pattern Bytes: `2931`
-- PyCharm Project View Style: `scope_background_color`
-- PyCharm Foreground Blue Source: `pycharm_vcs_modified_file_status`
+- PyCharm File Color Status: `missing`
+- PyCharm Active Core Files: `0`
+- PyCharm Scope Strategy: ``
+- PyCharm Scope Pattern Bytes: `0`
+- PyCharm Project View Style: ``
+- PyCharm Foreground Blue Source: ``
 - Foreground Blue Without Dirtying Files: `False`
 
 ## Intelligence Layers
 
-- `super_intelligence`: status `advisory`, mode `rethink`, action `run_outcome_verified_micro_drain`
-- `outcome_learning`: status `degraded`, verdict `ineffective_so_far`
+- `super_intelligence`: status `degraded`, mode `drain`, action `relieve_pressure_then_micro_drain`
+- `outcome_learning`: status `degraded`, verdict `worsening`
 - `paper_lane_governor`: status `ready`, mode `full_eligible_paper_soak_active`, score `1584`
 - `symbol_universe_intelligence`: status `ready`, score `100.0`
 - `cognitive_twin_counterfactuals`: status `advisory`, score `46`, next `pressure_relief_success`
 - `recursive_policy_evolution`: status `degraded`, score `40.0`, next `cognitive_twin_counterfactual_simulator`
-- `deeper_self_awareness_layers`: status `advisory`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `9`, next `belief_ledger_confidence`
+- `deeper_self_awareness_layers`: status `missing`, mode `advisory_control_plane_with_constitutional_lockout_attestation`, score `0`
 - `codex_handoff`: status `advisory`
-- `documentation_reporting_intelligence`: status `ready`, action `observe_docs_reporting_contract`, score `191`
+- `documentation_reporting_intelligence`: status `advisory`, action `run_report_quality_guard_repair`, score `254`
 
 ## PyCharm Open Paths
 

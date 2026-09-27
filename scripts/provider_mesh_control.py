@@ -205,6 +205,35 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         if isinstance(capability_health.get("authority_contract"), dict)
         else {}
     )
+    capability_routing = (
+        capability_health.get("ingestion_routing_contract")
+        if isinstance(capability_health.get("ingestion_routing_contract"), dict)
+        else {}
+    )
+    capability_ingestion_authority = (
+        capability_health.get("ingestion_authority_contract")
+        if isinstance(capability_health.get("ingestion_authority_contract"), dict)
+        else {}
+    )
+    capability_transport = (
+        capability_routing.get("transport_contract")
+        if isinstance(capability_routing.get("transport_contract"), dict)
+        else {}
+    )
+    capability_routing_v2_ready = bool(
+        int(capability_health.get("schema_version", 1) or 1) < 2
+        or (
+            capability_routing.get("policy_id")
+            and capability_routing.get("decision_stage") == "02_data_qualification"
+            and int(capability_routing.get("runtime_route_count", 0) or 0) > 0
+            and capability_routing.get("routing_artifact_receipt_sha256")
+            and capability_transport
+            and all(bool(value) for value in capability_transport.values())
+            and not any(
+                bool(value) for value in capability_ingestion_authority.values()
+            )
+        )
+    )
     capability_structural_ready = bool(
         not capability_configured
         or (
@@ -213,6 +242,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             and bool((capability_health.get("current_collector_mapping") or {}).get("complete", False))
             and float(capability_summary.get("bot_binding_coverage_ratio", 0.0) or 0.0) >= 1.0
             and not any(bool(value) for value in capability_authority.values())
+            and capability_routing_v2_ready
         )
     )
     capability_paper_soak_ready = bool(
@@ -280,6 +310,15 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "capability_bot_binding_count": int(capability_summary.get("bot_binding_count", 0) or 0),
             "capability_subscription_profile_count": int(
                 capability_summary.get("subscription_profile_count", 0) or 0
+            ),
+            "capability_runtime_route_count": int(
+                capability_routing.get("runtime_route_count", 0) or 0
+            ),
+            "capability_runtime_paper_ready_route_count": int(
+                capability_routing.get("runtime_paper_ready_route_count", 0) or 0
+            ),
+            "capability_runtime_live_ready_route_count": int(
+                capability_routing.get("runtime_live_ready_route_count", 0) or 0
             ),
         },
         "continuity_contract": {
@@ -361,6 +400,47 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 "capabilities": int(capability_summary.get("capability_count", 0) or 0),
                 "bot_bindings": int(capability_summary.get("bot_binding_count", 0) or 0),
                 "subscription_profiles": int(capability_summary.get("subscription_profile_count", 0) or 0),
+                "ingestion_route_profiles": int(
+                    capability_summary.get("ingestion_route_profile_count", 0)
+                    or 0
+                ),
+                "routing_policy": str(capability_routing.get("policy_id") or ""),
+                "decision_stage": str(
+                    capability_routing.get("decision_stage") or ""
+                ),
+                "decision_families": int(
+                    capability_routing.get("decision_family_count", 0) or 0
+                ),
+                "runtime_routes": int(
+                    capability_routing.get("runtime_route_count", 0) or 0
+                ),
+                "runtime_paper_ready_routes": int(
+                    capability_routing.get("runtime_paper_ready_route_count", 0)
+                    or 0
+                ),
+                "runtime_live_ready_routes": int(
+                    capability_routing.get("runtime_live_ready_route_count", 0)
+                    or 0
+                ),
+                "average_route_quality": float(
+                    capability_routing.get("average_profile_route_quality", 0.0)
+                    or 0.0
+                ),
+                "independent_redundancy_ratio": float(
+                    capability_summary.get(
+                        "required_capability_independent_redundancy_ratio", 0.0
+                    )
+                    or 0.0
+                ),
+                "transport_contract_complete": bool(
+                    capability_transport
+                    and all(bool(value) for value in capability_transport.values())
+                ),
+                "routing_contract_ready": capability_routing_v2_ready,
+                "routing_receipt_sha256": str(
+                    capability_routing.get("routing_artifact_receipt_sha256")
+                    or ""
+                ),
                 "unsupported_capabilities_are_live_promotion_debt": True,
                 "blocks_healthy_guarded_paper_soak": bool(
                     capability_configured and not capability_paper_soak_ready

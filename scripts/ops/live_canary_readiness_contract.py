@@ -248,6 +248,7 @@ def _build_live_money_canary_milestones(
     production_readiness: dict[str, Any],
     use_mode_compliance: dict[str, Any],
     commercial_readiness: dict[str, Any],
+    continuous_soak: dict[str, Any],
 ) -> list[dict[str, Any]]:
     definitions = _as_list(config.get("live_money_canary_milestones")) or [dict(row) for row in DEFAULT_CANARY_MILESTONES]
     by_id = {str(gate.get("gate_id") or ""): gate for gate in gates}
@@ -311,26 +312,68 @@ def _build_live_money_canary_milestones(
         definition = _as_dict(raw_definition)
         milestone_id = str(definition.get("milestone_id") or "")
         if milestone_id == "m01_continuous_soak_no_hard_blockers":
+            scope_policy_available = "scope_aware_validation_complete" in continuous_soak
+            scope_validation_ready = bool(
+                continuous_soak.get("scope_aware_validation_complete", False)
+            )
+            legacy_soak_ready = bool(
+                _safe_float(sustained.get("sustained_ready_hours"), 0.0)
+                >= min_soak_hours
+            )
+            soak_evidence_ready = (
+                scope_validation_ready if scope_policy_available else legacy_soak_ready
+            )
+            definition = {
+                **definition,
+                "title": (
+                    "Scope-Aware Candidate Validation With No Hard Blockers"
+                    if scope_policy_available
+                    else definition.get("title")
+                ),
+                "description": (
+                    "Every changed candidate scope completes its configured elapsed-time and XNYS-session tier before live-money canary consideration."
+                    if scope_policy_available
+                    else definition.get("description")
+                ),
+            }
             ready = bool(
                 health_fast
                 and health_status == "ready"
                 and strict_clear
                 and _status(guarded_paper.get("status")) == "ready"
-                and _safe_float(sustained.get("sustained_ready_hours"), 0.0) >= min_soak_hours
+                and soak_evidence_ready
             )
             blockers = [
                 "health_fast_missing" if not health_fast else "",
                 "strict_all_clear_not_true" if health_fast and not strict_clear else "",
                 "guarded_paper_not_ready" if guarded_paper and _status(guarded_paper.get("status")) != "ready" else "",
+                "scope_aware_candidate_validation_pending"
+                if scope_policy_available and not scope_validation_ready
+                else "",
                 f"continuous_soak_below_{int(min_soak_hours)}h"
-                if _safe_float(sustained.get("sustained_ready_hours"), 0.0) < min_soak_hours
+                if not scope_policy_available and not legacy_soak_ready
                 else "",
             ]
             evidence = {
                 "health_status": health_status or "unknown",
                 "strict_all_clear": strict_clear,
                 "guarded_paper_status": guarded_paper.get("status"),
-                "required_soak_hours": min_soak_hours,
+                "validation_mode": (
+                    "scope_aware_elapsed_and_xnys_sessions"
+                    if scope_policy_available
+                    else "legacy_uniform_elapsed_fallback"
+                ),
+                "scope_aware_validation_complete": scope_validation_ready,
+                "scope_validation_grade": continuous_soak.get(
+                    "scope_validation_grade"
+                ),
+                "scope_validation_score": continuous_soak.get(
+                    "scope_validation_score"
+                ),
+                "scope_validation_blocking_scopes": _as_dict(
+                    continuous_soak.get("scope_validation")
+                ).get("blocking_scopes", []),
+                "legacy_required_soak_hours": min_soak_hours,
                 "sustained_ready_hours": sustained.get("sustained_ready_hours"),
                 "continuous_all_gates_ready_since_utc": sustained.get("continuous_all_gates_ready_since_utc"),
             }
@@ -433,11 +476,24 @@ def _build_live_money_canary_milestones(
                 "sleeve_paper_trading_continuity": by_id.get("sleeve_paper_trading_continuity", {}),
             }
         elif milestone_id == "m08_microscopic_canary_plan":
-            ready = bool(live_canary_control and canary_weight > 0.0 and canary_weight <= max_initial_weight)
+            preflight_enforced = bool(
+                live_canary_control.get("live_canary_preflight_enforced", False)
+            )
+            preflight_ready = bool(
+                not preflight_enforced
+                or live_canary_control.get("live_canary_preflight_ready", False)
+            )
+            ready = bool(
+                live_canary_control
+                and canary_weight > 0.0
+                and canary_weight <= max_initial_weight
+                and preflight_ready
+            )
             blockers = [
                 "live_canary_control_missing" if not live_canary_control else "",
                 "canary_weight_not_positive" if live_canary_control and canary_weight <= 0.0 else "",
                 f"initial_canary_weight_above_{max_initial_weight:.4f}" if canary_weight > max_initial_weight else "",
+                "live_canary_preflight_not_ready" if not preflight_ready else "",
             ]
             evidence = {
                 "recommended_mode": live_canary_control.get("recommended_mode"),
@@ -446,6 +502,11 @@ def _build_live_money_canary_milestones(
                 "effective_canary_weight": canary_weight,
                 "max_initial_live_canary_weight": max_initial_weight,
                 "canary_weight_ok": bool(canary_weight > 0.0 and canary_weight <= max_initial_weight),
+                "live_canary_preflight_ready": preflight_ready,
+                "live_canary_preflight_enforced": preflight_enforced,
+                "live_canary_preflight": live_canary_control.get(
+                    "live_canary_preflight", {}
+                ),
             }
         elif milestone_id == "m09_explainable_trade_permission":
             previous_ready = all(prior_milestones.values()) if prior_milestones else False
@@ -629,6 +690,9 @@ def build_payload(
     production_readiness = load_json(health / "production_readiness_control_latest.json")
     use_mode_compliance = load_json(health / "use_mode_compliance_guard_latest.json")
     commercial_readiness = load_json(health / "commercial_readiness_control_latest.json")
+    continuous_soak = load_json(
+        health / "continuous_soak_integrity_control_latest.json"
+    )
 
     raw_grade = _grade(
         paper_profit.get("raw_profitability_grade")
@@ -651,6 +715,156 @@ def build_payload(
             "hard_block_floor": raw_hard_floor,
             "paper_profitability_status": paper_profit.get("overall_status") or paper_profit.get("status"),
             "runtime_profitability_status": paper_runtime_profit.get("overall_status") or paper_runtime_profit.get("status"),
+        },
+        owner="paper_profitability_control",
+    )
+    paper_debt_recovery = _as_dict(
+        paper_profit.get("paper_debt_recovery_contract")
+        or paper_runtime_profit.get("paper_debt_recovery_contract")
+    )
+    paper_debt_recovery_ready = bool(
+        paper_debt_recovery
+        and paper_debt_recovery.get("live_promotion_ready", False)
+        and paper_debt_recovery.get("debt_cleared", False)
+    )
+    paper_debt_gate = _gate(
+        "paper_debt_recovery_proof",
+        "Paper Recovery Balance And Candidate Proof",
+        paper_debt_recovery_ready,
+        [
+            "paper_debt_recovery_contract_missing" if not paper_debt_recovery else "",
+            *[
+                str(item)
+                for item in _as_list(paper_debt_recovery.get("promotion_blockers"))
+                if str(item or "").strip()
+            ],
+        ],
+        {
+            "state": paper_debt_recovery.get("state") or "unknown",
+            "baseline_debt_amount": paper_debt_recovery.get("baseline_debt_amount"),
+            "remaining_debt_amount": paper_debt_recovery.get("remaining_debt_amount"),
+            "recovery_progress_norm": paper_debt_recovery.get("recovery_progress_norm"),
+            "candidate_attribution": paper_debt_recovery.get("candidate_attribution", {}),
+            "candidate_proof": paper_debt_recovery.get("candidate_proof", {}),
+            "risk_budget": paper_debt_recovery.get("risk_budget", {}),
+            "live_execution_allowed": False,
+        },
+        owner="paper_profitability_control",
+    )
+    scaling_contract = _as_dict(
+        paper_profit.get("sleeve_strategy_profitability_scaling_contract")
+        or paper_runtime_profit.get("sleeve_strategy_profitability_scaling_contract")
+    )
+    scaling_profiles = _as_dict(scaling_contract.get("profile_controls"))
+    validated_scaling_profiles = [
+        profile
+        for profile, row in scaling_profiles.items()
+        if isinstance(row, dict)
+        and str(row.get("tier") or "")
+        in {"validated_baseline", "scale_tier_1", "scale_tier_2"}
+        and not bool(row.get("block_new_entries", False))
+    ]
+    scaling_binding = _as_dict(scaling_contract.get("candidate_binding"))
+    scaling_hard_limits = _as_dict(scaling_contract.get("hard_limits"))
+    scaling_max_multiplier = _safe_float(
+        scaling_contract.get("maximum_above_baseline_entry_size_multiplier_norm"),
+        99.0,
+    )
+    scaling_global_entry_cap = _safe_float(
+        scaling_contract.get("global_entry_size_cap_norm"),
+        99.0,
+    )
+    required_scaling_hard_limits = {
+        "never_scale_from_loss_recovery_pressure",
+        "never_use_martingale",
+        "never_average_down_for_recovery",
+        "never_scale_above_1_10x_from_profitability_evidence",
+        "portfolio_and_execution_risk_caps_remain_authoritative",
+    }
+    scaling_hard_limits_ready = all(
+        bool(scaling_hard_limits.get(limit, False))
+        for limit in required_scaling_hard_limits
+    )
+    scaling_contract_ready = bool(
+        scaling_contract.get("active", False)
+        and scaling_contract.get("mode") == "candidate_bound_sleeve_strategy_scaling_v1"
+        and scaling_contract.get("paper_only", False)
+        and not scaling_contract.get("live_execution_allowed", True)
+        and scaling_contract.get("source_ready", False)
+        and scaling_binding.get("candidate_binding_valid", False)
+        and scaling_contract.get("entry_only", False)
+        and scaling_contract.get("keep_sells_and_reduce_only_paths_open", False)
+        and scaling_contract.get("fail_closed_on_missing_or_mismatched_candidate_evidence", False)
+        and 0.0 < scaling_max_multiplier <= 1.10
+        and 0.0 <= scaling_global_entry_cap <= scaling_max_multiplier
+        and scaling_hard_limits_ready
+        and bool(validated_scaling_profiles)
+    )
+    scaling_gate = _gate(
+        "candidate_bound_sleeve_strategy_scaling",
+        "Candidate-Bound Sleeve And Strategy Scaling",
+        scaling_contract_ready,
+        [
+            "sleeve_strategy_scaling_contract_missing" if not scaling_contract else "",
+            "sleeve_strategy_scaling_mode_invalid"
+            if scaling_contract
+            and scaling_contract.get("mode") != "candidate_bound_sleeve_strategy_scaling_v1"
+            else "",
+            "sleeve_strategy_scaling_not_paper_only"
+            if scaling_contract and not scaling_contract.get("paper_only", False)
+            else "",
+            "sleeve_strategy_scaling_claims_live_authority"
+            if scaling_contract and scaling_contract.get("live_execution_allowed", True)
+            else "",
+            "sleeve_strategy_scaling_source_not_ready"
+            if scaling_contract and not scaling_contract.get("source_ready", False)
+            else "",
+            "sleeve_strategy_scaling_candidate_binding_invalid"
+            if scaling_contract and not scaling_binding.get("candidate_binding_valid", False)
+            else "",
+            "sleeve_strategy_scaling_not_entry_only"
+            if scaling_contract and not scaling_contract.get("entry_only", False)
+            else "",
+            "sleeve_strategy_scaling_exit_path_not_guaranteed"
+            if scaling_contract
+            and not scaling_contract.get("keep_sells_and_reduce_only_paths_open", False)
+            else "",
+            "sleeve_strategy_scaling_not_fail_closed"
+            if scaling_contract
+            and not scaling_contract.get(
+                "fail_closed_on_missing_or_mismatched_candidate_evidence",
+                False,
+            )
+            else "",
+            "sleeve_strategy_scaling_cap_above_1_10x"
+            if scaling_contract
+            and not 0.0 < scaling_max_multiplier <= 1.10
+            else "",
+            "sleeve_strategy_scaling_global_cap_invalid"
+            if scaling_contract
+            and not 0.0 <= scaling_global_entry_cap <= scaling_max_multiplier
+            else "",
+            "sleeve_strategy_scaling_hard_limits_incomplete"
+            if scaling_contract and not scaling_hard_limits_ready
+            else "",
+            "no_validated_candidate_bound_sleeve_for_canary"
+            if scaling_contract and not validated_scaling_profiles
+            else "",
+        ],
+        {
+            "mode": scaling_contract.get("mode") or "missing",
+            "candidate_binding": scaling_binding,
+            "global_entry_size_cap_norm": scaling_contract.get("global_entry_size_cap_norm"),
+            "maximum_above_baseline_entry_size_multiplier_norm": scaling_contract.get(
+                "maximum_above_baseline_entry_size_multiplier_norm"
+            ),
+            "validated_profile_count": len(validated_scaling_profiles),
+            "validated_profiles": sorted(validated_scaling_profiles),
+            "above_baseline_ready_count": scaling_contract.get("above_baseline_ready_count", 0),
+            "scale_up_ready": bool(scaling_contract.get("scale_up_ready", False)),
+            "hard_limits": scaling_hard_limits,
+            "hard_limits_ready": scaling_hard_limits_ready,
+            "live_execution_allowed": False,
         },
         owner="paper_profitability_control",
     )
@@ -849,7 +1063,17 @@ def build_payload(
         owner="promotion_gate_snapshot_policy",
     )
 
-    gates = [raw_gate, paper_gate, auth_gate, source_gate, ci_gate, storage_gate, freshness_gate]
+    gates = [
+        raw_gate,
+        paper_debt_gate,
+        scaling_gate,
+        paper_gate,
+        auth_gate,
+        source_gate,
+        ci_gate,
+        storage_gate,
+        freshness_gate,
+    ]
     all_gates_ready = all(gate["ready"] for gate in gates)
     previous = load_json(out_path)
     sustained = _sustained_state(
@@ -869,6 +1093,7 @@ def build_payload(
         production_readiness=production_readiness,
         use_mode_compliance=use_mode_compliance,
         commercial_readiness=commercial_readiness,
+        continuous_soak=continuous_soak,
     )
     require_milestones = bool(config.get("require_live_money_canary_milestones", True))
     required_milestones_ready = all(
@@ -907,6 +1132,7 @@ def build_payload(
         "infrastructure_message": str(config.get("infrastructure_message") or ""),
         "readiness_bar": [
             "no raw D-grade posture",
+            "paper recovery balance cleared with candidate-bound post-cost proof",
             "no unexplained sleeve paper-trading dropouts",
             "no auth/token surprises",
             "no source mutation from runtime",
@@ -917,6 +1143,7 @@ def build_payload(
             "clear use-mode and commercial boundary",
             "clear seven-section commercial readiness framework",
             "all gates sustained before live canary money",
+            "scope-aware candidate validation complete before live canary money",
         ],
         "milestone_bar": [str(item.get("title") or item.get("milestone_id")) for item in milestones],
         "gate_count": len(gates),
@@ -930,6 +1157,18 @@ def build_payload(
             if bool(milestone.get("required", True)) and bool(milestone.get("ready", False))
         ),
         "required_live_money_canary_milestones_ready": required_milestones_ready,
+        "scope_aware_candidate_validation": {
+            "available": "scope_aware_validation_complete" in continuous_soak,
+            "ready": bool(
+                continuous_soak.get("scope_aware_validation_complete", False)
+            ),
+            "grade": continuous_soak.get("scope_validation_grade"),
+            "score": continuous_soak.get("scope_validation_score"),
+            "blocking_scopes": _as_dict(
+                continuous_soak.get("scope_validation")
+            ).get("blocking_scopes", []),
+            "live_execution_authority": False,
+        },
         "require_live_money_canary_milestones": require_milestones,
         "blocked_milestones": [
             milestone["milestone_id"]

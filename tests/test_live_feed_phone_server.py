@@ -139,6 +139,45 @@ def test_helper_basics(tmp_path: Path) -> None:
     assert phone_server._is_loopback_host("localhost") is True
 
 
+def test_status_refresh_preserves_old_source_time(monkeypatch):
+    old = "2026-01-01T00:00:00+00:00"
+    monkeypatch.setattr(
+        phone_server,
+        "_load_json",
+        lambda path: {
+            "timestamp_utc": old,
+            "overall_status": "ready",
+        },
+    )
+    first = phone_server._status_summary()
+    second = phone_server._status_summary()
+    assert first["source_freshness"] == "stale_or_unknown"
+    assert (
+        first["oldest_core_observation_utc"]
+        == second["oldest_core_observation_utc"]
+        == old
+    )
+    assert "storage" in first["stale_or_unknown_sources"]
+    assert "polled=${new Date().toLocaleTimeString()}" in phone_server.HTML_PAGE
+    assert "updated=${new Date().toLocaleTimeString()}" not in phone_server.HTML_PAGE
+
+
+def test_status_reads_new_producer_on_each_poll(monkeypatch):
+    from datetime import datetime, timezone
+
+    state = {"timestamp_utc": "2026-01-01T00:00:00+00:00"}
+    monkeypatch.setattr(phone_server, "_load_json", lambda path: dict(state))
+    assert phone_server._status_summary()["source_freshness"] == "stale_or_unknown"
+    state["timestamp_utc"] = datetime.now(timezone.utc).isoformat()
+    assert phone_server._status_summary()["source_freshness"] == "fresh"
+
+
+def test_phone_missing_or_future_sources_are_not_fresh(monkeypatch):
+    for payload in ({}, {"timestamp_utc": "2999-01-01T00:00:00+00:00"}):
+        monkeypatch.setattr(phone_server, "_load_json", lambda path: payload)
+        assert phone_server._status_summary()["source_freshness"] == "stale_or_unknown"
+
+
 def test_status_summary_includes_expansion_health(tmp_path: Path, monkeypatch) -> None:
     health = tmp_path / "governance" / "health"
     external = tmp_path / "data" / "external_context"

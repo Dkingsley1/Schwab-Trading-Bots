@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "migrations" / "latest.json"
 
@@ -39,7 +38,11 @@ CONTRACT_SPECS = [
     {
         "name": "feature_store_manifest",
         "path": Path("governance/feature_store/latest.json"),
-        "required_keys": ["schema_version", "dataset_contract", "point_in_time_contract"],
+        "required_keys": [
+            "schema_version",
+            "dataset_contract",
+            "point_in_time_contract",
+        ],
         "compatibility": "point_in_time_contract_stable",
     },
     {
@@ -96,7 +99,7 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             }
         )
 
-    ok = missing == 0 and legacy_unversioned == 0
+    ok = all(row["status"] == "ready" for row in rows)
     overall_status = "ready" if ok else "needs_work"
     if missing > 0:
         overall_status = "blocked"
@@ -111,7 +114,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "contract_count": len(rows),
             "missing_contracts": missing,
             "legacy_unversioned_contracts": legacy_unversioned,
-            "needs_work_contracts": sum(1 for row in rows if row["status"] == "needs_work"),
+            "needs_work_contracts": sum(
+                1 for row in rows if row["status"] == "needs_work"
+            ),
         },
         "recommendations": [
             "Require schema_version or contract_version on every new operator-facing artifact.",
@@ -121,7 +126,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build a migration and schema contract manifest for operator-facing artifacts.")
+    parser = argparse.ArgumentParser(
+        description="Build a migration and schema contract manifest for operator-facing artifacts."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")
@@ -130,7 +137,9 @@ def main() -> int:
     payload = build_payload(Path(args.project_root).resolve())
     out_path = Path(args.out_file).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    out_path.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8"
+    )
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

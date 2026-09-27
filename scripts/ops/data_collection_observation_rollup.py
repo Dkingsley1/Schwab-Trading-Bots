@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import fnmatch
 import gzip
 import json
+import os
 import re
 from collections import Counter, defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
+import time
 from typing import Any
 
 if __package__ in {None, ""}:
@@ -18,6 +22,8 @@ if __package__ in {None, ""}:
     from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, parse_iso_utc, write_payload
 else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, parse_iso_utc, write_payload
+
+from core.storage_router import inspect_storage_path
 
 
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
@@ -30,6 +36,69 @@ MAX_ARTIFACT_OBSERVATION_KEYS = 20000
 DEFAULT_CHANNEL_OBSERVATION_DAYS = 7
 DEFAULT_CHANNEL_TAIL_LINES = 20000
 DEFAULT_CHANNEL_TAIL_BYTES = 16 * 1024 * 1024
+MAX_SOURCE_READ_BYTES = 4 * 1024 * 1024
+MAX_SCAN_BYTES = 256 * 1024 * 1024
+
+
+class ObservationScanBudget:
+    def __init__(self, seconds: float = 90, max_bytes: int = MAX_SCAN_BYTES):
+        self.deadline = time.monotonic() + seconds
+        self.max_bytes = max_bytes
+        self.bytes_read = 0
+        self.limited_sources: set[str] = set()
+        self.failed_sources: set[str] = set()
+
+    def remaining(self, path: Path) -> int:
+        left = max(self.max_bytes - self.bytes_read, 0)
+        if time.monotonic() >= self.deadline:
+            left = 0
+        if not left:
+            self.limited_sources.add(str(path))
+        return left
+
+    def present(self, path: Path) -> bool:
+        if not self.remaining(path):
+            return False
+        if inspect_storage_path(path)["status"] != "present":
+            self.failed_sources.add(str(path))
+            return False
+        return True
+
+    def load_json(self, path: Path) -> dict[str, Any]:
+        if not self.present(path):
+            return {}
+        try:
+            size = path.stat().st_size
+            if size > min(MAX_SOURCE_READ_BYTES, self.remaining(path)):
+                self.limited_sources.add(str(path))
+                return {}
+            with path.open("rb") as handle:
+                before = os.fstat(handle.fileno())
+                raw = handle.read(size)
+                after = os.fstat(handle.fileno())
+            self.bytes_read += len(raw)
+            if len(raw) != size or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                self.failed_sources.add(str(path))
+                return {}
+            payload = json.loads(raw)
+            return payload if isinstance(payload, dict) else {}
+        except (OSError, ValueError):
+            self.failed_sources.add(str(path))
+            return {}
+
+    def receipt(self) -> dict[str, Any]:
+        return {
+            "bytes_read": self.bytes_read,
+            "max_bytes": self.max_bytes,
+            "per_source_max_bytes": MAX_SOURCE_READ_BYTES,
+            "limited_source_count": len(self.limited_sources),
+            "limited_sources": sorted(self.limited_sources)[:20],
+            "failed_source_count": len(self.failed_sources),
+            "failed_sources": sorted(self.failed_sources)[:20],
+            "scan_complete": not self.limited_sources and not self.failed_sources,
+            "counts_are_observed_lower_bounds": True,
+            "full_history_or_training_qualification": False,
+        }
 
 
 def _safe_int(raw: Any, default: int = 0) -> int:
@@ -121,90 +190,181 @@ def _day_stamps(days: int) -> list[str]:
     return [(now - timedelta(days=offset)).strftime("%Y%m%d") for offset in range(max(int(days), 1))]
 
 
+def _routed_glob(root: Path, pattern: str):
+    # Validate each directory before enumeration, including intermediate aliases.
+    route = inspect_storage_path(root)
+    if route["status"] != "present" or route.get("kind") != "directory":
+        return
+    head, _, rest = pattern.partition("/")
+    try:
+        children = sorted(root.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if not fnmatch.fnmatchcase(child.name, head):
+            continue
+        if rest:
+            yield from _routed_glob(child, rest)
+        elif inspect_storage_path(child)["status"] == "present":
+            yield child
+
+
 def _decision_files(project_root: Path, *, days: int) -> list[Path]:
     root = project_root / "decision_explanations"
-    if not root.exists():
+    if inspect_storage_path(root)["status"] != "present":
         return []
     files: list[Path] = []
     for stamp in _day_stamps(days):
-        files.extend(root.glob(f"*/decision_explanations_{stamp}.jsonl"))
-        files.extend(root.glob(f"*/decision_explanations_{stamp}.jsonl.gz"))
-    return sorted({path for path in files if path.is_file()})
+        files.extend(_routed_glob(root, f"*/decision_explanations_{stamp}.jsonl"))
+        files.extend(_routed_glob(root, f"*/decision_explanations_{stamp}.jsonl.gz"))
+    found = {path for path in files if inspect_storage_path(path)["status"] == "present"}
+    return sorted(path for path in found if not (_is_gzip_path(path) and path.with_suffix("") in found))
 
 
 def _channel_files(project_root: Path, *, days: int) -> list[Path]:
     root = project_root / "governance" / "channels"
-    if not root.exists():
+    if inspect_storage_path(root)["status"] != "present":
         return []
     files: list[Path] = []
     for stamp in _day_stamps(max(int(days), DEFAULT_CHANNEL_OBSERVATION_DAYS)):
-        files.extend(root.glob(f"*/*/*_{stamp}.jsonl"))
-        files.extend(root.glob(f"*/*/*_{stamp}.jsonl.gz"))
-    return sorted({path for path in files if path.is_file()})
+        files.extend(_routed_glob(root, f"*/*/*_{stamp}.jsonl"))
+        files.extend(_routed_glob(root, f"*/*/*_{stamp}.jsonl.gz"))
+    found = {path for path in files if inspect_storage_path(path)["status"] == "present"}
+    return sorted(
+        (path for path in found if not (_is_gzip_path(path) and path.with_suffix("") in found)),
+        key=lambda path: (_is_gzip_path(path), -int(re.search(r"(\d{8})", path.name).group(1)), str(path)),
+    )
 
 
 def _is_gzip_path(path: Path) -> bool:
     return path.suffix == ".gz" or path.name.endswith(".jsonl.gz")
 
 
-def _read_gzip_lines(path: Path) -> list[str]:
+def _read_gzip_lines(path: Path, *, budget: ObservationScanBudget | None = None) -> tuple[list[str], bool]:
+    budget = budget or ObservationScanBudget()
+    if not budget.present(path):
+        return [], False
     try:
-        with gzip.open(path, "rt", encoding="utf-8", errors="ignore") as handle:
-            return handle.readlines()
-    except Exception:
-        return []
+        limit = min(MAX_SOURCE_READ_BYTES, budget.remaining(path))
+        if path.stat().st_size > limit:
+            budget.limited_sources.add(str(path))
+            return [], False
+        chunks = []
+        consumed = 0
+        with gzip.open(path, "rb") as handle:
+            while consumed < limit and budget.remaining(path):
+                chunk = handle.read(min(64 * 1024, limit - consumed, budget.remaining(path)))
+                budget.bytes_read += len(chunk)
+                consumed += len(chunk)
+                if not chunk:
+                    raw = b"".join(chunks)
+                    if raw and not raw.endswith(b"\n"):
+                        budget.failed_sources.add(str(path))
+                        return [], False
+                    return raw.decode("utf-8").splitlines(keepends=True), True
+                chunks.append(chunk)
+        # Do not advance an incremental cursor or count a partial gzip decode.
+        budget.limited_sources.add(str(path))
+        return [], False
+    except (OSError, EOFError, ValueError):
+        budget.failed_sources.add(str(path))
+        return [], False
 
 
-def _iter_tail_lines(path: Path, *, limit: int) -> list[str]:
+def _iter_tail_lines(
+    path: Path, *, limit: int, budget: ObservationScanBudget | None = None,
+    read_audit: dict[str, int] | None = None,
+) -> list[str]:
     max_lines = max(int(limit), 1)
     if _is_gzip_path(path):
-        return _read_gzip_lines(path)[-max_lines:]
+        lines, _ = _read_gzip_lines(path, budget=budget)
+        return lines[-max_lines:]
+    if budget and not budget.present(path):
+        return []
 
     block_size = 64 * 1024
     byte_budget = max(DEFAULT_CHANNEL_TAIL_BYTES, max_lines * 512)
+    if budget:
+        byte_budget = min(byte_budget, MAX_SOURCE_READ_BYTES, budget.remaining(path))
     chunks: deque[bytes] = deque()
     try:
         with path.open("rb") as handle:
             handle.seek(0, 2)
             position = handle.tell()
+            source_end = position
             newline_count = 0
             bytes_read = 0
             while position > 0 and newline_count <= max_lines and bytes_read < byte_budget:
+                if budget and not budget.remaining(path):
+                    break
                 read_size = min(block_size, position, byte_budget - bytes_read)
                 position -= read_size
                 handle.seek(position)
                 chunk = handle.read(read_size)
+                if len(chunk) != read_size:
+                    if budget:
+                        budget.bytes_read += len(chunk)
+                    raise OSError("source changed during tail read")
                 chunks.appendleft(chunk)
                 newline_count += chunk.count(b"\n")
                 bytes_read += read_size
-    except Exception:
+                if budget:
+                    budget.bytes_read += len(chunk)
+            incomplete = position > 0 and newline_count <= max_lines
+    except OSError:
+        if budget:
+            budget.failed_sources.add(str(path))
         return []
-    text = b"".join(chunks).decode("utf-8", errors="ignore")
+    raw = b"".join(chunks)
+    complete_end = source_end - len(raw) + raw.rfind(b"\n") + 1
+    if position > 0:
+        # The first fragment may start inside a JSON record, never count it.
+        raw = raw.partition(b"\n")[2]
+    raw = raw[:raw.rfind(b"\n") + 1]
+    if budget and incomplete:
+        budget.limited_sources.add(str(path))
+    text = raw.decode("utf-8", errors="ignore")
+    if read_audit is not None and raw:
+        read_audit["complete_end"] = complete_end
     return text.splitlines(keepends=True)[-max_lines:]
 
 
-def _iter_new_lines(path: Path, *, offset: int, line_offset: int = 0) -> tuple[list[str], int, int]:
+def _iter_new_lines(path: Path, *, offset: int, line_offset: int = 0, budget: ObservationScanBudget | None = None) -> tuple[list[str], int, int]:
+    budget = budget or ObservationScanBudget()
+    if not budget.present(path):
+        return [], offset, line_offset
     try:
         size = path.stat().st_size
-    except Exception:
+    except OSError:
+        budget.failed_sources.add(str(path))
         return [], offset, line_offset
 
     if _is_gzip_path(path):
         if int(offset) == size and int(line_offset) > 0:
             return [], size, int(line_offset)
-        lines = _read_gzip_lines(path)
+        lines, complete = _read_gzip_lines(path, budget=budget)
+        if not complete:
+            return [], offset, line_offset
         start_line = int(line_offset) if 0 <= int(line_offset) <= len(lines) and int(offset) <= size else 0
         return lines[start_line:], size, len(lines)
 
     start = offset if 0 <= int(offset) <= size else 0
-    out: list[str] = []
     try:
-        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+        with path.open("rb") as handle:
             handle.seek(start)
-            out = handle.readlines()
-            end = handle.tell()
-    except Exception:
-        return [], offset, 0
+            read_size = min(MAX_SOURCE_READ_BYTES, budget.remaining(path), size - start)
+            raw = handle.read(read_size)
+            budget.bytes_read += len(raw)
+            if len(raw) != read_size:
+                raise OSError("source changed during incremental read")
+        complete_bytes = raw.rfind(b"\n") + 1
+        end = start + complete_bytes
+        if end < size:
+            budget.limited_sources.add(str(path))
+        out = raw[:complete_bytes].decode("utf-8").splitlines(keepends=True)
+    except (OSError, ValueError):
+        budget.failed_sources.add(str(path))
+        return [], offset, line_offset
     return out, int(end), 0
 
 
@@ -245,17 +405,18 @@ def _artifact_observations(
     *,
     bot_ids: set[str],
     seen_keys: set[str],
+    budget: ObservationScanBudget | None = None,
 ) -> tuple[Counter[str], dict[str, Counter[str]], list[str], int]:
     health_root = project_root / "governance" / "health"
     counts: Counter[str] = Counter()
     statuses: dict[str, Counter[str]] = defaultdict(Counter)
     new_keys: list[str] = []
     files_scanned = 0
-    if not health_root.exists():
+    if inspect_storage_path(health_root)["status"] != "present":
         return counts, statuses, new_keys, files_scanned
 
-    for path in sorted(health_root.glob("*_latest.json")):
-        payload = load_json(path)
+    for path in _routed_glob(health_root, "*_latest.json"):
+        payload = budget.load_json(path) if budget else load_json(path)
         if not isinstance(payload, dict) or payload.get("ok") is False:
             continue
         artifact_bot_ids = _iter_artifact_bot_ids(payload) & bot_ids
@@ -285,13 +446,14 @@ def _channel_observations(
     bot_ids: set[str],
     days: int,
     tail_lines: int,
+    budget: ObservationScanBudget | None = None,
 ) -> tuple[Counter[str], dict[str, Counter[str]], int, int]:
     counts: Counter[str] = Counter()
     statuses: dict[str, Counter[str]] = defaultdict(Counter)
     files_scanned = 0
     lines_scanned = 0
     for path in _channel_files(project_root, days=days):
-        lines = _iter_tail_lines(path, limit=max(int(tail_lines), DEFAULT_CHANNEL_TAIL_LINES))
+        lines = _iter_tail_lines(path, limit=max(int(tail_lines), DEFAULT_CHANNEL_TAIL_LINES), budget=budget)
         file_counts, _file_statuses = _count_lines(lines, bot_ids)
         if file_counts:
             files_scanned += 1
@@ -342,16 +504,17 @@ def _diagnostic_observations(
     project_root: Path,
     *,
     bot_ids: set[str],
+    budget: ObservationScanBudget | None = None,
 ) -> tuple[Counter[str], dict[str, Counter[str]], int]:
     diagnostics_root = project_root / "governance" / "training_diagnostics"
     counts: Counter[str] = Counter()
     statuses: dict[str, Counter[str]] = defaultdict(Counter)
     files_scanned = 0
-    if not diagnostics_root.exists():
+    if inspect_storage_path(diagnostics_root)["status"] != "present":
         return counts, statuses, files_scanned
 
-    for path in sorted(diagnostics_root.glob("*_latest.json")):
-        payload = load_json(path)
+    for path in _routed_glob(diagnostics_root, "*_latest.json"):
+        payload = budget.load_json(path) if budget else load_json(path)
         if not isinstance(payload, dict):
             continue
         bot_id = _diagnostic_bot_id(path, payload)
@@ -469,7 +632,10 @@ def build_payload(
     days: int,
     bootstrap_tail_lines: int,
     apply: bool,
+    state_only: bool = False,
+    scan_budget: ObservationScanBudget | None = None,
 ) -> dict[str, Any]:
+    budget = scan_budget or ObservationScanBudget()
     registry = load_json(registry_path)
     collectors = _collector_rows(registry)
     bot_ids = {_bot_id(row) for row in collectors}
@@ -500,18 +666,23 @@ def build_payload(
     for path in files:
         key = str(path.relative_to(project_root))
         if bootstrap:
-            lines = _iter_tail_lines(path, limit=bootstrap_tail_lines)
-            try:
-                new_offsets[key] = int(path.stat().st_size)
-            except Exception:
-                new_offsets[key] = 0
             if _is_gzip_path(path):
-                new_line_counts[key] = len(_read_gzip_lines(path))
+                all_lines, complete = _read_gzip_lines(path, budget=budget)
+                lines = all_lines[-max(bootstrap_tail_lines, 1):] if complete else []
+                if complete:
+                    new_offsets[key] = int(path.stat().st_size)
+                    new_line_counts[key] = len(all_lines)
+            else:
+                read_audit: dict[str, int] = {}
+                lines = _iter_tail_lines(path, limit=bootstrap_tail_lines, budget=budget, read_audit=read_audit)
+                if "complete_end" in read_audit:
+                    new_offsets[key] = read_audit["complete_end"]
         else:
             lines, offset, line_count = _iter_new_lines(
                 path,
                 offset=_safe_int(file_offsets.get(key), 0),
                 line_offset=_safe_int(file_line_counts.get(key), 0),
+                budget=budget,
             )
             new_offsets[key] = offset
             if _is_gzip_path(path):
@@ -527,25 +698,25 @@ def build_payload(
         project_root,
         bot_ids=bot_ids,
         seen_keys=set(artifact_observation_keys),
+        budget=budget,
     )
     observed_counts.update(artifact_counts)
     for bot_id, counter in artifact_statuses.items():
         status_counts[bot_id].update(counter)
 
-    channel_counts, channel_statuses, channel_files_scanned, channel_lines_scanned = _channel_observations(
-        project_root,
-        bot_ids=bot_ids,
-        days=days,
-        tail_lines=bootstrap_tail_lines,
-    )
-    for bot_id, counter in channel_statuses.items():
-        status_counts[bot_id].update(counter)
-
     diagnostic_counts, diagnostic_statuses, diagnostic_files_scanned = _diagnostic_observations(
         project_root,
         bot_ids=bot_ids,
+        budget=budget,
     )
     for bot_id, counter in diagnostic_statuses.items():
+        status_counts[bot_id].update(counter)
+
+    channel_counts, channel_statuses, channel_files_scanned, channel_lines_scanned = _channel_observations(
+        project_root, bot_ids=bot_ids, days=days,
+        tail_lines=bootstrap_tail_lines, budget=budget,
+    )
+    for bot_id, counter in channel_statuses.items():
         status_counts[bot_id].update(counter)
 
     if bootstrap:
@@ -592,6 +763,8 @@ def build_payload(
             progress["training_ready"]
             and total > 0
             and (lifecycle_state == "data_collection_only" or has_explicit_floor)
+            and not budget.limited_sources
+            and not budget.failed_sources
         )
         if can_release_training_exclusion:
             training_ready_bot_ids.append(bot_id)
@@ -686,12 +859,13 @@ def build_payload(
                     "updates": delta,
                 }
             )
-            if apply:
+            if apply and not state_only:
                 row.update(delta)
 
     if apply:
-        _refresh_summary(registry)
-        write_payload(registry_path, registry)
+        if not state_only:
+            _refresh_summary(registry)
+            write_payload(registry_path, registry)
         state_payload = {
             "timestamp_utc": now,
             "initialized": True,
@@ -737,6 +911,8 @@ def build_payload(
         and bots_with_observations > 0
         and int(sum(merged_counts.get(bot_id, 0) for bot_id in bot_ids)) > 0
         and raw_observation_coverage_ratio >= 0.75
+        and not budget.failed_sources
+        and (not budget.limited_sources or sum(observed_counts.values()) > 0 or sum(channel_counts.values()) > 0)
         and (
             not unmanaged_zero_observation_bot_ids
             or all_unmanaged_zero_fail_closed
@@ -757,12 +933,14 @@ def build_payload(
                 "--json",
             ],
         )
-    ok = len(unmanaged_zero_observation_bot_ids) == 0
+    scan_receipt = budget.receipt()
+    ok = len(unmanaged_zero_observation_bot_ids) == 0 and scan_receipt["scan_complete"]
     return {
         "timestamp_utc": now,
         "schema_version": 1,
         "ok": ok,
-        "overall_status": "ready" if ok else "degraded",
+        "overall_status": "blocked" if budget.failed_sources else ("ready" if ok else "degraded"),
+        "scan_contract": scan_receipt,
         "operational_ok": operational_collection_ok,
         "operational_status": "ready" if operational_collection_ok else "degraded",
         "operational_collection": {
@@ -780,6 +958,8 @@ def build_payload(
         },
         "mode": "bootstrap_tail" if bootstrap else "incremental",
         "apply": bool(apply),
+        "state_only": bool(state_only),
+        "registry_written": bool(apply and not state_only),
         "collector_count": collector_count,
         "bots_with_observations": bots_with_observations,
         "effective_bots_with_observations": effective_bots_with_observations,
@@ -916,19 +1096,36 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=2)
     parser.add_argument("--bootstrap-tail-lines", type=int, default=1200)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--state-only", action="store_true", help="Persist observation cursors with --apply; never modify registry or training exclusions.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    project_root = Path(args.project_root).resolve()
-    payload = build_payload(
-        project_root=project_root,
-        registry_path=Path(args.registry).expanduser(),
-        state_path=Path(args.state_file).expanduser(),
-        days=args.days,
-        bootstrap_tail_lines=args.bootstrap_tail_lines,
-        apply=bool(args.apply),
-    )
-    write_payload(Path(args.out_file).expanduser(), payload)
+    project_root = Path(args.project_root).expanduser().absolute()
+    state_path = Path(args.state_file).expanduser()
+    out_path = Path(args.out_file).expanduser()
+    registry_path = Path(args.registry).expanduser()
+    lock_path = state_path.with_suffix(state_path.suffix + ".lock")
+    for path in (project_root, registry_path, state_path, out_path, lock_path):
+        route = inspect_storage_path(path)
+        if route["status"] not in {"present", "missing"}:
+            parser.error(f"unsafe or unavailable route: {path}")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with os.fdopen(os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600), "r+") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(json.dumps({"ok": False, "overall_status": "deferred", "reason": "observation_rollup_already_running"}))
+            return 75
+        payload = build_payload(
+            project_root=project_root,
+            registry_path=registry_path,
+            state_path=state_path,
+            days=args.days,
+            bootstrap_tail_lines=args.bootstrap_tail_lines,
+            apply=bool(args.apply),
+            state_only=bool(args.state_only),
+        )
+        write_payload(out_path, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

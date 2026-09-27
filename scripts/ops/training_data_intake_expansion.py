@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections import Counter, defaultdict
@@ -21,6 +22,7 @@ else:
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "master_bot_registry.json"
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "training_data_intake_expansion_latest.json"
 DEFAULT_FOCUS_PATH = PROJECT_ROOT / "governance" / "training_labeling_intelligence" / "data_intake_focus_latest.json"
+DEFAULT_LABEL_DEPTH_DATASET_PATH = PROJECT_ROOT / "governance" / "training_labeling_intelligence" / "label_depth_training_dataset_latest.json"
 DEFAULT_BOT_NEEDS_PATH = PROJECT_ROOT / "governance" / "health" / "bot_needs_intelligence_latest.json"
 DEFAULT_TRAINING_QUALITY_PATH = PROJECT_ROOT / "governance" / "health" / "training_quality_control_latest.json"
 DEFAULT_PAPER_PROFITABILITY_CONTROL_PATH = PROJECT_ROOT / "governance" / "health" / "paper_profitability_control_latest.json"
@@ -605,6 +607,97 @@ LABEL_REPAIR_ACTIONS_BY_FAMILY: dict[str, list[str]] = {
     "cross_asset_basis_research": ["join basis, funding, and cross-asset correlation traces to convergence outcomes"],
 }
 
+LABEL_HARDENING_FIELDS = [
+    "event_time_utc",
+    "label_time_utc",
+    "source_snapshot_receipt",
+    "feature_lineage_receipt",
+    "temporal_split_id",
+    "embargo_bucket",
+    "train_validation_test_split",
+    "label_builder_version",
+    "dedupe_receipt",
+]
+
+TRAINING_BLOCKING_WEAKNESSES = {
+    "sample_starved",
+    "label_depth_gap",
+    "sequence_starved",
+    "label_imbalanced",
+    "overacting",
+    "quality_weak",
+    "runtime_depth_debt",
+    "paper_loss_drag",
+    "confirmation_bias",
+    "advanced_quant_depth_debt",
+    "advanced_quant_proxy_gap",
+    "advanced_quant_label_gap",
+    "overfit_first",
+}
+
+WEAKNESS_REPAIR_LANES: dict[str, dict[str, Any]] = {
+    "sample_starved": {
+        "lane": "usable_sample_materialization",
+        "outputs": ["label_outcome_join", "sample_eligibility_reason", "accepted_candidate_trace", "rejected_candidate_trace"],
+        "completion": "usable real sample count reaches the work-item sample goal",
+    },
+    "label_depth_gap": {
+        "lane": "point_in_time_label_depth",
+        "outputs": ["label_outcome_join", "label_quality_bucket", "sample_eligibility_reason", "abstained_candidate_trace"],
+        "completion": "every eligible observation has a point-in-time outcome join or explicit rejection reason",
+    },
+    "sequence_starved": {
+        "lane": "sequence_coverage_backfill",
+        "outputs": ["temporal_split_id", "embargo_bucket", "sequence_gap_reason"],
+        "completion": "eligible sequence count reaches the work-item sequence goal across session buckets",
+    },
+    "label_imbalanced": {
+        "lane": "label_balance_repair",
+        "outputs": ["lane_balance_bucket", "side_specific_outcome", "counter_side_examples", "neutral_examples"],
+        "completion": "positive rate, side precision, and neutral examples are inside the label balance contract",
+    },
+    "overacting": {
+        "lane": "abstention_calibration",
+        "outputs": ["abstention_threshold_trace", "false_positive_candidate_trace", "side_specific_precision_trace"],
+        "completion": "acted coverage is capped until side precision and abstention canaries clear",
+    },
+    "quality_weak": {
+        "lane": "quality_non_regression_repair",
+        "outputs": ["counterfactual_replay", "feature_importance_trace", "non_regression_marker"],
+        "completion": "quality guard clears without weakening replay or feature-lineage checks",
+    },
+    "runtime_depth_debt": {
+        "lane": "runtime_snapshot_depth_repair",
+        "outputs": ["runtime_training_snapshot", "runtime_health", "writer_pressure"],
+        "completion": "runtime snapshot depth and resource-pressure rows meet the collection floor",
+    },
+    "paper_loss_drag": {
+        "lane": "post_cost_paper_outcome_labeling",
+        "outputs": ["paper_loss_cause", "paper_profile", "paper_strategy", "post_entry_mfe_mae", "exit_quality_trace"],
+        "completion": "post-cost paper losses are attributed before the profile can re-enter training",
+    },
+    "confirmation_bias": {
+        "lane": "independent_evidence_confirmation",
+        "outputs": ["independent_evidence_channel_count", "confirmation_bias_bucket", "cross_asset_disagreement_trace"],
+        "completion": "candidate rows show enough independent evidence and disagreement checks",
+    },
+    "advanced_quant_depth_debt": {
+        "lane": "advanced_quant_depth_backfill",
+        "outputs": ["feature_surface_snapshot_id", "model_parameter_trace", "walk_forward_fold_trace"],
+        "completion": "advanced quant sample, sequence, and feature-surface targets are all satisfied",
+    },
+    "advanced_quant_proxy_gap": {
+        "lane": "proxy_source_lineage_repair",
+        "outputs": ["provider_freshness", "cross_provider_agreement", "proxy_data_source_lineage", "source_confidence_bucket"],
+        "completion": "proxy-derived rows carry provider freshness, agreement, and source-lineage labels",
+    },
+    "advanced_quant_label_gap": {
+        "lane": "advanced_quant_label_quality_repair",
+        "outputs": ["point_in_time_label_quality", "proxy_label_quality_bucket", "label_outcome_join"],
+        "completion": "advanced quant labels include point-in-time and proxy quality buckets",
+    },
+}
+
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
@@ -980,11 +1073,12 @@ def _sample_enrichment_plan(
     base_sequence_goal = max(ELIGIBLE_SEQUENCE_GOAL, _safe_int(advanced_targets.get("sequence"), ELIGIBLE_SEQUENCE_GOAL))
     sample_goal = base_sample_goal if ("sample_starved" in weaknesses or "label_depth_gap" in weaknesses or "advanced_quant_depth_debt" in weaknesses) else SAMPLE_FLOOR
     eligible_goal = base_sequence_goal if ("sequence_starved" in weaknesses or "advanced_quant_depth_debt" in weaknesses) else ELIGIBLE_SEQUENCE_FLOOR
-    observation_goal = max(minimum_observations, observation_count)
+    observation_goal = max(minimum_observations, SAMPLE_FLOOR)
     if advanced_targets:
         observation_goal = max(observation_goal, _safe_int(advanced_targets.get("observations"), 0))
     if "sample_starved" in weaknesses:
-        observation_goal = max(observation_goal, observation_count + max(sample_goal - sample_count, 0) * 3)
+        # Collection is a fixed planning floor; real label yield is checked separately.
+        observation_goal = max(observation_goal, sample_goal * 3)
     if "runtime_depth_debt" in weaknesses:
         observation_goal = max(observation_goal, 1000)
     sample_gap = max(sample_goal - sample_count, 0)
@@ -1186,6 +1280,319 @@ def _label_depth_bridge(
     }
 
 
+def _label_embargo_minutes(label_family: str) -> int:
+    family = str(label_family or "").strip().lower()
+    if family in {"intraday_fast", "crypto_microstructure", "execution_cost_quality"}:
+        return 30
+    if family in {"operational_guard_effect", "gpu_quant_acceleration"}:
+        return 0
+    if family in {"multi_day", "income_total_return", "fixed_income_rates", "credit_spread"}:
+        return 1440
+    if "research" in family or "quant" in family:
+        return 1440
+    return 390
+
+
+def _ratio(value: int, goal: int) -> float:
+    if goal <= 0:
+        return 1.0
+    return min(max(float(value) / float(goal), 0.0), 1.0)
+
+
+def _label_depth_score(
+    *,
+    sample_count: int,
+    observation_count: int,
+    eligible_sequences: int,
+    sample_goal: int,
+    observation_goal: int,
+    sequence_goal: int,
+    weaknesses: list[str],
+) -> float:
+    weakness_set = {str(item) for item in weaknesses}
+    score = (
+        _ratio(sample_count, sample_goal) * 0.40
+        + _ratio(eligible_sequences, sequence_goal) * 0.25
+        + _ratio(observation_count, observation_goal) * 0.20
+        + (0.10 if "label_depth_gap" not in weakness_set else 0.0)
+        + (0.05 if "label_imbalanced" not in weakness_set else 0.0)
+    )
+    return round(score * 100.0, 3)
+
+
+def _label_depth_tier(
+    *,
+    materialized_depth_ready: bool,
+    weaknesses: list[str],
+    observation_count: int,
+    sample_count: int,
+) -> str:
+    blocking = bool({str(item) for item in weaknesses}.intersection(TRAINING_BLOCKING_WEAKNESSES))
+    if materialized_depth_ready and not blocking:
+        return "training_hardened_ready"
+    if materialized_depth_ready:
+        return "materialized_needs_hardening"
+    if sample_count > 0:
+        return "sample_depth_repair"
+    if observation_count > 0:
+        return "label_materialization_from_observations"
+    return "collection_backfill"
+
+
+def _label_quality_contract(
+    *,
+    bot_id: str,
+    label_family: str,
+    primary_need: str,
+    weaknesses: list[str],
+    label_repair_plan: dict[str, Any],
+    sample_plan: dict[str, Any],
+    required_outputs: list[str],
+    required_join_keys: list[str],
+) -> dict[str, Any]:
+    sample_goal = _safe_int(sample_plan.get("usable_sample_goal"), USABLE_SAMPLE_GOAL)
+    sequence_goal = _safe_int(sample_plan.get("eligible_sequence_goal"), ELIGIBLE_SEQUENCE_GOAL)
+    observation_goal = _safe_int(sample_plan.get("observation_goal"), OBSERVATION_FLOOR_DEFAULT)
+    train_min = max(int(sample_goal * 0.60), 1)
+    validation_min = max(int(sample_goal * 0.20), 1)
+    test_min = max(sample_goal - train_min - validation_min, 1)
+    hardening_fields = ordered_unique(LABEL_HARDENING_FIELDS + required_outputs)
+    return {
+        "contract_version": "label_quality_hardening_v2",
+        "bot_id": bot_id,
+        "label_family": label_family,
+        "primary_need": primary_need,
+        "blocking_weaknesses": [
+            weakness
+            for weakness in weaknesses
+            if weakness in TRAINING_BLOCKING_WEAKNESSES
+        ],
+        "point_in_time_join": {
+            "required_join_mode": str(label_repair_plan.get("required_join_mode") or "point_in_time_only"),
+            "required_join_keys": required_join_keys,
+            "dedupe_keys": required_join_keys,
+            "event_time_field": "event_time_utc",
+            "label_time_field": "label_time_utc",
+            "requires_event_time_lte_label_time": True,
+        },
+        "anti_leakage": {
+            "forbidden_join_modes": ["future_leakage", "lookahead_join", "unbounded_raw_feed_join"],
+            "requires_snapshot_id": True,
+            "requires_decision_id": True,
+            "requires_source_snapshot_receipt": True,
+            "requires_feature_lineage_receipt": True,
+            "requires_embargoed_split": True,
+            "disallow_same_decision_across_train_validation_test": True,
+            "disallow_estimated_capacity_as_real_samples": True,
+        },
+        "split_policy": {
+            "minimum_train_samples": train_min,
+            "minimum_validation_samples": validation_min,
+            "minimum_test_samples": test_min,
+            "minimum_total_samples": sample_goal,
+            "minimum_eligible_sequences": sequence_goal,
+            "minimum_observations": observation_goal,
+            "embargo_minutes": _label_embargo_minutes(label_family),
+            "split_keys": ["bot_id", "symbol", "mode", "temporal_split_id", "snapshot_id"],
+        },
+        "balance_policy": {
+            **_as_dict(label_repair_plan.get("balance_targets")),
+            "min_neutral_examples": max(int(sample_goal * 0.10), 12),
+            "min_counter_side_examples": max(int(sample_goal * 0.10), 12),
+            "requires_side_specific_precision": True,
+        },
+        "required_hardening_fields": hardening_fields,
+        "authority_contract": {
+            "live_execution_authority": False,
+            "paper_execution_authority": False,
+            "promotion_authority": False,
+            "training_launch_authority": False,
+            "counts_as_real_training_samples": False,
+        },
+    }
+
+
+def _weakness_repair_cards(
+    *,
+    bot_id: str,
+    label_family: str,
+    primary_need: str,
+    weaknesses: list[str],
+    sample_plan: dict[str, Any],
+    label_repair_plan: dict[str, Any],
+) -> list[dict[str, Any]]:
+    sample_goal = _safe_int(sample_plan.get("usable_sample_goal"), USABLE_SAMPLE_GOAL)
+    sequence_goal = _safe_int(sample_plan.get("eligible_sequence_goal"), ELIGIBLE_SEQUENCE_GOAL)
+    observation_goal = _safe_int(sample_plan.get("observation_goal"), OBSERVATION_FLOOR_DEFAULT)
+    cards: list[dict[str, Any]] = []
+    for weakness in ordered_unique([str(item) for item in weaknesses if str(item or "").strip()]):
+        spec = WEAKNESS_REPAIR_LANES.get(weakness, {})
+        lane = str(spec.get("lane") or f"{weakness}_repair")
+        required_context = ordered_unique(
+            WEAKNESS_CONTEXT.get(weakness, [])
+            + ENRICHMENT_CONTEXT_BY_WEAKNESS.get(weakness, [])
+        )
+        required_outputs = ordered_unique(
+            [str(item) for item in spec.get("outputs") or [] if str(item or "").strip()]
+            + [
+                item
+                for item in _as_list(label_repair_plan.get("required_label_outputs"))
+                if str(item or "").strip() in set(spec.get("outputs") or [])
+            ]
+        )
+        cards.append(
+            {
+                "repair_card_id": f"{bot_id}:{weakness}",
+                "weakness": weakness,
+                "repair_lane": lane,
+                "label_family": label_family,
+                "blocks_training_launch": weakness in TRAINING_BLOCKING_WEAKNESSES,
+                "required_context": required_context,
+                "required_label_outputs": required_outputs,
+                "sample_targets": {
+                    "usable_sample_goal": sample_goal,
+                    "eligible_sequence_goal": sequence_goal,
+                    "observation_goal": observation_goal,
+                },
+                "completion_check": str(spec.get("completion") or "weakness clears from bot-needs and label-depth diagnostics"),
+                "validation_command": [
+                    "./scripts/ops/opsctl.sh",
+                    "training-data-intake",
+                    "--include-bot-ids",
+                    bot_id,
+                    "--json",
+                ],
+                "authority_contract": {
+                    "counts_as_real_training_samples": False,
+                    "training_launch_authority": False,
+                    "promotion_authority": False,
+                    "live_execution_authority": False,
+                },
+            }
+        )
+    if primary_need in {"refresh_training_diagnostics", "create_collect_only_diagnostics"}:
+        cards.append(
+            {
+                "repair_card_id": f"{bot_id}:diagnostics_refresh",
+                "weakness": "diagnostics_refresh_required",
+                "repair_lane": "fresh_training_diagnostics",
+                "label_family": label_family,
+                "blocks_training_launch": True,
+                "required_context": ["training_diagnostic_receipt", "label_contract_quality", "non_regression_marker"],
+                "required_label_outputs": ["label_quality_bucket", "feature_lineage_receipt"],
+                "sample_targets": {
+                    "usable_sample_goal": sample_goal,
+                    "eligible_sequence_goal": sequence_goal,
+                    "observation_goal": observation_goal,
+                },
+                "completion_check": "training diagnostics are refreshed under the current evidence epoch",
+                "validation_command": ["./scripts/ops/opsctl.sh", "bot-needs", "--include-bot-ids", bot_id, "--json"],
+                "authority_contract": {
+                    "counts_as_real_training_samples": False,
+                    "training_launch_authority": False,
+                    "promotion_authority": False,
+                    "live_execution_authority": False,
+                },
+            }
+        )
+    if primary_need == "reduce_overfitting":
+        cards.append(
+            {
+                "repair_card_id": f"{bot_id}:overfit_repair",
+                "weakness": "overfit_first",
+                "repair_lane": "leakage_overfit_repair",
+                "label_family": label_family,
+                "blocks_training_launch": True,
+                "required_context": ["overfit_gap_trace", "leakage_red_team_receipt", "walk_forward_fold_trace"],
+                "required_label_outputs": ["overfit_gap_bucket", "non_regression_marker", "benchmark_gap_bucket"],
+                "sample_targets": {
+                    "usable_sample_goal": sample_goal,
+                    "eligible_sequence_goal": sequence_goal,
+                    "observation_goal": observation_goal,
+                },
+                "completion_check": "overfit and leakage guards clear before the bot can teach or train",
+                "validation_command": ["./scripts/ops/opsctl.sh", "overfitting-awareness", "--json"],
+                "authority_contract": {
+                    "counts_as_real_training_samples": False,
+                    "training_launch_authority": False,
+                    "promotion_authority": False,
+                    "live_execution_authority": False,
+                },
+            }
+        )
+    return cards
+
+
+def _training_hardening_checks(
+    *,
+    required_join_keys: list[str],
+    required_outputs: list[str],
+    label_quality_contract: dict[str, Any],
+    sample_count: int,
+    observation_count: int,
+    eligible_sequences: int,
+    sample_goal: int,
+    observation_goal: int,
+    sequence_goal: int,
+    weaknesses: list[str],
+) -> list[dict[str, Any]]:
+    required_key_set = {"bot_id", "symbol", "mode", "timestamp_utc", "snapshot_id", "decision_id"}
+    output_set = {str(item) for item in required_outputs}
+    hardening_field_set = {
+        str(item)
+        for item in _as_list(label_quality_contract.get("required_hardening_fields"))
+        if str(item or "").strip()
+    }
+    blocking_weaknesses = sorted({str(item) for item in weaknesses}.intersection(TRAINING_BLOCKING_WEAKNESSES))
+    checks = [
+        {
+            "check": "point_in_time_join_keys_complete",
+            "ready": required_key_set.issubset({str(item) for item in required_join_keys}),
+            "blocks_training_launch": True,
+        },
+        {
+            "check": "real_sample_goal_met",
+            "ready": sample_count >= sample_goal,
+            "blocks_training_launch": True,
+        },
+        {
+            "check": "eligible_sequence_goal_met",
+            "ready": eligible_sequences >= sequence_goal,
+            "blocks_training_launch": True,
+        },
+        {
+            "check": "observation_goal_met",
+            "ready": observation_count >= observation_goal,
+            "blocks_training_launch": True,
+        },
+        {
+            "check": "required_outcome_depth_declared",
+            "ready": {"label_outcome_join", "sample_eligibility_reason", "side_specific_outcome"}.issubset(output_set),
+            "blocks_training_launch": True,
+        },
+        {
+            "check": "leakage_hardening_fields_declared",
+            "ready": set(LABEL_HARDENING_FIELDS).issubset(hardening_field_set),
+            "blocks_training_launch": True,
+        },
+        {
+            "check": "blocking_weaknesses_clear",
+            "ready": not blocking_weaknesses,
+            "blocks_training_launch": True,
+            "blocking_weaknesses": blocking_weaknesses,
+        },
+        {
+            "check": "manifest_has_no_execution_authority",
+            "ready": not any(
+                bool(_as_dict(label_quality_contract.get("authority_contract")).get(field, False))
+                for field in ("live_execution_authority", "paper_execution_authority", "promotion_authority", "training_launch_authority")
+            ),
+            "blocks_training_launch": True,
+        },
+    ]
+    return checks
+
+
 def _priority(
     *,
     need: dict[str, Any],
@@ -1314,6 +1721,36 @@ def _row_record(
         sample_plan=enrichment_plan,
         label_repair_plan=label_repair_plan,
     )
+    label_quality_contract = _label_quality_contract(
+        bot_id=bot_id,
+        label_family=label_family,
+        primary_need=primary_need,
+        weaknesses=weaknesses,
+        label_repair_plan=label_repair_plan,
+        sample_plan=enrichment_plan,
+        required_outputs=[str(item) for item in _as_list(label_repair_plan.get("required_label_outputs")) if str(item or "").strip()],
+        required_join_keys=[str(item) for item in _as_list(label_repair_plan.get("required_join_keys")) if str(item or "").strip()],
+    )
+    weakness_repair_cards = _weakness_repair_cards(
+        bot_id=bot_id,
+        label_family=label_family,
+        primary_need=primary_need,
+        weaknesses=weaknesses,
+        sample_plan=enrichment_plan,
+        label_repair_plan=label_repair_plan,
+    )
+    training_hardening_checks = _training_hardening_checks(
+        required_join_keys=[str(item) for item in _as_list(label_repair_plan.get("required_join_keys")) if str(item or "").strip()],
+        required_outputs=[str(item) for item in _as_list(label_repair_plan.get("required_label_outputs")) if str(item or "").strip()],
+        label_quality_contract=label_quality_contract,
+        sample_count=sample_count,
+        observation_count=observation_count,
+        eligible_sequences=eligible_sequences,
+        sample_goal=_safe_int(enrichment_plan.get("usable_sample_goal"), USABLE_SAMPLE_GOAL),
+        observation_goal=_safe_int(enrichment_plan.get("observation_goal"), max(observation_count, OBSERVATION_FLOOR_DEFAULT)),
+        sequence_goal=_safe_int(enrichment_plan.get("eligible_sequence_goal"), ELIGIBLE_SEQUENCE_GOAL),
+        weaknesses=weaknesses,
+    )
     advanced_quant_section_contract = _advanced_quant_section_contract(
         bot_id=bot_id,
         label_family=label_family,
@@ -1353,6 +1790,9 @@ def _row_record(
         "sample_enrichment_plan": enrichment_plan,
         "label_repair_plan": label_repair_plan,
         "label_depth_bridge": label_depth_bridge,
+        "label_quality_contract": label_quality_contract,
+        "weakness_repair_cards": weakness_repair_cards,
+        "training_hardening_checks": training_hardening_checks,
         "advanced_quant_collection_contract": advanced_quant_section_contract,
         "diagnostic_path": str(_diagnostic_path(project_root, bot_id)),
         "next_action": _next_action(primary_need, weaknesses),
@@ -1428,6 +1868,303 @@ def _select_records(records: list[dict[str, Any]], *, limit: int) -> list[dict[s
     return ranked
 
 
+def _work_item_stage(record: dict[str, Any]) -> str:
+    weaknesses = {str(item) for item in _as_list(record.get("weaknesses"))}
+    primary_need = str(record.get("primary_need") or "").strip()
+    label_depth = _as_dict(record.get("label_depth_bridge"))
+    label_depth_status = str(label_depth.get("status") or "").strip()
+    sample_count = _safe_int(record.get("sample_count"), 0)
+    eligible_sequences = _safe_int(record.get("eligible_sequences"), 0)
+
+    if primary_need in {"targeted_quality_retrain", "top_off_walk_forward_runs"} and sample_count >= SAMPLE_FLOOR and eligible_sequences >= ELIGIBLE_SEQUENCE_FLOOR:
+        return "trainable_candidate_preflight"
+    if primary_need == "reduce_overfitting" or "overfit_first" in weaknesses:
+        return "overfit_repair_first"
+    if primary_need in {"refresh_training_diagnostics", "create_collect_only_diagnostics"}:
+        return "refresh_real_diagnostics"
+    if label_depth_status:
+        return label_depth_status
+    if "label_depth_gap" in weaknesses:
+        return "materialize_from_existing_observations"
+    if "sample_starved" in weaknesses or primary_need == "collect_more_data":
+        return "collect_and_materialize"
+    return primary_need or "monitor"
+
+
+def _work_item_id(record: dict[str, Any], stage: str) -> str:
+    raw = "|".join(
+        [
+            str(record.get("bot_id") or ""),
+            str(record.get("label_family") or ""),
+            str(record.get("training_lane") or ""),
+            str(record.get("primary_need") or ""),
+            stage,
+        ]
+    )
+    return f"label-depth:{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]}"
+
+
+def _label_depth_work_item(record: dict[str, Any]) -> dict[str, Any]:
+    stage = _work_item_stage(record)
+    bot_id = str(record.get("bot_id") or "").strip()
+    label_family = str(record.get("label_family") or "unclassified").strip() or "unclassified"
+    training_lane = str(record.get("training_lane") or "unassigned").strip() or "unassigned"
+    primary_need = str(record.get("primary_need") or "monitor").strip() or "monitor"
+    label_repair = _as_dict(record.get("label_repair_plan"))
+    sample_plan = _as_dict(record.get("sample_enrichment_plan"))
+    label_depth = _as_dict(record.get("label_depth_bridge"))
+    required_join_keys = [str(item) for item in _as_list(label_repair.get("required_join_keys")) if str(item or "").strip()]
+    required_outputs = [str(item) for item in _as_list(label_repair.get("required_label_outputs")) if str(item or "").strip()]
+    required_event_mix = [str(item) for item in _as_list(label_depth.get("required_event_mix")) if str(item or "").strip()]
+    current_sample_count = _safe_int(record.get("sample_count"), 0)
+    current_observation_count = _safe_int(record.get("observation_count"), 0)
+    current_eligible_sequences = _safe_int(record.get("eligible_sequences"), 0)
+    usable_sample_goal = _safe_int(sample_plan.get("usable_sample_goal"), SAMPLE_FLOOR)
+    eligible_sequence_goal = _safe_int(sample_plan.get("eligible_sequence_goal"), ELIGIBLE_SEQUENCE_FLOOR)
+    observation_goal = _safe_int(sample_plan.get("observation_goal"), max(current_observation_count, OBSERVATION_FLOOR_DEFAULT))
+    partition_key = "/".join([label_family, training_lane, primary_need, stage])
+    materialized_depth_ready = bool(
+        current_sample_count >= usable_sample_goal
+        and current_eligible_sequences >= eligible_sequence_goal
+        and current_observation_count >= observation_goal
+    )
+    label_quality_contract = _as_dict(record.get("label_quality_contract")) or _label_quality_contract(
+        bot_id=bot_id,
+        label_family=label_family,
+        primary_need=primary_need,
+        weaknesses=[str(item) for item in _as_list(record.get("weaknesses")) if str(item or "").strip()],
+        label_repair_plan=label_repair,
+        sample_plan=sample_plan,
+        required_outputs=required_outputs,
+        required_join_keys=required_join_keys,
+    )
+    weakness_repair_cards = _as_list(record.get("weakness_repair_cards")) or _weakness_repair_cards(
+        bot_id=bot_id,
+        label_family=label_family,
+        primary_need=primary_need,
+        weaknesses=[str(item) for item in _as_list(record.get("weaknesses")) if str(item or "").strip()],
+        sample_plan=sample_plan,
+        label_repair_plan=label_repair,
+    )
+    training_hardening_checks = _as_list(record.get("training_hardening_checks")) or _training_hardening_checks(
+        required_join_keys=required_join_keys,
+        required_outputs=required_outputs,
+        label_quality_contract=label_quality_contract,
+        sample_count=current_sample_count,
+        observation_count=current_observation_count,
+        eligible_sequences=current_eligible_sequences,
+        sample_goal=usable_sample_goal,
+        observation_goal=observation_goal,
+        sequence_goal=eligible_sequence_goal,
+        weaknesses=[str(item) for item in _as_list(record.get("weaknesses")) if str(item or "").strip()],
+    )
+    blocking_repair_cards = [
+        card
+        for card in weakness_repair_cards
+        if isinstance(card, dict) and bool(card.get("blocks_training_launch", False))
+    ]
+    failing_hardening_checks = [
+        check
+        for check in training_hardening_checks
+        if isinstance(check, dict)
+        and bool(check.get("blocks_training_launch", False))
+        and not bool(check.get("ready", False))
+    ]
+    training_hardened_ready = bool(
+        materialized_depth_ready
+        and not blocking_repair_cards
+        and not failing_hardening_checks
+    )
+    label_depth_score = _label_depth_score(
+        sample_count=current_sample_count,
+        observation_count=current_observation_count,
+        eligible_sequences=current_eligible_sequences,
+        sample_goal=usable_sample_goal,
+        observation_goal=observation_goal,
+        sequence_goal=eligible_sequence_goal,
+        weaknesses=[str(item) for item in _as_list(record.get("weaknesses")) if str(item or "").strip()],
+    )
+    label_depth_tier = _label_depth_tier(
+        materialized_depth_ready=materialized_depth_ready,
+        weaknesses=[str(item) for item in _as_list(record.get("weaknesses")) if str(item or "").strip()],
+        observation_count=current_observation_count,
+        sample_count=current_sample_count,
+    )
+    return {
+        "work_item_id": _work_item_id(record, stage),
+        "schema_version": 2,
+        "bot_id": bot_id,
+        "partition_key": partition_key,
+        "readiness_stage": stage,
+        "label_depth_tier": label_depth_tier,
+        "label_depth_score": label_depth_score,
+        "priority": _safe_float(record.get("priority"), 0.0),
+        "label_family": label_family,
+        "training_lane": training_lane,
+        "primary_need": primary_need,
+        "weaknesses": [str(item) for item in _as_list(record.get("weaknesses")) if str(item or "").strip()],
+        "required_join_mode": str(label_repair.get("required_join_mode") or "point_in_time_only"),
+        "required_join_keys": required_join_keys,
+        "dedupe_keys": required_join_keys,
+        "required_context": [str(item) for item in _as_list(record.get("required_context")) if str(item or "").strip()],
+        "focus_context": [str(item) for item in _as_list(record.get("focus_context")) if str(item or "").strip()],
+        "enrichment_context": [str(item) for item in _as_list(record.get("enrichment_context")) if str(item or "").strip()],
+        "required_label_outputs": required_outputs,
+        "required_event_mix": required_event_mix,
+        "label_quality_contract": label_quality_contract,
+        "weakness_repair_cards": weakness_repair_cards,
+        "training_hardening_checks": training_hardening_checks,
+        "failing_hardening_checks": failing_hardening_checks,
+        "sample_targets": {
+            "usable_sample_goal": usable_sample_goal,
+            "eligible_sequence_goal": eligible_sequence_goal,
+            "observation_goal": observation_goal,
+            "current_sample_count": current_sample_count,
+            "current_observation_count": current_observation_count,
+            "current_eligible_sequences": current_eligible_sequences,
+            "usable_sample_gap": max(usable_sample_goal - current_sample_count, 0),
+            "eligible_sequence_gap": max(eligible_sequence_goal - current_eligible_sequences, 0),
+            "observation_gap": max(observation_goal - current_observation_count, 0),
+        },
+        "quality_balance_targets": _as_dict(label_repair.get("balance_targets")),
+        "diagnostic_path": str(record.get("diagnostic_path") or ""),
+        "next_action": str(record.get("next_action") or ""),
+        "stop_when": str(record.get("stop_when") or ""),
+        "validation_command": _as_list(label_repair.get("validation_command") or sample_plan.get("validation_command")),
+        "training_gate_contract": {
+            "counts_as_real_training_samples": False,
+            "estimated_capacity_is_advisory_only": True,
+            "materialized_depth_ready": materialized_depth_ready,
+            "training_hardened_ready": training_hardened_ready,
+            "blocking_repair_card_count": len(blocking_repair_cards),
+            "failing_hardening_check_count": len(failing_hardening_checks),
+            "live_execution_authority": False,
+            "paper_execution_authority": False,
+            "promotion_authority": False,
+            "safe_use": "point_in_time_label_materialization_and_training_preflight_only",
+        },
+    }
+
+
+def _label_depth_dataset(records: list[dict[str, Any]], *, include_work_items: bool = False) -> dict[str, Any]:
+    work_items = [_label_depth_work_item(record) for record in records if str(record.get("bot_id") or "").strip()]
+    stage_counts: Counter[str] = Counter()
+    family_counts: Counter[str] = Counter()
+    lane_counts: Counter[str] = Counter()
+    need_counts: Counter[str] = Counter()
+    weakness_counts: Counter[str] = Counter()
+    required_output_counts: Counter[str] = Counter()
+    context_counts: Counter[str] = Counter()
+    partition_counts: Counter[str] = Counter()
+    repair_lane_counts: Counter[str] = Counter()
+    blocking_repair_lane_counts: Counter[str] = Counter()
+    hardening_check_failure_counts: Counter[str] = Counter()
+    hardening_check_ready_counts: Counter[str] = Counter()
+    depth_tier_counts: Counter[str] = Counter()
+    for item in work_items:
+        stage_counts[str(item.get("readiness_stage") or "")] += 1
+        depth_tier_counts[str(item.get("label_depth_tier") or "")] += 1
+        family_counts[str(item.get("label_family") or "")] += 1
+        lane_counts[str(item.get("training_lane") or "")] += 1
+        need_counts[str(item.get("primary_need") or "")] += 1
+        partition_counts[str(item.get("partition_key") or "")] += 1
+        for weakness in _as_list(item.get("weaknesses")):
+            weakness_counts[str(weakness)] += 1
+        for output in _as_list(item.get("required_label_outputs")):
+            required_output_counts[str(output)] += 1
+        for context in _as_list(item.get("enrichment_context")):
+            context_counts[str(context)] += 1
+        for card in _as_list(item.get("weakness_repair_cards")):
+            if not isinstance(card, dict):
+                continue
+            repair_lane = str(card.get("repair_lane") or "")
+            if repair_lane:
+                repair_lane_counts[repair_lane] += 1
+                if bool(card.get("blocks_training_launch", False)):
+                    blocking_repair_lane_counts[repair_lane] += 1
+        for check in _as_list(item.get("training_hardening_checks")):
+            if not isinstance(check, dict):
+                continue
+            check_name = str(check.get("check") or "")
+            if not check_name:
+                continue
+            if bool(check.get("ready", False)):
+                hardening_check_ready_counts[check_name] += 1
+            elif bool(check.get("blocks_training_launch", False)):
+                hardening_check_failure_counts[check_name] += 1
+    partitions = [
+        {
+            "partition_key": key,
+            "work_item_count": count,
+            "path_hint": "governance/training_labeling_intelligence/labels/" + key.replace("/", "__") + ".jsonl",
+        }
+        for key, count in sorted(partition_counts.items())
+    ]
+    summary = {
+        "work_item_count": len(work_items),
+        "partition_count": len(partitions),
+        "counts_by_readiness_stage": dict(stage_counts.most_common()),
+        "label_family_counts": dict(family_counts.most_common()),
+        "training_lane_counts": dict(lane_counts.most_common()),
+        "primary_need_counts": dict(need_counts.most_common()),
+        "weakness_counts": dict(weakness_counts.most_common()),
+        "required_output_counts": dict(required_output_counts.most_common()),
+        "enrichment_context_counts": dict(context_counts.most_common()),
+        "label_depth_tier_counts": dict(depth_tier_counts.most_common()),
+        "weakness_repair_lane_counts": dict(repair_lane_counts.most_common()),
+        "blocking_repair_lane_counts": dict(blocking_repair_lane_counts.most_common()),
+        "hardening_check_ready_counts": dict(hardening_check_ready_counts.most_common()),
+        "hardening_check_failure_counts": dict(hardening_check_failure_counts.most_common()),
+        "ready_for_training_gate_count": sum(
+            1
+            for item in work_items
+            if bool(_as_dict(item.get("training_gate_contract")).get("materialized_depth_ready", False))
+        ),
+        "training_hardened_ready_count": sum(
+            1
+            for item in work_items
+            if bool(_as_dict(item.get("training_gate_contract")).get("training_hardened_ready", False))
+        ),
+        "training_blocking_repair_card_count": sum(
+            _safe_int(_as_dict(item.get("training_gate_contract")).get("blocking_repair_card_count"), 0)
+            for item in work_items
+        ),
+        "failing_hardening_check_count": sum(
+            _safe_int(_as_dict(item.get("training_gate_contract")).get("failing_hardening_check_count"), 0)
+            for item in work_items
+        ),
+    }
+    dataset = {
+        "timestamp_utc": iso_now(),
+        "schema_version": 2,
+        "mode": "label_depth_training_dataset_manifest",
+        "summary": summary,
+        "partitions": partitions,
+        "sample_work_items": work_items[:20],
+        "contract": {
+            "contract_version": "label_depth_training_dataset_v2",
+            "required_join_mode": "point_in_time_only",
+            "required_join_keys": ["bot_id", "symbol", "mode", "timestamp_utc", "snapshot_id", "decision_id"],
+            "required_hardening_fields": LABEL_HARDENING_FIELDS,
+            "training_hardened_ready_requires": [
+                "materialized_depth_ready",
+                "no_blocking_repair_cards",
+                "all_launch_blocking_hardening_checks_ready",
+                "no_manifest_execution_authority",
+            ],
+            "counts_as_real_training_samples": False,
+            "estimated_capacity_is_advisory_only": True,
+            "live_execution_authority": False,
+            "paper_execution_authority": False,
+            "promotion_authority": False,
+            "policy": "organize label materialization work without converting planned or estimated depth into training samples",
+        },
+    }
+    if include_work_items:
+        dataset["work_items"] = work_items
+    return dataset
+
+
 def _apply_focus_to_registry(
     *,
     registry_path: Path,
@@ -1458,6 +2195,9 @@ def _apply_focus_to_registry(
             "sample_enrichment_plan": record.get("sample_enrichment_plan"),
             "label_repair_plan": record.get("label_repair_plan"),
             "label_depth_bridge": record.get("label_depth_bridge"),
+            "label_quality_contract": record.get("label_quality_contract"),
+            "weakness_repair_cards": record.get("weakness_repair_cards"),
+            "training_hardening_checks": record.get("training_hardening_checks"),
             "advanced_quant_collection_contract": record.get("advanced_quant_collection_contract"),
             "stop_when": record.get("stop_when"),
             "source_artifact": str(DEFAULT_OUT_PATH.relative_to(PROJECT_ROOT)),
@@ -1470,6 +2210,9 @@ def _apply_focus_to_registry(
             row["data_collection_sample_enrichment_plan"] = dict(record.get("sample_enrichment_plan") or {})
             row["data_collection_label_repair_plan"] = dict(record.get("label_repair_plan") or {})
             row["data_collection_label_depth_bridge"] = dict(record.get("label_depth_bridge") or {})
+            row["data_collection_label_quality_contract"] = dict(record.get("label_quality_contract") or {})
+            row["data_collection_weakness_repair_cards"] = list(record.get("weakness_repair_cards") or [])
+            row["data_collection_training_hardening_checks"] = list(record.get("training_hardening_checks") or [])
             row["data_collection_advanced_quant_contract"] = dict(record.get("advanced_quant_collection_contract") or {})
             row["data_collection_paper_loss_controls"] = list(record.get("paper_loss_controls") or [])
             row["data_collection_profitability_scout_contract"] = dict(record.get("profitability_scout_collection") or {})
@@ -1522,6 +2265,7 @@ def build_payload(
     focus_limit: int = 80,
     include_bot_ids: set[str] | None = None,
     apply: bool = False,
+    include_label_depth_work_items: bool = False,
 ) -> dict[str, Any]:
     if paper_profitability_path == DEFAULT_PAPER_PROFITABILITY_CONTROL_PATH and project_root != PROJECT_ROOT:
         paper_profitability_path = project_root / "governance" / "health" / "paper_profitability_control_latest.json"
@@ -1575,6 +2319,7 @@ def build_payload(
         and "sample_starved" not in _as_list(row.get("weaknesses"))
     ]
     collect_first = [row for row in records if str(row.get("primary_need") or "") == "collect_more_data"]
+    label_depth_dataset = _label_depth_dataset(records, include_work_items=include_label_depth_work_items)
     payload = {
         "timestamp_utc": iso_now(),
         "schema_version": 1,
@@ -1590,6 +2335,7 @@ def build_payload(
         "focus_records": focus_records,
         "trainable_candidates": _select_records(trainable_candidates, limit=20),
         "collect_first_top": _select_records(collect_first, limit=20),
+        "label_depth_dataset": label_depth_dataset,
         "apply_result": apply_result,
         "recommended_actions": [
             "use focus_context to route richer point-in-time observations before retraining sample-starved bots",
@@ -1604,6 +2350,7 @@ def build_payload(
             "training_quality": str(training_quality_path),
             "paper_profitability": str(paper_profitability_path),
             "focus_path": str(DEFAULT_FOCUS_PATH),
+            "label_depth_dataset": str(DEFAULT_LABEL_DEPTH_DATASET_PATH),
         },
     }
     return payload
@@ -1618,6 +2365,7 @@ def main() -> int:
     parser.add_argument("--paper-profitability-path", default=str(DEFAULT_PAPER_PROFITABILITY_CONTROL_PATH))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--focus-file", default=str(DEFAULT_FOCUS_PATH))
+    parser.add_argument("--label-dataset-file", default=str(DEFAULT_LABEL_DEPTH_DATASET_PATH))
     parser.add_argument("--focus-limit", type=int, default=80)
     parser.add_argument("--include-bot-ids", default="")
     parser.add_argument("--apply", action="store_true")
@@ -1634,10 +2382,17 @@ def main() -> int:
         focus_limit=int(args.focus_limit),
         include_bot_ids=_csv_set(args.include_bot_ids) or None,
         apply=bool(args.apply),
+        include_label_depth_work_items=True,
     )
+    label_depth_dataset = _as_dict(payload.get("label_depth_dataset"))
+    compact_label_depth_dataset = dict(label_depth_dataset)
+    compact_label_depth_dataset.pop("work_items", None)
+    payload["label_depth_dataset"] = compact_label_depth_dataset
     out_path = Path(args.out_file).expanduser()
     focus_path = Path(args.focus_file).expanduser()
+    label_dataset_path = Path(args.label_dataset_file).expanduser()
     write_payload(out_path, payload)
+    write_payload(label_dataset_path, label_depth_dataset)
     write_payload(
         focus_path,
         {
@@ -1665,6 +2420,11 @@ def main() -> int:
             },
             "advanced_quant_collection_sections": ADVANCED_QUANT_COLLECTION_SECTIONS,
             "advanced_quant_sample_targets": ADVANCED_QUANT_SAMPLE_TARGETS,
+            "label_depth_training_dataset": {
+                "path": str(label_dataset_path),
+                "summary": compact_label_depth_dataset.get("summary", {}),
+                "contract": compact_label_depth_dataset.get("contract", {}),
+            },
         },
     )
     if args.json:

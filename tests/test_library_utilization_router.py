@@ -11,6 +11,14 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def test_promoted_quant_libraries_and_solver_dependencies_have_explicit_lanes() -> None:
+    assert src.PACKAGE_LANE_OVERRIDES["river"] == "statistical_ml"
+    assert src.PACKAGE_LANE_OVERRIDES["linearmodels"] == "statistical_ml"
+    assert src.PACKAGE_LANE_OVERRIDES["cvxpy"] == "quant_derivatives_risk"
+    assert src.PACKAGE_LANE_OVERRIDES["clarabel"] == "quant_derivatives_risk"
+    assert src.PACKAGE_LANE_OVERRIDES["osqp"] == "quant_derivatives_risk"
+
+
 def test_library_utilization_router_maps_all_non_mlx_packages_and_keeps_mlx_default(tmp_path: Path) -> None:
     lock = tmp_path / "config" / "requirements.lock.txt"
     lock.parent.mkdir(parents=True, exist_ok=True)

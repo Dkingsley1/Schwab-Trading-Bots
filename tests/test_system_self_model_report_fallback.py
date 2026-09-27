@@ -4,6 +4,7 @@ import errno
 import importlib.util
 from pathlib import Path
 
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "ops" / "system_self_model.py"
@@ -18,16 +19,28 @@ def _load_module():
     return module
 
 
-def test_text_report_write_falls_back_on_no_space(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("error_number", [errno.ENOSPC, errno.EPERM, errno.EACCES])
+def test_text_report_write_falls_back_on_routed_output_write_failure(
+    monkeypatch, tmp_path: Path, error_number: int
+) -> None:
     module = _load_module()
     monkeypatch.setattr(module, "PROJECT_ROOT", tmp_path)
-    target = tmp_path / "exports" / "reports" / "operator" / "system_self_model_latest.md"
-    fallback = tmp_path / "local_fallback_storage" / "exports" / "reports" / "operator" / "system_self_model_latest.md"
+    target = (
+        tmp_path / "exports" / "reports" / "operator" / "system_self_model_latest.md"
+    )
+    fallback = (
+        tmp_path
+        / "local_fallback_storage"
+        / "exports"
+        / "reports"
+        / "operator"
+        / "system_self_model_latest.md"
+    )
     original_write_text = Path.write_text
 
     def fake_write_text(self: Path, text: str, *args, **kwargs):
         if self == target:
-            raise OSError(errno.ENOSPC, "No space left on device")
+            raise OSError(error_number, "routed output unavailable")
         return original_write_text(self, text, *args, **kwargs)
 
     monkeypatch.setattr(Path, "write_text", fake_write_text)

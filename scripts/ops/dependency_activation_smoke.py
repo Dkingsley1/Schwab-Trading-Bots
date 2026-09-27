@@ -25,6 +25,7 @@ DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "dependency_activation_sm
 DEFAULT_MARKDOWN = PROJECT_ROOT / "exports" / "reports" / "operator" / "dependency_activation_smoke_latest.md"
 
 IMPORT_MODULE_OVERRIDES = {
+    "ta-lib": "talib",
     "pyportfolioopt": "pypfopt",
     "riskfolio-lib": "riskfolio",
     "alibi-detect": "alibi_detect",

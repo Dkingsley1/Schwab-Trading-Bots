@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.halt_flags import inspect_halt_flag
 from core.runtime_maintenance import maintenance_hold_snapshot
 from core.runtime_python import resolve_runtime_python
+from core.system_role_contracts import RoleAuthorityError, component_action_guard
 
 VENV_PY = resolve_runtime_python(PROJECT_ROOT)
 ALL_SLEEVES_SCRIPT = PROJECT_ROOT / "scripts" / "run_all_sleeves.py"
@@ -33,6 +34,7 @@ FX_SHADOW_SCRIPT = PROJECT_ROOT / "scripts" / "run_fx_shadow.py"
 OPSCTL_SCRIPT = PROJECT_ROOT / "scripts" / "ops" / "opsctl.sh"
 WATCHDOG_DIR = PROJECT_ROOT / "governance" / "watchdog"
 HEALTH_DIR = PROJECT_ROOT / "governance" / "health"
+ALL_SLEEVES_LAUNCHER_HEALTH = HEALTH_DIR / "all_sleeves_launcher_latest.json"
 GLOBAL_HALT_FLAG = HEALTH_DIR / "GLOBAL_TRADING_HALT.flag"
 OPERATOR_STOP_FLAG = HEALTH_DIR / "OPERATOR_STOP.flag"
 HALT_RECOVERY_LATEST = HEALTH_DIR / "shadow_watchdog_halt_recovery_latest.json"
@@ -183,6 +185,15 @@ def _target_suppressed_by_fanout_guard(target: Target) -> bool:
     return "scripts/run_all_sleeves.py" in command or "scripts/run_parallel_aggressive_modes.py" in command
 
 
+def _canonical_all_sleeves_parent(target: Target) -> bool:
+    command = _format_start_cmd(target.start_cmd)
+    return bool(
+        target.name in {"schwab_parallel", "all_sleeves"}
+        or target.match == "scripts/run_all_sleeves.py"
+        or "scripts/run_all_sleeves.py" in command
+    )
+
+
 def _target_suppressed_by_creative_guard(target: Target) -> bool:
     command = _format_start_cmd(target.start_cmd)
     haystack = f"{target.name} {target.match} {command}"
@@ -207,6 +218,7 @@ def _target_suppressed_by_creative_guard(target: Target) -> bool:
 
 def _restart_guard_active_for_target(target: Target) -> tuple[bool, str]:
     command = _format_start_cmd(target.start_cmd)
+    canonical_parent = _canonical_all_sleeves_parent(target)
     if _paper_crypto_feed_pressure_guard_active() and (
         target.name in {"coinbase", "coinbase_futures"}
         or "coinbase-start" in command
@@ -214,9 +226,19 @@ def _restart_guard_active_for_target(target: Target) -> tuple[bool, str]:
         or "scripts/run_shadow_training_loop.py --broker coinbase" in command
     ):
         return True, "paper_crypto_feed_pressure_guard_active"
-    if (_process_fanout_guard_active() or _operator_mode_guard_active() or _computer_task_guard_active()) and _target_suppressed_by_fanout_guard(target):
+    if _process_fanout_guard_active() and _target_suppressed_by_fanout_guard(target):
         return True, "process_fanout_operator_or_computer_task_guard_active"
-    if _creative_pause_guard_active() and _target_suppressed_by_creative_guard(target):
+    if (
+        (_operator_mode_guard_active() or _computer_task_guard_active())
+        and not canonical_parent
+        and _target_suppressed_by_fanout_guard(target)
+    ):
+        return True, "process_fanout_operator_or_computer_task_guard_active"
+    if (
+        _creative_pause_guard_active()
+        and not canonical_parent
+        and _target_suppressed_by_creative_guard(target)
+    ):
         return True, "creative_audio_pause_guard_active"
     return False, ""
 
@@ -593,6 +615,90 @@ def _heartbeat_startup_grace_active(
     return float(process_age_seconds) < float(grace)
 
 
+def _canonical_parent_health(
+    target: Target,
+    pids: Iterable[int],
+    *,
+    health_path: Path | None = None,
+) -> dict[str, object]:
+    if not _canonical_all_sleeves_parent(target):
+        return {
+            "applicable": False,
+            "healthy": False,
+            "reason": "not_canonical_all_sleeves_parent",
+        }
+
+    path = health_path or ALL_SLEEVES_LAUNCHER_HEALTH
+    payload = _load_json(path)
+    if not payload:
+        return {
+            "applicable": True,
+            "healthy": False,
+            "reason": "launcher_health_missing_or_invalid",
+            "path": str(path),
+        }
+
+    expected_pids = {int(pid) for pid in pids}
+    try:
+        launcher_pid = int(payload.get("launcher_pid") or 0)
+    except (TypeError, ValueError):
+        launcher_pid = 0
+    if launcher_pid <= 0 or launcher_pid not in expected_pids:
+        return {
+            "applicable": True,
+            "healthy": False,
+            "reason": "launcher_health_pid_mismatch",
+            "launcher_pid": launcher_pid,
+            "path": str(path),
+        }
+
+    timestamp = _parse_ts(str(payload.get("timestamp_utc") or ""))
+    if timestamp is None:
+        return {
+            "applicable": True,
+            "healthy": False,
+            "reason": "launcher_health_timestamp_invalid",
+            "launcher_pid": launcher_pid,
+            "path": str(path),
+        }
+    age_seconds = max((_now_utc() - timestamp).total_seconds(), 0.0)
+    max_age_seconds = max(int(target.heartbeat_stale_seconds or 0), 60)
+    if age_seconds > float(max_age_seconds):
+        return {
+            "applicable": True,
+            "healthy": False,
+            "reason": "launcher_health_stale",
+            "launcher_pid": launcher_pid,
+            "age_seconds": round(age_seconds, 3),
+            "max_age_seconds": max_age_seconds,
+            "path": str(path),
+        }
+
+    phase = str(payload.get("phase") or "").strip().lower()
+    if phase not in {"starting", "running"}:
+        return {
+            "applicable": True,
+            "healthy": False,
+            "reason": f"launcher_phase_not_live:{phase or 'unknown'}",
+            "launcher_pid": launcher_pid,
+            "age_seconds": round(age_seconds, 3),
+            "phase": phase,
+            "path": str(path),
+        }
+
+    return {
+        "applicable": True,
+        "healthy": True,
+        "reason": "fresh_matching_launcher_health",
+        "launcher_pid": launcher_pid,
+        "age_seconds": round(age_seconds, 3),
+        "max_age_seconds": max_age_seconds,
+        "phase": phase,
+        "overall_status": str(payload.get("overall_status") or ""),
+        "path": str(path),
+    }
+
+
 def _find_matching_rows(rows: list[tuple[int, str]], match: str, exclude_matches: Iterable[str] = ()) -> list[tuple[int, str]]:
     out: list[tuple[int, str]] = []
     excludes = [x for x in (exclude_matches or ()) if x]
@@ -710,6 +816,7 @@ def _build_default_aggressive_modes_cmd(simulate: bool) -> str:
 def _build_default_coinbase_cmd() -> str:
     return (
         f"{VENV_PY} {SHADOW_LOOP_SCRIPT} "
+        "--runtime-cpu-class market_decision "
         "--broker coinbase "
         "--symbols BTC-USD,ETH-USD,SOL-USD,AVAX-USD,LTC-USD,LINK-USD,DOGE-USD "
         "--interval-seconds 60"
@@ -719,6 +826,7 @@ def _build_default_coinbase_cmd() -> str:
 def _build_default_coinbase_futures_cmd() -> str:
     return (
         f"{VENV_PY} {SHADOW_LOOP_SCRIPT} "
+        "--runtime-cpu-class market_decision "
         "--broker coinbase "
         "--profile crypto_futures "
         "--domain crypto "
@@ -731,6 +839,7 @@ def _build_default_coinbase_futures_cmd() -> str:
 def _build_default_schwab_futures_cmd() -> str:
     return (
         f"{VENV_PY} {SHADOW_LOOP_SCRIPT} "
+        "--runtime-cpu-class market_decision "
         "--broker schwab "
         "--profile schwab_futures "
         "--domain equities "
@@ -1159,6 +1268,7 @@ def _run_iteration(
         hb_ok, hb_count, hb_age, hb_live_count = _heartbeat_health(target, rows_by_pid)
         hb_required = bool(target.heartbeat_glob and target.heartbeat_stale_seconds > 0)
         process_age_seconds = _oldest_process_elapsed_seconds(pids) if pids else None
+        canonical_parent_health = _canonical_parent_health(target, pids)
         startup_grace_active = _heartbeat_startup_grace_active(
             target,
             proc_live=proc_live,
@@ -1166,11 +1276,35 @@ def _run_iteration(
             hb_ok=hb_ok,
             process_age_seconds=process_age_seconds,
         )
-        live = (
-            hb_ok and (proc_live or (target.allow_processless_heartbeat_live and hb_live_count > 0))
-        ) if hb_required else proc_live
-        if startup_grace_active:
-            live = True
+        canonical_parent = bool(canonical_parent_health.get("applicable", False))
+        canonical_parent_startup_grace = bool(
+            canonical_parent
+            and proc_live
+            and process_age_seconds is not None
+            and float(process_age_seconds)
+            < float(max(int(target.heartbeat_startup_grace_seconds or 0), 0))
+        )
+        if canonical_parent:
+            live = bool(
+                proc_live
+                and (
+                    canonical_parent_health.get("healthy", False)
+                    or canonical_parent_startup_grace
+                )
+            )
+        else:
+            live = (
+                hb_ok
+                and (
+                    proc_live
+                    or (
+                        target.allow_processless_heartbeat_live
+                        and hb_live_count > 0
+                    )
+                )
+            ) if hb_required else proc_live
+            if startup_grace_active:
+                live = True
 
         note_parts = []
         if proc_live:
@@ -1187,6 +1321,25 @@ def _run_iteration(
                 note_parts.append(f"heartbeat_age_s={hb_age:.1f}")
             if startup_grace_active:
                 note_parts.append(f"startup_grace_s={target.heartbeat_startup_grace_seconds}")
+        if canonical_parent:
+            note_parts.append(
+                "launcher_health_ok="
+                f"{bool(canonical_parent_health.get('healthy', False))}"
+            )
+            note_parts.append(
+                "launcher_health_reason="
+                f"{canonical_parent_health.get('reason', 'unknown')}"
+            )
+            if canonical_parent_health.get("age_seconds") is not None:
+                note_parts.append(
+                    "launcher_health_age_s="
+                    f"{float(canonical_parent_health['age_seconds']):.1f}"
+                )
+            if canonical_parent_startup_grace:
+                note_parts.append(
+                    "launcher_startup_grace_s="
+                    f"{target.heartbeat_startup_grace_seconds}"
+                )
         if conflicting_pids:
             note_parts.append(f"conflicting_excluded_pids={len(conflicting_pids)}")
 
@@ -1202,6 +1355,8 @@ def _run_iteration(
             "action": "none",
             "note": ",".join(note_parts),
         }
+        if canonical_parent:
+            entry["canonical_parent_health"] = canonical_parent_health
         if startup_grace_active:
             entry["heartbeat_startup_grace_active"] = True
             entry["process_age_seconds"] = round(float(process_age_seconds or 0.0), 3)
@@ -1231,22 +1386,36 @@ def _run_iteration(
                 entry["action"] = "throttled"
                 entry["note"] = entry["note"] + ",restart_rate_limit"
             else:
-                if proc_live:
-                    _terminate_pids(pids)
-                ok, start_detail = _start_target(target.start_cmd, dry_run=dry_run)
-                start_cmd_text = _format_start_cmd(target.start_cmd)
-                if start_cmd_text:
-                    entry["start_cmd"] = start_cmd_text
-                if ok:
-                    target.restart_times.append(now_ts)
-                    entry["action"] = "restart"
-                    entry["note"] = entry["note"] + ",restart_attempted"
-                    entry["start_detail"] = start_detail
-                else:
+                try:
+                    with component_action_guard(
+                        PROJECT_ROOT,
+                        component_id="process_restart_controller",
+                        action="restart_process",
+                        state_domain="process_lifecycle",
+                        acquire_lease=not dry_run,
+                    ) as authority:
+                        if proc_live and not dry_run:
+                            _terminate_pids(pids)
+                        ok, start_detail = _start_target(target.start_cmd, dry_run=dry_run)
+                        entry["system_role_authority"] = authority
+                except RoleAuthorityError as exc:
                     overall_rc = 1
-                    entry["action"] = "error"
-                    entry["start_error"] = start_detail
-                    entry["note"] = entry["note"] + f",restart_failed={_note_safe(start_detail)}"
+                    entry["action"] = "suppressed"
+                    entry["note"] = entry["note"] + f",restart_authority_denied={_note_safe(str(exc))}"
+                else:
+                    start_cmd_text = _format_start_cmd(target.start_cmd)
+                    if start_cmd_text:
+                        entry["start_cmd"] = start_cmd_text
+                    if ok:
+                        target.restart_times.append(now_ts)
+                        entry["action"] = "restart"
+                        entry["note"] = entry["note"] + ",restart_attempted"
+                        entry["start_detail"] = start_detail
+                    else:
+                        overall_rc = 1
+                        entry["action"] = "error"
+                        entry["start_error"] = start_detail
+                        entry["note"] = entry["note"] + f",restart_failed={_note_safe(start_detail)}"
 
         entries.append(entry)
 

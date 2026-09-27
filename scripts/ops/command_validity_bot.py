@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -882,20 +883,46 @@ def main() -> int:
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--safe-audit", action="store_true", help="Inventory every entry without running documented commands; source syntax is not functional certification.")
+    parser.add_argument("--summary-json", action="store_true", help="Print compact audit status; detailed evidence remains in the report.")
     parser.add_argument("--timeout-sec", type=int, default=int(os.getenv("COMMAND_VALIDITY_TIMEOUT_SECONDS", "45")))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
-    payload = build_payload(
-        project_root,
-        apply=bool(args.apply),
-        timeout_sec=int(args.timeout_sec),
-    )
+    if args.safe_audit:
+        if args.apply:
+            parser.error("--safe-audit cannot rewrite generated source with --apply")
+        from scripts.ops.command_surface_audit import build_payload as audit_surface
+        payload = audit_surface(project_root, budget_seconds=args.timeout_sec)
+    else:
+        payload = build_payload(
+            project_root,
+            apply=bool(args.apply),
+            timeout_sec=int(args.timeout_sec),
+        )
     out_file = Path(args.out_file).expanduser() if args.out_file else project_root / "governance" / "health" / "command_validity_latest.json"
+    if args.safe_audit:
+        detail = out_file.with_name("command_surface_audit_latest.json")
+        stable = {key: value for key, value in payload.items() if key not in {"timestamp_utc", "elapsed_seconds"}}
+        fingerprint = hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()
+        try:
+            previous = json.loads(detail.read_text())
+        except (OSError, ValueError):
+            previous = {}
+        if not isinstance(previous, dict) or previous.get("audit_content_sha256") != fingerprint:
+            write_payload(detail, {**payload, "audit_content_sha256": fingerprint})
+        payload = {key: value for key, value in payload.items()
+                   if key not in {"command_rows", "source_checks", "duplicate_snippet_groups"}}
+        payload.update(surface_report=str(detail), audit_content_sha256=fingerprint)
     write_payload(out_file, payload)
 
-    if args.json:
+    if args.summary_json:
+        print(json.dumps({key: payload.get(key) for key in (
+            "timestamp_utc", "ok", "overall_status", "audit_mode", "status_scope",
+            "metrics", "surface_report", "elapsed_seconds",
+        )}, ensure_ascii=True))
+    elif args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:
         print(

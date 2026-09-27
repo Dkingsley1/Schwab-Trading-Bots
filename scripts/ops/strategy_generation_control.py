@@ -19,15 +19,25 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, write_payload
+    from scripts.ops.long_runtime_common import (
+        iso_now, load_json, ordered_unique, write_payload,
+    )
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload,
+    )
 
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "strategy_generation_v1.json"
-DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "strategy_generations" / "strategy_generation_state.json"
-DEFAULT_EVENT_PATH = PROJECT_ROOT / "governance" / "strategy_generations" / "strategy_generation_events.jsonl"
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "strategy_generation_control_latest.json"
+DEFAULT_STATE_PATH = (
+    PROJECT_ROOT / "governance" / "strategy_generations" / "strategy_generation_state.json"
+)
+DEFAULT_EVENT_PATH = (
+    PROJECT_ROOT / "governance" / "strategy_generations" / "strategy_generation_events.jsonl"
+)
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "strategy_generation_control_latest.json"
+)
 ACTIVE_STATES = {
     "proposed_collection_only",
     "training",
@@ -157,14 +167,20 @@ def _integrity_context(project_root: Path, config: dict[str, Any]) -> dict[str, 
     private_permissions = bool(mode and not (mode & 0o077))
     errors = ordered_unique(
         [
-            "event_signing_key_outside_experiment_governance"
+            (
+                "event_signing_key_outside_experiment_governance"
             if not _is_within(key_path, project_root / "governance" / "experiments")
-            else "",
+            else ""
+            ),
             "event_signing_key_missing" if not key_path.is_file() else "",
-            "event_signing_key_too_short" if len(secret.encode("utf-8")) < minimum_bytes else "",
-            "event_signing_key_permissions_not_private"
+            (
+                "event_signing_key_too_short" if len(secret.encode("utf-8")) < minimum_bytes else ""
+            ),
+            (
+                "event_signing_key_permissions_not_private"
             if require_private and not private_permissions
-            else "",
+            else ""
+            ),
         ]
     )
     return {
@@ -277,7 +293,9 @@ def _event_signature(*, event_hash: str, previous_event_hash: str, key_id: str, 
             "signature_key_id": key_id,
         }
     ).encode("utf-8")
-    return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest() if secret else ""
+    return (
+        hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest() if secret else ""
+    )
 
 
 def verify_event_chain(
@@ -371,9 +389,11 @@ def _recover_state_from_signed_tail(state: dict[str, Any], event_path: Path) -> 
             return {"recovered": False, "reason": "signed_tail_candidate_id_invalid"}
         if any(
             bool(snapshot.get(key, False))
-            for key in ("execution_authority", "paper_execution_authority", "serving_eligible")
+            for key in ("execution_authority", "paper_execution_authority", "serving_eligible",
+            )
         ):
-            return {"recovered": False, "reason": "signed_tail_authority_contract_violated"}
+            return {"recovered": False, "reason": "signed_tail_authority_contract_violated",
+            }
     current_rows = [row for row in _as_list(state.get("offspring")) if isinstance(row, dict)]
     positions = {str(row.get("offspring_id") or ""): index for index, row in enumerate(current_rows)}
     for snapshot in snapshots:
@@ -387,7 +407,8 @@ def _recover_state_from_signed_tail(state: dict[str, Any], event_path: Path) -> 
     state["generation"] = max(
         _safe_int(state.get("generation"), 0),
         _safe_int(event.get("strategy_generation"), 0),
-        max((_safe_int(row.get("strategy_generation"), 0) for row in snapshots), default=0),
+        max((_safe_int(row.get("strategy_generation"), 0) for row in snapshots), default=0,
+        ),
     )
     if str(event.get("event_type") or "") == "strategy_generation_proposed":
         state["last_generation_utc"] = str(event.get("timestamp_utc") or state.get("last_generation_utc") or "")
@@ -461,7 +482,9 @@ def _parent_rejections(
     allowed_grades = {str(item).lower() for item in _as_list(rules.get("allowed_teacher_grades"))}
     registry = _registry_map(project_root)
     registry_path = project_root / "master_bot_registry.json"
-    quality_path = project_root / "governance" / "distillation" / "teacher_quality_latest.json"
+    quality_path = (
+        project_root / "governance" / "distillation" / "teacher_quality_latest.json"
+    )
     quality = load_json(quality_path)
     current = now or datetime.now(timezone.utc)
     quality_timestamp = _parse_timestamp(quality.get("timestamp_utc"))
@@ -490,7 +513,9 @@ def _parent_rejections(
             reasons.append("teacher_quality_evidence_stale_or_undated")
         if allowed_roles and role not in allowed_roles:
             reasons.append("role_not_strategy_eligible")
-        if str(teacher.get("teacher_grade") or "").strip().lower() not in allowed_grades:
+        if (
+            str(teacher.get("teacher_grade") or "").strip().lower() not in allowed_grades
+        ):
             reasons.append("teacher_grade_below_generation_floor")
         if _safe_float(teacher.get("teacher_score"), 0.0) < _safe_float(rules.get("minimum_teacher_score"), 0.0):
             reasons.append("teacher_score_below_generation_floor")
@@ -500,7 +525,9 @@ def _parent_rejections(
             rules.get("minimum_walk_forward_forward_mean"), 0.0
         ):
             reasons.append("walk_forward_mean_below_generation_floor")
-        if bool(rules.get("require_positive_paper_bonus", True)) and _safe_float(teacher.get("paper_bonus"), 0.0) <= 0.0:
+        if (
+            bool(rules.get("require_positive_paper_bonus", True)) and _safe_float(teacher.get("paper_bonus"), 0.0) <= 0.0
+        ):
             reasons.append("positive_paper_evidence_missing")
         overfit_policy = _as_dict(teacher.get("overfit_policy"))
         if bool(rules.get("require_overfit_may_teach", True)) and not bool(overfit_policy.get("may_teach", False)):
@@ -530,14 +557,18 @@ def _parent_rejections(
             "training_module": str(module_path),
             "source_module_sha256": module_sha256,
             "teacher_evidence_sha256": quality_sha256,
-            "teacher_evidence_age_hours": round(quality_age_hours, 6) if quality_age_hours is not None else None,
+            "teacher_evidence_age_hours": (
+                round(quality_age_hours, 6) if quality_age_hours is not None else None
+            ),
             "registry_sha256": registry_sha256,
             "rejection_reasons": ordered_unique(reasons),
         }
         (rejected if reasons else eligible).append(row)
 
     for offspring in _as_list(state.get("offspring")):
-        if not isinstance(offspring, dict) or str(offspring.get("lifecycle_state") or "") not in PARENT_OFFSPRING_STATES:
+        if (
+            not isinstance(offspring, dict) or str(offspring.get("lifecycle_state") or "") not in PARENT_OFFSPRING_STATES
+        ):
             continue
         evaluation = _as_dict(offspring.get("evaluation"))
         reasons: list[str] = []
@@ -564,7 +595,9 @@ def _parent_rejections(
             "paper_bonus": round(max(_safe_float(evaluation.get("out_of_sample_net_pnl"), 0.0), 0.0), 6),
             "lineage_depth": _safe_int(offspring.get("lineage_depth"), 1),
             "training_module": str(module_path),
-            "source_module_sha256": _file_hash(module_path) if module_path.is_file() else "",
+            "source_module_sha256": (
+                _file_hash(module_path) if module_path.is_file() else ""
+            ),
             "teacher_evidence_sha256": str(evaluation.get("evaluation_sha256") or ""),
             "teacher_evidence_age_hours": None,
             "registry_sha256": registry_sha256,
@@ -572,7 +605,8 @@ def _parent_rejections(
         }
         (rejected if reasons else eligible).append(row)
 
-    eligible.sort(key=lambda row: (row["teacher_score"], row["paper_bonus"], row["parent_id"]), reverse=True)
+    eligible.sort(key=lambda row: (row["teacher_score"], row["paper_bonus"], row["parent_id"]), reverse=True,
+    )
     rejected.sort(key=lambda row: (len(row["rejection_reasons"]), row["parent_id"]))
     return eligible, rejected
 
@@ -590,15 +624,19 @@ def _genome(config: dict[str, Any], *, generation: int, parent_id: str) -> dict[
     seed = hashlib.sha256(f"{config.get('policy_id')}|{generation}|{parent_id}".encode("utf-8")).digest()
     genome: dict[str, Any] = {}
     for index, name in enumerate(
-        ("teacher_weight", "lookback_days_delta", "minimum_confidence_delta", "sample_stride_delta")
+        ("teacher_weight", "lookback_days_delta", "minimum_confidence_delta", "sample_stride_delta",
+        )
     ):
         values = _bounded_values(_as_dict(bounds.get(name)))
         value = values[seed[index] % len(values)] if values else 0.0
-        genome[name] = int(value) if name.endswith("days_delta") or name.endswith("stride_delta") else float(value)
+        genome[name] = (
+            int(value) if name.endswith("days_delta") or name.endswith("stride_delta") else float(value)
+        )
     genome["warm_start_from_parent"] = True
     genome["mutation_count"] = sum(
         1
-        for key in ("lookback_days_delta", "minimum_confidence_delta", "sample_stride_delta")
+        for key in ("lookback_days_delta", "minimum_confidence_delta", "sample_stride_delta",
+        )
         if _safe_float(genome.get(key), 0.0) != 0.0
     )
     return genome
@@ -667,19 +705,148 @@ def _stale_training_candidates(
     current = now or datetime.now(timezone.utc)
     stale: list[dict[str, Any]] = []
     for row in _as_list(state.get("offspring")):
-        if not isinstance(row, dict) or str(row.get("lifecycle_state") or "") != "training":
+        if (
+            not isinstance(row, dict) or str(row.get("lifecycle_state") or "") != "training"
+        ):
             continue
         started = _parse_timestamp(row.get("training_started_at_utc"))
-        age_seconds = (current - started).total_seconds() if started is not None else float("inf")
+        age_seconds = (
+            (current - started).total_seconds() if started is not None else float("inf")
+        )
         if age_seconds > stale_after:
             stale.append(
                 {
                     "offspring_id": str(row.get("offspring_id") or ""),
-                    "training_age_seconds": round(age_seconds, 3) if age_seconds != float("inf") else None,
+                    "training_age_seconds": (
+                        round(age_seconds, 3) if age_seconds != float("inf") else None
+                    ),
                     "stale_after_seconds": stale_after,
                 }
             )
     return stale
+
+
+def _alpha_expansion_gate(
+    project_root: Path,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    gate = _as_dict(config.get("alpha_expansion_gate"))
+    if not bool(gate.get("enabled", False)):
+        return {
+            "enabled": False,
+            "artifact_present": False,
+            "ready": True,
+            "blockers": [],
+        }
+    artifact_path = _resolve_path(
+        project_root,
+        gate.get("artifact")
+        or "governance/health/alpha_generation_control_latest.json",
+    )
+    fallback_path = _resolve_path(
+        project_root,
+        gate.get("fallback_artifact")
+        or "governance/health/profitability_self_assessment_latest.json",
+    )
+    alpha = load_json(artifact_path)
+    fallback = load_json(fallback_path)
+    blockers: list[str] = []
+    source = ""
+    implementation_grade = ""
+    economic_grade = ""
+    statistical_ready = False
+    regime_ready = False
+    cross_sleeve_ready = False
+    if alpha:
+        source = str(artifact_path)
+        grades = _as_dict(alpha.get("grades"))
+        implementation_grade = str(grades.get("implementation_grade") or "")
+        economic_grade = str(grades.get("economic_evidence_grade") or "")
+        controls = {
+            str(row.get("control_id") or ""): row
+            for row in _as_list(alpha.get("controls"))
+            if isinstance(row, dict)
+        }
+        statistical_ready = bool(
+            _as_dict(controls.get("a04")).get("evidence_ready", False)
+        )
+        regime_ready = bool(_as_dict(controls.get("a06")).get("evidence_ready", False))
+        cross_sleeve_ready = bool(
+            _as_dict(alpha.get("cross_sleeve_alpha")).get("evidence_ready", False)
+        )
+    elif fallback:
+        source = str(fallback_path)
+        grades = _as_dict(fallback.get("grades"))
+        implementation_grade = str(grades.get("implementation_grade") or "")
+        economic_grade = str(grades.get("economic_evidence_grade") or "")
+        blockers.append("alpha_generation_control_artifact_pending")
+    else:
+        # Unit-test and isolated research roots may intentionally omit runtime
+        # evidence. Production roots carry the canonical policy and candidate
+        # state, so missing both gate artifacts fails closed there.
+        production_root = bool(
+            (
+                project_root
+                / "governance"
+                / "runtime"
+                / "production_candidate_state.json"
+            ).is_file()
+            or (project_root / "config" / "alpha_generation_control_v1.json").is_file()
+        )
+        if production_root and bool(
+            gate.get("missing_all_gate_artifacts_fails_closed_in_real_runtime", True)
+        ):
+            blockers.append("alpha_evidence_gate_artifacts_missing")
+        else:
+            return {
+                "enabled": True,
+                "artifact_present": False,
+                "fallback_present": False,
+                "source": "",
+                "ready": True,
+                "implementation_grade": "",
+                "economic_evidence_grade": "",
+                "statistical_evidence_ready": False,
+                "regime_evidence_ready": False,
+                "cross_sleeve_alpha_ready": False,
+                "blockers": [],
+                "isolated_root_without_runtime_evidence": True,
+                "existing_offspring_collection_continues": True,
+                "automatic_generation_authority": False,
+            }
+    if implementation_grade and implementation_grade != str(
+        gate.get("require_implementation_grade") or "A+"
+    ):
+        blockers.append("alpha_implementation_grade_pending")
+    if economic_grade != str(gate.get("require_economic_evidence_grade") or "A+"):
+        blockers.append("alpha_economic_evidence_grade_pending")
+    if (
+        bool(gate.get("require_statistical_evidence_ready", True))
+        and not statistical_ready
+    ):
+        blockers.append("alpha_statistical_evidence_pending")
+    if bool(gate.get("require_regime_evidence_ready", True)) and not regime_ready:
+        blockers.append("alpha_regime_evidence_pending")
+    if (
+        bool(gate.get("require_cross_sleeve_alpha_ready", True))
+        and not cross_sleeve_ready
+    ):
+        blockers.append("cross_sleeve_residual_alpha_map_pending")
+    return {
+        "enabled": True,
+        "artifact_present": bool(alpha),
+        "fallback_present": bool(fallback),
+        "source": source,
+        "ready": not blockers,
+        "implementation_grade": implementation_grade,
+        "economic_evidence_grade": economic_grade,
+        "statistical_evidence_ready": statistical_ready,
+        "regime_evidence_ready": regime_ready,
+        "cross_sleeve_alpha_ready": cross_sleeve_ready,
+        "blockers": ordered_unique(blockers),
+        "existing_offspring_collection_continues": True,
+        "automatic_generation_authority": False,
+    }
 
 
 def _proposal_blockers(
@@ -694,6 +861,7 @@ def _proposal_blockers(
     blockers: list[str] = []
     if not bool(config.get("enabled", False)):
         blockers.append("strategy_generation_disabled")
+    blockers.extend(_alpha_expansion_gate(project_root, config).get("blockers") or [])
     if not eligible_parents:
         blockers.append("no_parent_has_reproduction_grade_evidence")
     if len(_active_offspring(state)) >= _safe_int(limits.get("max_active_offspring"), 4):
@@ -781,7 +949,8 @@ def propose_generation(
     limits = _as_dict(config.get("resource_limits"))
     maximum = min(
         _safe_int(limits.get("max_offspring_per_generation"), 2),
-        max(_safe_int(limits.get("max_active_offspring"), 4) - len(_active_offspring(state)), 0),
+        max(_safe_int(limits.get("max_active_offspring"), 4) - len(_active_offspring(state)), 0,
+        ),
     )
     role_counts: dict[str, int] = {}
     parent_counts: dict[str, int] = {}
@@ -789,7 +958,9 @@ def propose_generation(
     for row in _active_offspring(state):
         for parent_id in _as_list(row.get("parent_bot_ids")):
             normalized = str(parent_id or "")
-            active_parent_counts[normalized] = active_parent_counts.get(normalized, 0) + 1
+            active_parent_counts[normalized] = (
+                active_parent_counts.get(normalized, 0) + 1
+            )
     selected: list[dict[str, Any]] = []
     generation = _safe_int(state.get("generation"), 0) + 1
     for parent in eligible:
@@ -882,7 +1053,9 @@ def _training_gate(project_root: Path, config: dict[str, Any], state: dict[str, 
         and launch_blockers == {"no_bot_needs_training_candidates"}
         and contract.get("prep_allowed", False)
     )
-    if not bool(contract.get("launch_allowed", False)) and not generation_queue_is_only_missing_candidate:
+    if (
+        not bool(contract.get("launch_allowed", False)) and not generation_queue_is_only_missing_candidate
+    ):
         blockers.append("training_runtime_launch_not_allowed")
     if str(throttle.get("overall_status") or "").lower() != "ready":
         blockers.append("runtime_throttle_not_ready")
@@ -898,7 +1071,8 @@ def _training_gate(project_root: Path, config: dict[str, Any], state: dict[str, 
         limits.get("maximum_host_saturation_score"), 55.0
     ):
         blockers.append("host_saturation_above_generation_cap")
-    if any(bool(thermal.get(key, False)) for key in ("thermal_warning_active", "performance_warning_active", "cpu_power_warning_active")):
+    if any(bool(thermal.get(key, False)) for key in ("thermal_warning_active", "performance_warning_active", "cpu_power_warning_active",
+        )):
         blockers.append("thermal_or_performance_warning_active")
     if not bool(release.get("shared_host_training_resume_allowed", False)):
         blockers.append("shared_host_training_not_released")
@@ -936,12 +1110,15 @@ def _candidate_pretraining_integrity(
         blockers.append("offspring_policy_hash_mismatch")
     if any(
         bool(candidate.get(key, False))
-        for key in ("execution_authority", "paper_execution_authority", "serving_eligible")
+        for key in ("execution_authority", "paper_execution_authority", "serving_eligible",
+        )
     ):
         blockers.append("offspring_authority_contract_violated")
     source_module_id = str(candidate.get("source_module_bot_id") or "").strip().lower()
     source_module = (project_root / "core" / f"{source_module_id}.py").resolve()
-    if not _is_within(source_module, project_root / "core") or not source_module.is_file():
+    if (
+        not _is_within(source_module, project_root / "core") or not source_module.is_file()
+    ):
         blockers.append("offspring_source_module_missing_or_outside_core")
     elif not hmac.compare_digest(
         str(candidate.get("parent_source_module_sha256") or ""),
@@ -949,7 +1126,8 @@ def _candidate_pretraining_integrity(
     ):
         blockers.append("offspring_parent_source_module_changed")
     manifest_path = _resolve_path(project_root, candidate.get("generation_manifest_path"))
-    if not _is_within(manifest_path, project_root / "governance" / "strategy_generations" / "generations"):
+    if not _is_within(manifest_path, project_root / "governance" / "strategy_generations" / "generations",
+    ):
         blockers.append("offspring_generation_manifest_outside_governance")
     elif not manifest_path.is_file():
         blockers.append("offspring_generation_manifest_missing")
@@ -1009,7 +1187,8 @@ def train_next_offspring(
             parent_log = load_json(Path(str(parent_candidate.get("log_path") or "")))
     runtime_config = _as_dict(_as_dict(parent_log.get("config")).get("runtime"))
     genome = _as_dict(candidate.get("genome"))
-    lookback = max(_safe_int(runtime_config.get("lookback_days"), 60) + _safe_int(genome.get("lookback_days_delta"), 0), 1)
+    lookback = max(_safe_int(runtime_config.get("lookback_days"), 60) + _safe_int(genome.get("lookback_days_delta"), 0), 1,
+    )
     confidence = min(
         max(
             _safe_float(runtime_config.get("min_confidence"), 0.0)
@@ -1018,7 +1197,8 @@ def train_next_offspring(
         ),
         1.0,
     )
-    stride = max(_safe_int(runtime_config.get("sample_stride"), 1) + _safe_int(genome.get("sample_stride_delta"), 0), 1)
+    stride = max(_safe_int(runtime_config.get("sample_stride"), 1) + _safe_int(genome.get("sample_stride_delta"), 0), 1,
+    )
     manifest_path = (
         project_root
         / "governance"
@@ -1045,7 +1225,9 @@ def train_next_offspring(
         }
     )
     command = [sys.executable, str(project_root / "core" / f"{source_module_id}.py")]
-    timeout = max(_safe_int(_as_dict(config.get("resource_limits")).get("training_timeout_seconds"), 7200), 60)
+    timeout = max(_safe_int(_as_dict(config.get("resource_limits")).get("training_timeout_seconds"), 7200,
+        ), 60,
+    )
     try:
         result = subprocess.run(
             command,
@@ -1065,10 +1247,15 @@ def train_next_offspring(
         return_code = 125
         stderr_tail = f"training_process_launch_failed: {exc}"
 
-    model_matches = sorted((project_root / "models").glob(f"{candidate['offspring_id']}_*.npz"), key=lambda p: p.stat().st_mtime, reverse=True)
-    log_matches = sorted((project_root / "logs").glob(f"{candidate['offspring_id']}_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    diagnostics_path = project_root / "governance" / "training_diagnostics" / f"{candidate['offspring_id']}_latest.json"
-    artifact_paths = [model_matches[0] if model_matches else None, log_matches[0] if log_matches else None, diagnostics_path]
+    model_matches = sorted((project_root / "models").glob(f"{candidate['offspring_id']}_*.npz"), key=lambda p: p.stat().st_mtime, reverse=True,
+    )
+    log_matches = sorted((project_root / "logs").glob(f"{candidate['offspring_id']}_*.json"), key=lambda p: p.stat().st_mtime, reverse=True,
+    )
+    diagnostics_path = (
+        project_root / "governance" / "training_diagnostics" / f"{candidate['offspring_id']}_latest.json"
+    )
+    artifact_paths = [model_matches[0] if model_matches else None, log_matches[0] if log_matches else None, diagnostics_path,
+    ]
     artifact_bytes = sum(path.stat().st_size for path in artifact_paths if path is not None and path.is_file())
     maximum_artifact_bytes = _safe_int(
         _as_dict(config.get("resource_limits")).get("max_candidate_artifact_bytes"),
@@ -1093,9 +1280,13 @@ def train_next_offspring(
     artifact_failures = ordered_unique(
         [
             "training_process_nonzero" if return_code != 0 else "",
-            "candidate_artifact_namespace_invalid" if not artifact_namespace_ready else "",
+            (
+                "candidate_artifact_namespace_invalid" if not artifact_namespace_ready else ""
+            ),
             "candidate_diagnostics_missing" if not diagnostics_path.is_file() else "",
-            "candidate_artifact_limit_exceeded" if artifact_bytes > maximum_artifact_bytes else "",
+            (
+                "candidate_artifact_limit_exceeded" if artifact_bytes > maximum_artifact_bytes else ""
+            ),
         ]
     )
     candidate["training_completed_at_utc"] = iso_now()
@@ -1108,7 +1299,9 @@ def train_next_offspring(
     candidate["training_artifact_bytes"] = artifact_bytes
     candidate["training_artifact_limit_bytes"] = maximum_artifact_bytes
     candidate["training_artifact_namespace_ready"] = artifact_namespace_ready
-    candidate["lifecycle_state"] = "trained_collection_only" if success else "training_failed_quarantined"
+    candidate["lifecycle_state"] = (
+        "trained_collection_only" if success else "training_failed_quarantined"
+    )
     if model_matches:
         candidate["model_path"] = str(model_matches[0])
         candidate["model_sha256"] = _file_hash(model_matches[0])
@@ -1143,14 +1336,18 @@ def _evaluation_signature(evaluation: dict[str, Any], *, key_id: str, secret: st
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    return hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest() if secret else ""
+    return (
+        hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest() if secret else ""
+    )
 
 
 def _evaluation_run_is_unique(state: dict[str, Any], *, candidate_id: str, evaluation_run_id: str) -> bool:
     if not evaluation_run_id:
         return False
     for row in _as_list(state.get("offspring")):
-        if not isinstance(row, dict) or str(row.get("offspring_id") or "") == candidate_id:
+        if (
+            not isinstance(row, dict) or str(row.get("offspring_id") or "") == candidate_id
+        ):
             continue
         prior = _as_dict(row.get("evaluation"))
         if str(prior.get("evaluation_run_id") or "") == evaluation_run_id:
@@ -1171,7 +1368,8 @@ def evaluate_offspring(
     candidate = _candidate_by_id(state, candidate_id)
     if candidate is None:
         return None, ["offspring_not_found"]
-    if str(candidate.get("lifecycle_state") or "") not in {"trained_collection_only", "paper_evaluation_pending"}:
+    if str(candidate.get("lifecycle_state") or "") not in {"trained_collection_only", "paper_evaluation_pending",
+    }:
         return candidate, ["offspring_not_ready_for_evaluation"]
     rules = _as_dict(config.get("evaluation"))
     resolved_evaluation_path = evaluation_path.expanduser().resolve()
@@ -1278,7 +1476,9 @@ def evaluate_offspring(
         "failed_checks": failed,
         "evaluation_path": str(resolved_evaluation_path),
         "evaluation_sha256": _file_hash(resolved_evaluation_path),
-        "evaluation_age_hours": round(evaluation_age_hours, 6) if evaluation_age_hours is not None else None,
+        "evaluation_age_hours": (
+            round(evaluation_age_hours, 6) if evaluation_age_hours is not None else None
+        ),
         "attestation_verified": bool(checks["signed_attestation"]),
     }
     candidate["lifecycle_state"] = (
@@ -1297,7 +1497,9 @@ def evaluate_offspring(
     _append_event(
         event_path,
         state,
-        "offspring_paper_challenger_qualified" if qualified else "offspring_evidence_rejected",
+        (
+            "offspring_paper_challenger_qualified" if qualified else "offspring_evidence_rejected"
+        ),
         {
             "offspring_id": candidate_id,
             "qualified": qualified,
@@ -1365,7 +1567,9 @@ def reconcile_stale_training(
         candidate["lifecycle_state"] = "training_failed_quarantined"
         candidate["training_completed_at_utc"] = current.isoformat()
         candidate["training_return_code"] = 126
-        candidate["training_error_tail"] = "stale training state reconciled after controller interruption"
+        candidate["training_error_tail"] = (
+            "stale training state reconciled after controller interruption"
+        )
         candidate["execution_authority"] = False
         candidate["paper_execution_authority"] = False
         candidate["serving_eligible"] = False
@@ -1418,7 +1622,8 @@ def _candidate_integrity_audit(
             reasons.append("offspring_lineage_depth_exceeded")
         if any(
             bool(row.get(key, False))
-            for key in ("execution_authority", "paper_execution_authority", "serving_eligible")
+            for key in ("execution_authority", "paper_execution_authority", "serving_eligible",
+            )
         ):
             reasons.append("offspring_authority_contract_violated")
         if _safe_float(row.get("paper_allocation_limit"), 0.0) != 0.0:
@@ -1429,9 +1634,12 @@ def _candidate_integrity_audit(
         if lifecycle in ACTIVE_STATES:
             for parent_id in _as_list(row.get("parent_bot_ids")):
                 normalized = str(parent_id or "")
-                active_parent_counts[normalized] = active_parent_counts.get(normalized, 0) + 1
+                active_parent_counts[normalized] = (
+                    active_parent_counts.get(normalized, 0) + 1
+                )
         manifest_path = _resolve_path(project_root, row.get("generation_manifest_path"))
-        if not _is_within(manifest_path, project_root / "governance" / "strategy_generations" / "generations"):
+        if not _is_within(manifest_path, project_root / "governance" / "strategy_generations" / "generations",
+        ):
             reasons.append("offspring_generation_manifest_outside_governance")
         elif not manifest_path.is_file():
             reasons.append("offspring_generation_manifest_missing")
@@ -1449,7 +1657,8 @@ def _candidate_integrity_audit(
             for path_key, hash_key, expected_root in (
                 ("model_path", "model_sha256", project_root / "models"),
                 ("log_path", "log_sha256", project_root / "logs"),
-                ("diagnostics_path", "diagnostics_sha256", project_root / "governance" / "training_diagnostics"),
+                ("diagnostics_path", "diagnostics_sha256", project_root / "governance" / "training_diagnostics",
+                ),
             ):
                 artifact_path = _resolve_path(project_root, row.get(path_key))
                 if not artifact_path.is_file() or not _is_within(artifact_path, expected_root):
@@ -1492,7 +1701,8 @@ def _candidate_integrity_audit(
             )
     total_artifact_limit = _safe_int(limits.get("max_total_candidate_artifact_bytes"), 4 * 1024**3)
     if _safe_int(artifact_usage.get("total_bytes"), 0) > total_artifact_limit:
-        violations.append({"offspring_id": "", "violations": ["total_candidate_artifact_limit_exceeded"]})
+        violations.append({"offspring_id": "", "violations": ["total_candidate_artifact_limit_exceeded"],
+            })
     return {
         "ok": not violations,
         "audited_candidate_count": len(seen_ids),
@@ -1536,7 +1746,9 @@ def build_payload(
     active = _active_offspring(state)
     limits = _as_dict(config.get("resource_limits"))
     now = datetime.now(timezone.utc)
-    proposal_blockers = _proposal_blockers(project_root, config, state, eligible, now=now)
+    proposal_blockers = _proposal_blockers(project_root, config, state, eligible, now=now
+    )
+    alpha_expansion_gate = _alpha_expansion_gate(project_root, config)
     resource_blockers = [
         blocker
         for blocker in proposal_blockers
@@ -1602,16 +1814,19 @@ def build_payload(
             "offspring_are_persistent_processes": False,
             "training_is_serial": _safe_int(limits.get("max_concurrent_training_jobs"), 1) == 1,
         },
+        "alpha_expansion_gate": alpha_expansion_gate,
         "safety_contract": _as_dict(config.get("safety_contract")),
         "hardening": {
-            "grade": "A+"
+            "grade": (
+                "A+"
             if bool(
                 policy_validation.get("ok", False)
                 and state_validation.get("ok", False)
                 and chain.get("ok", False)
                 and candidate_integrity.get("ok", False)
             )
-            else "F",
+            else "F"
+            ),
             "policy_validation": policy_validation,
             "state_integrity": state_validation,
             "candidate_integrity": candidate_integrity,
@@ -1639,13 +1854,32 @@ def build_payload(
         "active_offspring": active,
         "recommended_actions": ordered_unique(
             [
-                "collect independent walk-forward and positive paper evidence before allowing any parent to reproduce" if not eligible else "",
-                "wait for the generation cooldown or retire weak offspring before proposing another bounded wave" if resource_blockers else "",
-                "keep offspring collection-only until locked holdout, exact replay, post-cost, drawdown, diversity, and multiple-testing checks all pass" if active else "",
-                "repair the signed append-only strategy-generation event chain before any mutation" if not chain.get("ok", False) else "",
-                "repair the sealed strategy-generation state before any mutation" if not state_validation.get("ok", False) else "",
-                "repair candidate artifact or authority integrity before any lifecycle action" if not candidate_integrity.get("ok", False) else "",
-                "run strategy-generation --reconcile-stale to quarantine interrupted training state" if stale_training else "",
+                (
+                    "collect independent walk-forward and positive paper evidence before allowing any parent to reproduce" if not eligible else ""
+                ),
+                (
+                    "wait for the generation cooldown or retire weak offspring before proposing another bounded wave" if resource_blockers else ""
+                ),
+                (
+                    "keep offspring collection-only until locked holdout, exact replay, post-cost, drawdown, diversity, and multiple-testing checks all pass" if active else ""
+                ),
+                (
+                    "repair the signed append-only strategy-generation event chain before any mutation" if not chain.get("ok", False) else ""
+                ),
+                (
+                    "repair the sealed strategy-generation state before any mutation" if not state_validation.get("ok", False) else ""
+                ),
+                (
+                    "repair candidate artifact or authority integrity before any lifecycle action" if not candidate_integrity.get("ok", False) else ""
+                ),
+                (
+                    "run strategy-generation --reconcile-stale to quarantine interrupted training state" if stale_training else ""
+                ),
+                (
+                    "continue candidate-bound post-cost collection instead of generating more strategies until the alpha expansion gate clears"
+                    if not alpha_expansion_gate.get("ready", False)
+                    else ""
+                ),
             ]
         ),
     }
@@ -1677,22 +1911,34 @@ def main() -> int:
     if not config:
         raise SystemExit(f"strategy_generation_config_missing path={config_path}")
     policy_validation, integrity = _policy_validation(project_root, config)
-    state_path = Path(args.state_file).expanduser() if args.state_file else project_root / DEFAULT_STATE_PATH.relative_to(PROJECT_ROOT)
-    event_path = Path(args.event_file).expanduser() if args.event_file else project_root / DEFAULT_EVENT_PATH.relative_to(PROJECT_ROOT)
-    out_path = Path(args.out_file).expanduser() if args.out_file else project_root / DEFAULT_OUT_PATH.relative_to(PROJECT_ROOT)
+    state_path = (
+        Path(args.state_file).expanduser() if args.state_file else project_root / DEFAULT_STATE_PATH.relative_to(PROJECT_ROOT)
+    )
+    event_path = (
+        Path(args.event_file).expanduser() if args.event_file else project_root / DEFAULT_EVENT_PATH.relative_to(PROJECT_ROOT)
+    )
+    out_path = (
+        Path(args.out_file).expanduser() if args.out_file else project_root / DEFAULT_OUT_PATH.relative_to(PROJECT_ROOT)
+    )
     policy_id = str(config.get("policy_id") or "bounded_strategy_lineage_v1")
     action = (
         "propose"
         if args.propose
-        else "train_next"
+        else (
+            "train_next"
         if args.train_next
-        else "reconcile_stale"
+        else (
+                "reconcile_stale"
         if args.reconcile_stale
-        else "evaluate_offspring"
+        else (
+                    "evaluate_offspring"
         if args.evaluate_offspring
         else "retire_offspring"
         if args.retire_offspring
         else "inspect"
+                )
+            )
+        )
     )
     mutation_requested = action != "inspect"
     blockers: list[str] = []
@@ -1736,9 +1982,11 @@ def main() -> int:
                 chain.setdefault("errors", []).append("state_event_chain_head_mismatch")
                 chain.setdefault("errors", []).append(str(recovery.get("reason") or "state_recovery_failed"))
                 chain["ok"] = False
-        if mutation_requested and not blockers and not bool(policy_validation.get("ok", False)):
+        if (
+            mutation_requested and not blockers and not bool(policy_validation.get("ok", False))):
             blockers.extend(_as_list(policy_validation.get("errors")) or ["strategy_generation_policy_invalid"])
-        if mutation_requested and not blockers and not bool(state_validation.get("ok", False)):
+        if (
+            mutation_requested and not blockers and not bool(state_validation.get("ok", False))):
             blockers.extend(_as_list(state_validation.get("errors")) or ["strategy_generation_state_invalid"])
         if not blockers and not bool(chain.get("ok", False)):
             blockers.extend(chain.get("errors") or ["strategy_generation_event_chain_invalid"])
@@ -1783,7 +2031,9 @@ def main() -> int:
                     evaluation_path=Path(args.evaluation_file).expanduser(),
                     integrity=integrity,
                 )
-                mutated = candidate is not None and "offspring_not_found" not in blockers
+                mutated = (
+                    candidate is not None and "offspring_not_found" not in blockers
+                )
         elif not blockers and args.retire_offspring:
             if len(str(args.reason or "").strip()) < 12:
                 blockers = ["retirement_reason_must_be_at_least_12_characters"]

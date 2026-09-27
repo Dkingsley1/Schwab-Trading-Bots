@@ -100,6 +100,87 @@ def test_build_manifest_tracks_point_in_time_contract_and_lanes(tmp_path: Path) 
     assert len(payload["contract_hashes"]["dataset_manifest_sha256"]) == 64
 
 
+def test_build_manifest_resolves_missing_rows_from_local_fallback(
+    tmp_path: Path,
+) -> None:
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    declared_rows = tmp_path / "exports" / "training" / "runtime.jsonl"
+    fallback_rows = (
+        tmp_path
+        / "local_fallback_storage"
+        / "exports"
+        / "training"
+        / "runtime.jsonl"
+    )
+    fallback_rows.parent.mkdir(parents=True, exist_ok=True)
+    rows_blob = "".join(
+        json.dumps({"snapshot_id": f"snapshot-{index}", "timestamp_utc": fresh_ts})
+        + "\n"
+        for index in range(12)
+    )
+    fallback_rows.write_text(rows_blob, encoding="utf-8")
+    rows_hash = hashlib.sha256(rows_blob.encode("utf-8")).hexdigest()
+    snapshot_path = tmp_path / "governance" / "health" / "runtime_training_snapshot_latest.json"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": fresh_ts,
+                "row_count": 12,
+                "sequence_count": 3,
+                "rows_path": str(declared_rows),
+                "rows_sha256": rows_hash,
+                "coverage": {
+                    "top_modes": [
+                        {
+                            "mode": "shadow_intraday_aggressive_equities",
+                            "row_count": 12,
+                        }
+                    ]
+                },
+            },
+            ensure_ascii=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "snapshot_coverage_latest.json",
+        {
+            "coverage_ratio": 1.0,
+            "min_coverage_ratio": 0.75,
+            "rows_with_snapshot_id": 12,
+            "unique_snapshot_ids": 12,
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "point_in_time_event_store_latest.json",
+        {
+            "timestamp_utc": fresh_ts,
+            "ok": True,
+            "event_count": 2,
+            "category_counts": {"policy_macro": 1, "broker_readiness": 1},
+        },
+    )
+    _write_json(
+        tmp_path / "data" / "trade_history" / "trade_behavior_dataset.json",
+        {
+            "schema": "behavior_dataset_v3_dual_horizon",
+            "feature_schema_version": "trade_behavior_features_v4",
+            "horizons": {"primary_seconds": 300, "aux_seconds": 900},
+        },
+    )
+
+    payload = src.build_manifest(tmp_path)
+
+    assert payload["strict_ok"] is True
+    assert payload["dataset_contract"]["rows_path"] == str(declared_rows)
+    assert payload["dataset_contract"]["resolved_rows_path"] == str(fallback_rows)
+    assert payload["dataset_contract"]["rows_file_exists"] is True
+    assert payload["dataset_contract"]["rows_hash_verified"] is True
+    assert payload["dataset_contract"]["rows_count_verified"] is True
+
+
 def test_build_manifest_falls_back_to_trade_learning_dataset_lineage_when_dual_horizon_file_is_missing(tmp_path: Path) -> None:
     fresh_ts = datetime.now(timezone.utc).isoformat()
     _write_json(
@@ -252,3 +333,43 @@ def test_build_manifest_exposes_seed_ready_when_snapshot_contract_is_strong_but_
     assert payload["strict_status"] == "degraded"
     assert payload["point_in_time_contract"]["seed_ready"] is True
     assert payload["label_contract"]["seed_ready"] is True
+
+
+def test_build_manifest_prefers_training_horizon_snapshot_coverage(tmp_path: Path) -> None:
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    _write_json(
+        tmp_path / "governance" / "health" / "runtime_training_snapshot_latest.json",
+        {
+            "timestamp_utc": fresh_ts,
+            "row_count": 10,
+            "sequence_count": 2,
+            "rows_path": str(tmp_path / "exports" / "training" / "runtime.jsonl"),
+            "rows_sha256": "rows-hash",
+            "coverage": {"top_modes": [{"mode": "paper", "row_count": 10}]},
+        },
+    )
+    _write_json(
+        tmp_path / "governance" / "feature_versions" / "latest.json",
+        {"file_hashes": {"runtime": "hash"}},
+    )
+    _write_json(
+        tmp_path / "governance" / "health" / "snapshot_coverage_latest.json",
+        {"coverage_ratio": 0.1, "min_coverage_ratio": 0.75, "window_hours": 2},
+    )
+    training_path = tmp_path / "governance" / "health" / "snapshot_coverage_training_latest.json"
+    _write_json(
+        training_path,
+        {
+            "coverage_ratio": 1.0,
+            "min_coverage_ratio": 0.75,
+            "window_hours": 24,
+            "rows_with_snapshot_id": 10,
+            "unique_snapshot_ids": 10,
+        },
+    )
+
+    payload = src.build_manifest(tmp_path)
+
+    assert payload["ok"] is True
+    assert payload["point_in_time_contract"]["snapshot_coverage_window_hours"] == 24
+    assert payload["point_in_time_contract"]["snapshot_coverage_source"] == str(training_path)

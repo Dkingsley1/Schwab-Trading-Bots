@@ -3,6 +3,18 @@
   "policy_id": "bounded_strategy_lineage_v1",
   "enabled": true,
   "operating_mode": "collection_only_research",
+  "alpha_expansion_gate": {
+    "enabled": true,
+    "artifact": "governance/health/alpha_generation_control_latest.json",
+    "fallback_artifact": "governance/health/profitability_self_assessment_latest.json",
+    "require_implementation_grade": "A+",
+    "require_economic_evidence_grade": "A+",
+    "require_statistical_evidence_ready": true,
+    "require_regime_evidence_ready": true,
+    "require_cross_sleeve_alpha_ready": true,
+    "missing_all_gate_artifacts_fails_closed_in_real_runtime": true,
+    "existing_offspring_collection_continues": true
+  },
   "resource_limits": {
     "max_offspring_per_generation": 2,
     "max_active_offspring": 4,

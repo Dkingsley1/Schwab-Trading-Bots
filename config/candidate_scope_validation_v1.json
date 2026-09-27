@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "policy_id": "candidate_scope_validation_v1",
+  "calendar": {
+    "calendar_id": "XNYS",
+    "library": "exchange-calendars",
+    "minimum_version": "4.13.2"
+  },
+  "tiers": {
+    "advisory": {
+      "required_hours": 0,
+      "required_completed_sessions": 0,
+      "blocks_promotion": false
+    },
+    "operations": {
+      "required_hours": 72,
+      "required_completed_sessions": 3,
+      "blocks_promotion": true
+    },
+    "data_dependencies": {
+      "required_hours": 120,
+      "required_completed_sessions": 5,
+      "blocks_promotion": true
+    },
+    "promotion": {
+      "required_hours": 336,
+      "required_completed_sessions": 10,
+      "blocks_promotion": true
+    },
+    "material_trading": {
+      "required_hours": 720,
+      "required_completed_sessions": 20,
+      "blocks_promotion": true
+    }
+  },
+  "scope_tiers": {
+    "research_advisory": "advisory",
+    "operations": "operations",
+    "data": "data_dependencies",
+    "dependencies": "data_dependencies",
+    "promotion": "promotion",
+    "strategy": "material_trading",
+    "execution": "material_trading",
+    "risk": "material_trading"
+  },
+  "unknown_scope_tier": "material_trading",
+  "accounting": {
+    "require_both_elapsed_hours_and_completed_sessions": true,
+    "partial_market_sessions_earn_session_credit": false,
+    "planned_maintenance_preserves_prior_credit": true,
+    "planned_maintenance_offline_time_earns_credit": false,
+    "interrupted_market_session_earns_session_credit": false,
+    "cumulative_segmented_soak_remains_visible": true,
+    "cumulative_segmented_soak_is_promotion_credit": false,
+    "exact_policy_owned_generated_outputs_reset_candidate": false,
+    "canonical_source_changes_require_operator_acceptance": true
+  },
+  "authority": {
+    "paper_and_live_promotion_evidence_only": true,
+    "live_execution_authority": false,
+    "policy_changes_order_permissions": false,
+    "operator_release_still_required": true
+  }
+}

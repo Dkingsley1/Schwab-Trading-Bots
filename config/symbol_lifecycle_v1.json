@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "policy_id": "canonical_exchange_symbol_lifecycle_v1",
+  "renamed_symbols": {
+    "SPLG": "SPYM"
+  },
+  "observation_policy": "normalize configured universes to the current exchange symbol before collection",
+  "live_order_policy": "reject deprecated symbols instead of silently rewriting an order at submission time"
+}

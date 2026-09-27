@@ -14,9 +14,11 @@ if __package__ in {None, ""}:
         sys.path.insert(0, str(PROJECT_ROOT))
     from scripts.ops.long_runtime_common import iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
     from scripts.ops import sql_link_shard_manager as shard_manager
+    from scripts.ops.sql_writer_lock_path import configured_sql_writer_lock_path
 else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, payload_age_minutes, write_payload
     from . import sql_link_shard_manager as shard_manager
+    from .sql_writer_lock_path import configured_sql_writer_lock_path
 
 
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "writer_process_intelligence_latest.json"
@@ -554,7 +556,7 @@ def build_payload(
     progress_path = health / "sql_link_service_progress_latest.json"
     writer_cycle_payload = writer_cycle if isinstance(writer_cycle, dict) else load_json(health / "writer_cycle_coordinator_latest.json")
     progress = load_json(progress_path)
-    lock_state = _lock_snapshot(Path(project_root) / "governance" / "locks" / "jsonl_sql_writer.lock")
+    lock_state = _lock_snapshot(configured_sql_writer_lock_path(Path(project_root)))
     process_watchdog = load_json(health / "process_watchdog_latest.json")
     process_fanout = load_json(health / "process_fanout_guard_latest.json")
     drainer_intelligence = load_json(health / "drainer_intelligence_layer_latest.json")

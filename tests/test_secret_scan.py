@@ -57,3 +57,24 @@ def test_telemetry_redaction_fixture_is_repo_secret_scan_clean() -> None:
     findings = secret_scan._scan([fixture], max_bytes=1_000_000)
 
     assert findings == []
+
+
+def test_renamed_environment_is_pruned_but_other_work_is_scanned(tmp_path, monkeypatch):
+    monkeypatch.setattr(secret_scan, "PROJECT_ROOT", tmp_path)
+    backup = tmp_path / "work" / "upgrade" / "venv-before"
+    backup.mkdir(parents=True)
+    (backup / "pyvenv.cfg").write_text("home = /python\n")
+    (backup / "dependency.py").write_text("TOKEN=abcdefghijklmnopqrst\n")
+    authored = tmp_path / "work" / "source.py"
+    authored.write_text("TOKEN=abcdefghijklmnopqrst\n")
+    paths = secret_scan._all_repo_files()
+    assert authored in paths
+    assert not any(p.is_relative_to(backup) for p in paths)
+    assert len(secret_scan._scan(paths, 1024)) == 1
+
+
+def test_full_scan_does_not_follow_directory_or_file_links(tmp_path, monkeypatch):
+    monkeypatch.setattr(secret_scan, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "linked-file").symlink_to("/unavailable-target")
+    (tmp_path / "linked-dir").symlink_to("/unavailable-directory", target_is_directory=True)
+    assert secret_scan._all_repo_files() == []

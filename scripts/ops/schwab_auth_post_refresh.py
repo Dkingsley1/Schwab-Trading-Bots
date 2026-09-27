@@ -14,9 +14,11 @@ if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from core.provider_access_guard import mark_provider_recovered
+    from core.broker_auth_epoch import token_epoch
     from scripts.ops.long_runtime_common import iso_now, write_payload
 else:
     from core.provider_access_guard import mark_provider_recovered
+    from core.broker_auth_epoch import token_epoch
     from .long_runtime_common import PROJECT_ROOT, iso_now, write_payload
 
 
@@ -28,6 +30,8 @@ PAPER_ONLY_ENV = {
     "EXECUTION_LANE_LIVE_ENABLED": "0",
     "RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR": "0",
     "BOT_LIVE_MONEY_LOCKED_DURING_SOAK": "1",
+    "SCHWAB_API_TIMEOUT_SECONDS": "12",
+    "LIVE_API_RETRY_ATTEMPTS": "2",
 }
 
 
@@ -306,6 +310,7 @@ def build_payload(
                 provider_recovery.get("forced_recovery_from_verified_request", False)
             ),
         },
+        "auth_epoch": token_epoch(project_root / "token.json"),
         "steps": [_step_summary(step) for step in steps],
         "safety_contract": {
             "market_data_only": True,
@@ -325,6 +330,8 @@ def build_payload(
             "paper_truth_evaluator_is_non_recursive": True,
             "stale_account_and_broker_truth_have_bounded_repair_owner": True,
             "downstream_paper_watch_does_not_misclassify_auth_recovery": True,
+            "running_schwab_clients_rebind_when_token_epoch_changes": True,
+            "pre_auth_epoch_metrics_cannot_release_the_execution_breaker": True,
             "safe_environment": dict(PAPER_ONLY_ENV),
         },
     }

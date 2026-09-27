@@ -7,6 +7,7 @@ import json
 import math
 import os
 import sys
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +29,7 @@ from sql_dataset_io import (
     resolve_sqlite_path,
     split_paths_by_sqlite_coverage,
 )
+from storage_router import inspect_storage_path
 
 from market_context_features import (
     BOND_REFERENCE_FEATURE_KEYS,
@@ -51,7 +53,13 @@ from global_central_bank_context import (
 )
 from decision_context_mesh import (
     DECISION_CONTEXT_MESH_FEATURE_KEYS,
+    PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS,
     decision_context_mesh_ready,
+)
+from research_context_expansion import (
+    COLLECTOR_IDS as RESEARCH_CONTEXT_COLLECTOR_IDS,
+    RUNTIME_RESEARCH_CONTEXT_FEATURE_KEYS,
+    research_context_ready,
 )
 
 try:
@@ -234,7 +242,9 @@ _RUNTIME_EXTENDED_QUANT_KEYS = {
 _RUNTIME_CENTRAL_BANK_LIQUIDITY_KEYS = set(CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS)
 _RUNTIME_GLOBAL_CENTRAL_BANK_KEYS = set(GLOBAL_CENTRAL_BANK_FEATURE_KEYS)
 _RUNTIME_CENTRAL_BANK_CROSS_SOURCE_KEYS = set(CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS)
-_RUNTIME_DECISION_CONTEXT_MESH_KEYS = set(DECISION_CONTEXT_MESH_FEATURE_KEYS)
+_RUNTIME_DECISION_CONTEXT_MESH_KEYS = set(DECISION_CONTEXT_MESH_FEATURE_KEYS) | set(
+    PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS
+)
 
 _RUNTIME_TASTYTRADE_KEYS = {
     "tasty_iv_rank_norm",
@@ -369,7 +379,7 @@ _RUNTIME_SCHWAB_EDUCATION_KEYS = {
     "schwab_education_symbol_stream_share_norm",
 }
 
-_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS | _RUNTIME_MARKET_MICRO_KEYS | _RUNTIME_SEC_EDGAR_KEYS | _RUNTIME_EXTENDED_QUANT_KEYS | _RUNTIME_CENTRAL_BANK_LIQUIDITY_KEYS | _RUNTIME_GLOBAL_CENTRAL_BANK_KEYS | _RUNTIME_CENTRAL_BANK_CROSS_SOURCE_KEYS | _RUNTIME_DECISION_CONTEXT_MESH_KEYS | _RUNTIME_TASTYTRADE_KEYS | _RUNTIME_CRYPTO_MARKET_KEYS | _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS | _RUNTIME_FX_MARKET_KEYS | _RUNTIME_DIVIDEND_DRIP_KEYS | _RUNTIME_SCHWAB_EDUCATION_KEYS | _RUNTIME_QUANT_MODEL_KEYS
+_RUNTIME_GAP_FILL_KEYS = set(BREADTH_FEATURE_KEYS) | set(BOND_REFERENCE_FEATURE_KEYS) | set(CREDIT_CONTEXT_FEATURE_KEYS) | set(NEWS_STRUCTURED_FEATURE_KEYS) | _RUNTIME_NEWS_EVENT_KEYS | _RUNTIME_CALENDAR_EVENT_KEYS | _RUNTIME_MARKET_MICRO_KEYS | _RUNTIME_SEC_EDGAR_KEYS | _RUNTIME_EXTENDED_QUANT_KEYS | _RUNTIME_CENTRAL_BANK_LIQUIDITY_KEYS | _RUNTIME_GLOBAL_CENTRAL_BANK_KEYS | _RUNTIME_CENTRAL_BANK_CROSS_SOURCE_KEYS | _RUNTIME_DECISION_CONTEXT_MESH_KEYS | _RUNTIME_TASTYTRADE_KEYS | _RUNTIME_CRYPTO_MARKET_KEYS | _RUNTIME_MARKET_CRYPTO_CORRELATION_KEYS | _RUNTIME_FX_MARKET_KEYS | _RUNTIME_DIVIDEND_DRIP_KEYS | _RUNTIME_SCHWAB_EDUCATION_KEYS | _RUNTIME_QUANT_MODEL_KEYS | set(RUNTIME_RESEARCH_CONTEXT_FEATURE_KEYS)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -577,16 +587,55 @@ def _runtime_row_price(row: Mapping[str, Any], features: Mapping[str, Any] | Non
     return 0.0
 
 
-def _iter_runtime_price_sidecar_rows(paths: Sequence[Path], *, max_rows: int = 0) -> Iterable[Dict[str, Any]]:
+def _iter_runtime_price_sidecar_rows(
+    paths: Sequence[Path],
+    *,
+    max_rows: int = 0,
+    deadline_monotonic: float | None = None,
+    max_bytes: int = 32 * 1024 * 1024,
+    stats: Dict[str, Any] | None = None,
+) -> Iterable[Dict[str, Any]]:
+    # Bound decompressed bytes, including malformed/blank rows, not just JSON yields.
+    stats = stats if stats is not None else {}
+    deadline = (
+        min(deadline_monotonic, time.monotonic() + 10)
+        if deadline_monotonic is not None
+        else time.monotonic() + 10
+    )
+    byte_budget = max(int(max_bytes), 1)
+    scanned_bytes = 0
     yielded = 0
     for raw_path in paths:
         path = Path(raw_path)
         try:
-            handle_cm = gzip.open(path, "rt", encoding="utf-8") if path.suffix == ".gz" else path.open("r", encoding="utf-8")
+            if time.monotonic() >= deadline:
+                stats["timed_out"] = True
+                return
+            handle_cm = (
+                gzip.open(path, "rb") if path.suffix == ".gz" else path.open("rb")
+            )
             with handle_cm as handle:
-                for line in handle:
-                    if max_rows > 0 and yielded >= max_rows:
+                while True:
+                    if time.monotonic() >= deadline:
+                        stats["timed_out"] = True
                         return
+                    if max_rows > 0 and yielded >= max_rows:
+                        stats["row_limit_hit"] = True
+                        return
+                    remaining = byte_budget - scanned_bytes
+                    if remaining <= 0:
+                        stats["byte_limit_hit"] = True
+                        return
+                    line = handle.readline(min(remaining, 1024 * 1024))
+                    if not line:
+                        break
+                    scanned_bytes += len(line)
+                    stats["scanned_bytes"] = scanned_bytes
+                    if not line.endswith(b"\n"):
+                        # Do not parse a budget-truncated record as a complete observation.
+                        if len(line) >= min(remaining, 1024 * 1024):
+                            stats["record_limit_hit"] = True
+                            return
                     line = line.strip()
                     if not line:
                         continue
@@ -596,8 +645,10 @@ def _iter_runtime_price_sidecar_rows(paths: Sequence[Path], *, max_rows: int = 0
                         continue
                     if isinstance(row, dict):
                         yielded += 1
+                        stats["row_count"] = yielded
                         yield row
         except Exception:
+            stats["file_error_count"] = int(stats.get("file_error_count", 0)) + 1
             continue
 
 
@@ -824,11 +875,16 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     fx_market_context = load_latest_external_context(project_root, "fx_market_context")
     dividend_drip_state = load_latest_external_context(project_root, "dividend_drip_state")
     quant_model_control = load_latest_external_context(project_root, "quant_model_control")
+    research_contexts = [
+        load_latest_external_context(project_root, collector_id)
+        for collector_id in RESEARCH_CONTEXT_COLLECTOR_IDS
+    ]
 
     te_derived = tradingeconomics.get("derived") if isinstance(tradingeconomics.get("derived"), Mapping) else {}
     official_derived = official_macro.get("derived") if isinstance(official_macro.get("derived"), Mapping) else {}
     central_bank_cross_derived = central_bank_cross_source.get("derived") if isinstance(central_bank_cross_source.get("derived"), Mapping) else {}
     decision_context_mesh_derived = decision_context_mesh.get("derived") if isinstance(decision_context_mesh.get("derived"), Mapping) else {}
+    decision_context_mesh_routing = decision_context_mesh.get("routing") if isinstance(decision_context_mesh.get("routing"), Mapping) else {}
     schwab_derived = schwab_education.get("derived") if isinstance(schwab_education.get("derived"), Mapping) else {}
     sec_derived = sec_edgar.get("derived") if isinstance(sec_edgar.get("derived"), Mapping) else {}
     extended_derived = extended_quant.get("derived") if isinstance(extended_quant.get("derived"), Mapping) else {}
@@ -969,6 +1025,12 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     external_global_features.update(_feature_subset(fx_market_global, _RUNTIME_FX_MARKET_KEYS))
     external_global_features.update(_feature_subset(dividend_drip_global, _RUNTIME_DIVIDEND_DRIP_KEYS))
     external_global_features.update(_feature_subset(quant_model_global, _RUNTIME_QUANT_MODEL_KEYS))
+    for collector_id, research_context in zip(RESEARCH_CONTEXT_COLLECTOR_IDS, research_contexts):
+        if not research_context_ready(research_context, collector_id):
+            continue
+        research_derived = research_context.get("derived") if isinstance(research_context.get("derived"), Mapping) else {}
+        research_global = research_derived.get("global_features") if isinstance(research_derived.get("global_features"), Mapping) else {}
+        external_global_features.update(_feature_subset(research_global, RUNTIME_RESEARCH_CONTEXT_FEATURE_KEYS))
     external_symbol_features = _symbol_feature_subset(sec_symbol, _RUNTIME_SEC_EDGAR_KEYS)
     if central_bank_cross_source_context_ready(central_bank_cross_source):
         for symbol, subset in _symbol_feature_subset(
@@ -1014,6 +1076,14 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
     for symbol, subset in _symbol_feature_subset(quant_model_symbol, _RUNTIME_QUANT_MODEL_KEYS).items():
         current = external_symbol_features.setdefault(symbol, {})
         current.update(subset)
+    for collector_id, research_context in zip(RESEARCH_CONTEXT_COLLECTOR_IDS, research_contexts):
+        if not research_context_ready(research_context, collector_id):
+            continue
+        research_derived = research_context.get("derived") if isinstance(research_context.get("derived"), Mapping) else {}
+        research_symbol = research_derived.get("symbol_features") if isinstance(research_derived.get("symbol_features"), Mapping) else {}
+        for symbol, subset in _symbol_feature_subset(research_symbol, RUNTIME_RESEARCH_CONTEXT_FEATURE_KEYS).items():
+            current = external_symbol_features.setdefault(symbol, {})
+            current.update(subset)
 
     return {
         "calendar_features": calendar_features,
@@ -1025,6 +1095,11 @@ def _load_runtime_gap_fill_context(project_root: Path) -> Dict[str, Any]:
         "market_micro_features": market_micro_features,
         "external_global_features": external_global_features,
         "external_symbol_features": external_symbol_features,
+        "external_feature_routes": (
+            dict(decision_context_mesh_routing.get("classified_public_financial_routes"))
+            if isinstance(decision_context_mesh_routing.get("classified_public_financial_routes"), Mapping)
+            else {}
+        ),
     }
 
 
@@ -1049,13 +1124,28 @@ def _enrich_runtime_observation(
     market_micro_features = gap_fill_context.get("market_micro_features") if isinstance(gap_fill_context.get("market_micro_features"), Mapping) else {}
     external_global_features = gap_fill_context.get("external_global_features") if isinstance(gap_fill_context.get("external_global_features"), Mapping) else {}
     external_symbol_features = gap_fill_context.get("external_symbol_features") if isinstance(gap_fill_context.get("external_symbol_features"), Mapping) else {}
+    external_feature_routes = gap_fill_context.get("external_feature_routes") if isinstance(gap_fill_context.get("external_feature_routes"), Mapping) else {}
+    decision_family_id = str(
+        obs.get("institutional_decision_flow_policy_family_id")
+        or obs.get("decision_policy_family_id")
+        or obs.get("policy_family_id")
+        or ""
+    )
+
+    def feature_allowed(key: str) -> bool:
+        if key not in PUBLIC_FINANCIAL_CONTEXT_FEATURE_KEYS:
+            return True
+        route = external_feature_routes.get(key) if isinstance(external_feature_routes.get(key), Mapping) else {}
+        allowed_families = {str(value) for value in route.get("decision_family_ids", []) if str(value)}
+        return bool(decision_family_id and decision_family_id in allowed_families)
 
     for key, value in calendar_features.items():
         _set_missing_feature(features, str(key), value)
     symbol = str(obs.get("symbol") or "").strip().upper()
     symbol_feature_map = external_symbol_features.get(symbol) if isinstance(external_symbol_features.get(symbol), Mapping) else {}
     for key, value in symbol_feature_map.items():
-        _set_missing_feature(features, str(key), value)
+        if feature_allowed(str(key)):
+            _set_missing_feature(features, str(key), value)
     for key, value in news_features.items():
         _set_missing_feature(features, str(key), value)
     for key, value in live_macro_calendar.items():
@@ -1067,7 +1157,8 @@ def _enrich_runtime_observation(
     for key, value in market_micro_features.items():
         _set_missing_feature(features, str(key), value)
     for key, value in external_global_features.items():
-        _set_missing_feature(features, str(key), value)
+        if feature_allowed(str(key)):
+            _set_missing_feature(features, str(key), value)
 
     bond_features = summarize_bond_reference_context(
         symbol=symbol,
@@ -1251,9 +1342,27 @@ def _load_runtime_snapshot_rows(
     mode_allowlist: Optional[Sequence[str]],
     symbol_allowlist: Optional[Sequence[str]],
     snapshot_file: Optional[Path] = None,
+    max_source_bytes: int = 0,
+    max_retained_bytes: int = 0,
+    max_retained_rows: int = 0,
+    feature_allowlist: Optional[Sequence[str]] = None,
+    max_line_bytes: int = 0,
+    deadline_monotonic: float = 0.0,
+    strict_snapshot: bool = False,
+    read_audit: Optional[Dict[str, Any]] = None,
 ) -> RuntimeSequenceMap:
+    if read_audit is not None:
+        read_audit.update(status="blocked", reason="snapshot_metadata_unavailable", digest_verified=False)
+
+    def read_failure(reason: str) -> RuntimeSequenceMap:
+        if read_audit is not None:
+            read_audit.update(status="blocked", reason=reason, digest_verified=False)
+        return {}
+
     root = Path(project_root).expanduser().resolve()
     summary_path = Path(snapshot_file or (root / _DEFAULT_RUNTIME_SNAPSHOT_HEALTH)).expanduser()
+    if inspect_storage_path(summary_path)["status"] != "present":
+        return {}
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
     except Exception:
@@ -1263,25 +1372,53 @@ def _load_runtime_snapshot_rows(
     if int(summary.get("lookback_days", 0) or 0) < max(int(lookback_days), 1):
         return {}
     rows_path = Path(str(summary.get("rows_path") or "")).expanduser()
-    if not rows_path.exists():
+    if inspect_storage_path(rows_path)["status"] != "present":
         return {}
 
     since_utc = datetime.now(timezone.utc) - timedelta(days=max(int(lookback_days), 1))
     mode_allow = {str(x).strip().lower() for x in (mode_allowlist or []) if str(x).strip()}
     symbol_allow = {str(x).strip().upper() for x in (symbol_allowlist or []) if str(x).strip()}
+    feature_allow = None if feature_allowlist is None else frozenset(feature_allowlist)
     grouped: RuntimeSequenceMap = defaultdict(list)
+    expected_hash = str(summary.get("rows_sha256") or "")
+    if summary.get("schema_version") == 2 and not expected_hash:
+        return {}
+    digest = hashlib.sha256()
+    source_bytes = retained_bytes = retained_rows = source_rows = 0
     try:
-        with rows_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
+        with rows_path.open("rb") as handle:
+            initial_stat = os.fstat(handle.fileno())
+            if max_source_bytes and initial_stat.st_size > max_source_bytes:
+                return read_failure("source_byte_budget_exceeded")
+            while True:
+                if deadline_monotonic and time.monotonic() >= deadline_monotonic:
+                    return read_failure("snapshot_read_deadline_exceeded")
+                line = handle.readline(max_line_bytes + 1 if max_line_bytes else -1)
+                if not line:
+                    break
+                source_bytes += len(line)
+                if read_audit is not None:
+                    read_audit.update(source_bytes_scanned=source_bytes, retained_encoded_row_bytes=retained_bytes, retained_rows=retained_rows)
+                if max_line_bytes and len(line) > max_line_bytes:
+                    return read_failure("snapshot_line_byte_budget_exceeded")
+                if max_source_bytes and source_bytes > max_source_bytes:
+                    return read_failure("source_byte_budget_exceeded")
+                raw_line_bytes = len(line)
+                digest.update(line)
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     row = json.loads(line)
                 except Exception:
+                    if strict_snapshot:
+                        return read_failure("malformed_snapshot_row")
                     continue
                 if not isinstance(row, dict):
+                    if strict_snapshot:
+                        return read_failure("snapshot_row_not_an_object")
                     continue
+                source_rows += 1
                 ts = _parse_ts(row.get("timestamp_utc"))
                 if ts is None or ts < since_utc:
                     continue
@@ -1293,9 +1430,32 @@ def _load_runtime_snapshot_rows(
                     continue
                 if symbol_allow and symbol not in symbol_allow:
                     continue
+                if feature_allow is not None:
+                    features = row.get("features")
+                    if not isinstance(features, dict):
+                        return read_failure("snapshot_features_not_an_object")
+                    row["features"] = {key: value for key, value in features.items() if key in feature_allow}
+                    retained_bytes += len(json.dumps(row, separators=(",", ":")).encode("utf-8"))
+                else:
+                    retained_bytes += raw_line_bytes
+                retained_rows += 1
+                if max_retained_bytes and retained_bytes > max_retained_bytes:
+                    return read_failure("retained_snapshot_byte_budget_exceeded")
+                if max_retained_rows and retained_rows > max_retained_rows:
+                    return read_failure("retained_snapshot_row_budget_exceeded")
                 grouped[(mode, symbol)].append(dict(row))
-    except Exception:
-        return {}
+            final_stat = os.fstat(handle.fileno())
+            if (initial_stat.st_size, initial_stat.st_mtime_ns, initial_stat.st_ctime_ns) != (final_stat.st_size, final_stat.st_mtime_ns, final_stat.st_ctime_ns):
+                return read_failure("snapshot_changed_during_read")
+    except Exception as exc:
+        return read_failure(f"snapshot_read_error:{type(exc).__name__}")
+    if expected_hash and digest.hexdigest() != expected_hash:
+        return read_failure("snapshot_digest_mismatch")
+    if strict_snapshot and source_rows != summary.get("row_count"):
+        return read_failure("snapshot_row_count_mismatch")
+    if read_audit is not None:
+        read_audit.update(status="verified", reason="", digest_verified=bool(expected_hash), source_rows=source_rows,
+                          source_bytes_scanned=source_bytes, retained_encoded_row_bytes=retained_bytes, retained_rows=retained_rows)
     return grouped
 
 
@@ -1527,6 +1687,7 @@ def runtime_label_evidence(
     minimum_maturity_seconds: float = 0.0,
     maximum_maturity_seconds: float = 0.0,
     label_contract_sha256: str = "",
+    feature_window: int = 1,
 ) -> Dict[str, Any]:
     """Validate and identify the point-in-time evidence behind one label."""
     h = max(int(horizon), 1)
@@ -1590,6 +1751,52 @@ def runtime_label_evidence(
     if outcome_price <= 0.0:
         reasons.append("invalid_label_price")
 
+    window_start = idx - max(int(feature_window), 1) + 1
+    if window_start < 0:
+        reasons.append("incomplete_feature_window")
+    path_receipts = []
+    path_prices = []
+    path_times = []
+    seen_ids: set[str] = set()
+    previous_ts = None
+    for point_idx in range(max(window_start, 0), idx + h + 1):
+        point = sequence[point_idx]
+        point_ts = _runtime_observation_timestamp(point)
+        point_id = str(point.get("snapshot_id") or "").strip()
+        point_price = observation_feature(point, "last_price", 0.0)
+        if point_ts is None:
+            reasons.append("missing_window_timestamp")
+        elif previous_ts is not None and point_ts <= previous_ts:
+            reasons.append("nonchronological_evidence_window")
+        if point_ts is not None:
+            previous_ts = point_ts
+        if not point_id:
+            reasons.append("missing_window_snapshot_id")
+        elif point_id in seen_ids:
+            reasons.append("duplicate_window_snapshot_id")
+        seen_ids.add(point_id)
+        for key, expected in (("mode", anchor_mode), ("symbol", anchor_symbol)):
+            actual = str(point.get(key) or expected).strip().lower()
+            if actual != expected.lower():
+                reasons.append(f"cross_{key}_evidence_window")
+        for key in ("provider", "instrument_type", "source_contract"):
+            if anchor.get(key) and point.get(key) and anchor[key] != point[key]:
+                reasons.append(f"cross_{key}_evidence_window")
+        if not math.isfinite(point_price) or point_price <= 0.0:
+            reasons.append("invalid_window_price")
+        path_receipts.append({
+            "snapshot_id": point_id,
+            "timestamp_utc": point_ts.isoformat() if point_ts else "",
+            "price": point_price if math.isfinite(point_price) else None,
+        })
+        if point_idx >= idx:
+            path_prices.append(point_price)
+            path_times.append(point_ts)
+    if anchor_price > 0.0 and any(not math.isfinite(price / anchor_price) for price in path_prices):
+        reasons.append("nonfinite_market_path_return")
+    window_digest = hashlib.sha256(
+        json.dumps(path_receipts, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
     reasons = sorted(set(reasons))
     lineage_payload = {
         "schema_version": "runtime_label_evidence_v2",
@@ -1605,16 +1812,46 @@ def runtime_label_evidence(
         "feature_snapshot_id": anchor_snapshot_id,
         "label_snapshot_id": outcome_snapshot_id,
         "horizon_rows": h,
+        "feature_window_rows": max(int(feature_window), 1),
+        "feature_window_started_at_utc": path_receipts[0]["timestamp_utc"],
+        "evidence_window_sha256": window_digest,
     }
     lineage_sha256 = hashlib.sha256(
         json.dumps(lineage_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+    outcome_labels = {
+        "status": "unavailable" if reasons else "observed_market_path",
+        "forward_return_gross": None,
+        "max_observed_return_gross": None,
+        "min_observed_return_gross": None,
+        "observed_path_max_drawdown": None,
+        "outcome_path_max_gap_seconds": None,
+        "observed_point_count": len(path_prices),
+        "cost_adjustment_status": "not_applied",
+        "is_trade_pnl": False,
+        "profitability_evidence": False,
+        "sampling_policy": "observed_snapshots_only_not_intrabar_extrema",
+    }
+    if not reasons:
+        returns = [price / anchor_price - 1.0 for price in path_prices]
+        peak = path_prices[0]
+        drawdown = 0.0
+        for price in path_prices:
+            peak = max(peak, price)
+            drawdown = max(drawdown, 1.0 - price / peak)
+        outcome_labels.update(
+            forward_return_gross=returns[-1], max_observed_return_gross=max(returns),
+            min_observed_return_gross=min(returns), observed_path_max_drawdown=drawdown,
+            outcome_path_max_gap_seconds=max((b - a).total_seconds() for a, b in zip(path_times, path_times[1:])),
+        )
     return {
         **lineage_payload,
         "eligible": not reasons,
         "reasons": reasons,
         "lineage_sha256": lineage_sha256,
         "maturity_seconds": round(max(maturity_seconds, 0.0), 6),
+        "outcome_labels": outcome_labels,
+        "label_depth_version": "observed_market_path_v1",
     }
 
 
@@ -1642,6 +1879,7 @@ def _runtime_label_evidence_summary(
     return {
         "schema_version": "runtime_label_evidence_v2",
         "label_owner_id": str(label_owner_id or "").strip().lower(),
+        "label_contract_sha256": str((label_contract or {}).get("contract_sha256") or ""),
         "objective_class": objective_class,
         "semantic_horizon": str((label_contract or {}).get("primary_horizon") or horizon_policy.get("semantic_horizon") or ""),
         "horizon_enforcement_mode": str(horizon_policy.get("enforcement_mode") or "configured_row_horizon"),
@@ -2179,12 +2417,7 @@ def load_runtime_observation_sequences(
     mode_allow = {str(x).strip().lower() for x in (mode_allowlist or []) if str(x).strip()}
     symbol_allow = {str(x).strip().upper() for x in (symbol_allowlist or []) if str(x).strip()}
     gap_fill_context = _load_runtime_gap_fill_context(root)
-    sidecar_paths = _recent_decision_paths(root, lookback_days=max(int(lookback_days), 1))
-    sidecar_max_rows = max(int(os.getenv("RUNTIME_TRAIN_PRICE_SIDECAR_MAX_ROWS", "200000") or 200000), 1000)
-    price_sidecar = _build_runtime_price_sidecar_from_rows(
-        _iter_runtime_price_sidecar_rows(sidecar_paths, max_rows=sidecar_max_rows),
-        max_rows=sidecar_max_rows,
-    )
+    price_sidecar: Dict[str, Any] | None = None
     effective_prefer_sqlite = _env_flag("RUNTIME_TRAIN_PREFER_SQLITE", False) if prefer_sqlite is None else bool(prefer_sqlite)
 
     if allow_snapshot and _env_flag("RUNTIME_TRAIN_USE_SNAPSHOT", False):
@@ -2292,6 +2525,24 @@ def load_runtime_observation_sequences(
         if price <= 0.0:
             price = _runtime_row_price(row, features)
         if price <= 0.0:
+            if price_sidecar is None:
+                price_sidecar = {}
+                if _env_flag("RUNTIME_TRAIN_PRICE_SIDECAR_ENABLED", True):
+                    sidecar_paths = _recent_decision_paths(
+                        root, lookback_days=max(int(lookback_days), 1)
+                    )
+                    sidecar_max_rows = max(
+                        _safe_int(
+                            os.getenv("RUNTIME_TRAIN_PRICE_SIDECAR_MAX_ROWS"), 200000
+                        ),
+                        1,
+                    )
+                    price_sidecar = _build_runtime_price_sidecar_from_rows(
+                        _iter_runtime_price_sidecar_rows(
+                            sidecar_paths, max_rows=sidecar_max_rows
+                        ),
+                        max_rows=sidecar_max_rows,
+                    )
             sidecar_entry = _lookup_runtime_sidecar_context(
                 price_sidecar,
                 symbol=symbol,
@@ -2371,6 +2622,14 @@ def load_runtime_observation_sequences(
 
 def _sample_regime_label(row: RuntimeObservation) -> str:
     features = row.get("features") if isinstance(row.get("features"), Mapping) else {}
+    context_keys = (
+        "news_shock_rate", "calendar_macro_surprise_norm", "market_micro_trade_halt_norm",
+        "market_micro_range_expansion_norm", "day_regime_trend_norm",
+        "market_micro_trend_persistence_norm", "futures_curve_shift_velocity_norm",
+        "day_regime_mean_revert_norm", "market_micro_reversal_risk_norm",
+    )
+    if not any(key in features and math.isfinite(_safe_float(features[key], float("nan"))) for key in context_keys):
+        return "unknown"
     shock_score = max(
         _safe_float(features.get("news_shock_rate"), 0.0),
         _safe_float(features.get("calendar_macro_surprise_norm"), 0.0),
@@ -2397,6 +2656,13 @@ def _sample_regime_label(row: RuntimeObservation) -> str:
 
 def _sample_session_label(row: RuntimeObservation) -> str:
     features = row.get("features") if isinstance(row.get("features"), Mapping) else {}
+    context_keys = (
+        "market_micro_overnight_gap_norm", "market_micro_session_open_norm",
+        "market_micro_session_power_hour_norm", "market_micro_post_event_drift_norm",
+        "market_micro_session_midday_norm",
+    )
+    if not any(key in features and math.isfinite(_safe_float(features[key], float("nan"))) for key in context_keys):
+        return "unknown"
     if _safe_float(features.get("market_micro_overnight_gap_norm"), 0.0) >= 0.55:
         return "overnight_gap"
     if _safe_float(features.get("market_micro_session_open_norm"), 0.0) >= 0.55:
@@ -2499,6 +2765,7 @@ def _apply_symbol_and_regime_balance(
                 keep_chunks.append(_select_evenly_spaced_indices(reg_idx, keep_count, conf_sel, anchor_sel))
             if keep_chunks:
                 reg_selected = np.sort(np.concatenate(keep_chunks))
+                selected_idx = selected_idx[reg_selected]
                 X_sel = np.asarray(X_sel[reg_selected], dtype=np.float32)
                 y_sel = np.asarray(y_sel[reg_selected], dtype=np.float32)
                 conf_sel = np.asarray(conf_sel[reg_selected], dtype=np.float32)
@@ -2517,6 +2784,7 @@ def _apply_symbol_and_regime_balance(
     meta["regime_counts_after"] = {
         str(key): int(np.sum(regimes_sel == key)) for key in sorted({str(item) for item in regimes_sel.tolist()})
     }
+    meta["_selected_idx"] = selected_idx
     return X_sel, y_sel, conf_sel, symbols_sel, modes_sel, regimes_sel, sessions_sel, meta
 
 
@@ -2573,6 +2841,9 @@ def make_runtime_windowed_dataset(
     bypass_sample_filter: bool = False,
     fallback_direction_label: bool = False,
     fallback_min_abs_return: float = 0.00035,
+    include_sample_evidence: bool = False,
+    max_rejection_evidence: int = 0,
+    balance_samples: bool = True,
     window: int,
     horizon: int,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
@@ -2589,6 +2860,7 @@ def make_runtime_windowed_dataset(
     sample_modes: List[str] = []
     sample_regimes: List[str] = []
     sample_sessions: List[str] = []
+    sample_evidence: List[Dict[str, Any]] = []
     eligible_sequences = 0
     skipped_labels = 0
     skipped_filtered = 0
@@ -2616,6 +2888,41 @@ def make_runtime_windowed_dataset(
         0.0,
     )
     label_contract_sha256 = str((label_contract or {}).get("contract_sha256") or "")
+    if label_contract:
+        bypass_sample_filter = bool(bypass_sample_filter and label_contract.get("sample_filter_bypass_allowed") is True)
+        fallback_direction_label = bool(
+            fallback_direction_label and objective_class == "market_outcome"
+            and label_contract.get("directional_fallback_allowed") is True
+        )
+    disposition_counts: Counter[str] = Counter()
+    rejected_evidence: List[Dict[str, Any]] = []
+    rejection_limit = min(max(int(max_rejection_evidence), 0), 2000)
+
+    def reject(reason: str, rows, idx: int, mode: str, symbol: str) -> None:
+        disposition_counts[reason] += 1
+        if len(rejected_evidence) < rejection_limit:
+            timestamp = _runtime_observation_timestamp(rows[idx])
+            rejected_evidence.append({
+                "label_owner_id": label_owner_id, "label_contract_sha256": label_contract_sha256,
+                "mode": str(mode), "symbol": str(symbol),
+                "feature_snapshot_id": str(rows[idx].get("snapshot_id") or ""),
+                "feature_timestamp_utc": timestamp.isoformat() if timestamp else "",
+                "sample_eligibility_reason": reason, "training_eligible": False,
+                "label_value": None,
+            })
+
+    def disposition_summary(selected_count: int) -> Dict[str, Any]:
+        return {
+            "version": "label_disposition_v1", "candidate_count": evidence_candidate_count,
+            "accepted_before_selection_count": len(samples),
+            "selected_sample_count": selected_count,
+            "selection_excluded_count": max(len(samples) - selected_count, 0),
+            "rejected_candidate_count": sum(disposition_counts.values()),
+            "rejection_counts": dict(sorted(disposition_counts.items())),
+            "rejection_examples": rejected_evidence,
+            "rejection_examples_truncated": sum(disposition_counts.values()) > len(rejected_evidence),
+            "rejection_example_limit": rejection_limit,
+        }
 
     for (mode_key, symbol_key), rows in sequences.items():
         if len(rows) < (w + h):
@@ -2626,6 +2933,7 @@ def make_runtime_windowed_dataset(
             if objective_class != "market_outcome":
                 evidence_rejected_candidate_count += 1
                 evidence_rejection_counts["objective_requires_non_market_outcome"] += 1
+                reject("objective_requires_non_market_outcome", rows, idx, mode_key, symbol_key)
                 continue
             effective_horizon, horizon_rejection_reason = _runtime_contract_outcome_horizon(
                 rows,
@@ -2637,6 +2945,7 @@ def make_runtime_windowed_dataset(
             if effective_horizon is None:
                 evidence_rejected_candidate_count += 1
                 evidence_rejection_counts[horizon_rejection_reason or "label_horizon_not_mature_for_contract"] += 1
+                reject(horizon_rejection_reason or "label_horizon_not_mature_for_contract", rows, idx, mode_key, symbol_key)
                 continue
             evidence = runtime_label_evidence(
                 rows,
@@ -2649,17 +2958,20 @@ def make_runtime_windowed_dataset(
                 minimum_maturity_seconds=minimum_maturity_seconds,
                 maximum_maturity_seconds=maximum_maturity_seconds,
                 label_contract_sha256=label_contract_sha256,
+                feature_window=w,
             )
             if not bool(evidence.get("eligible", False)):
                 evidence_rejected_candidate_count += 1
                 reasons = evidence.get("reasons") if isinstance(evidence.get("reasons"), list) else []
                 for reason in reasons or ["invalid_label_evidence"]:
                     evidence_rejection_counts[str(reason)] += 1
+                reject("invalid_label_evidence:" + ",".join(reasons), rows, idx, mode_key, symbol_key)
                 continue
             lineage_sha256 = str(evidence.get("lineage_sha256") or "")
             if not lineage_sha256 or lineage_sha256 in accepted_lineage_set:
                 evidence_rejected_candidate_count += 1
                 evidence_rejection_counts["duplicate_label_lineage"] += 1
+                reject("duplicate_label_lineage", rows, idx, mode_key, symbol_key)
                 continue
             evidence_valid_candidate_count += 1
             if sample_filter is not None and not bypass_sample_filter:
@@ -2669,6 +2981,7 @@ def make_runtime_windowed_dataset(
                     include_sample = False
                 if not include_sample:
                     skipped_filtered += 1
+                    reject("strategy_sample_filter", rows, idx, mode_key, symbol_key)
                     continue
 
             confidence = 1.0
@@ -2680,22 +2993,31 @@ def make_runtime_windowed_dataset(
                 confidence = min(max(confidence, 0.0), 1.0)
                 if confidence < min_conf:
                     skipped_low_confidence += 1
+                    reject("below_minimum_confidence", rows, idx, mode_key, symbol_key)
                     continue
 
             per_step: List[np.ndarray] = []
             for step_idx in range(idx - w + 1, idx + 1):
-                vec = np.asarray(feature_builder(rows, step_idx), dtype=np.float32).reshape(-1)
-                vec = np.nan_to_num(vec, nan=0.0, posinf=0.0, neginf=0.0)
-                if vec.size == 0:
+                try:
+                    vec = np.asarray(feature_builder(rows, step_idx), dtype=np.float32).reshape(-1)
+                except (TypeError, ValueError, OverflowError):
+                    per_step = []
+                    break
+                if vec.size == 0 or not np.all(np.isfinite(vec)) or (feature_dim and vec.size != feature_dim):
                     per_step = []
                     break
                 if feature_dim == 0:
                     feature_dim = int(vec.size)
                 per_step.append(vec)
             if not per_step:
+                reject("invalid_or_inconsistent_feature_vector", rows, idx, mode_key, symbol_key)
                 continue
 
-            label = label_builder(rows, idx, effective_horizon)
+            try:
+                label = label_builder(rows, idx, effective_horizon)
+                label = float(label) if label is not None else None
+            except (TypeError, ValueError, OverflowError):
+                label = None
             if label is None or (not math.isfinite(float(label))):
                 if fallback_direction_label:
                     label = _label_repair_direction_label(
@@ -2708,6 +3030,7 @@ def make_runtime_windowed_dataset(
                         repaired_labels += 1
                 if label is None or (not math.isfinite(float(label))):
                     skipped_labels += 1
+                    reject("label_builder_no_valid_outcome", rows, idx, mode_key, symbol_key)
                     continue
 
             sample = np.concatenate(per_step, axis=0)
@@ -2724,6 +3047,22 @@ def make_runtime_windowed_dataset(
             sample_modes.append(str(rows[idx].get("mode") or mode_key or "").strip().lower())
             sample_regimes.append(_sample_regime_label(rows[idx]))
             sample_sessions.append(_sample_session_label(rows[idx]))
+            if include_sample_evidence:
+                window_start = _runtime_observation_timestamp(rows[idx - w + 1])
+                sample_evidence.append({
+                    **evidence,
+                    "feature_window_started_at_utc": window_start.isoformat() if window_start else "",
+                    "label_value": float(label),
+                    "feature_values_sha256": hashlib.sha256(np.asarray(sample, dtype="<f4").tobytes()).hexdigest(),
+                    "label_family": str((label_contract or {}).get("label_family") or "unknown"),
+                    "objective_class": objective_class,
+                    "outcome_authority": str((label_contract or {}).get("outcome_authority") or "unverified_market_observations"),
+                    "sample_regime": _sample_regime_label(rows[idx]),
+                    "sample_session": _sample_session_label(rows[idx]),
+                    "context_classification_source": "anchor_features_only",
+                    "confidence": float(confidence),
+                    "sample_eligibility_reason": "strategy_label_and_point_in_time_window_passed",
+                })
 
     if not samples:
         evidence_audit = _runtime_label_evidence_summary(
@@ -2761,6 +3100,9 @@ def make_runtime_windowed_dataset(
             "label_contract": dict(label_contract or {}),
             "label_evidence_audit": evidence_audit,
             "_sample_confidence": np.zeros((0,), dtype=np.float32),
+            "contributing_sequences": 0,
+            "label_disposition_audit": disposition_summary(0),
+            **({"sample_evidence": []} if include_sample_evidence else {}),
         }
 
     order = np.argsort(np.asarray(anchor_ts, dtype=np.float64))
@@ -2772,28 +3114,24 @@ def make_runtime_windowed_dataset(
     modes = np.asarray([sample_modes[i] for i in order], dtype=object)
     regimes = np.asarray([sample_regimes[i] for i in order], dtype=object)
     sessions = np.asarray([sample_sessions[i] for i in order], dtype=object)
-    X, y, conf, balance_meta = _rebalance_binary_runtime_dataset(
-        X,
-        y,
-        conf,
-        anchor_ordered,
-    )
+    evidence_order = np.asarray(order, dtype=np.int64)
+    balance_meta = {"label_balance_applied": False, "label_balance_reason": "deferred_until_training_partition"}
+    if balance_samples:
+        X, y, conf, balance_meta = _rebalance_binary_runtime_dataset(X, y, conf, anchor_ordered)
     selected_idx = np.asarray(balance_meta.pop("_selected_idx", np.arange(int(y.shape[0]), dtype=np.int64)), dtype=np.int64)
+    evidence_order = evidence_order[selected_idx]
     symbols = np.asarray(symbols[selected_idx])
     modes = np.asarray(modes[selected_idx])
     regimes = np.asarray(regimes[selected_idx])
     sessions = np.asarray(sessions[selected_idx])
     anchor_ordered = np.asarray(anchor_ordered[selected_idx], dtype=np.float64)
-    X, y, conf, symbols, modes, regimes, sessions, context_balance_meta = _apply_symbol_and_regime_balance(
-        X,
-        y,
-        conf,
-        anchor_ordered,
-        symbols,
-        modes,
-        regimes,
-        sessions,
-    )
+    context_balance_meta = {"context_balance_reason": "deferred_until_training_partition"}
+    if balance_samples:
+        X, y, conf, symbols, modes, regimes, sessions, context_balance_meta = _apply_symbol_and_regime_balance(
+            X, y, conf, anchor_ordered, symbols, modes, regimes, sessions,
+        )
+    context_selected_idx = context_balance_meta.pop("_selected_idx", np.arange(int(y.shape[0]), dtype=np.int64))
+    evidence_order = evidence_order[context_selected_idx]
     memory_sample_cap_limit = max(int(max_samples), 0)
     memory_sample_cap_applied = False
     memory_sample_cap_original_count = int(X.shape[0])
@@ -2807,6 +3145,7 @@ def make_runtime_windowed_dataset(
         modes = np.asarray(modes[selected_idx])
         regimes = np.asarray(regimes[selected_idx])
         sessions = np.asarray(sessions[selected_idx])
+        evidence_order = evidence_order[selected_idx]
         memory_sample_cap_applied = True
     positive_rate = float(np.mean(y[:, 0])) if y.size else 0.0
     label_audit = _build_label_audit(y, symbols, modes, regimes, sessions)
@@ -2849,6 +3188,9 @@ def make_runtime_windowed_dataset(
         "label_evidence_audit": evidence_audit,
         "_sample_confidence": conf,
         "label_audit": label_audit,
+        "contributing_sequences": len(set(zip(modes.tolist(), symbols.tolist()))),
+        "label_disposition_audit": disposition_summary(int(X.shape[0])),
+        **({"sample_evidence": [sample_evidence[i] for i in evidence_order]} if include_sample_evidence else {}),
         **balance_meta,
         **context_balance_meta,
     }

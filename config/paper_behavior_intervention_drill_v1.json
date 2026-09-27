@@ -1,0 +1,376 @@
+{
+  "schema_version": 1,
+  "policy_id": "paper_behavior_intervention_drill_v1",
+  "display_name": "Paper behavior intervention champion-challenger drills",
+  "paper_only": true,
+  "live_execution_allowed": false,
+  "proposal_ttl_seconds": 86400,
+  "runtime_contract_ttl_seconds": 86400,
+  "minimum_scenario_pass_rate": 1.0,
+  "minimum_candidate_bound_post_cost_fills_for_review": 30,
+  "healthy_feature_baseline": {
+    "quote_age_ms": 100.0,
+    "market_data_age_seconds": 0.1,
+    "source_freshness_norm": 0.95,
+    "predicted_edge_lower_confidence_bound_bps": 40.0,
+    "round_trip_cost_bps": 4.0,
+    "profitability_evidence_quality_norm": 0.9,
+    "independent_evidence_channel_count": 5,
+    "market_micro_tradeability_score_norm": 0.9,
+    "execution_fitness_norm": 0.9,
+    "liquidity_quality_norm": 0.9,
+    "portfolio_drawdown_pressure_norm": 0.1,
+    "lane_loss_streak": 0,
+    "core_portfolio_overlap_pressure_norm": 0.1,
+    "regime_transition_risk_norm": 0.1,
+    "recovery_reentry_confirmation_norm": 0.9,
+    "paper_debt_recovery_entry_size_multiplier_norm": 1.0,
+    "unresolved_partial_fill_inventory_norm": 0.0,
+    "paper_strategy_profit_harvest_runner_protected_norm": 0.0,
+    "core_cross_asset_confirmation_norm": 0.9,
+    "cross_horizon_conflict_norm": 0.1,
+    "candidate_bound_post_cost_samples": 60,
+    "candidate_bound_post_cost_lower_confidence_bound": 0.01
+  },
+  "authority_contract": {
+    "can_observe": true,
+    "can_propose_paper_behavior_overlay": true,
+    "can_write_runtime_control": false,
+    "can_submit_paper_orders": false,
+    "can_submit_live_orders": false,
+    "can_mutate_candidate": false,
+    "can_promote": false,
+    "can_change_live_execution": false,
+    "single_runtime_writer": "scripts/ops/paper_profitability_control.py"
+  },
+  "runtime_invariants": {
+    "can_originate_action": false,
+    "can_reverse_action": false,
+    "can_enlarge_entry": false,
+    "preserve_hold": true,
+    "preserve_sell_and_reduce_only": true,
+    "max_entry_size_multiplier_norm": 1.0,
+    "missing_or_invalid_contract_behavior": "disable_overlay_and_preserve_existing_controls",
+    "live_execution_allowed": false
+  },
+  "interventions": {
+    "stale_data_abstention": {
+      "enabled": true,
+      "max_quote_age_ms": 1500.0,
+      "max_market_data_age_seconds": 5.0,
+      "minimum_source_freshness_norm": 0.55
+    },
+    "post_cost_edge_gate": {
+      "enabled": true,
+      "minimum_edge_cost_multiple": 1.5,
+      "minimum_edge_margin_bps": 2.0
+    },
+    "evidence_quality_gate": {
+      "enabled": true,
+      "hard_floor_norm": 0.5,
+      "soft_floor_norm": 0.7,
+      "soft_floor_size_multiplier_norm": 0.55,
+      "minimum_independent_channels": 3
+    },
+    "liquidity_size_throttle": {
+      "enabled": true,
+      "hard_floor_norm": 0.35,
+      "soft_floor_norm": 0.65,
+      "minimum_size_multiplier_norm": 0.35
+    },
+    "drawdown_loss_streak_throttle": {
+      "enabled": true,
+      "drawdown_soft_floor_norm": 0.55,
+      "drawdown_hard_floor_norm": 0.85,
+      "loss_streak_soft_count": 3,
+      "loss_streak_hard_count": 6,
+      "minimum_size_multiplier_norm": 0.25
+    },
+    "crowding_concentration_cap": {
+      "enabled": true,
+      "soft_floor_norm": 0.55,
+      "hard_floor_norm": 0.82,
+      "minimum_size_multiplier_norm": 0.35
+    },
+    "regime_transition_hysteresis": {
+      "enabled": true,
+      "soft_floor_norm": 0.5,
+      "hard_floor_norm": 0.82,
+      "minimum_size_multiplier_norm": 0.4
+    },
+    "staged_recovery_reentry": {
+      "enabled": true,
+      "minimum_confirmation_norm": 0.6
+    },
+    "partial_fill_inventory_guard": {
+      "enabled": true,
+      "soft_floor_norm": 0.2,
+      "hard_floor_norm": 0.65,
+      "minimum_size_multiplier_norm": 0.35
+    },
+    "winner_add_discipline": {
+      "enabled": true,
+      "minimum_confirmation_norm": 0.65
+    },
+    "horizon_conflict_abstention": {
+      "enabled": true,
+      "soft_floor_norm": 0.5,
+      "hard_floor_norm": 0.75,
+      "minimum_size_multiplier_norm": 0.35
+    },
+    "candidate_maturity_scaling": {
+      "enabled": true,
+      "minimum_post_cost_samples": 30,
+      "immature_size_multiplier_norm": 0.25,
+      "mature_lower_confidence_bound_floor": 0.0
+    }
+  },
+  "scenarios": [
+    {
+      "scenario_id": "stale_quote_abstention",
+      "intervention_id": "stale_data_abstention",
+      "cases": [
+        {
+          "case_id": "stale_quote_buy",
+          "requested_action": "BUY",
+          "feature_overrides": {"quote_age_ms": 4500.0},
+          "diagnostic_forward_return_bps": -24.0,
+          "diagnostic_round_trip_cost_bps": 8.0,
+          "expected_action": "HOLD",
+          "expected_trigger": "stale_data_abstention"
+        }
+      ]
+    },
+    {
+      "scenario_id": "negative_post_cost_edge",
+      "intervention_id": "post_cost_edge_gate",
+      "cases": [
+        {
+          "case_id": "edge_below_cost_hurdle",
+          "requested_action": "BUY",
+          "feature_overrides": {"predicted_edge_lower_confidence_bound_bps": 8.0, "round_trip_cost_bps": 10.0},
+          "diagnostic_forward_return_bps": 4.0,
+          "diagnostic_round_trip_cost_bps": 10.0,
+          "expected_action": "HOLD",
+          "expected_trigger": "post_cost_edge_gate"
+        }
+      ]
+    },
+    {
+      "scenario_id": "weak_evidence_abstention",
+      "intervention_id": "evidence_quality_gate",
+      "cases": [
+        {
+          "case_id": "weak_evidence_buy",
+          "requested_action": "BUY",
+          "feature_overrides": {"profitability_evidence_quality_norm": 0.34, "independent_evidence_channel_count": 1},
+          "diagnostic_forward_return_bps": -18.0,
+          "diagnostic_round_trip_cost_bps": 6.0,
+          "expected_action": "HOLD",
+          "expected_trigger": "evidence_quality_gate"
+        }
+      ]
+    },
+    {
+      "scenario_id": "illiquid_market_abstention",
+      "intervention_id": "liquidity_size_throttle",
+      "cases": [
+        {
+          "case_id": "liquidity_below_hard_floor",
+          "requested_action": "BUY",
+          "feature_overrides": {"market_micro_tradeability_score_norm": 0.24, "execution_fitness_norm": 0.28, "liquidity_quality_norm": 0.22},
+          "diagnostic_forward_return_bps": -30.0,
+          "diagnostic_round_trip_cost_bps": 14.0,
+          "expected_action": "HOLD",
+          "expected_trigger": "liquidity_size_throttle"
+        }
+      ]
+    },
+    {
+      "scenario_id": "thin_liquidity_throttle",
+      "intervention_id": "liquidity_size_throttle",
+      "cases": [
+        {
+          "case_id": "liquidity_between_floors",
+          "requested_action": "BUY",
+          "feature_overrides": {"market_micro_tradeability_score_norm": 0.5, "execution_fitness_norm": 0.52, "liquidity_quality_norm": 0.5},
+          "diagnostic_forward_return_bps": -12.0,
+          "diagnostic_round_trip_cost_bps": 8.0,
+          "expected_action": "BUY",
+          "expected_max_size_multiplier_norm": 0.7,
+          "expected_trigger": "liquidity_size_throttle"
+        }
+      ]
+    },
+    {
+      "scenario_id": "deep_drawdown_abstention",
+      "intervention_id": "drawdown_loss_streak_throttle",
+      "cases": [
+        {
+          "case_id": "drawdown_above_hard_floor",
+          "requested_action": "BUY",
+          "feature_overrides": {"portfolio_drawdown_pressure_norm": 0.9},
+          "diagnostic_forward_return_bps": -35.0,
+          "diagnostic_round_trip_cost_bps": 7.0,
+          "expected_action": "HOLD",
+          "expected_trigger": "drawdown_loss_streak_throttle"
+        }
+      ]
+    },
+    {
+      "scenario_id": "loss_streak_throttle",
+      "intervention_id": "drawdown_loss_streak_throttle",
+      "cases": [
+        {
+          "case_id": "loss_streak_between_floors",
+          "requested_action": "BUY",
+          "feature_overrides": {"lane_loss_streak": 4},
+          "diagnostic_forward_return_bps": -15.0,
+          "diagnostic_round_trip_cost_bps": 6.0,
+          "expected_action": "BUY",
+          "expected_min_size_multiplier_norm": 0.25,
+          "expected_max_size_multiplier_norm": 0.65,
+          "expected_trigger": "drawdown_loss_streak_throttle"
+        }
+      ]
+    },
+    {
+      "scenario_id": "crowding_concentration_cap",
+      "intervention_id": "crowding_concentration_cap",
+      "cases": [
+        {
+          "case_id": "crowding_between_floors",
+          "requested_action": "BUY",
+          "feature_overrides": {"core_portfolio_overlap_pressure_norm": 0.7},
+          "diagnostic_forward_return_bps": -14.0,
+          "diagnostic_round_trip_cost_bps": 5.0,
+          "expected_action": "BUY",
+          "expected_max_size_multiplier_norm": 0.75,
+          "expected_trigger": "crowding_concentration_cap"
+        }
+      ]
+    },
+    {
+      "scenario_id": "regime_transition_hysteresis",
+      "intervention_id": "regime_transition_hysteresis",
+      "cases": [
+        {
+          "case_id": "transition_between_floors",
+          "requested_action": "BUY",
+          "feature_overrides": {"regime_transition_risk_norm": 0.72},
+          "diagnostic_forward_return_bps": -20.0,
+          "diagnostic_round_trip_cost_bps": 7.0,
+          "expected_action": "BUY",
+          "expected_max_size_multiplier_norm": 0.65,
+          "expected_trigger": "regime_transition_hysteresis"
+        }
+      ]
+    },
+    {
+      "scenario_id": "unconfirmed_recovery_reentry",
+      "intervention_id": "staged_recovery_reentry",
+      "cases": [
+        {
+          "case_id": "recovery_without_confirmation",
+          "requested_action": "BUY",
+          "feature_overrides": {"recovery_reentry_confirmation_norm": 0.42},
+          "diagnostic_forward_return_bps": -22.0,
+          "diagnostic_round_trip_cost_bps": 6.0,
+          "expected_action": "HOLD",
+          "expected_trigger": "staged_recovery_reentry"
+        }
+      ]
+    },
+    {
+      "scenario_id": "partial_fill_inventory_guard",
+      "intervention_id": "partial_fill_inventory_guard",
+      "cases": [
+        {
+          "case_id": "unresolved_partial_fill_above_hard_floor",
+          "requested_action": "BUY",
+          "feature_overrides": {"unresolved_partial_fill_inventory_norm": 0.82},
+          "diagnostic_forward_return_bps": -28.0,
+          "diagnostic_round_trip_cost_bps": 9.0,
+          "expected_action": "HOLD",
+          "expected_trigger": "partial_fill_inventory_guard"
+        }
+      ]
+    },
+    {
+      "scenario_id": "winner_add_discipline",
+      "intervention_id": "winner_add_discipline",
+      "cases": [
+        {
+          "case_id": "runner_add_without_confirmation",
+          "requested_action": "BUY",
+          "feature_overrides": {"paper_strategy_profit_harvest_runner_protected_norm": 1.0, "core_cross_asset_confirmation_norm": 0.45},
+          "diagnostic_forward_return_bps": -16.0,
+          "diagnostic_round_trip_cost_bps": 5.0,
+          "expected_action": "HOLD",
+          "expected_trigger": "winner_add_discipline"
+        }
+      ]
+    },
+    {
+      "scenario_id": "horizon_conflict_abstention",
+      "intervention_id": "horizon_conflict_abstention",
+      "cases": [
+        {
+          "case_id": "cross_horizon_conflict_above_hard_floor",
+          "requested_action": "BUY",
+          "feature_overrides": {"cross_horizon_conflict_norm": 0.8},
+          "diagnostic_forward_return_bps": -25.0,
+          "diagnostic_round_trip_cost_bps": 6.0,
+          "expected_action": "HOLD",
+          "expected_trigger": "horizon_conflict_abstention"
+        }
+      ]
+    },
+    {
+      "scenario_id": "maturity_and_action_integrity",
+      "intervention_id": "candidate_maturity_scaling",
+      "cases": [
+        {
+          "case_id": "immature_candidate_deweighted",
+          "requested_action": "BUY",
+          "feature_overrides": {"candidate_bound_post_cost_samples": 5},
+          "diagnostic_forward_return_bps": -12.0,
+          "diagnostic_round_trip_cost_bps": 5.0,
+          "expected_action": "BUY",
+          "expected_max_size_multiplier_norm": 0.25,
+          "expected_trigger": "candidate_maturity_scaling"
+        },
+        {
+          "case_id": "clean_mature_buy_preserved",
+          "requested_action": "BUY",
+          "feature_overrides": {},
+          "diagnostic_forward_return_bps": 34.0,
+          "diagnostic_round_trip_cost_bps": 4.0,
+          "expected_action": "BUY",
+          "expected_min_size_multiplier_norm": 1.0,
+          "expected_max_size_multiplier_norm": 1.0
+        },
+        {
+          "case_id": "sell_exit_preserved",
+          "requested_action": "SELL",
+          "feature_overrides": {"quote_age_ms": 5000.0, "portfolio_drawdown_pressure_norm": 0.95},
+          "diagnostic_forward_return_bps": 18.0,
+          "diagnostic_round_trip_cost_bps": 4.0,
+          "expected_action": "SELL",
+          "expected_min_size_multiplier_norm": 1.0,
+          "expected_max_size_multiplier_norm": 1.0
+        },
+        {
+          "case_id": "hold_preserved",
+          "requested_action": "HOLD",
+          "feature_overrides": {},
+          "diagnostic_forward_return_bps": 20.0,
+          "diagnostic_round_trip_cost_bps": 4.0,
+          "expected_action": "HOLD",
+          "expected_min_size_multiplier_norm": 1.0,
+          "expected_max_size_multiplier_norm": 1.0
+        }
+      ]
+    }
+  ]
+}

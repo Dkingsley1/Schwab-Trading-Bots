@@ -395,8 +395,8 @@ def _train_synthetic():
     )
 
 
-def train_brain():
-    return train_runtime_indicator_bot(
+def runtime_training_options():
+    return dict(
         run_tag="brain_refinery_v35_dmi_state_machine",
         feature_names=[
             "pct_from_close",
@@ -458,6 +458,10 @@ def train_brain():
         min_precision_balance_score=0.30,
         max_acted_coverage=0.30,
     )
+
+
+def train_brain():
+    return train_runtime_indicator_bot(**runtime_training_options())
 
 
 if __name__ == "__main__":

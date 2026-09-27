@@ -28,6 +28,10 @@ SQL_WRITER_PLIST = Path.home() / "Library" / "LaunchAgents" / "com.dankingsley.o
 TEXT_MERGE_SUFFIXES = {".jsonl", ".log", ".txt"}
 
 
+class UnverifiedStorageCollision(RuntimeError):
+    """Both versions must remain until a separate custody review resolves them."""
+
+
 def _env_flag(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -165,15 +169,16 @@ def _merge_path(src: Path, dest: Path, target_root: Path, actions: list[dict[str
     except Exception:
         same_size = False
     if same_size:
-        src.unlink()
-        actions.append({"action": "remove_duplicate", "source": str(src), "target": str(dest)})
+        # Size equality is not content or custody proof. Preserve the collision
+        # for the verified-retirement owner instead of deleting either version.
+        raise UnverifiedStorageCollision(f"unverified_storage_collision:{src}:{dest}")
     elif src.suffix in TEXT_MERGE_SUFFIXES and dest.suffix in TEXT_MERGE_SUFFIXES:
         _append_then_unlink(src, dest, actions)
     else:
         _move_conflict(src, target_root, actions)
 
 
-def _repair_stateful_path(
+def _repair_stateful_path_unchecked(
     *,
     name: str,
     local: Path,
@@ -266,6 +271,23 @@ def _repair_stateful_path(
         "status": status,
         "actions": actions,
     }
+
+
+def _repair_stateful_path(**kwargs: Any) -> dict[str, Any]:
+    try:
+        return _repair_stateful_path_unchecked(**kwargs)
+    except UnverifiedStorageCollision as exc:
+        return {
+            "name": kwargs["name"],
+            "status": "blocked",
+            "reason": "unverified_storage_collision",
+            "error": str(exc),
+            "local_path": str(kwargs["local"]),
+            "target_path": str(kwargs["target"]),
+            "local_bytes": _path_size_bytes(kwargs["local"]),
+            "actions": [],
+            "earlier_actions_not_certified": True,
+        }
 
 
 def _repair_stateful_file(
@@ -423,6 +445,19 @@ def build_payload(
     apply: bool = False,
 ) -> dict[str, Any]:
     project_root = project_root.resolve()
+    from core import sqlite_primary_storage as primary
+    if primary.enabled(project_root):
+        observation = primary.observe(project_root)
+        return {
+            "timestamp_utc": iso_now(), "schema_version": 1,
+            "ok": observation["ok"],
+            "overall_status": "ready" if observation["ok"] else "blocked",
+            "apply": bool(apply), "stateful_target_mode": observation["mode"],
+            "route_verification": observation, "route_mutation_performed": False,
+            "checks": [], "metrics": {"local_stateful_bytes": 0,
+                "blocked_check_count": int(not observation["ok"]), "degraded_check_count": 0},
+            "policy": "sqlite_primary_observation_only_no_legacy_merge_relink_or_prune",
+        }
     external = _external_project_root(project_root, external_root)
     target_root, target_mode = _stateful_target_project_root(project_root, external)
     max_sql_bytes = _safe_int(os.getenv("STATEFUL_STORAGE_SQL_LOCAL_MAX_BYTES"), 64 * 1024 * 1024)

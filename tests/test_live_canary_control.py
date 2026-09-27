@@ -1,5 +1,7 @@
 import json
 import sys
+import pytest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -10,12 +12,111 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import live_canary_control as src
 
 
+@pytest.mark.parametrize("mode,ok,ready", [
+    ("sqlite_primary", True, True),
+    ("sqlite_primary_unavailable", False, False),
+    ("sqlite_primary_pending", False, False),
+    ("unexpected", True, False),
+])
+def test_selected_sqlite_profile_uses_current_native_probe_without_order_authority(
+    tmp_path, monkeypatch, mode, ok, ready
+):
+    health = tmp_path / "governance/health"
+    _write_json(health / "storage_route_status_latest.json", {"ok": True, "mode": "external"})
+    calls = []
+    monkeypatch.setattr(src.sqlite_primary_storage, "enabled", lambda root: True)
+
+    def observe(root):
+        calls.append(root)
+        return {"ok": ok, "mode": mode, "integrity_verified": False,
+                "route_mutation_performed": False}
+
+    monkeypatch.setattr(src.sqlite_primary_storage, "observe", observe)
+    payload = src.build_payload(tmp_path)
+    assert calls == [tmp_path]
+    assert payload["storage_external_ready"] is ready
+    assert payload["storage_mode"] == mode
+    assert payload["storage_route_probe"]["integrity_verified"] is False
+    assert payload["supervised_canary_ready"] is False
+    assert "broker_not_ready" in payload["blocking_reasons"]
+    assert "canary_allowlist_not_ready" in payload["blocking_reasons"]
+    if ready:
+        assert "storage_not_external" not in payload["blocking_reasons"]
+        assert "storage_not_ready" not in payload["blocking_reasons"]
+
+
+@pytest.mark.parametrize("cached", [{}, {"ok": True, "mode": "sqlite_primary"}])
+def test_unselected_or_missing_storage_cannot_claim_external_readiness(tmp_path, monkeypatch, cached):
+    _write_json(tmp_path / "governance/health/storage_route_status_latest.json", cached)
+    monkeypatch.setattr(src.sqlite_primary_storage, "enabled", lambda root: False)
+    payload = src.build_payload(tmp_path)
+    assert payload["storage_external_ready"] is False
+    assert payload["supervised_canary_ready"] is False
+
+
+def test_invalid_selected_storage_configuration_blocks_without_cached_fallback(tmp_path, monkeypatch):
+    _write_json(tmp_path / "governance/health/storage_route_status_latest.json",
+                {"ok": True, "mode": "external"})
+
+    def invalid(root):
+        raise ValueError("invalid_profile")
+
+    monkeypatch.setattr(src.sqlite_primary_storage, "enabled", invalid)
+    payload = src.build_payload(tmp_path)
+    assert payload["storage_external_ready"] is False
+    assert payload["storage_ok"] is False
+    assert "storage_not_ready" in payload["blocking_reasons"]
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def _write_valid_canary_allowlist(project_root: Path) -> None:
+    candidate_id = "pc-test-candidate"
+    now = datetime.now(timezone.utc)
+    _write_json(
+        project_root / "config" / "production_readiness_control_v1.json",
+        {
+            "live_execution_risk_firewall": {
+                "canary_allowlist_path": "governance/runtime/live_canary_allowlist.json",
+                "canary_plan_path": "config/live_canary_micro_policy_v1.json",
+                "production_candidate_state_path": "governance/runtime/production_candidate_state.json",
+                "symbol_lifecycle_path": "config/symbol_lifecycle_v1.json",
+            }
+        },
+    )
+    _write_json(
+        project_root / "config" / "live_canary_micro_policy_v1.json",
+        {
+            "status": "advisory_only",
+            "hard_limits": {"max_order_notional_usd": 100, "max_order_quantity": 1},
+            "stages": [{"stage": 1, "symbols": ["SCHD"]}],
+            "activation_contract": {"max_allowlist_duration_hours": 4},
+        },
+    )
+    _write_json(project_root / "config" / "symbol_lifecycle_v1.json", {"renamed_symbols": {"SPLG": "SPYM"}})
+    _write_json(
+        project_root / "governance" / "runtime" / "production_candidate_state.json",
+        {"candidate_id": candidate_id, "accepted_at_utc": (now - timedelta(minutes=2)).isoformat()},
+    )
+    _write_json(
+        project_root / "governance" / "runtime" / "live_canary_allowlist.json",
+        {
+            "schema_version": 1,
+            "enabled": True,
+            "candidate_id": candidate_id,
+            "stage": 1,
+            "symbols": ["SCHD"],
+            "issued_at_utc": (now - timedelta(minutes=1)).isoformat(),
+            "expires_at_utc": (now + timedelta(hours=1)).isoformat(),
+        },
+    )
+
+
 def test_live_canary_control_reports_ready_when_supervised_canary_is_fully_clear(tmp_path: Path) -> None:
+    _write_valid_canary_allowlist(tmp_path)
     health = tmp_path / "governance" / "health"
     champion = tmp_path / "governance" / "champion_challenger"
     _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True})
@@ -79,6 +180,7 @@ def test_live_canary_control_blocks_when_faithful_live_money_contract_is_not_rea
 
 
 def test_live_canary_control_surfaces_packet_preclearance_when_only_seeded_committee_packet_exists(tmp_path: Path) -> None:
+    _write_valid_canary_allowlist(tmp_path)
     health = tmp_path / "governance" / "health"
     champion = tmp_path / "governance" / "champion_challenger"
     _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True})
@@ -121,6 +223,7 @@ def test_live_canary_control_surfaces_packet_preclearance_when_only_seeded_commi
 
 
 def test_live_canary_control_treats_managed_coverage_stage_as_recoverable(tmp_path: Path) -> None:
+    _write_valid_canary_allowlist(tmp_path)
     health = tmp_path / "governance" / "health"
     champion = tmp_path / "governance" / "champion_challenger"
     _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True})
@@ -158,6 +261,7 @@ def test_live_canary_control_treats_managed_coverage_stage_as_recoverable(tmp_pa
 
 
 def test_live_canary_control_preapproves_seeded_packet_when_runtime_is_already_clear(tmp_path: Path) -> None:
+    _write_valid_canary_allowlist(tmp_path)
     health = tmp_path / "governance" / "health"
     champion = tmp_path / "governance" / "champion_challenger"
     _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True})
@@ -216,6 +320,7 @@ def test_live_canary_control_blocks_when_core_prerequisites_are_missing(tmp_path
 
 
 def test_live_canary_control_marks_coverage_cycles_ready_as_runnable_release_window(tmp_path: Path) -> None:
+    _write_valid_canary_allowlist(tmp_path)
     health = tmp_path / "governance" / "health"
     champion = tmp_path / "governance" / "champion_challenger"
     _write_json(health / "broker_readiness_latest.json", {"ready_for_open": True})

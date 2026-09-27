@@ -187,6 +187,16 @@ class DecisionLogger:
         if iter_id:
             md["iter_id"] = iter_id
 
+        # Only a bounded local pointer read; charts and API fetches are report work.
+        if "candle_context" not in md and "schd_candle_context" not in md:
+            from core.decision_candle_store import context_receipt
+
+            md["candle_context"] = context_receipt(
+                self.project_root, symbol,
+                provider=md.get("market_data_provider"),
+                now=datetime.fromisoformat(ts),
+            )
+
         logged_features, feature_contract = compact_decision_features(
             features,
             metadata=md,

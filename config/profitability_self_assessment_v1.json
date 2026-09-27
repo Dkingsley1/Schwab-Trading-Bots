@@ -1,0 +1,168 @@
+{
+  "schema_version": 3,
+  "policy_id": "candidate_bound_profitability_self_assessment_v3",
+  "source_freshness_hours": {
+    "production_candidate": 720,
+    "paper_performance": 2,
+    "paper_execution_calibration": 2,
+    "calibration_control": 4,
+    "calibration_overrides": 168,
+    "profitability_firewall": 4,
+    "paper_profitability": 2,
+    "counterfactual_replay": 24,
+    "sleeve_dashboard": 4,
+    "live_money_readiness": 4,
+    "risk_service": 4,
+    "decision_policy": 8760,
+    "profitability_policy": 8760,
+    "broker_capabilities": 8760,
+    "collector_capabilities": 0.5
+  },
+  "confidence_and_abstention": {
+    "direct_loosen_allowed": false,
+    "maximum_threshold_uplift": 0.25,
+    "minimum_target_acceptance_rate": 0.05,
+    "maximum_target_acceptance_rate": 0.18,
+    "candidate_change_invalidates_overrides": true
+  },
+  "sleeve_and_regime_thresholds": {
+    "require_sleeve_policy_family": true,
+    "require_regime_stage": true,
+    "require_counterfactual_replay_before_loosen": true,
+    "require_positive_post_cost_expectancy_before_loosen": true
+  },
+  "income_sleeves": {
+    "families": ["bond", "dividend"],
+    "paper_confidence_threshold_uplift": 0.08,
+    "paper_abstention_budget": 0.88,
+    "live_application_allowed": false
+  },
+  "tradeability_and_conflict": {
+    "required_stages": ["06_execution_feasibility", "07_portfolio_fit"],
+    "require_tradeability_floor": true,
+    "require_conflict_limit": true,
+    "unknown_evidence_fails_closed": true
+  },
+  "exit_learning": {
+    "required_labels": [
+      "mae_bucket",
+      "mfe_bucket",
+      "exit_timing_bucket",
+      "post_entry_regime_bucket"
+    ],
+    "require_harvest_regret_control": true,
+    "exit_paths_must_remain_open": true
+  },
+  "execution_realism": {
+    "minimum_independent_fills_per_market_type": 30,
+    "required_broker": "schwab",
+    "require_candidate_binding": true,
+    "model_defaults_count_as_evidence": false,
+    "market_orders_start_at_observed_touch": true,
+    "derived_touch_is_diagnostic_only_when_two_sided_quote_missing": true,
+    "crossed_or_locked_quotes_reject": true,
+    "quote_age_must_be_preserved": true,
+    "quoted_spread_and_beyond_touch_costs_report_separately": true,
+    "financing_and_dividend_carry_must_be_explicit": true
+  },
+  "sizing": {
+    "paper_entry_cap_norm": 0.25,
+    "maximum_evidence_validated_scale_norm": 1.1,
+    "scale_before_evidence_allowed": false,
+    "loss_recovery_size_increase_allowed": false
+  },
+  "portfolio_allocation": {
+    "minimum_independently_profitable_sleeves": 4,
+    "maximum_single_sleeve_weight": 0.25,
+    "automatic_allocation_allowed": false,
+    "cash_weight_until_qualified": 1.0
+  },
+  "promotion_cohort": {
+    "enabled": true,
+    "cohort_id": "dividend_liquid_etf_candidate_v1",
+    "profile": "dividend",
+    "sleeve_id": "dividend_income",
+    "asset_class": "equity_etf",
+    "direction_policy": "long_only",
+    "active_stage": 1,
+    "maximum_active_stages": 1,
+    "maximum_active_strategies": 1,
+    "maximum_symbols_per_stage": 1,
+    "stage_advancement": "manual_after_all_candidate_bound_evidence_gates_pass",
+    "broad_fleet_mode": "collect_only_or_diagnostic_paper_non_promotion",
+    "non_cohort_candidate_rows": "candidate_research_forward_flow_only",
+    "historical_book_policy": "preserve_and_manage_but_never_recover_or_grade_the_current_candidate_against_it",
+    "stages": [
+      {
+        "stage": 1,
+        "symbol": "SCHD",
+        "strategy_id": "sleeve::dividend_income::portfolio_consensus::v1"
+      },
+      {
+        "stage": 2,
+        "symbol": "SPYD",
+        "strategy_id": "sleeve::dividend_income::dividend_growth::v1"
+      },
+      {
+        "stage": 3,
+        "symbol": "SPYM",
+        "strategy_id": "sleeve::dividend_income::yield_trap_avoidance::v1"
+      }
+    ],
+    "live_execution_allowed": false,
+    "automatic_stage_advancement_allowed": false
+  },
+  "validation_protocol": {
+    "out_of_sample_required": true,
+    "chronological_only": true,
+    "purged_walk_forward": {
+      "enabled": true,
+      "fold_count": 5,
+      "purge_periods": 1,
+      "embargo_periods": 1,
+      "minimum_train_periods": 12,
+      "minimum_test_periods": 3,
+      "minimum_total_periods": 30,
+      "minimum_completed_folds": 3,
+      "minimum_positive_fold_rate": 0.6,
+      "require_positive_oos_mean": true
+    },
+    "multiple_testing_correction_required": true,
+    "complete_experiment_lineage_required": true,
+    "holdout_vault_required": true,
+    "training_on_final_holdout_allowed": false
+  },
+  "authority": {
+    "paper_only": true,
+    "live_execution_allowed": false,
+    "grant_promotion": false,
+    "guarantee_profitability": false,
+    "force_trades": false
+  },
+  "soak_contract": {
+    "cumulative_history_preserved": true,
+    "full_clock_reset_requested": false,
+    "candidate_semantic_changes_require_new_clean_segment": true,
+    "historical_pnl_is_not_current_candidate_evidence": true,
+    "developmental_change_learning_enabled": true,
+    "candidate_event_log_path": "governance/evidence/production_candidate_events.jsonl",
+    "accepted_generations_are_developmental_evidence": true,
+    "identity_and_time_binding_required": true,
+    "mixed_generation_or_unbound_history_is_diagnostic_only": true,
+    "minimum_developmental_post_cost_samples": 30,
+    "minimum_developmental_observed_days": 2,
+    "clean_720_hour_live_promotion_gate_unchanged": true,
+    "bounded_paper_actions": [
+      "collect_current_candidate_post_cost_outcomes",
+      "refresh_candidate_counterfactual_replay",
+      "acquire_candidate_independent_fills",
+      "maintain_candidate_bound_weak_sleeve_containment",
+      "prioritize_loss_and_missed_opportunity_labels"
+    ],
+    "force_trades": false,
+    "loss_recovery_size_increase_allowed": false,
+    "direct_threshold_loosen_allowed": false,
+    "live_execution_allowed": false,
+    "grant_promotion": false
+  }
+}

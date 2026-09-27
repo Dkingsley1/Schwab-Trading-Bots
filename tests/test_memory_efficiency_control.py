@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -11,12 +12,139 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import memory_efficiency_control as src
 
 
+def _blocked_apply_fixture(tmp_path, monkeypatch, *, evidence_ready=True):
+    calls = []
+    override = tmp_path / "override.env"
+    out = tmp_path / "health.json"
+
+    def build(*args, **kwargs):
+        calls.append(kwargs)
+        assert (
+            len(calls) == 1
+        ), "must not replace the applied decision with a new sample"
+        return {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "input_evidence_ready": evidence_ready,
+            "ok": False,
+            "overall_status": "blocked",
+            "action": "apply",
+            "recommended_profile": "constrained",
+            "recommended_env_overrides": {"ASYNC_PIPELINE_WORKERS": "1"},
+            "changed": False,
+        }
+
+    monkeypatch.setattr(src, "build_payload", build)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "memory_efficiency_control.py",
+            "apply",
+            "--override-file",
+            str(override),
+            "--out-file",
+            str(out),
+            "--json",
+        ],
+    )
+    return override, out
+
+
+def test_blocked_memory_decision_publishes_verified_apply_receipt(
+    tmp_path, monkeypatch
+):
+    import hashlib
+
+    override, out = _blocked_apply_fixture(tmp_path, monkeypatch)
+    assert src.main() == 2  # Workload admission stays blocked.
+    payload = json.loads(out.read_text())
+    assert not payload["ok"]
+    assert payload["overall_status"] == "blocked"
+    assert payload["apply_result"]["applied"]
+    assert payload["apply_result"]["override_verified"]
+    assert (
+        payload["apply_result"]["override_sha256"]
+        == hashlib.sha256(override.read_bytes()).hexdigest()
+    )
+    assert payload["recommended_profile"] == payload["apply_result"]["profile"]
+
+
+def test_unchanged_memory_override_is_still_a_successful_application(
+    tmp_path, monkeypatch
+):
+    override, out = _blocked_apply_fixture(tmp_path, monkeypatch)
+    src._write_override(override, "constrained", {"ASYNC_PIPELINE_WORKERS": "1"})
+    assert src.main() == 2
+    payload = json.loads(out.read_text())
+    assert not payload["changed"]
+    assert payload["apply_result"]["applied"]
+
+
+def test_memory_apply_cannot_claim_success_without_fresh_input(tmp_path, monkeypatch):
+    override, out = _blocked_apply_fixture(tmp_path, monkeypatch, evidence_ready=False)
+    assert src.main() == 2
+    assert not override.exists()
+    payload = json.loads(out.read_text())
+    assert not payload["apply_result"]["applied"]
+    assert payload["apply_deferred_reason"] == "resource_observation_unavailable"
+
+
+def test_memory_apply_write_failure_publishes_failure_receipt(tmp_path, monkeypatch):
+    _, out = _blocked_apply_fixture(tmp_path, monkeypatch)
+
+    def fail(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(src, "_write_override", fail)
+    assert src.main() == 2
+    payload = json.loads(out.read_text())
+    assert payload["overall_status"] == "apply_failed"
+    assert not payload["apply_result"]["applied"]
+
+
+def test_memory_apply_verifies_override_instead_of_trusting_write_return(
+    tmp_path, monkeypatch
+):
+    override, out = _blocked_apply_fixture(tmp_path, monkeypatch)
+    override.write_text("unexpected concurrent profile")
+    monkeypatch.setattr(src, "_write_override", lambda *args: True)
+    assert src.main() == 2
+    payload = json.loads(out.read_text())
+    assert payload["overall_status"] == "apply_failed"
+    assert not payload["apply_result"]["override_verified"]
+    assert override.read_text() == "unexpected concurrent profile"
+
+
 def _write_json(path: Path, payload: dict) -> None:
+    payload = {"timestamp_utc": datetime.now(timezone.utc).isoformat(), **payload}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
-def test_memory_efficiency_treats_startup_disk_exhaustion_as_application_memory_risk(tmp_path: Path) -> None:
+def test_storage_recovery_observation_retains_raw_source_metrics(tmp_path):
+    observed = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "input_evidence_ready": True,
+        "memory_pressure_state": "yellow",
+        "memory_pressure_kind": "disk_swap_headroom",
+        "memory_pressure_reasons": ["local_disk_swap_headroom_gb:17<32"],
+        "memory_free_pct": 91.0,
+        "swap_used_gb": 6.9,
+        "compressor_gb": None,
+        "pages_throttled": 0,
+    }
+    _write_json(tmp_path / "governance/health/resource_guard_latest.json", observed)
+    payload = src.build_payload(
+        tmp_path, action="status", override_path=tmp_path / "override.env"
+    )
+    assert payload["storage_recovery_memory_observation"] == observed
+    assert payload["storage_recovery_memory_observation"]["compressor_gb"] is None
+    assert payload["memory_snapshot"]["memory_pressure_state"] == "yellow"
+
+
+def test_memory_efficiency_treats_startup_disk_exhaustion_as_application_memory_risk(
+    tmp_path: Path,
+) -> None:
     _write_json(
         tmp_path / "governance" / "health" / "resource_guard_latest.json",
         {

@@ -36,7 +36,25 @@ finish_slot() {
 }
 trap finish_slot EXIT INT TERM
 
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/data_retention_policy.py" --apply --skip-sqlite-vacuum --json
+# Share the same bounded owner and storage lock as pressure recovery.
+for cleanup_scope in local external; do
+  cleanup_root_args=()
+  if [[ "$cleanup_scope" == "local" ]]; then
+    cleanup_root_args=(--bot-logs-root "$PROJECT_ROOT/local_fallback_storage")
+  fi
+  if ! "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/bot_logs_cleanup_intelligence.py" \
+      "${cleanup_root_args[@]}" --apply --max-tier 1 --target-free-gb 125 \
+      --max-delete-gb 0.5 --max-files 4 --seconds 45 --max-verify-gb 1 \
+      --out-file "$PROJECT_ROOT/governance/health/verified_duplicate_cleanup_${cleanup_scope}_latest.json" \
+      --json; then
+    echo "data_retention verified_duplicate_cleanup=$cleanup_scope deferred_or_incomplete=1"
+  fi
+done
+
+# Independent owners must still get their slot after a partial retention failure.
+if ! "$PYTHON_BIN" "$PROJECT_ROOT/scripts/data_retention_policy.py" --apply --skip-sqlite-vacuum --json; then
+  echo "data_retention policy=degraded detail=see_retention_receipt continuing_independent_owners=1"
+fi
 
 if [[ "${RETENTION_INCLUDE_EXTERNAL_STALE_ROOT:-1}" != "0" ]]; then
   stale_reaper_cmd=(

@@ -36,7 +36,6 @@ SUPPORT_RENICE_PATTERNS: tuple[str, ...] = (
     "scripts/ops/creative_cotenant_guard.py",
     "scripts/ops/data_source_divergence_bot.py",
     "scripts/ops/ingestion_storage_governor.py",
-    "scripts/ops/process_watchdog.py",
     "scripts/ops/report_quality_guard.py",
     "scripts/ops/runtime_gate_dashboard.py",
     "scripts/ops/storage_quota_guard.py",

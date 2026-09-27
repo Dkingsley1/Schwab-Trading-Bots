@@ -1178,3 +1178,66 @@ def test_paper_storage_gate_keeps_hard_pressure_envelope_blocking() -> None:
     assert gate["ok"] is False
     assert gate["status"] == "blocked"
     assert gate["bounded_raw_live_relief"]["active"] is False
+
+
+def test_paper_storage_and_memory_gates_accept_managed_support_pressure_contract() -> None:
+    storage = {
+        "overall_status": "ready",
+        "severity": "stable",
+        "pressure_index": 0.034,
+        "backpressure": {
+            "core_pending_lines": 509,
+            "deferred_pending_lines": 425392,
+            "support_pending_lines": 424465,
+            "total_pending_lines": 425901,
+            "pending_lines_threshold": 15000,
+            "effective_pressure_clear": True,
+            "managed_support_pressure_clear": True,
+            "effective_raw_live_source": "raw_live_backpressure+managed_support_overlay_pressure",
+            "effective_raw_live": {
+                "core_pending_lines": 509,
+                "deferred_pending_lines": 927,
+                "support_pending_lines": 5000,
+                "total_pending_lines": 6436,
+                "oldest_pending_age_seconds": 0.0,
+            },
+            "raw_live": {
+                "core_pending_lines": 509,
+                "support_pending_lines": 424465,
+                "total_pending_lines": 425901,
+                "oldest_pending_age_seconds": 0.0,
+            },
+        },
+        "storage": {"backlog_drain_status": "drain_active"},
+        "external_route_verification": {"verification_state": "ready"},
+        "data_integrity": {
+            "sql_invalid_lines": 0,
+            "sql_overlay_invalid_lines": 0,
+            "sql_overlay_oversize_payloads": 0,
+            "sql_overlay_ops_write_failures": 0,
+        },
+        "writer_shedding": {
+            "hard_breaches": ["deferred", "support_telemetry"],
+            "elevated_breaches": ["deferred", "support_telemetry"],
+        },
+    }
+    memory = {
+        "overall_status": "blocked",
+        "reasons": ["storage_pressure_critical"],
+        "memory_snapshot": {
+            "memory_free_pct": 95.0,
+            "swap_used_gb": 0.0,
+            "compressed_store_gb": 0.0,
+            "compressor_gb": 0.0,
+        },
+    }
+
+    storage_gate = src._storage_gate(storage)
+    memory_gate = src._memory_gate(memory, storage)
+
+    assert storage_gate["ok"] is True
+    assert storage_gate["effective_pressure_contract"] is True
+    assert storage_gate["total_pending_lines"] == 6436
+    assert storage_gate["raw_total_pending_lines"] == 425901
+    assert memory_gate["ok"] is True
+    assert memory_gate["managed_storage_block"] is True

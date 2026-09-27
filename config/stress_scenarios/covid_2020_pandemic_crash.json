@@ -7,11 +7,31 @@
     "march_2020_liquidity_shock"
   ],
   "source": {
-    "publisher": "Public historical macro and market data composite",
+    "publisher": "Board of Governors of the Federal Reserve System and Federal Reserve Economic Data",
     "title": "COVID-19 Pandemic Crash Replay Anchors",
-    "url": "https://fred.stlouisfed.org/",
-    "retrieved_date": "2026-05-02",
-    "source_type": "public_historical_replay_composite"
+    "url": "https://www.federalreserve.gov/publications/2020-financial-stability.htm",
+    "retrieved_date": "2026-08-25",
+    "source_type": "official_historical_replay_composite",
+    "references": [
+      {
+        "publisher": "Board of Governors of the Federal Reserve System",
+        "title": "Financial Stability Report - May 2020",
+        "url": "https://www.federalreserve.gov/publications/files/financial-stability-report-20200515.pdf",
+        "official_authoritative_source": true
+      },
+      {
+        "publisher": "Board of Governors of the Federal Reserve System",
+        "title": "A Retrospective on the March 2020 Turmoil in Treasury and Mortgage-Backed Securities Markets",
+        "url": "https://www.federalreserve.gov/publications/2020-november-financial-stability-report-borrowing.htm",
+        "official_authoritative_source": true
+      },
+      {
+        "publisher": "Federal Reserve Bank of St. Louis",
+        "title": "Federal Reserve Economic Data",
+        "url": "https://fred.stlouisfed.org/",
+        "official_authoritative_source": true
+      }
+    ]
   },
   "scope": {
     "scenario_type": "historical_pandemic_liquidity_and_policy_shock",
@@ -123,11 +143,125 @@
     "governance/quant_models/macro_crisis_scenario_lab",
     "exports/quant_models/macro_crisis_scenario_lab"
   ],
+  "profitability_drill": {
+    "schema_version": 1,
+    "parameter_notice": "Values below are deterministic stress-test inputs calibrated to event severity; they are not historical tick reconstruction.",
+    "profile": "pandemic_liquidity_defensive",
+    "symbol": "SPY",
+    "recovery_phase": "early_reopen_recovery",
+    "phases": [
+      {
+        "phase": "pre_shock_peak",
+        "severity_norm": 0.20,
+        "diagnostic_forward_return_bps": -45.0,
+        "spread_bps": 6.0,
+        "volatility_1m": 0.005,
+        "latency_ms": 130.0,
+        "same_side_depth": 600.0,
+        "order_size": 10.0,
+        "quote_age_ms": 180.0,
+        "tradeability_norm": 0.82,
+        "execution_fitness_norm": 0.80,
+        "liquidity_quality_norm": 0.82,
+        "session_quality_norm": 0.84,
+        "source_quality_norm": 0.98,
+        "cross_asset_confirmation_norm": 0.40,
+        "portfolio_overlap_pressure_norm": 0.20,
+        "cross_bot_conflict_norm": 0.18,
+        "predicted_edge_lcb_bps": 28.0,
+        "expected_new_long_entry": "blocked"
+      },
+      {
+        "phase": "liquidity_break",
+        "severity_norm": 0.90,
+        "diagnostic_forward_return_bps": -680.0,
+        "spread_bps": 88.0,
+        "volatility_1m": 0.05,
+        "latency_ms": 1200.0,
+        "same_side_depth": 5.0,
+        "order_size": 10.0,
+        "quote_age_ms": 4800.0,
+        "tradeability_norm": 0.10,
+        "execution_fitness_norm": 0.08,
+        "liquidity_quality_norm": 0.08,
+        "session_quality_norm": 0.16,
+        "source_quality_norm": 0.98,
+        "cross_asset_confirmation_norm": 0.10,
+        "portfolio_overlap_pressure_norm": 0.86,
+        "cross_bot_conflict_norm": 0.82,
+        "predicted_edge_lcb_bps": 140.0,
+        "expected_new_long_entry": "blocked"
+      },
+      {
+        "phase": "policy_backstop_and_trough",
+        "severity_norm": 1.0,
+        "diagnostic_forward_return_bps": -420.0,
+        "spread_bps": 70.0,
+        "volatility_1m": 0.042,
+        "latency_ms": 900.0,
+        "same_side_depth": 8.0,
+        "order_size": 10.0,
+        "quote_age_ms": 3000.0,
+        "tradeability_norm": 0.16,
+        "execution_fitness_norm": 0.14,
+        "liquidity_quality_norm": 0.12,
+        "session_quality_norm": 0.24,
+        "source_quality_norm": 0.98,
+        "cross_asset_confirmation_norm": 0.18,
+        "portfolio_overlap_pressure_norm": 0.78,
+        "cross_bot_conflict_norm": 0.70,
+        "predicted_edge_lcb_bps": 120.0,
+        "expected_new_long_entry": "blocked"
+      },
+      {
+        "phase": "commodity_aftershock",
+        "severity_norm": 0.74,
+        "diagnostic_forward_return_bps": -190.0,
+        "spread_bps": 34.0,
+        "volatility_1m": 0.022,
+        "latency_ms": 480.0,
+        "same_side_depth": 24.0,
+        "order_size": 10.0,
+        "quote_age_ms": 1200.0,
+        "tradeability_norm": 0.40,
+        "execution_fitness_norm": 0.38,
+        "liquidity_quality_norm": 0.36,
+        "session_quality_norm": 0.48,
+        "source_quality_norm": 0.98,
+        "cross_asset_confirmation_norm": 0.30,
+        "portfolio_overlap_pressure_norm": 0.56,
+        "cross_bot_conflict_norm": 0.48,
+        "predicted_edge_lcb_bps": 75.0,
+        "expected_new_long_entry": "blocked"
+      },
+      {
+        "phase": "early_reopen_recovery",
+        "severity_norm": 0.32,
+        "diagnostic_forward_return_bps": 520.0,
+        "spread_bps": 7.0,
+        "volatility_1m": 0.007,
+        "latency_ms": 120.0,
+        "same_side_depth": 550.0,
+        "order_size": 10.0,
+        "quote_age_ms": 180.0,
+        "tradeability_norm": 0.86,
+        "execution_fitness_norm": 0.84,
+        "liquidity_quality_norm": 0.84,
+        "session_quality_norm": 0.86,
+        "source_quality_norm": 0.98,
+        "cross_asset_confirmation_norm": 0.82,
+        "portfolio_overlap_pressure_norm": 0.16,
+        "cross_bot_conflict_norm": 0.12,
+        "predicted_edge_lcb_bps": 170.0,
+        "expected_new_long_entry": "allowed"
+      }
+    ]
+  },
   "replay_contract": {
     "time_grain": "phase_window",
     "alignment_key": "start_date/end_date",
     "join_policy": "historical_replay_phase_template",
     "label_policy": "research_only_no_execution",
-    "minimum_required_sections": ["key_stress_anchors", "event_timeline", "replay_path", "market_proxy_symbols"]
+    "minimum_required_sections": ["key_stress_anchors", "event_timeline", "replay_path", "market_proxy_symbols", "profitability_drill"]
   }
 }

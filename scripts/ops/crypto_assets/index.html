@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Crypto | Schwab Trading Platform</title><link rel="stylesheet" href="/crypto/style.css"><script defer src="/crypto/app.js"></script></head>
+<body>
+  <header class="topbar"><a href="/" class="back"><svg class="icon"><use href="/crypto/icons.svg#arrow"/></svg>Live feed</a><span>Schwab Trading Platform</span><span class="local">Local workspace</span></header>
+  <main>
+    <div class="heading"><div><p class="eyebrow">COINBASE + SCHWAB DATA</p><h1>Crypto</h1></div><div class="head-actions"><span class="badge locked"><svg class="icon"><use href="/crypto/icons.svg#lock"/></svg>Live money locked</span><button class="icon-button" id="refresh" title="Reload local evidence" aria-label="Reload local evidence"><svg class="icon"><use href="/crypto/icons.svg#refresh"/></svg></button></div></div>
+    <p id="error" class="alert error" role="alert" hidden></p>
+    <form id="auth" hidden><label>Dashboard token<input type="password" id="token" autocomplete="off"></label><button>Connect</button></form>
+    <div class="summary" aria-label="Crypto status">
+      <div><span class="metric-label">ACCOUNT SNAPSHOT</span><strong id="account-state">Checking</strong><small id="account-time">Coinbase read-only</small></div>
+      <div><span class="metric-label">MARKET COLLECTION</span><strong id="collection-state">Checking</strong><small id="collection-time">Existing collector</small></div>
+      <div><span class="metric-label">FORWARD PAPER</span><strong class="amber">Held</strong><small>BTC cohorts not admitted</small></div>
+      <div><span class="metric-label">TRAINING DATA CHECKS</span><strong id="training-state">Checking</strong><small id="training-time">Latest crypto audit</small></div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Crypto views">
+      <button role="tab" id="tab-portfolio" aria-controls="portfolio" aria-selected="true" data-view="portfolio">Portfolio</button>
+      <button role="tab" id="tab-practice" aria-controls="practice" aria-selected="false" data-view="practice">Practice</button>
+      <button role="tab" id="tab-performance" aria-controls="performance" aria-selected="false" data-view="performance">Performance</button>
+      <button role="tab" id="tab-readiness" aria-controls="readiness" aria-selected="false" data-view="readiness">Readiness</button>
+    </nav>
+    <section id="portfolio" role="tabpanel" aria-labelledby="tab-portfolio">
+      <div class="section-title"><h2>Coinbase holdings</h2><label class="check"><input type="checkbox" id="btc-only">Bitcoin only</label></div>
+      <div class="btc-band"><div class="coin" aria-hidden="true">&#8383;</div><div><h3>Bitcoin <span>BTC</span></h3><div class="holding" id="btc-balance">Unavailable</div><small id="balance-time">Waiting for cached account snapshot</small></div><span class="badge neutral">Read-only holdings</span></div>
+      <p class="notice" id="portfolio-notice">No account refresh requested.</p>
+      <div class="table-wrap"><table><thead><tr><th>Asset</th><th class="number">Available</th><th class="number">On hold</th><th class="number">Total</th></tr></thead><tbody id="balances"></tbody></table></div>
+      <p class="footnote">USD valuation and deposit release times are not included in the account snapshot. No funds are assigned to research.</p>
+      <div class="section-title"><h2>Schwab market context</h2><span class="badge neutral" id="schwab-state">Checking</span></div>
+      <p class="notice" id="schwab-time">Waiting for collector evidence</p>
+      <div class="table-wrap"><table><thead><tr><th>Asset</th><th>Instrument</th><th>Type</th><th class="number">Mark USD</th><th class="number">Spread bps</th><th>Quote age</th><th>Quality</th></tr></thead><tbody id="schwab-quotes"></tbody></table></div>
+      <p class="footnote">Futures contract quotes and fund share prices. Spot Bitcoin practice remains on Coinbase. Schwab spot crypto feed: unverified.</p>
+    </section>
+    <section id="practice" role="tabpanel" aria-labelledby="tab-practice" hidden>
+      <div class="section-title"><h2>Bitcoin historical practice</h2><span class="badge neutral">Virtual balances only</span></div>
+      <div class="practice-grid">
+        <article class="strategy"><div class="strategy-top"><span class="strategy-number">01</span><span class="badge green">Historical replay</span></div><h3>Bitcoin Day</h3><p>5-minute bars / 24-hour data window</p><dl><div><dt>Entry</dt><dd>12-bar breakout + EMA 20/50 trend</dd></div><div><dt>Exit</dt><dd>Below EMA 20 or 6-hour hold limit</dd></div><div><dt>Evaluation</dt><dd>After 50 warmup bars</dd></div></dl><form class="replay-form" data-profile="day"><div class="inputs"><label>Virtual USD<input name="capital" type="number" value="1000" min="10" max="100000" step="0.01" required></label><label>Fee / side (bps)<input name="fee_bps" type="number" value="60" min="0" max="200" step="0.1" required></label><label>Spread (bps)<input name="spread_bps" type="number" value="10" min="1" max="100" step="0.1" required></label></div><button class="primary" type="submit"><svg class="icon"><use href="/crypto/icons.svg#play"/></svg>Run day replay</button><span class="run-status" aria-live="polite"></span></form></article>
+        <article class="strategy"><div class="strategy-top"><span class="strategy-number">02</span><span class="badge green">Historical replay</span></div><h3>Bitcoin Swing</h3><p>6-hour bars / 70-day data window</p><dl><div><dt>Entry</dt><dd>Close above EMA 20 above EMA 50</dd></div><div><dt>Exit</dt><dd>Below EMA 20 or 5-day hold limit</dd></div><div><dt>Evaluation</dt><dd>After 50 warmup bars</dd></div></dl><form class="replay-form" data-profile="swing"><div class="inputs"><label>Virtual USD<input name="capital" type="number" value="1000" min="10" max="100000" step="0.01" required></label><label>Fee / side (bps)<input name="fee_bps" type="number" value="60" min="0" max="200" step="0.1" required></label><label>Spread (bps)<input name="spread_bps" type="number" value="10" min="1" max="100" step="0.1" required></label></div><button class="primary" type="submit"><svg class="icon"><use href="/crypto/icons.svg#play"/></svg>Run swing replay</button><span class="run-status" aria-live="polite"></span></form></article>
+      </div>
+      <p class="notice">Untrained rule-based baselines. Closed-bar signals, next-open executions, long-only spot, no leverage. Full fills and execution friction are modeled, not measured.</p>
+      <p class="footnote">Fee inputs are assumptions, not your account fee tier. <a href="https://help.coinbase.com/en/coinbase/trading-and-funding/advanced-trade/advanced-trade-fees" target="_blank" rel="noreferrer">Coinbase fee details</a>. Historical results do not qualify a bot for training, soak acceptance, or live trading.</p>
+      <div class="forward"><h3>Forward paper trading <span class="badge amber-bg">Held</span></h3><ul id="practice-blockers"></ul></div>
+    </section>
+    <section id="performance" role="tabpanel" aria-labelledby="tab-performance" hidden>
+      <div class="section-title"><h2>Historical replay results</h2><div class="result-controls"><label class="sr-only" for="result-profile">Strategy results</label><select id="result-profile"><option value="day">Bitcoin Day</option><option value="swing">Bitcoin Swing</option></select><button id="download" class="icon-button" disabled title="Download research JSON" aria-label="Download research JSON"><svg class="icon"><use href="/crypto/icons.svg#download"/></svg></button></div></div>
+      <div id="no-results" class="empty"><h3>No replay for this strategy yet</h3><p>Forward-paper P&amp;L, drawdown, and win rate are unavailable.</p><button data-go="practice">Open practice</button></div>
+      <div id="results" hidden><p id="result-period" class="notice"></p><div id="result-metrics" class="summary result-metrics"></div><div class="chart-heading"><h3>Virtual equity</h3><div class="legend"><span class="strategy-key">Strategy</span><span class="benchmark-key">Buy &amp; hold, after costs</span></div></div><canvas id="equity-chart" aria-label="Virtual equity versus buy and hold" role="img"></canvas><p id="result-assumptions" class="footnote"></p><div class="section-title"><h3>Simulated entries &amp; exits</h3><span id="fill-count"></span></div><div class="table-wrap"><table><thead><tr><th>Time (UTC)</th><th>Side</th><th class="number">BTC</th><th class="number">Fill USD</th><th class="number">Fee USD</th><th>Reason</th></tr></thead><tbody id="fills"></tbody></table></div></div>
+    </section>
+    <section id="readiness" role="tabpanel" aria-labelledby="tab-readiness" hidden>
+      <div class="section-title"><h2>Readiness &amp; label coverage</h2><span class="badge locked">No execution authority</span></div>
+      <div class="gate-list" id="gates"></div>
+      <div class="section-title"><h3>Crypto training assessment</h3><small id="label-time"></small></div>
+      <p class="footnote">The assessment covers existing crypto strategies across their source data, not BTC-only day and swing models.</p>
+      <div class="table-wrap"><table><thead><tr><th>Strategy</th><th class="number">Observations</th><th>Data checks</th><th>Remaining blockers</th></tr></thead><tbody id="training-bots"></tbody></table></div>
+    </section>
+    <footer><span>BTC-USD / 24x7 market</span><span id="updated">Loading local evidence</span></footer>
+  </main>
+</body></html>

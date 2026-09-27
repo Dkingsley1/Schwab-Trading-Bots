@@ -23,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.collector_transport import attach_collection_confidence, fetch_json, fetch_text
 from core.coinbase_market_data import CoinbaseMarketDataClient, MarketDataAPIError
+from core.schwab_crypto_data import FEATURE_KEYS as SCHWAB_CONTEXT_FEATURE_KEYS, collect_context as collect_schwab_context
 from core.market_context_features import default_structured_news_features, summarize_structured_news_items
 
 
@@ -90,6 +91,7 @@ FEATURE_KEYS = [
     "crypto_defillama_stablecoin_growth_norm",
     "crypto_defillama_dex_volume_growth_norm",
     "crypto_etherscan_gas_norm",
+    *SCHWAB_CONTEXT_FEATURE_KEYS,
 ]
 
 _BASE_NEWS_FEATURE_KEYS = [
@@ -659,101 +661,6 @@ def _collect_okx_spot(
         "error": err,
         "optional": True,
     }
-
-
-def _parse_schwab_crypto_symbol_map(raw: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for part in str(raw or "").replace("\n", ",").split(","):
-        item = part.strip()
-        if not item:
-            continue
-        if ":" in item:
-            left, right = item.split(":", 1)
-        elif "=" in item:
-            left, right = item.split("=", 1)
-        else:
-            continue
-        coinbase_symbol = _normalize_symbol(left)
-        schwab_symbol = str(right or "").strip().upper()
-        if coinbase_symbol and schwab_symbol:
-            out[coinbase_symbol] = schwab_symbol
-    return out
-
-
-def _schwab_symbol_for_asset(asset: str, symbol_map: Mapping[str, str]) -> str:
-    coinbase_symbol = _coinbase_symbol_for_asset(asset)
-    mapped = str(symbol_map.get(coinbase_symbol) or "").strip().upper()
-    return mapped or coinbase_symbol
-
-
-def _candidate_quote_rows(payload: Any, *, source_symbol: str, coinbase_symbol: str) -> list[Mapping[str, Any]]:
-    if not isinstance(payload, Mapping):
-        if isinstance(payload, list):
-            return [row for row in payload if isinstance(row, Mapping)]
-        return []
-
-    rows: list[Mapping[str, Any]] = []
-    for key in (source_symbol, coinbase_symbol, source_symbol.replace("-", ""), coinbase_symbol.replace("-", "")):
-        value = payload.get(key)
-        if isinstance(value, Mapping):
-            rows.append(value)
-
-    for key in ("quotes", "data", "results", "items", "securities"):
-        value = payload.get(key)
-        if isinstance(value, Mapping):
-            for nested_key in (source_symbol, coinbase_symbol, source_symbol.replace("-", ""), coinbase_symbol.replace("-", "")):
-                nested = value.get(nested_key)
-                if isinstance(nested, Mapping):
-                    rows.append(nested)
-            rows.extend(row for row in value.values() if isinstance(row, Mapping))
-        elif isinstance(value, list):
-            rows.extend(row for row in value if isinstance(row, Mapping))
-
-    if not rows:
-        rows.append(payload)
-    return rows
-
-
-def _row_symbol_matches(row: Mapping[str, Any], *, source_symbol: str, coinbase_symbol: str) -> bool:
-    candidates = {
-        source_symbol.upper(),
-        coinbase_symbol.upper(),
-        source_symbol.replace("-", "").upper(),
-        coinbase_symbol.replace("-", "").upper(),
-    }
-    saw_symbol_field = False
-    for key in ("symbol", "product_id", "productId", "asset", "underlying", "securitySymbol"):
-        raw = row.get(key)
-        if raw is None:
-            continue
-        saw_symbol_field = True
-        token = str(raw).strip().upper()
-        normalized = _normalize_symbol(token)
-        if token in candidates or normalized in candidates or token.replace("/", "-") in candidates or token.replace("-", "") in candidates:
-            return True
-    return not saw_symbol_field
-
-
-def _extract_quote_price(row: Mapping[str, Any]) -> float:
-    for key in (
-        "markPrice",
-        "mark",
-        "lastPrice",
-        "last",
-        "price",
-        "regularMarketLastPrice",
-        "closePrice",
-        "close",
-    ):
-        value = _to_float(row.get(key), 0.0)
-        if value > 0.0:
-            return value
-
-    bid = _to_float(row.get("bidPrice", row.get("bid")), 0.0)
-    ask = _to_float(row.get("askPrice", row.get("ask")), 0.0)
-    if bid > 0.0 and ask > 0.0:
-        return (bid + ask) / 2.0
-    return max(bid, ask, 0.0)
 
 
 def _price_agreement_norm(prices: list[float], *, max_relative_spread: float) -> float:
@@ -1559,91 +1466,23 @@ def _collect_schwab_crypto_bridge(
     user_agent: str,
     timeout: float,
 ) -> tuple[dict[str, dict[str, float]], dict[str, float], dict[str, Any]]:
-    enabled = str(os.getenv("SCHWAB_CRYPTO_DATA_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    del user_agent
+    # The old speculative spot bridge is retired. This feed is typed context only.
+    enabled = str(os.getenv("SCHWAB_CRYPTO_CONTEXT_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
     if not enabled:
         return {}, {}, {
-            "ok": False,
-            "state": "disabled_until_official_schwab_crypto_data_is_available",
-            "optional": True,
-            "error": None,
-            "linked_provider": "coinbase",
+            "ok": False, "state": "disabled", "optional": True, "error": None,
+            "linked_provider": "coinbase", "data_role": "context_only",
+            "spot_feed_verified": False, "instruments": [],
+            "live_execution_allowed": False, "transfers_allowed": False,
         }
-
-    url_template = str(os.getenv("SCHWAB_CRYPTO_QUOTE_URL_TEMPLATE", "")).strip()
-    if not url_template:
-        return {}, {}, {
-            "ok": False,
-            "state": "enabled_but_not_configured",
-            "optional": True,
-            "error": "missing_SCHWAB_CRYPTO_QUOTE_URL_TEMPLATE",
-            "linked_provider": "coinbase",
-        }
-
-    symbol_map = _parse_schwab_crypto_symbol_map(os.getenv("SCHWAB_CRYPTO_SYMBOL_MAP", ""))
-    max_assets = max(int(os.getenv("SCHWAB_CRYPTO_QUOTE_MAX_ASSETS", "12")), 1)
-    requested_assets = [asset for asset in assets if asset][:max_assets]
-    source_symbols = [_schwab_symbol_for_asset(asset, symbol_map) for asset in requested_assets]
-    headers: dict[str, str] | None = None
-    token = str(os.getenv("SCHWAB_CRYPTO_BEARER_TOKEN", "")).strip()
-    if token:
-        headers = {"authorization": f"Bearer {token}"}
-
-    def _url_for(source_symbol: str, coinbase_symbol: str) -> str:
-        if "{symbols}" in url_template:
-            return url_template.format(symbols=",".join(source_symbols))
-        if "{symbol}" in url_template:
-            return url_template.format(symbol=source_symbol, coinbase_symbol=coinbase_symbol)
-        return url_template
-
-    symbol_features: dict[str, dict[str, float]] = {}
-    provider_prices: dict[str, float] = {}
-    errors: list[str] = []
-    fetched_urls: set[str] = set()
-    shared_payload: Any | None = None
-    shared_error: str | None = None
-    if "{symbols}" in url_template and requested_assets:
-        shared_url = _url_for(source_symbols[0], _coinbase_symbol_for_asset(requested_assets[0]))
-        fetched_urls.add(shared_url)
-        shared_payload, shared_error = _safe_http_json(url=shared_url, user_agent=user_agent, timeout=timeout, headers=headers)
-
-    for asset, source_symbol in zip(requested_assets, source_symbols):
-        coinbase_symbol = _coinbase_symbol_for_asset(asset)
-        payload: Any | None = shared_payload
-        err: str | None = shared_error
-        if payload is None and "{symbols}" not in url_template:
-            url = _url_for(source_symbol, coinbase_symbol)
-            fetched_urls.add(url)
-            payload, err = _safe_http_json(url=url, user_agent=user_agent, timeout=timeout, headers=headers)
-        if err:
-            errors.append(f"{source_symbol}:{err}")
-            continue
-        price = 0.0
-        for row in _candidate_quote_rows(payload, source_symbol=source_symbol, coinbase_symbol=coinbase_symbol):
-            if not _row_symbol_matches(row, source_symbol=source_symbol, coinbase_symbol=coinbase_symbol):
-                continue
-            price = _extract_quote_price(row)
-            if price > 0.0:
-                break
-        if price <= 0.0:
-            continue
-        symbol_features[asset] = {"crypto_schwab_crypto_quote_available_norm": 1.0}
-        provider_prices[asset] = price
-
-    resolved_assets = len(provider_prices)
-    return symbol_features, provider_prices, {
-        "ok": bool(provider_prices),
-        "state": "enabled",
-        "optional": True,
-        "requested_assets": len(requested_assets),
-        "resolved_assets": resolved_assets,
-        "configured_url_template": True,
-        "fetched_url_count": len(fetched_urls),
-        "symbol_map_count": len(symbol_map),
-        "linked_provider": "coinbase",
-        "error": errors[0] if errors and resolved_assets == 0 else None,
-        "errors": errors[:10],
-        "partial_error_count": len(errors) if resolved_assets > 0 else 0,
-    }
+    features, status = collect_schwab_context(
+        assets, token_path=PROJECT_ROOT / "token.json", timeout=timeout,
+    )
+    if any(os.getenv(key) for key in ("SCHWAB_CRYPTO_QUOTE_URL_TEMPLATE", "SCHWAB_CRYPTO_SYMBOL_MAP", "SCHWAB_CRYPTO_BEARER_TOKEN")):
+        status.setdefault("warnings", []).append("legacy_spot_bridge_settings_ignored")
+    # Futures contract marks and fund share prices never enter spot agreement.
+    return features, {}, status
 
 
 def collect_crypto_market_context(
@@ -1697,6 +1536,15 @@ def collect_crypto_market_context(
     asset_provider_prices: dict[str, dict[str, float]] = {}
 
     if expired():
+        schwab_crypto_rows, schwab_crypto_prices, schwab_crypto_status = {}, {}, deadline_status("schwab_crypto")
+    else:
+        schwab_crypto_rows, schwab_crypto_prices, schwab_crypto_status = _collect_schwab_crypto_bridge(
+            asset_order,
+            user_agent=user_agent,
+            timeout=bounded_timeout(timeout),
+        )
+
+    if expired():
         deribit_rows, deribit_prices, deribit_status = {}, {}, deadline_status("deribit")
     else:
         deribit_rows, deribit_prices, deribit_status = _collect_deribit(asset_order, user_agent=user_agent, timeout=bounded_timeout(timeout))
@@ -1741,14 +1589,6 @@ def collect_crypto_market_context(
         okx_rows, okx_prices, okx_status = {}, {}, deadline_status("okx")
     else:
         okx_rows, okx_prices, okx_status = _collect_okx_spot(asset_order, user_agent=user_agent, timeout=bounded_timeout(timeout))
-    if expired():
-        schwab_crypto_rows, schwab_crypto_prices, schwab_crypto_status = {}, {}, deadline_status("schwab_crypto")
-    else:
-        schwab_crypto_rows, schwab_crypto_prices, schwab_crypto_status = _collect_schwab_crypto_bridge(
-            asset_order,
-            user_agent=user_agent,
-            timeout=bounded_timeout(timeout),
-        )
 
     if expired():
         news_rows, news_statuses = [], {"crypto_news": deadline_status("crypto_news")}
@@ -1772,7 +1612,6 @@ def collect_crypto_market_context(
         ("okx", okx_prices),
         ("coinmetrics", coinmetrics_prices),
         ("coingecko", coingecko_prices),
-        ("schwab_crypto", schwab_crypto_prices),
     ):
         for asset, price in price_map.items():
             if price > 0.0:
@@ -1787,14 +1626,7 @@ def collect_crypto_market_context(
     for asset in asset_order:
         feature_map = asset_feature_accum.setdefault(asset, {})
         agreement = _price_agreement_norm(list(asset_provider_prices.get(asset, {}).values()), max_relative_spread=max_relative_spread)
-        schwab_coinbase_agreement = _price_agreement_norm(
-            [
-                price
-                for source_name, price in asset_provider_prices.get(asset, {}).items()
-                if source_name in {"schwab_crypto", "coinbase"}
-            ],
-            max_relative_spread=max_relative_spread,
-        )
+        schwab_coinbase_agreement = 0.0  # No verified Schwab spot feed.
         if agreement > 0.0:
             agreement_scores.append(agreement)
             compared_assets += 1
@@ -1901,9 +1733,9 @@ def collect_crypto_market_context(
         "status": status,
         "sources": {
             "provider_prices": asset_provider_prices,
-            "linked_provider_pairs": {
-                "schwab_crypto": "coinbase",
-            },
+            "linked_provider_pairs": {"schwab_crypto": "coinbase"},
+            "schwab_instruments": schwab_crypto_status.get("instruments", []),
+            "schwab_data_role": "context_only",
         },
         "derived": {
             "calendar_features": {},

@@ -183,3 +183,25 @@ def test_roll_watch_emits_critical_inside_recommended_window() -> None:
     assert row["status"] == "roll_window_active"
     assert row["severity"] == "critical"
     assert "inside_recommended_roll_window dte=60" in row["reasons"]
+
+
+def test_routine_nvda_notification_ignores_quote_noise_but_tracks_material_changes():
+    import copy
+    payload = src.evaluate(_snapshot(), today=date(2026, 7, 20), args=_args())
+    first = src._notification_policy(payload)
+    assert first["reminder_seconds"] == 21600
+    changed = copy.deepcopy(payload)
+    changed["covered_calls"][0]["moneyness_pct"] += 0.01
+    changed["covered_calls"][0]["underlying_price"] += 0.01
+    changed["covered_calls"][0]["dte"] -= 1
+    assert src._notification_policy(changed)["fingerprint"] == first["fingerprint"]
+    changed["covered_calls"][0]["covered"] = False
+    assert src._notification_policy(changed)["fingerprint"] != first["fingerprint"]
+
+
+def test_urgent_nvda_or_other_symbol_keeps_normal_notification_policy():
+    payload = src.evaluate(_snapshot(), today=date(2026, 7, 20), args=_args())
+    payload["covered_calls"][0]["status"] = "urgent_roll_window"
+    assert src._notification_policy(payload) == {}
+    payload["covered_calls"][0].update(status="roll_window_active", underlying="AAPL")
+    assert src._notification_policy(payload) == {}

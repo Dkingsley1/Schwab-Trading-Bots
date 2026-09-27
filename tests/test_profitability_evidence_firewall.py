@@ -24,7 +24,7 @@ def test_firewall_separates_implemented_controls_from_earned_profitability(tmp_p
     )
     performance_report = tmp_path / "scripts" / "paper_performance_report.py"
     performance_report.write_text(
-        "lifetime_flow current_day_flow candidate_forward_flow active_book_snapshot financial_grade_eligible carried_forward\n",
+        "lifetime_flow current_day_flow candidate_research_forward_flow candidate_forward_flow active_book_snapshot financial_grade_eligible carried_forward\n",
         encoding="utf-8",
     )
     for relative in (
@@ -61,7 +61,14 @@ def test_firewall_separates_implemented_controls_from_earned_profitability(tmp_p
             "accounting_views": {
                 "lifetime_flow": {},
                 "current_day_flow": {},
-                "candidate_forward_flow": {"candidate_id": "candidate-test", "row_count": 0},
+                "candidate_research_forward_flow": {
+                    "candidate_id": "candidate-test",
+                    "row_count": 0,
+                },
+                "candidate_forward_flow": {
+                    "candidate_id": "candidate-test",
+                    "row_count": 0,
+                },
                 "active_book_snapshot": {},
             },
         },
@@ -104,7 +111,13 @@ def test_firewall_separates_implemented_controls_from_earned_profitability(tmp_p
     _write_json(health / "counterfactual_replay_latest.json", {"ok": True, "candidate_count": 4})
     _write_json(
         tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json",
-        {"statistical_evidence_ready": False},
+        {
+            "statistical_evidence_ready": False,
+            "purged_walk_forward": {
+                "implementation_ready": True,
+                "evidence_ready": False,
+            },
+        },
     )
 
     payload = firewall.build_payload(tmp_path, config_path=config_path)

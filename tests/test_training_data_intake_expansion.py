@@ -10,6 +10,20 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import training_data_intake_expansion as src
 
 
+def test_collection_goal_does_not_move_when_unmaterialized_observations_grow():
+    def plan(observations):
+        return src._sample_enrichment_plan(
+            bot_id="example", label_family="generic_directional", primary_need="collect_more_data",
+            weaknesses=["sample_starved", "label_depth_gap"], sample_count=0,
+            observation_count=observations, eligible_sequences=0, minimum_observations=200,
+            required_context=[], focus_context=[],
+        )
+    before, after = plan(200), plan(1000)
+    assert before["observation_goal"] == after["observation_goal"] == 720
+    assert after["observation_gap"] == 0
+    assert after["usable_sample_gap"] == 240
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
@@ -414,3 +428,105 @@ def test_training_data_intake_uses_paper_loss_confirmation_controls(tmp_path: Pa
     assert "exit_drag_trace" in record["required_context"]
     assert record["profitability_scout_collection"]["active"] is True
     assert record["paper_loss_controls"][0]["profile"] == "swing_aggressive"
+
+
+def test_training_data_intake_builds_safe_label_depth_dataset_manifest(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    bot_id = "brain_refinery_v53_liquidity_spread_stress"
+    registry_path = project_root / "master_bot_registry.json"
+    needs_path = project_root / "governance" / "health" / "bot_needs_intelligence_latest.json"
+    quality_path = project_root / "governance" / "health" / "training_quality_control_latest.json"
+    _write_json(
+        registry_path,
+        {
+            "summary": {},
+            "sub_bots": [
+                {
+                    "bot_id": bot_id,
+                    "bot_role": "signal_sub_bot",
+                    "active": True,
+                    "data_collection_active": True,
+                    "lifecycle_state": "data_collection_only",
+                    "minimum_training_observations": 1000,
+                    "label_contract": {
+                        "label_family": "generic_directional",
+                        "required_context": ["price_bars", "volume", "market_context"],
+                    },
+                }
+            ],
+        },
+    )
+    _write_json(
+        needs_path,
+        {
+            "bot_needs": [
+                {
+                    "bot_id": bot_id,
+                    "primary_need": "collect_more_data",
+                    "priority": 97,
+                    "evidence": {
+                        "sample_count": 0,
+                        "observation_count": 390,
+                        "eligible_sequences": 0,
+                        "positive_rate": 0.0,
+                        "acted_coverage": -1.0,
+                        "quality_score": 0.2,
+                    },
+                }
+            ]
+        },
+    )
+    _write_json(quality_path, {"targeted_actions": {}})
+
+    compact_payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        bot_needs_path=needs_path,
+        training_quality_path=quality_path,
+        include_label_depth_work_items=False,
+    )
+    full_payload = src.build_payload(
+        project_root=project_root,
+        registry_path=registry_path,
+        bot_needs_path=needs_path,
+        training_quality_path=quality_path,
+        include_label_depth_work_items=True,
+    )
+
+    compact_dataset = compact_payload["label_depth_dataset"]
+    dataset = full_payload["label_depth_dataset"]
+    item = dataset["work_items"][0]
+
+    assert "work_items" not in compact_dataset
+    assert dataset["schema_version"] == 2
+    assert dataset["summary"]["work_item_count"] == 1
+    assert dataset["summary"]["counts_by_readiness_stage"]["collect_and_materialize"] == 1
+    assert dataset["summary"]["label_depth_tier_counts"]["label_materialization_from_observations"] == 1
+    assert dataset["summary"]["weakness_repair_lane_counts"]["usable_sample_materialization"] == 1
+    assert dataset["summary"]["hardening_check_failure_counts"]["real_sample_goal_met"] == 1
+    assert dataset["summary"]["training_hardened_ready_count"] == 0
+    assert dataset["summary"]["required_output_counts"]["label_outcome_join"] == 1
+    assert dataset["summary"]["required_output_counts"]["sample_eligibility_reason"] == 1
+    assert dataset["partitions"][0]["partition_key"] == item["partition_key"]
+    assert item["bot_id"] == bot_id
+    assert item["schema_version"] == 2
+    assert item["required_join_mode"] == "point_in_time_only"
+    assert item["required_join_keys"] == ["bot_id", "symbol", "mode", "timestamp_utc", "snapshot_id", "decision_id"]
+    assert "side_specific_outcome" in item["required_label_outputs"]
+    assert "abstained_candidate_trace" in item["required_event_mix"]
+    assert item["label_quality_contract"]["contract_version"] == "label_quality_hardening_v2"
+    assert item["label_quality_contract"]["anti_leakage"]["requires_embargoed_split"] is True
+    assert "source_snapshot_receipt" in item["label_quality_contract"]["required_hardening_fields"]
+    assert item["weakness_repair_cards"][0]["blocks_training_launch"] is True
+    assert "label_depth_gap" in [card["weakness"] for card in item["weakness_repair_cards"]]
+    assert "blocking_weaknesses_clear" in [check["check"] for check in item["training_hardening_checks"]]
+    assert item["training_gate_contract"]["training_hardened_ready"] is False
+    assert item["training_gate_contract"]["blocking_repair_card_count"] >= 1
+    assert item["training_gate_contract"]["failing_hardening_check_count"] >= 1
+    assert item["sample_targets"]["current_observation_count"] == 390
+    assert item["sample_targets"]["usable_sample_gap"] == 240
+    assert item["training_gate_contract"]["counts_as_real_training_samples"] is False
+    assert item["training_gate_contract"]["estimated_capacity_is_advisory_only"] is True
+    assert item["training_gate_contract"]["live_execution_authority"] is False
+    assert item["training_gate_contract"]["paper_execution_authority"] is False
+    assert item["training_gate_contract"]["promotion_authority"] is False

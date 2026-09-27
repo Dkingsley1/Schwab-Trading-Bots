@@ -3765,7 +3765,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--snapshot-coverage-file",
-        default=os.getenv("SNAPSHOT_COVERAGE_FILE", os.path.join(PROJECT_ROOT, "governance", "health", "snapshot_coverage_latest.json")),
+        default=os.getenv("SNAPSHOT_COVERAGE_FILE", os.path.join(PROJECT_ROOT, "governance", "health", "snapshot_coverage_training_latest.json")),
     )
     parser.add_argument(
         "--data-divergence-file",

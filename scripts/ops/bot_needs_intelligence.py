@@ -99,20 +99,16 @@ def _diagnostic_age_hours(
     diagnostic_path: Path,
     now: datetime,
 ) -> tuple[float | None, float | None, float | None, float | None]:
-    payload_age = _age_hours(
-        diagnostic.get("generated_at_utc")
-        or diagnostic.get("generated_utc")
-        or diagnostic.get("timestamp_utc")
-        or diagnostic.get("timestamp"),
-        now,
-    )
+    from core.training_diagnostic_contract import diagnostic_age_hours
+
+    payload_age = diagnostic_age_hours(diagnostic, now)
     label_age = (
         _safe_float(label_row.get("diagnostic_age_hours"), 0.0)
         if label_row.get("diagnostic_age_hours") is not None
         else None
     )
     file_age = _file_age_hours(diagnostic_path, now) if diagnostic_path.exists() else None
-    return _freshest_age_hours(payload_age, label_age, file_age), payload_age, label_age, file_age
+    return payload_age, payload_age, label_age, file_age
 
 
 def _unique(items: list[str]) -> list[str]:
@@ -733,7 +729,9 @@ def _classify_bot(
         needs.append(_need_record("create_collect_only_diagnostics", "Collection-only bot needs a diagnostic snapshot before training eligibility can be judged.", 100))
     elif active and not diagnostic_present:
         needs.append(_need_record("refresh_training_diagnostics", "No fresh diagnostic artifact; create or refresh diagnostics before judging it.", 100))
-    elif active and diagnostic_age is not None and diagnostic_age > MAX_TRAINING_DIAGNOSTIC_AGE_HOURS:
+    elif active and diagnostic_age is None:
+        needs.append(_need_record("refresh_training_diagnostics", "Diagnostic producer time is missing, invalid, or future-dated; refresh before retraining.", 90))
+    elif active and diagnostic_age > MAX_TRAINING_DIAGNOSTIC_AGE_HOURS:
         needs.append(_need_record("refresh_training_diagnostics", f"Diagnostic is stale at {diagnostic_age:.1f}h; refresh before retraining.", 90))
     if bot_id in memberships.get("repair_runtime_input_bot_ids", set()):
         repair_priority = 80.0 if training_excluded and min_observations > 0 and observation_count < min_observations else 102.0

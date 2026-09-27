@@ -11,6 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.operating_contracts import build_operating_contract
 from core.runtime_python import resolve_runtime_python
 
 VENV_PY = resolve_runtime_python(PROJECT_ROOT)
@@ -83,7 +84,11 @@ def _unique(items: list[str]) -> list[str]:
 
 
 def _failed_checks(payload: dict[str, Any]) -> list[str]:
-    raw = payload.get("failed_checks") if isinstance(payload.get("failed_checks"), list) else []
+    raw = (
+        payload.get("failed_checks")
+        if isinstance(payload.get("failed_checks"), list)
+        else []
+    )
     return _unique([str(item or "").strip() for item in raw])
 
 
@@ -114,7 +119,9 @@ def _check(path: Path, max_age_min: float, require_ok: bool) -> dict[str, Any]:
     if require_ok and not ok_field:
         failure_reasons.extend(payload_failed_checks or ["artifact_not_ok"])
     failure_reasons = _unique(failure_reasons)
-    failure_categories = _unique([_failure_category(reason) for reason in failure_reasons])
+    failure_categories = _unique(
+        [_failure_category(reason) for reason in failure_reasons]
+    )
     ok = exists and (age_min <= max_age_min) and ((not require_ok) or ok_field)
     return {
         "path": str(path),
@@ -152,16 +159,54 @@ def _prune_stale(path: Path, stale_dir: Path) -> dict[str, Any] | None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Fail-fast retrain guard for stale replay/reconciliation artifacts.")
-    ap.add_argument("--paper-replay-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_replay_drill_latest.json"))
-    ap.add_argument("--paper-recon-file", default=str(PROJECT_ROOT / "governance" / "health" / "paper_reconciliation_slo_latest.json"))
+    ap = argparse.ArgumentParser(
+        description="Fail-fast retrain guard for stale replay/reconciliation artifacts."
+    )
+    ap.add_argument(
+        "--paper-replay-file",
+        default=str(
+            PROJECT_ROOT / "governance" / "health" / "paper_replay_drill_latest.json"
+        ),
+    )
+    ap.add_argument(
+        "--paper-recon-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "paper_reconciliation_slo_latest.json"
+        ),
+    )
     ap.add_argument("--max-age-minutes", type=float, default=180.0)
-    ap.add_argument("--auto-prune-stale", action=argparse.BooleanOptionalAction, default=os.getenv("RETRAIN_FRESHNESS_AUTO_PRUNE_STALE", "1").strip() == "1")
-    ap.add_argument("--auto-refresh", action=argparse.BooleanOptionalAction, default=os.getenv("RETRAIN_FRESHNESS_AUTO_REFRESH", "1").strip() == "1")
-    ap.add_argument("--paper-replay-refresh-hours", type=int, default=int(os.getenv("RETRAIN_FRESHNESS_PAPER_REPLAY_HOURS", "24")))
-    ap.add_argument("--stale-archive-dir", default=str(PROJECT_ROOT / "governance" / "health" / "stale_artifacts"))
+    ap.add_argument(
+        "--auto-prune-stale",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("RETRAIN_FRESHNESS_AUTO_PRUNE_STALE", "1").strip() == "1",
+    )
+    ap.add_argument(
+        "--auto-refresh",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("RETRAIN_FRESHNESS_AUTO_REFRESH", "1").strip() == "1",
+    )
+    ap.add_argument(
+        "--paper-replay-refresh-hours",
+        type=int,
+        default=int(os.getenv("RETRAIN_FRESHNESS_PAPER_REPLAY_HOURS", "24")),
+    )
+    ap.add_argument(
+        "--stale-archive-dir",
+        default=str(PROJECT_ROOT / "governance" / "health" / "stale_artifacts"),
+    )
     ap.add_argument("--require-ok", action=argparse.BooleanOptionalAction, default=True)
-    ap.add_argument("--out-file", default=str(PROJECT_ROOT / "governance" / "health" / "retrain_artifact_freshness_latest.json"))
+    ap.add_argument(
+        "--out-file",
+        default=str(
+            PROJECT_ROOT
+            / "governance"
+            / "health"
+            / "retrain_artifact_freshness_latest.json"
+        ),
+    )
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -175,11 +220,16 @@ def main() -> int:
         "paper_replay": _check(paper_replay_file, max_age_minutes, require_ok),
         "paper_reconciliation": _check(paper_recon_file, max_age_minutes, require_ok),
     }
-    failed_initial = [k for k, v in checks_initial.items() if not bool(v.get("ok", False))]
+    failed_initial = [
+        k for k, v in checks_initial.items() if not bool(v.get("ok", False))
+    ]
 
     prune_actions: list[dict[str, Any]] = []
     if args.auto_prune_stale:
-        for key, path in [("paper_replay", paper_replay_file), ("paper_reconciliation", paper_recon_file)]:
+        for key, path in [
+            ("paper_replay", paper_replay_file),
+            ("paper_reconciliation", paper_recon_file),
+        ]:
             check = checks_initial.get(key, {})
             if (not bool(check.get("ok", False))) and bool(check.get("exists", False)):
                 try:
@@ -197,7 +247,9 @@ def main() -> int:
         py = _python_bin()
         if "paper_replay" in failed_initial and PAPER_REPLAY_SCRIPT.exists():
             paper_replay_initial = checks_initial.get("paper_replay", {})
-            failed_categories = list(paper_replay_initial.get("failure_categories") or [])
+            failed_categories = list(
+                paper_replay_initial.get("failure_categories") or []
+            )
             refresh_hours_plan = _paper_replay_refresh_hours_plan(
                 int(args.paper_replay_refresh_hours),
                 max(int(args.paper_replay_refresh_hours), 72),
@@ -217,7 +269,9 @@ def main() -> int:
                         ],
                     )
                 )
-                paper_replay_check = _check(paper_replay_file, max_age_minutes, require_ok)
+                paper_replay_check = _check(
+                    paper_replay_file, max_age_minutes, require_ok
+                )
                 if bool(paper_replay_check.get("ok", False)):
                     break
         if "paper_reconciliation" in failed_initial and PAPER_RECON_SCRIPT.exists():
@@ -238,21 +292,139 @@ def main() -> int:
     }
     failed = [k for k, v in checks.items() if not bool(v.get("ok", False))]
     failure_categories = {
-        "availability": [name for name, check in checks.items() if "availability" in list(check.get("failure_categories") or [])],
-        "freshness": [name for name, check in checks.items() if "freshness" in list(check.get("failure_categories") or [])],
-        "sample_sufficiency": [name for name, check in checks.items() if "sample_sufficiency" in list(check.get("failure_categories") or [])],
-        "artifact_health": [name for name, check in checks.items() if "artifact_health" in list(check.get("failure_categories") or [])],
+        "availability": [
+            name
+            for name, check in checks.items()
+            if "availability" in list(check.get("failure_categories") or [])
+        ],
+        "freshness": [
+            name
+            for name, check in checks.items()
+            if "freshness" in list(check.get("failure_categories") or [])
+        ],
+        "sample_sufficiency": [
+            name
+            for name, check in checks.items()
+            if "sample_sufficiency" in list(check.get("failure_categories") or [])
+        ],
+        "artifact_health": [
+            name
+            for name, check in checks.items()
+            if "artifact_health" in list(check.get("failure_categories") or [])
+        ],
     }
+    stale_retrain_artifacts = _unique(
+        [
+            *failure_categories["freshness"],
+            *[
+                name
+                for name, check in checks.items()
+                if not bool(check.get("exists", False))
+            ],
+        ]
+    )
+    overall_status = "ready" if not failed else "blocked"
+    recommended_actions = _unique(
+        [
+            (
+                "refresh missing retrain replay or reconciliation artifacts"
+                if failure_categories["availability"]
+                else ""
+            ),
+            (
+                "refresh stale paper replay or paper reconciliation artifacts"
+                if failure_categories["freshness"]
+                else ""
+            ),
+            (
+                "extend paper replay lookback before retraining"
+                if failure_categories["sample_sufficiency"]
+                else ""
+            ),
+            (
+                "inspect failing replay or reconciliation health payloads"
+                if failure_categories["artifact_health"]
+                else ""
+            ),
+            (
+                "keep training and promotion frozen until retrain freshness is ready"
+                if failed
+                else "retrain artifacts are fresh enough for downstream quality gates"
+            ),
+        ]
+    )
+    operating_contract = build_operating_contract(
+        contract_id="retrain_artifact_freshness_operating_contract_v1",
+        owner="retrain_artifact_freshness_guard",
+        domain="training_promotion",
+        status=overall_status,
+        why=failed[0] if failed else "ready",
+        safe_authority=[
+            "check_retrain_artifact_freshness",
+            "prune_stale_retrain_inputs",
+            "refresh_replay_and_reconciliation_artifacts",
+        ],
+        blocked_authority=[
+            "automatic_training_launch",
+            "automatic_model_promotion",
+            "paper_or_live_order_submission",
+            "lineage_override",
+        ],
+        evidence_missing=[
+            *failed,
+            *stale_retrain_artifacts,
+            *failure_categories["sample_sufficiency"],
+            *failure_categories["artifact_health"],
+        ],
+        release_conditions=[
+            "paper_replay_artifact_exists_fresh_and_ok",
+            "paper_reconciliation_artifact_exists_fresh_and_ok",
+            "failed_checks_empty",
+        ],
+        next_commands=[
+            ["python", "scripts/retrain_artifact_freshness_guard.py", "--json"],
+            ["./scripts/ops/opsctl.sh", "training-quality", "--json"],
+            ["./scripts/ops/opsctl.sh", "promotion-quality-gate", "--json"],
+        ],
+        definition_gaps=[
+            "artifact_freshness_debt" if failure_categories["freshness"] else "",
+            (
+                "sample_sufficiency_debt"
+                if failure_categories["sample_sufficiency"]
+                else ""
+            ),
+            "artifact_health_debt" if failure_categories["artifact_health"] else "",
+        ],
+        measurement={
+            "failed_check_count": len(failed),
+            "initial_failed_check_count": len(failed_initial),
+            "stale_retrain_artifact_count": len(stale_retrain_artifacts),
+            "refresh_step_count": len(refresh_steps),
+            "prune_action_count": len(prune_actions),
+            "max_age_minutes": max_age_minutes,
+        },
+        hardening={
+            "auto_prune_stale": bool(args.auto_prune_stale),
+            "auto_refresh": bool(args.auto_refresh),
+            "require_ok": require_ok,
+            "training_promotion_frozen_until_ready": bool(failed),
+        },
+    )
 
     out = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "ok": len(failed) == 0,
+        "overall_status": overall_status,
         "failed_checks": failed,
+        "stale_retrain_artifacts": stale_retrain_artifacts,
         "availability_failed_checks": failure_categories["availability"],
         "freshness_failed_checks": failure_categories["freshness"],
         "sample_sufficiency_failed_checks": failure_categories["sample_sufficiency"],
         "artifact_health_failed_checks": failure_categories["artifact_health"],
         "failure_categories": failure_categories,
+        "recommended_actions": recommended_actions,
+        "operating_contract": operating_contract,
+        "retrain_operating_contract": operating_contract,
         "max_age_minutes": max_age_minutes,
         "require_ok": require_ok,
         "auto_prune_stale": bool(args.auto_prune_stale),
@@ -271,7 +443,9 @@ def main() -> int:
     if args.json:
         print(json.dumps(out, ensure_ascii=True))
     else:
-        print(f"retrain_artifact_freshness_ok={int(out['ok'])} failed_checks={','.join(failed) if failed else 'none'}")
+        print(
+            f"retrain_artifact_freshness_ok={int(out['ok'])} failed_checks={','.join(failed) if failed else 'none'}"
+        )
     return 0 if out["ok"] else 2
 
 

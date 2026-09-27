@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import sys
+import os
+import subprocess
 import time
 from pathlib import Path
+
+import pytest
 
 from scripts.ops import system_drift_autopilot as src
 
@@ -246,6 +250,15 @@ def test_system_drift_autopilot_run_timeout_returns_clean_failure(tmp_path: Path
 
 
 def test_system_drift_autopilot_timeout_reaps_known_one_numbers_child(tmp_path: Path) -> None:
+    try:
+        probe = subprocess.run(
+            ["ps", "-o", "pid=", "-p", str(os.getpid())],
+            capture_output=True, text=True, timeout=2, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("native ps inspection unavailable in this execution environment")
+    if not probe.stdout.strip():
+        pytest.skip("native ps returned no process visibility")
     child = tmp_path / "scripts" / "build_one_numbers_report.py"
     child.parent.mkdir(parents=True, exist_ok=True)
     child.write_text("import time\ntime.sleep(20)\n", encoding="utf-8")

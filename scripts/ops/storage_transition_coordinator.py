@@ -375,6 +375,26 @@ def _apply_refresh(project_root: Path, *, transition_mode: str) -> list[dict[str
     return attempts
 
 
+def _apply_attempt_outcomes(payload: dict[str, Any], attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    payload["attempts"] = attempts
+    metrics = payload.setdefault("metrics", {})
+    metrics["attempted_step_count"] = len(attempts)
+    managed_names = {
+        str(row.get("name") or "")
+        for row in list(payload.get("assigned_bots") or [])
+        if bool(row.get("managed_advisory", False))
+    }
+    failed_attempts = [row for row in attempts if int(row.get("rc", 1)) != 0]
+    unmanaged_failures = [row for row in failed_attempts if str(row.get("name") or "") not in managed_names]
+    metrics["managed_failed_step_count"] = len(failed_attempts) - len(unmanaged_failures)
+    metrics["unmanaged_failed_step_count"] = len(unmanaged_failures)
+    if unmanaged_failures:
+        payload["ok"] = False
+        if str(payload.get("overall_status") or "") == "ready":
+            payload["overall_status"] = "degraded"
+    return payload
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Assign and refresh infrastructure bots around a BOT_LOGS storage transition.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
@@ -421,11 +441,7 @@ def main() -> int:
 
             attempts = _apply_refresh(project_root, transition_mode=str(args.transition_mode))
             payload = build_payload(project_root, transition_mode=str(args.transition_mode), apply=True)
-            payload["attempts"] = attempts
-            payload["metrics"]["attempted_step_count"] = len(attempts)
-            if any(int(row.get("rc", 1)) != 0 for row in attempts):
-                payload["ok"] = False
-                payload["overall_status"] = "degraded" if str(payload.get("overall_status") or "") == "ready" else payload.get("overall_status")
+            payload = _apply_attempt_outcomes(payload, attempts)
             _write_json(out_file, payload)
 
     if args.json:

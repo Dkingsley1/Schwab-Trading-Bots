@@ -309,3 +309,68 @@ def test_counterfactual_replay_harness_uses_execution_result_fallback(tmp_path) 
     assert "intraday_aggressive" in payload["profiles_reviewed"]
     assert payload["candidate_count"] > 0
     assert payload["top_candidates"][0]["aggregate_net_pnl_total"] > 0
+
+
+def test_counterfactual_replay_is_exactly_bound_to_current_candidate(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    runtime_dir = project_root / "governance" / "runtime"
+    log_dir = project_root / "exports" / "paper_broker_bridge" / "paper"
+    runtime_dir.mkdir(parents=True)
+    log_dir.mkdir(parents=True)
+    (runtime_dir / "production_candidate_state.json").write_text(
+        json.dumps(
+            {
+                "candidate_id": "candidate-g102",
+                "generation": 102,
+                "accepted_at_utc": "2026-04-01T14:00:00+00:00",
+                "overall_sha256": "candidate-receipt",
+            }
+        ),
+        encoding="utf-8",
+    )
+    base = {
+        "symbol": "AAPL",
+        "action": "BUY",
+        "model_score": 0.72,
+        "threshold": 0.60,
+        "tradeability_score": 0.80,
+        "allocation_conflict_norm": 0.10,
+        "post_cost_pnl_delta": 1.0,
+    }
+    rows = [
+        {
+            **base,
+            "timestamp_utc": "2026-04-01T14:05:00+00:00",
+            "production_candidate_id": "candidate-g102",
+            "production_candidate_generation": 102,
+        },
+        {
+            **base,
+            "timestamp_utc": "2026-04-01T14:06:00+00:00",
+            "production_candidate_id": "candidate-g101",
+            "production_candidate_generation": 101,
+        },
+        {
+            **base,
+            "timestamp_utc": "2026-04-01T13:59:00+00:00",
+            "production_candidate_id": "candidate-g102",
+            "production_candidate_generation": 102,
+        },
+        {**base, "timestamp_utc": "2026-04-01T14:07:00+00:00"},
+    ]
+    (log_dir / "paper_bridge_orders_20260401.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    payload = harness.build_counterfactual_report(project_root, max_rows=100)
+
+    binding = payload["candidate_binding"]
+    assert payload["overall_status"] == "ready"
+    assert binding["candidate_id"] == "candidate-g102"
+    assert binding["eligible_rows"] == 1
+    assert binding["identity_mismatch_rows"] == 1
+    assert binding["before_cutoff_rows"] == 1
+    assert binding["identity_missing_rows"] == 1
+    assert payload["processing"]["row_buffer_size"] == 1
+    assert payload["authority_contract"]["live_execution_authority"] is False

@@ -1,0 +1,1 @@
+../../../scripts/ops/collector_capability_control.py

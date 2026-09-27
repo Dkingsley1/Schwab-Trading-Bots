@@ -19,7 +19,12 @@ def test_benchmark_hurdle_requires_candidate_bound_cash_and_passive_outperforman
             "minimum_excess_return_bps": 0.0,
             "maximum_drawdown_ratio_to_passive": 1.0,
             "cash_annual_rate": 0.04,
-            "capture": {"symbol": "SPY"},
+            "require_cash_proxy": True,
+            "capture": {
+                "symbol": "SPY",
+                "cash_proxy_symbol": "SGOV",
+                "require_cash_proxy": True,
+            },
         }
     }
     config_path = tmp_path / "config.json"
@@ -48,6 +53,7 @@ def test_benchmark_hurdle_requires_candidate_bound_cash_and_passive_outperforman
                     "candidate_full_session": True,
                     "passive_return_bps": 1.0,
                     "cash_return_bps": 0.5,
+                    "cash_proxy_return_bps": 0.75,
                 }
             )
             for day in range(1, 4)

@@ -190,6 +190,28 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, limit: int = 8) -> dict[
     return payload
 
 
+def _queue_matches(path: Path, candidate: Path) -> bool:
+    def identity(value: os.stat_result) -> tuple[int, ...]:
+        return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+    try:
+        if path.is_symlink() or not path.is_file():
+            return False
+        with path.open("rb") as existing, candidate.open("rb") as proposed:
+            before = identity(os.fstat(existing.fileno()))
+            if before[2] != os.fstat(proposed.fileno()).st_size:
+                return False
+            while True:
+                chunk = existing.read(65536)
+                if chunk != proposed.read(65536):
+                    return False
+                if not chunk:
+                    break
+            return before == identity(os.fstat(existing.fileno())) == identity(path.stat())
+    except OSError:
+        return False
+
+
 def _write_queue(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, raw_temp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -200,6 +222,9 @@ def _write_queue(path: Path, rows: list[dict[str, Any]]) -> None:
                 handle.write(json.dumps(row, ensure_ascii=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+        # Preserve ingestion identity and age when the durable queue is unchanged.
+        if _queue_matches(path, temp_path):
+            return
         os.replace(temp_path, path)
     finally:
         temp_path.unlink(missing_ok=True)

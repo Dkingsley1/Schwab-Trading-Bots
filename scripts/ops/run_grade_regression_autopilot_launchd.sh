@@ -16,6 +16,6 @@ fi
 "$PROJECT_ROOT/scripts/ops/run_guarded_maintenance.sh" grade_regression_autopilot \
   "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/grade_regression_autopilot.py" \
   --apply \
-  --timeout-sec "${GRADE_REGRESSION_AUTOPILOT_TIMEOUT_SECONDS:-1200}" \
+  --timeout-sec "${GRADE_REGRESSION_AUTOPILOT_TIMEOUT_SECONDS:-840}" \
   --storage-max-cycles "${GRADE_REGRESSION_AUTOPILOT_STORAGE_MAX_CYCLES:-1}" \
   --json

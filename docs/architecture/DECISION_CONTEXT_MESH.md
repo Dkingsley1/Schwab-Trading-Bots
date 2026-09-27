@@ -16,6 +16,8 @@ Three missing dimensions are collected directly from official public endpoints:
 - EIA Weekly Petroleum Status Report inventory tables.
 - Bureau of Transportation Statistics Freight Transportation Services Index.
 
+An additional optional collector contributes classified official public financial context from SEC Company Facts, the OFR Financial Stress Index, FDIC bank-failure records, Federal Register financial-agency documents, and the ECB euro short-term rate. Its global and issuer features enter the mesh only when the collector contract is healthy. Every feature is mapped to an evidence class, entity and geographic scope, market domain, cadence, latency class, semantic direction, decision plane, decision family, and authority class. Unclassified features are quarantined, cross-family broadcast is forbidden, and consumers omit unavailable values rather than converting them into neutral-looking zeros.
+
 Every source has an expected publication or refresh cadence and a separate hard staleness limit. A source earns full freshness while it is current for its real cadence, then decays toward zero before the hard limit. Direct sources may use the prior successful value only inside that bounded window. A missing or expired value is omitted; it is never converted into a zero.
 
 The estimate plane consumes Nasdaq analyst forecasts containing EPS consensus, high/low dispersion, analyst counts, and four-week up/down revisions. Direct readiness requires the exact governed 16-symbol membership, `16/16` fresh symbol coverage, and `16/16` revision-history coverage. The collector uses a persistent, process-safe UTC-day request budget, counts failed calls, checkpoints after every symbol, applies a run deadline, and keeps availability-time snapshots. Alpha Vantage `EARNINGS_ESTIMATES` remains an optional credentialed fallback.
@@ -52,10 +54,13 @@ The estimate-revision plane is capped at `B+` while it relies on SEC and broker-
 - Collector: `scripts/collect_decision_context_mesh.py`
 - Optional consensus collector: `scripts/collect_analyst_consensus_context.py`
 - Optional consensus configuration: `config/analyst_consensus_context_v1.json`
+- Optional public financial collector: `scripts/collect_public_financial_context.py`
+- Public financial routing taxonomy: `config/public_financial_context_routing_v1.json`
 - Latest context: `exports/external_context/decision_context_mesh_latest.json`
 - Latest health and grades: `governance/health/decision_context_mesh_latest.json`
 - Append-only history: `data/external_context/decision_context_mesh_history/*.jsonl.gz`
 - Refresh command: `./scripts/ops/opsctl.sh decision-context-sync --json`
 - Consensus refresh command: `./scripts/ops/opsctl.sh analyst-consensus-sync --json`
+- Public financial refresh command: `./scripts/ops/opsctl.sh public-financial-sync --json`
 
 The daily refresh runs the mesh after its upstream collectors and before collector, capability, provider, training, and source-verification controls. Source-verification autorefresh can invoke the same bounded command when the artifact becomes stale or semantically invalid.

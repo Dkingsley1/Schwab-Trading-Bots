@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "contract_id": "bot_process_definitions_v1",
+  "mode": "source_bound_definition_only",
+  "completion_scope": "authored_process_definition_not_runtime_or_economic_completion",
+  "dependency_semantics": "authored_definition_order_not_observed_execution_order",
+  "authority": {
+    "changes_decisions": false,
+    "changes_registry": false,
+    "changes_risk_limits": false,
+    "starts_workers": false,
+    "submits_orders": false,
+    "promotes_candidates": false,
+    "claims_economic_evidence": false
+  },
+  "profiles": {
+    "collection_wrapper": {
+      "implementation_kind": "metadata_only_wrapper",
+      "purpose": "Describe the bound collection specification and blocked-training metadata through existing wrapper functions.",
+      "stages": [
+        {"id": "registry_binding", "depends_on": []},
+        {"id": "metadata_description", "depends_on": ["registry_binding"]},
+        {"id": "blocked_training_metadata", "depends_on": ["registry_binding"]},
+        {"id": "completion_evidence", "depends_on": ["metadata_description", "blocked_training_metadata"]}
+      ]
+    },
+    "registry_declared_slot": {
+      "implementation_kind": "no_dedicated_implementation",
+      "purpose": "Preserve the declared registry job, inputs, outputs and target functions without treating them as implemented code.",
+      "stages": [
+        {"id": "registry_binding", "depends_on": []},
+        {"id": "completion_evidence", "depends_on": ["registry_binding"]}
+      ]
+    },
+    "runtime_model_program": {
+      "implementation_kind": "source_defined_runtime_model",
+      "purpose": "Bind the observed runtime model program, including any source-defined fallback, without invoking it.",
+      "stages": [
+        {"id": "registry_binding", "depends_on": []},
+        {"id": "program_entrypoints", "depends_on": ["registry_binding"]},
+        {"id": "input_validation", "depends_on": ["program_entrypoints"]},
+        {"id": "feature_definition", "depends_on": ["input_validation"]},
+        {"id": "label_definition", "depends_on": ["input_validation"]},
+        {"id": "filter_definition", "depends_on": ["input_validation"]},
+        {"id": "evaluation", "depends_on": ["feature_definition", "label_definition", "filter_definition"]},
+        {"id": "output_publication", "depends_on": ["evaluation"]},
+        {"id": "completion_evidence", "depends_on": ["output_publication"]}
+      ]
+    },
+    "synthetic_research_program": {
+      "implementation_kind": "source_defined_synthetic_or_offline_research",
+      "purpose": "Bind the existing synthetic or offline research program; generated samples and fit metrics do not establish market outcomes.",
+      "stages": [
+        {"id": "registry_binding", "depends_on": []},
+        {"id": "program_entrypoints", "depends_on": ["registry_binding"]},
+        {"id": "input_validation", "depends_on": ["program_entrypoints"]},
+        {"id": "feature_definition", "depends_on": ["input_validation"]},
+        {"id": "label_definition", "depends_on": ["input_validation"]},
+        {"id": "filter_definition", "depends_on": ["input_validation"]},
+        {"id": "evaluation", "depends_on": ["feature_definition", "label_definition", "filter_definition"]},
+        {"id": "output_publication", "depends_on": ["evaluation"]},
+        {"id": "completion_evidence", "depends_on": ["output_publication"]}
+      ]
+    }
+  },
+  "stages": {
+    "registry_binding": {
+      "title": "Registry identity and declarations",
+      "applicable_profiles": ["collection_wrapper", "registry_declared_slot", "runtime_model_program", "synthetic_research_program"],
+      "owner": "registry_definition_owner",
+      "inputs": ["Observed registry projection and module specification, when present."],
+      "outputs": ["Exact bot identity, registered role, declared input collections, storage targets and target functions."],
+      "failure_policy": "reject_invalid_binding",
+      "retry_policy": "no_retry_definition_only",
+      "completion_evidence": ["matching_registry_projection"]
+    },
+    "metadata_description": {
+      "title": "Collection description",
+      "applicable_profiles": ["collection_wrapper"],
+      "owner": "bound_source_owner",
+      "inputs": ["Bound BOT_SPEC and describe_bot source definition, if present."],
+      "outputs": ["Source-defined collection metadata description; observed output requires a separate receipt."],
+      "failure_policy": "source_failure_semantics_not_verified",
+      "retry_policy": "existing_owner_policy_not_assessed",
+      "completion_evidence": ["source_reference_or_explicit_gap", "independent_runtime_receipt_required"]
+    },
+    "blocked_training_metadata": {
+      "title": "Blocked-training descriptor",
+      "applicable_profiles": ["collection_wrapper"],
+      "owner": "bound_source_owner",
+      "inputs": ["Bound BOT_SPEC and train_brain wrapper definition, if present."],
+      "outputs": ["Existing metadata-only blocked-training response; thresholds are declarations, not model-fit evidence."],
+      "failure_policy": "source_failure_semantics_not_verified",
+      "retry_policy": "existing_owner_policy_not_assessed",
+      "completion_evidence": ["source_reference_or_explicit_gap", "independent_runtime_receipt_required"]
+    },
+    "program_entrypoints": {
+      "title": "Program entrypoints and observed trainer calls",
+      "applicable_profiles": ["runtime_model_program", "synthetic_research_program"],
+      "owner": "bound_source_owner",
+      "inputs": ["Observed entrypoint signatures, trainer call expressions and exact source parameters."],
+      "outputs": ["Source references describing the existing program and any fallback; no execution sequence is inferred."],
+      "failure_policy": "source_failure_semantics_not_verified",
+      "retry_policy": "existing_owner_policy_not_assessed",
+      "completion_evidence": ["source_reference_or_explicit_gap", "independent_runtime_receipt_required"]
+    },
+    "input_validation": {
+      "title": "Input validation requirements and source references",
+      "applicable_profiles": ["runtime_model_program", "synthetic_research_program"],
+      "owner": "bound_source_owner",
+      "inputs": ["Observed input-validation functions or callback expressions and exact source input declarations; shared-helper checks may have no local reference."],
+      "outputs": ["Source references for input acceptance or rejection, or an explicit gap. This authored requirement does not certify schema, sample sufficiency, freshness or lineage checks."],
+      "failure_policy": "source_failure_semantics_not_verified",
+      "retry_policy": "existing_owner_policy_not_assessed",
+      "completion_evidence": ["source_reference_or_explicit_gap", "independent_runtime_receipt_required"]
+    },
+    "feature_definition": {
+      "title": "Feature functions and callback expressions",
+      "applicable_profiles": ["runtime_model_program", "synthetic_research_program"],
+      "owner": "bound_source_owner",
+      "inputs": ["Observed feature callbacks, named feature functions and literal input keys."],
+      "outputs": ["Exact feature source references or an explicit local-reference gap; names alone do not prove call wiring."],
+      "failure_policy": "source_failure_semantics_not_verified",
+      "retry_policy": "existing_owner_policy_not_assessed",
+      "completion_evidence": ["source_reference_or_explicit_gap", "independent_runtime_receipt_required"]
+    },
+    "label_definition": {
+      "title": "Label functions and callback expressions",
+      "applicable_profiles": ["runtime_model_program", "synthetic_research_program"],
+      "owner": "bound_source_owner",
+      "inputs": ["Observed label callbacks, local label functions and registry label declarations."],
+      "outputs": ["Exact label source references or an explicit local-reference gap; sample horizons retain their source units."],
+      "failure_policy": "source_failure_semantics_not_verified",
+      "retry_policy": "existing_owner_policy_not_assessed",
+      "completion_evidence": ["source_reference_or_explicit_gap", "independent_runtime_receipt_required"]
+    },
+    "filter_definition": {
+      "title": "Sample filters and confidence functions",
+      "applicable_profiles": ["runtime_model_program", "synthetic_research_program"],
+      "owner": "bound_source_owner",
+      "inputs": ["Observed filter and confidence callbacks, local functions and source selection expressions."],
+      "outputs": ["Exact source references or an explicit local-reference gap; no empirical regime support is inferred."],
+      "failure_policy": "source_failure_semantics_not_verified",
+      "retry_policy": "existing_owner_policy_not_assessed",
+      "completion_evidence": ["source_reference_or_explicit_gap", "independent_runtime_receipt_required"]
+    },
+    "evaluation": {
+      "title": "Evaluation requirements and source references",
+      "applicable_profiles": ["runtime_model_program", "synthetic_research_program"],
+      "owner": "bound_source_owner",
+      "inputs": ["Observed evaluation functions or callbacks and exact source prediction, label, split and metric declarations when present."],
+      "outputs": ["Source references describing evaluation or an explicit gap. Evaluation outcomes, failures, untouched tests and economic performance require separate evidence; none are inferred from this authored stage."],
+      "failure_policy": "source_failure_semantics_not_verified",
+      "retry_policy": "existing_owner_policy_not_assessed",
+      "completion_evidence": ["source_reference_or_explicit_gap", "independent_runtime_receipt_required"]
+    },
+    "output_publication": {
+      "title": "Output publication and failure evidence requirements",
+      "applicable_profiles": ["runtime_model_program", "synthetic_research_program"],
+      "owner": "bound_source_owner",
+      "inputs": ["Observed artifact-writing functions or publication callbacks and source-defined output declarations when present."],
+      "outputs": ["Source references or an explicit publication gap. Completion requires independent owner evidence of the actual output; failed or partial publication cannot earn completion from this definition. Persistence, cleanup, recovery and retry behavior remain source-defined and unverified."],
+      "failure_policy": "source_failure_semantics_not_verified",
+      "retry_policy": "existing_owner_policy_not_assessed",
+      "completion_evidence": ["source_reference_or_explicit_gap", "independent_runtime_receipt_required"]
+    },
+    "completion_evidence": {
+      "title": "Definition receipt and outstanding evidence",
+      "applicable_profiles": ["collection_wrapper", "registry_declared_slot", "runtime_model_program", "synthetic_research_program"],
+      "owner": "bot_organization_controller",
+      "inputs": ["Validated authored graph, observed binding and explicit source-reference gaps."],
+      "outputs": ["Policy and binding digests; runtime completion, conformance and economic evidence remain unverified."],
+      "failure_policy": "reject_invalid_binding",
+      "retry_policy": "no_retry_definition_only",
+      "completion_evidence": ["valid_authored_graph_and_binding", "separate_runtime_and_economic_evidence"]
+    }
+  }
+}

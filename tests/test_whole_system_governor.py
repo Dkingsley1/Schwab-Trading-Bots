@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -58,7 +59,7 @@ def test_pressure_moves_low_value_collection_to_heartbeat(tmp_path: Path) -> Non
     health = tmp_path / "governance" / "health"
     health.mkdir(parents=True)
     (health / "ingestion_storage_control_latest.json").write_text(
-        json.dumps({"overall_status": "degraded", "backpressure": {"total_pending_lines": 300000}}) + "\n",
+        json.dumps({"timestamp_utc": datetime.now(timezone.utc).isoformat(), "overall_status": "degraded", "backpressure": {"total_pending_lines": 300000}}) + "\n",
         encoding="utf-8",
     )
 
@@ -123,6 +124,7 @@ def test_whole_system_governor_uses_current_pressure_fields_not_stale_history(tm
     _write_registry(tmp_path)
     health = tmp_path / "governance" / "health"
     health.mkdir(parents=True)
+    (health / "runtime_throttle_control_latest.json").write_text(json.dumps({"timestamp_utc": datetime.now(timezone.utc).isoformat(), "overall_status": "ready"}))
     (health / "whole_system_intelligence_latest.json").write_text(
         json.dumps(
             {
@@ -139,6 +141,7 @@ def test_whole_system_governor_uses_current_pressure_fields_not_stale_history(tm
             {
                 "overall_status": "ready",
                 "pressure_index": 0.013,
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "backpressure": {"total_pending_lines": 3449},
                 "raw_live_expansion_contract": {
                     "raw_live": {"total_pending_lines": 3449},
@@ -149,7 +152,7 @@ def test_whole_system_governor_uses_current_pressure_fields_not_stale_history(tm
         encoding="utf-8",
     )
     (health / "memory_efficiency_control_latest.json").write_text(
-        json.dumps({"overall_status": "ready", "swap_used_gb": 0.5}) + "\n",
+        json.dumps({"timestamp_utc": datetime.now(timezone.utc).isoformat(), "overall_status": "ready", "swap_used_gb": 0.5}) + "\n",
         encoding="utf-8",
     )
     (health / "expansion_capacity_planner_latest.json").write_text(

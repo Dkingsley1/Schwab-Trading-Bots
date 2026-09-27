@@ -177,6 +177,10 @@ def _registry_contract(registry: dict[str, Any]) -> dict[str, Any]:
     ]
     return {
         "total_bots": len(rows),
+        "count_basis": "registry_declarations_not_observed_running_processes_or_outcomes",
+        "active_bots_label": "configured_active_bots",
+        "data_collection_active_bots_label": "configured_collection_enabled_bots",
+        "label_contract_ready_scope": "declared_contract_presence_not_measured_label_accuracy",
         "non_deleted_bots": len(non_deleted),
         "active_bots": len(active),
         "deleted_or_retired_bots": len(deleted),

@@ -103,7 +103,14 @@ def test_replacement_train_brain_uses_runtime_path(monkeypatch) -> None:
             captured.update(kwargs)
             return "ok"
 
-        monkeypatch.setattr(module, "train_runtime_indicator_bot", _fake_train_runtime_indicator_bot)
+        if module is v103:
+            # v103 intentionally imports the trainer lazily inside train_brain.
+            monkeypatch.setattr(
+                "indicator_bot_common.train_runtime_indicator_bot",
+                _fake_train_runtime_indicator_bot,
+            )
+        else:
+            monkeypatch.setattr(module, "train_runtime_indicator_bot", _fake_train_runtime_indicator_bot)
         assert module.train_brain() == "ok"
         assert captured["run_tag"] == run_tag
         assert captured["allow_fallback_on_insufficient_data"] is False

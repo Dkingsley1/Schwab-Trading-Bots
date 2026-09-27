@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.runtime_python import resolve_runtime_python
+from core.stack_restart_coordination import stack_restart_fence_snapshot
 
 os.environ.setdefault("BOT_RUNTIME_LANE", os.getenv("BOT_SHADOW_RUNTIME_LANE", "canary314"))
 RUNTIME_PY = resolve_runtime_python(PROJECT_ROOT)
@@ -156,9 +157,12 @@ def _build_failover_event(
     swap_pause: dict,
     standby_cmd: str,
     allow_simulate: bool,
+    restart_fence: dict | None = None,
     start_cmd=_start_cmd,
 ) -> dict:
     stale = heartbeat_age_sec > max_heartbeat_age_sec
+    restart_state = restart_fence if isinstance(restart_fence, dict) else {}
+    restart_active = bool(restart_state.get('active', False))
     event = {
         'timestamp_utc': _now_iso(),
         'primary_alive': bool(primary_alive),
@@ -167,8 +171,21 @@ def _build_failover_event(
         'stale': bool(stale),
         'action': 'none',
         'swap_pause_active': bool(swap_pause.get('active', False)),
+        'stack_restart_in_progress': restart_active,
         'simulate_standby_allowed': bool(allow_simulate),
     }
+
+    if restart_active:
+        event['action'] = 'standby_start_skipped_stack_restart'
+        event['standby_ok'] = False
+        event['standby_cmd'] = standby_cmd
+        event['standby_skip_reason'] = 'stack_restart_in_progress'
+        event['stack_restart_fence'] = {
+            key: value
+            for key, value in restart_state.items()
+            if key not in {'token', 'payload'}
+        }
+        return event
 
     if live_parent_alive:
         if stale:
@@ -210,6 +227,7 @@ def _event_signature(event: dict) -> tuple:
         bool(event.get('live_parent_alive', False)),
         bool(event.get('stale', False)),
         bool(event.get('swap_pause_active', False)),
+        bool(event.get('stack_restart_in_progress', False)),
         event.get('standby_ok'),
         event.get('standby_skip_reason', ''),
     )
@@ -253,6 +271,7 @@ def main() -> int:
         live_parent_alive = _proc_alive(args.live_parent_match, ('--simulate',)) if args.live_parent_match else False
         hb_age = _heartbeat_age_sec(args.primary_heartbeat)
         swap_pause = _swap_research_pause_state()
+        restart_fence = stack_restart_fence_snapshot(PROJECT_ROOT)
         event = _build_failover_event(
             primary_alive=alive,
             live_parent_alive=live_parent_alive,
@@ -261,6 +280,7 @@ def main() -> int:
             swap_pause=swap_pause,
             standby_cmd=standby_cmd,
             allow_simulate=bool(args.allow_simulate_standby),
+            restart_fence=restart_fence,
         )
 
         signature = _event_signature(event)

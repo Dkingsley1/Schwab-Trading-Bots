@@ -1,14 +1,27 @@
 import argparse
+import gzip
+import hashlib
 import json
+import math
 import os
 import re
+import sys
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean, pstdev
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.storage_router import (
+    _configured_external_project_root_no_io,
+    inspect_storage_path,
+)
+from scripts.ops.long_runtime_common import write_payload
+
 TS_RE = re.compile(r"_(\d{8})_(\d{6})$")
 
 
@@ -23,7 +36,9 @@ def _to_float(value, default: float = 0.0) -> float:
         return float(default)
 
 
-def _trading_quality_score(forward_mean: float, delta: float, forward_std: float, overfit_gap: float) -> float:
+def _trading_quality_score(
+    forward_mean: float, delta: float, forward_std: float, overfit_gap: float
+) -> float:
     edge_component = _clamp((forward_mean - 0.48) / 0.10)
     generalization_component = _clamp((0.04 + delta) / 0.04)
     stability_component = _clamp((0.08 - forward_std) / 0.08)
@@ -40,6 +55,7 @@ def _trading_quality_score(forward_mean: float, delta: float, forward_std: float
 
 
 def bot_id_from_log_name(name: str) -> str:
+    name = name.removesuffix(".gz")
     base = name[:-5] if name.endswith(".json") else name
     m = TS_RE.search(base)
     if not m:
@@ -48,11 +64,15 @@ def bot_id_from_log_name(name: str) -> str:
 
 
 def timestamp_from_log_name(name: str) -> datetime:
+    name = name.removesuffix(".gz")
     base = name[:-5] if name.endswith(".json") else name
     m = TS_RE.search(base)
     if not m:
         return datetime.min.replace(tzinfo=timezone.utc)
-    dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+    try:
+        dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
     return dt.replace(tzinfo=timezone.utc)
 
 
@@ -74,6 +94,153 @@ def _safe_log_paths(logs_dir: Path, max_log_files: int) -> list[Path]:
     return paths
 
 
+def _training_log_evidence(
+    roots: list[Path],
+    *,
+    max_files: int = 2000,
+    max_entries: int = 10000,
+    max_file_bytes: int = 2 * 1024 * 1024,
+    max_total_bytes: int = 64 * 1024 * 1024,
+    timeout_seconds: float = 20.0,
+    now: datetime | None = None,
+) -> tuple[dict, dict]:
+    """Read bounded native training logs, including lossless routed copies."""
+    deadline = time.monotonic() + timeout_seconds
+    now = now or datetime.now(timezone.utc)
+    audit = {
+        "complete": True,
+        "files_read": 0,
+        "entries_scanned": 0,
+        "decompressed_bytes": 0,
+        "duplicate_records": 0,
+        "rejected_records": 0,
+        "missing_roots": 0,
+        "errors": [],
+        "error_count": 0,
+        "max_files": max_files,
+        "max_total_bytes": max_total_bytes,
+        "timeout_seconds": timeout_seconds,
+    }
+
+    def error(reason: str) -> None:
+        audit["complete"] = False
+        audit["error_count"] += 1
+        if len(audit["errors"]) < 20:
+            audit["errors"].append(reason)
+
+    candidates = []
+    seen_roots = set()
+    for root in roots:
+        route = inspect_storage_path(root)
+        if route["status"] == "missing":
+            audit["missing_roots"] += 1
+            continue
+        if route["status"] != "present" or route.get("kind") != "directory":
+            error("log_root_unavailable:" + str(route["status"]))
+            continue
+        identity = str(route["resolved_path"])
+        if identity in seen_roots:
+            continue
+        seen_roots.add(identity)
+        try:
+            with os.scandir(root) as entries:
+                for entry in entries:
+                    audit["entries_scanned"] += 1
+                    if (
+                        time.monotonic() >= deadline
+                        or audit["entries_scanned"] > max_entries
+                    ):
+                        error("log_discovery_budget_exceeded")
+                        return {}, audit
+                    if entry.name.startswith("brain_refinery_") and entry.name.endswith(
+                        (".json", ".json.gz")
+                    ):
+                        candidates.append(Path(entry.path))
+                        if len(candidates) > max_files:
+                            error("log_file_budget_exceeded")
+                            return {}, audit
+        except OSError:
+            error("log_discovery_failed")
+
+    seen_paths, seen_payloads = set(), set()
+    runs = {}
+    conflicts = set()
+    for path in sorted(
+        candidates,
+        key=lambda p: (timestamp_from_log_name(p.name), str(p)),
+        reverse=True,
+    ):
+        if time.monotonic() >= deadline:
+            error("log_read_deadline_exceeded")
+            break
+        route = inspect_storage_path(path)
+        if route["status"] != "present" or route.get("size_bytes") is None:
+            error("log_source_unavailable:" + str(route["status"]))
+            continue
+        identity = str(route["resolved_path"])
+        if identity in seen_paths:
+            audit["duplicate_records"] += 1
+            continue
+        seen_paths.add(identity)
+        remaining = max_total_bytes - audit["decompressed_bytes"]
+        if remaining <= 0:
+            error("log_byte_budget_exceeded")
+            break
+        limit = min(max_file_bytes, remaining)
+        try:
+            opener = gzip.open if path.suffix == ".gz" else open
+            with opener(path, "rb") as handle:
+                raw = handle.read(limit + 1)
+            audit["files_read"] += 1
+            audit["decompressed_bytes"] += len(raw)
+            if len(raw) > limit:
+                error("log_byte_budget_exceeded")
+                continue
+            obj = json.loads(raw)
+            if not isinstance(obj, dict):
+                raise ValueError("log_not_an_object")
+        except (OSError, EOFError, ValueError):
+            error("log_read_failed")
+            continue
+        if time.monotonic() >= deadline:
+            error("log_read_deadline_exceeded")
+            break
+        metrics = obj.get("metrics")
+        acc = metrics.get("test_accuracy") if isinstance(metrics, dict) else None
+        ts = timestamp_from_log_name(path.name)
+        if (
+            type(acc) not in (int, float)
+            or not math.isfinite(acc)
+            or not 0 <= acc <= 1
+            or ts == datetime.min.replace(tzinfo=timezone.utc)
+            or ts > now
+            or obj.get("diagnostic_only") is True
+            or metrics.get("diagnostic_only") is True
+        ):
+            audit["rejected_records"] += 1
+            continue
+        key = (bot_id_from_log_name(path.name), ts)
+        digest = hashlib.sha256(
+            json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if key in runs and runs[key] != (float(acc), digest):
+            conflicts.add(key)
+            error("conflicting_training_run")
+            continue
+        if key in runs or digest in seen_payloads:
+            audit["duplicate_records"] += 1
+            continue
+        seen_payloads.add(digest)
+        runs[key] = (float(acc), digest)
+    groups = defaultdict(list)
+    for (bot_id, ts), (acc, _) in runs.items():
+        if (bot_id, ts) not in conflicts:
+            groups[bot_id].append((ts, acc))
+    audit["observed_unique_runs"] = sum(map(len, groups.values()))
+    # Partial discovery must never turn a selected subset into a quality pass.
+    return (groups if audit["complete"] else {}), audit
+
+
 def _registry_repair_boundaries(registry_path: Path) -> dict[str, datetime]:
     payload = _load_json(registry_path)
     rows = payload.get("sub_bots") if isinstance(payload.get("sub_bots"), list) else []
@@ -82,7 +249,11 @@ def _registry_repair_boundaries(registry_path: Path) -> dict[str, datetime]:
         if not isinstance(row, dict):
             continue
         bot_id = str(row.get("bot_id") or "").strip()
-        evidence = row.get("training_repair_evidence") if isinstance(row.get("training_repair_evidence"), dict) else {}
+        evidence = (
+            row.get("training_repair_evidence")
+            if isinstance(row.get("training_repair_evidence"), dict)
+            else {}
+        )
         log_file = str(evidence.get("log_file") or row.get("log_file") or "").strip()
         if not bot_id or not log_file:
             continue
@@ -95,31 +266,58 @@ def _registry_repair_boundaries(registry_path: Path) -> dict[str, datetime]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Walk-forward style validation over historical bot training logs.")
-    parser.add_argument("--min-runs", type=int, default=int(os.getenv("WALK_FORWARD_MIN_RUNS", "12")))
-    parser.add_argument("--pass-forward-threshold", type=float, default=float(os.getenv("WALK_FORWARD_PASS_FORWARD_THRESHOLD", "0.52")))
-    parser.add_argument("--pass-delta-threshold", type=float, default=float(os.getenv("WALK_FORWARD_PASS_DELTA_THRESHOLD", "-0.02")))
-    parser.add_argument("--min-trading-quality-score", type=float, default=float(os.getenv("WALK_FORWARD_MIN_TRADING_QUALITY_SCORE", "0.48")))
-    parser.add_argument("--max-overfit-gap", type=float, default=float(os.getenv("WALK_FORWARD_MAX_OVERFIT_GAP", "0.10")))
-    parser.add_argument("--max-log-files", type=int, default=int(os.getenv("WALK_FORWARD_MAX_LOG_FILES", "0")))
-    parser.add_argument("--registry-file", default=str(PROJECT_ROOT / "master_bot_registry.json"))
-    parser.add_argument("--out", default=str(PROJECT_ROOT / "governance" / "walk_forward" / "walk_forward_latest.json"))
+    parser = argparse.ArgumentParser(
+        description="Walk-forward style validation over historical bot training logs."
+    )
+    parser.add_argument(
+        "--min-runs", type=int, default=int(os.getenv("WALK_FORWARD_MIN_RUNS", "12"))
+    )
+    parser.add_argument(
+        "--pass-forward-threshold",
+        type=float,
+        default=float(os.getenv("WALK_FORWARD_PASS_FORWARD_THRESHOLD", "0.52")),
+    )
+    parser.add_argument(
+        "--pass-delta-threshold",
+        type=float,
+        default=float(os.getenv("WALK_FORWARD_PASS_DELTA_THRESHOLD", "-0.02")),
+    )
+    parser.add_argument(
+        "--min-trading-quality-score",
+        type=float,
+        default=float(os.getenv("WALK_FORWARD_MIN_TRADING_QUALITY_SCORE", "0.48")),
+    )
+    parser.add_argument(
+        "--max-overfit-gap",
+        type=float,
+        default=float(os.getenv("WALK_FORWARD_MAX_OVERFIT_GAP", "0.10")),
+    )
+    parser.add_argument(
+        "--max-log-files",
+        type=int,
+        default=int(os.getenv("WALK_FORWARD_MAX_LOG_FILES", "0")),
+    )
+    parser.add_argument(
+        "--registry-file", default=str(PROJECT_ROOT / "master_bot_registry.json")
+    )
+    parser.add_argument(
+        "--out",
+        default=str(
+            PROJECT_ROOT / "governance" / "walk_forward" / "walk_forward_latest.json"
+        ),
+    )
     args = parser.parse_args()
 
-    logs_dir = PROJECT_ROOT / "logs"
-    groups = defaultdict(list)
-
-    for p in _safe_log_paths(logs_dir, max(int(args.max_log_files), 0)):
-        try:
-            obj = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        bot_id = bot_id_from_log_name(p.name)
-        ts = timestamp_from_log_name(p.name)
-        acc = (obj.get("metrics") or {}).get("test_accuracy")
-        if acc is None:
-            continue
-        groups[bot_id].append((ts, float(acc)))
+    groups, source_evidence = _training_log_evidence(
+        [
+            PROJECT_ROOT / "logs",
+            PROJECT_ROOT / "local_fallback_storage/logs",
+            _configured_external_project_root_no_io() / "logs",
+        ],
+        max_files=(
+            min(max(int(args.max_log_files), 1), 2000) if args.max_log_files else 2000
+        ),
+    )
 
     repair_boundaries = _registry_repair_boundaries(Path(args.registry_file))
     report = {}
@@ -131,11 +329,10 @@ def main() -> int:
         boundary = repair_boundaries.get(bot_id)
         if boundary is not None:
             current_vals = [row for row in vals if row[0] >= boundary]
-            if current_vals:
-                lineage_reset = True
-                lineage_start_utc = boundary.isoformat()
-                pre_repair_runs_excluded = len(vals) - len(current_vals)
-                vals = current_vals
+            lineage_reset = True
+            lineage_start_utc = boundary.isoformat()
+            pre_repair_runs_excluded = len(vals) - len(current_vals)
+            vals = current_vals
         if len(vals) < args.min_runs:
             report[bot_id] = {
                 "runs": len(vals),
@@ -190,6 +387,7 @@ def main() -> int:
 
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "source_evidence": source_evidence,
         "min_runs": args.min_runs,
         "thresholds": {
             "pass_forward_threshold": float(args.pass_forward_threshold),
@@ -197,15 +395,18 @@ def main() -> int:
             "min_trading_quality_score": float(args.min_trading_quality_score),
             "max_overfit_gap": float(args.max_overfit_gap),
         },
-        "lineage_reset_bot_count": sum(1 for row in report.values() if isinstance(row, dict) and row.get("lineage_reset_active")),
+        "lineage_reset_bot_count": sum(
+            1
+            for row in report.values()
+            if isinstance(row, dict) and row.get("lineage_reset_active")
+        ),
         "bots": report,
     }
 
     out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    write_payload(out, payload)
     print(json.dumps(payload, indent=2))
-    return 0
+    return 0 if source_evidence["complete"] else 2
 
 
 if __name__ == "__main__":

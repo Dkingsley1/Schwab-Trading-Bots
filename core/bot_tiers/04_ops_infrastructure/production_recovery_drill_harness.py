@@ -1,0 +1,1 @@
+../../../scripts/ops/production_recovery_drill_harness.py

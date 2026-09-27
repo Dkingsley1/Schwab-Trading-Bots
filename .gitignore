@@ -16,11 +16,14 @@ __pycache__/
 
 # Secrets / auth
 token.json
+token.json.refresh.lock
 *.pem
 *.key
 .env
 .env.*
 !config/.env.example
+config/account_aliases.json
+config/account_policy_registry.json
 
 # Runtime outputs (large / generated)
 .runtime_locks/
@@ -59,10 +62,18 @@ output/pdf/*.zip
 
 # Generated registry backups / datasets
 backups/master_bot_registry_before_*.json
+backups/master_bot_registry_before_*.json.gz
 master_bot_registry.backup_*.json
 data/trade_history/import_summary_*.json
 data/trade_history/trade_learning_dataset.json
 paper_trades_*.jsonl
+
+# Local operator reports; hash/disposition snapshots live in docs/releases.
+/work/*.json
+/work/*.log
+/work/last_issues_writer_sample.txt
+# Retained upgrade evidence; payload-free inventory is tracked in docs/releases.
+/work/library_upgrade_apply_20260924_2018/
 
 # Legacy root duplicates
 Brain Refinery 2

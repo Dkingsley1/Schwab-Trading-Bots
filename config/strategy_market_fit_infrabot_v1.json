@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "policy_id": "strategy_market_fit_infrabot_v1",
+  "purpose": "Continuously screen the complete bounded strategy catalog against current market conditions and maintain a five-slot shadow challenger cohort without changing runtime decisions, sizing, promotion, or execution.",
+  "sources": {
+    "strategy_library_path": "governance/research/sleeve_strategy_library_latest.json",
+    "strategy_policy_path": "config/sleeve_strategy_contracts_v1.json",
+    "regime_path": "governance/health/regime_control_plane_latest.json",
+    "alpha_inputs_path": "governance/research/alpha_concept_inputs_latest.json",
+    "alpha_generation_path": "governance/health/alpha_generation_control_latest.json",
+    "paper_performance_path": "governance/health/paper_performance_latest.json",
+    "maximum_library_age_seconds": 86400,
+    "maximum_regime_age_seconds": 3600,
+    "maximum_alpha_input_age_seconds": 7200
+  },
+  "catalog_contract": {
+    "expected_strategy_count": 12000,
+    "require_unique_strategy_ids": true,
+    "require_complete_contract_receipts": true,
+    "batch_size": 500,
+    "top_strategy_limit": 100,
+    "top_family_limit": 100,
+    "top_per_sleeve_limit": 3,
+    "cache_when_source_signature_unchanged": true
+  },
+  "challenger_cohort": {
+    "mode": "existing_contract_shadow_observation_only",
+    "maximum_slots": 5,
+    "freeze_compatibility": "existing cold contracts may be observed in shadow while offspring generation and runtime activation remain frozen",
+    "strategies": [
+      {
+        "strategy_id": "sleeve::stat_arb_market_neutral::research_residual_reversal_regime_conditioned::v1",
+        "role": "mean_reversion_challenger"
+      },
+      {
+        "strategy_id": "sleeve::international_macro::research_policy_surprise_regime_conditioned::v1",
+        "role": "macro_event_challenger"
+      },
+      {
+        "strategy_id": "sleeve::international_macro::research_carry_roll_down_stress_tested::v1",
+        "role": "carry_value_challenger"
+      },
+      {
+        "strategy_id": "sleeve::international_macro::research_liquidity_stress_cost_adjusted::v1",
+        "role": "liquidity_execution_challenger"
+      },
+      {
+        "strategy_id": "sleeve::variance_volatility_swaps::research_tail_convexity_cost_adjusted::v1",
+        "role": "volatility_challenger"
+      }
+    ],
+    "require_catalog_presence": true,
+    "require_distinct_signal_families": true,
+    "require_fresh_ready_regime_for_shadow_observation": true,
+    "allow_counterfactual_research": true,
+    "allow_paper_orders": false,
+    "allow_live_orders": false
+  },
+  "scoring": {
+    "weights": {
+      "regime_fit": 0.5,
+      "candidate_forecast_evidence": 0.15,
+      "quality_maturity": 0.15,
+      "source_integrity": 0.1,
+      "contract_integrity": 0.1
+    },
+    "regime_scores": {
+      "aligned": 1.0,
+      "neutral": 0.6,
+      "guarded": 0.2,
+      "unknown": 0.0
+    },
+    "quality_scores": {
+      "validated_good": 1.0,
+      "promising_unconfirmed": 0.75,
+      "mixed_watch": 0.5,
+      "objective_evidence_pending": 0.35,
+      "insufficient_evidence": 0.2,
+      "cold_untested": 0.1,
+      "weak": 0.05,
+      "retirement_candidate": 0.0,
+      "control_only": 0.0
+    },
+    "minimum_sleeve_regime_observations": 20,
+    "family_identity": "sleeve_id_plus_archetype",
+    "score_semantics": "research priority only; never expected return, profitability probability, or execution approval"
+  },
+  "proof_contract": {
+    "market_fit_is_not_profitability": true,
+    "working_now_requires_candidate_bound_positive_post_cost_evidence": true,
+    "working_now_requires_positive_clustered_lower_confidence_bound": true,
+    "working_now_requires_cost_liquidity_and_capacity_clearance": true,
+    "counterfactual_hold_paths_are_not_trade_profit": true,
+    "unknown_is_not_bad": true
+  },
+  "infrabots": [
+    "strategy_market_fit_scanner_infrabot",
+    "challenger_cohort_curator_infrabot",
+    "strategy_evidence_guard_infrabot",
+    "strategy_market_drift_sentinel_infrabot"
+  ],
+  "authority": {
+    "changes_active_action": false,
+    "changes_position_size": false,
+    "changes_allocator_weights": false,
+    "changes_training_labels": false,
+    "activates_cold_strategy": false,
+    "retires_strategy": false,
+    "submits_paper_orders": false,
+    "submits_live_orders": false,
+    "grants_promotion": false,
+    "mutates_candidate": false,
+    "rewrites_soak_history": false,
+    "guarantees_profitability": false
+  }
+}

@@ -14,12 +14,28 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, ordered_unique, load_json, write_payload
+    from scripts.ops.long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        ordered_unique,
+        load_json,
+        write_payload,
+    )
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, ordered_unique, load_json, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        ordered_unique,
+        load_json,
+        write_payload,
+    )
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "storage_quota_guard_latest.json"
+from core.storage_router import inspect_storage_path
+
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "storage_quota_guard_latest.json"
+)
 
 
 DEFAULT_QUOTAS_GB = {
@@ -31,21 +47,38 @@ DEFAULT_QUOTAS_GB = {
 }
 SOFT_ADVISORY_TOLERANCE_GB = 2.0
 SOFT_ADVISORY_TOLERANCE_RATIO = 0.10
-DEFAULT_ACTIVE_DECISION_BUFFER_ALLOWANCE_GB = float(os.getenv("STORAGE_QUOTA_ACTIVE_DECISION_BUFFER_ALLOWANCE_GB", "16"))
-DEFAULT_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB = float(os.getenv("STORAGE_QUOTA_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB", "24"))
+DEFAULT_ACTIVE_DECISION_BUFFER_ALLOWANCE_GB = float(
+    os.getenv("STORAGE_QUOTA_ACTIVE_DECISION_BUFFER_ALLOWANCE_GB", "16")
+)
+DEFAULT_ACTIVE_DECISION_FULL_EVIDENCE_MAX_GB = float(
+    os.getenv("STORAGE_QUOTA_ACTIVE_DECISION_FULL_EVIDENCE_MAX_GB", "32")
+)
+DEFAULT_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB = float(
+    os.getenv("STORAGE_QUOTA_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB", "24")
+)
 DEFAULT_ACTIVE_GOVERNANCE_FULL_EVIDENCE_MAX_GB = float(
     os.getenv("STORAGE_QUOTA_ACTIVE_GOVERNANCE_FULL_EVIDENCE_MAX_GB", "48")
 )
-DEFAULT_ACTIVE_EXPLANATION_BUFFER_ALLOWANCE_GB = float(os.getenv("STORAGE_QUOTA_ACTIVE_EXPLANATION_BUFFER_ALLOWANCE_GB", "16"))
-DEFAULT_MANAGED_SUPPORT_SQL_RELIEF_ENABLED = os.getenv("STORAGE_QUOTA_MANAGED_SUPPORT_SQL_RELIEF", "1").strip().lower() in {
+DEFAULT_ACTIVE_EXPLANATION_BUFFER_ALLOWANCE_GB = float(
+    os.getenv("STORAGE_QUOTA_ACTIVE_EXPLANATION_BUFFER_ALLOWANCE_GB", "16")
+)
+DEFAULT_MANAGED_SUPPORT_SQL_RELIEF_ENABLED = os.getenv(
+    "STORAGE_QUOTA_MANAGED_SUPPORT_SQL_RELIEF", "1"
+).strip().lower() in {
     "1",
     "true",
     "yes",
     "on",
 }
-DEFAULT_SUPPORT_SQL_RELIEF_MIN_FREE_GB = float(os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RELIEF_MIN_FREE_GB", "96"))
-DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO = float(os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO", "0.20"))
-DEFAULT_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO = float(os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO", "0.95"))
+DEFAULT_SUPPORT_SQL_RELIEF_MIN_FREE_GB = float(
+    os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RELIEF_MIN_FREE_GB", "96")
+)
+DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO = float(
+    os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO", "0.20")
+)
+DEFAULT_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO = float(
+    os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO", "0.95")
+)
 DEFAULT_SUPPORT_SQL_RAW_HARD_MANAGED_MAX_RATIO = float(
     os.getenv("STORAGE_QUOTA_SUPPORT_SQL_RAW_HARD_MANAGED_MAX_RATIO", "1.15")
 )
@@ -80,27 +113,51 @@ def _safe_float(raw: Any, default: float = 0.0) -> float:
 
 
 def _role_bytes(storage_tier: dict[str, Any], role: str) -> int:
-    by_role = storage_tier.get("by_service_role") if isinstance(storage_tier.get("by_service_role"), dict) else {}
+    by_role = (
+        storage_tier.get("by_service_role")
+        if isinstance(storage_tier.get("by_service_role"), dict)
+        else {}
+    )
     return int(((by_role.get(role) or {}).get("bytes", 0)) or 0)
 
 
 def _family_bytes(storage_tier: dict[str, Any], family: str) -> int:
-    by_family = storage_tier.get("by_family") if isinstance(storage_tier.get("by_family"), dict) else {}
+    by_family = (
+        storage_tier.get("by_family")
+        if isinstance(storage_tier.get("by_family"), dict)
+        else {}
+    )
     return int(((by_family.get(family) or {}).get("bytes", 0)) or 0)
 
 
 def _compressed_archive_bytes(root: Path) -> int:
-    if not root.exists():
+    route = inspect_storage_path(root)
+    if route.get("status") == "missing":
         return 0
+    if route.get("status") != "present":
+        raise RuntimeError("unavailable_or_protected_archive_route")
     total = 0
+    seen_targets: set[Path] = set()
     try:
         iterator = root.rglob("*.gz")
     except Exception:
         return 0
     for path in iterator:
+        route = inspect_storage_path(path)
+        if route.get("status") == "missing":
+            continue
+        if route.get("status") != "present":
+            raise RuntimeError("unavailable_or_protected_archive_target")
         try:
-            if path.is_file() and not path.is_symlink():
-                total += max(int(path.stat().st_size), 0)
+            resolved = path.resolve(strict=True)
+            # Match the tier inventory's resolved-path deduplication for aliases.
+            if (
+                resolved.suffix == ".gz"
+                and resolved.is_file()
+                and resolved not in seen_targets
+            ):
+                seen_targets.add(resolved)
+                total += max(int(resolved.stat().st_size), 0)
         except Exception:
             continue
     return total
@@ -115,10 +172,20 @@ def _disk_free_gb(path: Path) -> float:
 
 def _stateful_sql_shard_breakdown(project_root: Path) -> dict[str, Any]:
     shard_root = project_root / "data" / "sql_link_shards"
-    try:
-        scan_root = shard_root.resolve() if shard_root.exists() else shard_root
-    except Exception:
-        scan_root = shard_root
+    scan_roots: list[Path] = []
+    for candidate in (
+        shard_root,
+        project_root / "local_fallback_storage/data/sql_link_shards",
+    ):
+        route = inspect_storage_path(candidate)
+        if route.get("status") == "missing":
+            continue
+        if route.get("status") != "present":
+            raise RuntimeError("unavailable_or_protected_sql_shard_route")
+        resolved = candidate.resolve(strict=True)
+        if resolved not in scan_roots:
+            scan_roots.append(resolved)
+    scan_root = scan_roots[0] if scan_roots else shard_root
     support_bytes = 0
     core_bytes = 0
     shard_bytes = 0
@@ -128,8 +195,14 @@ def _stateful_sql_shard_breakdown(project_root: Path) -> dict[str, Any]:
     core_rows: list[dict[str, Any]] = []
     component_rows: list[dict[str, Any]] = []
     seen_files: set[tuple[int, int]] = set()
+    backing_free_gb: dict[int, float] = {}
 
     def measure(path: Path) -> tuple[Path, int] | None:
+        route = inspect_storage_path(path)
+        if route.get("status") == "missing":
+            return None
+        if route.get("status") != "present":
+            raise RuntimeError("unavailable_or_protected_sql_component_route")
         try:
             resolved = path.resolve(strict=True)
             stat = resolved.stat()
@@ -139,13 +212,15 @@ def _stateful_sql_shard_breakdown(project_root: Path) -> dict[str, Any]:
             if identity in seen_files:
                 return None
             seen_files.add(identity)
+            if stat.st_dev not in backing_free_gb:
+                backing_free_gb[stat.st_dev] = _disk_free_gb(resolved.parent)
             return resolved, max(int(stat.st_size), 0)
         except Exception:
             return None
 
-    if scan_root.exists():
+    for scan_root_item in scan_roots:
         try:
-            iterator = scan_root.glob("*.sqlite3")
+            iterator = scan_root_item.glob("*.sqlite3")
         except Exception:
             iterator = []
         for path in iterator:
@@ -171,8 +246,17 @@ def _stateful_sql_shard_breakdown(project_root: Path) -> dict[str, Any]:
     component_candidates = (
         ("primary_compatibility_cache", project_root / "data" / "jsonl_link.sqlite3"),
         ("queue", project_root / "data" / "bot_channel_queue.sqlite3"),
-        ("primary_compatibility_cache", project_root / "local_fallback_storage" / "data" / "jsonl_link.sqlite3"),
-        ("queue", project_root / "local_fallback_storage" / "data" / "bot_channel_queue.sqlite3"),
+        (
+            "primary_compatibility_cache",
+            project_root / "local_fallback_storage" / "data" / "jsonl_link.sqlite3",
+        ),
+        (
+            "queue",
+            project_root
+            / "local_fallback_storage"
+            / "data"
+            / "bot_channel_queue.sqlite3",
+        ),
     )
     for component, path in component_candidates:
         measured = measure(path)
@@ -192,12 +276,22 @@ def _stateful_sql_shard_breakdown(project_root: Path) -> dict[str, Any]:
             primary_cache_bytes += size
         else:
             queue_bytes += size
-    support_rows = sorted(support_rows, key=lambda row: _safe_float(row.get("size_gb"), 0.0), reverse=True)
-    core_rows = sorted(core_rows, key=lambda row: _safe_float(row.get("size_gb"), 0.0), reverse=True)
+    support_rows = sorted(
+        support_rows, key=lambda row: _safe_float(row.get("size_gb"), 0.0), reverse=True
+    )
+    core_rows = sorted(
+        core_rows, key=lambda row: _safe_float(row.get("size_gb"), 0.0), reverse=True
+    )
     return {
         "root": str(scan_root),
-        "root_exists": bool(scan_root.exists()),
-        "root_free_gb": _round_gb(_disk_free_gb(scan_root if scan_root.exists() else scan_root.parent)),
+        "root_exists": bool(scan_roots),
+        "observed_shard_roots": [str(path) for path in scan_roots],
+        "resident_copy_policy": "count canonical and local fallback shards; deduplicate aliases and hard links by device and inode",
+        "root_free_gb": _round_gb(
+            min(backing_free_gb.values())
+            if backing_free_gb
+            else _disk_free_gb(scan_root if scan_roots else scan_root.parent)
+        ),
         "support_bytes": int(support_bytes),
         "core_bytes": int(core_bytes),
         "total_bytes": int(support_bytes + core_bytes),
@@ -209,7 +303,11 @@ def _stateful_sql_shard_breakdown(project_root: Path) -> dict[str, Any]:
         "shard_gb": _round_gb(float(shard_bytes) / float(1024**3)),
         "primary_cache_gb": _round_gb(float(primary_cache_bytes) / float(1024**3)),
         "queue_gb": _round_gb(float(queue_bytes) / float(1024**3)),
-        "stateful_components": sorted(component_rows, key=lambda row: _safe_float(row.get("size_gb"), 0.0), reverse=True),
+        "stateful_components": sorted(
+            component_rows,
+            key=lambda row: _safe_float(row.get("size_gb"), 0.0),
+            reverse=True,
+        ),
         "top_support_shards": support_rows[:5],
         "top_core_shards": core_rows[:5],
         "support_markers": list(SUPPORT_SQL_SHARD_MARKERS),
@@ -224,17 +322,28 @@ def _managed_support_sql_adjustment(
     hard_gb: float,
     breakdown: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    breakdown = breakdown if isinstance(breakdown, dict) else _stateful_sql_shard_breakdown(project_root)
-    support_bytes = min(max(int(breakdown.get("support_bytes") or 0), 0), max(int(bytes_used), 0))
+    breakdown = (
+        breakdown
+        if isinstance(breakdown, dict)
+        else _stateful_sql_shard_breakdown(project_root)
+    )
+    support_bytes = min(
+        max(int(breakdown.get("support_bytes") or 0), 0), max(int(bytes_used), 0)
+    )
     raw_used_gb = float(max(int(bytes_used), 0)) / float(1024**3)
     support_ratio = float(support_bytes) / float(max(int(bytes_used), 1))
-    core_after_support_gb = max(raw_used_gb - (float(support_bytes) / float(1024**3)), 0.0)
+    core_after_support_gb = max(
+        raw_used_gb - (float(support_bytes) / float(1024**3)), 0.0
+    )
     root_free_gb = _safe_float(breakdown.get("root_free_gb"), 0.0)
     active = bool(
         DEFAULT_MANAGED_SUPPORT_SQL_RELIEF_ENABLED
         and support_bytes > 0
-        and support_ratio >= max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO), 0.0)
-        and raw_used_gb <= float(hard_gb) * max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_MANAGED_MAX_RATIO), 1.0)
+        and support_ratio
+        >= max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO), 0.0)
+        and raw_used_gb
+        <= float(hard_gb)
+        * max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_MANAGED_MAX_RATIO), 1.0)
         and core_after_support_gb <= float(soft_gb)
         and root_free_gb >= max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_FREE_GB), 0.0)
     )
@@ -245,7 +354,9 @@ def _managed_support_sql_adjustment(
         blockers.append("no_support_sql_shards")
     if support_ratio < max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO), 0.0):
         blockers.append("support_sql_ratio_below_floor")
-    if raw_used_gb > float(hard_gb) * max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_MANAGED_MAX_RATIO), 1.0):
+    if raw_used_gb > float(hard_gb) * max(
+        float(DEFAULT_SUPPORT_SQL_RAW_HARD_MANAGED_MAX_RATIO), 1.0
+    ):
         blockers.append("raw_stateful_sql_above_managed_support_relief_ceiling")
     if core_after_support_gb > float(soft_gb):
         blockers.append("core_stateful_sql_above_soft_quota_after_support_relief")
@@ -261,9 +372,15 @@ def _managed_support_sql_adjustment(
         "raw_hard_ratio": round(raw_used_gb / max(float(hard_gb), 0.001), 3),
         "root_free_gb": _round_gb(root_free_gb),
         "min_root_free_gb": _round_gb(DEFAULT_SUPPORT_SQL_RELIEF_MIN_FREE_GB),
-        "min_support_ratio": round(max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO), 0.0), 3),
-        "raw_hard_advisory_ratio": round(max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO), 0.0), 3),
-        "raw_hard_managed_max_ratio": round(max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_MANAGED_MAX_RATIO), 1.0), 3),
+        "min_support_ratio": round(
+            max(float(DEFAULT_SUPPORT_SQL_RELIEF_MIN_SUPPORT_RATIO), 0.0), 3
+        ),
+        "raw_hard_advisory_ratio": round(
+            max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO), 0.0), 3
+        ),
+        "raw_hard_managed_max_ratio": round(
+            max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_MANAGED_MAX_RATIO), 1.0), 3
+        ),
         "blockers": ordered_unique(blockers),
         "breakdown": breakdown,
         "policy": "managed support SQL shards can be excluded from core stateful quota only while raw SQL is inside the managed over-hard buffer, core SQL is below soft quota after relief, and the backing volume has a free-space buffer; bytes still count toward disk forecasts",
@@ -300,7 +417,11 @@ def _active_current_day_decision_bytes(project_root: Path) -> int:
                 continue
             if not any(token in path.name for token in tokens):
                 continue
-            if ".local_fallback" in path.name or ".tmp." in path.name or ".compact_pending" in path.name:
+            if (
+                ".local_fallback" in path.name
+                or ".tmp." in path.name
+                or ".compact_pending" in path.name
+            ):
                 continue
             total += max(int(path.stat().st_size), 0)
         except Exception:
@@ -328,7 +449,11 @@ def _active_current_day_governance_channel_bytes(project_root: Path) -> int:
                 continue
             if not any(token in path.name for token in tokens):
                 continue
-            if ".local_fallback" in path.name or ".tmp." in path.name or ".compact_pending" in path.name:
+            if (
+                ".local_fallback" in path.name
+                or ".tmp." in path.name
+                or ".compact_pending" in path.name
+            ):
                 continue
             total += max(int(path.stat().st_size), 0)
         except Exception:
@@ -356,7 +481,11 @@ def _active_current_day_explanation_bytes(project_root: Path) -> int:
                 continue
             if not any(token in path.name for token in tokens):
                 continue
-            if ".local_fallback" in path.name or ".tmp." in path.name or ".compact_pending" in path.name:
+            if (
+                ".local_fallback" in path.name
+                or ".tmp." in path.name
+                or ".compact_pending" in path.name
+            ):
                 continue
             total += max(int(path.stat().st_size), 0)
         except Exception:
@@ -376,19 +505,37 @@ def _quota_lane_action(lane: dict[str, Any]) -> str:
     if family == "decision_explanations":
         return "tighten explanation retention or cold-tier offload before hot-path quotas spill further"
     if family == "sql_link_shards":
-        relief = lane.get("managed_support_sql_relief") if isinstance(lane.get("managed_support_sql_relief"), dict) else {}
+        relief = (
+            lane.get("managed_support_sql_relief")
+            if isinstance(lane.get("managed_support_sql_relief"), dict)
+            else {}
+        )
         if bool(relief.get("active", False)):
             return "keep managed support SQL shards on scheduled compaction/offload watch while core stateful SQL stays below quota"
         return "checkpoint and compact sql_link shards before the stateful_sql quota becomes runtime blocking"
     if family == "artifact_store":
-        return "garbage-collect artifact store blobs proactively during long-run windows"
+        return (
+            "garbage-collect artifact store blobs proactively during long-run windows"
+        )
     return f"reduce {family} storage before allowing growth lanes to widen"
 
 
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
-    storage_tier = load_json(project_root / "governance" / "health" / "storage_tier_policy_latest.json")
-    hot_lane_retention = load_json(project_root / "governance" / "health" / "hot_lane_retention_control_latest.json")
-    data_collection_storage_guard = load_json(project_root / "governance" / "health" / "data_collection_storage_guard_latest.json")
+    storage_tier = load_json(
+        project_root / "governance" / "health" / "storage_tier_policy_latest.json"
+    )
+    hot_lane_retention = load_json(
+        project_root
+        / "governance"
+        / "health"
+        / "hot_lane_retention_control_latest.json"
+    )
+    data_collection_storage_guard = load_json(
+        project_root
+        / "governance"
+        / "health"
+        / "data_collection_storage_guard_latest.json"
+    )
     safe_space_recovery = (
         data_collection_storage_guard.get("safe_space_recovery")
         if isinstance(data_collection_storage_guard.get("safe_space_recovery"), dict)
@@ -399,7 +546,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         if isinstance(data_collection_storage_guard.get("duplicate_cleanup"), dict)
         else {}
     )
-    safe_space_scan = safe_space_recovery.get("scan") if isinstance(safe_space_recovery.get("scan"), dict) else {}
+    safe_space_scan = (
+        safe_space_recovery.get("scan")
+        if isinstance(safe_space_recovery.get("scan"), dict)
+        else {}
+    )
     safe_space_by_reason = (
         safe_space_recovery.get("by_reason")
         if isinstance(safe_space_recovery.get("by_reason"), dict)
@@ -407,27 +558,50 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     )
     duplicate_bucket = (
         safe_space_by_reason.get("duplicate_local_fallback_artifact")
-        if isinstance(safe_space_by_reason.get("duplicate_local_fallback_artifact"), dict)
+        if isinstance(
+            safe_space_by_reason.get("duplicate_local_fallback_artifact"), dict
+        )
         else {}
     )
-    unbacked_fallback_gb = _safe_float(safe_space_scan.get("unbacked_duplicate_gb"), 0.0)
+    unbacked_fallback_gb = _safe_float(
+        safe_space_scan.get("unbacked_duplicate_gb"), 0.0
+    )
     fallback_reconciliation_bytes = max(
         int(max(unbacked_fallback_gb, 0.0) * (1024**3)),
-        int(max(_safe_float(duplicate_cleanup.get("candidate_gb"), 0.0), 0.0) * (1024**3)),
+        int(
+            max(_safe_float(duplicate_cleanup.get("candidate_gb"), 0.0), 0.0)
+            * (1024**3)
+        ),
         int(max(int(duplicate_bucket.get("bytes") or 0), 0)),
     )
     compressed_archive_offsets = {
-        "governance_telemetry": _compressed_archive_bytes(project_root / "governance" / "channels"),
+        "governance_telemetry": _compressed_archive_bytes(
+            project_root / "governance" / "channels"
+        ),
         "decisions": _compressed_archive_bytes(project_root / "decisions"),
-        "decision_explanations": _compressed_archive_bytes(project_root / "decision_explanations"),
+        "decision_explanations": _compressed_archive_bytes(
+            project_root / "decision_explanations"
+        ),
     }
     active_current_day_decision_bytes = _active_current_day_decision_bytes(project_root)
-    active_current_day_governance_channel_bytes = _active_current_day_governance_channel_bytes(project_root)
-    active_current_day_explanation_bytes = _active_current_day_explanation_bytes(project_root)
+    active_current_day_governance_channel_bytes = (
+        _active_current_day_governance_channel_bytes(project_root)
+    )
+    active_current_day_explanation_bytes = _active_current_day_explanation_bytes(
+        project_root
+    )
     storage_tier_status = str(storage_tier.get("overall_status") or "").strip()
-    pressure = storage_tier.get("pressure") if isinstance(storage_tier.get("pressure"), dict) else {}
-    hot_path_over_budget_bytes = int(max(_safe_float(pressure.get("hot_path_over_budget_bytes"), 0.0), 0.0))
-    live_hot_path_bytes = int(max(_safe_float(pressure.get("live_hot_path_bytes"), 0.0), 0.0))
+    pressure = (
+        storage_tier.get("pressure")
+        if isinstance(storage_tier.get("pressure"), dict)
+        else {}
+    )
+    hot_path_over_budget_bytes = int(
+        max(_safe_float(pressure.get("hot_path_over_budget_bytes"), 0.0), 0.0)
+    )
+    live_hot_path_bytes = int(
+        max(_safe_float(pressure.get("live_hot_path_bytes"), 0.0), 0.0)
+    )
     hot_budget_bytes = int(max(_safe_float(pressure.get("hot_budget_bytes"), 0.0), 0.0))
     hot_path_green = bool(
         storage_tier_status == "ready"
@@ -440,6 +614,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         hot_lane_retention.get("ok", False)
         and hot_lane_mode in {"thin_optional_sub_bot_decisions", "emergency_hot_thin"}
         and hot_lane_status in {"active", "critical", "watching", "ready"}
+    )
+    hot_lane_watch_current_day_decision_relief = bool(
+        hot_lane_retention.get("ok", False)
+        and hot_lane_mode in {"watch", "full_decision_evidence"}
+        and hot_lane_status in {"watching", "ready"}
+        and hot_path_green
     )
     hot_lane_full_evidence_current_day_governance_relief = bool(
         hot_lane_retention.get("ok", False)
@@ -459,17 +639,30 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         stateful_sql_breakdown: dict[str, Any] = {}
         if family == "sql_link_shards":
             stateful_sql_breakdown = _stateful_sql_shard_breakdown(project_root)
-            verified_bytes = int(max(int(stateful_sql_breakdown.get("total_bytes") or 0), 0))
+            verified_bytes = int(
+                max(int(stateful_sql_breakdown.get("total_bytes") or 0), 0)
+            )
             reported_bytes = int(max(int(bytes_used), 0))
-            materially_different = abs(reported_bytes - verified_bytes) >= max(int(1024**3), int(max(verified_bytes, 1) * 0.10))
-            if bool(stateful_sql_breakdown.get("root_exists", False)) and (materially_different or reported_bytes == 0):
+            materially_different = abs(reported_bytes - verified_bytes) >= max(
+                int(1024**3), int(max(verified_bytes, 1) * 0.10)
+            )
+            if bool(stateful_sql_breakdown.get("root_exists", False)) and (
+                materially_different or reported_bytes == 0
+            ):
                 bytes_used = verified_bytes
                 accounting_reconciliations.append(
                     {
                         "reason": "verified_sql_link_shard_filesystem_usage",
-                        "storage_tier_reported_gb": _round_gb(float(reported_bytes) / float(1024**3)),
-                        "verified_filesystem_gb": _round_gb(float(verified_bytes) / float(1024**3)),
+                        "storage_tier_reported_gb": _round_gb(
+                            float(reported_bytes) / float(1024**3)
+                        ),
+                        "verified_filesystem_gb": _round_gb(
+                            float(verified_bytes) / float(1024**3)
+                        ),
                         "root": stateful_sql_breakdown.get("root"),
+                        "observed_shard_roots": stateful_sql_breakdown.get(
+                            "observed_shard_roots", []
+                        ),
                         "policy": "prefer live filesystem usage for symlinked SQL shard quota when storage-tier accounting is stale or materially divergent",
                     }
                 )
@@ -485,7 +678,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                     "gb": _round_gb(float(applied) / float(1024**3)),
                 }
             )
-        compressed_offset = min(bytes_used, int(compressed_archive_offsets.get(family, 0) or 0))
+        compressed_offset = min(
+            bytes_used, int(compressed_archive_offsets.get(family, 0) or 0)
+        )
         if compressed_offset > 0:
             bytes_used = max(bytes_used - compressed_offset, 0)
             adjustments.append(
@@ -494,7 +689,11 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                     "gb": _round_gb(float(compressed_offset) / float(1024**3)),
                 }
             )
-        if family == "decisions" and active_current_day_decision_bytes > 0 and hot_lane_control_active:
+        if (
+            family == "decisions"
+            and active_current_day_decision_bytes > 0
+            and hot_lane_control_active
+        ):
             applied = min(bytes_used, active_current_day_decision_bytes)
             if applied > 0:
                 bytes_used = max(bytes_used - applied, 0)
@@ -507,30 +706,52 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                         "still_counted_by_disk_free_forecast": True,
                     }
                 )
-        if family == "governance_telemetry" and active_current_day_governance_channel_bytes > 0:
+        if (
+            family == "governance_telemetry"
+            and active_current_day_governance_channel_bytes > 0
+        ):
             applied = 0
             reason = ""
             if hot_lane_control_active:
                 applied = min(bytes_used, active_current_day_governance_channel_bytes)
                 reason = "exclude_current_day_active_governance_channels_under_hot_lane_retention"
             elif hot_lane_full_evidence_current_day_governance_relief:
-                base_allowance_bytes = int(max(DEFAULT_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB, 0.0) * (1024**3))
+                base_allowance_bytes = int(
+                    max(DEFAULT_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB, 0.0) * (1024**3)
+                )
                 full_evidence_allowance_bytes = int(
-                    max(DEFAULT_ACTIVE_GOVERNANCE_FULL_EVIDENCE_MAX_GB, DEFAULT_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB, 0.0)
+                    max(
+                        DEFAULT_ACTIVE_GOVERNANCE_FULL_EVIDENCE_MAX_GB,
+                        DEFAULT_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB,
+                        0.0,
+                    )
                     * (1024**3)
                 )
-                legacy_governance_bytes = max(raw_bytes_used - int(active_current_day_governance_channel_bytes), 0)
-                legacy_governance_within_soft = legacy_governance_bytes <= int(float(quota["soft"]) * (1024**3))
+                legacy_governance_bytes = max(
+                    raw_bytes_used - int(active_current_day_governance_channel_bytes), 0
+                )
+                legacy_governance_within_soft = legacy_governance_bytes <= int(
+                    float(quota["soft"]) * (1024**3)
+                )
                 active_governance_within_full_evidence_cap = (
-                    int(active_current_day_governance_channel_bytes) <= full_evidence_allowance_bytes
+                    int(active_current_day_governance_channel_bytes)
+                    <= full_evidence_allowance_bytes
                 )
                 use_full_evidence_allowance = bool(
                     active_current_day_governance_channel_bytes > base_allowance_bytes
                     and legacy_governance_within_soft
                     and active_governance_within_full_evidence_cap
                 )
-                allowance_bytes = full_evidence_allowance_bytes if use_full_evidence_allowance else base_allowance_bytes
-                applied = min(bytes_used, active_current_day_governance_channel_bytes, allowance_bytes)
+                allowance_bytes = (
+                    full_evidence_allowance_bytes
+                    if use_full_evidence_allowance
+                    else base_allowance_bytes
+                )
+                applied = min(
+                    bytes_used,
+                    active_current_day_governance_channel_bytes,
+                    allowance_bytes,
+                )
                 reason = (
                     "exclude_extended_current_day_active_governance_channels_under_green_full_evidence_hot_lane"
                     if use_full_evidence_allowance
@@ -543,22 +764,42 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                         "reason": reason,
                         "gb": _round_gb(float(applied) / float(1024**3)),
                         "hot_lane_mode": hot_lane_mode,
-                        "hot_path_over_budget_gb": _round_gb(float(hot_path_over_budget_bytes) / float(1024**3)),
-                        "allowance_gb": _round_gb(DEFAULT_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB),
-                        "full_evidence_max_gb": _round_gb(DEFAULT_ACTIVE_GOVERNANCE_FULL_EVIDENCE_MAX_GB),
+                        "hot_path_over_budget_gb": _round_gb(
+                            float(hot_path_over_budget_bytes) / float(1024**3)
+                        ),
+                        "allowance_gb": _round_gb(
+                            DEFAULT_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB
+                        ),
+                        "full_evidence_max_gb": _round_gb(
+                            DEFAULT_ACTIVE_GOVERNANCE_FULL_EVIDENCE_MAX_GB
+                        ),
                         "legacy_governance_after_current_day_gb": _round_gb(
-                            float(max(raw_bytes_used - int(active_current_day_governance_channel_bytes), 0))
+                            float(
+                                max(
+                                    raw_bytes_used
+                                    - int(active_current_day_governance_channel_bytes),
+                                    0,
+                                )
+                            )
                             / float(1024**3)
                         ),
                         "still_counted_by_disk_free_forecast": True,
                     }
                 )
-        if family == "decision_explanations" and active_current_day_explanation_bytes > 0 and hot_lane_control_active:
+        if (
+            family == "decision_explanations"
+            and active_current_day_explanation_bytes > 0
+            and hot_lane_control_active
+        ):
             raw_used_gb = float(bytes_used) / float(1024**3)
             hard_gb = float(quota["hard"])
             if raw_used_gb < hard_gb:
-                allowance_bytes = int(max(DEFAULT_ACTIVE_EXPLANATION_BUFFER_ALLOWANCE_GB, 0.0) * (1024**3))
-                applied = min(bytes_used, active_current_day_explanation_bytes, allowance_bytes)
+                allowance_bytes = int(
+                    max(DEFAULT_ACTIVE_EXPLANATION_BUFFER_ALLOWANCE_GB, 0.0) * (1024**3)
+                )
+                applied = min(
+                    bytes_used, active_current_day_explanation_bytes, allowance_bytes
+                )
                 if applied > 0:
                     bytes_used = max(bytes_used - applied, 0)
                     adjustments.append(
@@ -566,20 +807,66 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                             "reason": "exclude_bounded_current_day_explanation_buffer_under_hot_lane_retention",
                             "gb": _round_gb(float(applied) / float(1024**3)),
                             "hot_lane_mode": hot_lane_mode,
-                            "allowance_gb": _round_gb(DEFAULT_ACTIVE_EXPLANATION_BUFFER_ALLOWANCE_GB),
+                            "allowance_gb": _round_gb(
+                                DEFAULT_ACTIVE_EXPLANATION_BUFFER_ALLOWANCE_GB
+                            ),
                             "hard_quota_protected": True,
                             "still_counted_by_disk_free_forecast": True,
                         }
                     )
-        elif family == "decisions" and active_current_day_decision_bytes > 0 and not hot_lane_control_active:
+        elif (
+            family == "decisions"
+            and active_current_day_decision_bytes > 0
+            and not hot_lane_control_active
+        ):
             # Current-day active decision buffers are hot evidence, not old quota
-            # debt. Exclude only a bounded soft-quota allowance after compressed
-            # archive history is removed, and never use it to hide a hard breach.
+            # debt. A green watch/full-evidence hot lane can also account for a
+            # bounded current-day buffer against hard quota when legacy decision
+            # data is below hard quota; otherwise only soft-quota relief applies.
             raw_used_gb = float(bytes_used) / float(1024**3)
             hard_gb = float(quota["hard"])
-            if raw_used_gb < hard_gb:
-                allowance_bytes = int(max(DEFAULT_ACTIVE_DECISION_BUFFER_ALLOWANCE_GB, 0.0) * (1024**3))
-                applied = min(bytes_used, active_current_day_decision_bytes, allowance_bytes)
+            legacy_decision_bytes = max(
+                int(bytes_used) - int(active_current_day_decision_bytes),
+                0,
+            )
+            full_evidence_allowance_bytes = int(
+                max(DEFAULT_ACTIVE_DECISION_FULL_EVIDENCE_MAX_GB, 0.0) * (1024**3)
+            )
+            current_day_watch_relief_safe = bool(
+                hot_lane_watch_current_day_decision_relief
+                and legacy_decision_bytes <= int(hard_gb * (1024**3))
+                and int(active_current_day_decision_bytes)
+                <= full_evidence_allowance_bytes
+            )
+            if current_day_watch_relief_safe:
+                applied = min(bytes_used, active_current_day_decision_bytes)
+                if applied > 0:
+                    bytes_used = max(bytes_used - applied, 0)
+                    adjustments.append(
+                        {
+                            "reason": "exclude_current_day_active_decision_buffer_under_green_hot_lane_watch",
+                            "gb": _round_gb(float(applied) / float(1024**3)),
+                            "hot_lane_mode": hot_lane_mode,
+                            "hot_path_over_budget_gb": _round_gb(
+                                float(hot_path_over_budget_bytes) / float(1024**3)
+                            ),
+                            "full_evidence_max_gb": _round_gb(
+                                DEFAULT_ACTIVE_DECISION_FULL_EVIDENCE_MAX_GB
+                            ),
+                            "legacy_decisions_after_current_day_gb": _round_gb(
+                                float(legacy_decision_bytes) / float(1024**3)
+                            ),
+                            "hard_quota_protected": False,
+                            "still_counted_by_disk_free_forecast": True,
+                        }
+                    )
+            elif raw_used_gb < hard_gb:
+                allowance_bytes = int(
+                    max(DEFAULT_ACTIVE_DECISION_BUFFER_ALLOWANCE_GB, 0.0) * (1024**3)
+                )
+                applied = min(
+                    bytes_used, active_current_day_decision_bytes, allowance_bytes
+                )
                 if applied > 0:
                     bytes_used = max(bytes_used - applied, 0)
                     adjustments.append(
@@ -598,15 +885,22 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
                 breakdown=stateful_sql_breakdown,
             )
             if bool(managed_support_sql_relief.get("active", False)):
-                applied = min(bytes_used, int(managed_support_sql_relief.get("support_bytes") or 0))
+                applied = min(
+                    bytes_used,
+                    int(managed_support_sql_relief.get("support_bytes") or 0),
+                )
                 if applied > 0:
                     bytes_used = max(bytes_used - applied, 0)
                     adjustments.append(
                         {
                             "reason": "exclude_managed_support_sql_shards_from_core_stateful_quota",
                             "gb": _round_gb(float(applied) / float(1024**3)),
-                            "support_ratio": managed_support_sql_relief.get("support_ratio"),
-                            "root_free_gb": managed_support_sql_relief.get("root_free_gb"),
+                            "support_ratio": managed_support_sql_relief.get(
+                                "support_ratio"
+                            ),
+                            "root_free_gb": managed_support_sql_relief.get(
+                                "root_free_gb"
+                            ),
                             "hard_quota_protected": True,
                             "still_counted_by_disk_free_forecast": True,
                         }
@@ -625,7 +919,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             status = "blocked"
             hard_breaches += 1
         elif used_gb >= soft_gb:
-            if over_soft_gb <= SOFT_ADVISORY_TOLERANCE_GB and soft_ratio <= (1.0 + SOFT_ADVISORY_TOLERANCE_RATIO):
+            if over_soft_gb <= SOFT_ADVISORY_TOLERANCE_GB and soft_ratio <= (
+                1.0 + SOFT_ADVISORY_TOLERANCE_RATIO
+            ):
                 status = "advisory"
                 advisory_breaches += 1
             else:
@@ -634,7 +930,8 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         elif (
             family == "sql_link_shards"
             and bool(managed_support_sql_relief.get("active", False))
-            and raw_hard_ratio >= max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO), 0.0)
+            and raw_hard_ratio
+            >= max(float(DEFAULT_SUPPORT_SQL_RAW_HARD_ADVISORY_RATIO), 0.0)
         ):
             status = "advisory"
             advisory_breaches += 1
@@ -665,8 +962,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         overall_status = "degraded"
 
     blocked_lanes = [row for row in lanes if str(row.get("status") or "") == "blocked"]
-    degraded_lanes = [row for row in lanes if str(row.get("status") or "") == "degraded"]
-    advisory_lanes = [row for row in lanes if str(row.get("status") or "") == "advisory"]
+    degraded_lanes = [
+        row for row in lanes if str(row.get("status") or "") == "degraded"
+    ]
+    advisory_lanes = [
+        row for row in lanes if str(row.get("status") or "") == "advisory"
+    ]
     ranked_breaches = sorted(
         [*blocked_lanes, *degraded_lanes],
         key=lambda row: (
@@ -683,7 +984,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         ]
     )
     if blocked_lanes:
-        recommended_actions.append("keep expansion and heavy training gated until blocked storage quota lanes fall below hard quota")
+        recommended_actions.append(
+            "keep expansion and heavy training gated until blocked storage quota lanes fall below hard quota"
+        )
     recommended_actions = ordered_unique(recommended_actions)
 
     return {
@@ -697,36 +1000,79 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             "advisory_breaches": advisory_breaches,
             "tracked_lane_count": len(lanes),
             "blocked_families": [str(row.get("family") or "") for row in blocked_lanes],
-            "degraded_families": [str(row.get("family") or "") for row in degraded_lanes],
-            "advisory_families": [str(row.get("family") or "") for row in advisory_lanes],
+            "degraded_families": [
+                str(row.get("family") or "") for row in degraded_lanes
+            ],
+            "advisory_families": [
+                str(row.get("family") or "") for row in advisory_lanes
+            ],
             "soft_advisory_tolerance_gb": SOFT_ADVISORY_TOLERANCE_GB,
             "soft_advisory_tolerance_ratio": SOFT_ADVISORY_TOLERANCE_RATIO,
-            "worst_over_hard_gb": _round_gb(max((_safe_float(row.get("over_hard_gb"), 0.0) for row in lanes), default=0.0)),
-            "worst_hard_ratio": round(max((_safe_float(row.get("hard_ratio"), 0.0) for row in lanes), default=0.0), 3),
+            "worst_over_hard_gb": _round_gb(
+                max(
+                    (_safe_float(row.get("over_hard_gb"), 0.0) for row in lanes),
+                    default=0.0,
+                )
+            ),
+            "worst_hard_ratio": round(
+                max(
+                    (_safe_float(row.get("hard_ratio"), 0.0) for row in lanes),
+                    default=0.0,
+                ),
+                3,
+            ),
         },
         "lanes": lanes,
         "active_hot_buffer_containment": {
             "hot_lane_control_active": bool(hot_lane_control_active),
             "hot_lane_status": hot_lane_status,
             "hot_lane_mode": hot_lane_mode,
-            "active_current_day_decision_gb": _round_gb(float(active_current_day_decision_bytes) / float(1024**3)),
-            "active_current_day_governance_channel_gb": _round_gb(float(active_current_day_governance_channel_bytes) / float(1024**3)),
-            "active_current_day_explanation_gb": _round_gb(float(active_current_day_explanation_bytes) / float(1024**3)),
+            "active_current_day_decision_gb": _round_gb(
+                float(active_current_day_decision_bytes) / float(1024**3)
+            ),
+            "active_current_day_governance_channel_gb": _round_gb(
+                float(active_current_day_governance_channel_bytes) / float(1024**3)
+            ),
+            "active_current_day_explanation_gb": _round_gb(
+                float(active_current_day_explanation_bytes) / float(1024**3)
+            ),
             "hot_path_green": bool(hot_path_green),
-            "hot_path_over_budget_gb": _round_gb(float(hot_path_over_budget_bytes) / float(1024**3)),
-            "hot_lane_full_evidence_current_day_governance_relief": bool(hot_lane_full_evidence_current_day_governance_relief),
-            "active_governance_buffer_allowance_gb": _round_gb(DEFAULT_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB),
-            "active_governance_full_evidence_max_gb": _round_gb(DEFAULT_ACTIVE_GOVERNANCE_FULL_EVIDENCE_MAX_GB),
-            "active_explanation_buffer_allowance_gb": _round_gb(DEFAULT_ACTIVE_EXPLANATION_BUFFER_ALLOWANCE_GB),
-            "policy": "current-day decision bytes are excluded from lane quota only when hot-lane retention is actively throttling their source; bounded current-day explanation buffers are excluded from soft quota only while hot-lane retention is active and cannot hide hard breaches; bounded current-day governance evidence is excluded when full-evidence mode is ready and the hot path is green, with an extended cap only when non-current governance telemetry is already within soft quota; disk free forecast still counts the bytes",
+            "hot_path_over_budget_gb": _round_gb(
+                float(hot_path_over_budget_bytes) / float(1024**3)
+            ),
+            "hot_lane_full_evidence_current_day_governance_relief": bool(
+                hot_lane_full_evidence_current_day_governance_relief
+            ),
+            "hot_lane_watch_current_day_decision_relief": bool(
+                hot_lane_watch_current_day_decision_relief
+            ),
+            "active_decision_full_evidence_max_gb": _round_gb(
+                DEFAULT_ACTIVE_DECISION_FULL_EVIDENCE_MAX_GB
+            ),
+            "active_governance_buffer_allowance_gb": _round_gb(
+                DEFAULT_ACTIVE_GOVERNANCE_BUFFER_ALLOWANCE_GB
+            ),
+            "active_governance_full_evidence_max_gb": _round_gb(
+                DEFAULT_ACTIVE_GOVERNANCE_FULL_EVIDENCE_MAX_GB
+            ),
+            "active_explanation_buffer_allowance_gb": _round_gb(
+                DEFAULT_ACTIVE_EXPLANATION_BUFFER_ALLOWANCE_GB
+            ),
+            "policy": "current-day decision bytes are excluded from lane quota when hot-lane retention is actively throttling their source, or when green watch/full-evidence mode proves the hot path is within budget and the bounded current-day buffer is below its cap with legacy decisions still under hard quota; bounded current-day explanation buffers are excluded from soft quota only while hot-lane retention is active and cannot hide hard breaches; bounded current-day governance evidence is excluded when full-evidence mode is ready and the hot path is green, with an extended cap only when non-current governance telemetry is already within soft quota; disk free forecast still counts the bytes",
         },
-        "infra_bots": ["storage_quota_guard", "storage_tier_policy", "retention_debt_sheriff"],
+        "infra_bots": [
+            "storage_quota_guard",
+            "storage_tier_policy",
+            "retention_debt_sheriff",
+        ],
         "recommended_actions": recommended_actions,
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Apply hard storage quotas per lane for long-running runtime windows.")
+    parser = argparse.ArgumentParser(
+        description="Apply hard storage quotas per lane for long-running runtime windows."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")

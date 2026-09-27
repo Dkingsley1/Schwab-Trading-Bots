@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "contract_id": "bot_operating_definitions_v1",
+  "completion_scope": "registered_bot_operating_definitions_not_standalone_trading_mandates",
+  "mode": "source_bound_definition_only",
+  "authority": {
+    "changes_decisions": false,
+    "changes_registry": false,
+    "changes_risk_limits": false,
+    "starts_workers": false,
+    "submits_orders": false,
+    "promotes_candidates": false,
+    "claims_economic_evidence": false
+  },
+  "rebind_policy": "explicit_materialization_only_never_scheduled_auto_repin",
+  "source_budget": {
+    "maximum_module_bytes": 2000000,
+    "maximum_total_bytes": 64000000,
+    "maximum_files": 2500
+  },
+  "areas": {
+    "purpose": {
+      "role": "Preserve the registered bot role; operating job kind never changes registry role or authority.",
+      "hypothesis": "State the falsifiable behavior of this operating job, not an unsupported claim of market alpha.",
+      "primary_family": "Assign exactly one operating job family. Economic strategy classifications remain separate hints.",
+      "objective": "Define the output this exact registry entry or source program is responsible for producing."
+    },
+    "scope": {
+      "universe": "Bind exact registry inputs or the source-defined data selection and feature expressions; do not invent instruments.",
+      "venue": "This component does not own an order venue. Input provider selection belongs to its bound source program.",
+      "session": "Use the existing caller's invocation/session selection, including source-defined allowlists.",
+      "decision_interval_seconds": "Declare event-driven invocation explicitly. No polling interval or wall-clock conversion is invented for sample-based programs.",
+      "holding_horizon_seconds": "This job does not own positions. Prediction horizons remain source-defined observation counts or explicit label-time rules.",
+      "inputs": "Bind the per-bot input fields, registry record projection, and executable feature builders."
+    },
+    "decision_rules": {
+      "output_rule": "Bind the exact source program, entry points and shared helpers, or the registry-slot definition projection.",
+      "parameters": "Record literal values, exact expressions, function defaults and training-call keyword arguments without executing code.",
+      "position_management": "Entry/add/trim/exit/time-stop ownership stays with existing position, risk and execution controllers; this job grants none.",
+      "test_cases": "Require valid-binding acceptance and changed-identity rejection cases for the definition controller. Model conformance tests are separate."
+    },
+    "abstention": {
+      "conditions": "Reject missing, changed, ambiguous or authority-bearing definition bindings; model sample rejection remains the bound source logic.",
+      "maximum_input_age_seconds": "Use source-defined input/label freshness rules for model calls. Definition source identity is rechecked on each native audit.",
+      "supported_regimes": "Describe declared source filters exactly. A registry regime label alone is not empirical evidence of model support."
+    },
+    "boundaries": {
+      "owner": "The bot-organization controller owns these definitions; the existing trainer or collector retains execution of its own work.",
+      "allowed_outputs": "Limit this definition layer to contracts and audit evidence. Describe model or metadata outputs without activating them.",
+      "forbidden_actions": "No orders, allocation, risk-limit changes, registry mutation, promotion, worker creation, or profitability clearance.",
+      "risk_owner": "Downstream decisions retain the existing institutional and execution-lane owners and all vetoes.",
+      "dependencies": "Pin direct local imports and explicit shared feature, label, training and execution-boundary sources."
+    },
+    "training": {
+      "target": "Bind the exact implemented learning target, or explicitly identify a metadata-only slot with no dedicated trainer.",
+      "label_horizon_seconds": "Keep label maturity declarations separate from sample-count horizons. Do not infer seconds from a strategy name.",
+      "join_policy": "Record implemented source/registry label joins; their statistical correctness is not established by definition completeness.",
+      "split_policy": "Record the implemented split/defaults and preserve synthetic-versus-runtime origin; do not fabricate purged validation.",
+      "experiment_contract": "Bind the bot, code revision and definition receipt. Candidate, dataset, model and untouched evaluation evidence remain separate requirements."
+    },
+    "accountability": {
+      "metric": "Measure operating-contract correctness and describe source loss/metrics separately from net trading returns.",
+      "benchmark": "Use the exact source/record projection as the operating benchmark; a strategy benchmark requires the separate trading mandate.",
+      "invalidation": "Any identity, role, contract, source, dependency or authority mismatch makes the operating definition incomplete.",
+      "trace_fields": "Publish bot ID, definition digest, profile, source and registry receipts, all seven areas, validation issues and separate evidence states.",
+      "lifecycle": "Define draft, source-bound, changed/incomplete, and retired-record handling without mutating runtime lifecycle."
+    }
+  },
+  "subsections": {
+    "purpose": {
+      "role": "Role And Responsibility",
+      "hypothesis": "Hypothesis",
+      "primary_family": "Primary Family",
+      "objective": "Objective"
+    },
+    "scope": {
+      "universe": "Input Universe",
+      "venue": "Venue And Data Origin",
+      "session": "Session",
+      "decision_interval_seconds": "Decision Cadence",
+      "holding_horizon_seconds": "Holding And Prediction Horizon",
+      "inputs": "Input Contract"
+    },
+    "decision_rules": {
+      "output_rule": "Output Rule",
+      "parameters": "Parameters And Units",
+      "position_management": "Position Management",
+      "test_cases": "Acceptance And Abstention Cases"
+    },
+    "abstention": {
+      "conditions": "No-Output Conditions",
+      "maximum_input_age_seconds": "Freshness Limits",
+      "supported_regimes": "Regime Support"
+    },
+    "boundaries": {
+      "owner": "Ownership",
+      "allowed_outputs": "Allowed Outputs",
+      "forbidden_actions": "Forbidden Actions",
+      "risk_owner": "Risk Ownership",
+      "dependencies": "Dependencies"
+    },
+    "training": {
+      "target": "Learning Target",
+      "label_horizon_seconds": "Label Horizon",
+      "join_policy": "Point-In-Time Joins",
+      "split_policy": "Evaluation Splits",
+      "experiment_contract": "Experiment Lineage"
+    },
+    "accountability": {
+      "metric": "Success Metrics",
+      "benchmark": "Benchmarks",
+      "invalidation": "Invalidation",
+      "trace_fields": "Traceability",
+      "lifecycle": "Lifecycle"
+    }
+  },
+  "profiles": {
+    "collection_wrapper": {
+      "purpose": "Describe the registered collection specification and return its existing blocked-training metadata.",
+      "training_status": "metadata_descriptor_no_model_fit",
+      "hypothesis": "describe_bot returns its declared BOT_SPEC; train_brain returns metadata with trainable_now false through the existing collection helper.",
+      "data_origin": "declared_collection_metadata_not_verified_market_outcomes"
+    },
+    "registry_declared_slot": {
+      "purpose": "Represent an explicitly bound registry research/collection slot with no dedicated source program.",
+      "training_status": "no_dedicated_trainer_declared",
+      "hypothesis": "The definition projection preserves this bot's explicit registry metadata and exposes the absence of a dedicated implementation.",
+      "data_origin": "registry_declaration_not_observed_worker_activity"
+    },
+    "runtime_model_program": {
+      "purpose": "Fit or describe a model using the source program's runtime-data training path and its exact feature, label and filter callbacks.",
+      "training_status": "source_defined_runtime_training_not_started_by_definition",
+      "hypothesis": "The model learning procedure predicts the target produced by the pinned label program from the pinned feature program; test loss and generalization must be measured independently.",
+      "data_origin": "runtime_data_path_with_source_defined_fallback_policy"
+    },
+    "synthetic_research_program": {
+      "purpose": "Run the source-defined synthetic or offline research experiment without treating simulated results as live market evidence.",
+      "training_status": "source_defined_research_training_not_started_by_definition",
+      "hypothesis": "The source-defined predictor or classifier fits its generated or offline dataset under the pinned training procedure; synthetic fit does not establish market alpha.",
+      "data_origin": "synthetic_or_offline_research_path"
+    }
+  },
+  "shared_sources": [
+    "core/registry_backed_collection_bot.py",
+    "core/indicator_bot_common.py",
+    "core/runtime_training_common.py",
+    "core/crypto_runtime_bot_common.py",
+    "core/runtime_requested_bot_common.py",
+    "core/institutional_decision_flow.py",
+    "core/execution_lane_pipeline.py",
+    "core/bot_operating_definitions.py",
+    "core/bot_definition_contracts.py",
+    "core/bot_process_definitions.py"
+  ]
+}

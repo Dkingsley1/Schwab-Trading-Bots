@@ -1,0 +1,1 @@
+../../../scripts/ops/strategy_market_fit_infrabot.py

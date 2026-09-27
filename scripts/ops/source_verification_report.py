@@ -11,27 +11,31 @@ from typing import Any
 
 try:
     from zoneinfo import ZoneInfo
-except Exception:  # pragma: no cover - zoneinfo is available on normal Python 3.9+ runtimes.
+except (
+    Exception
+):  # pragma: no cover - zoneinfo is available on normal Python 3.9+ runtimes.
     ZoneInfo = None
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.central_bank_liquidity import (
+from core.central_bank_liquidity import (  # noqa: E402
     CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS,
     assess_central_bank_liquidity_context,
 )
-from core.global_central_bank_context import (
+from core.global_central_bank_context import (  # noqa: E402
     CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS,
     GLOBAL_CENTRAL_BANK_FEATURE_KEYS,
     assess_central_bank_cross_source_context,
     assess_global_central_bank_context,
 )
-from core.decision_context_mesh import (
+from core.decision_context_mesh import (  # noqa: E402
     DECISION_CONTEXT_MESH_FEATURE_KEYS,
     assess_decision_context_mesh,
 )
+from core.operating_contracts import build_operating_contract  # noqa: E402
+from scripts import collector_contracts as collector_contracts_src  # noqa: E402
 
 REPORTS_DIR = PROJECT_ROOT / "exports" / "reports"
 HEALTH_DIR = PROJECT_ROOT / "governance" / "health"
@@ -52,6 +56,7 @@ SOURCE_CRITICALITY = {
     "central_bank_liquidity_context": "decision_critical",
     "global_central_bank_context": "decision_context",
     "central_bank_cross_source_context": "decision_context",
+    "public_financial_context": "decision_context",
     "decision_context_mesh": "decision_context",
     "market_micro_context": "decision_critical",
     "sec_edgar_context": "decision_context",
@@ -62,6 +67,9 @@ SOURCE_CRITICALITY = {
     "public_policy_context": "decision_context",
     "schwab_education_context": "optional_enrichment",
     "fed_2026_supervisory_stress_scenario": "optional_enrichment",
+}
+SOURCE_COLLECTOR_PAIR_ALIASES = {
+    OPTIONS_CONTEXT_SOURCE_ID: "options_flow_context",
 }
 
 
@@ -137,7 +145,9 @@ def _ordered_unique(items: list[Any]) -> list[str]:
     return out
 
 
-def _minimum_ok_sources(total: int, *, floor: int = 1, tolerate_failures: int = 1, min_ratio: float = 0.75) -> int:
+def _minimum_ok_sources(
+    total: int, *, floor: int = 1, tolerate_failures: int = 1, min_ratio: float = 0.75
+) -> int:
     if int(total) <= 0:
         return 0
     ratio_target = int(round(float(total) * float(min_ratio)))
@@ -163,9 +173,7 @@ def _source_confidence_components(
     status_score = (
         1.0
         if verification_status == STATUS_CROSS_VERIFIED
-        else 0.84
-        if verification_status == STATUS_SINGLE_VERIFIED
-        else 0.30
+        else 0.84 if verification_status == STATUS_SINGLE_VERIFIED else 0.30
     )
     freshness_score = 1.0 if fresh else 0.20
     health_score = 1.0 if ok else 0.20
@@ -179,13 +187,22 @@ def _source_confidence_components(
         int(_safe_float(evidence.get("effective_ok_sources"), 0.0) or 0),
         1 if _safe_float(evidence.get("symbols_with_chain"), 0.0) > 0 else 0,
     )
-    provider_score = min(provider_ok / max(provider_total, 1), 1.0) if provider_total > 0 else (1.0 if ok else 0.0)
+    provider_score = (
+        min(provider_ok / max(provider_total, 1), 1.0)
+        if provider_total > 0
+        else (1.0 if ok else 0.0)
+    )
     schema_score = 0.72
-    if evidence.get("cross_profile_ok") is True or evidence.get("options_backbone_ok") is True:
+    if (
+        evidence.get("cross_profile_ok") is True
+        or evidence.get("options_backbone_ok") is True
+    ):
         schema_score = 0.88
     if evidence.get("ticker_map_ok") is True:
         schema_score = 0.92
-    notes_penalty = min(len([item for item in notes if str(item).strip()]) * 0.035, 0.18)
+    notes_penalty = min(
+        len([item for item in notes if str(item).strip()]) * 0.035, 0.18
+    )
     return {
         "status_score": round(status_score, 6),
         "freshness_score": round(freshness_score, 6),
@@ -234,11 +251,16 @@ def _market_closed_for_local_micro(now: datetime) -> bool:
 
 
 def _market_holiday_pause_observed(health_dir: Path, now: datetime) -> bool:
-    for path in sorted(health_dir.glob("data_ingress_latest_*_equities_schwab.json"))[:200]:
+    for path in sorted(health_dir.glob("data_ingress_latest_*_equities_schwab.json"))[
+        :200
+    ]:
         payload = _read_json(path)
         if str(payload.get("pause_reason") or "").strip().lower() != "holiday":
             continue
-        if str(payload.get("loop_state") or "").strip().lower() != "paused_session_gate":
+        if (
+            str(payload.get("loop_state") or "").strip().lower()
+            != "paused_session_gate"
+        ):
             continue
         ts = _parse_ts(payload.get("timestamp_utc"))
         if _is_fresh(ts, now, 12.0):
@@ -247,7 +269,11 @@ def _market_holiday_pause_observed(health_dir: Path, now: datetime) -> bool:
 
 
 def _row_has_actionable_notes(row: dict[str, Any]) -> bool:
-    notes = [str(item or "").strip() for item in row.get("notes") or [] if str(item or "").strip()]
+    notes = [
+        str(item or "").strip()
+        for item in row.get("notes") or []
+        if str(item or "").strip()
+    ]
     if not notes:
         return False
     verification_status = str(row.get("verification_status") or "")
@@ -267,13 +293,21 @@ def _row_has_actionable_notes(row: dict[str, Any]) -> bool:
     if bool(evidence.get("official_plus_twelvedata_verified_fallback")):
         accepted_note_tokens.update({"market_proxy_absent_direct_fx_unavailable"})
     if bool(evidence.get("official_reference_rates_only_direct_fx_unavailable")):
-        accepted_note_tokens.update({"official_reference_rates_only_direct_fx_unavailable"})
+        accepted_note_tokens.update(
+            {"official_reference_rates_only_direct_fx_unavailable"}
+        )
     if bool(evidence.get("optional_unconfigured")):
-        accepted_note_tokens.update({"optional_options_flow_credentials_not_configured"})
-    if bool(evidence.get("free_options_chain_ok")) and bool(evidence.get("options_backbone_ok")):
+        accepted_note_tokens.update(
+            {"optional_options_flow_credentials_not_configured"}
+        )
+    if bool(evidence.get("free_options_chain_ok")) and bool(
+        evidence.get("options_backbone_ok")
+    ):
         accepted_note_tokens.update({"polygon_api_key_missing"})
     if bool(evidence.get("official_macro_context_verified_partial_public_feeds")):
-        accepted_note_tokens.update({"official_macro_context_verified_partial_public_feeds"})
+        accepted_note_tokens.update(
+            {"official_macro_context_verified_partial_public_feeds"}
+        )
     if bool(evidence.get("world_bank_partial_verified")):
         accepted_note_tokens.update({"world_bank_indicators_partial"})
     for note in notes:
@@ -281,11 +315,18 @@ def _row_has_actionable_notes(row: dict[str, Any]) -> bool:
             continue
         if note.startswith("partial_sources=") and accepted_note_tokens:
             continue
-        if note.startswith("source_warnings=") and "cross_verified_source_warnings" in accepted_note_tokens:
+        if (
+            note.startswith("source_warnings=")
+            and "cross_verified_source_warnings" in accepted_note_tokens
+        ):
             continue
-        if note.startswith("fred_warnings=") and bool(evidence.get("official_macro_context_verified_partial_public_feeds")):
+        if note.startswith("fred_warnings=") and bool(
+            evidence.get("official_macro_context_verified_partial_public_feeds")
+        ):
             continue
-        if note.startswith("world_bank_indicators_partial=") and bool(evidence.get("world_bank_partial_verified")):
+        if note.startswith("world_bank_indicators_partial=") and bool(
+            evidence.get("world_bank_partial_verified")
+        ):
             continue
         return True
     return False
@@ -294,7 +335,11 @@ def _row_has_actionable_notes(row: dict[str, Any]) -> bool:
 def _refresh_command_for_source(project_root: Path, source_id: str) -> list[str]:
     opsctl = str(project_root / "scripts" / "ops" / "opsctl.sh")
     mapping: dict[str, list[str]] = {
-        "market_quote_profiles": [str(project_root / ".venv314" / "bin" / "python"), str(project_root / "scripts" / "data_source_divergence_bot.py"), "--json"],
+        "market_quote_profiles": [
+            str(project_root / ".venv314" / "bin" / "python"),
+            str(project_root / "scripts" / "data_source_divergence_bot.py"),
+            "--json",
+        ],
         OPTIONS_CONTEXT_SOURCE_ID: [opsctl, "options-flow-sync", "--json"],
         OPTIONS_CONTEXT_LEGACY_SOURCE_ID: [opsctl, "options-flow-sync", "--json"],
         "macro_crossstack": [opsctl, "macro-crosscheck", "--json"],
@@ -315,18 +360,171 @@ def _refresh_command_for_source(project_root: Path, source_id: str) -> list[str]
         "official_macro_context": [opsctl, "macro-context-sync", "--json"],
         "central_bank_liquidity_context": [opsctl, "macro-context-sync", "--json"],
         "global_central_bank_context": [opsctl, "global-central-bank-sync", "--json"],
-        "central_bank_cross_source_context": [opsctl, "central-bank-context-sync", "--json"],
+        "central_bank_cross_source_context": [
+            opsctl,
+            "central-bank-context-sync",
+            "--json",
+        ],
+        "public_financial_context": [opsctl, "public-financial-sync", "--json"],
         "decision_context_mesh": [opsctl, "decision-context-sync", "--json"],
         "schwab_education_context": [opsctl, "schwab-education-sync", "--json"],
-        "schwab_symbol_news": [opsctl, "schwab-symbol-news-sync", "--max-runtime-seconds", "180", "--json"],
-        "ticker_news_context": [opsctl, "ticker-news-sync", "--max-runtime-seconds", "240", "--json"],
+        "schwab_symbol_news": [
+            opsctl,
+            "schwab-symbol-news-sync",
+            "--max-runtime-seconds",
+            "180",
+            "--json",
+        ],
+        "ticker_news_context": [
+            opsctl,
+            "ticker-news-sync",
+            "--max-runtime-seconds",
+            "240",
+            "--json",
+        ],
         "market_micro_context": [opsctl, "market-micro-sync", "--json"],
         "sec_edgar_context": [opsctl, "sec-edgar-sync", "--json"],
         "extended_quant_context": [opsctl, "extended-quant-sync", "--json"],
         "public_policy_context": [opsctl, "public-policy-sync", "--json"],
-        "fed_2026_supervisory_stress_scenario": [opsctl, "source-verification", "--json"],
+        "fed_2026_supervisory_stress_scenario": [
+            opsctl,
+            "source-verification",
+            "--json",
+        ],
     }
     return mapping.get(str(source_id), [opsctl, "source-verification", "--json"])
+
+
+def _refresh_dependency_source_ids(row: dict[str, Any]) -> list[str]:
+    if str(row.get("source_id") or "") != "decision_context_mesh":
+        return []
+    evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    allowed = set(SOURCE_CRITICALITY) - {"decision_context_mesh"}
+    return [
+        source_id
+        for source_id in _ordered_unique(
+            [str(value or "") for value in evidence.get("failed_source_ids") or []]
+        )
+        if source_id in allowed
+    ]
+
+
+def _source_row_refresh_ready(row: dict[str, Any]) -> bool:
+    return bool(
+        row
+        and row.get("fresh", False)
+        and row.get("ok", False)
+        and str(row.get("verification_status") or "")
+        in {STATUS_SINGLE_VERIFIED, STATUS_CROSS_VERIFIED}
+    )
+
+
+def _build_refresh_commands(
+    project_root: Path,
+    rows: list[dict[str, Any]],
+    degraded_source_ids: list[str],
+) -> tuple[list[list[str]], dict[str, list[str]]]:
+    rows_by_id = {str(row.get("source_id") or ""): row for row in rows}
+    commands: list[list[str]] = []
+    dependencies: dict[str, list[str]] = {}
+    for source_id in degraded_source_ids:
+        row = rows_by_id.get(source_id, {})
+        dependency_ids = [
+            dependency_id
+            for dependency_id in _refresh_dependency_source_ids(row)
+            if not _source_row_refresh_ready(rows_by_id.get(dependency_id, {}))
+        ]
+        if dependency_ids:
+            dependencies[source_id] = dependency_ids
+        for refresh_source_id in [*dependency_ids, source_id]:
+            command = _refresh_command_for_source(project_root, refresh_source_id)
+            if command not in commands:
+                commands.append(command)
+    verification_command = [
+        str(project_root / "scripts" / "ops" / "opsctl.sh"),
+        "source-verification",
+        "--json",
+    ]
+    if commands and verification_command not in commands:
+        commands.append(verification_command)
+    return commands, dependencies
+
+
+def _apply_artifact_pair_contract(
+    rows: list[dict[str, Any]],
+    project_root: Path,
+    now: datetime,
+) -> dict[str, Any]:
+    contract_path = (
+        project_root / "governance" / "health" / "collector_contracts_latest.json"
+    )
+    if not contract_path.exists():
+        return {
+            "active": False,
+            "status": "not_available",
+            "artifact_path": str(contract_path),
+            "evaluated_source_count": 0,
+            "drifted_source_count": 0,
+            "drifted_sources": [],
+            "policy": "collector_contract_marker_enables_direct_health_payload_pair_evaluation",
+        }
+
+    specs_by_name = {
+        str(spec.get("name") or ""): spec
+        for spec in collector_contracts_src.COLLECTOR_SPECS
+        if str(spec.get("name") or "")
+    }
+    evaluated = 0
+    drifted: list[str] = []
+    skewed: list[str] = []
+    for row in rows:
+        source_id = str(row.get("source_id") or "")
+        collector_name = SOURCE_COLLECTOR_PAIR_ALIASES.get(source_id, source_id)
+        spec = specs_by_name.get(collector_name)
+        if spec is None:
+            continue
+        evaluated += 1
+        state = collector_contracts_src._artifact_pair_state(
+            project_root,
+            spec,
+            now_ts=now.timestamp(),
+        )
+        evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+        evidence["artifact_pair_contract"] = state
+        row["evidence"] = evidence
+        if float(state.get("timestamp_skew_seconds") or 0.0) > 300.0:
+            skewed.append(source_id)
+        if bool(state.get("ready", False)):
+            continue
+        drifted.append(source_id)
+        notes = [str(value) for value in row.get("notes") or []]
+        if "health_payload_artifact_drift" not in notes:
+            notes.append("health_payload_artifact_drift")
+        row["verification_status"] = STATUS_SINGLE_UNVERIFIED
+        row["fresh"] = False
+        row["ok"] = False
+        row["notes"] = notes
+        components = _source_confidence_components(
+            verification_status=STATUS_SINGLE_UNVERIFIED,
+            fresh=False,
+            ok=False,
+            notes=notes,
+            evidence=evidence,
+        )
+        row["confidence_components"] = components
+        row["source_confidence_score"] = _source_confidence_score(components)
+    return {
+        "active": True,
+        "status": "ready" if not drifted else "drifted",
+        "artifact_path": str(contract_path),
+        "evaluated_source_count": evaluated,
+        "drifted_source_count": len(drifted),
+        "drifted_sources": drifted,
+        "timestamp_skew_observed_count": len(skewed),
+        "timestamp_skew_observed_sources": skewed,
+        "blocking_policy": "fresh_health_never_masks_a_stale_or_missing_consumer_payload",
+        "timestamp_skew_policy": "skew_is_visible_but_blocks_only_when_either_side_exceeds_its_freshness_slo",
+    }
 
 
 def _row(
@@ -361,7 +559,9 @@ def _row(
         "verification_status": verification_status,
         "verification_mode": verification_mode,
         "artifact_path": str(artifact_path),
-        "artifact_timestamp_utc": artifact_timestamp.isoformat() if artifact_timestamp is not None else None,
+        "artifact_timestamp_utc": (
+            artifact_timestamp.isoformat() if artifact_timestamp is not None else None
+        ),
         "age_hours": _round_age(age_hours),
         "fresh": bool(fresh),
         "ok": bool(ok),
@@ -379,13 +579,25 @@ def _market_quote_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     ts = _parse_ts(payload.get("timestamp_utc"))
     fresh = _is_fresh(ts, now, 12.0)
     notes: list[str] = []
-    cross_profile = payload.get("cross_profile") if isinstance(payload.get("cross_profile"), dict) else {}
-    offenders = cross_profile.get("offenders") if isinstance(cross_profile.get("offenders"), list) else []
+    cross_profile = (
+        payload.get("cross_profile")
+        if isinstance(payload.get("cross_profile"), dict)
+        else {}
+    )
+    offenders = (
+        cross_profile.get("offenders")
+        if isinstance(cross_profile.get("offenders"), list)
+        else []
+    )
     if cross_profile and not bool(cross_profile.get("ok", True)):
         notes.append(f"cross_profile_residual_offenders={len(offenders)}")
     if not fresh:
         notes.append("stale_artifact")
-    status = STATUS_CROSS_VERIFIED if bool(payload.get("ok", False)) and fresh else STATUS_SINGLE_UNVERIFIED
+    status = (
+        STATUS_CROSS_VERIFIED
+        if bool(payload.get("ok", False)) and fresh
+        else STATUS_SINGLE_UNVERIFIED
+    )
     return _row(
         source_id="market_quote_profiles",
         title="Market Quote Profiles",
@@ -400,9 +612,15 @@ def _market_quote_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         notes=notes,
         evidence={
             "compared_buckets": int(payload.get("compared_buckets", 0) or 0),
-            "worst_relative_spread": float(payload.get("worst_relative_spread", 0.0) or 0.0),
-            "max_relative_spread": float(payload.get("max_relative_spread", 0.0) or 0.0),
-            "cross_profile_ok": bool(cross_profile.get("ok", False)) if cross_profile else None,
+            "worst_relative_spread": float(
+                payload.get("worst_relative_spread", 0.0) or 0.0
+            ),
+            "max_relative_spread": float(
+                payload.get("max_relative_spread", 0.0) or 0.0
+            ),
+            "cross_profile_ok": (
+                bool(cross_profile.get("ok", False)) if cross_profile else None
+            ),
             "cross_profile_offenders": offenders[:5],
         },
     )
@@ -418,47 +636,90 @@ def _options_flow_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     notes: list[str] = []
     sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
     polygon = sources.get("polygon") if isinstance(sources.get("polygon"), dict) else {}
-    unusual_whales_api = sources.get("unusual_whales_api") if isinstance(sources.get("unusual_whales_api"), dict) else {}
-    unusual_whales_export = sources.get("unusual_whales_export") if isinstance(sources.get("unusual_whales_export"), dict) else {}
-    yahoo_options_chain = sources.get("yahoo_options_chain") if isinstance(sources.get("yahoo_options_chain"), dict) else {}
-    cboe_delayed_options = sources.get("cboe_delayed_options") if isinstance(sources.get("cboe_delayed_options"), dict) else {}
-    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    unusual_whales_api = (
+        sources.get("unusual_whales_api")
+        if isinstance(sources.get("unusual_whales_api"), dict)
+        else {}
+    )
+    unusual_whales_export = (
+        sources.get("unusual_whales_export")
+        if isinstance(sources.get("unusual_whales_export"), dict)
+        else {}
+    )
+    yahoo_options_chain = (
+        sources.get("yahoo_options_chain")
+        if isinstance(sources.get("yahoo_options_chain"), dict)
+        else {}
+    )
+    cboe_delayed_options = (
+        sources.get("cboe_delayed_options")
+        if isinstance(sources.get("cboe_delayed_options"), dict)
+        else {}
+    )
+    coverage = (
+        payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    )
     polygon_ok = bool(polygon.get("ok", False))
     free_options_chain_ok = bool(
         coverage.get("free_options_chain_ok", False)
         or yahoo_options_chain.get("ok", False)
         or cboe_delayed_options.get("ok", False)
     )
-    unusual_whales_ok = bool(unusual_whales_api.get("ok", False) or unusual_whales_export.get("ok", False))
+    unusual_whales_ok = bool(
+        unusual_whales_api.get("ok", False) or unusual_whales_export.get("ok", False)
+    )
     unusual_whales_expected = bool(
         unusual_whales_api.get("expected", False)
         or unusual_whales_export.get("expected", False)
         or unusual_whales_export.get("configured", False)
     )
     symbols_with_chain = int(payload.get("symbols_with_chain", 0) or 0)
-    symbols_with_polygon_chain = int(payload.get("symbols_with_polygon_chain", coverage.get("symbols_with_polygon_chain", 0)) or 0)
+    symbols_with_polygon_chain = int(
+        payload.get(
+            "symbols_with_polygon_chain", coverage.get("symbols_with_polygon_chain", 0)
+        )
+        or 0
+    )
     if symbols_with_polygon_chain <= 0 and polygon_ok and not free_options_chain_ok:
         symbols_with_polygon_chain = symbols_with_chain
-    polygon_backbone_ok = bool(coverage.get("polygon_backbone_ok", False) or (polygon_ok and symbols_with_polygon_chain > 0))
+    polygon_backbone_ok = bool(
+        coverage.get("polygon_backbone_ok", False)
+        or (polygon_ok and symbols_with_polygon_chain > 0)
+    )
     options_backbone_ok = bool(polygon_backbone_ok or free_options_chain_ok)
-    context_profile = str(payload.get("context_profile") or coverage.get("context_profile") or "").strip()
+    context_profile = str(
+        payload.get("context_profile") or coverage.get("context_profile") or ""
+    ).strip()
     if not context_profile:
         context_profile = (
             "multi_provider_full"
             if polygon_backbone_ok and unusual_whales_ok
-            else "polygon_primary_only"
-            if polygon_backbone_ok and not unusual_whales_expected
-            else "polygon_backbone_only"
-            if polygon_backbone_ok
-            else "free_options_chain_plus_overlay"
-            if free_options_chain_ok and unusual_whales_ok
-            else "free_options_chain_only"
-            if free_options_chain_ok
-            else "unusual_whales_overlay_only"
-            if unusual_whales_ok
-            else "unavailable"
+            else (
+                "polygon_primary_only"
+                if polygon_backbone_ok and not unusual_whales_expected
+                else (
+                    "polygon_backbone_only"
+                    if polygon_backbone_ok
+                    else (
+                        "free_options_chain_plus_overlay"
+                        if free_options_chain_ok and unusual_whales_ok
+                        else (
+                            "free_options_chain_only"
+                            if free_options_chain_ok
+                            else (
+                                "unusual_whales_overlay_only"
+                                if unusual_whales_ok
+                                else "unavailable"
+                            )
+                        )
+                    )
+                )
+            )
         )
-    overall_status = str(payload.get("overall_status") or ("ready" if payload.get("ok", False) else "blocked")).strip()
+    overall_status = str(
+        payload.get("overall_status")
+        or ("ready" if payload.get("ok", False) else "blocked")
+    ).strip()
     auth_issue = str(payload.get("auth_issue") or "").strip()
     optional_unconfigured = bool(
         auth_issue == "options_flow_credentials_missing"
@@ -474,17 +735,36 @@ def _options_flow_row(health_dir: Path, now: datetime) -> dict[str, Any]:
                 text = str(err or "").strip()
                 if text:
                     notes.append(text)
-        if unusual_whales_expected and (not unusual_whales_ok) and bool(payload.get("operator_action_required", False)):
+        if (
+            unusual_whales_expected
+            and (not unusual_whales_ok)
+            and bool(payload.get("operator_action_required", False))
+        ):
             notes.append(auth_issue or "options_flow_source_unavailable")
-        if context_profile and context_profile not in {"multi_provider_full", "polygon_primary_only", "free_options_chain_plus_overlay", "free_options_chain_only"}:
+        if context_profile and context_profile not in {
+            "multi_provider_full",
+            "polygon_primary_only",
+            "free_options_chain_plus_overlay",
+            "free_options_chain_only",
+        }:
             notes.append(f"context_profile={context_profile}")
         if overall_status and overall_status != "ready":
             notes.append(f"overall_status={overall_status}")
     if not fresh:
         notes.append("stale_artifact")
-    if bool(payload.get("ok", False)) and fresh and context_profile == "multi_provider_full" and overall_status == "ready":
+    if (
+        bool(payload.get("ok", False))
+        and fresh
+        and context_profile == "multi_provider_full"
+        and overall_status == "ready"
+    ):
         status = STATUS_CROSS_VERIFIED
-    elif bool(payload.get("ok", False)) and fresh and options_backbone_ok and overall_status == "ready":
+    elif (
+        bool(payload.get("ok", False))
+        and fresh
+        and options_backbone_ok
+        and overall_status == "ready"
+    ):
         status = STATUS_SINGLE_VERIFIED
     elif optional_unconfigured and fresh:
         status = STATUS_SINGLE_VERIFIED
@@ -508,7 +788,9 @@ def _options_flow_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "symbols_with_chain": symbols_with_chain,
             "symbols_with_metrics": int(payload.get("symbols_with_metrics", 0) or 0),
             "symbols_with_polygon_chain": symbols_with_polygon_chain,
-            "symbols_with_free_options": int(payload.get("symbols_with_free_options", 0) or 0),
+            "symbols_with_free_options": int(
+                payload.get("symbols_with_free_options", 0) or 0
+            ),
             "polygon_ok": polygon_ok,
             "polygon_backbone_ok": polygon_backbone_ok,
             "free_options_chain_ok": free_options_chain_ok,
@@ -535,10 +817,16 @@ def _macro_crosscheck_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     fresh = _is_fresh(ts, now, 24.0)
     notes: list[str] = []
     if isinstance(payload.get("notes"), list):
-        notes.extend(str(item) for item in payload.get("notes", []) if str(item).strip())
+        notes.extend(
+            str(item) for item in payload.get("notes", []) if str(item).strip()
+        )
     if not fresh:
         notes.append("stale_artifact")
-    status = STATUS_CROSS_VERIFIED if bool(payload.get("ok", False)) and fresh else STATUS_SINGLE_UNVERIFIED
+    status = (
+        STATUS_CROSS_VERIFIED
+        if bool(payload.get("ok", False)) and fresh
+        else STATUS_SINGLE_UNVERIFIED
+    )
     return _row(
         source_id="macro_crossstack",
         title="Macro Cross-Stack",
@@ -572,6 +860,8 @@ def _crypto_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     compared_assets = int(payload.get("compared_assets", 0) or 0)
     ok_sources = int(payload.get("ok_source_count", 0) or 0)
     total_sources = int(payload.get("source_count", 0) or 0)
+    market_ok_sources = int(payload.get("market_ok_source_count", ok_sources) or 0)
+    market_total_sources = int(payload.get("market_source_count", total_sources) or 0)
     if compared_assets <= 0:
         notes.append("no_cross_provider_overlap")
     if ok_sources < total_sources:
@@ -585,7 +875,10 @@ def _crypto_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         STATUS_CROSS_VERIFIED
         if bool(payload.get("ok", False))
         and compared_assets >= 3
-        and ok_sources >= _minimum_ok_sources(total_sources, floor=5, tolerate_failures=2, min_ratio=0.70)
+        and market_ok_sources
+        >= _minimum_ok_sources(
+            market_total_sources, floor=5, tolerate_failures=2, min_ratio=0.70
+        )
         and fresh
         else STATUS_SINGLE_UNVERIFIED
     )
@@ -606,6 +899,8 @@ def _crypto_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "tracked_assets": int(payload.get("tracked_assets", 0) or 0),
             "ok_sources": ok_sources,
             "total_sources": total_sources,
+            "market_ok_sources": market_ok_sources,
+            "market_total_sources": market_total_sources,
             "compared_assets": compared_assets,
             "warning_count": warning_count,
             "sources": {
@@ -658,7 +953,11 @@ def _free_equity_reference_row(health_dir: Path, now: datetime) -> dict[str, Any
             "symbols_with_reference": symbols_with_reference,
             "ok_sources": ok_count,
             "total_sources": total_count,
-            "sources": {key: bool(value.get("ok", False)) for key, value in sources.items() if isinstance(value, dict)},
+            "sources": {
+                key: bool(value.get("ok", False))
+                for key, value in sources.items()
+                if isinstance(value, dict)
+            },
         },
     )
 
@@ -685,15 +984,27 @@ def _fx_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     fed_h10 = sources.get("fed_h10") if isinstance(sources.get("fed_h10"), dict) else {}
     if official_pairs <= 0:
         official_pairs = max(official_pairs, int(fed_h10.get("pair_count", 0) or 0))
-    twelve_data = sources.get("twelve_data") if isinstance(sources.get("twelve_data"), dict) else {}
-    twelve_data_ok = bool(twelve_data.get("ok", False)) and int(twelve_data.get("pairs_ok", 0) or 0) > 0
-    direct_forex_execution_supported = bool(payload.get("direct_forex_execution_supported", False))
+    twelve_data = (
+        sources.get("twelve_data")
+        if isinstance(sources.get("twelve_data"), dict)
+        else {}
+    )
+    twelve_data_ok = (
+        bool(twelve_data.get("ok", False))
+        and int(twelve_data.get("pairs_ok", 0) or 0) > 0
+    )
+    direct_forex_execution_supported = bool(
+        payload.get("direct_forex_execution_supported", False)
+    )
     official_rate_only_holiday_fallback = bool(
         bool(payload.get("ok", False))
         and ok_sources >= 3
         and official_pairs >= 3
         and proxy_symbols_observed <= 0
-        and (_market_closed_for_local_micro(now) or _market_holiday_pause_observed(health_dir, now))
+        and (
+            _market_closed_for_local_micro(now)
+            or _market_holiday_pause_observed(health_dir, now)
+        )
         and fresh
     )
     official_plus_twelvedata_verified_fallback = bool(
@@ -767,7 +1078,9 @@ def _fx_market_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "official_reference_rates_only_direct_fx_unavailable": official_reference_rates_only_direct_fx_unavailable,
             "twelve_data_ok": twelve_data_ok,
             "direct_forex_execution_supported": direct_forex_execution_supported,
-            "direct_forex_execution_reason": str(payload.get("direct_forex_execution_reason") or ""),
+            "direct_forex_execution_reason": str(
+                payload.get("direct_forex_execution_reason") or ""
+            ),
         },
     )
 
@@ -779,13 +1092,24 @@ def _external_feeds_row(project_root: Path, now: datetime) -> dict[str, Any]:
     fresh = _is_fresh(ts, now, 24.0)
     ok_count, total_count = _ok_count(payload)
     notes: list[str] = []
-    official_macro_path = project_root / "governance" / "health" / "official_macro_context_sync_latest.json"
+    official_macro_path = (
+        project_root
+        / "governance"
+        / "health"
+        / "official_macro_context_sync_latest.json"
+    )
     official_macro = _read_json(official_macro_path)
     official_macro_ts = _parse_ts(official_macro.get("timestamp_utc"))
     official_macro_fresh = _is_fresh(official_macro_ts, now, 24.0)
-    official_sources = official_macro.get("sources") if isinstance(official_macro.get("sources"), dict) else {}
+    official_sources = (
+        official_macro.get("sources")
+        if isinstance(official_macro.get("sources"), dict)
+        else {}
+    )
     official_ok_count, official_total_count = _ok_count(official_sources)
-    official_min_ok = _minimum_ok_sources(official_total_count, floor=4, tolerate_failures=1, min_ratio=0.80)
+    official_min_ok = _minimum_ok_sources(
+        official_total_count, floor=4, tolerate_failures=1, min_ratio=0.80
+    )
     official_macro_verified = bool(
         bool(official_macro.get("ok", False))
         and official_macro_fresh
@@ -794,7 +1118,11 @@ def _external_feeds_row(project_root: Path, now: datetime) -> dict[str, Any]:
     )
     public_feeds_fully_ok = bool(ok_count == total_count and total_count > 0)
     official_macro_context_verified_partial_public_feeds = bool(
-        fresh and ok_count > 0 and total_count > 0 and not public_feeds_fully_ok and official_macro_verified
+        fresh
+        and ok_count > 0
+        and total_count > 0
+        and not public_feeds_fully_ok
+        and official_macro_verified
     )
     fred = payload.get("fred") if isinstance(payload.get("fred"), dict) else {}
     warnings = fred.get("warnings") if isinstance(fred.get("warnings"), list) else []
@@ -807,7 +1135,10 @@ def _external_feeds_row(project_root: Path, now: datetime) -> dict[str, Any]:
         notes.append("official_macro_context_verified_partial_public_feeds")
     if not fresh:
         notes.append("stale_artifact")
-    verified = bool((public_feeds_fully_ok or official_macro_context_verified_partial_public_feeds) and fresh)
+    verified = bool(
+        (public_feeds_fully_ok or official_macro_context_verified_partial_public_feeds)
+        and fresh
+    )
     effective_ok_count = ok_count
     effective_total_count = total_count
     if official_macro_context_verified_partial_public_feeds:
@@ -837,7 +1168,11 @@ def _external_feeds_row(project_root: Path, now: datetime) -> dict[str, Any]:
             "official_macro_ok_sources": official_ok_count,
             "official_macro_total_sources": official_total_count,
             "official_macro_min_ok_sources_required": official_min_ok,
-            "sources": {key: bool(value.get("ok", False)) for key, value in payload.items() if isinstance(value, dict) and "ok" in value},
+            "sources": {
+                key: bool(value.get("ok", False))
+                for key, value in payload.items()
+                if isinstance(value, dict) and "ok" in value
+            },
         },
     )
 
@@ -857,11 +1192,17 @@ def _official_macro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         and not bool(value.get("contract_participates", True))
         and not bool(value.get("ok", False))
     )
-    central_source = sources.get("central_bank_liquidity") if isinstance(sources.get("central_bank_liquidity"), dict) else {}
+    central_source = (
+        sources.get("central_bank_liquidity")
+        if isinstance(sources.get("central_bank_liquidity"), dict)
+        else {}
+    )
     central_liquidity_ok = bool(central_source.get("ok", False))
     if not fresh:
         notes.append("stale_artifact")
-    min_ok_sources = _minimum_ok_sources(total_count, floor=4, tolerate_failures=1, min_ratio=0.80)
+    min_ok_sources = _minimum_ok_sources(
+        total_count, floor=4, tolerate_failures=1, min_ratio=0.80
+    )
     if total_count > 0 and ok_count < total_count:
         notes.append(f"partial_sources={ok_count}/{total_count}")
     if auxiliary_degraded:
@@ -870,7 +1211,11 @@ def _official_macro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         notes.append("central_bank_liquidity_contract_not_ready")
     status = (
         STATUS_SINGLE_VERIFIED
-        if bool(payload.get("ok", False)) and central_liquidity_ok and ok_count >= min_ok_sources and total_count > 0 and fresh
+        if bool(payload.get("ok", False))
+        and central_liquidity_ok
+        and ok_count >= min_ok_sources
+        and total_count > 0
+        and fresh
         else STATUS_SINGLE_UNVERIFIED
     )
     return _row(
@@ -890,30 +1235,59 @@ def _official_macro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "total_sources": total_count,
             "min_ok_sources_required": min_ok_sources,
             "central_bank_liquidity_ok": central_liquidity_ok,
-            "sources": {key: bool(value.get("ok", False)) for key, value in sources.items() if isinstance(value, dict)},
+            "sources": {
+                key: bool(value.get("ok", False))
+                for key, value in sources.items()
+                if isinstance(value, dict)
+            },
         },
     )
 
 
 def _central_bank_liquidity_row(project_root: Path, now: datetime) -> dict[str, Any]:
-    path = project_root / "exports" / "external_context" / "central_bank_liquidity_latest.json"
+    path = (
+        project_root
+        / "exports"
+        / "external_context"
+        / "central_bank_liquidity_latest.json"
+    )
     payload = _read_json(path)
     ts = _parse_ts(payload.get("timestamp_utc"))
     fresh = _is_fresh(ts, now, 24.0)
-    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
-    missing = coverage.get("missing_required_series") if isinstance(coverage.get("missing_required_series"), list) else []
-    stale = coverage.get("stale_required_series") if isinstance(coverage.get("stale_required_series"), list) else []
-    unusable = coverage.get("unusable_required_series") if isinstance(coverage.get("unusable_required_series"), list) else []
+    coverage = (
+        payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    )
+    missing = (
+        coverage.get("missing_required_series")
+        if isinstance(coverage.get("missing_required_series"), list)
+        else []
+    )
+    stale = (
+        coverage.get("stale_required_series")
+        if isinstance(coverage.get("stale_required_series"), list)
+        else []
+    )
+    unusable = (
+        coverage.get("unusable_required_series")
+        if isinstance(coverage.get("unusable_required_series"), list)
+        else []
+    )
     future_selected = bool(coverage.get("future_observation_selected", False))
     coverage_ratio = float(coverage.get("required_coverage_ratio", 0.0) or 0.0)
-    features = payload.get("global_features") if isinstance(payload.get("global_features"), dict) else {}
+    features = (
+        payload.get("global_features")
+        if isinstance(payload.get("global_features"), dict)
+        else {}
+    )
     assessment = assess_central_bank_liquidity_context(payload, now_utc=now)
     verified = bool(fresh and assessment.get("ready", False))
     notes: list[str] = []
     if not fresh:
         notes.append("stale_artifact")
     if missing:
-        notes.append(f"missing_required_series={','.join(str(item) for item in missing)}")
+        notes.append(
+            f"missing_required_series={','.join(str(item) for item in missing)}"
+        )
     if stale:
         notes.append(f"stale_required_series={','.join(str(item) for item in stale)}")
     if future_selected:
@@ -927,7 +1301,9 @@ def _central_bank_liquidity_row(project_root: Path, now: datetime) -> dict[str, 
         source_id="central_bank_liquidity_context",
         title="Central Bank And Fed Liquidity Context",
         category="macro_data",
-        verification_status=STATUS_SINGLE_VERIFIED if verified else STATUS_SINGLE_UNVERIFIED,
+        verification_status=(
+            STATUS_SINGLE_VERIFIED if verified else STATUS_SINGLE_UNVERIFIED
+        ),
         verification_mode="official_series_coverage_and_freshness",
         artifact_path=path,
         artifact_timestamp=ts,
@@ -944,8 +1320,12 @@ def _central_bank_liquidity_row(project_root: Path, now: datetime) -> dict[str, 
             "unusable_required_series": unusable,
             "as_of_date": coverage.get("as_of_date"),
             "latest_observation_dates": coverage.get("latest_observation_dates", {}),
-            "latest_observation_age_days": coverage.get("latest_observation_age_days", {}),
-            "future_observations_excluded": coverage.get("future_observations_excluded", {}),
+            "latest_observation_age_days": coverage.get(
+                "latest_observation_age_days", {}
+            ),
+            "future_observations_excluded": coverage.get(
+                "future_observations_excluded", {}
+            ),
             "future_observation_selected": future_selected,
             "feature_count": len(features),
             "required_feature_count": len(CENTRAL_BANK_LIQUIDITY_FEATURE_KEYS),
@@ -956,12 +1336,23 @@ def _central_bank_liquidity_row(project_root: Path, now: datetime) -> dict[str, 
 
 
 def _global_central_bank_row(project_root: Path, now: datetime) -> dict[str, Any]:
-    path = project_root / "exports" / "external_context" / "global_central_bank_context_latest.json"
+    path = (
+        project_root
+        / "exports"
+        / "external_context"
+        / "global_central_bank_context_latest.json"
+    )
     payload = _read_json(path)
     ts = _parse_ts(payload.get("timestamp_utc"))
     fresh = _is_fresh(ts, now, 48.0)
-    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
-    features = payload.get("global_features") if isinstance(payload.get("global_features"), dict) else {}
+    coverage = (
+        payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    )
+    features = (
+        payload.get("global_features")
+        if isinstance(payload.get("global_features"), dict)
+        else {}
+    )
     assessment = assess_global_central_bank_context(payload, now_utc=now)
     verified = bool(fresh and assessment.get("ready", False))
     notes = [str(reason) for reason in assessment.get("reasons", [])]
@@ -971,7 +1362,9 @@ def _global_central_bank_row(project_root: Path, now: datetime) -> dict[str, Any
         source_id="global_central_bank_context",
         title="Global Central Bank Policy And Balance Sheet Context",
         category="macro_data",
-        verification_status=STATUS_SINGLE_VERIFIED if verified else STATUS_SINGLE_UNVERIFIED,
+        verification_status=(
+            STATUS_SINGLE_VERIFIED if verified else STATUS_SINGLE_UNVERIFIED
+        ),
         verification_mode="bis_member_reported_point_in_time_coverage",
         artifact_path=path,
         artifact_timestamp=ts,
@@ -983,13 +1376,25 @@ def _global_central_bank_row(project_root: Path, now: datetime) -> dict[str, Any
             "registry_bank_count": coverage.get("registry_bank_count", 0),
             "ready_bank_count": coverage.get("ready_bank_count", 0),
             "tier_1_coverage_ratio": coverage.get("tier_1_coverage_ratio", 0.0),
-            "important_bank_coverage_ratio": coverage.get("important_bank_coverage_ratio", 0.0),
-            "policy_rate_coverage_ratio": coverage.get("policy_rate_coverage_ratio", 0.0),
-            "balance_sheet_coverage_ratio": coverage.get("balance_sheet_coverage_ratio", 0.0),
+            "important_bank_coverage_ratio": coverage.get(
+                "important_bank_coverage_ratio", 0.0
+            ),
+            "policy_rate_coverage_ratio": coverage.get(
+                "policy_rate_coverage_ratio", 0.0
+            ),
+            "balance_sheet_coverage_ratio": coverage.get(
+                "balance_sheet_coverage_ratio", 0.0
+            ),
             "raw_policy_area_count": coverage.get("raw_policy_area_count", 0),
-            "raw_balance_sheet_area_count": coverage.get("raw_balance_sheet_area_count", 0),
-            "future_observations_excluded": coverage.get("future_observations_excluded", {}),
-            "future_observation_selected": coverage.get("future_observation_selected", False),
+            "raw_balance_sheet_area_count": coverage.get(
+                "raw_balance_sheet_area_count", 0
+            ),
+            "future_observations_excluded": coverage.get(
+                "future_observations_excluded", {}
+            ),
+            "future_observation_selected": coverage.get(
+                "future_observation_selected", False
+            ),
             "feature_count": len(features),
             "required_feature_count": len(GLOBAL_CENTRAL_BANK_FEATURE_KEYS),
             "consumer_contract": assessment,
@@ -999,24 +1404,39 @@ def _global_central_bank_row(project_root: Path, now: datetime) -> dict[str, Any
 
 
 def _central_bank_cross_source_row(project_root: Path, now: datetime) -> dict[str, Any]:
-    path = project_root / "exports" / "external_context" / "central_bank_cross_source_latest.json"
+    path = (
+        project_root
+        / "exports"
+        / "external_context"
+        / "central_bank_cross_source_latest.json"
+    )
     payload = _read_json(path)
     ts = _parse_ts(payload.get("timestamp_utc"))
     fresh = _is_fresh(ts, now, 24.0)
-    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
-    features = payload.get("global_features") if isinstance(payload.get("global_features"), dict) else {}
+    coverage = (
+        payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    )
+    features = (
+        payload.get("global_features")
+        if isinstance(payload.get("global_features"), dict)
+        else {}
+    )
     assessment = assess_central_bank_cross_source_context(payload, now_utc=now)
     verified = bool(fresh and assessment.get("ready", False))
     notes = [str(reason) for reason in assessment.get("reasons", [])]
     if not fresh and "stale_artifact" not in notes:
         notes.append("stale_artifact")
     if int(coverage.get("soft_conflict_count", 0) or 0) > 0:
-        notes.append(f"soft_source_conflicts={int(coverage.get('soft_conflict_count', 0) or 0)}")
+        notes.append(
+            f"soft_source_conflicts={int(coverage.get('soft_conflict_count', 0) or 0)}"
+        )
     return _row(
         source_id="central_bank_cross_source_context",
         title="Central Bank Point-In-Time Cross-Source Router",
         category="macro_data",
-        verification_status=STATUS_SINGLE_VERIFIED if verified else STATUS_SINGLE_UNVERIFIED,
+        verification_status=(
+            STATUS_SINGLE_VERIFIED if verified else STATUS_SINGLE_UNVERIFIED
+        ),
         verification_mode="point_in_time_lineage_and_conflict_contract",
         artifact_path=path,
         artifact_timestamp=ts,
@@ -1025,17 +1445,29 @@ def _central_bank_cross_source_row(project_root: Path, now: datetime) -> dict[st
         ok=verified,
         notes=notes,
         evidence={
-            "synchronized_ready_bank_count": coverage.get("synchronized_ready_bank_count", 0),
-            "distinct_cross_source_link_count": coverage.get("distinct_cross_source_link_count", 0),
-            "banks_without_distinct_cross_source": coverage.get("banks_without_distinct_cross_source", []),
-            "synchronized_bank_coverage_ratio": coverage.get("synchronized_bank_coverage_ratio", 0.0),
+            "synchronized_ready_bank_count": coverage.get(
+                "synchronized_ready_bank_count", 0
+            ),
+            "distinct_cross_source_link_count": coverage.get(
+                "distinct_cross_source_link_count", 0
+            ),
+            "banks_without_distinct_cross_source": coverage.get(
+                "banks_without_distinct_cross_source", []
+            ),
+            "synchronized_bank_coverage_ratio": coverage.get(
+                "synchronized_bank_coverage_ratio", 0.0
+            ),
             "fx_join_coverage_ratio": coverage.get("fx_join_coverage_ratio", 0.0),
             "macro_join_coverage_ratio": coverage.get("macro_join_coverage_ratio", 0.0),
-            "liquidity_join_coverage_ratio": coverage.get("liquidity_join_coverage_ratio", 0.0),
+            "liquidity_join_coverage_ratio": coverage.get(
+                "liquidity_join_coverage_ratio", 0.0
+            ),
             "lineage_coverage_ratio": coverage.get("lineage_coverage_ratio", 0.0),
             "hard_conflict_count": coverage.get("hard_conflict_count", 0),
             "soft_conflict_count": coverage.get("soft_conflict_count", 0),
-            "future_observations_excluded": coverage.get("future_observations_excluded", {}),
+            "future_observations_excluded": coverage.get(
+                "future_observations_excluded", {}
+            ),
             "feature_count": len(features),
             "required_feature_count": len(CENTRAL_BANK_CROSS_SOURCE_FEATURE_KEYS),
             "consumer_contract": assessment,
@@ -1045,24 +1477,144 @@ def _central_bank_cross_source_row(project_root: Path, now: datetime) -> dict[st
     )
 
 
+def _public_financial_context_row(health_dir: Path, now: datetime) -> dict[str, Any]:
+    path = health_dir / "public_financial_context_sync_latest.json"
+    payload = _read_json(path)
+    ts = _parse_ts(payload.get("timestamp_utc"))
+    fresh = _is_fresh(ts, now, 48.0)
+    source_count = int(payload.get("source_count", 0) or 0)
+    ok_source_count = int(payload.get("ok_source_count", 0) or 0)
+    capability_count = int(payload.get("capability_count", 0) or 0)
+    ready_capability_count = int(payload.get("ready_capability_count", 0) or 0)
+    taxonomy = (
+        payload.get("taxonomy_validation")
+        if isinstance(payload.get("taxonomy_validation"), dict)
+        else {}
+    )
+    unclassified_global = list(taxonomy.get("unclassified_global_feature_keys") or [])
+    unclassified_symbol = list(taxonomy.get("unclassified_symbol_feature_keys") or [])
+    taxonomy_ok = (
+        bool(taxonomy.get("ok", False))
+        and not unclassified_global
+        and not unclassified_symbol
+    )
+    source_contract_ready = source_count >= 5 and ok_source_count == source_count
+    capability_contract_ready = (
+        capability_count >= 13 and ready_capability_count == capability_count
+    )
+    authority_safe = bool(
+        payload.get("paper_execution_authority") is False
+        and payload.get("live_execution_authority") is False
+        and payload.get("automatic_promotion_authority") is False
+    )
+    notes: list[str] = []
+    if not fresh:
+        notes.append("stale_artifact")
+    if not source_contract_ready:
+        notes.append(f"partial_sources={ok_source_count}/{source_count}")
+    if not capability_contract_ready:
+        notes.append(
+            f"capability_proofs_incomplete={ready_capability_count}/{capability_count}"
+        )
+    if not taxonomy_ok:
+        notes.append(
+            f"unclassified_features={len(unclassified_global) + len(unclassified_symbol)}"
+        )
+    if not authority_safe:
+        notes.append("authority_contract_unsafe")
+    ok = (
+        bool(payload.get("ok", False))
+        and fresh
+        and source_contract_ready
+        and capability_contract_ready
+        and taxonomy_ok
+        and authority_safe
+    )
+    return _row(
+        source_id="public_financial_context",
+        title="Classified Official Public Financial Context",
+        category="official_public_financial_context",
+        verification_status=STATUS_SINGLE_VERIFIED if ok else STATUS_SINGLE_UNVERIFIED,
+        verification_mode="official_multi_source_field_proofs_and_taxonomy_contract",
+        artifact_path=path,
+        artifact_timestamp=ts,
+        age_hours=_age_hours(ts, now),
+        fresh=fresh,
+        ok=ok,
+        notes=notes,
+        evidence={
+            "ok_sources": ok_source_count,
+            "total_sources": source_count,
+            "ready_capability_count": ready_capability_count,
+            "capability_count": capability_count,
+            "taxonomy_ok": taxonomy_ok,
+            "classified_global_feature_count": int(
+                taxonomy.get("classified_global_feature_count", 0) or 0
+            ),
+            "classified_symbol_feature_count": int(
+                taxonomy.get("classified_symbol_feature_count", 0) or 0
+            ),
+            "unclassified_global_feature_keys": unclassified_global,
+            "unclassified_symbol_feature_keys": unclassified_symbol,
+            "unclassified_feature_policy": str(
+                taxonomy.get("unclassified_feature_policy") or ""
+            ),
+            "optional_failure_is_soak_blocking": bool(
+                payload.get("optional_failure_is_soak_blocking", True)
+            ),
+            "authority_safe": authority_safe,
+        },
+    )
+
+
 def _decision_context_mesh_row(project_root: Path, now: datetime) -> dict[str, Any]:
-    path = project_root / "exports" / "external_context" / "decision_context_mesh_latest.json"
+    path = (
+        project_root
+        / "exports"
+        / "external_context"
+        / "decision_context_mesh_latest.json"
+    )
     payload = _read_json(path)
     ts = _parse_ts(payload.get("timestamp_utc"))
     fresh = _is_fresh(ts, now, 24.0)
     assessment = assess_decision_context_mesh(payload, now_utc=now)
-    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
-    grade_summary = payload.get("grade_summary") if isinstance(payload.get("grade_summary"), dict) else {}
-    features = ((payload.get("derived") or {}).get("global_features") or {}) if isinstance(payload.get("derived"), dict) else {}
+    coverage = (
+        payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    )
+    grade_summary = (
+        payload.get("grade_summary")
+        if isinstance(payload.get("grade_summary"), dict)
+        else {}
+    )
+    features = (
+        ((payload.get("derived") or {}).get("global_features") or {})
+        if isinstance(payload.get("derived"), dict)
+        else {}
+    )
     sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
-    healthy_sources = sum(1 for row in sources.values() if isinstance(row, dict) and row.get("ok") is True)
+    healthy_sources = sum(
+        1 for row in sources.values() if isinstance(row, dict) and row.get("ok") is True
+    )
     source_count = len(sources)
+    failed_source_ids = [
+        str(source_id)
+        for source_id, row in sources.items()
+        if isinstance(row, dict)
+        and bool(row.get("contract_participates", True))
+        and row.get("ok") is not True
+    ]
     distinct_families = {
         str(row.get("source_family") or "")
         for row in sources.values()
-        if isinstance(row, dict) and row.get("ok") is True and str(row.get("source_family") or "")
+        if isinstance(row, dict)
+        and row.get("ok") is True
+        and str(row.get("source_family") or "")
     }
-    verified = bool(fresh and assessment.get("ready", False) and healthy_sources >= max(source_count - 1, 1))
+    verified = bool(
+        fresh
+        and assessment.get("ready", False)
+        and healthy_sources >= max(source_count - 1, 1)
+    )
     notes = [str(reason) for reason in assessment.get("reasons", [])]
     if not fresh and "stale_artifact" not in notes:
         notes.append("stale_artifact")
@@ -1071,7 +1623,9 @@ def _decision_context_mesh_row(project_root: Path, now: datetime) -> dict[str, A
         title="Twelve-Plane Macro And Micro Decision Context Mesh",
         category="cross_source_decision_context",
         verification_status=(
-            STATUS_CROSS_VERIFIED if verified and len(distinct_families) >= 2 else STATUS_SINGLE_UNVERIFIED
+            STATUS_CROSS_VERIFIED
+            if verified and len(distinct_families) >= 2
+            else STATUS_SINGLE_UNVERIFIED
         ),
         verification_mode="point_in_time_multi_source_lineage_and_routing_contract",
         artifact_path=path,
@@ -1092,11 +1646,14 @@ def _decision_context_mesh_row(project_root: Path, now: datetime) -> dict[str, A
             "healthy_source_count": healthy_sources,
             "ok_sources": healthy_sources,
             "total_sources": source_count,
+            "failed_source_ids": failed_source_ids,
             "distinct_source_family_count": len(distinct_families),
             "cross_profile_ok": bool(verified and len(distinct_families) >= 2),
             "feature_count": len(features),
             "required_feature_count": len(DECISION_CONTEXT_MESH_FEATURE_KEYS),
-            "future_observations_excluded": coverage.get("future_observations_excluded", {}),
+            "future_observations_excluded": coverage.get(
+                "future_observations_excluded", {}
+            ),
             "consumer_contract": assessment,
             "authority_contract": payload.get("contract", {}),
             "methodology": payload.get("methodology", {}),
@@ -1111,7 +1668,9 @@ def _schwab_education_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     fresh = _is_fresh(ts, now, 36.0)
     ok_count = int(payload.get("ok_source_count", 0) or 0)
     total_count = int(payload.get("source_count", 0) or 0)
-    min_ok_sources_required = int(payload.get("min_ok_sources_required", total_count) or 0)
+    min_ok_sources_required = int(
+        payload.get("min_ok_sources_required", total_count) or 0
+    )
     notes: list[str] = []
     if not fresh:
         notes.append("stale_artifact")
@@ -1119,7 +1678,10 @@ def _schwab_education_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         notes.append("no_items_collected")
     status = (
         STATUS_SINGLE_VERIFIED
-        if bool(payload.get("ok", False)) and ok_count >= min_ok_sources_required and total_count > 0 and fresh
+        if bool(payload.get("ok", False))
+        and ok_count >= min_ok_sources_required
+        and total_count > 0
+        and fresh
         else STATUS_SINGLE_UNVERIFIED
     )
     return _row(
@@ -1159,14 +1721,20 @@ def _schwab_symbol_news_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     with_news = int(payload.get("symbols_with_news", 0) or 0)
     total_items = int(payload.get("total_news_items", 0) or 0)
     coverage_ratio = float(payload.get("coverage_ratio", 0.0) or 0.0)
-    method_counts = payload.get("method_counts") if isinstance(payload.get("method_counts"), dict) else {}
+    method_counts = (
+        payload.get("method_counts")
+        if isinstance(payload.get("method_counts"), dict)
+        else {}
+    )
     fallback_active = bool(payload.get("fallback_active", False))
     fallback_source_contract = (
         payload.get("fallback_source_contract")
         if isinstance(payload.get("fallback_source_contract"), dict)
         else {}
     )
-    fallback_source_fresh = bool(not fallback_active or fallback_source_contract.get("fresh", False))
+    fallback_source_fresh = bool(
+        not fallback_active or fallback_source_contract.get("fresh", False)
+    )
     no_endpoint = str(overall_status) == "degraded_no_broker_news_endpoint" or (
         attempted > 0 and int(method_counts.get("none", 0) or 0) >= attempted
     )
@@ -1216,8 +1784,14 @@ def _schwab_symbol_news_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "total_news_items": total_items,
             "coverage_ratio": coverage_ratio,
             "method_counts": method_counts,
-            "source_counts": payload.get("source_counts") if isinstance(payload.get("source_counts"), dict) else {},
-            "broker_native_news_endpoint_available": bool(payload.get("broker_native_news_endpoint_available", False)),
+            "source_counts": (
+                payload.get("source_counts")
+                if isinstance(payload.get("source_counts"), dict)
+                else {}
+            ),
+            "broker_native_news_endpoint_available": bool(
+                payload.get("broker_native_news_endpoint_available", False)
+            ),
             "fallback_active": fallback_active,
             "fallback_mode": str(payload.get("fallback_mode") or ""),
             "fallback_symbol_count": int(payload.get("fallback_symbol_count", 0) or 0),
@@ -1269,7 +1843,11 @@ def _ticker_news_context_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "total_news_items": total_items,
             "ok_sources": ok_sources,
             "total_sources": total_sources,
-            "source_counts": payload.get("source_counts") if isinstance(payload.get("source_counts"), dict) else {},
+            "source_counts": (
+                payload.get("source_counts")
+                if isinstance(payload.get("source_counts"), dict)
+                else {}
+            ),
             "sources": {
                 key: bool(value.get("ok", False))
                 for key, value in (payload.get("sources") or {}).items()
@@ -1294,10 +1872,26 @@ def _market_micro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         and not bool(value.get("contract_participates", True))
         and not bool(value.get("ok", False))
     )
-    local_micro_ok = bool((sources.get("local_micro") or {}).get("ok", False)) if isinstance(sources, dict) else False
-    finra_ok = bool((sources.get("finra_short_volume") or {}).get("ok", False)) if isinstance(sources, dict) else False
-    nasdaq_halts_ok = bool((sources.get("nasdaq_trade_halts") or {}).get("ok", False)) if isinstance(sources, dict) else False
-    treasury_ok = bool((sources.get("treasury_auctions") or {}).get("ok", False)) if isinstance(sources, dict) else False
+    local_micro_ok = (
+        bool((sources.get("local_micro") or {}).get("ok", False))
+        if isinstance(sources, dict)
+        else False
+    )
+    finra_ok = (
+        bool((sources.get("finra_short_volume") or {}).get("ok", False))
+        if isinstance(sources, dict)
+        else False
+    )
+    nasdaq_halts_ok = (
+        bool((sources.get("nasdaq_trade_halts") or {}).get("ok", False))
+        if isinstance(sources, dict)
+        else False
+    )
+    treasury_ok = (
+        bool((sources.get("treasury_auctions") or {}).get("ok", False))
+        if isinstance(sources, dict)
+        else False
+    )
     critical_sources = {
         "local_micro": local_micro_ok,
         "external_micro_reference": bool(finra_ok or nasdaq_halts_ok),
@@ -1307,7 +1901,9 @@ def _market_micro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     }
     if not fresh:
         notes.append("stale_artifact")
-    min_ok_sources = _minimum_ok_sources(total_count, floor=3, tolerate_failures=1, min_ratio=0.75)
+    min_ok_sources = _minimum_ok_sources(
+        total_count, floor=3, tolerate_failures=1, min_ratio=0.75
+    )
     holiday_pause_observed = _market_holiday_pause_observed(health_dir, now)
     market_closed_local_micro_fallback = bool(
         not local_micro_ok
@@ -1316,7 +1912,9 @@ def _market_micro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         and treasury_ok
         and fresh
     )
-    finra_symbol_count = int(((sources.get("finra_short_volume") or {}).get("symbol_count", 0)) or 0)
+    finra_symbol_count = int(
+        ((sources.get("finra_short_volume") or {}).get("symbol_count", 0)) or 0
+    )
     external_micro_reference_verified_fallback = bool(
         not local_micro_ok
         and finra_ok
@@ -1325,7 +1923,12 @@ def _market_micro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
         and fresh
     )
     effective_ok_count = ok_count + (
-        1 if (market_closed_local_micro_fallback or external_micro_reference_verified_fallback) else 0
+        1
+        if (
+            market_closed_local_micro_fallback
+            or external_micro_reference_verified_fallback
+        )
+        else 0
     )
     if total_count > 0 and ok_count < total_count:
         notes.append(f"partial_sources={ok_count}/{total_count}")
@@ -1371,7 +1974,9 @@ def _market_micro_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "market_closed_local_micro_fallback": market_closed_local_micro_fallback,
             "external_micro_reference_verified_fallback": external_micro_reference_verified_fallback,
             "holiday_pause_observed": holiday_pause_observed,
-            "local_micro_symbol_count": int(((sources.get("local_micro") or {}).get("symbol_count", 0)) or 0),
+            "local_micro_symbol_count": int(
+                ((sources.get("local_micro") or {}).get("symbol_count", 0)) or 0
+            ),
             "finra_symbol_count": finra_symbol_count,
         },
     )
@@ -1422,12 +2027,21 @@ def _extended_quant_row(health_dir: Path, now: datetime) -> dict[str, Any]:
     sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
     ok_count, total_count = _ok_count(sources)
     notes: list[str] = []
-    nyfed = sources.get("nyfed_sofr") if isinstance(sources.get("nyfed_sofr"), dict) else {}
+    nyfed = (
+        sources.get("nyfed_sofr") if isinstance(sources.get("nyfed_sofr"), dict) else {}
+    )
     if nyfed.get("averages_error"):
         notes.append("nyfed_partial_averages_fallback")
     if not fresh:
         notes.append("stale_artifact")
-    status = STATUS_SINGLE_VERIFIED if bool(payload.get("ok", False)) and ok_count == total_count and total_count > 0 and fresh else STATUS_SINGLE_UNVERIFIED
+    status = (
+        STATUS_SINGLE_VERIFIED
+        if bool(payload.get("ok", False))
+        and ok_count == total_count
+        and total_count > 0
+        and fresh
+        else STATUS_SINGLE_UNVERIFIED
+    )
     return _row(
         source_id="extended_quant_context",
         title="Extended Quant Context",
@@ -1444,7 +2058,11 @@ def _extended_quant_row(health_dir: Path, now: datetime) -> dict[str, Any]:
             "tracked_symbols": int(payload.get("tracked_symbols", 0) or 0),
             "ok_sources": ok_count,
             "total_sources": total_count,
-            "sources": {key: bool(value.get("ok", False)) for key, value in sources.items() if isinstance(value, dict)},
+            "sources": {
+                key: bool(value.get("ok", False))
+                for key, value in sources.items()
+                if isinstance(value, dict)
+            },
         },
     )
 
@@ -1456,21 +2074,35 @@ def _public_policy_context_row(health_dir: Path, now: datetime) -> dict[str, Any
     fresh = _is_fresh(ts, now, 72.0)
     sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
     ok_count, total_count = _ok_count(sources)
-    features = payload.get("features") if isinstance(payload.get("features"), dict) else {}
-    treasury_debt = sources.get("treasury_debt_to_penny") if isinstance(sources.get("treasury_debt_to_penny"), dict) else {}
+    features = (
+        payload.get("features") if isinstance(payload.get("features"), dict) else {}
+    )
+    treasury_debt = (
+        sources.get("treasury_debt_to_penny")
+        if isinstance(sources.get("treasury_debt_to_penny"), dict)
+        else {}
+    )
     treasury_rates = (
         sources.get("treasury_avg_interest_rates")
         if isinstance(sources.get("treasury_avg_interest_rates"), dict)
         else {}
     )
-    world_bank = sources.get("world_bank_indicators") if isinstance(sources.get("world_bank_indicators"), dict) else {}
+    world_bank = (
+        sources.get("world_bank_indicators")
+        if isinstance(sources.get("world_bank_indicators"), dict)
+        else {}
+    )
     treasury_debt_ok = bool(treasury_debt.get("ok", False))
     treasury_rates_ok = bool(treasury_rates.get("ok", False))
     world_bank_ok = bool(world_bank.get("ok", False))
     world_bank_indicator_count = int(world_bank.get("indicator_count", 0) or 0)
     world_bank_success_count = int(world_bank.get("indicator_success_count", 0) or 0)
     world_bank_value_count = int(world_bank.get("value_count", 0) or 0)
-    min_world_bank_success = max(1, min(world_bank_indicator_count, 4)) if world_bank_indicator_count > 0 else 0
+    min_world_bank_success = (
+        max(1, min(world_bank_indicator_count, 4))
+        if world_bank_indicator_count > 0
+        else 0
+    )
     world_bank_partial_verified = bool(
         not world_bank_ok
         and world_bank_indicator_count > 0
@@ -1487,7 +2119,9 @@ def _public_policy_context_row(health_dir: Path, now: datetime) -> dict[str, Any
     if not treasury_rates_ok:
         notes.append("treasury_avg_interest_rates_unavailable")
     if not world_bank_ok and world_bank_partial_verified:
-        notes.append(f"world_bank_indicators_partial={world_bank_success_count}/{world_bank_indicator_count}")
+        notes.append(
+            f"world_bank_indicators_partial={world_bank_success_count}/{world_bank_indicator_count}"
+        )
     elif not world_bank_ok:
         notes.append("world_bank_indicators_unavailable")
     if world_bank_value_count < 8:
@@ -1496,10 +2130,20 @@ def _public_policy_context_row(health_dir: Path, now: datetime) -> dict[str, Any
         notes.append("derived_features_missing")
     if not fresh:
         notes.append("stale_artifact")
-    min_ok_sources = _minimum_ok_sources(total_count, floor=2, tolerate_failures=1, min_ratio=0.67)
+    min_ok_sources = _minimum_ok_sources(
+        total_count, floor=2, tolerate_failures=1, min_ratio=0.67
+    )
     status = (
         STATUS_SINGLE_VERIFIED
-        if (bool(payload.get("ok", False)) or (treasury_debt_ok and treasury_rates_ok and world_bank_effective_ok and bool(features)))
+        if (
+            bool(payload.get("ok", False))
+            or (
+                treasury_debt_ok
+                and treasury_rates_ok
+                and world_bank_effective_ok
+                and bool(features)
+            )
+        )
         and fresh
         and total_count >= 2
         and effective_ok_count >= min_ok_sources
@@ -1527,40 +2171,103 @@ def _public_policy_context_row(health_dir: Path, now: datetime) -> dict[str, Any
             "effective_ok_sources": effective_ok_count,
             "total_sources": total_count,
             "min_ok_sources_required": min_ok_sources,
-            "countries": payload.get("countries") if isinstance(payload.get("countries"), list) else [],
+            "countries": (
+                payload.get("countries")
+                if isinstance(payload.get("countries"), list)
+                else []
+            ),
             "treasury_debt_record_date": str(treasury_debt.get("record_date") or ""),
-            "treasury_avg_interest_record_date": str(treasury_rates.get("record_date") or ""),
+            "treasury_avg_interest_record_date": str(
+                treasury_rates.get("record_date") or ""
+            ),
             "world_bank_lastupdated": str(world_bank.get("lastupdated") or ""),
             "world_bank_indicator_success_count": world_bank_success_count,
             "world_bank_indicator_count": world_bank_indicator_count,
             "world_bank_value_count": world_bank_value_count,
             "world_bank_partial_verified": world_bank_partial_verified,
-            "us_public_debt_to_worldbank_gdp_proxy": features.get("us_public_debt_to_worldbank_gdp_proxy"),
-            "treasury_avg_interest_rate_pct": features.get("treasury_avg_interest_rate_pct"),
-            "sources": {key: bool(value.get("ok", False)) for key, value in sources.items() if isinstance(value, dict)},
+            "us_public_debt_to_worldbank_gdp_proxy": features.get(
+                "us_public_debt_to_worldbank_gdp_proxy"
+            ),
+            "treasury_avg_interest_rate_pct": features.get(
+                "treasury_avg_interest_rate_pct"
+            ),
+            "sources": {
+                key: bool(value.get("ok", False))
+                for key, value in sources.items()
+                if isinstance(value, dict)
+            },
         },
     )
 
 
 def _fed_2026_stress_scenario_row(project_root: Path, now: datetime) -> dict[str, Any]:
-    scenario_path = project_root / "config" / "stress_scenarios" / "fed_2026_supervisory_severely_adverse.json"
-    plumbing_path = project_root / "config" / "stress_scenarios" / "fed_2026_source_plumbing.json"
-    modules_path = project_root / "config" / "stress_scenarios" / "fed_2026_stress_modules.json"
+    scenario_path = (
+        project_root
+        / "config"
+        / "stress_scenarios"
+        / "fed_2026_supervisory_severely_adverse.json"
+    )
+    plumbing_path = (
+        project_root / "config" / "stress_scenarios" / "fed_2026_source_plumbing.json"
+    )
+    modules_path = (
+        project_root / "config" / "stress_scenarios" / "fed_2026_stress_modules.json"
+    )
     scenario = _read_json(scenario_path)
     plumbing = _read_json(plumbing_path)
     modules_payload = _read_json(modules_path)
     source = scenario.get("source") if isinstance(scenario.get("source"), dict) else {}
     ts = _parse_ts(source.get("retrieved_date"))
-    domestic = scenario.get("domestic_variables") if isinstance(scenario.get("domestic_variables"), dict) else {}
-    international = scenario.get("international_variables") if isinstance(scenario.get("international_variables"), dict) else {}
-    anchors = scenario.get("key_stress_anchors") if isinstance(scenario.get("key_stress_anchors"), dict) else {}
-    series_map = plumbing.get("series_map") if isinstance(plumbing.get("series_map"), dict) else {}
-    stress_module_map = plumbing.get("stress_module_map") if isinstance(plumbing.get("stress_module_map"), dict) else {}
-    internal_feature_keys = plumbing.get("internal_feature_keys") if isinstance(plumbing.get("internal_feature_keys"), list) else []
-    proxy_symbols = plumbing.get("market_proxy_symbols") if isinstance(plumbing.get("market_proxy_symbols"), dict) else {}
-    governance_targets = plumbing.get("governance_targets") if isinstance(plumbing.get("governance_targets"), list) else []
-    stress_modules = modules_payload.get("stress_modules") if isinstance(modules_payload.get("stress_modules"), list) else []
-    stress_module_ids = [str(item.get("module_id") or "") for item in stress_modules if isinstance(item, dict)]
+    domestic = (
+        scenario.get("domestic_variables")
+        if isinstance(scenario.get("domestic_variables"), dict)
+        else {}
+    )
+    international = (
+        scenario.get("international_variables")
+        if isinstance(scenario.get("international_variables"), dict)
+        else {}
+    )
+    anchors = (
+        scenario.get("key_stress_anchors")
+        if isinstance(scenario.get("key_stress_anchors"), dict)
+        else {}
+    )
+    series_map = (
+        plumbing.get("series_map")
+        if isinstance(plumbing.get("series_map"), dict)
+        else {}
+    )
+    stress_module_map = (
+        plumbing.get("stress_module_map")
+        if isinstance(plumbing.get("stress_module_map"), dict)
+        else {}
+    )
+    internal_feature_keys = (
+        plumbing.get("internal_feature_keys")
+        if isinstance(plumbing.get("internal_feature_keys"), list)
+        else []
+    )
+    proxy_symbols = (
+        plumbing.get("market_proxy_symbols")
+        if isinstance(plumbing.get("market_proxy_symbols"), dict)
+        else {}
+    )
+    governance_targets = (
+        plumbing.get("governance_targets")
+        if isinstance(plumbing.get("governance_targets"), list)
+        else []
+    )
+    stress_modules = (
+        modules_payload.get("stress_modules")
+        if isinstance(modules_payload.get("stress_modules"), list)
+        else []
+    )
+    stress_module_ids = [
+        str(item.get("module_id") or "")
+        for item in stress_modules
+        if isinstance(item, dict)
+    ]
     expected_module_ids = {
         "fed_2026_equity_crash_volatility_spike",
         "fed_2026_corporate_credit_spread_blowout",
@@ -1582,12 +2289,21 @@ def _fed_2026_stress_scenario_row(project_root: Path, now: datetime) -> dict[str
         notes.append("stress_modules_missing")
     if scenario.get("scenario_id") != "fed_2026_supervisory_severely_adverse":
         notes.append("scenario_id_mismatch")
-    if modules_payload.get("scenario_id") not in {None, "fed_2026_supervisory_severely_adverse"}:
+    if modules_payload.get("scenario_id") not in {
+        None,
+        "fed_2026_supervisory_severely_adverse",
+    }:
         notes.append("stress_module_scenario_id_mismatch")
     if "federalreserve.gov" not in str(source.get("url") or ""):
         notes.append("official_fed_url_missing")
-    module_source = modules_payload.get("source") if isinstance(modules_payload.get("source"), dict) else {}
-    if modules_payload and "federalreserve.gov" not in str(module_source.get("url") or ""):
+    module_source = (
+        modules_payload.get("source")
+        if isinstance(modules_payload.get("source"), dict)
+        else {}
+    )
+    if modules_payload and "federalreserve.gov" not in str(
+        module_source.get("url") or ""
+    ):
         notes.append("stress_module_official_fed_url_missing")
     if not domestic.get("columns") or not domestic.get("rows"):
         notes.append("domestic_variables_missing")
@@ -1595,7 +2311,9 @@ def _fed_2026_stress_scenario_row(project_root: Path, now: datetime) -> dict[str
         notes.append("international_variables_missing")
     if not anchors:
         notes.append("key_stress_anchors_missing")
-    if not series_map.get("domestic_variables") or not series_map.get("international_variables"):
+    if not series_map.get("domestic_variables") or not series_map.get(
+        "international_variables"
+    ):
         notes.append("series_map_incomplete")
     if len(stress_modules) < 10:
         notes.append(f"stress_module_count_low={len(stress_modules)}")
@@ -1614,14 +2332,22 @@ def _fed_2026_stress_scenario_row(project_root: Path, now: datetime) -> dict[str
         if not module.get("primary_series") or not module.get("internal_feature_keys"):
             notes.append(f"stress_module_contract_incomplete={module_id}")
             break
-    usage_policy = modules_payload.get("usage_policy") if isinstance(modules_payload.get("usage_policy"), dict) else {}
+    usage_policy = (
+        modules_payload.get("usage_policy")
+        if isinstance(modules_payload.get("usage_policy"), dict)
+        else {}
+    )
     if modules_payload and bool(usage_policy.get("direct_execution_allowed", True)):
         notes.append("stress_modules_direct_execution_not_blocked")
     if not internal_feature_keys:
         notes.append("internal_feature_keys_missing")
     if not proxy_symbols:
         notes.append("market_proxy_symbols_missing")
-    for required_target in ("source_verification", "point_in_time_event_store", "replay_hash_registry"):
+    for required_target in (
+        "source_verification",
+        "point_in_time_event_store",
+        "replay_hash_registry",
+    ):
         if required_target not in governance_targets:
             notes.append(f"governance_target_missing={required_target}")
     fresh = ts is not None and (_age_hours(ts, now) or 0.0) <= (365.0 * 3.0 * 24.0)
@@ -1661,7 +2387,74 @@ def _fed_2026_stress_scenario_row(project_root: Path, now: datetime) -> dict[str
     )
 
 
-def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+def _source_containment_contract(
+    *,
+    all_verified: bool,
+    evidence_complete: bool,
+    decision_critical_sources_ready: bool,
+    decision_critical_blockers: list[str],
+    decision_context_debt: list[str],
+    optional_enrichment_debt: list[str],
+    degraded_sources: list[str],
+    low_confidence_sources: list[str],
+) -> dict[str, Any]:
+    context_debt_only = bool(
+        decision_critical_sources_ready
+        and not decision_critical_blockers
+        and (decision_context_debt or optional_enrichment_debt)
+    )
+    decision_runtime_blocked = bool(
+        (not decision_critical_sources_ready) or decision_critical_blockers
+    )
+    if all_verified and evidence_complete:
+        status = "clear"
+    elif context_debt_only:
+        status = "contained_context_debt"
+    elif decision_runtime_blocked:
+        status = "decision_critical_blocked"
+    else:
+        status = "degraded_unclassified"
+    return {
+        "status": status,
+        "context_debt_only": context_debt_only,
+        "decision_runtime_blocked": decision_runtime_blocked,
+        "paper_runtime_blocking": decision_runtime_blocked,
+        "live_promotion_blocking": bool(
+            decision_runtime_blocked
+            or context_debt_only
+            or not all_verified
+            or not evidence_complete
+        ),
+        "decision_critical_blockers": decision_critical_blockers,
+        "decision_context_debt": decision_context_debt,
+        "optional_enrichment_debt": optional_enrichment_debt,
+        "degraded_sources": degraded_sources,
+        "low_confidence_sources": low_confidence_sources,
+        "containment_action": (
+            "downweight_unverified_context_sources_and_block_promotion_claims"
+            if context_debt_only
+            else (
+                "block_context_dependent_decisions_until_decision_critical_sources_recover"
+                if decision_runtime_blocked
+                else "keep_source_collectors_on_normal_refresh"
+            )
+        ),
+        "release_condition": (
+            "decision_context_debt_and_optional_enrichment_debt_empty"
+            if context_debt_only
+            else (
+                "decision_critical_blockers_empty_and_decision_critical_sources_ready"
+                if decision_runtime_blocked
+                else "all_sources_verified_fresh_healthy_and_confident"
+            )
+        ),
+        "policy": "decision_critical_source_failures_block_runtime; context_or_optional_debt_is_contained_but_blocks_promotion_and_confidence_claims",
+    }
+
+
+def build_source_verification_payload(
+    project_root: Path = PROJECT_ROOT,
+) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     health_dir = project_root / "governance" / "health"
     rows = [
@@ -1676,6 +2469,7 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
         _central_bank_liquidity_row(project_root, now),
         _global_central_bank_row(project_root, now),
         _central_bank_cross_source_row(project_root, now),
+        _public_financial_context_row(health_dir, now),
         _decision_context_mesh_row(project_root, now),
         _schwab_education_row(health_dir, now),
         _schwab_symbol_news_row(health_dir, now),
@@ -1686,27 +2480,46 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
         _public_policy_context_row(health_dir, now),
         _fed_2026_stress_scenario_row(project_root, now),
     ]
+    artifact_pair_contract = _apply_artifact_pair_contract(rows, project_root, now)
 
     counts = {
-        STATUS_CROSS_VERIFIED: sum(1 for row in rows if row["verification_status"] == STATUS_CROSS_VERIFIED),
-        STATUS_SINGLE_VERIFIED: sum(1 for row in rows if row["verification_status"] == STATUS_SINGLE_VERIFIED),
-        STATUS_SINGLE_UNVERIFIED: sum(1 for row in rows if row["verification_status"] == STATUS_SINGLE_UNVERIFIED),
+        STATUS_CROSS_VERIFIED: sum(
+            1 for row in rows if row["verification_status"] == STATUS_CROSS_VERIFIED
+        ),
+        STATUS_SINGLE_VERIFIED: sum(
+            1 for row in rows if row["verification_status"] == STATUS_SINGLE_VERIFIED
+        ),
+        STATUS_SINGLE_UNVERIFIED: sum(
+            1 for row in rows if row["verification_status"] == STATUS_SINGLE_UNVERIFIED
+        ),
     }
-    confidence_scores = [float(row.get("source_confidence_score", 0.0) or 0.0) for row in rows]
+    confidence_scores = [
+        float(row.get("source_confidence_score", 0.0) or 0.0) for row in rows
+    ]
     low_confidence_sources = [
         str(row.get("source_id") or "")
         for row in rows
         if float(row.get("source_confidence_score", 0.0) or 0.0) < 0.70
     ]
-    unverified = [row["source_id"] for row in rows if row["verification_status"] == STATUS_SINGLE_UNVERIFIED]
+    unverified = [
+        row["source_id"]
+        for row in rows
+        if row["verification_status"] == STATUS_SINGLE_UNVERIFIED
+    ]
     warnings = [row["source_id"] for row in rows if _row_has_actionable_notes(row)]
     stale = [row["source_id"] for row in rows if not bool(row.get("fresh", False))]
     degraded = _ordered_unique(unverified + warnings)
     all_verified = counts[STATUS_SINGLE_UNVERIFIED] == 0
     all_cross_verified = counts[STATUS_CROSS_VERIFIED] == len(rows)
-    decision_critical_rows = [row for row in rows if row.get("criticality") == "decision_critical"]
-    decision_context_rows = [row for row in rows if row.get("criticality") == "decision_context"]
-    optional_enrichment_rows = [row for row in rows if row.get("criticality") == "optional_enrichment"]
+    decision_critical_rows = [
+        row for row in rows if row.get("criticality") == "decision_critical"
+    ]
+    decision_context_rows = [
+        row for row in rows if row.get("criticality") == "decision_context"
+    ]
+    optional_enrichment_rows = [
+        row for row in rows if row.get("criticality") == "optional_enrichment"
+    ]
 
     def _runtime_source_ready(row: dict[str, Any]) -> bool:
         return bool(
@@ -1717,20 +2530,32 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
         )
 
     decision_critical_blockers = [
-        str(row.get("source_id") or "") for row in decision_critical_rows if not _runtime_source_ready(row)
+        str(row.get("source_id") or "")
+        for row in decision_critical_rows
+        if not _runtime_source_ready(row)
     ]
     decision_context_debt = [
-        str(row.get("source_id") or "") for row in decision_context_rows if not _runtime_source_ready(row)
+        str(row.get("source_id") or "")
+        for row in decision_context_rows
+        if not _runtime_source_ready(row)
     ]
     optional_enrichment_debt = [
-        str(row.get("source_id") or "") for row in optional_enrichment_rows if not _runtime_source_ready(row)
+        str(row.get("source_id") or "")
+        for row in optional_enrichment_rows
+        if not _runtime_source_ready(row)
     ]
-    decision_critical_sources_ready = bool(decision_critical_rows and not decision_critical_blockers)
+    decision_critical_sources_ready = bool(
+        decision_critical_rows and not decision_critical_blockers
+    )
     overall_status = "ready" if all_verified else "degraded"
     row_scores = [
         100.0
         * (
-            (0.35 if row.get("verification_status") != STATUS_SINGLE_UNVERIFIED else 0.0)
+            (
+                0.35
+                if row.get("verification_status") != STATUS_SINGLE_UNVERIFIED
+                else 0.0
+            )
             + (0.20 if row.get("fresh", False) else 0.0)
             + (0.20 if row.get("ok", False) else 0.0)
             + 0.25 * float(row.get("source_confidence_score", 0.0) or 0.0)
@@ -1756,14 +2581,105 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
         "bounded_quarantine_with_starvation_override": True,
         "atomic_report_and_state_replacement": True,
         "downstream_contract_reconciliation": True,
+        "paired_health_payload_freshness_contract": True,
+        "dependency_ordered_aggregate_refresh": True,
     }
-    refresh_commands: list[list[str]] = []
-    for source_id in degraded:
-        command = _refresh_command_for_source(project_root, source_id)
-        if command not in refresh_commands:
-            refresh_commands.append(command)
-    if refresh_commands and [str(project_root / "scripts" / "ops" / "opsctl.sh"), "source-verification", "--json"] not in refresh_commands:
-        refresh_commands.append([str(project_root / "scripts" / "ops" / "opsctl.sh"), "source-verification", "--json"])
+    refresh_commands, refresh_dependencies = _build_refresh_commands(
+        project_root,
+        rows,
+        degraded,
+    )
+    containment_contract = _source_containment_contract(
+        all_verified=all_verified,
+        evidence_complete=evidence_complete,
+        decision_critical_sources_ready=decision_critical_sources_ready,
+        decision_critical_blockers=decision_critical_blockers,
+        decision_context_debt=decision_context_debt,
+        optional_enrichment_debt=optional_enrichment_debt,
+        degraded_sources=degraded,
+        low_confidence_sources=low_confidence_sources,
+    )
+    source_operating_contract = build_operating_contract(
+        contract_id="source_verification_operating_contract_v1",
+        owner="source_verification_report",
+        domain="source_verification",
+        status=containment_contract["status"],
+        why=(
+            "decision_critical_sources_ready_context_debt_only"
+            if containment_contract["context_debt_only"]
+            else (
+                "decision_critical_source_blocked"
+                if containment_contract["decision_runtime_blocked"]
+                else (
+                    "all_sources_verified"
+                    if evidence_complete
+                    else "source_evidence_incomplete"
+                )
+            )
+        ),
+        safe_authority=[
+            "verify_source_freshness",
+            "score_source_confidence",
+            "refresh_context_sources",
+            "quarantine_optional_or_context_debt",
+        ],
+        blocked_authority=[
+            "market_context_claim_using_unverified_source",
+            "paper_decision_when_decision_critical_source_blocked",
+            "live_promotion_while_context_debt_exists",
+            "source_confidence_override",
+        ],
+        evidence_missing=[
+            *decision_critical_blockers,
+            *decision_context_debt,
+            *optional_enrichment_debt,
+            *low_confidence_sources,
+        ],
+        release_conditions=[
+            containment_contract["release_condition"],
+            "minimum_source_confidence_score_at_or_above_0_70",
+            "collector_artifact_pair_contract_ready",
+            "aggregate_context_dependencies_refreshed_before_aggregate_rebuild",
+        ],
+        next_commands=(
+            refresh_commands[:12]
+            or [["./scripts/ops/opsctl.sh", "source-verification", "--json"]]
+        ),
+        definition_gaps=[
+            (
+                "decision_context_sources_need_confidence_budget"
+                if decision_context_debt
+                else ""
+            ),
+            (
+                "optional_enrichment_sources_need_quarantine_or_refresh"
+                if optional_enrichment_debt
+                else ""
+            ),
+            (
+                "decision_critical_blockers_stop_context_dependent_runtime"
+                if decision_critical_blockers
+                else ""
+            ),
+        ],
+        measurement={
+            "total_sources": len(rows),
+            "decision_critical_source_count": len(decision_critical_rows),
+            "decision_context_source_count": len(decision_context_rows),
+            "optional_enrichment_source_count": len(optional_enrichment_rows),
+            "decision_critical_blocker_count": len(decision_critical_blockers),
+            "decision_context_debt_count": len(decision_context_debt),
+            "low_confidence_source_count": len(low_confidence_sources),
+            "source_evidence_score": evidence_score,
+        },
+        hardening={
+            "decision_critical_sources_ready": decision_critical_sources_ready,
+            "paper_runtime_blocking": containment_contract["paper_runtime_blocking"],
+            "live_promotion_blocking": containment_contract["live_promotion_blocking"],
+            "dependency_ordered_refresh": True,
+            "paired_health_payload_freshness_contract": True,
+        },
+    )
     return {
         "timestamp_utc": now.isoformat(),
         "schema_version": 2,
@@ -1774,7 +2690,9 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
         "source_evidence_score": evidence_score,
         "source_evidence_a_plus_earned": evidence_complete,
         "source_control_grade": "A+" if all(control_checks.values()) else "F",
-        "source_control_score": 100.0 * sum(1 for value in control_checks.values() if value) / len(control_checks),
+        "source_control_score": 100.0
+        * sum(1 for value in control_checks.values() if value)
+        / len(control_checks),
         "overall": {
             "all_cross_verified": all_cross_verified,
             "all_verified": all_verified,
@@ -1783,7 +2701,9 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
             "unverified_sources": unverified,
             "sources_with_notes": warnings,
             "stale_sources": stale,
-            "mean_source_confidence_score": round(sum(confidence_scores) / max(len(confidence_scores), 1), 6),
+            "mean_source_confidence_score": round(
+                sum(confidence_scores) / max(len(confidence_scores), 1), 6
+            ),
             "min_source_confidence_score": round(min(confidence_scores or [0.0]), 6),
             "low_confidence_sources": low_confidence_sources,
         },
@@ -1794,30 +2714,56 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
             "decision_critical_blockers": decision_critical_blockers,
             "decision_context_debt": decision_context_debt,
             "optional_enrichment_debt": optional_enrichment_debt,
+            "containment_status": containment_contract["status"],
+            "paper_runtime_blocking": containment_contract["paper_runtime_blocking"],
+            "live_promotion_blocking": containment_contract["live_promotion_blocking"],
             "minimum_confidence_score": 0.70,
             "policy": "paper_runtime_requires_fresh_healthy_verified_decision_critical_sources; context_and_optional_debt_remains_visible_without_execution_authority",
         },
+        "containment_contract": containment_contract,
+        "operating_contract": source_operating_contract,
+        "source_operating_contract": source_operating_contract,
         "source_confidence_summary": {
-            "mean_score": round(sum(confidence_scores) / max(len(confidence_scores), 1), 6),
+            "mean_score": round(
+                sum(confidence_scores) / max(len(confidence_scores), 1), 6
+            ),
             "min_score": round(min(confidence_scores or [0.0]), 6),
             "low_confidence_source_count": len(low_confidence_sources),
             "low_confidence_sources": low_confidence_sources,
             "policy": "training_and_paper_truth_downweight_contexts_when_source_confidence_is_thin",
         },
+        "artifact_pair_contract": artifact_pair_contract,
+        "source_dependency_contract": {
+            "status": "ready" if not refresh_dependencies else "dependencies_pending",
+            "aggregate_count": len(refresh_dependencies),
+            "dependencies": refresh_dependencies,
+            "policy": "refresh_failed_source_dependencies_before_rebuilding_aggregate_context",
+        },
         "unverified_sources": unverified,
         "stale_artifacts": stale,
         "degraded_artifacts": degraded,
         "recommended_refresh_commands": refresh_commands,
-        "recommended_actions": [
-            "refresh degraded source artifacts with the recommended commands, then rerun source-verification",
-            "keep required market context lanes fresh before using market-move explanations for confidence claims",
-        ]
-        if degraded
-        else ["source verification is clean; keep scheduled collectors current"],
+        "recommended_actions": (
+            [
+                "refresh degraded source artifacts with the recommended commands, then rerun source-verification",
+                "keep required market context lanes fresh before using market-move explanations for confidence claims",
+            ]
+            if degraded
+            else ["source verification is clean; keep scheduled collectors current"]
+        ),
         "autorefresh_contract": {
             "enabled": True,
-            "apply_command": [str(project_root / "scripts" / "ops" / "opsctl.sh"), "source-verification-refresh", "--apply", "--json"],
-            "preview_command": [str(project_root / "scripts" / "ops" / "opsctl.sh"), "source-verification-refresh", "--json"],
+            "apply_command": [
+                str(project_root / "scripts" / "ops" / "opsctl.sh"),
+                "source-verification-refresh",
+                "--apply",
+                "--json",
+            ],
+            "preview_command": [
+                str(project_root / "scripts" / "ops" / "opsctl.sh"),
+                "source-verification-refresh",
+                "--json",
+            ],
             "policy": "refresh_only_degraded_or_stale_source_artifacts_then_rerun_source_verification",
             "persistent_retry_state": "governance/runtime/source_verification_retry_state.json",
             "exponential_backoff": True,
@@ -1839,10 +2785,18 @@ def build_source_verification_payload(project_root: Path = PROJECT_ROOT) -> dict
 def _render_markdown(payload: dict[str, Any]) -> str:
     overall = payload.get("overall") if isinstance(payload.get("overall"), dict) else {}
     counts = overall.get("counts") if isinstance(overall.get("counts"), dict) else {}
+    containment = (
+        payload.get("containment_contract")
+        if isinstance(payload.get("containment_contract"), dict)
+        else {}
+    )
     lines = [
         f"# Source Verification Report ({payload.get('timestamp_utc', '')})",
         f"- all_verified: {bool(overall.get('all_verified', False))}",
         f"- decision_critical_sources_ready: {bool(((payload.get('source_runtime_contract') or {}).get('decision_critical_sources_ready', False)))}",
+        f"- containment_status: {str(containment.get('status') or 'unknown')}",
+        f"- paper_runtime_blocking: {bool(containment.get('paper_runtime_blocking', False))}",
+        f"- live_promotion_blocking: {bool(containment.get('live_promotion_blocking', False))}",
         f"- all_cross_verified: {bool(overall.get('all_cross_verified', False))}",
         f"- cross_verified: {int(counts.get(STATUS_CROSS_VERIFIED, 0) or 0)}",
         f"- single_source_verified: {int(counts.get(STATUS_SINGLE_VERIFIED, 0) or 0)}",
@@ -1852,7 +2806,11 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         "| --- | --- | --- | --- | ---: | --- |",
     ]
     for row in payload.get("sources", []):
-        notes = ", ".join(row.get("notes", [])) if isinstance(row.get("notes"), list) and row.get("notes") else "none"
+        notes = (
+            ", ".join(row.get("notes", []))
+            if isinstance(row.get("notes"), list) and row.get("notes")
+            else "none"
+        )
         age = row.get("age_hours")
         age_text = "" if age is None else str(age)
         lines.append(
@@ -1869,7 +2827,9 @@ def _render_markdown(payload: dict[str, Any]) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Summarize source verification and cross-check coverage.")
+    parser = argparse.ArgumentParser(
+        description="Summarize source verification and cross-check coverage."
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -1899,9 +2859,21 @@ def main() -> int:
         print(
             "source_verification all_verified={all_verified} cross_verified={cross_verified} single_verified={single_verified} unverified={unverified}".format(
                 all_verified=str(bool(overall.get("all_verified", False))).lower(),
-                cross_verified=int((((overall.get("counts") or {}).get(STATUS_CROSS_VERIFIED, 0)) or 0)),
-                single_verified=int((((overall.get("counts") or {}).get(STATUS_SINGLE_VERIFIED, 0)) or 0)),
-                unverified=int((((overall.get("counts") or {}).get(STATUS_SINGLE_UNVERIFIED, 0)) or 0)),
+                cross_verified=int(
+                    (((overall.get("counts") or {}).get(STATUS_CROSS_VERIFIED, 0)) or 0)
+                ),
+                single_verified=int(
+                    (
+                        ((overall.get("counts") or {}).get(STATUS_SINGLE_VERIFIED, 0))
+                        or 0
+                    )
+                ),
+                unverified=int(
+                    (
+                        ((overall.get("counts") or {}).get(STATUS_SINGLE_UNVERIFIED, 0))
+                        or 0
+                    )
+                ),
             )
         )
     return 0

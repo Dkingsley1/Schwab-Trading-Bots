@@ -1,0 +1,651 @@
+{
+  "schema_version": 1,
+  "evidence_scope": "synthetic_deterministic_regression",
+  "reference_basis": "Manually specified default-policy action, risk, notional and allocation expectations; never learned from current replay output. No execution, promotion or profitability authority.",
+  "required_coverage": [
+    "normal_buy_sell_hold",
+    "notional_cap",
+    "volatility_halt",
+    "drawdown_halt",
+    "var_halt",
+    "factor_halt",
+    "daily_loss_halt",
+    "exposure_halt",
+    "daily_loss_boundary",
+    "allocation_cap"
+  ],
+  "cases": [
+    {
+      "name": "normal_actions",
+      "coverage": [
+        "normal_buy_sell_hold",
+        "notional_cap"
+      ],
+      "payload": {
+        "equity_proxy": 100000,
+        "max_notional_pct": 0.03,
+        "portfolio_base_budget": 0.5,
+        "symbol_budgets": {
+          "SPY": 0.4,
+          "QQQ": 0.4
+        },
+        "rows": [
+          {
+            "symbol": "SPY",
+            "action": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.01,
+              "pct_from_close": 0,
+              "mom_5m": 0,
+              "daily_loss_proxy": 0
+            }
+          },
+          {
+            "symbol": "QQQ",
+            "action": "SELL",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.01,
+              "pct_from_close": 0,
+              "mom_5m": 0,
+              "daily_loss_proxy": 0
+            }
+          },
+          {
+            "symbol": "IWM",
+            "action": "HOLD",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.01,
+              "pct_from_close": 0,
+              "mom_5m": 0,
+              "daily_loss_proxy": 0
+            }
+          }
+        ]
+      },
+      "expected_canonical": {
+        "results": [
+          {
+            "symbol": "SPY",
+            "action_in": "BUY",
+            "action_out": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 3000.0,
+            "alloc_qty": 1200.0,
+            "risk_gates": {
+              "risk_volatility_ok": true,
+              "risk_drawdown_ok": true,
+              "risk_symbol_exposure_ok": true,
+              "risk_var_ok": true,
+              "risk_factor_ok": true,
+              "risk_daily_loss_ok": true
+            },
+            "risk_reasons": []
+          },
+          {
+            "symbol": "QQQ",
+            "action_in": "SELL",
+            "action_out": "SELL",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 3000.0,
+            "alloc_qty": 1200.0,
+            "risk_gates": {
+              "risk_volatility_ok": true,
+              "risk_drawdown_ok": true,
+              "risk_symbol_exposure_ok": true,
+              "risk_var_ok": true,
+              "risk_factor_ok": true,
+              "risk_daily_loss_ok": true
+            },
+            "risk_reasons": []
+          },
+          {
+            "symbol": "IWM",
+            "action_in": "HOLD",
+            "action_out": "HOLD",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 0.0,
+            "alloc_qty": 0.0,
+            "risk_gates": {
+              "risk_volatility_ok": true,
+              "risk_drawdown_ok": true,
+              "risk_symbol_exposure_ok": true,
+              "risk_var_ok": true,
+              "risk_factor_ok": true,
+              "risk_daily_loss_ok": true
+            },
+            "risk_reasons": []
+          }
+        ],
+        "exposure_state": {
+          "SPY": 1,
+          "QQQ": 1
+        }
+      }
+    },
+    {
+      "name": "volatility_halt",
+      "coverage": [
+        "volatility_halt"
+      ],
+      "payload": {
+        "equity_proxy": 100000,
+        "max_notional_pct": 0.03,
+        "portfolio_base_budget": 0.5,
+        "symbol_budgets": {
+          "SPY": 0.4
+        },
+        "rows": [
+          {
+            "symbol": "SPY",
+            "action": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.04,
+              "pct_from_close": 0,
+              "mom_5m": 0,
+              "daily_loss_proxy": 0
+            }
+          }
+        ]
+      },
+      "expected_canonical": {
+        "results": [
+          {
+            "symbol": "SPY",
+            "action_in": "BUY",
+            "action_out": "HOLD",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 0.0,
+            "alloc_qty": 0.0,
+            "risk_gates": {
+              "risk_volatility_ok": false,
+              "risk_drawdown_ok": true,
+              "risk_symbol_exposure_ok": true,
+              "risk_var_ok": true,
+              "risk_factor_ok": true,
+              "risk_daily_loss_ok": true
+            },
+            "risk_reasons": [
+              "risk_volatility_limit vol_1m=0.0400>0.0300"
+            ]
+          }
+        ],
+        "exposure_state": {}
+      }
+    },
+    {
+      "name": "drawdown_halt",
+      "coverage": [
+        "drawdown_halt"
+      ],
+      "payload": {
+        "equity_proxy": 100000,
+        "max_notional_pct": 0.03,
+        "portfolio_base_budget": 0.5,
+        "symbol_budgets": {
+          "SPY": 0.4
+        },
+        "rows": [
+          {
+            "symbol": "SPY",
+            "action": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.01,
+              "pct_from_close": 0.09,
+              "mom_5m": 0,
+              "daily_loss_proxy": 0
+            }
+          }
+        ]
+      },
+      "expected_canonical": {
+        "results": [
+          {
+            "symbol": "SPY",
+            "action_in": "BUY",
+            "action_out": "HOLD",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 0.0,
+            "alloc_qty": 0.0,
+            "risk_gates": {
+              "risk_volatility_ok": true,
+              "risk_drawdown_ok": false,
+              "risk_symbol_exposure_ok": true,
+              "risk_var_ok": true,
+              "risk_factor_ok": true,
+              "risk_daily_loss_ok": true
+            },
+            "risk_reasons": [
+              "risk_drawdown_limit dd_proxy=0.0900>0.0800"
+            ]
+          }
+        ],
+        "exposure_state": {}
+      }
+    },
+    {
+      "name": "var_halt",
+      "coverage": [
+        "var_halt"
+      ],
+      "payload": {
+        "equity_proxy": 100000,
+        "max_notional_pct": 0.03,
+        "portfolio_base_budget": 0.5,
+        "symbol_budgets": {
+          "SPY": 0.4
+        },
+        "rows": [
+          {
+            "symbol": "SPY",
+            "action": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.02,
+              "pct_from_close": 0,
+              "mom_5m": 0,
+              "daily_loss_proxy": 0
+            }
+          }
+        ]
+      },
+      "expected_canonical": {
+        "results": [
+          {
+            "symbol": "SPY",
+            "action_in": "BUY",
+            "action_out": "HOLD",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 0.0,
+            "alloc_qty": 0.0,
+            "risk_gates": {
+              "risk_volatility_ok": true,
+              "risk_drawdown_ok": true,
+              "risk_symbol_exposure_ok": true,
+              "risk_var_ok": false,
+              "risk_factor_ok": true,
+              "risk_daily_loss_ok": true
+            },
+            "risk_reasons": [
+              "risk_var_limit var_proxy=0.0330>0.0200"
+            ]
+          }
+        ],
+        "exposure_state": {}
+      }
+    },
+    {
+      "name": "factor_halt",
+      "coverage": [
+        "factor_halt"
+      ],
+      "payload": {
+        "equity_proxy": 100000,
+        "max_notional_pct": 0.03,
+        "portfolio_base_budget": 0.5,
+        "symbol_budgets": {
+          "SPY": 0.4
+        },
+        "rows": [
+          {
+            "symbol": "SPY",
+            "action": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.01,
+              "pct_from_close": 0,
+              "mom_5m": 1.6,
+              "daily_loss_proxy": 0
+            }
+          }
+        ]
+      },
+      "expected_canonical": {
+        "results": [
+          {
+            "symbol": "SPY",
+            "action_in": "BUY",
+            "action_out": "HOLD",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 0.0,
+            "alloc_qty": 0.0,
+            "risk_gates": {
+              "risk_volatility_ok": true,
+              "risk_drawdown_ok": true,
+              "risk_symbol_exposure_ok": true,
+              "risk_var_ok": true,
+              "risk_factor_ok": false,
+              "risk_daily_loss_ok": true
+            },
+            "risk_reasons": [
+              "risk_factor_limit factor_exposure=1.6000>1.5000"
+            ]
+          }
+        ],
+        "exposure_state": {}
+      }
+    },
+    {
+      "name": "daily_loss_halt",
+      "coverage": [
+        "daily_loss_halt"
+      ],
+      "payload": {
+        "equity_proxy": 100000,
+        "max_notional_pct": 0.03,
+        "portfolio_base_budget": 0.5,
+        "symbol_budgets": {
+          "SPY": 0.4
+        },
+        "rows": [
+          {
+            "symbol": "SPY",
+            "action": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.01,
+              "pct_from_close": 0,
+              "mom_5m": 0,
+              "daily_loss_proxy": 0.06
+            }
+          }
+        ]
+      },
+      "expected_canonical": {
+        "results": [
+          {
+            "symbol": "SPY",
+            "action_in": "BUY",
+            "action_out": "HOLD",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 0.0,
+            "alloc_qty": 0.0,
+            "risk_gates": {
+              "risk_volatility_ok": true,
+              "risk_drawdown_ok": true,
+              "risk_symbol_exposure_ok": true,
+              "risk_var_ok": true,
+              "risk_factor_ok": true,
+              "risk_daily_loss_ok": false
+            },
+            "risk_reasons": [
+              "risk_daily_loss_limit daily_loss_proxy=0.0600>0.0500"
+            ]
+          }
+        ],
+        "exposure_state": {}
+      }
+    },
+    {
+      "name": "exposure_halt",
+      "coverage": [
+        "exposure_halt"
+      ],
+      "payload": {
+        "equity_proxy": 100000,
+        "max_notional_pct": 0.03,
+        "portfolio_base_budget": 0.5,
+        "symbol_budgets": {
+          "SPY": 0.4
+        },
+        "rows": [
+          {
+            "symbol": "SPY",
+            "action": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.01,
+              "pct_from_close": 0,
+              "mom_5m": 0,
+              "daily_loss_proxy": 0
+            }
+          },
+          {
+            "symbol": "SPY",
+            "action": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.01,
+              "pct_from_close": 0,
+              "mom_5m": 0,
+              "daily_loss_proxy": 0
+            }
+          },
+          {
+            "symbol": "SPY",
+            "action": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.01,
+              "pct_from_close": 0,
+              "mom_5m": 0,
+              "daily_loss_proxy": 0
+            }
+          },
+          {
+            "symbol": "SPY",
+            "action": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.01,
+              "pct_from_close": 0,
+              "mom_5m": 0,
+              "daily_loss_proxy": 0
+            }
+          }
+        ]
+      },
+      "expected_canonical": {
+        "results": [
+          {
+            "symbol": "SPY",
+            "action_in": "BUY",
+            "action_out": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 3000.0,
+            "alloc_qty": 1200.0,
+            "risk_gates": {
+              "risk_volatility_ok": true,
+              "risk_drawdown_ok": true,
+              "risk_symbol_exposure_ok": true,
+              "risk_var_ok": true,
+              "risk_factor_ok": true,
+              "risk_daily_loss_ok": true
+            },
+            "risk_reasons": []
+          },
+          {
+            "symbol": "SPY",
+            "action_in": "BUY",
+            "action_out": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 3000.0,
+            "alloc_qty": 1200.0,
+            "risk_gates": {
+              "risk_volatility_ok": true,
+              "risk_drawdown_ok": true,
+              "risk_symbol_exposure_ok": true,
+              "risk_var_ok": true,
+              "risk_factor_ok": true,
+              "risk_daily_loss_ok": true
+            },
+            "risk_reasons": []
+          },
+          {
+            "symbol": "SPY",
+            "action_in": "BUY",
+            "action_out": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 3000.0,
+            "alloc_qty": 1200.0,
+            "risk_gates": {
+              "risk_volatility_ok": true,
+              "risk_drawdown_ok": true,
+              "risk_symbol_exposure_ok": true,
+              "risk_var_ok": true,
+              "risk_factor_ok": true,
+              "risk_daily_loss_ok": true
+            },
+            "risk_reasons": []
+          },
+          {
+            "symbol": "SPY",
+            "action_in": "BUY",
+            "action_out": "HOLD",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 0.0,
+            "alloc_qty": 0.0,
+            "risk_gates": {
+              "risk_volatility_ok": true,
+              "risk_drawdown_ok": true,
+              "risk_symbol_exposure_ok": false,
+              "risk_var_ok": true,
+              "risk_factor_ok": true,
+              "risk_daily_loss_ok": true
+            },
+            "risk_reasons": [
+              "risk_symbol_exposure_limit symbol=SPY count=3"
+            ]
+          }
+        ],
+        "exposure_state": {
+          "SPY": 3
+        }
+      }
+    },
+    {
+      "name": "daily_loss_boundary",
+      "coverage": [
+        "daily_loss_boundary"
+      ],
+      "payload": {
+        "equity_proxy": 100000,
+        "max_notional_pct": 0.03,
+        "portfolio_base_budget": 0.5,
+        "symbol_budgets": {
+          "SPY": 0.4
+        },
+        "rows": [
+          {
+            "symbol": "SPY",
+            "action": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.01,
+              "pct_from_close": 0,
+              "mom_5m": 0,
+              "daily_loss_proxy": 0.05
+            }
+          }
+        ]
+      },
+      "expected_canonical": {
+        "results": [
+          {
+            "symbol": "SPY",
+            "action_in": "BUY",
+            "action_out": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 3000.0,
+            "alloc_qty": 1200.0,
+            "risk_gates": {
+              "risk_volatility_ok": true,
+              "risk_drawdown_ok": true,
+              "risk_symbol_exposure_ok": true,
+              "risk_var_ok": true,
+              "risk_factor_ok": true,
+              "risk_daily_loss_ok": true
+            },
+            "risk_reasons": []
+          }
+        ],
+        "exposure_state": {
+          "SPY": 1
+        }
+      }
+    },
+    {
+      "name": "allocation_cap",
+      "coverage": [
+        "allocation_cap"
+      ],
+      "payload": {
+        "equity_proxy": 100000,
+        "max_notional_pct": 0.03,
+        "portfolio_base_budget": 0.5,
+        "symbol_budgets": {
+          "SPY": 0.1
+        },
+        "rows": [
+          {
+            "symbol": "SPY",
+            "action": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "features": {
+              "volatility_1m": 0.01,
+              "pct_from_close": 0,
+              "mom_5m": 0,
+              "daily_loss_proxy": 0
+            }
+          }
+        ]
+      },
+      "expected_canonical": {
+        "results": [
+          {
+            "symbol": "SPY",
+            "action_in": "BUY",
+            "action_out": "BUY",
+            "score": 0.9,
+            "threshold": 0.55,
+            "raw_qty": 3000.0,
+            "alloc_qty": 300.0,
+            "risk_gates": {
+              "risk_volatility_ok": true,
+              "risk_drawdown_ok": true,
+              "risk_symbol_exposure_ok": true,
+              "risk_var_ok": true,
+              "risk_factor_ok": true,
+              "risk_daily_loss_ok": true
+            },
+            "risk_reasons": []
+          }
+        ],
+        "exposure_state": {
+          "SPY": 1
+        }
+      }
+    }
+  ]
+}

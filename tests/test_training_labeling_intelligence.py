@@ -43,6 +43,40 @@ def _write_registry(root: Path) -> None:
     )
 
 
+def test_read_only_refresh_preserves_observed_label_coverage(tmp_path: Path) -> None:
+    _write_registry(tmp_path)
+    registry_path = tmp_path / "master_bot_registry.json"
+    original = registry_path.read_bytes()
+    payload = tli.refresh_artifacts(tmp_path)
+    summary = payload["label_contract_summary"]
+    assert summary["total_rows"] == 2
+    assert summary["complete_contract_count"] == 1
+    assert summary["missing_contract_count"] == 1
+    assert summary["coverage_ratio_after"] == 0.5
+    assert summary["observation_only"] is True
+    assert summary["outcome_evidence_certified"] is False
+    assert registry_path.read_bytes() == original
+    saved = json.loads((tmp_path / "governance/health/training_labeling_intelligence_latest.json").read_text())
+    assert saved["label_contract_summary"] == summary
+
+
+def test_empty_registry_has_no_label_coverage(tmp_path: Path) -> None:
+    payload = tli.build_payload(tmp_path)
+    assert payload["label_contract_summary"]["coverage_ratio_after"] == 0.0
+
+
+def test_incomplete_label_contract_is_not_counted_as_covered(tmp_path: Path) -> None:
+    (tmp_path / "master_bot_registry.json").write_text(json.dumps({"sub_bots": [
+        {"bot_id": "incomplete", "label_contract": {"label_family": "intraday_fast"}},
+        {"bot_id": "version_only", "data_label_contract_version": "v1"},
+    ]}))
+    payload = tli.build_payload(tmp_path)
+    summary = payload["label_contract_summary"]
+    assert summary["complete_contract_count"] == 0
+    assert summary["incomplete_contract_count"] == 2
+    assert summary["coverage_ratio_after"] == 0.0
+
+
 def test_central_bank_liquidity_source_routes_to_macro_rates_and_funding_contexts() -> None:
     source_id = tli.CENTRAL_BANK_CONTEXT_SOURCE_ID
     required_contexts = {

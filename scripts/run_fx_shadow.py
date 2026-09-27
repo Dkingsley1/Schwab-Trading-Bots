@@ -455,6 +455,8 @@ def _build_loop_cmd(
     cmd = [
         str(VENV_PY),
         str(SHADOW_LOOP),
+        "--runtime-cpu-class",
+        "market_decision",
         "--broker",
         args.broker,
         "--profile",

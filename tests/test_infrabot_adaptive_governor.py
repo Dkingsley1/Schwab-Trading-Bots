@@ -297,6 +297,82 @@ def test_infrabot_adaptive_governor_routes_raw_profitability_burn_down(tmp_path:
     ]
 
 
+def test_infrabot_routes_generation_aware_bounded_profitability_actions(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    health = _base_ready_health(project_root)
+    _write_json(
+        health / "profitability_self_assessment_latest.json",
+        {
+            "developmental_soak_learning": {
+                "status": "ready",
+                "accepted_generation_count": 12,
+                "attributable_generation_count": 4,
+                "mature_developmental_generation_count": 2,
+                "observed_negative_delta_generation_count": 1,
+                "bounded_paper_action_plan": [
+                    {
+                        "action_id": "collect_current_candidate_post_cost_outcomes",
+                        "owner": "paper_performance_refresh",
+                        "auto_apply_allowed": True,
+                    },
+                    {
+                        "action_id": "refresh_candidate_counterfactual_replay",
+                        "owner": "counterfactual_replay",
+                        "auto_apply_allowed": True,
+                    },
+                    {
+                        "action_id": "acquire_candidate_independent_fills",
+                        "owner": "independent_fill_evidence_acquisition",
+                        "auto_apply_allowed": True,
+                    },
+                    {
+                        "action_id": "maintain_candidate_bound_weak_sleeve_containment",
+                        "owner": "paper_profitability_control",
+                        "auto_apply_allowed": True,
+                    },
+                    {
+                        "action_id": "prioritize_loss_and_missed_opportunity_labels",
+                        "owner": "training_data_intake_labeling",
+                        "auto_apply_allowed": True,
+                    },
+                ],
+            }
+        },
+    )
+
+    payload = infrabot_adaptive_governor.build_payload(project_root, max_actions=8)
+
+    needs = {need["id"]: need for need in payload["system_needs_contract"]["needs"]}
+    need = needs["candidate_generation_profitability_learning"]
+    assert need["severity"] == "high"
+    assert set(need["target_capabilities"]) == {
+        "paper_performance_refresh",
+        "counterfactual_replay",
+        "independent_fill_evidence_acquisition",
+        "paper_profitability_control",
+        "training_data_intake_labeling",
+    }
+    assert "historical_generations_grade_current_candidate=false" in need["evidence"]
+    routes = {
+        row["capability_id"]: row
+        for row in payload["adaptive_policy_router"]["routes"]
+    }
+    assert routes["counterfactual_replay"]["command"] == [
+        "./scripts/ops/opsctl.sh",
+        "counterfactual-replay",
+        "--json",
+    ]
+    assert routes["independent_fill_evidence_acquisition"]["command"] == [
+        "./scripts/ops/opsctl.sh",
+        "independent-fill-acquisition",
+        "--apply",
+        "--json",
+    ]
+    assert payload["safety_guard"]["live_execution_authority"] is False
+
+
 def test_infrabot_adaptive_governor_routes_source_quality_to_health_gate_recheck(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     health = _base_ready_health(project_root)

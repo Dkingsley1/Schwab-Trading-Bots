@@ -40,7 +40,9 @@
   },
   "derivative_contract_master_path": "config/derivatives_contract_master_v1.json",
   "stress_scenario_paths": [
+    "config/stress_scenarios/gfc_2008_financial_crisis.json",
     "config/stress_scenarios/covid_2020_pandemic_crash.json",
+    "config/stress_scenarios/us_regional_banking_2023.json",
     "config/stress_scenarios/fed_2026_supervisory_severely_adverse.json",
     "config/stress_scenarios/fed_2026_source_plumbing.json",
     "config/stress_scenarios/fed_2026_stress_modules.json"

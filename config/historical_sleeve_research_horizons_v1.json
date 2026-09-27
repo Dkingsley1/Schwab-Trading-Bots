@@ -1,0 +1,597 @@
+{
+  "schema_version": 1,
+  "policy_id": "historical_sleeve_research_horizons_v1",
+  "purpose": "Explicit offline research windows chosen before outcome evaluation; not validated optimal horizons, execution holding periods, or promotion authority.",
+  "timezone": "UTC",
+  "day_definition": "86400 elapsed seconds, not an exchange trading day",
+  "point_in_time_rule": "Anchor only on recorded decision/action/event/fold time. Use an observed endpoint at or after target within declared tolerance; never interpolate missing outcomes.",
+  "endpoint_tolerance_seconds": {
+    "minimum": 30,
+    "maximum": 300,
+    "horizon_fraction": 0.01
+  },
+  "outcome_missing_policy": "censored_unknown_not_negative",
+  "training_split_policy": "purge the full feature-through-outcome interval and embargo at least the longest active label horizon; no cross-candidate promotion credit",
+  "authority": {
+    "can_change_execution_horizon": false,
+    "can_train": false,
+    "can_promote": false,
+    "can_submit_order": false
+  },
+  "recipes": {
+    "pairs": {
+      "primary_seconds": 432000,
+      "secondary_seconds": [3600, 86400, 864000, 1728000],
+      "clock": "elapsed_utc",
+      "endpoint": "synchronized_factor_neutral_spread_convergence_after_borrow_and_costs",
+      "rationale": "Five-calendar-day residual convergence with one-hour through twenty-day stability checks; never a single-leg directional label."
+    },
+    "execution_intraday": {
+      "primary_seconds": 1800,
+      "secondary_seconds": [
+        60,
+        300,
+        900,
+        3600
+      ],
+      "clock": "elapsed_utc_with_observed_session_boundary",
+      "endpoint": "observed_fill_markout_and_session_close",
+      "rationale": "Resolve intraday execution and adverse selection before end-of-session inventory flattening."
+    },
+    "execution_microstructure": {
+      "primary_seconds": 60,
+      "secondary_seconds": [
+        1,
+        5,
+        10,
+        300,
+        900
+      ],
+      "clock": "elapsed_utc_with_observed_session_boundary",
+      "endpoint": "observed_quote_fill_markout",
+      "rationale": "Measure short-lived queue, spread and adverse-selection effects; sparse observations are censored, never interpolated."
+    },
+    "crypto_spot": {
+      "primary_seconds": 14400,
+      "secondary_seconds": [
+        900,
+        3600,
+        86400,
+        604800
+      ],
+      "clock": "elapsed_utc_24x7",
+      "endpoint": "venue_matched_spot_outcome",
+      "rationale": "Separate 15-minute/day practice from one-week swing context in continuous spot markets."
+    },
+    "crypto_funding": {
+      "primary_seconds": 28800,
+      "secondary_seconds": [
+        3600,
+        86400,
+        604800
+      ],
+      "clock": "elapsed_utc_24x7",
+      "endpoint": "observed_position_and_actual_funding_schedule",
+      "rationale": "Use an eight-hour research window, with actual instrument funding cashflows rather than assuming an eight-hour venue payment schedule."
+    },
+    "basis": {
+      "primary_seconds": 86400,
+      "secondary_seconds": [
+        3600,
+        604800,
+        2592000
+      ],
+      "clock": "elapsed_utc",
+      "endpoint": "synchronized_leg_convergence_and_costs",
+      "rationale": "Measure convergence over one hour through thirty calendar days with synchronized legs."
+    },
+    "directional_swing": {
+      "primary_seconds": 432000,
+      "secondary_seconds": [
+        86400,
+        172800,
+        864000,
+        1728000,
+        3628800
+      ],
+      "clock": "elapsed_utc",
+      "endpoint": "same_instrument_return_and_benchmark",
+      "rationale": "Five-calendar-day primary observation with two-day to six-week swing robustness windows."
+    },
+    "directional_long": {
+      "primary_seconds": 1728000,
+      "secondary_seconds": [
+        86400,
+        432000,
+        5184000,
+        7776000
+      ],
+      "clock": "elapsed_utc",
+      "endpoint": "same_instrument_return_and_benchmark",
+      "rationale": "Twenty-calendar-day primary observation for persistent equity and regime effects."
+    },
+    "event": {
+      "primary_seconds": 86400,
+      "secondary_seconds": [
+        900,
+        3600,
+        432000,
+        1728000
+      ],
+      "clock": "verified_event_time_plus_elapsed_utc",
+      "endpoint": "verified_event_window_and_matched_cohort",
+      "rationale": "One-day event follow-through plus intraday and multi-day drift; actual event time is required."
+    },
+    "event_fast": {
+      "primary_seconds": 3600,
+      "secondary_seconds": [
+        60,
+        300,
+        900,
+        86400
+      ],
+      "clock": "verified_event_time_plus_elapsed_utc",
+      "endpoint": "verified_event_window_and_matched_cohort",
+      "rationale": "One-hour reaction window with minute-scale checks for macro-event futures."
+    },
+    "income_capture": {
+      "primary_seconds": 604800,
+      "secondary_seconds": [
+        86400,
+        259200,
+        2592000
+      ],
+      "clock": "verified_ex_date_plus_elapsed_utc",
+      "endpoint": "ex_date_recovery_and_actual_cash_distribution",
+      "rationale": "Seven-calendar-day recovery window around a verified ex-date; distributions and tax costs remain explicit."
+    },
+    "income_compound": {
+      "primary_seconds": 7776000,
+      "secondary_seconds": [
+        2592000,
+        15552000,
+        31536000
+      ],
+      "clock": "elapsed_utc",
+      "endpoint": "actual_distributions_corporate_actions_and_total_return",
+      "rationale": "Ninety-calendar-day compounding window with thirty-day, half-year and one-year checks."
+    },
+    "macro": {
+      "primary_seconds": 1728000,
+      "secondary_seconds": [
+        86400,
+        432000,
+        5184000,
+        7776000
+      ],
+      "clock": "elapsed_utc",
+      "endpoint": "price_carry_roll_funding_and_benchmark",
+      "rationale": "Twenty-calendar-day macro/carry window with daily through quarterly robustness checks."
+    },
+    "macro_intraday": {
+      "primary_seconds": 86400,
+      "secondary_seconds": [
+        3600,
+        14400,
+        432000,
+        1728000
+      ],
+      "clock": "elapsed_utc_with_observed_session_boundary",
+      "endpoint": "price_carry_roll_funding_and_benchmark",
+      "rationale": "One-calendar-day futures/FX research window with intraday and multi-week context."
+    },
+    "derivatives": {
+      "primary_seconds": 86400,
+      "secondary_seconds": [
+        3600,
+        604800,
+        2592000
+      ],
+      "clock": "elapsed_utc_and_observed_contract_expiry",
+      "endpoint": "actual_leg_payoff_greeks_hedge_cashflows_and_expiry",
+      "rationale": "One-day risk/payoff marks and one-hour to thirty-day checks, plus actual expiry rather than an invented maturity."
+    },
+    "hedge": {
+      "primary_seconds": 432000,
+      "secondary_seconds": [
+        86400,
+        1728000,
+        5184000
+      ],
+      "clock": "elapsed_utc",
+      "endpoint": "matched_portfolio_with_and_without_hedge",
+      "rationale": "Five-calendar-day hedge utility with daily and longer tail-risk windows; standalone hedge loss is not failure."
+    },
+    "preservation": {
+      "primary_seconds": 1728000,
+      "secondary_seconds": [
+        86400,
+        432000,
+        5184000,
+        7776000
+      ],
+      "clock": "elapsed_utc",
+      "endpoint": "portfolio_drawdown_cash_benchmark_and_opportunity_cost",
+      "rationale": "Twenty-calendar-day preservation utility with shorter loss-avoidance and longer opportunity-cost checks."
+    },
+    "lifecycle": {
+      "primary_seconds": 86400,
+      "secondary_seconds": [
+        3600,
+        432000,
+        1728000
+      ],
+      "clock": "elapsed_utc_and_verified_position_exit",
+      "endpoint": "actual_position_lifecycle_and_liquidity_event",
+      "rationale": "One-day position/liquidity window plus realized exits, not an assumed liquidation."
+    },
+    "structured_credit": {
+      "primary_seconds": 2592000,
+      "secondary_seconds": [
+        604800,
+        7776000,
+        15552000,
+        31536000
+      ],
+      "clock": "elapsed_utc_and_observed_contract_cashflows",
+      "endpoint": "actual_tranche_cashflows_losses_and_valuation",
+      "rationale": "Thirty-calendar-day primary window plus quarterly to annual loss/cashflow evidence for slow structured-credit dynamics."
+    },
+    "pricing_validation": {
+      "primary_seconds": 86400,
+      "secondary_seconds": [
+        604800,
+        2592000
+      ],
+      "clock": "elapsed_utc_and_completed_out_of_sample_fold",
+      "endpoint": "independent_observed_price_residual_and_completed_oos_validation",
+      "rationale": "One-day pricing residual and one-week/one-month out-of-sample checks; an in-sample model score is not a label."
+    },
+    "control": {
+      "primary_seconds": 3600,
+      "secondary_seconds": [
+        300,
+        86400,
+        604800
+      ],
+      "clock": "verified_action_time_plus_elapsed_utc",
+      "endpoint": "verified_incident_action_result_and_false_positive_adjudication",
+      "rationale": "One-hour recovery/effectiveness window, with five-minute detection and one-day/week recurrence checks; no price labels."
+    }
+  },
+  "sleeves": {
+    "adaptive_architectures": {
+      "recipe": "control"
+    },
+    "adversarial_ml_security": {
+      "recipe": "control"
+    },
+    "alpha_research_os": {
+      "recipe": "control"
+    },
+    "alternative_data_ingestion": {
+      "recipe": "control"
+    },
+    "arbitrage_execution_safety": {
+      "recipe": "control"
+    },
+    "barrier_lookback_options": {
+      "recipe": "derivatives"
+    },
+    "black_swan_hedging": {
+      "recipe": "hedge"
+    },
+    "bond_rates": {
+      "recipe": "macro"
+    },
+    "cash_rotation_tactical": {
+      "recipe": "preservation"
+    },
+    "causal_omni_symbolic": {
+      "recipe": "directional_long"
+    },
+    "causal_regime_discovery": {
+      "recipe": "directional_long"
+    },
+    "cdo_cubed": {
+      "recipe": "structured_credit"
+    },
+    "cdo_squared": {
+      "recipe": "structured_credit"
+    },
+    "collateral_margin_liquidity": {
+      "recipe": "lifecycle"
+    },
+    "commodity_inflation": {
+      "recipe": "macro"
+    },
+    "compound_options": {
+      "recipe": "derivatives"
+    },
+    "conservative": {
+      "recipe": "preservation"
+    },
+    "credit_derivatives_cdx_cds": {
+      "recipe": "macro"
+    },
+    "critic_hmm_pinsde": {
+      "recipe": "directional_long"
+    },
+    "cross_asset_basis_training": {
+      "recipe": "basis"
+    },
+    "cross_sleeve_evidence_court": {
+      "recipe": "control"
+    },
+    "crowd_physics_games": {
+      "recipe": "directional_swing"
+    },
+    "crypto_futures": {
+      "recipe": "crypto_funding"
+    },
+    "crypto_futures_basis": {
+      "recipe": "basis"
+    },
+    "crypto_spot": {
+      "recipe": "crypto_spot"
+    },
+    "data_plane_backpressure_resilience": {
+      "recipe": "control"
+    },
+    "day_trading": {
+      "recipe": "execution_intraday"
+    },
+    "dealer_positioning_gamma_inventory": {
+      "recipe": "derivatives"
+    },
+    "dispersion_trading": {
+      "recipe": "derivatives"
+    },
+    "dividend_capture": {
+      "recipe": "income_capture"
+    },
+    "dividend_income": {
+      "recipe": "income_compound"
+    },
+    "earnings_event": {
+      "recipe": "event"
+    },
+    "equity_core": {
+      "recipe": "directional_long"
+    },
+    "etf_flow_creation_redemption": {
+      "recipe": "directional_swing"
+    },
+    "event_intelligence": {
+      "recipe": "control"
+    },
+    "execution_quality": {
+      "recipe": "execution_intraday"
+    },
+    "expansion_quality_governance": {
+      "recipe": "control"
+    },
+    "feature_quality_data_confidence": {
+      "recipe": "control"
+    },
+    "futures_commodity_macro": {
+      "recipe": "macro_intraday"
+    },
+    "futures_event_reaction": {
+      "recipe": "event_fast"
+    },
+    "futures_index_intraday": {
+      "recipe": "execution_intraday"
+    },
+    "futures_rates_curve": {
+      "recipe": "macro_intraday"
+    },
+    "fx_macro": {
+      "recipe": "macro_intraday"
+    },
+    "gamma_scalping": {
+      "recipe": "derivatives"
+    },
+    "geometry_spillover_durability": {
+      "recipe": "directional_long"
+    },
+    "gpu_quant_acceleration": {
+      "recipe": "control"
+    },
+    "halt_recovery_stability": {
+      "recipe": "control"
+    },
+    "high_frequency_market_making": {
+      "recipe": "execution_microstructure"
+    },
+    "infrastructure_risk": {
+      "recipe": "control"
+    },
+    "institutional_data_plumbing": {
+      "recipe": "control"
+    },
+    "international_macro": {
+      "recipe": "macro"
+    },
+    "intraday_aggressive": {
+      "recipe": "execution_intraday"
+    },
+    "liquidity_regime": {
+      "recipe": "execution_intraday"
+    },
+    "lit_order_book_transformers": {
+      "recipe": "execution_microstructure"
+    },
+    "lobdif_crisis_microstructure": {
+      "recipe": "execution_microstructure"
+    },
+    "low_latency_orchestration": {
+      "recipe": "control"
+    },
+    "macro_crisis_scenario_lab": {
+      "recipe": "macro"
+    },
+    "market_data_tape_normalization": {
+      "recipe": "control"
+    },
+    "market_making_liquidity": {
+      "recipe": "execution_microstructure"
+    },
+    "martingale_flow_pricing": {
+      "recipe": "pricing_validation"
+    },
+    "model_risk_validation": {
+      "recipe": "control"
+    },
+    "neural_operator_surrogates": {
+      "recipe": "pricing_validation"
+    },
+    "neural_sde_kan_hedging": {
+      "recipe": "hedge"
+    },
+    "nlp_sentiment_agents": {
+      "recipe": "directional_swing"
+    },
+    "optimization_research": {
+      "recipe": "directional_long"
+    },
+    "options_flow": {
+      "recipe": "derivatives"
+    },
+    "options_on_futures": {
+      "recipe": "derivatives"
+    },
+    "options_on_futures_aggressive": {
+      "recipe": "derivatives"
+    },
+    "order_flow_market_microstructure": {
+      "recipe": "execution_microstructure"
+    },
+    "order_flow_toxicity": {
+      "recipe": "execution_microstructure"
+    },
+    "pairs_correlation": {
+      "recipe": "pairs"
+    },
+    "portfolio_construction": {
+      "recipe": "preservation"
+    },
+    "position_lifecycle": {
+      "recipe": "lifecycle"
+    },
+    "privacy_zkp_controls": {
+      "recipe": "control"
+    },
+    "proof_quantum_formal_backends": {
+      "recipe": "control"
+    },
+    "provider_adapter_verification": {
+      "recipe": "control"
+    },
+    "qemc_path_volatility": {
+      "recipe": "derivatives"
+    },
+    "quant_pricing_models": {
+      "recipe": "pricing_validation"
+    },
+    "rainbow_options": {
+      "recipe": "derivatives"
+    },
+    "rates_credit_macro": {
+      "recipe": "macro"
+    },
+    "repo_securities_lending": {
+      "recipe": "macro"
+    },
+    "research_meta_governance": {
+      "recipe": "control"
+    },
+    "rlbf_dms_equivariant": {
+      "recipe": "directional_swing"
+    },
+    "runtime_capacity_governance": {
+      "recipe": "control"
+    },
+    "schwab_futures": {
+      "recipe": "macro_intraday"
+    },
+    "second_third_order_greeks": {
+      "recipe": "derivatives"
+    },
+    "sector_master": {
+      "recipe": "directional_long"
+    },
+    "securitized_products_mbs_abs_clo": {
+      "recipe": "structured_credit"
+    },
+    "short_bias_hedge": {
+      "recipe": "hedge"
+    },
+    "signal_governance_integrity": {
+      "recipe": "control"
+    },
+    "signature_hawkes_generators": {
+      "recipe": "directional_swing"
+    },
+    "single_name_options_event": {
+      "recipe": "event"
+    },
+    "sovereign_debt_macro": {
+      "recipe": "macro"
+    },
+    "stat_arb_market_neutral": {
+      "recipe": "pairs"
+    },
+    "state_space_models": {
+      "recipe": "directional_long"
+    },
+    "statistical_arbitrage": {
+      "recipe": "pairs"
+    },
+    "structured_products": {
+      "recipe": "structured_credit"
+    },
+    "swaptions": {
+      "recipe": "derivatives"
+    },
+    "swing_aggressive": {
+      "recipe": "directional_swing"
+    },
+    "synthetic_cdo": {
+      "recipe": "structured_credit"
+    },
+    "system_governor_expansion": {
+      "recipe": "directional_long"
+    },
+    "tail_dependency_risk": {
+      "recipe": "hedge"
+    },
+    "tail_risk_parity": {
+      "recipe": "hedge"
+    },
+    "transaction_cost_slippage_intelligence": {
+      "recipe": "execution_intraday"
+    },
+    "transport_topology_research": {
+      "recipe": "directional_long"
+    },
+    "uncertainty_robust_control": {
+      "recipe": "control"
+    },
+    "vanna_volga_hedging": {
+      "recipe": "hedge"
+    },
+    "variance_volatility_swaps": {
+      "recipe": "derivatives"
+    },
+    "volatility": {
+      "recipe": "derivatives"
+    },
+    "volatility_arbitrage": {
+      "recipe": "derivatives"
+    },
+    "xva_counterparty_margin": {
+      "recipe": "control"
+    }
+  }
+}

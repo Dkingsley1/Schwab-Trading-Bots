@@ -4,9 +4,11 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import math
 import os
-import subprocess
+import shutil
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -24,11 +26,17 @@ else:
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
+from core.runtime_maintenance import maintenance_hold_snapshot
+from core.storage_router import inspect_storage_path
+from core.workload_admission import POLICIES, current_lease
+from scripts.ops.long_runtime_common import run_bounded_process_group
+
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "soak_self_healing_control_latest.json"
 DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "health" / "soak_self_healing_state.json"
 DEFAULT_LOCK_PATH = PROJECT_ROOT / "governance" / "locks" / "soak_self_healing.lock"
 DEFAULT_MAX_FAILURES_BEFORE_CIRCUIT = 3
 DEFAULT_CIRCUIT_OPEN_SECONDS = 3600
+STORAGE_MEMORY_STEP = "storage_recovery_memory_admission"
 
 MANAGED_DAILY_FAILURES = {
     "feature_store_manifest",
@@ -121,7 +129,7 @@ def _path_under(path: Path, root: Path) -> bool:
 
 
 def _protected_storage_path(path: Path) -> bool:
-    return any(_path_under(path, root) for root in PROTECTED_VOLUME_ROOTS)
+    return inspect_storage_path(path).get("status") not in {"present", "missing"}
 
 
 def _configure_cold_archive_env(env: dict[str, str], *, apply: bool) -> dict[str, Any]:
@@ -129,18 +137,27 @@ def _configure_cold_archive_env(env: dict[str, str], *, apply: bool) -> dict[str
     env["BOT_NEVER_TOUCH_VIDEO"] = "1"
     env["BOT_PROTECTED_VOLUME_DENYLIST"] = "/Volumes/VIDEO"
     configured = str(env.get("BOT_SECOND_COLD_ROOT") or "").strip()
+    requested_path = configured
     auto_selected = False
+    deferred_local = False
     if configured:
         target = Path(configured).expanduser()
         if _protected_storage_path(target):
             env.pop("BOT_SECOND_COLD_ROOT", None)
             configured = ""
             target = Path(".")
+        elif _path_under(target, Path("/Volumes")) and not (target.exists() or target.parent.exists()):
+            target = PROJECT_ROOT / "local_fallback_storage" / "cold_archive_deferred"
+            env["BOT_SECOND_COLD_ROOT"] = str(target)
+            configured = str(target)
+            auto_selected = True
+            deferred_local = True
     else:
         target = Path(".")
     if not configured:
+        external_root = str(env.get("BOT_LOGS_EXTERNAL_PROJECT_ROOT") or "").strip()
         active_root = str(
-            env.get("BOT_LOGS_EXTERNAL_PROJECT_ROOT")
+            external_root
             or env.get("BOT_LOGS_ACTIVE_ROOT")
             or ""
         ).strip()
@@ -153,12 +170,30 @@ def _configure_cold_archive_env(env: dict[str, str], *, apply: bool) -> dict[str
                 "protected_volume_denied": True,
                 "reason": "non_protected_second_cold_root_not_configured",
             }
-        target = Path(active_root).expanduser() / "cold_archive"
+        active_path = Path(active_root).expanduser()
+        external_parent_available = bool(
+            external_root
+            and not _protected_storage_path(active_path)
+            and (active_path.exists() or active_path.parent.exists())
+        )
+        if external_parent_available and not _protected_storage_path(active_path):
+            target = active_path / "cold_archive"
+        else:
+            target = PROJECT_ROOT / "local_fallback_storage" / "cold_archive_deferred"
+            deferred_local = True
         env["BOT_SECOND_COLD_ROOT"] = str(target)
         auto_selected = True
 
     created = False
     create_error = ""
+    if _protected_storage_path(target):
+        env.pop("BOT_SECOND_COLD_ROOT", None)
+        return {
+            "configured": False,
+            "path": "",
+            "protected_volume_denied": True,
+            "reason": "protected_or_unverifiable_cold_route",
+        }
     if apply and target.parent.exists():
         try:
             target.mkdir(parents=True, exist_ok=True)
@@ -168,11 +203,16 @@ def _configure_cold_archive_env(env: dict[str, str], *, apply: bool) -> dict[str
     return {
         "configured": True,
         "path": str(target),
+        "requested_path": requested_path,
         "auto_selected": auto_selected,
         "created": created,
         "create_error": create_error,
         "protected_volume_denied": False,
-        "scope": "non_protected_cold_target",
+        "scope": "local_deferred_cold_queue" if deferred_local else "non_protected_cold_target",
+        "route_state": "deferred_until_external_returns" if deferred_local else "external_cold_ready",
+        "redundancy_ready": not deferred_local,
+        "hot_path_blocked": False,
+        "auto_failback_enabled": True,
     }
 
 
@@ -212,30 +252,17 @@ def _run_command(
     env: dict[str, str],
 ) -> dict[str, Any]:
     started = _utc_now()
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(project_root),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=max(int(timeout_sec), 1),
-            check=False,
-        )
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-        rc = int(proc.returncode)
-        timed_out = False
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode("utf-8", errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        stderr = exc.stderr.decode("utf-8", errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
-        rc = 124
-        timed_out = True
+    result = run_bounded_process_group(
+        cmd, cwd=project_root, env=env, timeout_seconds=max(int(timeout_sec), 1)
+    )
+    stdout, stderr = result["stdout"], result["stderr"]
+    rc, timed_out = result["rc"], result["timed_out"]
     parsed = _parse_json_output(stdout)
     return {
         "command": cmd,
         "rc": rc,
         "timed_out": timed_out,
+        "timeout_cleanup": result["timeout_cleanup"],
         "duration_seconds": round((_utc_now() - started).total_seconds(), 3),
         "parsed": parsed,
         "ok": bool(_payload_ok(parsed, rc)) and not timed_out,
@@ -301,7 +328,15 @@ def _update_step_state(
     steps = _as_dict(state.setdefault("steps", {}))
     parsed = _as_dict(row.get("parsed"))
     ok = bool(row.get("ok", False))
+    prior = _as_dict(steps.get(step_name))
+    progress = row.get("storage_recovery_progress")
+    no_progress_count = _safe_int(prior.get("no_progress_count"), 0)
+    if isinstance(progress, dict):
+        no_progress_count = 0 if progress["made_progress"] else min(no_progress_count + 1, 16)
     until = _utc_now() + timedelta(seconds=max(int(cooldown_seconds), 0)) if (not ok and cooldown_seconds > 0) else None
+    if ok and isinstance(progress, dict) and not progress["made_progress"]:
+        delay = min(max(int(cooldown_seconds), 60) * 2 ** min(no_progress_count - 1, 6), 3600)
+        until = _utc_now() + timedelta(seconds=delay)
     failure_count = 0 if ok else _safe_int(_as_dict(steps.get(step_name)).get("failure_count"), 0) + 1
     circuit_until = (
         _utc_now() + timedelta(seconds=max(int(circuit_open_seconds), 1))
@@ -319,7 +354,202 @@ def _update_step_state(
         "circuit_until_utc": circuit_until.isoformat() if circuit_until else "",
         "circuit_reason": "bounded_repair_failure_budget_exhausted" if circuit_until else "",
     }
+    if isinstance(progress, dict):
+        steps[step_name].update(no_progress_count=no_progress_count, storage_recovery_progress=progress)
+        if ok and not progress["made_progress"]:
+            steps[step_name]["cooldown_reason"] = "storage_recovery_no_measured_progress"
+    if step_name == STORAGE_MEMORY_STEP:
+        steps[step_name]["observation_contract_version"] = 1
+        steps[step_name]["admission_ready"] = bool(row.get("admission_ready"))
+        steps[step_name]["observation_reason"] = row.get("observation_reason", "")
+        if row.get("legacy_circuit_revalidation"):
+            steps[step_name]["legacy_circuit_revalidation"] = row[
+                "legacy_circuit_revalidation"
+            ]
     state["steps"] = steps
+
+
+def _disk_only_recovery_memory_ready(payload: dict[str, Any]) -> bool:
+    """Separate memory admission from disk pressure without clearing disk guards."""
+    observed = _as_dict(payload.get("storage_recovery_memory_observation"))
+    if (
+        payload.get("input_evidence_ready") is not True
+        or observed.get("input_evidence_ready") is not True
+    ):
+        return False
+    try:
+        measured = datetime.fromisoformat(
+            str(observed.get("timestamp_utc", "")).replace("Z", "+00:00")
+        )
+        if (
+            measured.tzinfo is None
+            or not 0 <= (_utc_now() - measured).total_seconds() <= 90
+        ):
+            return False
+        values = [
+            observed.get(key)
+            for key in (
+                "memory_free_pct",
+                "swap_used_gb",
+                "compressor_gb",
+                "pages_throttled",
+            )
+        ]
+        if any(
+            type(value) not in {int, float} or not math.isfinite(value)
+            for value in values
+        ):
+            return False
+    except (TypeError, ValueError, OverflowError):
+        return False
+    free, swap, compressor, throttled = values
+    reasons = observed.get("memory_pressure_reasons")
+    return bool(
+        observed.get("memory_pressure_state") == "yellow"
+        and observed.get("memory_pressure_kind") == "disk_swap_headroom"
+        and isinstance(reasons, list)
+        and reasons
+        and all(
+            isinstance(reason, str)
+            and reason.startswith("local_disk_swap_headroom_gb:")
+            for reason in reasons
+        )
+        and 85 <= free <= 100
+        and 0 <= swap <= 8
+        and 0 <= compressor <= 1
+        and throttled == 0
+    )
+
+
+def _storage_memory_observation(result: dict[str, Any]) -> dict[str, Any]:
+    """A blocked storage assessment can still be a valid memory observation."""
+    payload = _as_dict(result.get("parsed"))
+    snapshot = _as_dict(payload.get("memory_snapshot"))
+    invalid = {
+        "ok": False,
+        "admission_ready": False,
+        "observation_reason": "invalid_memory_observation",
+    }
+    if (
+        result.get("timed_out")
+        or type(result.get("rc")) is not int
+        or result["rc"] not in {0, 2}
+    ):
+        return invalid
+    try:
+        measured = datetime.fromisoformat(
+            str(payload.get("timestamp_utc", "")).replace("Z", "+00:00")
+        )
+        if (
+            measured.tzinfo is None
+            or not 0 <= (_utc_now() - measured).total_seconds() <= 90
+        ):
+            return invalid
+    except (TypeError, ValueError, OverflowError):
+        return invalid
+    free = snapshot.get("memory_free_pct")
+    swap = snapshot.get("swap_used_gb")
+    try:
+        valid_metrics = all(
+            type(value) in {int, float} and math.isfinite(value)
+            for value in (free, swap)
+        )
+    except OverflowError:
+        valid_metrics = False
+    if not valid_metrics:
+        return invalid
+    pressure = snapshot.get("memory_pressure_state")
+    if (
+        not 0 <= free <= 100
+        or swap < 0
+        or type(pressure) is not str
+        or pressure not in {"green", "normal", "yellow", "red"}
+    ):
+        return invalid
+    disk_only = (
+        pressure == "yellow"
+        and snapshot.get("memory_pressure_kind") == "disk_swap_headroom"
+        and _disk_only_recovery_memory_ready(payload)
+    )
+    admitted = (pressure in {"green", "normal"} or disk_only) and free >= 25 and swap <= 8
+    return {
+        "ok": True,
+        "admission_ready": admitted,
+        "observation_reason": (
+            "disk_only_pressure_memory_admitted"
+            if admitted and disk_only
+            else "memory_admitted" if admitted else "memory_pressure_not_admitted"
+        ),
+    }
+
+
+def _storage_recovery_progress(name: str, result: dict[str, Any]) -> dict[str, Any] | None:
+    """Owner receipts measure recovery; a successful exit alone does not."""
+    fields = {
+        "local_compatibility_cache_rebuild": ("reclaimed_bytes",),
+        "local_disk_snapshot_scratch_cleanup": ("removed_allocated_bytes",),
+        "local_disk_verified_duplicate_cleanup": ("apply_result", "deleted_bytes"),
+        "local_disk_cold_evidence_compaction": ("saved_bytes",),
+        "local_disk_lifecycle_backup_compaction": (
+            "summary",
+            "estimated_reduction_bytes",
+        ),
+        "local_disk_governance_telemetry_compaction": (
+            "summary",
+            "estimated_hot_reduction_bytes",
+        ),
+        "local_disk_cold_sqlite_compression": ("allocated_bytes_reclaimed",),
+        "local_disk_resumable_deep_cold_offload": ("second_cold_move", "moved_bytes"),
+    }
+    if name not in fields or result.get("ok") is not True:
+        return None
+    payload = _as_dict(result.get("parsed"))
+    value: Any = payload
+    for key in fields[name]:
+        value = _as_dict(value).get(key)
+    valid = type(value) in (int, float) and math.isfinite(value) and value >= 0
+    reclaimed = int(value) if valid else 0
+    owner_reason = str(payload.get("reason") or "")
+    owner_deferred = bool(
+        payload.get("batch_complete") is False
+        or (
+            _status(payload) in {"deferred", "blocked", "planned"}
+            and owner_reason not in {"no_eligible_cold_logs", "eligible_files_exhausted", "headroom_sufficient", "target_reached"}
+        )
+    )
+    return {
+        "made_progress": reclaimed > 0,
+        "reported_reclaimed_bytes": reclaimed,
+        "measurement_present": valid,
+        "owner_status": _status(payload),
+        "owner_reason": owner_reason,
+        "owner_deferred": owner_deferred,
+        "reason": "measured_reclamation" if reclaimed > 0 else "no_measured_reclamation",
+        "proves_local_reserve_recovered": False,
+    }
+
+
+def _completed_deep_cold_pass(result: dict[str, Any]) -> bool:
+    """An unmet capacity goal is not an I/O failure after a complete owner pass."""
+    move = _as_dict(_as_dict(result.get("parsed")).get("second_cold_move"))
+    counts = [move.get(key) for key in (
+        "selected_candidate_files", "attempted_files", "moved_files", "failed_files", "moved_bytes"
+    )]
+    if not all(type(value) is int and value >= 0 for value in counts):
+        return False
+    selected, attempted, moved, failed, moved_bytes = counts
+    return bool(
+        type(result.get("rc")) is int
+        and result["rc"] in {0, 2}
+        and result.get("timed_out") is False
+        and move.get("enabled") is True
+        and (move.get("status"), move.get("reason")) in {
+            ("ready", ""), ("partial", "adaptive_release_target_unmet")
+        }
+        and failed == 0
+        and moved <= attempted <= selected
+        and ((moved == 0 and moved_bytes == 0) or (moved > 0 and moved_bytes > 0))
+    )
 
 
 def _run_step(
@@ -337,7 +567,16 @@ def _run_step(
     circuit_open_seconds: int = DEFAULT_CIRCUIT_OPEN_SECONDS,
 ) -> dict[str, Any]:
     circuit = _repair_circuit_active(state, name)
-    if bool(circuit.get("active")):
+    prior = _as_dict(_as_dict(state.get("steps")).get(name))
+    # Recheck only legacy, misclassified read-only observations, never repairs.
+    legacy_revalidation = bool(
+        name == STORAGE_MEMORY_STEP
+        and circuit.get("active")
+        and prior.get("last_rc") == 2
+        and prior.get("last_status") == "blocked"
+        and not prior.get("observation_contract_version")
+    )
+    if bool(circuit.get("active")) and not legacy_revalidation:
         row = {
             "name": name,
             "command": cmd,
@@ -361,7 +600,27 @@ def _run_step(
         steps.append(row)
         return row
     result = _run_command(cmd, project_root=project_root, timeout_sec=timeout_sec, env=env)
+    if name == "local_disk_verified_duplicate_cleanup":
+        parsed = _as_dict(result.get("parsed"))
+        result["capacity_assessment_ok"] = result.get("ok", False)
+        result["ok"] = bool(result.get("rc") == 0 and parsed.get("assessment_complete") is True
+                            and parsed.get("cleanup_pass_complete") is True)
+    if name == "local_disk_resumable_deep_cold_offload" and not result.get("ok"):
+        result["capacity_assessment_ok"] = False
+        result["repair_pass_complete"] = _completed_deep_cold_pass(result)
+        result["ok"] = result["repair_pass_complete"]
     row = {"name": name, "executed": True, **result}
+    progress = _storage_recovery_progress(name, result)
+    if progress is not None:
+        row["storage_recovery_progress"] = progress
+    if name == STORAGE_MEMORY_STEP:
+        row["assessment_payload_ok"] = bool(result.get("ok"))
+        row.update(_storage_memory_observation(result))
+        receipt = prior.get("legacy_circuit_revalidation")
+        if legacy_revalidation:
+            receipt = {"timestamp_utc": _iso_now(), "previous_state": prior}
+        if receipt:
+            row["legacy_circuit_revalidation"] = receipt
     _update_step_state(
         state,
         name,
@@ -448,7 +707,12 @@ def _local_disk_headroom_recovery_contract(memory_payload: dict[str, Any]) -> di
     free_raw = contract.get("local_disk_free_gb", memory.get("local_disk_free_gb"))
     free_known = free_raw is not None
     free_gb = _safe_float(free_raw, 0.0)
-    warning_gb = max(_safe_float(contract.get("warning_free_gb"), 32.0), 1.0)
+    storage_pressure_gb = max(
+        _safe_float(os.getenv("BOT_LOCAL_STORAGE_PRESSURE_FREE_GB"), 64.0), 1.0
+    )
+    warning_gb = max(
+        _safe_float(contract.get("warning_free_gb"), 32.0), storage_pressure_gb
+    )
     critical_gb = max(_safe_float(contract.get("critical_free_gb"), 8.0), 0.5)
     active = bool(
         contract.get("active", False)
@@ -469,6 +733,8 @@ def _local_disk_headroom_recovery_contract(memory_payload: dict[str, Any]) -> di
         "local_disk_free_gb": round(free_gb, 3) if free_known else None,
         "warning_free_gb": round(warning_gb, 3),
         "critical_free_gb": round(critical_gb, 3),
+        "storage_pressure_free_gb": round(storage_pressure_gb, 3),
+        "storage_pressure_active": bool(free_known and free_gb < storage_pressure_gb),
         "policy": "recover startup-disk headroom before restoring normal fanout because macOS swap and temp files share that capacity",
     }
 
@@ -647,6 +913,588 @@ def _fast_refresh_steps(project_root: Path, *, py: Path, apply: bool) -> list[tu
     ]
 
 
+def _cache_rebuild_command(
+    project_root: Path, env: dict[str, str], cold: dict[str, Any]
+) -> tuple[list[str], int]:
+    # The archive and staging disks are independent; the rebuild owner validates both.
+    cold_root = Path(env.get("BOT_DEEP_COLD_OFFLOAD_ROOT") or cold["path"]).expanduser()
+    seconds = max(
+        60,
+        min(
+            _safe_int(
+                env.get("BOT_LOGS_SQLITE_LOCAL_CACHE_REBUILD_TIMEOUT_SECONDS"), 1200
+            ),
+            1500,
+        ),
+    )
+    return (
+        _cmd(
+            resolve_runtime_python(project_root),
+            project_root / "scripts/ops/storage_sqlite_hot_route.py",
+            "--rebuild-local-cache",
+            "--hot-hours",
+            env.get("SQL_LINK_SERVICE_HOT_HOURS", "18"),
+            "--apply",
+            "--prune-old-cache",
+            "--min-local-free-after-gb",
+            env.get("BOT_LOGS_SQLITE_LOCAL_CACHE_CRITICAL_FREE_GB", "32"),
+            "--min-external-free-after-gb",
+            env.get("BOT_LOGS_SQLITE_HOT_ROUTE_MIN_FREE_AFTER_GB", "64"),
+            "--cold-export-root",
+            cold_root / "sql_link_primary/autonomic_cache_rebuild",
+            "--writer-drain-timeout-seconds",
+            "30",
+            "--operation-seconds",
+            str(seconds),
+            "--sqlite-timeout-seconds",
+            "900",
+            "--json",
+        ),
+        seconds + 90,
+    )
+
+
+def _storage_load_admission(project_root: Path) -> dict[str, Any]:
+    """Keep the legacy low-load lane separate from leased compression capacity."""
+    try:
+        cpus = os.cpu_count()
+        loads = os.getloadavg()[:2]
+        valid = (
+            type(cpus) is int
+            and cpus > 0
+            and len(loads) == 2
+            and all(
+                type(value) in (int, float) and math.isfinite(value) and value >= 0
+                for value in loads
+            )
+        )
+        load_ratio = max(loads) / cpus if valid else None
+    except (OSError, ValueError, TypeError, OverflowError):
+        load_ratio = None
+    path = project_root / "governance/health/runtime_throttle_control_latest.json"
+    runtime = {} if _protected_storage_path(path) else load_json(path)
+    admission = _as_dict(runtime.get("workload_admission"))
+    lease = current_lease(admission, "storage_recovery")
+    lease_row = _as_dict(_as_dict(admission.get("workloads")).get("storage_recovery"))
+    reasons = [
+        value for value in _as_list(lease_row.get("reasons")) if isinstance(value, str)
+    ]
+    if not lease and not reasons:
+        reasons = ["storage_recovery_lease_missing_stale_or_invalid"]
+    low_load = load_ratio is not None and load_ratio <= 0.62
+    compression_only = bool(
+        load_ratio is not None
+        and 0.62 < load_ratio <= POLICIES["storage_recovery"]["load"]
+        and lease
+    )
+    if low_load or compression_only:
+        reason = "load_admitted"
+    elif load_ratio is None:
+        reason = "host_load_measurement_unavailable"
+    elif load_ratio <= POLICIES["storage_recovery"]["load"]:
+        reason = "storage_recovery_lease_not_ready"
+    else:
+        reason = "host_load_above_recovery_budget"
+    return {
+        "admitted": low_load or compression_only,
+        "lane": (
+            "low_load"
+            if low_load
+            else "leased_compression" if compression_only else "deferred"
+        ),
+        "load_per_cpu": load_ratio,
+        "load_basis": "max_one_and_five_minute_load",
+        "baseline_max_load_per_cpu": 0.62,
+        "compression_max_load_per_cpu": POLICIES["storage_recovery"]["load"],
+        "storage_recovery_lease_current": lease,
+        "lease_reasons": reasons,
+        "reason": reason,
+    }
+
+
+def _storage_recovery_outcome(
+    steps: list[dict[str, Any]],
+    *,
+    state: dict[str, Any],
+    free_after: float,
+    pressure_threshold: float,
+    trigger: float,
+    target: float,
+    admitted: bool,
+    reason: str,
+) -> dict[str, Any]:
+    repairs = [
+        row
+        for row in steps
+        if row["name"] not in {STORAGE_MEMORY_STEP, "local_disk_reserve_recheck"}
+    ]
+    attempted = [row for row in repairs if row.get("executed")]
+    progress = [
+        row["name"]
+        for row in attempted
+        if _as_dict(row.get("storage_recovery_progress")).get("made_progress")
+    ]
+    empty = [
+        row["name"]
+        for row in attempted
+        if _as_dict(row.get("storage_recovery_progress")).get("measurement_present")
+        and not _as_dict(row.get("storage_recovery_progress")).get("made_progress")
+    ]
+    failed = [row["name"] for row in attempted if not row.get("ok")]
+    deferred = [
+        row["name"]
+        for row in repairs
+        if not row.get("executed")
+        or _as_dict(row.get("storage_recovery_progress")).get("owner_deferred")
+    ]
+    retry = {}
+    for row in repairs:
+        prior = _as_dict(_as_dict(state.get("steps")).get(row["name"]))
+        deadlines = [
+            parse_iso_utc(prior.get(key))
+            for key in ("cooldown_until_utc", "circuit_until_utc")
+        ]
+        active = [value for value in deadlines if value and value > _utc_now()]
+        if active:
+            retry[row["name"]] = max(active).isoformat()
+    if free_after >= target:
+        outcome = "target_recovered"
+    elif free_after >= trigger and not admitted:
+        outcome = "within_hysteresis"
+    elif failed:
+        outcome = "repair_failed"
+    elif progress:
+        outcome = "progress_capacity_unmet"
+    elif not attempted or reason != "bounded_storage_recovery" or deferred:
+        outcome = "deferred"
+    elif len(empty) == len(attempted):
+        outcome = "no_measured_progress_in_completed_pass"
+    else:
+        outcome = "reclamation_not_measured"
+    next_action = {
+        "target_recovered": "continue_native_reserve_monitoring",
+        "within_hysteresis": "continue_native_reserve_monitoring",
+        "repair_failed": "inspect_failed_owner_receipts_preserve_failure_circuits",
+        "progress_capacity_unmet": "continue_bounded_recovery_after_fresh_admission",
+        "deferred": "wait_for_named_admission_or_owner_retry_conditions",
+        "no_measured_progress_in_completed_pass": "review_additional_capacity_or_owner_retention_candidates_without_relaxing_reserves",
+        "reclamation_not_measured": "inspect_owner_receipts_before_claiming_reclamation",
+    }[outcome]
+    return {
+        "outcome": outcome,
+        "measured_progress_steps": progress,
+        "no_progress_steps": empty,
+        "failed_steps": failed,
+        "deferred_steps": deferred,
+        "owner_retry_not_before_utc": retry,
+        "pressure_shortfall_gb": round(max(pressure_threshold - free_after, 0), 3),
+        "trigger_shortfall_gb": round(max(trigger - free_after, 0), 3),
+        "capacity_shortfall_gb": round(max(target - free_after, 0), 3),
+        "next_action": next_action,
+        "successful_exit_is_not_recovery": True,
+        "no_progress_backoff_max_seconds": 3600,
+    }
+
+
+def build_storage_recovery_payload(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    apply: bool = False,
+    quick_bounded: bool = False,
+    rebuild_reserve: bool = False,
+) -> dict[str, Any]:
+    """Pressure relief only; never inherit heavy maintenance or release authority."""
+    deadline_seconds = 90 if quick_bounded else 1800
+    started = time.monotonic()
+    recovery_deadline = started + deadline_seconds
+    project_root = Path(project_root)
+    if _protected_storage_path(project_root):
+        return {
+            "ok": False,
+            "overall_status": "blocked",
+            "reason": "protected_project_root",
+        }
+    health_root = project_root / "governance" / "health"
+    env = {**os.environ, **SAFE_ENV}
+    state = _load_state(project_root)
+    steps: list[dict[str, Any]] = []
+    pressure_threshold = max(
+        _safe_float(env.get("BOT_LOCAL_STORAGE_PRESSURE_FREE_GB"), 64.0), 1.0
+    )
+    trigger = pressure_threshold
+    threshold = pressure_threshold
+    if rebuild_reserve:
+        trigger = max(
+            pressure_threshold,
+            _safe_float(env.get("BOT_LOCAL_STORAGE_TARGET_FREE_GB"), 125.0),
+        )
+        threshold = max(
+            trigger,
+            _safe_float(env.get("SOAK_SELF_HEAL_STORAGE_TARGET_FREE_GB"), 135.0),
+        )
+    free_before = shutil.disk_usage(project_root).free / 1024**3
+    reason = "headroom_above_pressure_threshold"
+    admitted = False
+    adaptive_compression_only = False
+    load_admission: dict[str, Any] = {}
+    latest_load_admission: dict[str, Any] = {}
+    memory_observed_at = started
+    if apply and free_before < trigger:
+        hold = maintenance_hold_snapshot(project_root)
+        load_admission = _storage_load_admission(project_root)
+        latest_load_admission = load_admission
+        adaptive_compression_only = load_admission["lane"] == "leased_compression"
+        if adaptive_compression_only:
+            deadline_seconds = min(deadline_seconds, POLICIES["storage_recovery"]["seconds"])
+            recovery_deadline = started + deadline_seconds
+        if hold.get("active"):
+            reason = "existing_maintenance_hold"
+        elif not load_admission["admitted"]:
+            reason = load_admission["reason"]
+        else:
+            memory = _run_step(
+                steps,
+                name=STORAGE_MEMORY_STEP,
+                cmd=_cmd(
+                    resolve_runtime_python(project_root),
+                    project_root / "scripts/ops/memory_efficiency_control.py",
+                    "status",
+                    "--json",
+                ),
+                project_root=project_root,
+                timeout_sec=10 if quick_bounded else 60,
+                env=env,
+                state=state,
+            )
+            admitted = bool(
+                memory.get("executed")
+                and memory.get("ok")
+                and memory.get("admission_ready")
+            )
+            memory_observed_at = time.monotonic()
+            reason = (
+                "bounded_storage_recovery" if admitted else "memory_admission_not_ready"
+            )
+    elif free_before < trigger:
+        reason = "storage_recovery_required"
+
+    if admitted:
+        opsctl = project_root / "scripts/ops/opsctl.sh"
+        cold = {} if adaptive_compression_only or quick_bounded else _configure_cold_archive_env(env, apply=False)
+        commands = [
+            (
+                "local_disk_cold_evidence_compaction",
+                _cmd(
+                    opsctl,
+                    "cold-evidence-compactor",
+                    "--apply",
+                    "--target-free-gb",
+                    str(threshold),
+                    "--max-files",
+                    "256",
+                    "--seconds",
+                    "840",
+                    "--json",
+                ),
+                900,
+            ),
+            (
+                "local_disk_lifecycle_backup_compaction",
+                _cmd(
+                    opsctl, "governance-lifecycle-compactor", "--apply",
+                    "--max-files", "32", "--target-free-gb", "2",
+                    "--seconds", "180", "--json",
+                ),
+                210,
+            ),
+            (
+                "local_disk_governance_telemetry_compaction",
+                _cmd(
+                    opsctl,
+                    "governance-telemetry-compactor",
+                    "--apply",
+                    "--channels",
+                    "all",
+                    "--target-free-gb",
+                    str(threshold),
+                    "--min-file-mb",
+                    "256",
+                    "--max-files",
+                    "2",
+                    "--include-current-day",
+                    "--json",
+                ),
+                600,
+            )
+        ]
+        if quick_bounded or adaptive_compression_only:
+            seconds = "25" if quick_bounded else "60"
+            timeout = 30 if quick_bounded else 65
+            commands = [
+                (
+                    "local_disk_cold_evidence_compaction",
+                    _cmd(opsctl, "cold-evidence-compactor", "--apply",
+                         "--target-free-gb", str(threshold), "--max-files", "4",
+                         "--seconds", seconds, "--json"),
+                    timeout,
+                ),
+                (
+                    "local_disk_lifecycle_backup_compaction",
+                    _cmd(opsctl, "governance-lifecycle-compactor", "--apply",
+                         "--max-files", "4", "--target-free-gb", "2",
+                         "--seconds", seconds, "--json"),
+                    timeout,
+                ),
+            ]
+        if cold.get("configured") and cold.get("redundancy_ready"):
+            commands.extend(
+                [
+                    (
+                        "local_disk_cold_sqlite_compression",
+                        _cmd(
+                            opsctl,
+                            "cold-archive-compactor",
+                            "--apply",
+                            "--archive-root",
+                            cold["path"],
+                            "--filesystem-select-inactive",
+                            "--filesystem-scratch-root",
+                            project_root / "local_fallback_storage/cold_compaction_scratch",
+                            "--filesystem-compressor",
+                            "auto",
+                            "--coordinate-writer-handoff",
+                            "--writer-handoff-timeout-seconds",
+                            "30",
+                            "--maintenance-hold-ttl-seconds",
+                            "1320",
+                            "--filesystem-timeout-seconds",
+                            "1200",
+                            "--max-files",
+                            "4",
+                            "--max-raw-gb",
+                            "4",
+                            "--json",
+                        ),
+                        1300,
+                    ),
+                    (
+                        "local_disk_resumable_deep_cold_offload",
+                        _cmd(
+                            opsctl,
+                            "deep-cold-storage-layer",
+                            "--apply",
+                            "--adaptive",
+                            "--move-to-second-cold",
+                            "--second-cold-root",
+                            env.get("BOT_DEEP_COLD_OFFLOAD_ROOT") or cold["path"],
+                            "--source-free-path",
+                            project_root,
+                            "--destination-reserve-gb",
+                            "125",
+                            "--max-move-gb",
+                            "8",
+                            "--max-move-files",
+                            str(
+                                max(
+                                    1,
+                                    min(
+                                        _safe_int(
+                                            env.get("BOT_DEEP_COLD_MAX_MOVE_FILES"), 20
+                                        ),
+                                        256,
+                                    ),
+                                )
+                            ),
+                            "--min-size-mb",
+                            str(
+                                max(
+                                    _safe_float(
+                                        env.get("BOT_DEEP_COLD_MIN_SIZE_MB"), 25
+                                    ),
+                                    1,
+                                )
+                            ),
+                            "--include-compressed-history",
+                            "--include-registry-backups",
+                            "--no-include-local-quarantine",
+                            "--no-include-failover-backups",
+                            "--json",
+                        ),
+                        1800,
+                    ),
+                ]
+            )
+        if not adaptive_compression_only and not quick_bounded:
+            commands.insert(0, (
+                "local_disk_verified_duplicate_cleanup",
+                _cmd(opsctl, "bot-logs-cleanup-intelligence", "--apply", "--max-tier", "1",
+                     "--bot-logs-root", project_root / "local_fallback_storage",
+                     "--target-free-gb", str(threshold), "--max-delete-gb", "0.5",
+                     "--max-files", "4", "--seconds", "45", "--max-verify-gb", "1",
+                     "--out-file", project_root / "governance/health/verified_duplicate_cleanup_local_latest.json",
+                     "--json"),
+                60,
+            ))
+        commands.insert(0, (
+            "local_disk_snapshot_scratch_cleanup",
+            _cmd(opsctl, "runtime-training-snapshot", "--cleanup-abandoned-builds",
+                 "--apply-cleanup", "--max-runtime-seconds", "25", "--json"),
+            30,
+        ))
+        if (
+            not quick_bounded
+            and not adaptive_compression_only
+            and cold.get("configured")
+            and _compatibility_cache_rebuild_contract(project_root).get("active")
+        ):
+            command, timeout = _cache_rebuild_command(project_root, env, cold)
+            commands.insert(1, ("local_compatibility_cache_rebuild", command, timeout))
+        for name, cmd, timeout in commands:
+            if shutil.disk_usage(project_root).free / 1024**3 >= threshold:
+                break
+            if maintenance_hold_snapshot(project_root).get("active"):
+                reason = "existing_maintenance_hold"
+                break
+            assessment_reserve = 10 if quick_bounded else 15 if adaptive_compression_only else 60
+            if recovery_deadline - time.monotonic() - assessment_reserve < (15 if quick_bounded else 30):
+                reason = "storage_recovery_deadline"
+                break
+            latest_load_admission = _storage_load_admission(project_root)
+            if not latest_load_admission["admitted"]:
+                reason = latest_load_admission["reason"]
+                break
+            if adaptive_compression_only and not latest_load_admission["storage_recovery_lease_current"]:
+                reason = "storage_recovery_lease_not_ready"
+                break
+            if not adaptive_compression_only and latest_load_admission["lane"] != "low_load":
+                reason = "host_load_above_full_recovery_budget"
+                break
+            if time.monotonic() - memory_observed_at >= 60:
+                remaining = int(recovery_deadline - time.monotonic()) - 15
+                if remaining < 10:
+                    reason = "storage_recovery_deadline"
+                    break
+                memory = _run_step(
+                    steps, name=STORAGE_MEMORY_STEP,
+                    cmd=_cmd(resolve_runtime_python(project_root), project_root / "scripts/ops/memory_efficiency_control.py", "status", "--json"),
+                    project_root=project_root, timeout_sec=min(10, remaining), env=env, state=state,
+                )
+                memory_observed_at = time.monotonic()
+                if not (memory.get("executed") and memory.get("ok") and memory.get("admission_ready")):
+                    reason = "memory_admission_not_ready"
+                    break
+            remaining = int(recovery_deadline - time.monotonic()) - (
+                10 if quick_bounded else 15 if adaptive_compression_only else 60
+            )
+            if remaining < (15 if quick_bounded else 30):
+                reason = "storage_recovery_deadline"
+                break
+            if (
+                (quick_bounded or adaptive_compression_only or name in {
+                    "local_disk_cold_sqlite_compression",
+                    "local_compatibility_cache_rebuild",
+                })
+                and remaining < timeout
+            ):
+                steps.append(
+                    {
+                        "name": name,
+                        "executed": False,
+                        "deferred": True,
+                        "reason": "insufficient_complete_compression_window",
+                        "required_seconds": timeout,
+                        "remaining_seconds": remaining,
+                    }
+                )
+                continue
+            _run_step(
+                steps,
+                name=name,
+                cmd=cmd,
+                project_root=project_root,
+                timeout_sec=min(timeout, remaining),
+                env=(
+                    {
+                        **env,
+                        "OMP_NUM_THREADS": "1",
+                        "OPENBLAS_NUM_THREADS": "1",
+                        "VECLIB_MAXIMUM_THREADS": "1",
+                    }
+                    if name == "local_compatibility_cache_rebuild" or adaptive_compression_only or quick_bounded
+                    else env
+                ),
+                state=state,
+                cooldown_seconds=(
+                    (60 if quick_bounded else 900)
+                    if name
+                    in {
+                        "local_disk_snapshot_scratch_cleanup",
+                        "local_disk_verified_duplicate_cleanup",
+                        "local_disk_cold_evidence_compaction",
+                        "local_disk_lifecycle_backup_compaction",
+                    }
+                    else 3600
+                ),
+            )
+    if admitted or (apply and quick_bounded and free_before >= threshold):
+        remaining = int(recovery_deadline - time.monotonic()) - 10
+        if remaining >= 10:
+            # Reconcile only the reserve owner's pause, including after external relief.
+            recheck = _run_command(
+                _cmd(
+                    project_root / "scripts/ops/opsctl.sh",
+                    "local-storage-reserve-guard",
+                    "--apply",
+                    "--reserve-only",
+                    "--skip-governor-reconcile",
+                    "--json",
+                ),
+                project_root=project_root,
+                timeout_sec=min(10 if quick_bounded or adaptive_compression_only else 60, remaining),
+                env=env,
+            )
+            steps.append(
+                {"name": "local_disk_reserve_recheck", "executed": True, **recheck}
+            )
+    if any(step.get("executed") for step in steps):
+        _write_state(project_root, state)
+    free_after = shutil.disk_usage(project_root).free / 1024**3
+    payload = {
+        "timestamp_utc": _iso_now(),
+        "schema_version": 1,
+        "apply": apply,
+        "mode": "storage_recovery_only",
+        "ok": free_after >= trigger,
+        "overall_status": "ready" if free_after >= trigger else "needs_work",
+        "reason": reason,
+        "admitted": admitted,
+        "adaptive_compression_only": adaptive_compression_only,
+        "load_admission": load_admission,
+        "latest_load_admission": latest_load_admission,
+        "quick_bounded": quick_bounded,
+        "rebuild_reserve": rebuild_reserve,
+        "steps": steps,
+        "local_free_before_gb": round(free_before, 3),
+        "local_free_after_gb": round(free_after, 3),
+        "net_local_headroom_change_gb": round(free_after - free_before, 3),
+        "recovery_effectiveness": _storage_recovery_outcome(
+            steps, state=state, free_after=free_after, pressure_threshold=pressure_threshold,
+            trigger=trigger, target=threshold, admitted=admitted, reason=reason,
+        ),
+        "pressure_free_gb": pressure_threshold,
+        "recovery_trigger_free_gb": trigger,
+        "recovery_target_free_gb": threshold,
+        "recovery_target_met": free_after >= threshold,
+        "shared_deadline_seconds": deadline_seconds,
+        "storage_ready_is_current_free_space_only": True,
+        "live_execution_authority": False,
+        "automatic_promotion_authority": False,
+        "heavy_maintenance_allowed": False,
+    }
+    write_payload(health_root / "soak_storage_recovery_latest.json", payload)
+    return payload
+
+
 def build_payload(
     project_root: Path = PROJECT_ROOT,
     *,
@@ -694,34 +1542,21 @@ def build_payload(
     cache_rebuild_initial = _compatibility_cache_rebuild_contract(project_root)
     cache_rebuild_payload: dict[str, Any] = {}
     if apply and bool(cache_rebuild_initial.get("active", False)) and bool(cold_archive_env.get("configured", False)):
-        cold_root = Path(str(cold_archive_env.get("path") or "")).expanduser()
+        rebuild_command, rebuild_timeout = _cache_rebuild_command(
+            project_root, env, cold_archive_env
+        )
         rebuild_row = _run_step(
             steps,
             name="local_compatibility_cache_rebuild",
-            cmd=_cmd(
-                py,
-                project_root / "scripts" / "ops" / "storage_sqlite_hot_route.py",
-                "--rebuild-local-cache",
-                "--hot-hours",
-                str(os.getenv("SQL_LINK_SERVICE_HOT_HOURS", "18")),
-                "--apply",
-                "--prune-old-cache",
-                "--min-local-free-after-gb",
-                str(os.getenv("BOT_LOGS_SQLITE_LOCAL_CACHE_CRITICAL_FREE_GB", "32")),
-                "--min-external-free-after-gb",
-                str(os.getenv("BOT_LOGS_SQLITE_HOT_ROUTE_MIN_FREE_AFTER_GB", "40")),
-                "--cold-export-root",
-                cold_root / "sql_link_primary" / "autonomic_cache_rebuild",
-                "--sqlite-timeout-seconds",
-                "900",
-                "--json",
-            ),
+            cmd=rebuild_command,
             project_root=project_root,
-            timeout_sec=max(
-                int(step_timeout_sec),
-                _safe_int(os.getenv("BOT_LOGS_SQLITE_LOCAL_CACHE_REBUILD_TIMEOUT_SECONDS"), 43200),
-            ),
-            env=env,
+            timeout_sec=rebuild_timeout,
+            env={
+                **env,
+                "OMP_NUM_THREADS": "1",
+                "OPENBLAS_NUM_THREADS": "1",
+                "VECLIB_MAXIMUM_THREADS": "1",
+            },
             state=state,
             cooldown_seconds=300,
             respect_cooldowns=respect_cooldowns,
@@ -777,7 +1612,10 @@ def build_payload(
             respect_cooldowns=respect_cooldowns,
         )
         local_disk_recovery_payloads["acknowledged_queue_retention"] = _as_dict(queue_row.get("parsed"))
-        if bool(local_disk_recovery_initial.get("critical", False)):
+        if bool(
+            local_disk_recovery_initial.get("critical", False)
+            or local_disk_recovery_initial.get("storage_pressure_active", False)
+        ):
             compactor_row = _run_step(
                 steps,
                 name="local_disk_governance_telemetry_compaction",
@@ -803,6 +1641,45 @@ def build_payload(
             )
             local_disk_recovery_payloads["governance_telemetry_compaction"] = _as_dict(compactor_row.get("parsed"))
             if str(env.get("BOT_SECOND_COLD_ROOT") or "").strip():
+                cold_compression = _run_step(
+                    steps,
+                    name="local_disk_cold_sqlite_compression",
+                    cmd=_cmd(
+                        opsctl,
+                        "cold-archive-compactor",
+                        "--apply",
+                        "--archive-root",
+                        str(env["BOT_SECOND_COLD_ROOT"]),
+                        "--filesystem-select-inactive",
+                        "--filesystem-scratch-root",
+                        project_root / "local_fallback_storage/cold_compaction_scratch",
+                        "--filesystem-compressor",
+                        "auto",
+                        "--coordinate-writer-handoff",
+                        "--writer-handoff-timeout-seconds",
+                        "30",
+                        "--maintenance-hold-ttl-seconds",
+                        "1320",
+                        "--filesystem-timeout-seconds",
+                        "1200",
+                        "--max-files",
+                        "4",
+                        "--max-raw-gb",
+                        "4",
+                        "--json",
+                    ),
+                    project_root=project_root,
+                    timeout_sec=max(int(step_timeout_sec), 1300),
+                    env=env,
+                    state=state,
+                    cooldown_seconds=int(
+                        max(float(storage_cooldown_minutes), 1.0) * 60
+                    ),
+                    respect_cooldowns=respect_cooldowns,
+                )
+                local_disk_recovery_payloads["cold_sqlite_compression"] = _as_dict(
+                    cold_compression.get("parsed")
+                )
                 deep_cold_row = _run_step(
                     steps,
                     name="local_disk_resumable_deep_cold_offload",
@@ -812,6 +1689,8 @@ def build_payload(
                         "--apply",
                         "--adaptive",
                         "--move-to-second-cold",
+                        "--include-compressed-history",
+                        "--include-registry-backups",
                         "--planning-horizon-days",
                         str(round(float(target_days), 3)),
                         "--json",
@@ -820,7 +1699,9 @@ def build_payload(
                     timeout_sec=max(int(step_timeout_sec), 600),
                     env=env,
                     state=state,
-                    cooldown_seconds=int(max(float(storage_cooldown_minutes), 1.0) * 60),
+                    cooldown_seconds=int(
+                        max(float(storage_cooldown_minutes), 1.0) * 60
+                    ),
                     respect_cooldowns=respect_cooldowns,
                 )
                 local_disk_recovery_payloads["resumable_deep_cold_offload"] = _as_dict(deep_cold_row.get("parsed"))
@@ -1101,6 +1982,29 @@ def build_payload(
         respect_cooldowns=False,
     )
     production_refresh_payloads["paper_replay_drill"] = _as_dict(paper_replay_row.get("parsed")) or load_json(health_root / "paper_replay_drill_latest.json")
+    paper_replay_training_row = _run_step(
+        steps,
+        name="paper_replay_training_refresh",
+        cmd=_cmd(
+            py,
+            project_root / "scripts" / "paper_replay_drill.py",
+            "--hours",
+            "336",
+            "--out-file",
+            health_root / "paper_replay_training_latest.json",
+            "--json",
+        ),
+        project_root=project_root,
+        timeout_sec=max(int(step_timeout_sec), 120),
+        env=env,
+        state=state,
+        cooldown_seconds=0,
+        respect_cooldowns=False,
+    )
+    production_refresh_payloads["paper_replay_training"] = (
+        _as_dict(paper_replay_training_row.get("parsed"))
+        or load_json(health_root / "paper_replay_training_latest.json")
+    )
     paper_truth_row = _run_step(
         steps,
         name="paper_execution_truth_production_refresh",
@@ -1154,7 +2058,13 @@ def build_payload(
     soak_row = _run_step(
         steps,
         name="unattended_soak_readiness",
-        cmd=_cmd(py, project_root / "scripts" / "ops" / "unattended_soak_readiness.py", "--target-days", str(round(float(target_days), 3)), "--json"),
+        cmd=_cmd(
+            py,
+            project_root / "scripts" / "ops" / "unattended_soak_readiness.py",
+            "--target-days",
+            str(round(float(target_days), 3)),
+            "--json",
+        ),
         project_root=project_root,
         timeout_sec=min(max(int(step_timeout_sec), 30), 90),
         env=env,
@@ -1162,11 +2072,38 @@ def build_payload(
         cooldown_seconds=0,
         respect_cooldowns=False,
     )
-    soak_payload = _as_dict(soak_row.get("parsed")) or load_json(health_root / "unattended_soak_readiness_latest.json")
+    soak_payload = _as_dict(soak_row.get("parsed")) or load_json(
+        health_root / "unattended_soak_readiness_latest.json"
+    )
 
     storage_retention_payload: dict[str, Any] = {}
     storage_recovery_payloads: dict[str, Any] = {}
     if apply and _storage_blockers(soak_payload):
+        evidence_row = _run_step(
+            steps,
+            name="storage_cold_evidence_compaction",
+            cmd=_cmd(
+                opsctl,
+                "cold-evidence-compactor",
+                "--apply",
+                "--target-free-gb",
+                str(round(float(storage_target_free_gb), 3)),
+                "--max-files",
+                "256",
+                "--seconds",
+                "540",
+                "--json",
+            ),
+            project_root=project_root,
+            timeout_sec=600,
+            env=env,
+            state=state,
+            cooldown_seconds=int(max(float(storage_cooldown_minutes), 1.0) * 60),
+            respect_cooldowns=respect_cooldowns,
+        )
+        storage_recovery_payloads["cold_evidence_compaction"] = _as_dict(
+            evidence_row.get("parsed")
+        )
         raw_compaction_row = _run_step(
             steps,
             name="storage_raw_training_compaction",
@@ -1177,7 +2114,9 @@ def build_payload(
                 "--max-files",
                 "24",
                 "--max-gb",
-                str(round(max(min(float(storage_cleanup_max_delete_gb), 12.0), 4.0), 3)),
+                str(
+                    round(max(min(float(storage_cleanup_max_delete_gb), 12.0), 4.0), 3)
+                ),
                 "--jumbo-gb",
                 "12.0",
                 "--min-age-hours",
@@ -1452,7 +2391,9 @@ def build_payload(
     payload = {
         "timestamp_utc": _iso_now(),
         "schema_version": 1,
-        "ok": not core_failures and not repairable_daily and not production_hard_blockers,
+        "ok": not core_failures
+        and not repairable_daily
+        and not production_hard_blockers,
         "overall_status": overall_status,
         "apply": bool(apply),
         "target_days": float(target_days),
@@ -1470,7 +2411,9 @@ def build_payload(
         },
         "runtime_ok": not core_failures,
         "production_hard_blockers_clear": not production_hard_blockers,
-        "safe_to_leave_unattended": bool(soak_payload.get("safe_to_leave_unattended", False)),
+        "safe_to_leave_unattended": bool(
+            soak_payload.get("safe_to_leave_unattended", False)
+        ),
         "unattended_soak_status": str(soak_payload.get("overall_status") or ""),
         "unattended_soak_grade": str(soak_payload.get("overall_grade") or ""),
         "soak_blockers": soak_blockers,
@@ -1482,41 +2425,68 @@ def build_payload(
             "retention_attempted": bool(storage_retention_payload),
             "cold_archive": cold_archive_env,
             "recovery": {
-                "raw_compaction_attempted": bool(storage_recovery_payloads.get("raw_training_compaction")),
+                "raw_compaction_attempted": bool(
+                    storage_recovery_payloads.get("raw_training_compaction")
+                ),
                 "raw_gb_cleared": _safe_float(
-                    _as_dict(storage_recovery_payloads.get("raw_training_compaction")).get("raw_gb_cleared")
-                    or _as_dict(_as_dict(storage_recovery_payloads.get("raw_training_compaction")).get("raw_summary")).get(
-                        "raw_gb_cleared"
-                    ),
+                    _as_dict(
+                        storage_recovery_payloads.get("raw_training_compaction")
+                    ).get("raw_gb_cleared")
+                    or _as_dict(
+                        _as_dict(
+                            storage_recovery_payloads.get("raw_training_compaction")
+                        ).get("raw_summary")
+                    ).get("raw_gb_cleared"),
                     0.0,
                 ),
-                "manifest_cold_offload_attempted": bool(storage_recovery_payloads.get("manifest_backed_cold_offload")),
+                "manifest_cold_offload_attempted": bool(
+                    storage_recovery_payloads.get("manifest_backed_cold_offload")
+                ),
                 "manifest_released_gb": _safe_float(
                     _as_dict(
-                        _as_dict(storage_recovery_payloads.get("manifest_backed_cold_offload")).get("apply_result")
+                        _as_dict(
+                            storage_recovery_payloads.get(
+                                "manifest_backed_cold_offload"
+                            )
+                        ).get("apply_result")
                     ).get("released_gb"),
                     0.0,
                 ),
                 "manifest_offload_status": str(
-                    _as_dict(storage_recovery_payloads.get("manifest_backed_cold_offload")).get("overall_status") or ""
+                    _as_dict(
+                        storage_recovery_payloads.get("manifest_backed_cold_offload")
+                    ).get("overall_status")
+                    or ""
                 ),
                 "retention_recheck_status": str(
-                    _as_dict(storage_recovery_payloads.get("retention_after_cold_offload")).get("overall_status") or ""
+                    _as_dict(
+                        storage_recovery_payloads.get("retention_after_cold_offload")
+                    ).get("overall_status")
+                    or ""
                 ),
             },
         },
         "application_memory_protection": {
             "incident_class": "startup_disk_exhaustion_can_starve_swap_and_temp_files",
-            "recovery_attempted": bool(local_disk_recovery_payloads or cache_rebuild_payload),
+            "recovery_attempted": bool(
+                local_disk_recovery_payloads or cache_rebuild_payload
+            ),
             "initial": local_disk_recovery_initial,
             "final": local_disk_recovery_final,
             "compatibility_cache_rebuild": {
                 "initial": cache_rebuild_initial,
                 "attempted": bool(cache_rebuild_payload),
-                "overall_status": str(cache_rebuild_payload.get("overall_status") or ""),
-                "ok": bool(cache_rebuild_payload.get("ok", False)) if cache_rebuild_payload else None,
+                "overall_status": str(
+                    cache_rebuild_payload.get("overall_status") or ""
+                ),
+                "ok": (
+                    bool(cache_rebuild_payload.get("ok", False))
+                    if cache_rebuild_payload
+                    else None
+                ),
                 "reclaimed_gb": round(
-                    _safe_float(cache_rebuild_payload.get("reclaimed_bytes"), 0.0) / float(1024**3),
+                    _safe_float(cache_rebuild_payload.get("reclaimed_bytes"), 0.0)
+                    / float(1024**3),
                     3,
                 ),
                 "final": cache_rebuild_final,
@@ -1525,27 +2495,41 @@ def build_payload(
                 "writer_handoff_required": True,
             },
             "external_route_reconcile_status": str(
-                _as_dict(local_disk_recovery_payloads.get("external_route_reconcile")).get("overall_status") or ""
+                _as_dict(
+                    local_disk_recovery_payloads.get("external_route_reconcile")
+                ).get("overall_status")
+                or ""
             ),
             "acknowledged_queue_rows_deleted": _safe_int(
-                _as_dict(local_disk_recovery_payloads.get("acknowledged_queue_retention")).get("deleted_acked_rows"),
+                _as_dict(
+                    local_disk_recovery_payloads.get("acknowledged_queue_retention")
+                ).get("deleted_acked_rows"),
                 0,
             ),
             "telemetry_compaction_status": str(
-                _as_dict(local_disk_recovery_payloads.get("governance_telemetry_compaction")).get("overall_status") or ""
+                _as_dict(
+                    local_disk_recovery_payloads.get("governance_telemetry_compaction")
+                ).get("overall_status")
+                or ""
             ),
             "deep_cold_offload_status": str(
-                _as_dict(local_disk_recovery_payloads.get("resumable_deep_cold_offload")).get("overall_status") or ""
+                _as_dict(
+                    local_disk_recovery_payloads.get("resumable_deep_cold_offload")
+                ).get("overall_status")
+                or ""
             ),
             "storage_pressure_clearance_status": str(
-                _as_dict(local_disk_recovery_payloads.get("storage_pressure_clearance")).get("overall_status") or ""
+                _as_dict(
+                    local_disk_recovery_payloads.get("storage_pressure_clearance")
+                ).get("overall_status")
+                or ""
             ),
             "automatic_recovery_order": [
                 "oversized_compatibility_cache_transactional_rebuild",
                 "external_storage_route_reconcile",
                 "acknowledged_queue_retention",
-                "critical_only_governance_telemetry_compaction",
-                "critical_only_resumable_verified_deep_cold_offload",
+                "storage_pressure_governance_telemetry_compaction",
+                "storage_pressure_verified_cold_compression_and_offload",
                 "bounded_storage_pressure_clearance",
                 "resource_and_memory_guard_recheck",
             ],
@@ -1554,10 +2538,16 @@ def build_payload(
             "attempted": bool(ingestion_repair_payloads),
             "blockers": _ingestion_blockers(soak_payload),
             "route_reconcile_status": str(
-                _as_dict(ingestion_repair_payloads.get("storage_route_reconcile")).get("overall_status") or ""
+                _as_dict(ingestion_repair_payloads.get("storage_route_reconcile")).get(
+                    "overall_status"
+                )
+                or ""
             ),
             "backpressure_autopilot_status": str(
-                _as_dict(ingestion_repair_payloads.get("storage_backpressure_autopilot")).get("overall_status") or ""
+                _as_dict(
+                    ingestion_repair_payloads.get("storage_backpressure_autopilot")
+                ).get("overall_status")
+                or ""
             ),
         },
         "daily_verify": {
@@ -1570,7 +2560,9 @@ def build_payload(
                 "attempted": bool(remediation_payload),
                 "overall_status": str(remediation_payload.get("overall_status") or ""),
                 "resolved_checks": _as_list(remediation_payload.get("resolved_checks")),
-                "unresolved_checks": _as_list(remediation_payload.get("unresolved_checks")),
+                "unresolved_checks": _as_list(
+                    remediation_payload.get("unresolved_checks")
+                ),
             },
         },
         "promotion_quality": {
@@ -1586,43 +2578,84 @@ def build_payload(
             "ready": not production_hard_blockers,
             "hard_blockers": production_hard_blockers,
             "managed_live_money_locks": managed_live_money_locks,
-            "source_verification_ready": bool(production_refresh_payloads.get("source_verification", {}).get("ok", False)),
-            "paper_replay_ok": bool(production_refresh_payloads.get("paper_replay_drill", {}).get("ok", False)),
-            "paper_replay_failed_checks": _as_list(
-                production_refresh_payloads.get("paper_replay_drill", {}).get("failed_checks")
+            "source_verification_ready": bool(
+                production_refresh_payloads.get("source_verification", {}).get(
+                    "ok", False
+                )
             ),
-            "paper_replay_rows": _safe_int(production_refresh_payloads.get("paper_replay_drill", {}).get("rows"), 0),
+            "paper_replay_ok": bool(
+                production_refresh_payloads.get("paper_replay_drill", {}).get(
+                    "ok", False
+                )
+            ),
+            "paper_replay_failed_checks": _as_list(
+                production_refresh_payloads.get("paper_replay_drill", {}).get(
+                    "failed_checks"
+                )
+            ),
+            "paper_replay_rows": _safe_int(
+                production_refresh_payloads.get("paper_replay_drill", {}).get("rows"), 0
+            ),
             "paper_execution_result_activity_status": str(
-                _as_dict(production_refresh_payloads.get("paper_execution_stale_prefix_drain")).get("result_activity_status")
+                _as_dict(
+                    production_refresh_payloads.get(
+                        "paper_execution_stale_prefix_drain"
+                    )
+                ).get("result_activity_status")
                 or _as_dict(
-                    _as_dict(production_refresh_payloads.get("paper_execution_stale_prefix_drain")).get("execution_result_evidence")
+                    _as_dict(
+                        production_refresh_payloads.get(
+                            "paper_execution_stale_prefix_drain"
+                        )
+                    ).get("execution_result_evidence")
                 ).get("activity_status")
                 or ""
             ),
-            "paper_execution_truth_grade": str(production_refresh_payloads.get("paper_execution_truth", {}).get("grade") or ""),
+            "paper_execution_truth_grade": str(
+                production_refresh_payloads.get("paper_execution_truth", {}).get(
+                    "grade"
+                )
+                or ""
+            ),
             "paper_profitability_display_grade": str(
-                production_refresh_payloads.get("paper_profitability", {}).get("profitability_display_grade") or ""
+                production_refresh_payloads.get("paper_profitability", {}).get(
+                    "profitability_display_grade"
+                )
+                or ""
             ),
             "raw_profitability_grade": str(
-                production_refresh_payloads.get("paper_profitability", {}).get("raw_profitability_grade") or ""
+                production_refresh_payloads.get("paper_profitability", {}).get(
+                    "raw_profitability_grade"
+                )
+                or ""
             ),
             "schema_compatibility_ok": bool(
-                production_refresh_payloads.get("retrain_schema_compatibility", {}).get("ok", False)
+                production_refresh_payloads.get("retrain_schema_compatibility", {}).get(
+                    "ok", False
+                )
             ),
             "promotion_packet_idle_seed_ready": _promotion_packet_idle_seed_ready(
                 _as_dict(production_refresh_payloads.get("promotion_packet"))
             ),
             "promotion_quality_ok": bool(promotion_payload.get("ok", False)),
             "live_money_ready_required_section_count": _safe_int(
-                _as_dict(live_money_payload.get("grade_summary")).get("ready_required_section_count"),
+                _as_dict(live_money_payload.get("grade_summary")).get(
+                    "ready_required_section_count"
+                ),
                 0,
             ),
             "live_money_required_section_count": _safe_int(
-                _as_dict(live_money_payload.get("grade_summary")).get("required_section_count"),
+                _as_dict(live_money_payload.get("grade_summary")).get(
+                    "required_section_count"
+                ),
                 0,
             ),
-            "live_money_blocking_reasons": _as_list(live_money_payload.get("blocking_reasons")),
-            "live_money_grade_summary": _as_dict(live_money_payload.get("grade_summary")),
+            "live_money_blocking_reasons": _as_list(
+                live_money_payload.get("blocking_reasons")
+            ),
+            "live_money_grade_summary": _as_dict(
+                live_money_payload.get("grade_summary")
+            ),
             "refresh_order": [
                 "source_verification",
                 "paper_profitability",
@@ -1640,8 +2673,12 @@ def build_payload(
         "self_healing": {
             "state_path": str(state_path),
             "respect_cooldowns": bool(respect_cooldowns),
-            "steps_executed": len([row for row in steps if row.get("executed") is not False]),
-            "steps_skipped": len([row for row in steps if row.get("executed") is False]),
+            "steps_executed": len(
+                [row for row in steps if row.get("executed") is not False]
+            ),
+            "steps_skipped": len(
+                [row for row in steps if row.get("executed") is False]
+            ),
             "core_failures": core_failures,
             "operator_followups": ordered_unique(operator_followups),
             "repair_circuits": {
@@ -1653,26 +2690,52 @@ def build_payload(
         },
         "profitability_control_refresh": {
             "attempted": bool(profitability_refresh_payload),
-            "overall_status": str(profitability_refresh_payload.get("overall_status") or ""),
-            "raw_profitability_grade": str(profitability_refresh_payload.get("raw_profitability_grade") or ""),
-            "controlled_profitability_grade": str(profitability_refresh_payload.get("controlled_profitability_grade") or ""),
+            "overall_status": str(
+                profitability_refresh_payload.get("overall_status") or ""
+            ),
+            "raw_profitability_grade": str(
+                profitability_refresh_payload.get("raw_profitability_grade") or ""
+            ),
+            "controlled_profitability_grade": str(
+                profitability_refresh_payload.get("controlled_profitability_grade")
+                or ""
+            ),
         },
         "runtime_continuity_refresh": {
             "attempted": bool(runtime_continuity_refresh_payloads),
             "schwab_auth_status": str(
-                _as_dict(runtime_continuity_refresh_payloads.get("schwab_auth_supervisor")).get("overall_status") or ""
+                _as_dict(
+                    runtime_continuity_refresh_payloads.get("schwab_auth_supervisor")
+                ).get("overall_status")
+                or ""
             ),
             "global_halt_status": str(
-                _as_dict(runtime_continuity_refresh_payloads.get("global_halt_refresh")).get("overall_status")
-                or _as_dict(runtime_continuity_refresh_payloads.get("global_halt_refresh")).get("status")
+                _as_dict(
+                    runtime_continuity_refresh_payloads.get("global_halt_refresh")
+                ).get("overall_status")
+                or _as_dict(
+                    runtime_continuity_refresh_payloads.get("global_halt_refresh")
+                ).get("status")
                 or ""
             ),
             "runtime_throttle_status": str(
-                _as_dict(runtime_continuity_refresh_payloads.get("runtime_throttle")).get("overall_status") or ""
+                _as_dict(
+                    runtime_continuity_refresh_payloads.get("runtime_throttle")
+                ).get("overall_status")
+                or ""
             ),
-            "paper_ramp_stage": str(_as_dict(runtime_continuity_refresh_payloads.get("paper_400_ramp")).get("stage") or ""),
-            "runtime_guard_after_refresh": str(runtime_paper_payload.get("overall_status") or ""),
-            "failed_guards_after_refresh": _failed_runtime_guard_names(runtime_paper_payload),
+            "paper_ramp_stage": str(
+                _as_dict(runtime_continuity_refresh_payloads.get("paper_400_ramp")).get(
+                    "stage"
+                )
+                or ""
+            ),
+            "runtime_guard_after_refresh": str(
+                runtime_paper_payload.get("overall_status") or ""
+            ),
+            "failed_guards_after_refresh": _failed_runtime_guard_names(
+                runtime_paper_payload
+            ),
         },
         "adaptive_governor": {
             "attempted": bool(adaptive_payload),
@@ -1695,6 +2758,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Bounded self-healing control loop for the unattended soak.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--apply", action="store_true", help="Apply safe mapped repairs and bounded retention relief.")
+    parser.add_argument(
+        "--storage-recovery-only",
+        action="store_true",
+        help="Only bounded pressure relief; no heavy repair or release evaluation.",
+    )
+    parser.add_argument("--quick-storage-recovery", action="store_true")
+    parser.add_argument("--rebuild-reserve", action="store_true")
     parser.add_argument("--target-days", type=float, default=30.0)
     parser.add_argument("--daily-max-age-minutes", type=float, default=360.0)
     parser.add_argument("--force-daily-verify", action="store_true")
@@ -1710,11 +2780,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lock-file", default=str(DEFAULT_LOCK_PATH))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.quick_storage_recovery and not args.storage_recovery_only:
+        parser.error("--quick-storage-recovery requires --storage-recovery-only")
+    if args.rebuild_reserve and (
+        not args.storage_recovery_only or args.quick_storage_recovery
+    ):
+        parser.error("--rebuild-reserve requires normal --storage-recovery-only")
 
-    project_root = Path(args.project_root).resolve()
+    project_root = Path(args.project_root).expanduser()
+    if _protected_storage_path(project_root):
+        parser.error("protected_or_unverifiable_project_root")
+    project_root = project_root.resolve()
     lock_path = Path(args.lock_file).expanduser()
     if not lock_path.is_absolute():
         lock_path = project_root / lock_path
+    if _protected_storage_path(lock_path):
+        parser.error("protected_or_unverifiable_lock_path")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as lock_handle:
         try:
@@ -1730,6 +2811,18 @@ def main(argv: list[str] | None = None) -> int:
             if args.json:
                 print(json.dumps(payload, ensure_ascii=True))
             return 0
+        if args.storage_recovery_only:
+            payload = build_storage_recovery_payload(
+                project_root, apply=bool(args.apply), quick_bounded=bool(args.quick_storage_recovery),
+                rebuild_reserve=bool(args.rebuild_reserve),
+            )
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=True))
+            else:
+                print(
+                    f"soak_storage_recovery status={payload.get('overall_status')} reason={payload.get('reason')}"
+                )
+            return 0 if payload.get("ok") else 2
         payload = build_payload(
             project_root,
             apply=bool(args.apply),

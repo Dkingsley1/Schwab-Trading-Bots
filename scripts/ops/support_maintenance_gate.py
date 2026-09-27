@@ -3,11 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from scripts.ops.long_runtime_common import evidence_freshness, write_payload
 DEFAULT_OUT = PROJECT_ROOT / "governance" / "health" / "support_maintenance_gate_latest.json"
 
 
@@ -37,18 +41,10 @@ def _load_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def _fresh_enough(path: Path, *, max_age_seconds: float) -> bool:
-    try:
-        age = datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
-        return age <= max(max_age_seconds, 1.0)
-    except Exception:
-        return False
-
-
 def support_maintenance_freeze_contract(project_root: Path, component: str) -> dict[str, Any]:
     """Return an active contract when noncritical support work should yield."""
     project_root = Path(project_root)
-    max_age_seconds = float(os.getenv("SUPPORT_MAINTENANCE_FREEZE_MAX_AGE_SECONDS", "1800"))
+    max_age_seconds = min(max(float(os.getenv("SUPPORT_MAINTENANCE_FREEZE_MAX_AGE_SECONDS", "180")), 1.0), 1800.0)
     override_path = project_root / "config" / ".env.runtime_resource_guard_override"
     runtime_path = project_root / "governance" / "health" / "runtime_throttle_control_latest.json"
     env_file = _load_env_file(override_path)
@@ -61,14 +57,20 @@ def support_maintenance_freeze_contract(project_root: Path, component: str) -> d
     )
     support_pause = support_pause if isinstance(support_pause, dict) else {}
 
-    env_freeze = bool(
-        _truthy(os.getenv("OPS_SUPPORT_MAINTENANCE_FREEZE"))
-        or _truthy(os.getenv("MAC_FLUIDITY_SUPPORT_PAUSE"))
-        or str(os.getenv("SUPPORT_MAINTENANCE_CONCURRENCY", "")).strip() == "0"
-        or _truthy(env_file.get("OPS_SUPPORT_MAINTENANCE_FREEZE"))
-        or _truthy(env_file.get("MAC_FLUIDITY_SUPPORT_PAUSE"))
-        or str(env_file.get("SUPPORT_MAINTENANCE_CONCURRENCY", "")).strip() == "0"
-    )
+    def requests_freeze(values: Any) -> bool:
+        return bool(
+            _truthy(values.get("OPS_SUPPORT_MAINTENANCE_FREEZE"))
+            or _truthy(values.get("MAC_FLUIDITY_SUPPORT_PAUSE"))
+            or str(values.get("SUPPORT_MAINTENANCE_CONCURRENCY", "")).strip() == "0"
+        )
+
+    lease_key = "RUNTIME_GOVERNOR_LEASE_TIMESTAMP_UTC"
+    process_freeze = requests_freeze(os.environ)
+    # A sourced governor lease is not an independent operator hold. Unowned
+    # explicit environment holds remain authoritative and never auto-expire.
+    operator_freeze = bool(process_freeze and not os.getenv(lease_key))
+    file_freeze = requests_freeze(env_file)
+    env_freeze = bool(operator_freeze or file_freeze)
     runtime_freeze = bool(
         _truthy(mac.get("support_pause_recommended"))
         or _truthy(support_pause.get("pause_requested"))
@@ -78,14 +80,36 @@ def support_maintenance_freeze_contract(project_root: Path, component: str) -> d
             and str(mac.get("fluidity_band") or "").strip().lower() in {"strained", "protect"}
         )
     )
-    fresh_runtime = _fresh_enough(runtime_path, max_age_seconds=max_age_seconds)
-    fresh_override = _fresh_enough(override_path, max_age_seconds=max_age_seconds)
-    active = bool((env_freeze and (fresh_override or fresh_runtime)) or (runtime_freeze and fresh_runtime))
+    runtime_evidence = evidence_freshness(runtime, max_age_minutes=max_age_seconds / 60.0)
+    override_evidence = evidence_freshness(
+        {"timestamp_utc": env_file.get(lease_key)}, max_age_minutes=max_age_seconds / 60.0
+    )
+    fresh_runtime = runtime_evidence["fresh"]
+    fresh_override = override_evidence["fresh"]
+    applied = runtime.get("apply_result") if isinstance(runtime.get("apply_result"), dict) else {}
+    release_verified = bool(
+        fresh_runtime and applied.get("applied") is True
+        and support_pause.get("pause_requested") is False and not runtime_freeze
+        and (not fresh_override or runtime_evidence["producer_timestamp_utc"] >= override_evidence["producer_timestamp_utc"])
+    )
+    unresolved = bool(
+        not release_verified and not fresh_runtime and not fresh_override
+        and (file_freeze or runtime_freeze or (process_freeze and os.getenv(lease_key)))
+    )
+    active = bool(operator_freeze or unresolved or (runtime_freeze and fresh_runtime) or (file_freeze and not release_verified))
+    reason = "support_maintenance_ready"
+    if active:
+        reason = "awaiting_fresh_runtime_pause_decision" if unresolved else "support_maintenance_frozen_for_mac_fluidity"
     return {
         "active": active,
         "component": str(component),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "reason": "support_maintenance_frozen_for_mac_fluidity" if active else "support_maintenance_ready",
+        "reason": reason,
+        "operator_freeze": operator_freeze,
+        "release_verified": release_verified,
+        "refresh_required": unresolved,
+        "runtime_evidence": runtime_evidence,
+        "override_evidence": override_evidence,
         "env_freeze": env_freeze,
         "runtime_freeze": runtime_freeze,
         "fresh_runtime": fresh_runtime,
@@ -106,7 +130,7 @@ def frozen_health_payload(previous_path: Path, contract: dict[str, Any], *, ok: 
     previous = _load_json(Path(previous_path))
     payload = dict(previous)
     now = datetime.now(timezone.utc)
-    source_timestamp = str(previous.get("timestamp_utc") or "").strip()
+    source_timestamp = str(previous.get("source_timestamp_utc", previous.get("timestamp_utc")) or "").strip()
     source_dt = None
     if source_timestamp:
         try:
@@ -174,8 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     payload = build_payload(args.project_root, component=args.component)
-    args.out_file.parent.mkdir(parents=True, exist_ok=True)
-    args.out_file.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    write_payload(args.out_file, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

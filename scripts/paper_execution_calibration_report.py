@@ -34,20 +34,30 @@ def _calibration_cutoff_utc() -> datetime | None:
         or os.getenv("PAPER_EXECUTION_REALISTIC_FILL_CUTOFF_UTC", "").strip()
     )
     configured = _parse_ts(raw)
-    candidate_cutoff = None
-    try:
-        state = json.loads(
-            (PROJECT_ROOT / "governance" / "runtime" / "production_candidate_state.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        windows = state.get("scope_windows_started_utc", {}) if isinstance(state, dict) else {}
-        candidates = [_parse_ts(windows.get(scope)) for scope in ("execution", "data", "dependencies")]
-        candidate_cutoff = max((value for value in candidates if value is not None), default=None)
-    except Exception:
-        candidate_cutoff = None
+    candidate_cutoff = _parse_ts(_production_candidate_binding().get("cutoff_utc"))
     values = [value for value in (configured, candidate_cutoff) if value is not None]
     return max(values) if values else None
+
+
+def _production_candidate_binding() -> dict[str, Any]:
+    path = PROJECT_ROOT / "governance" / "runtime" / "production_candidate_state.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    windows = state.get("scope_windows_started_utc") if isinstance(state.get("scope_windows_started_utc"), dict) else {}
+    cutoffs = [_parse_ts(windows.get(scope)) for scope in ("execution", "data", "dependencies")]
+    cutoff = max((value for value in cutoffs if value is not None), default=None)
+    candidate_id = str(state.get("candidate_id") or "").strip()
+    return {
+        "candidate_id": candidate_id,
+        "generation": int(_safe_float(state.get("generation"), 0.0)),
+        "cutoff_utc": cutoff.isoformat() if cutoff is not None else "",
+        "required": bool(candidate_id and cutoff is not None),
+        "state_path": str(path),
+    }
 
 
 def _is_synthetic_guard_row(row: Dict[str, Any]) -> bool:
@@ -108,6 +118,23 @@ def _fill_evidence_class(row: Dict[str, Any], *, fill: float, expected_fill: flo
     if abs(float(fill) - float(expected_fill)) <= tolerance:
         return "model_derived", "inferred_fill_equals_expected_model"
     return "unverified", source or "missing_explicit_independent_provenance"
+
+
+def _row_candidate_id(row: Dict[str, Any]) -> str:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+    for raw in (
+        row.get("candidate_id"),
+        row.get("production_candidate_id"),
+        metadata.get("candidate_id"),
+        metadata.get("production_candidate_id"),
+        provenance.get("candidate_id"),
+        provenance.get("production_candidate_id"),
+    ):
+        value = str(raw or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _metrics(values: list[float], observed: list[float], expected: list[float]) -> dict[str, float]:
@@ -194,6 +221,7 @@ def main() -> int:
     args = ap.parse_args()
 
     since = datetime.now(timezone.utc) - timedelta(hours=max(int(args.hours), 1))
+    candidate_binding = _production_candidate_binding()
     cutoff_utc = _calibration_cutoff_utc()
     if cutoff_utc is not None and cutoff_utc > since:
         since = cutoff_utc
@@ -208,6 +236,8 @@ def main() -> int:
     files_scanned = 0
     skipped_before_cutoff = 0
     skipped_synthetic_guard = 0
+    candidate_identity_missing_rows = 0
+    candidate_identity_mismatch_rows = 0
     by_market_kind: Dict[str, Dict[str, Any]] = {}
     by_profile: Dict[str, Dict[str, Any]] = {}
     by_symbol: Dict[str, Dict[str, Any]] = {}
@@ -255,6 +285,14 @@ def main() -> int:
                     if evidence_class != "independent":
                         unverified_samples += 1
                         continue
+                    if candidate_binding.get("required", False):
+                        row_candidate_id = _row_candidate_id(row)
+                        if not row_candidate_id:
+                            candidate_identity_missing_rows += 1
+                            continue
+                        if row_candidate_id != candidate_binding.get("candidate_id"):
+                            candidate_identity_mismatch_rows += 1
+                            continue
 
                     vals.append(abs_error)
                     observed_vals.append(observed_bps)
@@ -329,6 +367,25 @@ def main() -> int:
         )
     if model_vals:
         top_actions.append("keep expected-fill-model samples in simulator diagnostics, not independent calibration evidence")
+    if candidate_identity_missing_rows or candidate_identity_mismatch_rows:
+        top_actions.append(
+            "materialize independent fill evidence with the exact current candidate identity before using it for promotion calibration"
+        )
+
+    candidate_binding["bound"] = bool(
+        not candidate_binding.get("required", False)
+        or candidate_binding.get("candidate_id")
+    )
+    candidate_binding["eligible_rows_identity_clean"] = bool(
+        candidate_identity_missing_rows == 0
+        and candidate_identity_mismatch_rows == 0
+    )
+    candidate_binding["identity_missing_rows_excluded"] = int(candidate_identity_missing_rows)
+    candidate_binding["identity_mismatch_rows_excluded"] = int(candidate_identity_mismatch_rows)
+    candidate_binding["policy"] = (
+        "current-candidate identity is mandatory for independent promotion-grade calibration; "
+        "legacy or cross-candidate fills remain diagnostics only"
+    )
 
     out = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -345,11 +402,14 @@ def main() -> int:
         "independent_evidence_ready": bool(independent_evidence_ready),
         "minimum_independent_samples": int(min_independent_samples),
         "evidence_sources": dict(sorted(evidence_sources.items())),
+        "candidate_binding": candidate_binding,
         "calibration_window": {
             "cutoff_utc": cutoff_utc.isoformat() if cutoff_utc is not None else "",
             "reset_active": cutoff_utc is not None,
             "skipped_before_cutoff": int(skipped_before_cutoff),
             "skipped_synthetic_guard_rows": int(skipped_synthetic_guard),
+            "candidate_identity_missing_rows_excluded": int(candidate_identity_missing_rows),
+            "candidate_identity_mismatch_rows_excluded": int(candidate_identity_mismatch_rows),
             "policy": "only independent broker-paper explicit-fill or market-replay evidence can calibrate the expected-fill model",
         },
         "metrics": independent_metrics,

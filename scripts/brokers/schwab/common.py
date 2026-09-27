@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.base_trader import BaseTrader
 from core.brokers import BrokerCredentials
+from core.brokers.schwab_credentials import (
+    enforce_managed_schwab_runtime,
+    resolve_schwab_credentials,
+    schwab_credentials_ready,
+)
 
 
 INVALID_SCHWAB_CREDENTIAL_VALUES = {
@@ -22,21 +26,11 @@ INVALID_SCHWAB_CREDENTIAL_VALUES = {
 
 
 def schwab_credentials_from_env() -> BrokerCredentials:
-    return BrokerCredentials(
-        api_key=os.getenv("SCHWAB_API_KEY", "YOUR_KEY_HERE").strip(),
-        app_secret=os.getenv("SCHWAB_SECRET", "YOUR_SECRET_HERE").strip(),
-        callback_url=(
-            os.getenv("SCHWAB_CALLBACK_URL", "").strip()
-            or os.getenv("SCHWAB_REDIRECT", "https://127.0.0.1:8182").strip()
-        ),
-    )
+    return resolve_schwab_credentials()
 
 
 def credentials_ready(credentials: BrokerCredentials) -> bool:
-    return (
-        str(credentials.api_key or "").strip() not in INVALID_SCHWAB_CREDENTIAL_VALUES
-        and str(credentials.app_secret or "").strip() not in INVALID_SCHWAB_CREDENTIAL_VALUES
-    )
+    return schwab_credentials_ready(credentials)
 
 
 def build_schwab_trader(
@@ -47,6 +41,7 @@ def build_schwab_trader(
     require_credentials: bool = True,
     missing_credentials_message: str = "Schwab credentials are required",
 ) -> BaseTrader:
+    enforce_managed_schwab_runtime(require_by_default=True)
     credentials = schwab_credentials_from_env()
     if require_credentials and not credentials_ready(credentials):
         raise RuntimeError(str(missing_credentials_message or "Schwab credentials are required"))

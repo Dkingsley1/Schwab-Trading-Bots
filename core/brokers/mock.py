@@ -94,6 +94,10 @@ class MockBrokerClient:
         payload = dict(self._orders.get(order_id) or {"orderId": order_id, "status": "FILLED"})
         return _MockResponse(200, payload)
 
+    def get_orders(self, *args, **kwargs) -> _MockResponse:
+        _ = (args, kwargs)
+        return _MockResponse(200, list(self._orders.values()))
+
 
 class MockBrokerAdapter(BrokerAdapter):
     name = "mock"
@@ -110,6 +114,7 @@ class MockBrokerAdapter(BrokerAdapter):
         supports_order_replace=True,
         supports_order_cancel=True,
         supports_order_fetch=True,
+        supports_order_list=True,
         supports_options=False,
         supports_futures=False,
     )
@@ -151,6 +156,16 @@ class MockBrokerAdapter(BrokerAdapter):
     def fetch_order_candidates(self, *, account_reference: str, order_id: str) -> List[BrokerCallSpec]:
         _ = account_reference
         return [("get_order", (order_id,), {})]
+
+    def orders_snapshot_candidates(
+        self,
+        *,
+        account_reference: str,
+        max_results: int = 500,
+        lookback_days: int = 60,
+    ) -> List[BrokerCallSpec]:
+        _ = (account_reference, max_results, lookback_days)
+        return [("get_orders", tuple(), {})]
 
     def quote_candidates(self, *, symbol: str) -> List[BrokerCallSpec]:
         return [("get_quote", (str(symbol or "").strip().upper(),), {})]

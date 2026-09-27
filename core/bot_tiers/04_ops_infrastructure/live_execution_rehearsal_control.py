@@ -1,0 +1,1 @@
+../../../scripts/ops/live_execution_rehearsal_control.py

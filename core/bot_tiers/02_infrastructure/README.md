@@ -633,7 +633,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v571_model_risk_calibration_decay_sentinel_bot | signal_sub_bot | active / collecting | core/brain_refinery_v571_model_risk_calibration_decay_sentinel_bot.py |
 | brain_refinery_v573_model_risk_overfit_leakage_replay_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v573_model_risk_overfit_leakage_replay_guard_bot.py |
 | brain_refinery_v575_model_risk_validation_regression_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v575_model_risk_validation_regression_guard_bot.py |
-| brain_refinery_v57_confidence_calibrator | infrastructure_sub_bot | inactive | core/brain_refinery_v57_confidence_calibrator.py |
+| brain_refinery_v57_confidence_calibrator | infrastructure_sub_bot | active / collecting | core/brain_refinery_v57_confidence_calibrator.py |
 | brain_refinery_v580_transaction_cost_slippage_regression_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v580_transaction_cost_slippage_regression_guard_bot.py |
 | brain_refinery_v585_portfolio_construction_regression_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v585_portfolio_construction_regression_guard_bot.py |
 | brain_refinery_v58_ensemble_diversity_controller | options_sub_bot | active / collecting | core/brain_refinery_v58_ensemble_diversity_controller.py |
@@ -646,20 +646,20 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v603_system_governor_global_halt_pressure_reducer_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v603_system_governor_global_halt_pressure_reducer_bot.py |
 | brain_refinery_v604_system_governor_adaptive_sampling_throttle_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v604_system_governor_adaptive_sampling_throttle_bot.py |
 | brain_refinery_v605_system_governor_expansion_regression_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v605_system_governor_expansion_regression_guard_bot.py |
-| brain_refinery_v60_data_quality_sentinel | infrastructure_sub_bot | inactive | core/brain_refinery_v60_data_quality_sentinel.py |
+| brain_refinery_v60_data_quality_sentinel | infrastructure_sub_bot | active / collecting | core/brain_refinery_v60_data_quality_sentinel.py |
 | brain_refinery_v617_experience_accumulation_memory_design_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v617_experience_accumulation_memory_design_bot.py |
-| brain_refinery_v61_bot_allocator | infrastructure_sub_bot | inactive | core/brain_refinery_v61_bot_allocator.py |
-| brain_refinery_v62_bot_pruner | infrastructure_sub_bot | inactive | core/brain_refinery_v62_bot_pruner.py |
+| brain_refinery_v61_bot_allocator | infrastructure_sub_bot | active / collecting | core/brain_refinery_v61_bot_allocator.py |
+| brain_refinery_v62_bot_pruner | infrastructure_sub_bot | active / collecting | core/brain_refinery_v62_bot_pruner.py |
 | brain_refinery_v635_dividend_debt_maturity_wall_sentinel_bot | signal_sub_bot | active / collecting | core/brain_refinery_v635_dividend_debt_maturity_wall_sentinel_bot.py |
-| brain_refinery_v63_compute_budget_controller | infrastructure_sub_bot | inactive | core/brain_refinery_v63_compute_budget_controller.py |
+| brain_refinery_v63_compute_budget_controller | infrastructure_sub_bot | active / collecting | core/brain_refinery_v63_compute_budget_controller.py |
 | brain_refinery_v641_dividend_tax_qualified_holding_guard_bot | signal_sub_bot | active / collecting | core/brain_refinery_v641_dividend_tax_qualified_holding_guard_bot.py |
 | brain_refinery_v642_dividend_options_assignment_income_guard_bot | options_sub_bot | active / collecting | core/brain_refinery_v642_dividend_options_assignment_income_guard_bot.py |
 | brain_refinery_v649_intraday_liquidity_cliff_avoidance_guard_bot | signal_sub_bot | active / collecting | core/brain_refinery_v649_intraday_liquidity_cliff_avoidance_guard_bot.py |
-| brain_refinery_v64_regime_router_layer | infrastructure_sub_bot | inactive | core/brain_refinery_v64_regime_router_layer.py |
+| brain_refinery_v64_regime_router_layer | infrastructure_sub_bot | active / collecting | core/brain_refinery_v64_regime_router_layer.py |
 | brain_refinery_v651_day_trading_level_two_spread_decay_guard_bot | signal_sub_bot | active / collecting | core/brain_refinery_v651_day_trading_level_two_spread_decay_guard_bot.py |
-| brain_refinery_v65_dynamic_threshold_layer | infrastructure_sub_bot | inactive | core/brain_refinery_v65_dynamic_threshold_layer.py |
+| brain_refinery_v65_dynamic_threshold_layer | infrastructure_sub_bot | active / collecting | core/brain_refinery_v65_dynamic_threshold_layer.py |
 | brain_refinery_v663_fed_2026_counterparty_default_contagion_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v663_fed_2026_counterparty_default_contagion_bot.py |
-| brain_refinery_v66_reliability_score_layer | infrastructure_sub_bot | inactive | core/brain_refinery_v66_reliability_score_layer.py |
+| brain_refinery_v66_reliability_score_layer | infrastructure_sub_bot | active / collecting | core/brain_refinery_v66_reliability_score_layer.py |
 | brain_refinery_v674_expansion_capacity_planner_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v674_expansion_capacity_planner_bot.py |
 | brain_refinery_v675_expansion_dependency_graph_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v675_expansion_dependency_graph_guard_bot.py |
 | brain_refinery_v676_expansion_storage_budget_forecaster_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v676_expansion_storage_budget_forecaster_bot.py |
@@ -686,7 +686,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v707_basket_liquidity_stress_router_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v707_basket_liquidity_stress_router_bot.py |
 | brain_refinery_v708_etf_flow_regression_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v708_etf_flow_regression_guard_bot.py |
 | brain_refinery_v709_ensemble_disagreement_resolver_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v709_ensemble_disagreement_resolver_bot.py |
-| brain_refinery_v70_drift_detection_layer | infrastructure_sub_bot | inactive | core/brain_refinery_v70_drift_detection_layer.py |
+| brain_refinery_v70_drift_detection_layer | infrastructure_sub_bot | active / collecting | core/brain_refinery_v70_drift_detection_layer.py |
 | brain_refinery_v710_signal_half_life_decay_governor_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v710_signal_half_life_decay_governor_bot.py |
 | brain_refinery_v711_alpha_crowding_duplicate_detector_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v711_alpha_crowding_duplicate_detector_bot.py |
 | brain_refinery_v712_experiment_kill_criteria_arbiter_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v712_experiment_kill_criteria_arbiter_bot.py |
@@ -697,7 +697,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v717_mlx_batch_size_runtime_governor_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v717_mlx_batch_size_runtime_governor_bot.py |
 | brain_refinery_v718_runtime_capacity_regression_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v718_runtime_capacity_regression_guard_bot.py |
 | brain_refinery_v719_shard_writer_queue_balancer_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v719_shard_writer_queue_balancer_bot.py |
-| brain_refinery_v71_champion_challenger_layer | infrastructure_sub_bot | inactive | core/brain_refinery_v71_champion_challenger_layer.py |
+| brain_refinery_v71_champion_challenger_layer | infrastructure_sub_bot | active / collecting | core/brain_refinery_v71_champion_challenger_layer.py |
 | brain_refinery_v720_explanation_backlog_chunker_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v720_explanation_backlog_chunker_bot.py |
 | brain_refinery_v721_ops_data_plane_integrity_sentinel_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v721_ops_data_plane_integrity_sentinel_bot.py |
 | brain_refinery_v722_wal_queue_checkpoint_scheduler_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v722_wal_queue_checkpoint_scheduler_bot.py |
@@ -708,7 +708,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v727_paper_trade_lock_recovery_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v727_paper_trade_lock_recovery_guard_bot.py |
 | brain_refinery_v728_halt_recovery_regression_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v728_halt_recovery_regression_guard_bot.py |
 | brain_refinery_v729_bot_admission_capacity_score_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v729_bot_admission_capacity_score_bot.py |
-| brain_refinery_v72_latency_sentinel | infrastructure_sub_bot | inactive | core/brain_refinery_v72_latency_sentinel.py |
+| brain_refinery_v72_latency_sentinel | infrastructure_sub_bot | active / collecting | core/brain_refinery_v72_latency_sentinel.py |
 | brain_refinery_v730_label_taxonomy_drift_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v730_label_taxonomy_drift_guard_bot.py |
 | brain_refinery_v731_training_readiness_sample_debt_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v731_training_readiness_sample_debt_bot.py |
 | brain_refinery_v732_report_surface_freshness_contract_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v732_report_surface_freshness_contract_bot.py |
@@ -733,7 +733,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v767_execution_intelligence_paper_live_parity_regression_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v767_execution_intelligence_paper_live_parity_regression_guard_bot.py |
 | brain_refinery_v768_execution_intelligence_latency_capacity_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v768_execution_intelligence_latency_capacity_guard_bot.py |
 | brain_refinery_v769_portfolio_risk_exposure_netting_collector_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v769_portfolio_risk_exposure_netting_collector_bot.py |
-| brain_refinery_v76_trend_acceleration_sentinel | infrastructure_sub_bot | inactive | core/brain_refinery_v76_trend_acceleration_sentinel.py |
+| brain_refinery_v76_trend_acceleration_sentinel | infrastructure_sub_bot | active / collecting | core/brain_refinery_v76_trend_acceleration_sentinel.py |
 | brain_refinery_v770_portfolio_risk_correlation_cap_allocator_bot | signal_sub_bot | active / collecting | core/brain_refinery_v770_portfolio_risk_correlation_cap_allocator_bot.py |
 | brain_refinery_v772_portfolio_risk_margin_convexity_regression_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v772_portfolio_risk_margin_convexity_regression_guard_bot.py |
 | brain_refinery_v773_portfolio_risk_capacity_budget_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v773_portfolio_risk_capacity_budget_guard_bot.py |
@@ -753,7 +753,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v797_model_lifecycle_leakage_overfit_regression_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v797_model_lifecycle_leakage_overfit_regression_guard_bot.py |
 | brain_refinery_v798_model_lifecycle_retrain_capacity_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v798_model_lifecycle_retrain_capacity_guard_bot.py |
 | brain_refinery_v799_reporting_layer_metric_contract_collector_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v799_reporting_layer_metric_contract_collector_bot.py |
-| brain_refinery_v79_trend_persistence_sentinel | infrastructure_sub_bot | inactive | core/brain_refinery_v79_trend_persistence_sentinel.py |
+| brain_refinery_v79_trend_persistence_sentinel | infrastructure_sub_bot | active / collecting | core/brain_refinery_v79_trend_persistence_sentinel.py |
 | brain_refinery_v802_reporting_layer_pdf_open_regression_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v802_reporting_layer_pdf_open_regression_guard_bot.py |
 | brain_refinery_v803_reporting_layer_freshness_capacity_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v803_reporting_layer_freshness_capacity_guard_bot.py |
 | brain_refinery_v805_advanced_mesh_experience_memory_consolidator_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v805_advanced_mesh_experience_memory_consolidator_bot.py |
@@ -773,7 +773,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v826_cognitive_epistemic_risk_budget_allocator_bot | signal_sub_bot | active / collecting | core/brain_refinery_v826_cognitive_epistemic_risk_budget_allocator_bot.py |
 | brain_refinery_v828_cognitive_autonomous_research_backlog_prioritizer_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v828_cognitive_autonomous_research_backlog_prioritizer_bot.py |
 | brain_refinery_v829_cognitive_policy_simulation_sandbox_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v829_cognitive_policy_simulation_sandbox_bot.py |
-| brain_refinery_v82_feature_drift_guard | infrastructure_sub_bot | inactive | core/brain_refinery_v82_feature_drift_guard.py |
+| brain_refinery_v82_feature_drift_guard | infrastructure_sub_bot | active / collecting | core/brain_refinery_v82_feature_drift_guard.py |
 | brain_refinery_v830_cognitive_safety_case_builder_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v830_cognitive_safety_case_builder_bot.py |
 | brain_refinery_v832_cognitive_agent_market_specialist_router_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v832_cognitive_agent_market_specialist_router_bot.py |
 | brain_refinery_v834_recursive_foundry_literature_hypothesis_compiler_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v834_recursive_foundry_literature_hypothesis_compiler_bot.py |
@@ -792,7 +792,7 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v856_coordination_margin_drawdown_sensitivity_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v856_coordination_margin_drawdown_sensitivity_bot.py |
 | brain_refinery_v857_coordination_allocation_sandbox_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v857_coordination_allocation_sandbox_guard_bot.py |
 | brain_refinery_v858_coordination_regime_memory_writer_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v858_coordination_regime_memory_writer_bot.py |
-| brain_refinery_v85_latency_and_staleness_guard | signal_sub_bot | inactive | core/brain_refinery_v85_latency_and_staleness_guard.py |
+| brain_refinery_v85_latency_and_staleness_guard | signal_sub_bot | active / collecting | core/brain_refinery_v85_latency_and_staleness_guard.py |
 | brain_refinery_v860_coordination_regime_memory_decay_guard_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v860_coordination_regime_memory_decay_guard_bot.py |
 | brain_refinery_v861_coordination_research_ingest_classifier_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v861_coordination_research_ingest_classifier_bot.py |
 | brain_refinery_v862_coordination_research_to_bot_spec_builder_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v862_coordination_research_to_bot_spec_builder_bot.py |

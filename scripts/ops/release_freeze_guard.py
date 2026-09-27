@@ -76,27 +76,50 @@ def _git_snapshot(project_root: Path, *, runner: GitRunner = _default_git_runner
             "tags_at_head": [],
         }
 
-    _, commit_out, _ = run("rev-parse", "HEAD")
+    commit_rc, commit_out, _ = run("rev-parse", "HEAD")
     _, branch_out, _ = run("branch", "--show-current")
-    _, status_out, _ = run("status", "--porcelain=v1", "--untracked-files=all")
+    status_rc, status_out, _ = run("status", "--porcelain=v1", "--untracked-files=all")
     changed_paths = [line.rstrip() for line in status_out.splitlines() if line.strip()]
-    upstream_rc, upstream_out, _ = run("rev-list", "--left-right", "--count", "@{upstream}...HEAD")
+    upstream_rc, upstream_out, _ = run(
+        "rev-list", "--left-right", "--count", "@{upstream}...HEAD"
+    )
     ahead: int | None = None
     behind: int | None = None
     if upstream_rc == 0:
         values = upstream_out.strip().split()
-        if len(values) == 2:
+        if len(values) == 2 and all(value.isdecimal() for value in values):
             behind, ahead = int(values[0]), int(values[1])
-    _, tree_out, _ = run("ls-files", "-s")
+    tree_rc, tree_out, _ = run("ls-files", "-s")
     _, tags_out, _ = run("tag", "--points-at", "HEAD")
-    tree_receipt = hashlib.sha256(tree_out.encode("utf-8")).hexdigest() if tree_out else ""
-    clean = not changed_paths
+    tree_receipt = (
+        hashlib.sha256(tree_out.encode("utf-8")).hexdigest()
+        if tree_rc == 0 and tree_out
+        else ""
+    )
+    clean = status_rc == 0 and not changed_paths
     upstream_synchronized = bool(upstream_rc == 0 and ahead == 0 and behind == 0)
-    ready = bool(commit_out.strip() and clean and upstream_synchronized and tree_receipt)
+    errors = [
+        name
+        for name, failed in (
+            ("git_commit_unverified", commit_rc != 0 or not commit_out.strip()),
+            ("git_worktree_status_unverified", status_rc != 0),
+            ("git_tracked_tree_unverified", not tree_receipt),
+            ("git_upstream_state_unverified", ahead is None or behind is None),
+        )
+        if failed
+    ]
+    ready = bool(
+        not errors
+        and commit_out.strip()
+        and clean
+        and upstream_synchronized
+        and tree_receipt
+    )
     return {
         "repository": True,
         "ready": ready,
-        "error": "",
+        "error": ",".join(errors),
+        "blockers": errors,
         "branch": branch_out.strip(),
         "commit": commit_out.strip(),
         "clean": clean,
@@ -156,7 +179,31 @@ def build_payload(
     git_integrity = _git_snapshot(project_root, runner=git_runner)
     rollback_entrypoint = project_root / "scripts" / "release_ops.sh"
     rollback_ready = bool(git_integrity.get("commit") and rollback_entrypoint.is_file())
-    production_release_ready = bool(active and git_integrity.get("ready", False) and rollback_ready)
+    production_release_ready = bool(
+        active and git_integrity.get("ready", False) and rollback_ready
+    )
+    release_blockers = ordered_unique(
+        [
+            "release_freeze_window_inactive_or_expired" if not active else "",
+            (
+                "release_worktree_not_clean"
+                if not git_integrity.get("clean", False)
+                else ""
+            ),
+            (
+                "release_upstream_not_synchronized"
+                if not git_integrity.get("upstream_synchronized", False)
+                else ""
+            ),
+            (
+                "release_git_integrity_unverified"
+                if not git_integrity.get("ready", False)
+                else ""
+            ),
+            "release_rollback_unavailable" if not rollback_ready else "",
+            *git_integrity.get("blockers", []),
+        ]
+    )
 
     overall_status = "ready" if active else "degraded"
     if active and str(supportability_control.get("overall_status") or "") == "blocked":
@@ -199,6 +246,8 @@ def build_payload(
             "manifest_eligible": production_release_ready,
             "requires_clean_worktree": True,
             "requires_upstream_synchronization": True,
+            "blockers": release_blockers,
+            "operator_release_review_required": not production_release_ready,
         },
         "paper_soak_contract": {
             "ready": overall_status == "ready",

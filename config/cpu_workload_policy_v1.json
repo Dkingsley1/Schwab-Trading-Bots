@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "policy_id": "cpu_workload_policy_v1",
+  "policy_locked": true,
+  "platform_contract": {
+    "apple_silicon_strategy": "performance_core_primary_qos_nice_worker_budget",
+    "hard_affinity_supported_on_macos": false,
+    "hard_affinity_claim_allowed": false,
+    "managed_restart_required_to_raise_priority": true,
+    "taskpolicy_remove_background_for_critical_work": true,
+    "linux_exclusive_cpu_upgrade_path": "cgroup_v2_cpuset_or_kubernetes_static_cpu_manager",
+    "packet_runtime_upgrade_path": "dpdk_lcore_and_service_core_partitioning_when_native_market_access_exists"
+  },
+  "resource_partition": {
+    "foreground_performance_core_reserve": 1,
+    "maximum_critical_shared_workers": 7,
+    "maximum_efficiency_service_workers": 2,
+    "critical_efficiency_spillover_allowed": false,
+    "support_efficiency_spillover_allowed": true,
+    "governors_may_shrink_worker_budgets": true,
+    "governors_may_widen_worker_budgets": false
+  },
+  "workload_classes": {
+    "critical_supervisor": {
+      "critical": true,
+      "nice_ceiling": 0,
+      "remove_darwin_background": true,
+      "worker_pool": "critical_shared_performance",
+      "efficiency_spillover_allowed": false
+    },
+    "live_execution": {
+      "critical": true,
+      "nice_ceiling": 0,
+      "remove_darwin_background": true,
+      "worker_pool": "critical_shared_performance",
+      "efficiency_spillover_allowed": false
+    },
+    "paper_execution": {
+      "critical": true,
+      "nice_ceiling": 0,
+      "remove_darwin_background": true,
+      "worker_pool": "critical_shared_performance",
+      "efficiency_spillover_allowed": false
+    },
+    "market_decision": {
+      "critical": true,
+      "nice_ceiling": 4,
+      "remove_darwin_background": true,
+      "worker_pool": "critical_shared_performance",
+      "efficiency_spillover_allowed": false
+    },
+    "data_collection": {
+      "critical": false,
+      "nice_floor": 12,
+      "remove_darwin_background": false,
+      "worker_pool": "efficiency_service_spillover",
+      "efficiency_spillover_allowed": true
+    },
+    "research_training": {
+      "critical": false,
+      "nice_floor": 15,
+      "remove_darwin_background": false,
+      "worker_pool": "efficiency_service_spillover",
+      "efficiency_spillover_allowed": true
+    },
+    "storage_maintenance": {
+      "critical": false,
+      "nice_floor": 15,
+      "remove_darwin_background": false,
+      "worker_pool": "efficiency_service_spillover",
+      "efficiency_spillover_allowed": true
+    },
+    "operator_observability": {
+      "critical": false,
+      "nice_floor": 10,
+      "remove_darwin_background": false,
+      "worker_pool": "efficiency_service_spillover",
+      "efficiency_spillover_allowed": true
+    }
+  },
+  "shadow_resolution": {
+    "default_class": "market_decision",
+    "collect_only_lifecycle_states": [
+      "data_collection_only",
+      "collect_only",
+      "research_only"
+    ],
+    "research_only_environment_flags": [
+      "QUANT_MODEL_RESEARCH_ONLY",
+      "TRAINING_ONLY"
+    ]
+  },
+  "authority": {
+    "may_pin_hardware_cores": false,
+    "may_restart_running_processes": false,
+    "may_widen_worker_budgets": false,
+    "may_pause_paper_execution": false,
+    "may_change_order_quantity": false,
+    "may_submit_live_orders": false,
+    "may_grant_live_promotion": false
+  }
+}

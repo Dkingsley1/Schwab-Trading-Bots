@@ -1,0 +1,616 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pytest
+
+from scripts.ops import live_canary_dress_rehearsal as rehearsal
+
+from scripts.ops.live_canary_dress_rehearsal import (
+    READ_ONLY_ENVIRONMENT,
+    build_dress_rehearsal_payload,
+)
+
+ACCOUNT_REFERENCE = "opaque-account-reference-for-test"
+
+
+def _plan() -> dict:
+    return {
+        "policy_id": "live_canary_micro_200_v1",
+        "account_capital_usd": 200.0,
+        "account_policy_key": "schwab_cash_account_1",
+        "execution_route_id": "dividend_liquid_etf_candidate_v1",
+        "hard_limits": {
+            "max_order_notional_usd": 100.0,
+            "max_order_quantity": 1.0,
+            "max_concurrent_positions": 1,
+        },
+        "stages": [{"stage": 1, "symbols": ["SCHD"]}],
+        "activation_contract": {"unfilled_order_cancel_deadline_seconds": 60},
+    }
+
+
+def _firewall() -> dict:
+    return {
+        "max_quote_age_seconds": 15.0,
+        "max_account_snapshot_age_seconds": 30.0,
+        "max_spread_bps": 75.0,
+        "max_future_clock_skew_seconds": 2.0,
+        "live_execution_envelope_ttl_seconds": 15.0,
+    }
+
+
+def _study(now: datetime, *, cash: float = 200.0) -> dict:
+    return {
+        "timestamp_utc": now.isoformat(),
+        "accounts": [
+            {
+                "account_policy_key": "schwab_cash_account_1",
+                "operator_account_kind": "cash",
+                "operator_trading_type": "limited_margin",
+                "borrowing_allowed": False,
+                "cash_balance": cash,
+                "flags": {"closing_only": False},
+                "canary_preflight": {
+                    "blockers": (
+                        [] if cash >= 200.0 else ["canary_cash_not_funded_and_settled"]
+                    )
+                },
+                "account_capability_truth": {
+                    "operator_classification": {
+                        "account_kind": "cash",
+                        "trading_access": "limited_margin",
+                    },
+                    "balance_truth": {
+                        "cash_balance": cash,
+                        "cash_available_for_trading": cash,
+                        "pending_deposits": 0.0,
+                    },
+                    "debit_truth": {
+                        "provider_margin_balance": -2512.65,
+                        "status": "negative_provider_balance_not_confirmed_as_borrowing",
+                        "interest_bearing_borrowing_confirmed": False,
+                        "requires_broker_ui_confirmation": True,
+                    },
+                    "broker_call_truth": {"in_call": False},
+                    "position_collateral_truth": {
+                        "covered_short_option_count": 1,
+                        "uncovered_short_option_count": 0,
+                    },
+                },
+            }
+        ],
+        "positions": [
+            {
+                "account_policy_key": "schwab_cash_account_1",
+                "symbol": "NVDA",
+                "underlying": "NVDA",
+                "asset_type": "EQUITY",
+                "quantity": 100.1446,
+                "short_quantity": 0.0,
+            },
+            {
+                "account_policy_key": "schwab_cash_account_1",
+                "symbol": "NVDA  280121C00195000",
+                "underlying": "NVDA",
+                "asset_type": "OPTION",
+                "quantity": -1.0,
+                "short_quantity": 1.0,
+            },
+        ],
+    }
+
+
+def _quote(now: datetime, *, observed_at: datetime | None = None) -> dict:
+    provider_time = observed_at or now
+    epoch_ms = int(provider_time.timestamp() * 1000)
+    return {
+        "ok": True,
+        "operation": "get_quote",
+        "method": "get_quote",
+        "status_code": 200,
+        "latency_ms": 12.5,
+        "quote_snapshot": {
+            "bid_price": 29.01,
+            "ask_price": 29.03,
+            "last_price": 29.02,
+            "mark_price": 29.02,
+            "raw_payload": {
+                "SCHD": {
+                    "realtime": True,
+                    "quote": {
+                        "bidPrice": 29.01,
+                        "askPrice": 29.03,
+                        "bidTime": epoch_ms,
+                        "askTime": epoch_ms,
+                        "askMICId": "XNAS",
+                    },
+                }
+            },
+        },
+    }
+
+
+def _preflight(*, ready: bool, blockers: list[str] | None = None) -> dict:
+    return {
+        "ready": ready,
+        "receipt_sha256": "b" * 64,
+        "account_policy_key": "schwab_cash_account_1",
+        "account_reference_sha256": hashlib.sha256(
+            ACCOUNT_REFERENCE.encode()
+        ).hexdigest(),
+        "equity_session": {"ready": ready, "state": "open" if ready else "closed"},
+        "blockers": list(blockers or []),
+    }
+
+
+def _build(
+    *,
+    now: datetime,
+    cash: float = 200.0,
+    quote: dict | None = None,
+    preflight: dict | None = None,
+    plan: dict | None = None,
+    symbol: str = "SCHD",
+) -> dict:
+    return build_dress_rehearsal_payload(
+        now=now,
+        plan=plan if plan is not None else _plan(),
+        firewall=_firewall(),
+        candidate={"candidate_id": "pc-connected-rehearsal-test"},
+        account_study=_study(now, cash=cash),
+        account_study_sha256="a" * 64,
+        account_reference=ACCOUNT_REFERENCE,
+        expected_account_reference=ACCOUNT_REFERENCE,
+        quote_result=quote or _quote(now),
+        preflight_receipt=preflight or _preflight(ready=True),
+        account_refresh_summary={"ok": True, "account_count": 3, "position_rows": 7},
+        policy_sha256="c" * 64,
+        symbol=symbol,
+    )
+
+
+def _test_scope() -> dict:
+    return {
+        "mode": "read_only",
+        "investment_style": "buy_and_hold",
+        "symbols": ["SCHD", "O"],
+        "ex_dividend_trading_enabled": False,
+        "paper_order_authority": False,
+        "live_execution_authority": False,
+    }
+
+
+def test_realty_income_is_a_read_only_test_not_live_stage_admission() -> None:
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    plan = _plan()
+    plan["read_only_test_scope"] = _test_scope()
+    quote = _quote(now)
+    raw = quote["quote_snapshot"]["raw_payload"]
+    raw["O"] = raw.pop("SCHD")
+    payload = _build(now=now, plan=plan, symbol="O", quote=quote)
+
+    assert payload["ok"] is True
+    assert payload["read_only_test_scope"]["valid"] is True
+    assert payload["read_only_test_scope"]["symbol_in_scope"] is True
+    assert payload["read_only_test_scope"]["investment_style"] == "buy_and_hold"
+    assert payload["canary_ready"] is False
+    assert "symbol_not_in_canary_stage_plan" in payload["blockers"]
+    assert payload["exact_order_preview"]["symbol"] == "O"
+    assert rehearsal._candidate_symbols(plan) == {"SCHD"}
+    for key in (
+        "live_execution_authority",
+        "live_order_attempted",
+        "paper_order_attempted",
+        "broker_mutation_attempted",
+    ):
+        assert payload[key] is False
+
+
+def test_read_only_scope_does_not_change_existing_schd_readiness_or_envelope() -> None:
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    legacy = _build(now=now)
+    plan = _plan()
+    plan["read_only_test_scope"] = _test_scope()
+    scoped = _build(now=now, plan=plan)
+
+    assert scoped["read_only_test_scope"]["symbol_in_scope"] is True
+    assert legacy["read_only_test_scope"]["configured"] is False
+    scoped.pop("read_only_test_scope")
+    legacy.pop("read_only_test_scope")
+    assert scoped == legacy
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("mode", "live"),
+        ("investment_style", "ex_dividend"),
+        ("symbols", "SCHD,O"),
+        ("symbols", []),
+        ("symbols", ["O", "O"]),
+        ("symbols", ["O", {}]),
+        ("symbols", ["../O"]),
+        ("ex_dividend_trading_enabled", True),
+        ("paper_order_authority", True),
+        ("live_execution_authority", True),
+        ("live_execution_authority", "false"),
+        ("live_execution_authority", 0),
+    ],
+)
+def test_invalid_or_authority_seeking_scope_cannot_claim_test_membership(
+    field: str, value: object
+) -> None:
+    scope = _test_scope()
+    scope[field] = value
+    result = rehearsal._read_only_test_scope({"read_only_test_scope": scope}, "O")
+    assert result["valid"] is False
+    assert result["symbol_in_scope"] is False
+    assert result["symbols"] == []
+    assert result["live_execution_authority"] is False
+    assert result["paper_order_authority"] is False
+    assert result["changes_canary_stage_eligibility"] is False
+
+
+def test_unlisted_symbol_has_no_read_only_test_membership() -> None:
+    result = rehearsal._read_only_test_scope(
+        {"read_only_test_scope": _test_scope()}, "UNLISTED"
+    )
+    assert result["valid"] is True
+    assert result["symbol_in_scope"] is False
+
+
+def test_repository_policy_keeps_o_research_separate_from_live_stages() -> None:
+    plan = json.loads(
+        (rehearsal.PROJECT_ROOT / "config/live_canary_micro_policy_v1.json").read_text()
+    )
+    scope = rehearsal._read_only_test_scope(plan, "O")
+    assert scope["symbols"] == ["SCHD", "O"]
+    assert scope["valid"] is True
+    assert plan["stages"][0]["symbols"] == ["SCHD"]
+    assert "O" not in rehearsal._candidate_symbols(plan)
+    assert plan["status"] == "advisory_only"
+    assert plan["activation_contract"]["live_execution_authority"] is False
+    assert plan["hard_limits"]["max_order_notional_usd"] == 100.0
+    assert plan["hard_limits"]["max_order_quantity"] == 1.0
+
+
+def test_funded_connected_rehearsal_builds_exact_cash_only_projection() -> None:
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    payload = _build(now=now)
+
+    assert payload["ok"] is True
+    assert payload["canary_ready"] is True
+    assert payload["exact_order_preview"]["order_spec"]["orderType"] == "LIMIT"
+    assert payload["exact_order_preview"]["order_spec"]["session"] == "NORMAL"
+    assert payload["exact_order_preview"]["order_spec"]["duration"] == "DAY"
+    assert payload["exact_order_preview"]["quantity"] == 1.0
+    assert payload["funding_and_settlement"]["candidate_order_notional_usd"] == 29.03
+    assert (
+        payload["funding_and_settlement"]["projected_settled_cash_after_fill_usd"]
+        == 170.97
+    )
+    assert payload["live_execution_authority"] is False
+    assert payload["live_order_attempted"] is False
+
+
+def test_zero_cash_is_a_funding_shortfall_and_never_uses_buying_power() -> None:
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    payload = _build(
+        now=now,
+        cash=0.0,
+        preflight=_preflight(
+            ready=False,
+            blockers=["canary_settled_cash_not_broker_visible"],
+        ),
+    )
+
+    funding = payload["funding_and_settlement"]
+    assert payload["ok"] is True
+    assert payload["canary_ready"] is False
+    assert funding["canary_cap_shortfall_usd"] == 200.0
+    assert funding["candidate_order_cash_shortfall_usd"] == 29.03
+    assert funding["projected_settled_cash_after_fill_usd"] is None
+    assert funding["borrowing_or_buying_power_used"] is False
+    assert "candidate_order_not_fully_cash_funded" in payload["blockers"]
+
+
+def test_provider_negative_balance_stays_diagnostic_not_debt_or_cash() -> None:
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    payload = _build(now=now)
+    diagnostic = payload["account"]["provider_balance_diagnostic"]
+
+    assert diagnostic["provider_margin_balance"] == -2512.65
+    assert diagnostic["classified_as_debt"] is False
+    assert diagnostic["included_in_settled_cash"] is False
+    assert diagnostic["interest_bearing_borrowing_confirmed"] is False
+    assert payload["funding_and_settlement"]["settled_cash_broker_visible_usd"] == 200.0
+
+
+def test_candidate_buy_preserves_existing_covered_nvda_collateral() -> None:
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    payload = _build(now=now)
+    safety = payload["post_fill_projection"]["covered_position_safety"]
+    nvda = next(
+        row for row in safety["collateral_by_underlying"] if row["underlying"] == "NVDA"
+    )
+
+    assert safety["candidate_order_reduces_existing_collateral"] is False
+    assert safety["coverage_unchanged_by_candidate_buy"] is True
+    assert safety["uncovered_short_option_count"] == 0
+    assert nvda["reserved_equity_shares"] == 100.0
+    assert nvda["unencumbered_equity_shares"] == 0.1446
+
+
+def test_stale_provider_quote_blocks_without_turning_off_read_only_proof() -> None:
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    payload = _build(
+        now=now,
+        quote=_quote(now, observed_at=now - timedelta(minutes=5)),
+    )
+
+    assert payload["ok"] is True
+    assert payload["canary_ready"] is False
+    assert "schwab_quote_stale" in payload["blockers"]
+    assert "quote_is_stale" not in payload["blockers"]
+    assert "order_intent_risk_decision_not_approved" not in payload["blockers"]
+    assert payload["broker_network_read_only"] is True
+    assert payload["broker_mutation_attempted"] is False
+
+
+def test_wide_or_malformed_quote_fails_closed() -> None:
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    malformed = _quote(now)
+    malformed["quote_snapshot"]["bid_price"] = 28.0
+    malformed["quote_snapshot"]["ask_price"] = 29.0
+    payload = _build(now=now, quote=malformed)
+
+    assert payload["canary_ready"] is False
+    assert "schwab_quote_spread_not_canary_ready" in payload["blockers"]
+    assert payload["live_order_attempted"] is False
+
+
+def test_designated_account_reference_mismatch_blocks() -> None:
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    payload = build_dress_rehearsal_payload(
+        now=now,
+        plan=_plan(),
+        firewall=_firewall(),
+        candidate={"candidate_id": "pc-connected-rehearsal-test"},
+        account_study=_study(now),
+        account_study_sha256="a" * 64,
+        account_reference=ACCOUNT_REFERENCE,
+        expected_account_reference="different-designated-reference",
+        quote_result=_quote(now),
+        preflight_receipt=_preflight(ready=True),
+        account_refresh_summary={"ok": True, "account_count": 3, "position_rows": 7},
+        policy_sha256="c" * 64,
+        symbol="SCHD",
+    )
+
+    assert payload["canary_ready"] is False
+    assert "live_account_not_designated_canary_account" in payload["blockers"]
+    assert payload["account_reference_matches_designated_policy"] is False
+
+
+def test_artifact_never_contains_raw_account_reference_or_provider_payload() -> None:
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    payload = _build(now=now)
+    encoded = json.dumps(payload, sort_keys=True)
+
+    assert ACCOUNT_REFERENCE not in encoded
+    assert "raw_payload" not in encoded
+    assert payload["redaction"]["raw_account_hash_emitted"] is False
+    assert payload["redaction"]["provider_quote_payload_emitted"] is False
+
+
+def test_rehearsal_forces_every_live_runtime_switch_off() -> None:
+    assert READ_ONLY_ENVIRONMENT == {
+        "ALLOW_ORDER_EXECUTION": "0",
+        "MARKET_DATA_ONLY": "1",
+        "TOP_BOT_ENABLE_LIVE_EXECUTION": "0",
+        "EXECUTION_LANE_LIVE_ENABLED": "0",
+        "RUN_ALL_SLEEVES_WITH_LIVE_EXECUTOR": "0",
+    }
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "exit",
+        "timeout",
+        "stale",
+        "future",
+        "unchanged",
+        "risk_degraded",
+        "risk_degraded_stale",
+        "risk_exit",
+    ],
+)
+def test_technical_refresh_requires_new_owner_evidence(tmp_path, monkeypatch, failure):
+    monkeypatch.setattr(rehearsal, "PROJECT_ROOT", tmp_path)
+    health = tmp_path / "governance/health"
+    health.mkdir(parents=True)
+    names = {
+        "risk-service-boundary": "../risk/risk_service_boundary_latest.json",
+        "schwab-tax-ledger-refresh": "schwab_tax_ledger_refresh_latest.json",
+        "release-freeze": "release_freeze_guard_latest.json",
+        "live-order-ledger": "live_order_ledger_control_latest.json",
+    }
+    old = {
+        "timestamp_utc": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+        "ok": True,
+    }
+    for filename in names.values():
+        (health / filename).parent.mkdir(parents=True, exist_ok=True)
+        (health / filename).write_text(json.dumps(old))
+    calls = []
+
+    def run(command, **kwargs):
+        name = command[1]
+        calls.append(name)
+        assert command[2:] == (
+            ["--refresh-inputs", "--json"] if name == "risk-service-boundary" else ["--json"]
+        )
+        assert kwargs["timeout"] <= 180
+        assert kwargs["env"]["SCHWAB_AUTH_INTERACTIVE"] == "0"
+        for key, value in READ_ONLY_ENVIRONMENT.items():
+            assert kwargs["env"][key] == value
+        if name == "schwab-tax-ledger-refresh" and failure == "timeout":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        observed = datetime.now(timezone.utc)
+        blocked_risk = name == "risk-service-boundary" and failure in {
+            "risk_degraded",
+            "risk_degraded_stale",
+        }
+        if blocked_risk and failure == "risk_degraded_stale":
+            observed -= timedelta(days=1)
+        if name == "schwab-tax-ledger-refresh":
+            if failure == "stale":
+                observed -= timedelta(days=1)
+            if failure == "future":
+                observed += timedelta(days=1)
+        if name != "schwab-tax-ledger-refresh" or failure != "unchanged":
+            (health / names[name]).write_text(
+                json.dumps(
+                    {
+                        "timestamp_utc": observed.isoformat(),
+                        "ok": name != "release-freeze" and not blocked_risk,
+                        "overall_status": (
+                            "degraded"
+                            if name == "release-freeze" or blocked_risk
+                            else "ready"
+                        ),
+                    }
+                )
+            )
+        return SimpleNamespace(
+            returncode=(
+                2
+                if (name == "schwab-tax-ledger-refresh" and failure == "exit")
+                or blocked_risk
+                or (name == "risk-service-boundary" and failure == "risk_exit")
+                else 0
+            )
+        )
+
+    monkeypatch.setattr(rehearsal.subprocess, "run", run)
+    payload = rehearsal._refresh_technical_evidence()
+    assert calls == list(names)
+    assert payload["ok"] is (failure in {None, "risk_degraded"})
+    release_step = next(
+        row for row in payload["steps"] if row["name"] == "release_guard"
+    )
+    assert release_step["refreshed"] is True
+    assert release_step["source_ok"] is False
+    assert payload["live_execution_authority"] is False
+    if failure and failure.startswith("risk_"):
+        risk_step = next(
+            row for row in payload["steps"] if row["name"] == "risk_boundary"
+        )
+        assert risk_step["refreshed"] is (failure == "risk_degraded")
+        assert payload["blockers"] == (
+            []
+            if failure == "risk_degraded"
+            else ["technical_evidence_refresh_failed:risk_boundary"]
+        )
+        if failure != "risk_exit":
+            assert risk_step["source_ok"] is False
+    elif failure:
+        assert payload["blockers"] == ["technical_evidence_refresh_failed:tax_ledger"]
+
+
+def test_technical_refresh_rejects_redirected_route_before_read_or_launch(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(rehearsal, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        rehearsal,
+        "inspect_storage_path",
+        lambda *args, **kwargs: {"status": "external_path"},
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("must not access a rejected route")
+
+    monkeypatch.setattr(rehearsal, "file_sha256", forbidden)
+    monkeypatch.setattr(rehearsal.subprocess, "run", forbidden)
+    assert rehearsal._refresh_technical_evidence()["ok"] is False
+
+
+def test_refresh_failure_cannot_reuse_a_ready_preflight(tmp_path, monkeypatch):
+    sequence = []
+    monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "prior-value")
+
+    def technical_refresh():
+        sequence.append("technical")
+        assert os.environ["ALLOW_ORDER_EXECUTION"] == "0"
+        return {
+            "ok": False,
+            "blockers": ["technical_evidence_refresh_failed:tax_ledger"],
+        }
+
+    def account_refresh(**kwargs):
+        sequence.append("account")
+        return {"ok": True}
+
+    class ReadOnlyTrader:
+        def _fetch_live_quote(self, **kwargs):
+            sequence.append("quote")
+            return {}
+
+    captured = {}
+
+    def build(**kwargs):
+        receipt = kwargs["preflight_receipt"]
+        captured.update(receipt)
+        return {
+            "ok": True,
+            "canary_ready": receipt["ready"],
+            "blockers": receipt["blockers"],
+        }
+
+    monkeypatch.setattr(rehearsal, "_refresh_technical_evidence", technical_refresh)
+    monkeypatch.setattr(rehearsal, "_refresh_account_study", account_refresh)
+    monkeypatch.setattr(rehearsal, "_load_json", lambda path: {})
+    monkeypatch.setattr(
+        rehearsal,
+        "_resolve_account_references",
+        lambda **kwargs: ("test", "test", "test"),
+    )
+    monkeypatch.setattr(
+        rehearsal, "build_schwab_trader", lambda *args, **kwargs: ReadOnlyTrader()
+    )
+    monkeypatch.setattr(rehearsal, "_quiet_auth", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        rehearsal,
+        "evaluate_live_canary_preflight",
+        lambda *args, **kwargs: {
+            "ready": True,
+            "blockers": [],
+            "receipt_sha256": "old",
+        },
+    )
+    monkeypatch.setattr(rehearsal, "file_sha256", lambda path: "test")
+    monkeypatch.setattr(rehearsal, "build_dress_rehearsal_payload", build)
+    monkeypatch.setattr(
+        rehearsal, "safe_write_json_atomic", lambda *args, **kwargs: None
+    )
+    payload = rehearsal.run(
+        symbol="SCHD",
+        refresh_account=True,
+        quiet_auth=True,
+        out_path=tmp_path / "result.json",
+    )
+    assert sequence == ["technical", "account", "quote"]
+    assert payload["canary_ready"] is False
+    assert payload["blockers"] == ["technical_evidence_refresh_failed:tax_ledger"]
+    digest = captured.pop("receipt_sha256")
+    assert digest == rehearsal._payload_sha256(captured)
+    assert os.environ["ALLOW_ORDER_EXECUTION"] == "prior-value"

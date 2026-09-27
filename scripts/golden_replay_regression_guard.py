@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PACK_PATH = PROJECT_ROOT / "governance" / "replay" / "golden_replay_pack.json"
+DEFAULT_PACK_PATH = PROJECT_ROOT / "config" / "golden_replay_pack_v1.json"
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "golden_replay_regression_latest.json"
 DEFAULT_REPLAY_HASH_REGISTRY_PATH = PROJECT_ROOT / "governance" / "health" / "replay_hash_registry_guard_latest.json"
 
@@ -50,17 +51,40 @@ def build_payload(*, golden_pack: dict[str, Any], replay_hash_registry: dict[str
     failed_cases: list[str] = []
     case_names: list[str] = []
     covered_contracts: set[str] = set()
+    invalid_cases: list[str] = []
 
-    for raw_case in cases:
-        if not isinstance(raw_case, dict):
+    for index, raw_case in enumerate(cases):
+        if not isinstance(raw_case, dict) or not isinstance(raw_case.get("payload"), dict):
+            invalid_cases.append(f"case_{index}")
             continue
         name = str(raw_case.get("name") or "").strip() or f"case_{len(rows)}"
         payload = raw_case.get("payload") if isinstance(raw_case.get("payload"), dict) else {}
         expected_hash = str(raw_case.get("expected_hash") or "").strip().lower()
+        reference = raw_case.get("expected_canonical")
+        reference_valid = True
+        if "expected_canonical" in raw_case:
+            reference_valid = bool(
+                isinstance(reference, dict)
+                and isinstance(reference.get("results"), list)
+                and reference["results"]
+                and isinstance(reference.get("exposure_state"), dict)
+            )
+            if reference_valid:
+                # Hash the reviewed fixture, never the engine's current output.
+                reference_hash = hashlib.sha256(
+                    json.dumps(reference, sort_keys=True, ensure_ascii=True).encode("utf-8")
+                ).hexdigest()
+                reference_valid = not expected_hash or expected_hash == reference_hash
+                expected_hash = reference_hash
         expected_actions = raw_case.get("expected_actions") if isinstance(raw_case.get("expected_actions"), dict) else {}
         expected_results = raw_case.get("expected_results") if isinstance(raw_case.get("expected_results"), list) else []
         coverage = [str(item) for item in raw_case.get("coverage", []) if str(item or "").strip()]
-        replay = replay_src.run_replay(payload)
+        try:
+            replay = replay_src.run_replay(payload)
+            replay_error = ""
+        except Exception as exc:
+            replay = {}
+            replay_error = type(exc).__name__
         actual_actions = {
             str((row or {}).get("symbol") or "").strip(): str((row or {}).get("action_out") or "").strip()
             for row in (replay.get("canonical", {}).get("results") or [])
@@ -89,7 +113,12 @@ def build_payload(*, golden_pack: dict[str, Any], replay_hash_registry: dict[str
         ]
         result_sequence_match = bool(not normalized_expected_results or normalized_expected_results == actual_results)
         hash_match = bool(expected_hash and replay.get("replay_hash") == expected_hash)
-        case_ok = bool(hash_match and not mismatched_actions and result_sequence_match)
+        canonical_match = reference is None or reference == replay.get("canonical")
+        case_ok = bool(
+            reference_valid and canonical_match and hash_match
+            and not mismatched_actions and result_sequence_match and not replay_error
+            and actual_results
+        )
         if not case_ok:
             failed_cases.append(name)
         else:
@@ -102,6 +131,9 @@ def build_payload(*, golden_pack: dict[str, Any], replay_hash_registry: dict[str
                 "expected_hash": expected_hash,
                 "actual_hash": str(replay.get("replay_hash") or ""),
                 "hash_match": hash_match,
+                "reference_valid": reference_valid,
+                "canonical_match": canonical_match,
+                "replay_error": replay_error,
                 "expected_actions": expected_actions,
                 "actual_actions": actual_actions,
                 "mismatched_actions": mismatched_actions,
@@ -119,7 +151,7 @@ def build_payload(*, golden_pack: dict[str, Any], replay_hash_registry: dict[str
     duplicate_case_names = sorted({name for name in case_names if case_names.count(name) > 1})
     missing_coverage = sorted(required_coverage - covered_contracts)
     pack_contract_declared = bool(required_coverage)
-    pack_contract_valid = bool(not duplicate_case_names and not missing_coverage)
+    pack_contract_valid = bool(not duplicate_case_names and not missing_coverage and not invalid_cases)
     if rows:
         ok = bool(not failed_cases and pack_contract_valid)
         overall_status = "ready" if ok else "blocked"
@@ -129,8 +161,8 @@ def build_payload(*, golden_pack: dict[str, Any], replay_hash_registry: dict[str
             else "golden replay regression detected a hash or action mismatch"
         )
     else:
-        ok = registry_seed_ready
-        overall_status = "degraded" if registry_seed_ready else "blocked"
+        ok = registry_seed_ready and not invalid_cases
+        overall_status = "degraded" if ok else "blocked"
         summary = (
             "golden replay pack is not available yet, but replay hash registry coverage is healthy enough for seeded review"
             if registry_seed_ready
@@ -151,6 +183,9 @@ def build_payload(*, golden_pack: dict[str, Any], replay_hash_registry: dict[str
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "schema_version": 2,
+        "evidence_scope": "synthetic_deterministic_regression",
+        "strategy_profitability_proven": False,
+        "order_authorized": False,
         "ok": ok,
         "overall_status": overall_status,
         "seed_ready": registry_seed_ready,
@@ -160,6 +195,7 @@ def build_payload(*, golden_pack: dict[str, Any], replay_hash_registry: dict[str
         "failed_case_count": len(failed_cases),
         "failed_cases": failed_cases,
         "duplicate_case_names": duplicate_case_names,
+        "invalid_cases": invalid_cases,
         "required_coverage": sorted(required_coverage),
         "covered_contracts": sorted(covered_contracts),
         "missing_coverage": missing_coverage,
@@ -187,6 +223,10 @@ def main() -> int:
         golden_pack=_load_json(Path(args.pack_file)),
         replay_hash_registry=_load_json(Path(args.replay_hash_registry_file)),
     )
+    payload["source_artifacts"] = {
+        "golden_replay_pack": str(Path(args.pack_file).expanduser().resolve()),
+        "replay_hash_registry_guard": str(Path(args.replay_hash_registry_file).expanduser().resolve()),
+    }
     out_path = Path(args.out_file)
     write_payload(out_path, payload)
 

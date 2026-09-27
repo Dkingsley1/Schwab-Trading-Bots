@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "account_slots": [
+    {
+      "account_policy_key": "schwab_cash_account_1",
+      "account_label": "Cash Account 1",
+      "account_type": "cash",
+      "tax_treatment": "taxable",
+      "broker": "schwab",
+      "trading_access": "limited_margin",
+      "borrowing_allowed": false,
+      "cash_only_live_budget": true,
+      "existing_positions_authority": "observe_only",
+    "canary_candidate": true,
+    "canary_cap_usd": 200,
+    "allowed_live_routes": [
+      "dividend_liquid_etf_candidate_v1"
+    ],
+      "operator_verified": true,
+      "verification_source": "operator",
+      "env_names": [
+        "SCHWAB_CASH_ACCOUNT_1_HASH",
+        "SCHWAB_CASH_ACCOUNT_1_NUMBER"
+      ],
+      "bot_visible": true,
+      "auto_order_enabled": false,
+      "requires_operator_confirmation": true
+    }
+  ]
+}

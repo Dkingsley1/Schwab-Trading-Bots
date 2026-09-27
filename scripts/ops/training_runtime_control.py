@@ -13,6 +13,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "training_runtime_control_latest.json"
+DEFAULT_LABEL_DEPTH_DATASET_PATH = PROJECT_ROOT / "governance" / "training_labeling_intelligence" / "label_depth_training_dataset_latest.json"
 TRAINING_REPAIR_ACTIONS = {
     "rebuild_model_artifact",
     "calibrate_abstention_before_retry",
@@ -34,6 +35,7 @@ TRAINING_BATCH_PROFILES = {
 TRAINING_BATCH_MAX = 30
 TRAINING_TIMEOUT_FALLBACK_WINDOW_MINUTES = 24 * 60
 TRAINING_TARGET_COOLDOWN_MINUTES = 24 * 60
+LABEL_DEPTH_MIN_SCHEMA_VERSION = 2
 STORAGE_OVERRIDE_MAX_AGE_SECONDS = 900.0
 SUPPORT_MAINTENANCE_FREEZE_REASON = "support_maintenance_frozen_for_mac_fluidity"
 CREATIVE_SESSION_ACTIVE_REASON = "creative_session_active"
@@ -43,6 +45,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.ml_backend_contract import resolve_backend_contract
 from core.runtime_python import resolve_runtime_python
+from scripts.ops.long_runtime_common import evidence_freshness, governor_observation_contract
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -67,6 +70,10 @@ def _safe_int(raw: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def _parse_ts(raw: Any) -> datetime | None:
     text = str(raw or "").strip().replace("Z", "+00:00")
     if not text:
@@ -84,7 +91,8 @@ def _age_minutes(raw: Any) -> float | None:
     ts = _parse_ts(raw)
     if ts is None:
         return None
-    return max((datetime.now(timezone.utc) - ts).total_seconds() / 60.0, 0.0)
+    age = (datetime.now(timezone.utc) - ts).total_seconds() / 60.0
+    return age if age >= 0 else None
 
 
 def _build_training_evidence_gate(project_root: Path, *, max_age_minutes: int) -> dict[str, Any]:
@@ -299,6 +307,135 @@ def _apply_training_target_cooldown(
         "and targets outside the successful-run cooldown"
     )
     return out
+
+
+def _label_depth_item_safe(item: dict[str, Any]) -> tuple[bool, list[str]]:
+    blockers: list[str] = []
+    gate = item.get("training_gate_contract") if isinstance(item.get("training_gate_contract"), dict) else {}
+    quality = item.get("label_quality_contract") if isinstance(item.get("label_quality_contract"), dict) else {}
+    required_join_mode = str(
+        item.get("required_join_mode")
+        or (quality.get("point_in_time_join") if isinstance(quality.get("point_in_time_join"), dict) else {}).get("required_join_mode")
+        or ""
+    ).strip()
+    if required_join_mode != "point_in_time_only":
+        blockers.append("label_depth_join_mode_not_point_in_time")
+    if bool(gate.get("counts_as_real_training_samples", True)):
+        blockers.append("label_depth_manifest_counts_as_real_samples")
+    if bool(gate.get("estimated_capacity_is_advisory_only", False)) is not True:
+        blockers.append("label_depth_estimated_capacity_not_advisory")
+    for field in ("live_execution_authority", "paper_execution_authority", "promotion_authority"):
+        if bool(gate.get(field, False)):
+            blockers.append(f"label_depth_{field}_leaked")
+    if not bool(gate.get("materialized_depth_ready", False)):
+        blockers.append("label_depth_materialized_depth_not_ready")
+    if not bool(gate.get("training_hardened_ready", False)):
+        blockers.append("label_depth_training_hardened_not_ready")
+    if _safe_int(gate.get("blocking_repair_card_count"), 0) > 0:
+        blockers.append("label_depth_blocking_repair_cards_present")
+    if _safe_int(gate.get("failing_hardening_check_count"), 0) > 0:
+        blockers.append("label_depth_hardening_checks_failing")
+    return (not blockers, _ordered_unique(blockers))
+
+
+def _build_label_depth_training_gate(
+    project_root: Path,
+    candidate_selector: dict[str, Any],
+    *,
+    max_age_minutes: int,
+) -> dict[str, Any]:
+    path = project_root / "governance" / "training_labeling_intelligence" / "label_depth_training_dataset_latest.json"
+    if not path.is_file():
+        return {
+            "active": False,
+            "ready": True,
+            "mode": "not_configured",
+            "blockers": [],
+            "launch_blockers": [],
+            "selected_ready_bot_ids": [],
+            "selected_blocked_bot_ids": [],
+            "policy": "label-depth manifests are enforced when configured",
+        }
+    payload = _load_json(path)
+    age_minutes = _age_minutes(payload.get("timestamp_utc"))
+    fresh = bool(age_minutes is not None and age_minutes <= max(int(max_age_minutes), 1))
+    schema_version = _safe_int(payload.get("schema_version"), 0)
+    contract = payload.get("contract") if isinstance(payload.get("contract"), dict) else {}
+    contract_blockers: list[str] = []
+    if str(contract.get("required_join_mode") or "") != "point_in_time_only":
+        contract_blockers.append("label_depth_contract_join_mode_not_point_in_time")
+    if bool(contract.get("counts_as_real_training_samples", True)):
+        contract_blockers.append("label_depth_contract_counts_as_real_samples")
+    if bool(contract.get("estimated_capacity_is_advisory_only", False)) is not True:
+        contract_blockers.append("label_depth_contract_estimated_capacity_not_advisory")
+    for field in ("live_execution_authority", "paper_execution_authority", "promotion_authority"):
+        if bool(contract.get(field, False)):
+            contract_blockers.append(f"label_depth_contract_{field}_leaked")
+
+    work_items = [
+        row
+        for row in _as_list(payload.get("work_items"))
+        if isinstance(row, dict) and str(row.get("bot_id") or "").strip()
+    ]
+    by_bot = {str(row.get("bot_id") or "").strip().lower(): row for row in work_items}
+    selected_ids = [
+        str(bot_id or "").strip().lower()
+        for bot_id in candidate_selector.get("selected_bot_ids") or []
+        if str(bot_id or "").strip()
+    ]
+    selector_has_candidates = bool(
+        candidate_selector.get("authoritative", False)
+        and _safe_int(candidate_selector.get("selected_count"), 0) > 0
+        and selected_ids
+    )
+    selected_ready: list[str] = []
+    selected_blocked: list[dict[str, Any]] = []
+    launch_blockers: list[str] = []
+    if selector_has_candidates:
+        if not fresh:
+            launch_blockers.append("label_depth_manifest_not_fresh")
+        if schema_version < LABEL_DEPTH_MIN_SCHEMA_VERSION:
+            launch_blockers.append("label_depth_manifest_schema_too_old")
+        for bot_id in selected_ids:
+            item = by_bot.get(bot_id)
+            if not item:
+                selected_blocked.append({"bot_id": bot_id, "blockers": ["label_depth_work_item_missing"]})
+                continue
+            safe, blockers = _label_depth_item_safe(item)
+            if safe:
+                selected_ready.append(bot_id)
+            else:
+                selected_blocked.append({"bot_id": bot_id, "blockers": blockers})
+        if selected_blocked:
+            launch_blockers.append("label_depth_selected_candidates_not_hardened")
+    launch_blockers.extend(contract_blockers)
+
+    return {
+        "active": True,
+        "ready": not launch_blockers,
+        "mode": "label_depth_manifest_training_gate_v1",
+        "blockers": _ordered_unique(launch_blockers),
+        "launch_blockers": _ordered_unique(launch_blockers),
+        "manifest_path": str(path),
+        "fresh": fresh,
+        "age_minutes": round(float(age_minutes), 3) if age_minutes is not None else None,
+        "maximum_age_minutes": max(int(max_age_minutes), 1),
+        "schema_version": schema_version,
+        "minimum_schema_version": LABEL_DEPTH_MIN_SCHEMA_VERSION,
+        "contract_blockers": _ordered_unique(contract_blockers),
+        "work_item_count": len(work_items),
+        "selected_count": len(selected_ids),
+        "selected_ready_count": len(selected_ready),
+        "selected_ready_bot_ids": selected_ready,
+        "selected_blocked_count": len(selected_blocked),
+        "selected_blocked_bot_ids": [str(row.get("bot_id") or "") for row in selected_blocked],
+        "selected_blocked_candidates": selected_blocked[:20],
+        "summary": payload.get("summary") if isinstance(payload.get("summary"), dict) else {},
+        "policy": (
+            "selector-approved training candidates must have a fresh label-depth v2 work item, "
+            "materialized real depth, all launch-blocking hardening checks ready, and no manifest execution authority"
+        ),
+    }
 
 
 def _ordered_unique(items: list[str]) -> list[str]:
@@ -1438,7 +1575,17 @@ def _build_host_training_headroom_gate(
         ),
         reentry_stages[0],
     )
+    observation = governor_observation_contract({
+        "memory_intelligence": (memory_intelligence, 180.0),
+        "autonomic_governor": (autonomic_governor, 900.0),
+    })
+    if not observation["input_evidence_ready"]:
+        blockers.append("host_governor_evidence_requires_refresh")
+        batch_cap = 0
+        status = "blocked"
+        command = ["./scripts/ops/opsctl.sh", "governor-refresh", "--json"]
     return {
+        **observation,
         "status": status,
         "safe_for_training": not blockers,
         "launch_blockers": _ordered_unique(blockers),
@@ -1475,12 +1622,16 @@ def _build_host_training_headroom_gate(
 
 
 def _build_resource_guard_training_gate(project_root: Path, resource_guard: dict[str, Any]) -> dict[str, Any]:
+    evidence = evidence_freshness(resource_guard, max_age_minutes=2.0)
     raw_ok = bool(resource_guard.get("resource_guard_ok", resource_guard.get("ok", True)))
     memory_state = str(resource_guard.get("memory_pressure_state") or "unknown").strip().lower()
     reasons = [str(item).strip() for item in resource_guard.get("resource_guard_reasons") or [] if str(item).strip()]
     advisory_freeze = bool((not raw_ok) and memory_state == "green" and _training_advisory_resource_guard_only(reasons))
     training_ok = bool(raw_ok or advisory_freeze)
     blockers: list[str] = []
+    if not evidence["fresh"]:
+        blockers.append("resource_guard_evidence_requires_refresh")
+        training_ok = False
     if not training_ok or memory_state not in {"green", "unknown"}:
         blockers.append("resource_guard_not_green")
     command = []
@@ -1494,6 +1645,7 @@ def _build_resource_guard_training_gate(project_root: Path, resource_guard: dict
         ]
     return {
         "status": "ready" if not blockers else "blocked",
+        "evidence": evidence,
         "ok": training_ok,
         "raw_ok": raw_ok,
         "training_ok": training_ok,
@@ -1557,6 +1709,7 @@ def _build_training_launch_contract(
     fresh_minutes: int,
     batch_limit: int,
     training_evidence_gate: dict[str, Any] | None = None,
+    label_depth_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     backpressure_severe = bool(backpressure_gate.get("severe", False))
     backpressure_cooling_down = bool(backpressure_gate.get("cooling_down", False))
@@ -1592,6 +1745,36 @@ def _build_training_launch_contract(
     else:
         canary_pool = unfiltered_canary_pool
         eligibility_blocked_targets = []
+    label_depth_gate = label_depth_gate or {"active": False, "ready": True, "launch_blockers": [], "selected_ready_bot_ids": []}
+    label_depth_blocked_targets: list[dict[str, Any]] = []
+    if (
+        bool(label_depth_gate.get("active", False))
+        and selector_authoritative
+        and _safe_int(candidate_selector.get("selected_count"), 0) > 0
+    ):
+        label_ready_ids = {
+            str(bot_id or "").strip().lower()
+            for bot_id in label_depth_gate.get("selected_ready_bot_ids") or []
+            if str(bot_id or "").strip()
+        }
+        label_depth_blocked_by_id = {
+            str(row.get("bot_id") or "").strip().lower(): row
+            for row in label_depth_gate.get("selected_blocked_candidates") or []
+            if isinstance(row, dict) and str(row.get("bot_id") or "").strip()
+        }
+        filtered_canary_pool = []
+        for row in canary_pool:
+            bot_id = str(row.get("bot_id") or "").strip().lower()
+            if bot_id in label_ready_ids:
+                filtered_canary_pool.append(row)
+            else:
+                label_depth_blocked_targets.append(
+                    {
+                        **row,
+                        "label_depth_blockers": list(label_depth_blocked_by_id.get(bot_id, {}).get("blockers") or ["label_depth_work_item_not_training_hardened"]),
+                    }
+                )
+        canary_pool = filtered_canary_pool
     requested_batch = min(max(int(batch_limit), 1), TRAINING_BATCH_MAX)
     selected_profile = str(
         host_headroom_gate.get("selected_training_profile")
@@ -1616,8 +1799,14 @@ def _build_training_launch_contract(
         launch_blockers.append("training_candidate_selector_not_fresh")
     elif selector_authoritative and _safe_int(candidate_selector.get("selected_count"), 0) <= 0:
         launch_blockers.append("no_bot_needs_training_candidates")
-    elif selector_authoritative and not canary_pool:
+    if selector_authoritative and _safe_int(candidate_selector.get("selected_count"), 0) > 0 and not canary_pool:
         launch_blockers.append("bot_needs_training_candidates_not_runtime_ready")
+    if label_depth_blocked_targets:
+        launch_blockers.append("label_depth_selected_candidates_not_hardened")
+    for blocker in label_depth_gate.get("launch_blockers") or []:
+        text = str(blocker or "").strip()
+        if text:
+            launch_blockers.append(text)
     if not resource_guard_ok or memory_pressure_state not in {"green", "unknown"}:
         launch_blockers.append("resource_guard_not_green")
         prep_blockers.append("resource_guard_not_green")
@@ -1745,6 +1934,9 @@ def _build_training_launch_contract(
         "unfiltered_canary_pool_size": len(unfiltered_canary_pool),
         "eligibility_blocked_target_count": len(eligibility_blocked_targets),
         "eligibility_blocked_targets": eligibility_blocked_targets[: max(int(batch_limit), 1)],
+        "label_depth_training_gate": label_depth_gate,
+        "label_depth_blocked_target_count": len(label_depth_blocked_targets),
+        "label_depth_blocked_targets": label_depth_blocked_targets[: max(int(batch_limit), 1)],
         "training_candidate_selector": candidate_selector,
         "training_evidence_gate": evidence_gate,
         "available_repair_first_pool_size": len(repair_first),
@@ -1830,6 +2022,11 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
             0,
         ),
     )
+    label_depth_training_gate = _build_label_depth_training_gate(
+        project_root,
+        training_candidate_selector,
+        max_age_minutes=max(int(fresh_minutes), 1),
+    )
     training_evidence_gate = _build_training_evidence_gate(
         project_root,
         max_age_minutes=max(int(fresh_minutes), 1),
@@ -1914,6 +2111,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         fresh_minutes=fresh_minutes,
         batch_limit=limit,
         training_evidence_gate=training_evidence_gate,
+        label_depth_gate=label_depth_training_gate,
     )
 
     training_launch_allowed = bool(training_launch_contract.get("launch_allowed", False))
@@ -1940,6 +2138,12 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
     if bool(training_candidate_selector.get("active", False)) and not bool(training_candidate_selector.get("authoritative", False)):
         overall_status = "blocked"
     if bool(training_evidence_gate.get("active", False)) and not bool(training_evidence_gate.get("ready", False)):
+        overall_status = "blocked"
+    if (
+        bool(label_depth_training_gate.get("active", False))
+        and not bool(label_depth_training_gate.get("ready", True))
+        and _safe_int(training_candidate_selector.get("selected_count"), 0) > 0
+    ):
         overall_status = "blocked"
     elif (
         bool(training_candidate_selector.get("authoritative", False))
@@ -1977,6 +2181,11 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         recommended_actions.append(
             "refresh the ordered training evidence chain before launching a canary: "
             + ", ".join(str(item) for item in training_evidence_gate.get("blockers") or [])
+        )
+    if label_depth_training_gate.get("launch_blockers"):
+        recommended_actions.append(
+            "materialize and harden label depth before launching selector candidates: "
+            + ", ".join(str(item) for item in label_depth_training_gate.get("launch_blockers") or [])
         )
     selector_status = str(training_candidate_selector.get("status") or "")
     if selector_status == "stale":
@@ -2085,6 +2294,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, fresh_minutes: int = 360
         ],
         "training_quality_score": round(_safe_float(training_quality.get("training_quality_score"), 0.0), 3),
         "training_evidence_gate": training_evidence_gate,
+        "label_depth_training_gate": label_depth_training_gate,
         "training_stage_reconciliation": {
             "collection_threshold_ready_count": _safe_int(
                 collection_rollup.get("collection_threshold_ready_count"),

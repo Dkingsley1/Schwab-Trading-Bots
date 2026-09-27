@@ -2,7 +2,35 @@ from __future__ import annotations
 
 import json
 
-from scripts.ops.schwab_tax_ledger_refresh import normalize_transaction
+from scripts.ops.schwab_tax_ledger_refresh import (
+    _account_alias_tax_treatments,
+    normalize_transaction,
+)
+
+
+def test_account_alias_tax_treatments_route_redacted_schwab_tails() -> None:
+    treatments = _account_alias_tax_treatments(
+        {
+            "schema_version": 2,
+            "schwab_accounts": {
+                "tail:1111": {
+                    "account_policy_key": "taxable_cash",
+                    "operator_account_label": "Cash Account",
+                    "tax_treatment": "taxable",
+                },
+                "tail:2222": {
+                    "account_policy_key": "roth_primary",
+                    "operator_account_label": "Roth IRA",
+                    "tax_treatment": "tax_advantaged",
+                },
+            },
+        }
+    )
+
+    assert treatments["1111"] == "taxable"
+    assert treatments["taxable_cash"] == "taxable"
+    assert treatments["2222"] == "tax_advantaged"
+    assert treatments["Roth IRA"] == "tax_advantaged"
 
 
 def test_trade_uses_signed_security_quantity_and_drops_currency_leg() -> None:

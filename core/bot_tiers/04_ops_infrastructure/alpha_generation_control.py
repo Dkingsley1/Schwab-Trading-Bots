@@ -1,0 +1,1 @@
+../../../scripts/ops/alpha_generation_control.py

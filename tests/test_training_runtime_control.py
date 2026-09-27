@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import pytest
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,12 +15,25 @@ from scripts.ops import runtime_snapshot_cache_control as snapshot_cache_src
 
 
 def _write_json(path: Path, payload: dict) -> None:
+    payload = {"timestamp_utc": _fresh_ts(), **payload}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
 def _fresh_ts() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@pytest.fixture(autouse=True)
+def fresh_host_evidence(tmp_path: Path) -> None:
+    # These tests isolate training behavior with measured host prerequisites.
+    health = tmp_path / "project" / "governance" / "health"
+    _write_json(health / "memory_pressure_intelligence_latest.json", {
+        "classification": {"status": "clear"}, "reopen_gate": {"safe_for_training": True},
+    })
+    _write_json(health / "autonomic_resource_governor_latest.json", {
+        "budgets": {"training": {"allowed": True}},
+    })
 
 
 def test_training_evidence_gate_requires_one_fresh_epoch_in_production(tmp_path: Path) -> None:
@@ -1471,6 +1485,93 @@ def test_training_runtime_launch_intersects_fresh_bot_needs_selector(tmp_path: P
     assert contract["eligibility_blocked_target_count"] == 1
     assert contract["eligibility_blocked_targets"][0]["bot_id"] == blocked_bot
     assert contract["recommended_retrain_command"][3] == selected_bot
+
+
+def test_training_runtime_blocks_selector_candidate_without_label_depth_hardening(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    health = project_root / "governance" / "health"
+    label_root = project_root / "governance" / "training_labeling_intelligence"
+    selected_bot = "brain_refinery_v58_ensemble_diversity_controller"
+    _write_json(health / "runtime_training_snapshot_latest.json", {"timestamp_utc": _fresh_ts(), "row_count": 100, "sequence_count": 12})
+    _write_json(health / "training_quality_control_latest.json", {"overall_status": "ready", "training_quality_score": 91.0, "top_priorities": []})
+    _write_json(health / "retrain_scorecard_latest.json", {"retry_pack": {"command": []}})
+    _write_json(health / "training_success_latest.json", {"confirmed_training_success": True, "failure_details": []})
+    _write_json(health / "resource_guard_latest.json", {"resource_guard_ok": True, "memory_pressure_state": "green"})
+    _write_json(health / "health_gates_latest.json", {"recommended_operating_mode": "normal", "inputs": {"backpressure_overload_severe": False}})
+    _write_json(
+        health / "bot_needs_intelligence_latest.json",
+        {
+            "timestamp_utc": _fresh_ts(),
+            "training_candidate_selector": {
+                "active": True,
+                "mode": "training_candidate_selector_v2",
+                "selected_candidates": [{"bot_id": selected_bot, "priority": 82.0}],
+            },
+        },
+    )
+    _write_json(
+        label_root / "label_depth_training_dataset_latest.json",
+        {
+            "timestamp_utc": _fresh_ts(),
+            "schema_version": 2,
+            "contract": {
+                "required_join_mode": "point_in_time_only",
+                "counts_as_real_training_samples": False,
+                "estimated_capacity_is_advisory_only": True,
+                "live_execution_authority": False,
+                "paper_execution_authority": False,
+                "promotion_authority": False,
+            },
+            "work_items": [
+                {
+                    "bot_id": selected_bot,
+                    "required_join_mode": "point_in_time_only",
+                    "training_gate_contract": {
+                        "counts_as_real_training_samples": False,
+                        "estimated_capacity_is_advisory_only": True,
+                        "materialized_depth_ready": True,
+                        "training_hardened_ready": False,
+                        "blocking_repair_card_count": 1,
+                        "failing_hardening_check_count": 1,
+                        "live_execution_authority": False,
+                        "paper_execution_authority": False,
+                        "promotion_authority": False,
+                    },
+                }
+            ],
+        },
+    )
+
+    runtime_python = project_root / ".venv312" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True, exist_ok=True)
+    runtime_python.write_text("", encoding="utf-8")
+    monkeypatch.setattr(src, "resolve_runtime_python", lambda _root: runtime_python)
+
+    class _Proc:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.stdout = json.dumps(
+                {
+                    "python": "3.12.12",
+                    "platform": "macOS",
+                    "modules": {"mlx": True, "torch": True, "onnxruntime": False, "tensorflow": False, "jax": False},
+                }
+            )
+            self.stderr = ""
+
+    monkeypatch.setattr(src.subprocess, "run", lambda *args, **kwargs: _Proc())
+
+    payload = src.build_payload(project_root)
+    contract = payload["training_launch_contract"]
+
+    assert payload["overall_status"] == "blocked"
+    assert payload["launch_allowed"] is False
+    assert payload["label_depth_training_gate"]["active"] is True
+    assert payload["label_depth_training_gate"]["selected_blocked_bot_ids"] == [selected_bot.lower()]
+    assert contract["label_depth_blocked_target_count"] == 1
+    assert contract["recommended_batch_size"] == 0
+    assert "label_depth_selected_candidates_not_hardened" in contract["launch_blockers"]
+    assert "label_depth_hardening_checks_failing" in contract["label_depth_blocked_targets"][0]["label_depth_blockers"]
 
 
 def test_training_runtime_cools_down_recently_trained_selector_target() -> None:

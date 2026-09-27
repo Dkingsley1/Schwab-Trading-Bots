@@ -201,6 +201,7 @@ def test_super_drainer_surfaces_snapshot_lag_when_writer_merges_but_pending_snap
     def _fake_run(cmd: list[str], *, cwd: Path, payload_path: Path | None = None, timeout_sec: int) -> dict:
         payload = {
             "overall_status": "applied",
+            "summary": {"writer_merged_rows_delta": 12000},
             "writer_state_after_wait": {"merged_rows_this_cycle": 12000},
         }
         return {"cmd": cmd, "rc": 0, "duration_ms": 5.0, "payload": payload, "stdout_tail": "", "stderr_tail": "", "timed_out": False}
@@ -248,6 +249,81 @@ def test_super_drainer_stops_when_wave_makes_no_progress(tmp_path: Path, monkeyp
     assert payload["summary"]["waves_run"] == 1
     assert payload["summary"]["any_progress"] is False
     assert payload["stop_reason"] == "progress_stalled"
+
+
+def test_super_drainer_successful_noop_stops_after_one_wave(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        src,
+        "_storage_snapshot",
+        lambda root: {"total_pending_lines": 42000, "core_pending_lines": 42000},
+    )
+    monkeypatch.setattr(
+        src.drainer_src,
+        "build_payload",
+        lambda *args, **kwargs: _ready_drainer_payload(),
+    )
+    monkeypatch.setattr(
+        src.coordinator_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "ready",
+            "actionable": True,
+            "live_drainer_ready": True,
+        },
+    )
+    monkeypatch.setattr(
+        src.coordinator_src,
+        "writer_state_snapshot",
+        lambda *args, **kwargs: {"active": False},
+    )
+    for status in (
+        "applied",
+        "applied_with_followups",
+        "progressing_waiting_for_writer",
+    ):
+        payload = {
+            "overall_status": status,
+            "summary": {"writer_merged_rows_delta": 0, "partial_progress": True},
+            "writer_state_before": {"merged_rows_this_cycle": 99999},
+            "writer_state_after_wait": {"merged_rows_this_cycle": 99999},
+        }
+        monkeypatch.setattr(
+            src,
+            "_run_json_command",
+            lambda cmd, **kwargs: {
+                "cmd": cmd,
+                "rc": 0,
+                "payload": payload,
+                "timed_out": False,
+            },
+        )
+        result = src.build_payload(
+            tmp_path, apply=True, max_waves=5, target_pending_lines=5000
+        )
+        assert result["stop_reason"] == "progress_stalled"
+        assert result["summary"]["waves_run"] == 1
+        assert result["summary"]["any_progress"] is False
+        assert result["overall_status"] == "stalled"
+
+
+def test_super_drainer_uses_wave_rows_and_deltas_not_stale_cycle_totals() -> None:
+    flat = {"total_pending_lines": 42000}
+    stale = {
+        "writer_state_before": {"merged_rows_this_cycle": 99999},
+        "writer_state_after_wait": {"merged_rows_this_cycle": 99999},
+    }
+    assert not src._wave_progress(flat, flat, stale, min_progress_rows=1)[
+        "progress_observed"
+    ]
+    measured = {**stale, "drain_effectiveness": {"merged_rows": 32}}
+    progress = src._wave_progress(flat, flat, measured, min_progress_rows=10)
+    assert progress["progress_observed"]
+    assert progress["merged_rows_observed"] == 32
+    assert src._wave_progress(
+        flat, {"total_pending_lines": 41000}, stale, min_progress_rows=10
+    )["progress_observed"]
 
 
 def test_super_drainer_writes_memory_feedback(tmp_path: Path) -> None:

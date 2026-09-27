@@ -14,6 +14,11 @@ fi
 
 export BOT_RUNTIME_PROFILE="${BOT_RUNTIME_PROFILE:-$PROFILE}"
 
+# Keep bounded observation available while expensive repair admission is deferred.
+"$PROJECT_ROOT/scripts/ops/run_guarded_maintenance.sh" infrastructure_observe \
+  "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/infrastructure_autofix_bot.py" \
+  --timeout-sec 45 --json || true
+
 "$PROJECT_ROOT/scripts/ops/run_guarded_maintenance.sh" infrastructure_autofix \
   "$PYTHON_BIN" "$PROJECT_ROOT/scripts/ops/infrastructure_autofix_bot.py" \
   --apply \

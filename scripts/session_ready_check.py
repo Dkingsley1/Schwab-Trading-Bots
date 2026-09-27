@@ -12,6 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from core.runtime_maintenance import maintenance_hold_snapshot
+from core.sqlite_runtime import connect_sqlite
 DB_PATH = PROJECT_ROOT / "data" / "jsonl_link.sqlite3"
 DEFAULT_EXPECTED_PROFILES = ["conservative", "aggressive"]
 MAX_HEALTH_JSON_BYTES = 1_000_000
@@ -332,11 +336,15 @@ def _safe_float(raw: object, default: float = 0.0) -> float:
 
 def _sql_writable() -> bool:
     try:
+        if maintenance_hold_snapshot(PROJECT_ROOT).get("active"):
+            return False
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         if DB_PATH.exists():
-            conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=2.0)
-            conn.execute("PRAGMA schema_version").fetchone()
-            conn.close()
+            conn = connect_sqlite(DB_PATH, project_root=PROJECT_ROOT, readonly=True, timeout_seconds=2.0)
+            try:
+                conn.execute("PRAGMA schema_version").fetchone()
+            finally:
+                conn.close()
         probe_path = DB_PATH.parent / ".session_ready_write_probe"
         probe_path.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
         probe_path.unlink(missing_ok=True)

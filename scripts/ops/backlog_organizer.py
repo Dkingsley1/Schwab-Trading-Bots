@@ -8,10 +8,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "backlog_organizer_latest.json"
-DEFAULT_STATE_PATH = PROJECT_ROOT / "governance" / "backlog" / "backlog_organizer_allocation_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "backlog_organizer_latest.json"
+)
+DEFAULT_STATE_PATH = (
+    PROJECT_ROOT / "governance" / "backlog" / "backlog_organizer_allocation_latest.json"
+)
+GUARDED_PAPER_VISIBILITY_ADVISORIES = {
+    "retrain_artifact_freshness_not_ok",
+    "teacher_quality_guard_blocked",
+    "training_quality_control_blocked",
+}
 
 
 def _utc_now() -> str:
@@ -41,7 +49,11 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 
 def _status(payload: dict[str, Any], default: str = "missing") -> str:
-    text = str(payload.get("overall_status") or payload.get("status") or "").strip().lower()
+    text = (
+        str(payload.get("overall_status") or payload.get("status") or "")
+        .strip()
+        .lower()
+    )
     if not text and isinstance(payload.get("overall"), dict):
         text = str(payload["overall"].get("status") or "").strip().lower()
     return text or default
@@ -49,12 +61,26 @@ def _status(payload: dict[str, Any], default: str = "missing") -> str:
 
 def _guarded_paper_soak_green(health_root: Path) -> bool:
     health_fast = _load_json(health_root / "health_fast_latest.json")
-    operational = health_fast.get("operational_readiness") if isinstance(health_fast.get("operational_readiness"), dict) else {}
-    guarded_paper = operational.get("guarded_paper") if isinstance(operational.get("guarded_paper"), dict) else {}
-    live_execution = operational.get("live_execution") if isinstance(operational.get("live_execution"), dict) else {}
+    operational = (
+        health_fast.get("operational_readiness")
+        if isinstance(health_fast.get("operational_readiness"), dict)
+        else {}
+    )
+    guarded_paper = (
+        operational.get("guarded_paper")
+        if isinstance(operational.get("guarded_paper"), dict)
+        else {}
+    )
+    live_execution = (
+        operational.get("live_execution")
+        if isinstance(operational.get("live_execution"), dict)
+        else {}
+    )
     soak = _load_json(health_root / "unattended_soak_readiness_latest.json")
     paper_guard = _load_json(health_root / "runtime_paper_regression_guard_latest.json")
-    guarded_ready = bool(guarded_paper.get("ok", False)) and str(guarded_paper.get("status") or "").strip().lower() in {
+    guarded_ready = bool(guarded_paper.get("ok", False)) and str(
+        guarded_paper.get("status") or ""
+    ).strip().lower() in {
         "ready",
         "armed",
         "guarded_ready",
@@ -65,29 +91,62 @@ def _guarded_paper_soak_green(health_root: Path) -> bool:
         "read_only",
         "disabled",
     }
-    soak_ready = bool(soak.get("ok", False)) and str(soak.get("overall_status") or "").strip().lower() == "ready"
-    paper_guard_ready = bool(paper_guard.get("ok", False)) and str(paper_guard.get("overall_status") or "").strip().lower() == "ready"
+    soak_ready = (
+        bool(soak.get("ok", False))
+        and str(soak.get("overall_status") or "").strip().lower() == "ready"
+    )
+    paper_guard_ready = (
+        bool(paper_guard.get("ok", False))
+        and str(paper_guard.get("overall_status") or "").strip().lower() == "ready"
+    )
     operational_health_ready = bool(
         health_fast.get("strict_all_clear", False)
         or (
             bool(health_fast.get("ok", False))
-            and str(health_fast.get("overall_status") or "").strip().lower() in {"ready", "guarded_ready"}
+            and str(health_fast.get("overall_status") or "").strip().lower()
+            in {"ready", "guarded_ready"}
         )
     )
-    return bool(operational_health_ready and guarded_ready and live_locked and soak_ready and paper_guard_ready)
+    return bool(
+        operational_health_ready
+        and guarded_ready
+        and live_locked
+        and soak_ready
+        and paper_guard_ready
+    )
 
 
-def _bounded_storage_soak_backlog(storage: dict[str, Any], *, total_pending: int, estimated_drain_minutes: float) -> bool:
-    backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
-    raw_live = backpressure.get("raw_live") if isinstance(backpressure.get("raw_live"), dict) else {}
-    effective_raw_live = backpressure.get("effective_raw_live") if isinstance(backpressure.get("effective_raw_live"), dict) else {}
+def _bounded_storage_soak_backlog(
+    storage: dict[str, Any], *, total_pending: int, estimated_drain_minutes: float
+) -> bool:
+    backpressure = (
+        storage.get("backpressure")
+        if isinstance(storage.get("backpressure"), dict)
+        else {}
+    )
+    raw_live = (
+        backpressure.get("raw_live")
+        if isinstance(backpressure.get("raw_live"), dict)
+        else {}
+    )
+    effective_raw_live = (
+        backpressure.get("effective_raw_live")
+        if isinstance(backpressure.get("effective_raw_live"), dict)
+        else {}
+    )
     raw = effective_raw_live or raw_live
     core_pending = _safe_int(raw.get("core_pending_lines"), 0)
     raw_total = max(_safe_int(raw.get("total_pending_lines"), 0), total_pending)
     oldest_age = _safe_float(raw.get("oldest_pending_age_seconds"), 0.0)
     pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
-    contract = storage.get("continuous_run_soak_contract") if isinstance(storage.get("continuous_run_soak_contract"), dict) else {}
-    soak_ready = bool(contract.get("soak_ready", False)) and not list(contract.get("blockers") or [])
+    contract = (
+        storage.get("continuous_run_soak_contract")
+        if isinstance(storage.get("continuous_run_soak_contract"), dict)
+        else {}
+    )
+    soak_ready = bool(contract.get("soak_ready", False)) and not list(
+        contract.get("blockers") or []
+    )
     low_pressure_bounded = bool(
         _status(storage) == "ready"
         and pressure_index <= 0.50
@@ -104,7 +163,10 @@ def _bounded_storage_soak_backlog(storage: dict[str, Any], *, total_pending: int
         and raw_total <= 5_000
         and oldest_age <= 300.0
     )
-    return bool((low_pressure_bounded or steady_state_bounded) and (soak_ready or estimated_drain_minutes >= 0.0))
+    return bool(
+        (low_pressure_bounded or steady_state_bounded)
+        and (soak_ready or estimated_drain_minutes >= 0.0)
+    )
 
 
 def _ok(payload: dict[str, Any]) -> bool | None:
@@ -143,16 +205,23 @@ def _lane(
 
 def _registry_summary(project_root: Path) -> dict[str, Any]:
     registry = _load_json(project_root / "master_bot_registry.json")
-    rows = registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
+    rows = (
+        registry.get("sub_bots") if isinstance(registry.get("sub_bots"), list) else []
+    )
     rows = [row for row in rows if isinstance(row, dict)]
     return {
         "total_bots": len(rows),
         "active_bots": sum(1 for row in rows if bool(row.get("active"))),
         "data_collection_only_bots": sum(
-            1 for row in rows if str(row.get("lifecycle_state") or "") == "data_collection_only"
+            1
+            for row in rows
+            if str(row.get("lifecycle_state") or "") == "data_collection_only"
         ),
         "training_excluded_bots": sum(
-            1 for row in rows if bool(row.get("training_excluded")) or bool(row.get("exclude_from_training"))
+            1
+            for row in rows
+            if bool(row.get("training_excluded"))
+            or bool(row.get("exclude_from_training"))
         ),
     }
 
@@ -186,7 +255,11 @@ def _git_status_summary(project_root: Path) -> dict[str, Any]:
     untracked_tests = 0
     untracked_config = 0
     scratch = 0
-    scratch_names = {"overwrite_test.txt", "private_copy_test.txt", "private_write_test.txt"}
+    scratch_names = {
+        "overwrite_test.txt",
+        "private_copy_test.txt",
+        "private_write_test.txt",
+    }
     sample: list[str] = []
     for raw_line in completed.stdout.splitlines():
         line = raw_line.rstrip()
@@ -219,29 +292,49 @@ def _git_status_summary(project_root: Path) -> dict[str, Any]:
     }
 
 
-def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> dict[str, Any]:
+def build_payload(
+    project_root: Path = PROJECT_ROOT, *, apply: bool = False
+) -> dict[str, Any]:
     health_root = project_root / "governance" / "health"
     runtime = _load_json(health_root / "runtime_throttle_control_latest.json")
     memory = _load_json(health_root / "memory_efficiency_control_latest.json")
     expansion = _load_json(health_root / "expansion_capacity_planner_latest.json")
     admission = _load_json(health_root / "new_bot_admission_guard_latest.json")
-    collection = _load_json(health_root / "data_collection_observation_rollup_latest.json")
+    collection = _load_json(
+        health_root / "data_collection_observation_rollup_latest.json"
+    )
     dashboard = _load_json(health_root / "runtime_gate_dashboard_latest.json")
     storage = _load_json(health_root / "ingestion_storage_control_latest.json")
     drainer_fleet = _load_json(health_root / "backpressure_drainer_fleet_latest.json")
     super_drainer = _load_json(health_root / "backpressure_super_drainer_latest.json")
     training = _load_json(health_root / "training_quality_control_latest.json")
     bot_quality = _load_json(health_root / "bot_quality_autopilot_latest.json")
-    live_runtime = _load_json(health_root / "live_runtime_separation_control_latest.json")
+    live_runtime = _load_json(
+        health_root / "live_runtime_separation_control_latest.json"
+    )
     auth = _load_json(health_root / "auth_lease_manager_latest.json")
     fanout = _load_json(health_root / "process_fanout_guard_latest.json")
-    materialization = _load_json(health_root / "core_bot_materialization_guard_latest.json")
+    materialization = _load_json(
+        health_root / "core_bot_materialization_guard_latest.json"
+    )
     worktree = _git_status_summary(project_root)
     guarded_paper_soak_green = _guarded_paper_soak_green(health_root)
 
-    pressure = expansion.get("pressure_snapshot") if isinstance(expansion.get("pressure_snapshot"), dict) else {}
-    capacity = expansion.get("capacity_contract") if isinstance(expansion.get("capacity_contract"), dict) else {}
-    storage_backpressure = storage.get("backpressure") if isinstance(storage.get("backpressure"), dict) else {}
+    pressure = (
+        expansion.get("pressure_snapshot")
+        if isinstance(expansion.get("pressure_snapshot"), dict)
+        else {}
+    )
+    capacity = (
+        expansion.get("capacity_contract")
+        if isinstance(expansion.get("capacity_contract"), dict)
+        else {}
+    )
+    storage_backpressure = (
+        storage.get("backpressure")
+        if isinstance(storage.get("backpressure"), dict)
+        else {}
+    )
     dashboard_attention = []
     if isinstance(dashboard.get("overall"), dict):
         dashboard_attention = [
@@ -250,20 +343,42 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             if str(item or "").strip()
         ]
 
-    admission_blocking = _safe_int(admission.get("blocking_candidate_count"), _safe_int(pressure.get("admission_blocking_candidate_count"), 0))
-    admission_candidates = _safe_int(admission.get("candidate_bot_count"), _safe_int(pressure.get("admission_candidate_count"), 0))
+    admission_blocking = _safe_int(
+        admission.get("blocking_candidate_count"),
+        _safe_int(pressure.get("admission_blocking_candidate_count"), 0),
+    )
+    admission_candidates = _safe_int(
+        admission.get("candidate_bot_count"),
+        _safe_int(pressure.get("admission_candidate_count"), 0),
+    )
     training_ready = _safe_int(collection.get("training_ready_count"), 0)
     collector_count = _safe_int(collection.get("collector_count"), 0)
     total_pending = max(
         _safe_int(storage_backpressure.get("total_pending_lines"), 0),
         _safe_int(storage.get("pending_lines_total"), 0),
     )
-    estimated_drain_minutes = _safe_float(storage_backpressure.get("estimated_total_drain_minutes"), 0.0)
-    active_drainer = drainer_fleet.get("active_drainer") if isinstance(drainer_fleet.get("active_drainer"), dict) else {}
-    active_drainer_name = str(active_drainer.get("name") or drainer_fleet.get("active_drainer") or "").strip()
+    estimated_drain_minutes = _safe_float(
+        storage_backpressure.get("estimated_total_drain_minutes"), 0.0
+    )
+    active_drainer = (
+        drainer_fleet.get("active_drainer")
+        if isinstance(drainer_fleet.get("active_drainer"), dict)
+        else {}
+    )
+    active_drainer_name = str(
+        active_drainer.get("name") or drainer_fleet.get("active_drainer") or ""
+    ).strip()
     ready_drainer_count = _safe_int(drainer_fleet.get("ready_drainer_count"), 0)
-    fleet_self = drainer_fleet.get("self_accommodation") if isinstance(drainer_fleet.get("self_accommodation"), dict) else {}
-    super_summary = super_drainer.get("summary") if isinstance(super_drainer.get("summary"), dict) else {}
+    fleet_self = (
+        drainer_fleet.get("self_accommodation")
+        if isinstance(drainer_fleet.get("self_accommodation"), dict)
+        else {}
+    )
+    super_summary = (
+        super_drainer.get("summary")
+        if isinstance(super_drainer.get("summary"), dict)
+        else {}
+    )
     super_packet = (
         super_drainer.get("grandmaster_context_packet")
         if isinstance(super_drainer.get("grandmaster_context_packet"), dict)
@@ -277,9 +392,7 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
     drainer_accommodation_status = (
         "blocked"
         if total_pending and _status(drainer_fleet) == "blocked"
-        else "needs_work"
-        if total_pending or ready_drainer_count
-        else "ready"
+        else "needs_work" if total_pending or ready_drainer_count else "ready"
     )
     bounded_storage_soak_backlog = bool(
         guarded_paper_soak_green
@@ -291,10 +404,13 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
     )
     promotion_training_status = (
         "blocked"
-        if _status(training) in {"blocked", "critical"} or _status(bot_quality) in {"blocked", "critical"}
-        else "ready"
-        if _status(training) == "ready" and _status(bot_quality) == "ready"
-        else "needs_work"
+        if _status(training) in {"blocked", "critical"}
+        or _status(bot_quality) in {"blocked", "critical"}
+        else (
+            "ready"
+            if _status(training) == "ready" and _status(bot_quality) == "ready"
+            else "needs_work"
+        )
     )
     if guarded_paper_soak_green and promotion_training_status != "ready":
         promotion_training_status = "advisory"
@@ -305,31 +421,70 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
     )
     collection_operational_ready = bool(
         collection.get("operational_ok", False)
-        and str(collection.get("operational_status") or collection_operational.get("status") or "").strip().lower()
+        and str(
+            collection.get("operational_status")
+            or collection_operational.get("status")
+            or ""
+        )
+        .strip()
+        .lower()
         == "ready"
     )
-    collection_status = "needs_work" if collector_count and training_ready == 0 else _status(collection)
-    if guarded_paper_soak_green and collection_operational_ready and collection_status not in {"ready", "advisory"}:
+    collection_status = (
+        "needs_work" if collector_count and training_ready == 0 else _status(collection)
+    )
+    if (
+        guarded_paper_soak_green
+        and collection_operational_ready
+        and collection_status not in {"ready", "advisory"}
+    ):
         collection_status = "advisory"
     if guarded_paper_soak_green and collection_status in {"missing", "needs_work"}:
         collection_status = "advisory"
     storage_backlog_status = (
         "blocked"
         if _status(storage) in {"blocked", "critical"}
-        else "needs_work"
-        if total_pending or estimated_drain_minutes > 120
-        else _status(storage)
+        else (
+            "needs_work"
+            if total_pending or estimated_drain_minutes > 120
+            else _status(storage)
+        )
     )
     if bounded_storage_soak_backlog and storage_backlog_status == "needs_work":
         storage_backlog_status = "advisory"
     if bounded_storage_soak_backlog and drainer_accommodation_status == "needs_work":
         drainer_accommodation_status = "advisory"
-    auth_runtime_status = "needs_work" if _status(auth) != "ready" or _status(live_runtime) != "ready" else "ready"
-    if guarded_paper_soak_green and auth_runtime_status == "needs_work" and _status(auth) == "ready":
+    auth_runtime_status = (
+        "needs_work"
+        if _status(auth) != "ready" or _status(live_runtime) != "ready"
+        else "ready"
+    )
+    if (
+        guarded_paper_soak_green
+        and auth_runtime_status == "needs_work"
+        and _status(auth) == "ready"
+    ):
         auth_runtime_status = "advisory"
-    worktree_status = "needs_work" if worktree.get("tracked_change_count") or worktree.get("untracked_count") else "ready"
+    worktree_status = (
+        "needs_work"
+        if worktree.get("tracked_change_count") or worktree.get("untracked_count")
+        else "ready"
+    )
     if guarded_paper_soak_green and worktree_status == "needs_work":
         worktree_status = "advisory"
+    health_visibility_status = (
+        _status(dashboard, "missing") if dashboard_attention else "ready"
+    )
+    managed_visibility_attention = bool(
+        guarded_paper_soak_green
+        and health_visibility_status in {"degraded", "needs_work"}
+        and dashboard_attention
+        and set(dashboard_attention) <= GUARDED_PAPER_VISIBILITY_ADVISORIES
+        and _status(materialization, "missing") == "ready"
+        and _status(fanout, "missing") == "ready"
+    )
+    if managed_visibility_attention:
+        health_visibility_status = "advisory"
 
     lanes = [
         _lane(
@@ -337,7 +492,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             title="Runtime Pressure Organizer",
             weak_points=[1, 2],
             owner="runtime_pressure_infrabot",
-            priority=10 if _status(runtime) in {"blocked", "critical", "degraded"} else 4,
+            priority=(
+                10 if _status(runtime) in {"blocked", "critical", "degraded"} else 4
+            ),
             status=_status(runtime),
             evidence=[
                 f"host_saturation_score={runtime.get('host_saturation_score', pressure.get('host_saturation_score', 'unknown'))}",
@@ -384,7 +541,11 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
                 f"bots_with_observations={collection.get('bots_with_observations', 'unknown')}",
                 f"total_observations={collection.get('total_observations', 'unknown')}",
                 f"training_ready_count={training_ready}",
-                "paper_soak_advisory_only=true" if guarded_paper_soak_green and collection_status == "advisory" else "",
+                (
+                    "paper_soak_advisory_only=true"
+                    if guarded_paper_soak_green and collection_status == "advisory"
+                    else ""
+                ),
             ],
             next_commands=[
                 _command("data-collection-observation-rollup", "--apply", "--json"),
@@ -398,13 +559,23 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             title="Promotion and Training Quality Organizer",
             weak_points=[5],
             owner="promotion_quality_infrabot",
-            priority=9 if _status(training) in {"blocked", "critical"} or _status(bot_quality) in {"blocked", "critical"} else 5,
+            priority=(
+                9
+                if _status(training) in {"blocked", "critical"}
+                or _status(bot_quality) in {"blocked", "critical"}
+                else 5
+            ),
             status=promotion_training_status,
             evidence=[
                 f"training_quality_status={_status(training)}",
                 f"bot_quality_status={_status(bot_quality)}",
                 f"training_quality_score={(training.get('summary') or {}).get('training_quality_score', training.get('training_quality_score', 'unknown')) if isinstance(training.get('summary'), dict) else training.get('training_quality_score', 'unknown')}",
-                "paper_soak_advisory_only=true" if guarded_paper_soak_green and promotion_training_status == "advisory" else "",
+                (
+                    "paper_soak_advisory_only=true"
+                    if guarded_paper_soak_green
+                    and promotion_training_status == "advisory"
+                    else ""
+                ),
             ],
             next_commands=[
                 _command("training-quality", "--json"),
@@ -420,12 +591,13 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             weak_points=[6],
             owner="health_visibility_infrabot",
             priority=8 if dashboard_attention else 4,
-            status=_status(dashboard, "missing") if dashboard_attention else "ready",
+            status=health_visibility_status,
             evidence=[
                 f"runtime_gate_dashboard_status={_status(dashboard, 'missing')}",
                 f"attention={'; '.join(dashboard_attention[:8])}",
                 f"materialization_status={_status(materialization, 'missing')}",
                 f"fanout_status={_status(fanout, 'missing')}",
+                "paper_soak_advisory_only=true" if managed_visibility_attention else "",
             ],
             next_commands=[
                 ["./scripts/session_ready_check.py", "--json"],
@@ -451,12 +623,24 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
                 f"ready_drainer_count={ready_drainer_count}",
                 f"super_drainer_status={_status(super_drainer, 'missing')}",
                 f"super_safe_next_action={super_safe_next_action}",
-                "bounded_storage_soak_backlog=true" if bounded_storage_soak_backlog else "",
+                (
+                    "bounded_storage_soak_backlog=true"
+                    if bounded_storage_soak_backlog
+                    else ""
+                ),
             ],
             next_commands=[
                 _command("external-backlog-drain", "--apply", "--json"),
                 _command("backpressure-drainer-fleet", "--apply", "--json"),
-                _command("backpressure-super-drainer", "--apply", "--max-waves", "1", "--target-pending-lines", "10000", "--json"),
+                _command(
+                    "backpressure-super-drainer",
+                    "--apply",
+                    "--max-waves",
+                    "1",
+                    "--target-pending-lines",
+                    "10000",
+                    "--json",
+                ),
                 _command("storage-pressure-clearance", "--apply", "--json"),
                 _command("ingestion-storage-control", "--json"),
             ],
@@ -482,8 +666,23 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             ],
             next_commands=[
                 _command("backpressure-drainer-fleet", "--json"),
-                _command("backpressure-super-drainer", "--max-waves", "1", "--target-pending-lines", "10000", "--json"),
-                _command("backpressure-super-drainer", "--apply", "--max-waves", "1", "--target-pending-lines", "10000", "--json"),
+                _command(
+                    "backpressure-super-drainer",
+                    "--max-waves",
+                    "1",
+                    "--target-pending-lines",
+                    "10000",
+                    "--json",
+                ),
+                _command(
+                    "backpressure-super-drainer",
+                    "--apply",
+                    "--max-waves",
+                    "1",
+                    "--target-pending-lines",
+                    "10000",
+                    "--json",
+                ),
                 _command("writer-cycle-coordinator", "--json"),
                 _command("ingestion-storage-control", "--json"),
             ],
@@ -494,13 +693,22 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             title="Auth and Runtime Separation Organizer",
             weak_points=[1, 5, 6],
             owner="runtime_separation_infrabot",
-            priority=8 if _status(auth) in {"degraded", "blocked"} or _status(live_runtime) in {"degraded", "blocked"} else 4,
+            priority=(
+                8
+                if _status(auth) in {"degraded", "blocked"}
+                or _status(live_runtime) in {"degraded", "blocked"}
+                else 4
+            ),
             status=auth_runtime_status,
             evidence=[
                 f"auth_lease_status={_status(auth)}",
                 f"auth_expires_in_seconds={(auth.get('summary') or {}).get('expires_in_seconds', auth.get('expires_in_seconds', 'unknown')) if isinstance(auth.get('summary'), dict) else auth.get('expires_in_seconds', 'unknown')}",
                 f"live_runtime_separation_status={_status(live_runtime)}",
-                "paper_soak_advisory_only=true" if guarded_paper_soak_green and auth_runtime_status == "advisory" else "",
+                (
+                    "paper_soak_advisory_only=true"
+                    if guarded_paper_soak_green and auth_runtime_status == "advisory"
+                    else ""
+                ),
             ],
             next_commands=[
                 _command("schwab-auth-guard", "--json"),
@@ -514,16 +722,35 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             title="Worktree Hygiene Organizer",
             weak_points=[6],
             owner="worktree_hygiene_infrabot",
-            priority=6 if worktree.get("tracked_change_count") or worktree.get("untracked_count") else 2,
+            priority=(
+                6
+                if worktree.get("tracked_change_count")
+                or worktree.get("untracked_count")
+                else 2
+            ),
             status=worktree_status,
             evidence=[
-                "tracked_change_count={}".format(worktree.get("tracked_change_count", 0)),
+                "tracked_change_count={}".format(
+                    worktree.get("tracked_change_count", 0)
+                ),
                 "untracked_count={}".format(worktree.get("untracked_count", 0)),
-                "generated_core_untracked_count={}".format(worktree.get("generated_core_untracked_count", 0)),
-                "untracked_config_count={}".format(worktree.get("untracked_config_count", 0)),
-                "untracked_test_count={}".format(worktree.get("untracked_test_count", 0)),
-                "obvious_scratch_count={}".format(worktree.get("obvious_scratch_count", 0)),
-                "paper_soak_advisory_only=true" if guarded_paper_soak_green and worktree_status == "advisory" else "",
+                "generated_core_untracked_count={}".format(
+                    worktree.get("generated_core_untracked_count", 0)
+                ),
+                "untracked_config_count={}".format(
+                    worktree.get("untracked_config_count", 0)
+                ),
+                "untracked_test_count={}".format(
+                    worktree.get("untracked_test_count", 0)
+                ),
+                "obvious_scratch_count={}".format(
+                    worktree.get("obvious_scratch_count", 0)
+                ),
+                (
+                    "paper_soak_advisory_only=true"
+                    if guarded_paper_soak_green and worktree_status == "advisory"
+                    else ""
+                ),
             ],
             next_commands=[
                 ["git", "status", "--short"],
@@ -535,11 +762,19 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
     ]
 
     lanes = sorted(lanes, key=lambda row: int(row.get("priority", 0)), reverse=True)
-    blocking_lanes = [lane for lane in lanes if str(lane.get("status")) in {"blocked", "critical", "degraded", "missing"}]
-    needs_work_lanes = [lane for lane in lanes if str(lane.get("status")) == "needs_work"]
+    blocking_lanes = [
+        lane
+        for lane in lanes
+        if str(lane.get("status")) in {"blocked", "critical", "degraded", "missing"}
+    ]
+    needs_work_lanes = [
+        lane for lane in lanes if str(lane.get("status")) == "needs_work"
+    ]
     advisory_lanes = [lane for lane in lanes if str(lane.get("status")) == "advisory"]
     registry = _registry_summary(project_root)
-    overall_status = "blocked" if blocking_lanes else "needs_work" if needs_work_lanes else "ready"
+    overall_status = (
+        "blocked" if blocking_lanes else "needs_work" if needs_work_lanes else "ready"
+    )
 
     payload = {
         "timestamp_utc": _utc_now(),
@@ -555,7 +790,9 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
             "guarded_paper_soak_green": bool(guarded_paper_soak_green),
             "bounded_storage_soak_backlog": bool(bounded_storage_soak_backlog),
             **registry,
-            "worktree_tracked_change_count": int(worktree.get("tracked_change_count", 0) or 0),
+            "worktree_tracked_change_count": int(
+                worktree.get("tracked_change_count", 0) or 0
+            ),
             "worktree_untracked_count": int(worktree.get("untracked_count", 0) or 0),
         },
         "lanes": lanes,
@@ -583,11 +820,15 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False) -> 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Allocate current platform weak points into backlog organizer lanes.")
+    parser = argparse.ArgumentParser(
+        description="Allocate current platform weak points into backlog organizer lanes."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_PATH))

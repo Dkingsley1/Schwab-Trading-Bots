@@ -5,12 +5,16 @@ import argparse
 import json
 import re
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from scripts.ops.long_runtime_common import evidence_freshness, write_payload
 GOVERNOR_VERSION = "whole_system_governor_v1"
 OUT_DIR = PROJECT_ROOT / "governance" / "whole_system_governor"
 HEALTH_PATH = PROJECT_ROOT / "governance" / "health" / "whole_system_governor_latest.json"
@@ -179,15 +183,10 @@ def _parse_iso(raw: Any) -> datetime | None:
 
 
 def _payload_time(path: Path, payload: dict[str, Any], now: datetime) -> tuple[str, float | None]:
-    for key in ("generated_at_utc", "updated_at_utc", "timestamp_utc", "created_at"):
-        parsed = _parse_iso(payload.get(key))
-        if parsed is not None:
-            return parsed.isoformat(), round(max((now - parsed).total_seconds() / 60.0, 0.0), 3)
-    try:
-        modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-    except Exception:
+    evidence = evidence_freshness(payload, max_age_minutes=float("inf"), now=now)
+    if not evidence["fresh"]:
         return "", None
-    return modified.isoformat(), round(max((now - modified).total_seconds() / 60.0, 0.0), 3)
+    return evidence["source_timestamp_utc"], evidence["age_minutes"]
 
 
 def _registry_rows(registry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -223,6 +222,8 @@ def _surface_snapshot(project_root: Path, now: datetime) -> dict[str, dict[str, 
         path = project_root / rel
         payload = _load_json(path)
         timestamp, age_minutes = _payload_time(path, payload, now) if payload else ("", None)
+        ttl = 3 if name in {"memory_efficiency", "runtime_throttle"} else 15 if name == "ingestion_storage" else 60
+        evidence = evidence_freshness(payload, max_age_minutes=ttl, now=now)
         surfaces[name] = {
             "surface": name,
             "path": rel,
@@ -230,6 +231,7 @@ def _surface_snapshot(project_root: Path, now: datetime) -> dict[str, dict[str, 
             "exists": bool(payload),
             "timestamp_utc": timestamp,
             "age_minutes": age_minutes,
+            "evidence": evidence,
             "payload": payload,
         }
     return surfaces
@@ -305,9 +307,12 @@ def _pressure_snapshot(surfaces: dict[str, dict[str, Any]], identity: dict[str, 
         name
         for name, surface in surfaces.items()
         if STATUS_WEIGHT.get(str(surface["status"]), 3) >= STATUS_WEIGHT["degraded"]
+        and surface.get("evidence", {}).get("fresh", False)
     ]
 
     def payload(name: str) -> dict[str, Any]:
+        if not surfaces.get(name, {}).get("evidence", {}).get("fresh", False):
+            return {}
         raw = surfaces.get(name, {}).get("payload")
         return raw if isinstance(raw, dict) else {}
 
@@ -362,14 +367,18 @@ def _pressure_snapshot(surfaces: dict[str, dict[str, Any]], identity: dict[str, 
         ]
     )
     collection_count = _safe_int(identity.get("data_collection_active_bots"), 0)
+    unavailable = [name for name, surface in surfaces.items() if not surface.get("evidence", {}).get("fresh", False)]
+    primary_missing = any(name in unavailable for name in ("memory_efficiency", "runtime_throttle", "ingestion_storage"))
     if bad_surfaces or pending_lines >= 250000 or swap_gb >= 24 or memory_pressure >= 85:
         tier = "protective"
-    elif pending_lines >= 50000 or swap_gb >= 12 or collection_count >= 1200:
+    elif primary_missing or pending_lines >= 50000 or swap_gb >= 12 or collection_count >= 1200:
         tier = "constrained"
     else:
         tier = "steady"
     return {
         "pressure_tier": tier,
+        "unavailable_surfaces": unavailable,
+        "primary_pressure_evidence_ready": not primary_missing,
         "bad_surface_count": len(bad_surfaces),
         "bad_surfaces": bad_surfaces,
         "pending_lines_estimate": int(pending_lines),
@@ -813,11 +822,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Build and apply the whole-system governor layer.")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--refresh", action="store_true", help="Publish advisory health only, without registry or policy mutation.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
     payload = apply_governor(project_root) if args.apply else build_payload(project_root, apply=False)
+    if args.refresh and not args.apply:
+        write_payload(project_root / HEALTH_PATH.relative_to(PROJECT_ROOT), payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True, indent=2))
     else:

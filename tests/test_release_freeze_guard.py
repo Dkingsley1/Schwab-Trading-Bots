@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from scripts.ops import release_freeze_guard as freeze
 
 
@@ -92,3 +94,55 @@ def test_manifest_binds_commit_tree_and_rollback() -> None:
     assert manifest["release_identity"]["commit"] == "b" * 40
     assert manifest["rollback"]["reference"] == "b" * 40
     assert manifest["manifest_sha256"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        ["rev-parse", "HEAD"],
+        ["ls-files", "-s"],
+        ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+    ],
+)
+def test_failed_git_probe_never_certifies_release(tmp_path, command):
+    project, window = _project(tmp_path)
+    good = _runner()
+
+    def failed(root, args):
+        return (1, "", "unavailable") if args == command else good(root, args)
+
+    payload = freeze.build_payload(project, window_path=window, git_runner=failed)
+    assert payload["git_integrity"]["ready"] is False
+    assert payload["git_integrity"]["blockers"]
+    assert payload["immutable_release_boundary"]["ready"] is False
+    assert (
+        payload["immutable_release_boundary"]["operator_release_review_required"]
+        is True
+    )
+
+
+def test_malformed_upstream_counts_are_blocked_not_a_crash(tmp_path):
+    project, window = _project(tmp_path)
+    good = _runner()
+
+    def malformed(root, args):
+        return (0, "unknown unknown", "") if args[0] == "rev-list" else good(root, args)
+
+    payload = freeze.build_payload(project, window_path=window, git_runner=malformed)
+    assert (
+        "git_upstream_state_unverified"
+        in payload["immutable_release_boundary"]["blockers"]
+    )
+
+
+def test_expired_window_and_dirty_tree_have_separate_blockers(tmp_path):
+    project, window = _project(tmp_path)
+    _write(window, {"active": True, "ends_at_utc": "2020-01-01T00:00:00+00:00"})
+    payload = freeze.build_payload(
+        project, window_path=window, git_runner=_runner(dirty=True)
+    )
+    blockers = payload["immutable_release_boundary"]["blockers"]
+    assert "release_freeze_window_inactive_or_expired" in blockers
+    assert "release_worktree_not_clean" in blockers
+    assert "release_upstream_not_synchronized" not in blockers

@@ -1,4 +1,120 @@
 import scripts.sqlite_performance_maintenance as maint
+import json
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def test_routine_planner_maintenance_is_bounded_optimize(tmp_path, monkeypatch):
+    health = tmp_path / "governance/health"
+    health.mkdir(parents=True)
+    (health / "resource_guard_latest.json").write_text(
+        json.dumps(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "memory_free_pct": 70,
+                "swap_used_gb": 0,
+            }
+        )
+    )
+    monkeypatch.delenv("SQLITE_ANALYZE_ENABLED", raising=False)
+    settings = maint.resolve_runtime_settings(tmp_path)
+    assert settings["planner_maintenance_mode"] == "bounded_optimize"
+    assert settings["analyze_enabled"] is False
+    assert settings["optimize_enabled"] is True
+    monkeypatch.setenv("SQLITE_ANALYZE_ENABLED", "1")
+    assert maint.resolve_runtime_settings(tmp_path)["analyze_enabled"] is True
+
+
+def test_pressure_cannot_be_overridden_by_maintenance_environment(
+    tmp_path, monkeypatch
+):
+    for key, value in {
+        "SQLITE_ANALYZE_ENABLED": "1",
+        "SQLITE_OPTIMIZE_ENABLED": "1",
+        "SQLITE_CACHE_SIZE_KB": "65536",
+        "SQLITE_TEMP_STORE_MODE": "MEMORY",
+        "SQLITE_ALLOW_MMAP": "1",
+        "SQLITE_MMAP_SIZE_MB": "256",
+        "SQLITE_SKIP_AUTO_VACUUM_ON_MEMORY_PRESSURE": "0",
+    }.items():
+        monkeypatch.setenv(key, value)
+    settings = maint.resolve_runtime_settings(tmp_path)
+    assert settings["analyze_enabled"] is False
+    assert settings["optimize_enabled"] is False
+    assert settings["auto_vacuum_allowed"] is False
+    assert settings["cache_size_kb"] == 4096
+    assert settings["temp_store_mode"] == "FILE"
+    assert settings["mmap_size_mb"] == 0
+
+
+def test_optimize_considers_unqueried_tables_with_sample_limit():
+    conn = sqlite3.connect(":memory:")
+    statements = []
+    try:
+        conn.execute("CREATE TABLE evidence (id INTEGER, value TEXT)")
+        conn.execute("CREATE INDEX evidence_id ON evidence(id)")
+        conn.executemany(
+            "INSERT INTO evidence VALUES (?, ?)", [(i, str(i)) for i in range(2000)]
+        )
+        conn.commit()
+        conn.set_trace_callback(statements.append)
+        maint._optimize_planner(conn, lock_retries=0, lock_retry_delay_seconds=0.01)
+        assert conn.execute("PRAGMA analysis_limit").fetchone()[0] == 1000
+        assert "PRAGMA optimize=0x10002" in statements
+        assert conn.execute("SELECT count(*) FROM sqlite_stat1").fetchone()[0] > 0
+        assert "ANALYZE" not in statements
+    finally:
+        conn.close()
+
+
+def test_vacuum_temp_candidates_never_probe_protected_volume(tmp_path, monkeypatch):
+    original_exists = Path.exists
+
+    def checked_exists(path):
+        assert not str(path).startswith("/Volumes/VIDEO")
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", checked_exists)
+    candidates = maint._vacuum_temp_dir_candidates(tmp_path / "db.sqlite3", tmp_path)
+    assert all(source != "video_volume_tmpdir" for _, source in candidates)
+
+
+def test_vacuum_temp_selection_rejects_protected_path_before_io(tmp_path, monkeypatch):
+    protected = Path("/Volumes/VIDEO/sqlite_tmp")
+    monkeypatch.setattr(
+        maint, "_vacuum_temp_dir_candidates", lambda *args: [(protected, "explicit")]
+    )
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("protected volume must not be probed")
+
+    monkeypatch.setattr(Path, "mkdir", unexpected)
+    monkeypatch.setattr(Path, "resolve", unexpected)
+    result = maint._select_vacuum_temp_dir(db_path=tmp_path / "db.sqlite3", project_root=tmp_path, db_size_gb=1)
+    assert result["selected"] is False
+    assert result["candidate_evaluations"][0]["reason"] == "protected_volume"
+
+
+def test_vacuum_temp_selection_rejects_symlink_to_protected_volume(tmp_path):
+    link = tmp_path / "media_alias"
+    link.symlink_to("/Volumes/VIDEO", target_is_directory=True)
+    assert maint._protected_storage_path(link)
+
+
+def test_sqlite_maintenance_owned_hold_allows_checkpoint(tmp_path, monkeypatch):
+    import sqlite3
+    from core.runtime_maintenance import MAINTENANCE_HOLD_TOKEN_ENV
+
+    db = tmp_path / "test.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE evidence (id INTEGER PRIMARY KEY)")
+    out = tmp_path / "maintenance.json"
+    monkeypatch.setattr(maint, "maintenance_hold_snapshot", lambda root: {"active": True, "valid": True, "token": "test-owner-token"})
+    monkeypatch.setenv(MAINTENANCE_HOLD_TOKEN_ENV, "test-owner-token")
+    monkeypatch.setattr(maint.sys, "argv", ["maintenance", "--db", str(db), "--out-file", str(out), "--checkpoint-only", "--json"])
+    assert maint.main() == 0
+    assert maint._read_json(out)["current_step"] == "complete"
 
 
 def test_sqlite_maintenance_hold_exits_before_opening_database(tmp_path, monkeypatch) -> None:

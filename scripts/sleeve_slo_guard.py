@@ -1,11 +1,190 @@
 import argparse
+import fcntl
+import hashlib
 import json
+import math
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WATCHDOG_DIR = PROJECT_ROOT / "governance" / "watchdog"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.storage_router import inspect_storage_path
+from scripts.ops.long_runtime_common import (
+    evidence_freshness,
+    parse_iso_utc,
+    write_payload,
+)
+
+
+def local_path(root: Path, path: Path) -> Path:
+    route = inspect_storage_path(path, boundary_root=root, allow_external=False)
+    if route.get("status") not in {"present", "missing"} or route.get("symlinks"):
+        raise ValueError("unsafe_risk_evidence_path")
+    return path
+
+
+def read_local_json(root: Path, path: Path) -> dict:
+    path = local_path(root, path)
+    if not path.exists():
+        return {}
+    if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+        raise ValueError("risk_evidence_size_or_type_invalid")
+    payload = _read_json(path)
+    return payload if isinstance(payload, dict) else {}
+
+
+def watchdog_payload(watchdog, state, *, now, required_breaches=3):
+    """Consume the active watchdog's observation, never start or restart a process."""
+    freshness = evidence_freshness(watchdog, now=now, max_age_minutes=6)
+    rows = watchdog.get("status")
+    valid = bool(
+        freshness["fresh"]
+        and isinstance(rows, list)
+        and rows
+        and all(
+            isinstance(row, dict)
+            and isinstance(row.get("name"), str)
+            and row["name"]
+            and isinstance(row.get("heartbeat_ok"), bool)
+            for row in rows
+        )
+        and len({row["name"] for row in rows}) == len(rows)
+        and any(row["name"] == "all_sleeves" for row in rows)
+        and isinstance(watchdog.get("restart_storms"), list)
+    )
+    source_hash = hashlib.sha256(
+        json.dumps(watchdog, sort_keys=True).encode()
+    ).hexdigest()
+    observed = parse_iso_utc(watchdog.get("timestamp_utc"))
+    previous = parse_iso_utc(state.get("source_observed_at_utc"))
+    new_observation = bool(observed and (previous is None or observed > previous))
+    if (
+        observed
+        and previous
+        and (
+            observed < previous
+            or (
+                observed == previous
+                and source_hash != state.get("source_receipt_sha256")
+            )
+        )
+    ):
+        valid = False
+    streaks = dict(state.get("streaks") or {})
+    targets, alerts = [], []
+    if not valid:
+        alerts.append(
+            {
+                "name": "process_watchdog",
+                "breaches": ["source_missing_stale_or_incomplete"],
+            }
+        )
+    else:
+        storms = {
+            row.get("name")
+            for row in watchdog["restart_storms"]
+            if isinstance(row, dict)
+        }
+        for row in rows:
+            name = row["name"]
+            live = row.get("effective_process_live", row.get("process_live")) is True
+            heartbeat_ok = row["heartbeat_ok"]
+            heartbeat_age = row.get("heartbeat_age_seconds")
+            heartbeat_limit = row.get("heartbeat_max_age_seconds")
+            if heartbeat_age is not None or heartbeat_limit is not None:
+                try:
+                    heartbeat_age = float(heartbeat_age) + freshness["age_minutes"] * 60
+                    heartbeat_limit = float(heartbeat_limit)
+                    heartbeat_ok = bool(
+                        heartbeat_ok
+                        and math.isfinite(heartbeat_age)
+                        and math.isfinite(heartbeat_limit)
+                        and 0 <= heartbeat_age <= heartbeat_limit
+                    )
+                except (ValueError, TypeError):
+                    heartbeat_ok = False
+            idle = row.get("writer_idle_health") or {}
+            recovery = row.get("writer_recovery_health") or {}
+            healthy = bool(
+                heartbeat_ok
+                and (live or idle.get("ok") is True or recovery.get("ok") is True)
+            )
+            breaches = [] if healthy else ["process_or_heartbeat_unhealthy"]
+            if name in storms:
+                breaches.append("watchdog_reported_restart_storm")
+            streak = int(streaks.get(name, 0))
+            if new_observation:
+                streak = streak + 1 if breaches else 0
+            streaks[name] = streak
+            alert = bool(breaches and (streak >= required_breaches or name in storms))
+            if alert:
+                alerts.append({"name": name, "breaches": breaches, "streak": streak})
+            targets.append(
+                {
+                    "name": name,
+                    "live": live,
+                    "heartbeat_ok": heartbeat_ok,
+                    "heartbeat_age_s": heartbeat_age,
+                    "breaches": breaches,
+                    "breach_streak": streak,
+                    "alert": alert,
+                }
+            )
+    return {
+        "timestamp_utc": now.isoformat(),
+        "schema_version": 2,
+        "source_kind": "active_process_watchdog_snapshot",
+        "source_timestamp_utc": watchdog.get("timestamp_utc"),
+        "source_observed_at_utc": watchdog.get("timestamp_utc"),
+        "source_receipt_sha256": source_hash,
+        "source_scope": "reported_watchdog_targets_not_every_individual_bot",
+        "restart_rate_basis": "watchdog_reported_storms_not_reconstructed_history",
+        "input_freshness": {"sources_ready": valid, "process_watchdog": freshness},
+        "required_consecutive_breaches": required_breaches,
+        "ok": valid and not alerts,
+        "overall_ok": valid and not alerts,
+        "alerts": alerts,
+        "targets": targets,
+        "live_execution_authority": False,
+    }, {
+        "timestamp_utc": now.isoformat(),
+        "streaks": streaks,
+        "source_receipt_sha256": (
+            source_hash if valid else state.get("source_receipt_sha256")
+        ),
+        "source_observed_at_utc": (
+            watchdog.get("timestamp_utc")
+            if valid
+            else state.get("source_observed_at_utc")
+        ),
+    }
+
+
+def refresh_current(root: Path, *, out_path=None, state_path=None, required_breaches=3):
+    out = local_path(
+        root, out_path or root / "governance/watchdog/sleeve_slo_latest.json"
+    )
+    state_file = local_path(
+        root, state_path or root / "governance/watchdog/sleeve_slo_state.json"
+    )
+    lock = local_path(root, state_file.with_suffix(".lock"))
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        watchdog = read_local_json(
+            root, root / "governance/health/process_watchdog_latest.json"
+        )
+        state = read_local_json(root, state_file)
+        payload, updated = watchdog_payload(
+            watchdog, state, now=_now_utc(), required_breaches=required_breaches
+        )
+        write_payload(state_file, updated)
+        write_payload(out, payload)
+        return payload
 
 
 def _now_utc() -> datetime:
@@ -69,7 +248,9 @@ def _restart_count_last_hour(events: list[dict], target_name: str) -> int:
     for evt in events:
         ts_raw = str(evt.get("timestamp_utc", ""))
         try:
-            ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+            ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).astimezone(
+                timezone.utc
+            )
         except Exception:
             continue
         if ts < cutoff:
@@ -83,11 +264,17 @@ def _restart_count_last_hour(events: list[dict], target_name: str) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Per-sleeve SLO guard with sustained-breach alerting.")
+    parser = argparse.ArgumentParser(
+        description="Per-sleeve SLO guard with sustained-breach alerting."
+    )
     parser.add_argument("--day", default=_today())
     parser.add_argument("--event-log", default=None)
-    parser.add_argument("--state-file", default=str(WATCHDOG_DIR / "sleeve_slo_state.json"))
-    parser.add_argument("--out-file", default=str(WATCHDOG_DIR / "sleeve_slo_latest.json"))
+    parser.add_argument(
+        "--state-file", default=str(WATCHDOG_DIR / "sleeve_slo_state.json")
+    )
+    parser.add_argument(
+        "--out-file", default=str(WATCHDOG_DIR / "sleeve_slo_latest.json")
+    )
     parser.add_argument("--required-consecutive-breaches", type=int, default=3)
     parser.add_argument("--max-heartbeat-age-seconds", type=float, default=240.0)
     parser.add_argument("--max-restarts-per-hour", type=int, default=4)
@@ -95,9 +282,31 @@ def main() -> int:
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
 
-    event_path = Path(args.event_log) if args.event_log else (WATCHDOG_DIR / f"watchdog_events_{args.day}.jsonl")
+    if args.event_log is None:
+        payload = refresh_current(
+            PROJECT_ROOT,
+            out_path=Path(args.out_file),
+            state_path=Path(args.state_file),
+            required_breaches=max(args.required_consecutive_breaches, 1),
+        )
+        print(
+            json.dumps(payload)
+            if args.json
+            else f"sleeve_slo_ok={payload['overall_ok']} alerts={len(payload['alerts'])} source=process_watchdog"
+        )
+        return 0 if payload["overall_ok"] else 2
+
+    event_path = (
+        Path(args.event_log)
+        if args.event_log
+        else (WATCHDOG_DIR / f"watchdog_events_{args.day}.jsonl")
+    )
     events = _read_jsonl(event_path)
-    latest_evt = events[-1] if events else {"timestamp_utc": _now_utc().isoformat(), "targets": []}
+    latest_evt = (
+        events[-1]
+        if events
+        else {"timestamp_utc": _now_utc().isoformat(), "targets": []}
+    )
 
     state_path = Path(args.state_file)
     state = _read_json(state_path)
@@ -129,7 +338,9 @@ def main() -> int:
 
         alert = current_streak >= max(args.required_consecutive_breaches, 1)
         if alert:
-            alerts.append({"name": name, "breaches": breaches, "streak": current_streak})
+            alerts.append(
+                {"name": name, "breaches": breaches, "streak": current_streak}
+            )
 
         entries.append(
             {
@@ -170,7 +381,9 @@ def main() -> int:
 
     out_path = Path(args.out_file)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    out_path.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8"
+    )
 
     events_out = WATCHDOG_DIR / f"sleeve_slo_events_{args.day}.jsonl"
     with events_out.open("a", encoding="utf-8") as f:
@@ -179,7 +392,9 @@ def main() -> int:
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:
-        print(f"sleeve_slo_ok={payload['overall_ok']} alerts={len(alerts)} source={event_path}")
+        print(
+            f"sleeve_slo_ok={payload['overall_ok']} alerts={len(alerts)} source={event_path}"
+        )
         for row in entries:
             print(
                 " - {name}: live={live} hb_age_s={hb} restarts_1h={r} streak={s} alert={a} breaches={b}".format(

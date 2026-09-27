@@ -1,6 +1,8 @@
+import gzip
 import json
 import sys
 from pathlib import Path
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +15,75 @@ from scripts.ops import training_lineage_manifest as src
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+@pytest.mark.parametrize("suffix", [".gz", ".raw-training.gz"])
+def test_training_lineage_reads_compressed_registry_and_training_horizon_evidence(tmp_path: Path, suffix: str) -> None:
+    health_root = tmp_path / "governance" / "health"
+    experiments_root = tmp_path / "governance" / "experiments"
+    feature_store_root = tmp_path / "governance" / "feature_store"
+
+    _write_json(
+        feature_store_root / "latest.json",
+        {
+            "ok": True,
+            "dataset_contract": {"rows_sha256": "rows-hash"},
+            "point_in_time_contract": {"dataset_join_keys": ["snapshot_id"]},
+        },
+    )
+    _write_json(health_root / "replay_hash_registry_guard_latest.json", {"ok": True})
+    _write_json(health_root / "paper_replay_drill_latest.json", {"ok": False})
+    _write_json(health_root / "paper_replay_training_latest.json", {"ok": True, "window_hours": 336})
+    _write_json(health_root / "replay_end_to_end_latest.json", {"ok": True})
+    _write_json(health_root / "promotion_quality_gate_latest.json", {"ok": False})
+    _write_json(health_root / "training_report_latest.json", {"summary": {"confirmed_training_success": False}})
+    _write_json(health_root / "snapshot_coverage_latest.json", {"ok": False, "window_hours": 2})
+    _write_json(health_root / "snapshot_coverage_training_latest.json", {"ok": True, "window_hours": 24})
+    _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": True})
+    _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "ready"})
+    experiments_root.mkdir(parents=True, exist_ok=True)
+    with gzip.open(experiments_root / f"experiment_registry.jsonl{suffix}", "wt", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp_utc": "2026-08-20T12:00:00+00:00",
+                    "experiment_id": "exp_from_cold_archive",
+                    "replayability": {
+                        "bundle_hash": "bundle-hash",
+                        "dataset_hash": "dataset-hash",
+                        "model_hash": "model-hash",
+                        "replay_hash": "replay-hash",
+                        "exact_replay_ready": True,
+                    },
+                }
+            )
+            + "\n"
+        )
+
+    payload = src.build_payload(tmp_path)
+
+    assert payload["latest_experiment_id"] == "exp_from_cold_archive"
+    assert payload["replay_drills_ok"] is True
+    assert payload["snapshot_coverage_ok"] is True
+    assert payload["source_artifacts"]["paper_replay_drill"].endswith("paper_replay_training_latest.json")
+    assert payload["source_artifacts"]["snapshot_coverage"].endswith("snapshot_coverage_training_latest.json")
+    assert payload["promotion_bundle_ready"] is False
+
+
+@pytest.mark.parametrize("suffix", [".gz", ".raw-training.gz"])
+def test_quality_and_lineage_keep_newest_registry_row_after_compaction(tmp_path, suffix):
+    from scripts.ops import training_quality_control
+
+    path = tmp_path / "experiment_registry.jsonl"
+    older = {"experiment_id": "old", "timestamp_utc": "2026-08-01T00:00:00+00:00"}
+    newer = {"experiment_id": "new", "timestamp_utc": "2026-09-01T00:00:00+00:00"}
+    with gzip.open(path.with_name(path.name + suffix), "wt") as handle:
+        handle.write(json.dumps(older) + "\n")
+    for reader in (src._load_latest_jsonl_row, training_quality_control._load_latest_jsonl_row):
+        assert reader(path) == older
+    path.write_text(json.dumps(newer) + "\n")
+    for reader in (src._load_latest_jsonl_row, training_quality_control._load_latest_jsonl_row):
+        assert reader(path) == newer
 
 
 def test_training_lineage_manifest_reports_ready_when_bundle_is_complete(tmp_path: Path) -> None:

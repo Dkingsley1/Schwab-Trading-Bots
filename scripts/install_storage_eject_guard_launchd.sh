@@ -45,6 +45,17 @@ cat > "$PLIST_PATH" <<PLIST
     <key>HOME</key><string>$HOME</string>
     <key>BOT_RUNTIME_PROFILE</key><string>$RUNTIME_PROFILE</string>
     <key>STORAGE_EJECT_GUARD_BINARY</key><string>$GUARD_BINARY</string>
+    <key>BOT_LOGS_DENY_UNSAFE_EJECT</key><string>1</string>
+    <key>BOT_LOGS_DISABLE_SPOTLIGHT_ON_MOUNT</key><string>1</string>
+    <key>BOT_LOGS_FLAP_WINDOW_SECONDS</key><string>600</string>
+    <key>BOT_LOGS_FLAP_THRESHOLD</key><string>2</string>
+    <key>BOT_LOGS_FLAP_COOLDOWN_SECONDS</key><string>900</string>
+    <key>BOT_LOGS_DISAPPEAR_DUPLICATE_COLLAPSE_SECONDS</key><string>3</string>
+    <key>BOT_LOGS_MOUNT_ATTEMPT_BASE_BACKOFF_SECONDS</key><string>15</string>
+    <key>BOT_LOGS_MOUNT_ATTEMPT_MAX_BACKOFF_SECONDS</key><string>300</string>
+    <key>BOT_LOGS_MOUNT_STABILIZATION_MIN_INTERVAL_SECONDS</key><string>300</string>
+    <key>BOT_LOGS_SPOTLIGHT_DISABLE_TIMEOUT_SECONDS</key><string>8</string>
+    <key>BOT_LOGS_EJECT_EVENT_LEDGER_MAX_BYTES</key><string>5000000</string>
   </dict>
 
   <key>WorkingDirectory</key>

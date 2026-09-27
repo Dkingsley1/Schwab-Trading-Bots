@@ -18,6 +18,8 @@ else:
     from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, parse_iso_utc, status_rank, write_payload
 
 
+from core.workload_admission import current_lease
+
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "autonomic_resource_governor_latest.json"
 DEFAULT_OVERRIDE_PATH = PROJECT_ROOT / "config" / ".env.autonomic_resource_governor_override"
 BACKLOG_GREEN_AGE_SECONDS = 900.0
@@ -230,6 +232,7 @@ def _backlog_trend(previous: dict[str, Any], current: dict[str, Any], writer: di
 
 def _stability_state(storage_metrics: dict[str, Any], runtime: dict[str, Any], writer: dict[str, Any], trend: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
     prior = _as_dict(previous.get("stability_state"))
+    increment = int(bool(trend.get("recovery_sample_due", trend.get("new_observation", True))))
     backlog_green = bool(storage_metrics.get("green", False))
     runtime_status = _status(runtime)
     runtime_clear = runtime_status in {"ready", "advisory", "ok"} and str(runtime.get("memory_pressure_level") or "normal").lower() not in {"high", "red"}
@@ -237,13 +240,13 @@ def _stability_state(storage_metrics: dict[str, Any], runtime: dict[str, Any], w
     runtime_pressure_clear = str(pressure_policy.get("mode") or "").strip().lower() in {"clear", "operator_foreground_advisory"}
     trend_regressing = str(trend.get("status") or "") == "regressing"
     writer_idle = not _writer_active(writer)
-    green_samples = (_safe_int(prior.get("consecutive_green_samples"), 0) + 1) if backlog_green and not trend_regressing else 0
-    runtime_clear_samples = (_safe_int(prior.get("consecutive_runtime_clear_samples"), 0) + 1) if runtime_clear else 0
+    green_samples = (_safe_int(prior.get("consecutive_green_samples"), 0) + increment) if backlog_green and not trend_regressing else 0
+    runtime_clear_samples = (_safe_int(prior.get("consecutive_runtime_clear_samples"), 0) + increment) if runtime_clear else 0
     runtime_pressure_clear_samples = (
-        _safe_int(prior.get("consecutive_runtime_pressure_clear_samples", prior.get("consecutive_runtime_clear_samples")), 0) + 1
+        _safe_int(prior.get("consecutive_runtime_pressure_clear_samples", prior.get("consecutive_runtime_clear_samples")), 0) + increment
     ) if runtime_clear and runtime_pressure_clear else 0
-    idle_samples = (_safe_int(prior.get("consecutive_writer_idle_samples"), 0) + 1) if writer_idle else 0
-    improvement_samples = (_safe_int(prior.get("consecutive_improving_samples"), 0) + 1) if bool(trend.get("pending_improving")) and not trend_regressing else 0
+    idle_samples = (_safe_int(prior.get("consecutive_writer_idle_samples"), 0) + increment) if writer_idle else 0
+    improvement_samples = (_safe_int(prior.get("consecutive_improving_samples"), 0) + increment) if bool(trend.get("pending_improving")) and not trend_regressing else 0
     return {
         "consecutive_green_samples": green_samples,
         "consecutive_runtime_clear_samples": runtime_clear_samples,
@@ -520,9 +523,21 @@ def _runtime_pressure_attribution_policy(runtime: dict[str, Any]) -> dict[str, A
         and memory_pressure not in {"high", "red"}
         and throttle_profile != "protect_live"
     )
+    workload_capacity_advisory = bool(
+        current_lease(runtime.get("workload_admission"), "capacity_probe")
+        and runtime.get("input_evidence_ready") is True
+        and runtime.get("protective_hold") is False
+        and _as_dict(runtime.get("adaptive_safety_limits")).get("active") is False
+        and compute_pressure in {"normal", "elevated"}
+        and memory_pressure == "normal"
+        and throttle_profile in {"observe", "soft_cap"}
+    )
     if not attribution:
         mode = "legacy_runtime_pressure" if runtime_hot else "clear"
         reason = "runtime pressure attribution is not published yet" if runtime_hot else "runtime pressure is clear"
+    elif workload_capacity_advisory:
+        mode = "workload_capacity_advisory"
+        reason = "sustained whole-host headroom permits bounded work despite overlapping CPU activity flags"
     elif low_pressure_system_advisory:
         mode = "macos_system_advisory"
         reason = "macOS system activity is visible, but runtime saturation and memory pressure remain training-safe"
@@ -586,6 +601,10 @@ def _runtime_pressure_attribution_policy(runtime: dict[str, Any]) -> dict[str, A
         )
         collector_reopen_allowed = bool(mode in {"clear", "runtime_soft_cap", "operator_foreground_advisory", "operator_foreground_guarded_advisory", "operator_observability_guarded_advisory", "support_maintenance_advisory", "support_maintenance_niced_advisory", "macos_system_advisory", "protected_work_guarded_advisory"} and memory_pressure not in {"high", "red"})
         training_allowed = bool(mode in {"clear", "operator_foreground_advisory", "operator_foreground_guarded_advisory", "operator_observability_guarded_advisory", "support_maintenance_advisory", "support_maintenance_niced_advisory", "macos_system_advisory", "protected_work_guarded_advisory"} and memory_pressure not in {"high", "red"})
+    if mode == "workload_capacity_advisory":
+        p_core_widen_allowed = False
+        training_allowed = current_lease(runtime.get("workload_admission"), "training_canary")
+        collector_reopen_allowed = training_allowed
     recommended_command = ["./scripts/ops/opsctl.sh", "runtime-throttle", "--apply", "--json"] if mode != "clear" else []
     return {
         "mode": mode,
@@ -619,10 +638,12 @@ def _runtime_pressure_attribution_policy(runtime: dict[str, Any]) -> dict[str, A
         "guarded_operator_observability_advisory": guarded_operator_observability_advisory,
         "guarded_protected_work_advisory": guarded_protected_work_advisory,
         "protected_work_hot": protected_hot,
+        "workload_capacity_advisory": workload_capacity_advisory,
+        "training_batch_cap": 1 if mode == "workload_capacity_advisory" else None,
         "p_core_widen_allowed": p_core_widen_allowed,
         "collector_reopen_allowed": collector_reopen_allowed,
         "training_allowed": training_allowed,
-        "collector_ratio_cap": 0.35 if low_pressure_external_advisory or low_pressure_system_advisory else 0.28 if guarded_foreground_advisory or guarded_operator_observability_advisory or guarded_support_advisory or low_pressure_support_advisory or guarded_protected_work_advisory or support_hot or protected_hot else 0.20 if system_hot or external_dominant else 0.55,
+        "collector_ratio_cap": 0.28 if mode == "workload_capacity_advisory" else 0.35 if low_pressure_external_advisory or low_pressure_system_advisory else 0.28 if guarded_foreground_advisory or guarded_operator_observability_advisory or guarded_support_advisory or low_pressure_support_advisory or guarded_protected_work_advisory or support_hot or protected_hot else 0.20 if system_hot or external_dominant else 0.55,
         "recommended_command": recommended_command,
         "reason": reason,
         "attribution": attribution,
@@ -1241,6 +1262,8 @@ def _training_reentry_gate(
         and writer_idle
         and not trend_regressing
     )
+    if pressure_policy.get("training_batch_cap") == 1:
+        batch30_allowed = batch20_allowed = batch10_allowed = full_allowed = False
     micro_allowed = bool(
         not (batch30_allowed or batch20_allowed or batch10_allowed or full_allowed)
         and micro_backlog_green
@@ -1254,6 +1277,8 @@ def _training_reentry_gate(
         and not trend_regressing
     )
     small_allowed = bool(
+        pressure_policy.get("training_batch_cap") != 1
+        and
         not (batch30_allowed or batch20_allowed or batch10_allowed or full_allowed)
         and backlog_green
         and green_samples >= 3
@@ -1791,6 +1816,7 @@ def _env_lines(budgets: dict[str, Any], lanes: dict[str, Any]) -> list[str]:
 
 
 def write_outputs(payload: dict[str, Any], *, out_path: Path = DEFAULT_OUT_PATH, override_path: Path = DEFAULT_OVERRIDE_PATH, apply: bool = False) -> dict[str, Any]:
+    from scripts.ops.long_runtime_common import write_text_atomic
     write_payload(out_path, payload)
     applied = False
     if apply:
@@ -1801,12 +1827,14 @@ def write_outputs(payload: dict[str, Any], *, out_path: Path = DEFAULT_OUT_PATH,
             "",
         ]
         override_path.parent.mkdir(parents=True, exist_ok=True)
-        override_path.write_text("\n".join(lines), encoding="utf-8")
+        write_text_atomic(override_path, "\n".join(lines))
         applied = True
     return {"out_path": str(out_path), "override_path": str(override_path), "applied": applied}
 
 
 def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
+    from scripts.ops.long_runtime_common import evidence_freshness, governor_observation_contract, governor_recovery_observation
+
     health = project_root / "governance" / "health"
     previous = load_json(health / "autonomic_resource_governor_latest.json")
     host = load_json(health / "host_capability_contract_latest.json")
@@ -1820,6 +1848,17 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     computer = load_json(health / "computer_task_intelligence_latest.json")
     benchmark = load_json(health / "host_self_benchmark_latest.json")
     memory_intelligence = load_json(health / "memory_pressure_intelligence_latest.json")
+    observation = governor_observation_contract({
+        "runtime_throttle": (runtime, 180.0),
+        "memory_intelligence": (memory_intelligence, 180.0),
+        "storage": (storage, 900.0),
+    })
+    computer_evidence = evidence_freshness(computer, max_age_minutes=2.0)
+    if not computer_evidence["fresh"]:
+        computer = {}
+    if not evidence_freshness(host, max_age_minutes=2.0)["fresh"]:
+        host = dict(host)
+        host["body_map"] = {**_as_dict(host.get("body_map")), "foreground_apps_and_user_activity": {}}
     capital_growth_awareness = load_json(health / "capital_growth_awareness_bridge_latest.json")
     watchdog_raw = load_json(health / "watchdog_intelligence_latest.json")
     process_watchdog = load_json(health / "process_watchdog_latest.json")
@@ -1831,10 +1870,18 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     storage_metrics = _storage_metrics(storage)
     current_seed = {"timestamp_utc": iso_now(), "storage_metrics": storage_metrics}
     trend = _backlog_trend(previous, current_seed, writer)
-    stability = _stability_state(storage_metrics, runtime, writer, trend, previous)
+    trend["new_observation"] = bool(
+        observation["input_evidence_ready"] and observation["source_timestamp_utc"] != previous.get("source_timestamp_utc")
+    )
+    recovery = governor_recovery_observation(previous, observation.get("source_timestamp_utc"), inputs_ready=observation["input_evidence_ready"])
+    trend["recovery_sample_due"] = recovery["credit_due"]
+    stability = _stability_state(storage_metrics, runtime, writer, trend, {} if recovery["reset_history"] else previous)
     lanes = _p_core_widening_controller(host, runtime, benchmark, memory_intelligence, writer, storage_metrics, trend, stability)
     user = _user_context(computer, host)
     budgets = _budgets(storage_metrics, runtime, mlx, lanes, user, writer, trend, stability, watchdog_intelligence)
+    if not observation["input_evidence_ready"]:
+        budgets["training"].update(allowed=False, mode="paused")
+        budgets["training"]["reentry_gate"].update(allowed=False, reason="governor_inputs_require_refresh")
     pressure_policy = _as_dict(budgets.get("runtime_pressure_source")) or _runtime_pressure_attribution_policy(runtime)
     budgets["backlog_writer"]["backlog_green"] = bool(storage_metrics.get("green", False))
     budgets["backlog_writer"]["green_gate"] = _as_dict(storage_metrics.get("green_gate"))
@@ -1866,6 +1913,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     action_packet = _operator_action_packet(needs, writer, storage_metrics, budgets, trend, stability)
     return {
         "timestamp_utc": current_seed["timestamp_utc"],
+        **observation,
+        "recovery_observation": recovery,
+        "computer_context_evidence": computer_evidence,
         "schema_version": 1,
         "ok": overall in {"ready", "advisory"},
         "overall_status": overall,
@@ -1930,7 +1980,8 @@ def main() -> int:
     parser.add_argument("--override", default=str(DEFAULT_OVERRIDE_PATH))
     args = parser.parse_args()
     payload = build_payload(PROJECT_ROOT)
-    result = write_outputs(payload, out_path=Path(args.out), override_path=Path(args.override), apply=args.apply)
+    result = write_outputs(payload, out_path=Path(args.out), override_path=Path(args.override), apply=args.apply and payload["input_evidence_ready"])
+    result["deferred_reason"] = "" if payload["input_evidence_ready"] else "governor_inputs_require_refresh"
     payload["write_result"] = result
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))

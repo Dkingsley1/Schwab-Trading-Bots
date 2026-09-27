@@ -68,6 +68,55 @@ def test_execution_simulator_models_option_stale_quote_rejects() -> None:
     assert result.stale_quote_probability == 1.0
 
 
+def test_execution_simulator_starts_market_fill_at_observed_touch() -> None:
+    result = simulate_execution(
+        action="BUY",
+        last_price=100.0,
+        return_1m=0.001,
+        spread_bps=2.0,
+        volatility_1m=0.001,
+        bid_price=99.95,
+        ask_price=100.05,
+        bid_size=5000.0,
+        ask_size=5000.0,
+        order_size=1.0,
+        broker="schwab",
+        market_kind="equities",
+        symbol="SCHD",
+    )
+
+    assert result.quote_source_mode == "observed_bid_ask"
+    assert result.touch_price == 100.05
+    assert result.expected_fill_price > result.touch_price
+    assert 9.9 <= result.quoted_spread_bps <= 10.1
+    assert result.beyond_touch_cost_bps > 0.0
+    assert result.total_cost_bps == result.slippage_bps
+
+
+def test_execution_simulator_rejects_crossed_or_locked_quote() -> None:
+    result = simulate_execution(
+        action="SELL",
+        last_price=100.0,
+        return_1m=0.0,
+        spread_bps=8.0,
+        volatility_1m=0.001,
+        bid_price=100.10,
+        ask_price=100.00,
+        bid_size=1000.0,
+        ask_size=1000.0,
+        order_size=1.0,
+        broker="schwab",
+        market_kind="equities",
+        symbol="SCHD",
+    )
+
+    assert result.quote_crossed_or_locked is True
+    assert result.quote_source_mode == "crossed_or_locked_bid_ask"
+    assert result.paper_execution_status == "crossed_or_locked_quote_rejected"
+    assert result.reject_probability == 1.0
+    assert result.effective_fill_ratio == 0.0
+
+
 def test_execution_lab_builds_scenario_grid() -> None:
     payload = lab.build_payload()
     assert payload["scenario_count"] >= 4

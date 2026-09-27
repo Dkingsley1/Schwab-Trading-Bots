@@ -75,3 +75,17 @@ def test_repository_registry_is_complete_and_routable() -> None:
 
     assert payload["ok"] is True
     assert payload["ready_control_count"] == payload["control_count"] >= 10
+
+
+def test_supervised_attestation_owner_uses_canonical_symbol_path() -> None:
+    from core.supervised_broker_test import attestation_path
+
+    root = ownership.PROJECT_ROOT
+    config = json.loads((root / "config/control_surface_ownership_v1.json").read_text())
+    spec = next(row for row in config["controls"]
+                if row["control_id"] == "supervised_broker_test_attestation")
+    assert spec["resource_path"] == attestation_path("O")
+    assert spec["owner_source"] == "scripts/ops/live_canary_preflight.py"
+    assert spec["owner_marker"] == "test_attestation_path(test_symbol)"
+    assert spec["owner_marker"] in (root / spec["owner_source"]).read_text()
+    assert spec["mutation_mode"] == "explicit_operator_atomic_snapshot"

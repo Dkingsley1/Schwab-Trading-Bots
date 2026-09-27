@@ -1,0 +1,419 @@
+{
+  "schema_version": 1,
+  "policy_id": "live_canary_post_first_fill_graduation_v1",
+  "status": "advisory_only",
+  "expected_canary_policy_id": "live_canary_micro_200_v1",
+  "evidence": {
+    "closeout_receipts_path": "governance/evidence/live_canary_closeout_receipts.jsonl",
+    "live_order_ledger_path": "governance/runtime/live_order_ledger.sqlite3",
+    "account_position_study_path": "governance/health/account_position_study_latest.json",
+    "max_account_study_age_seconds": 300.0,
+    "max_account_snapshot_delay_after_fill_seconds": 300.0,
+    "position_reconciliation_tolerance_quantity": 0.000001,
+    "cash_reconciliation_tolerance_usd": 0.25,
+    "conservative_fee_floor_usd_per_order": 0.02,
+    "require_hash_chained_final_order_event": true,
+    "require_broker_order_reconciliation": true,
+    "require_position_reconciliation": true,
+    "require_cash_reconciliation": true,
+    "require_position_delta_verification": true,
+    "allowed_closeout_sources": [
+      "broker_reconciled_live_canary_closeout"
+    ],
+    "accepted_fee_evidence_sources": [
+      "broker_order_activity",
+      "broker_transaction_receipt",
+      "confirmed_zero_commission_contract",
+      "conservative_policy_floor"
+    ],
+    "actual_fee_evidence_sources": [
+      "broker_order_activity",
+      "broker_transaction_receipt",
+      "confirmed_zero_commission_contract"
+    ]
+  },
+  "first_canary": {
+    "required_reconciled_entry_fills": 1,
+    "require_stage_one_symbol": true,
+    "require_no_safety_violations": true,
+    "require_no_ambiguous_broker_state": true,
+    "unlocks_more_live_orders_automatically": false
+  },
+  "stage_progression": {
+    "minimum_independent_trading_days": 3,
+    "minimum_distinct_regime_buckets": 2,
+    "minimum_positive_day_ratio": 0.5,
+    "minimum_total_post_cost_pnl_usd_exclusive": 0.0,
+    "minimum_mean_post_cost_return_bps_exclusive": 0.0,
+    "maximum_fill_deviation_bps": 20.0,
+    "maximum_daily_loss_usd": 2.0,
+    "maximum_cumulative_drawdown_usd": 10.0,
+    "maximum_consecutive_losing_round_trips": 2,
+    "require_reduce_only_exit": true,
+    "require_same_candidate_account_route_and_symbol": true,
+    "automatic_stage_progression": false,
+    "operator_review_required": true
+  },
+  "scale_governance": {
+    "enabled_operating_classes": [
+      "personal_brokerage"
+    ],
+    "automatic_operating_class_transition": false,
+    "external_investor_capital_allowed": false,
+    "third_party_account_management_allowed": false,
+    "operating_classes": [
+      {
+        "operating_class": "personal_brokerage",
+        "maximum_cataloged_capital_usd": 100000.0,
+        "required_controls": []
+      },
+      {
+        "operating_class": "advanced_personal",
+        "maximum_cataloged_capital_usd": 1000000.0,
+        "required_controls": [
+          "independent_model_validation",
+          "independent_financial_controls_review",
+          "multi_account_reconciliation"
+        ]
+      },
+      {
+        "operating_class": "professional_multi_account",
+        "maximum_cataloged_capital_usd": 10000000.0,
+        "required_controls": [
+          "independent_model_validation",
+          "independent_financial_controls_review",
+          "multi_account_reconciliation",
+          "multi_broker_failover",
+          "formal_compliance_review",
+          "institutional_transaction_cost_analysis"
+        ]
+      },
+      {
+        "operating_class": "institutional",
+        "maximum_cataloged_capital_usd": 100000000.0,
+        "required_controls": [
+          "independent_model_validation",
+          "independent_financial_controls_review",
+          "multi_account_reconciliation",
+          "multi_broker_failover",
+          "formal_compliance_review",
+          "institutional_transaction_cost_analysis",
+          "qualified_custody_architecture",
+          "independent_risk_oversight",
+          "business_continuity_site"
+        ]
+      },
+      {
+        "operating_class": "large_institutional",
+        "maximum_cataloged_capital_usd": 1000000000.0,
+        "required_controls": [
+          "independent_model_validation",
+          "independent_financial_controls_review",
+          "multi_account_reconciliation",
+          "multi_broker_failover",
+          "formal_compliance_review",
+          "institutional_transaction_cost_analysis",
+          "qualified_custody_architecture",
+          "independent_risk_oversight",
+          "business_continuity_site",
+          "market_impact_governance",
+          "operations_staffing_and_separation",
+          "external_audit_program"
+        ]
+      }
+    ],
+    "control_evidence": {
+      "independent_model_validation": false,
+      "independent_financial_controls_review": false,
+      "multi_account_reconciliation": false,
+      "multi_broker_failover": false,
+      "formal_compliance_review": false,
+      "institutional_transaction_cost_analysis": false,
+      "qualified_custody_architecture": false,
+      "independent_risk_oversight": false,
+      "business_continuity_site": false,
+      "market_impact_governance": false,
+      "operations_staffing_and_separation": false,
+      "external_audit_program": false
+    }
+  },
+  "capital_ladder": [
+    {
+      "tier": "micro_validation",
+      "account_capital_usd": 200.0,
+      "max_order_notional_usd": 100.0,
+      "max_order_quantity": 1.0,
+      "minimum_reconciled_round_trips": 0,
+      "minimum_independent_trading_days": 0,
+      "minimum_distinct_regime_buckets": 0,
+      "require_positive_normal_approx_lcb_95": false,
+      "require_positive_benchmark_excess": false,
+      "require_actual_fee_evidence": false
+    },
+    {
+      "tier": "micro_two",
+      "account_capital_usd": 400.0,
+      "max_order_notional_usd": 150.0,
+      "max_order_quantity": 2.0,
+      "minimum_reconciled_round_trips": 10,
+      "minimum_independent_trading_days": 5,
+      "minimum_distinct_regime_buckets": 2,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "micro_four",
+      "account_capital_usd": 800.0,
+      "max_order_notional_usd": 300.0,
+      "max_order_quantity": 4.0,
+      "minimum_reconciled_round_trips": 25,
+      "minimum_independent_trading_days": 10,
+      "minimum_distinct_regime_buckets": 3,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "foundation_1600",
+      "account_capital_usd": 1600.0,
+      "max_order_notional_usd": 400.0,
+      "max_order_quantity": 8.0,
+      "minimum_reconciled_round_trips": 50,
+      "minimum_independent_trading_days": 20,
+      "minimum_distinct_regime_buckets": 3,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "foundation_3200",
+      "account_capital_usd": 3200.0,
+      "max_order_notional_usd": 640.0,
+      "max_order_quantity": 12.0,
+      "minimum_reconciled_round_trips": 100,
+      "minimum_independent_trading_days": 30,
+      "minimum_distinct_regime_buckets": 4,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "foundation_6400",
+      "account_capital_usd": 6400.0,
+      "max_order_notional_usd": 960.0,
+      "max_order_quantity": 20.0,
+      "minimum_reconciled_round_trips": 175,
+      "minimum_independent_trading_days": 45,
+      "minimum_distinct_regime_buckets": 4,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "personal_12800",
+      "account_capital_usd": 12800.0,
+      "max_order_notional_usd": 1280.0,
+      "max_order_quantity": 30.0,
+      "minimum_reconciled_round_trips": 300,
+      "minimum_independent_trading_days": 60,
+      "minimum_distinct_regime_buckets": 5,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "personal_25000",
+      "account_capital_usd": 25000.0,
+      "max_order_notional_usd": 2000.0,
+      "max_order_quantity": 50.0,
+      "minimum_reconciled_round_trips": 500,
+      "minimum_independent_trading_days": 90,
+      "minimum_distinct_regime_buckets": 5,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "personal_50000",
+      "account_capital_usd": 50000.0,
+      "max_order_notional_usd": 3000.0,
+      "max_order_quantity": 75.0,
+      "minimum_reconciled_round_trips": 750,
+      "minimum_independent_trading_days": 120,
+      "minimum_distinct_regime_buckets": 6,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "personal_100000",
+      "account_capital_usd": 100000.0,
+      "max_order_notional_usd": 5000.0,
+      "max_order_quantity": 125.0,
+      "minimum_reconciled_round_trips": 1200,
+      "minimum_independent_trading_days": 180,
+      "minimum_distinct_regime_buckets": 6,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "advanced_250000",
+      "account_capital_usd": 250000.0,
+      "max_order_notional_usd": 10000.0,
+      "max_order_quantity": 250.0,
+      "minimum_reconciled_round_trips": 2000,
+      "minimum_independent_trading_days": 252,
+      "minimum_distinct_regime_buckets": 7,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "advanced_500000",
+      "account_capital_usd": 500000.0,
+      "max_order_notional_usd": 15000.0,
+      "max_order_quantity": 375.0,
+      "minimum_reconciled_round_trips": 3000,
+      "minimum_independent_trading_days": 365,
+      "minimum_distinct_regime_buckets": 7,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "advanced_1000000",
+      "account_capital_usd": 1000000.0,
+      "max_order_notional_usd": 25000.0,
+      "max_order_quantity": 625.0,
+      "minimum_reconciled_round_trips": 5000,
+      "minimum_independent_trading_days": 504,
+      "minimum_distinct_regime_buckets": 8,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "professional_2500000",
+      "account_capital_usd": 2500000.0,
+      "max_order_notional_usd": 50000.0,
+      "max_order_quantity": 1250.0,
+      "minimum_reconciled_round_trips": 7500,
+      "minimum_independent_trading_days": 756,
+      "minimum_distinct_regime_buckets": 8,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "professional_5000000",
+      "account_capital_usd": 5000000.0,
+      "max_order_notional_usd": 75000.0,
+      "max_order_quantity": 1875.0,
+      "minimum_reconciled_round_trips": 10000,
+      "minimum_independent_trading_days": 1008,
+      "minimum_distinct_regime_buckets": 9,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "professional_10000000",
+      "account_capital_usd": 10000000.0,
+      "max_order_notional_usd": 100000.0,
+      "max_order_quantity": 2500.0,
+      "minimum_reconciled_round_trips": 15000,
+      "minimum_independent_trading_days": 1260,
+      "minimum_distinct_regime_buckets": 9,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "institutional_25000000",
+      "account_capital_usd": 25000000.0,
+      "max_order_notional_usd": 187500.0,
+      "max_order_quantity": 4687.0,
+      "minimum_reconciled_round_trips": 25000,
+      "minimum_independent_trading_days": 1512,
+      "minimum_distinct_regime_buckets": 10,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "institutional_50000000",
+      "account_capital_usd": 50000000.0,
+      "max_order_notional_usd": 250000.0,
+      "max_order_quantity": 6250.0,
+      "minimum_reconciled_round_trips": 40000,
+      "minimum_independent_trading_days": 1764,
+      "minimum_distinct_regime_buckets": 10,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "institutional_100000000",
+      "account_capital_usd": 100000000.0,
+      "max_order_notional_usd": 400000.0,
+      "max_order_quantity": 10000.0,
+      "minimum_reconciled_round_trips": 60000,
+      "minimum_independent_trading_days": 2016,
+      "minimum_distinct_regime_buckets": 10,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "large_institutional_250000000",
+      "account_capital_usd": 250000000.0,
+      "max_order_notional_usd": 750000.0,
+      "max_order_quantity": 18750.0,
+      "minimum_reconciled_round_trips": 100000,
+      "minimum_independent_trading_days": 2520,
+      "minimum_distinct_regime_buckets": 12,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "large_institutional_500000000",
+      "account_capital_usd": 500000000.0,
+      "max_order_notional_usd": 1000000.0,
+      "max_order_quantity": 25000.0,
+      "minimum_reconciled_round_trips": 150000,
+      "minimum_independent_trading_days": 3024,
+      "minimum_distinct_regime_buckets": 12,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    },
+    {
+      "tier": "large_institutional_1000000000",
+      "account_capital_usd": 1000000000.0,
+      "max_order_notional_usd": 1500000.0,
+      "max_order_quantity": 37500.0,
+      "minimum_reconciled_round_trips": 250000,
+      "minimum_independent_trading_days": 3780,
+      "minimum_distinct_regime_buckets": 12,
+      "require_positive_normal_approx_lcb_95": true,
+      "require_positive_benchmark_excess": true,
+      "require_actual_fee_evidence": true
+    }
+  ],
+  "scale_interlocks": {
+    "automatic_scaling": false,
+    "loss_chasing": false,
+    "martingale": false,
+    "average_down_because_of_loss": false,
+    "profitable_trade_alone_can_graduate": false,
+    "new_policy_commit_required": true,
+    "new_candidate_scope_validation_required": true,
+    "new_immutable_release_required": true,
+    "new_operator_attestation_required": true,
+    "new_candidate_bound_allowlist_required": true,
+    "live_execution_authority": false
+  }
+}

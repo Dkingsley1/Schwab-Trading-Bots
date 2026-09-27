@@ -2,12 +2,16 @@ import json
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _write_json(path: Path, payload: dict) -> None:
+    if "bots" in payload:
+        payload = {"timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                   "source_evidence": {"complete": True}, **payload}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
 

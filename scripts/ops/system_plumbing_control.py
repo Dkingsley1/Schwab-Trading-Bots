@@ -12,17 +12,37 @@ if __package__ in {None, ""}:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from scripts.ops.long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from scripts.ops.long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        load_json,
+        ordered_unique,
+        write_payload,
+    )
 else:
-    from .long_runtime_common import PROJECT_ROOT, iso_now, load_json, ordered_unique, write_payload
+    from .long_runtime_common import (
+        PROJECT_ROOT,
+        iso_now,
+        load_json,
+        ordered_unique,
+        write_payload,
+    )
 
 
-DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "system_plumbing_control_latest.json"
+DEFAULT_OUT_PATH = (
+    PROJECT_ROOT / "governance" / "health" / "system_plumbing_control_latest.json"
+)
 RAW_LIVE_MAX_CORE_LINES = 5_000
 RAW_LIVE_MAX_TOTAL_LINES = 15_000
 RAW_LIVE_MAX_AGE_SECONDS = 15 * 60
 BOUNDED_WRITE_FAILURE_LIMIT = 12
-ROUTE_READY_STATES = {"ready", "verified", "curated_ready", "active_passthrough", "active_local_ready"}
+ROUTE_READY_STATES = {
+    "ready",
+    "verified",
+    "curated_ready",
+    "active_passthrough",
+    "active_local_ready",
+}
 STORAGE_PRESSURE_TARGET = 0.25
 STORAGE_PRESSURE_ADVISORY_CEILING = 0.50
 STORAGE_PRESSURE_HARD_CEILING = 1.0
@@ -53,7 +73,11 @@ def _as_list(value: Any) -> list[Any]:
 
 
 def _status(payload: dict[str, Any], default: str = "missing") -> str:
-    text = str(payload.get("overall_status") or payload.get("status") or "").strip().lower()
+    text = (
+        str(payload.get("overall_status") or payload.get("status") or "")
+        .strip()
+        .lower()
+    )
     if text:
         return text
     if "ok" in payload:
@@ -62,14 +86,22 @@ def _status(payload: dict[str, Any], default: str = "missing") -> str:
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
-    return str(os.getenv(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+    return str(os.getenv(name, default) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _execution_expected(global_halt: dict[str, Any]) -> bool:
     metrics = _as_dict(global_halt.get("metrics"))
     if "execution_expected" in metrics:
         return bool(metrics.get("execution_expected", False))
-    return bool(_truthy_env("ALLOW_ORDER_EXECUTION", "0") and not _truthy_env("MARKET_DATA_ONLY", "1"))
+    return bool(
+        _truthy_env("ALLOW_ORDER_EXECUTION", "0")
+        and not _truthy_env("MARKET_DATA_ONLY", "1")
+    )
 
 
 def _runtime_soft_cap_paper_relief(runtime: dict[str, Any]) -> dict[str, Any]:
@@ -82,19 +114,27 @@ def _runtime_soft_cap_paper_relief(runtime: dict[str, Any]) -> dict[str, Any]:
     paper_allowed = bool(paper_policy.get("paper_execution_allowed", False))
     paper_paused = bool(paper_policy.get("pause_paper_execution", False))
     external_guarded = bool(measurements.get("external_high_compute_guarded", False))
-    storage_overlay_guarded = bool(measurements.get("bounded_storage_overlay_guarded", False))
+    storage_overlay_guarded = bool(
+        measurements.get("bounded_storage_overlay_guarded", False)
+    )
     paper_memory_guarded = bool(measurements.get("paper_ramp_memory_guarded", False))
     paper_hot = bool(measurements.get("paper_execution_hot", False))
     bot_owned_dominant = bool(measurements.get("bot_owned_pressure_dominant", False))
-    host_saturation = _safe_float(runtime.get("host_saturation_score"), _safe_float(measurements.get("host_saturation_score"), 0.0))
-    host_ceiling = _safe_float(thresholds.get("max_guarded_external_high_compute_host_saturation_score"), 75.0)
+    host_saturation = _safe_float(
+        runtime.get("host_saturation_score"),
+        _safe_float(measurements.get("host_saturation_score"), 0.0),
+    )
+    host_ceiling = _safe_float(
+        thresholds.get("max_guarded_external_high_compute_host_saturation_score"), 75.0
+    )
     accepted_reason = reason in {
         "external_high_compute_pressure_is_capacity_limited_advisory_not_bot_runtime_degradation",
         "external_high_compute_with_bounded_storage_overlay_is_capacity_limited_advisory",
     }
     ok = bool(
         active
-        and str(soft_cap.get("to_status") or "").strip().lower() in {"ready", "advisory", "guarded_ready"}
+        and str(soft_cap.get("to_status") or "").strip().lower()
+        in {"ready", "advisory", "guarded_ready"}
         and accepted_reason
         and external_guarded
         and (storage_overlay_guarded or paper_memory_guarded)
@@ -126,10 +166,23 @@ def _raw_live(storage: dict[str, Any]) -> dict[str, Any]:
     backpressure = _as_dict(storage.get("backpressure"))
     effective = _as_dict(backpressure.get("effective_raw_live"))
     raw = effective or _as_dict(backpressure.get("raw_live")) or backpressure
-    core = _safe_int(raw.get("core_pending_lines"), _safe_int(backpressure.get("core_pending_lines"), 0))
-    total = _safe_int(raw.get("total_pending_lines"), _safe_int(backpressure.get("total_pending_lines"), 0))
-    oldest = _safe_float(raw.get("oldest_pending_age_seconds"), _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0))
-    clear = bool(core <= RAW_LIVE_MAX_CORE_LINES and total <= RAW_LIVE_MAX_TOTAL_LINES and oldest <= RAW_LIVE_MAX_AGE_SECONDS)
+    core = _safe_int(
+        raw.get("core_pending_lines"),
+        _safe_int(backpressure.get("core_pending_lines"), 0),
+    )
+    total = _safe_int(
+        raw.get("total_pending_lines"),
+        _safe_int(backpressure.get("total_pending_lines"), 0),
+    )
+    oldest = _safe_float(
+        raw.get("oldest_pending_age_seconds"),
+        _safe_float(backpressure.get("oldest_pending_age_seconds"), 0.0),
+    )
+    clear = bool(
+        core <= RAW_LIVE_MAX_CORE_LINES
+        and total <= RAW_LIVE_MAX_TOTAL_LINES
+        and oldest <= RAW_LIVE_MAX_AGE_SECONDS
+    )
     result = {
         "ok": clear,
         "status": "ready" if clear else "blocked",
@@ -142,8 +195,14 @@ def _raw_live(storage: dict[str, Any]) -> dict[str, Any]:
         "expansion_headroom_lines": max(RAW_LIVE_MAX_TOTAL_LINES - total, 0),
     }
     if effective:
-        result["source"] = str(backpressure.get("effective_raw_live_source") or effective.get("source") or "effective_raw_live")
-        result["reconciled_from_raw_live"] = bool(effective.get("reconciled_from_raw_live", False))
+        result["source"] = str(
+            backpressure.get("effective_raw_live_source")
+            or effective.get("source")
+            or "effective_raw_live"
+        )
+        result["reconciled_from_raw_live"] = bool(
+            effective.get("reconciled_from_raw_live", False)
+        )
         if isinstance(effective.get("raw_live_estimate"), dict):
             result["raw_live_estimate"] = effective["raw_live_estimate"]
     return result
@@ -156,9 +215,17 @@ def _overlay_relief(storage: dict[str, Any], raw: dict[str, Any]) -> dict[str, A
     raw_clear = bool(raw.get("ok", False))
     overlay_total = _safe_int(backpressure.get("total_pending_lines"), 0)
     raw_estimate = _as_dict(raw.get("raw_live_estimate"))
-    raw_total = _safe_int(raw_estimate.get("total_pending_lines"), _safe_int(raw.get("total_pending_lines"), 0))
+    raw_total = _safe_int(
+        raw_estimate.get("total_pending_lines"),
+        _safe_int(raw.get("total_pending_lines"), 0),
+    )
     overlay_delta = max(overlay_total - raw_total, 0)
-    active = bool(overlay_adjusted and overlay_pressure_clear and raw_clear and overlay_total <= 12000)
+    active = bool(
+        overlay_adjusted
+        and overlay_pressure_clear
+        and raw_clear
+        and overlay_total <= 12000
+    )
     return {
         "active": active,
         "overlay_adjusted": overlay_adjusted,
@@ -181,21 +248,60 @@ def _managed_deferred_backlog_relief(storage: dict[str, Any]) -> dict[str, Any]:
     support_pending = _safe_int(backpressure.get("support_pending_lines"), 0)
     deferred_pending = _safe_int(backpressure.get("deferred_pending_lines"), 0)
     total_pending = _safe_int(backpressure.get("total_pending_lines"), 0)
-    pending_threshold = max(_safe_int(backpressure.get("pending_lines_threshold"), RAW_LIVE_MAX_TOTAL_LINES), 1)
-    backlog_status = str(storage_section.get("backlog_drain_status") or storage.get("backlog_drain_status") or "").strip().lower()
-    route_ready = str(route.get("verification_state") or "").strip().lower() in ROUTE_READY_STATES
+    pending_threshold = max(
+        _safe_int(
+            backpressure.get("pending_lines_threshold"), RAW_LIVE_MAX_TOTAL_LINES
+        ),
+        1,
+    )
+    backlog_status = (
+        str(
+            storage_section.get("backlog_drain_status")
+            or storage.get("backlog_drain_status")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    route_ready = (
+        str(route.get("verification_state") or "").strip().lower() in ROUTE_READY_STATES
+    )
     integrity_clean = all(
         _safe_int(integrity.get(key), 0) == 0
-        for key in ("sql_invalid_lines", "sql_overlay_invalid_lines", "sql_overlay_oversize_payloads", "sql_overlay_ops_write_failures")
+        for key in (
+            "sql_invalid_lines",
+            "sql_overlay_invalid_lines",
+            "sql_overlay_oversize_payloads",
+            "sql_overlay_ops_write_failures",
+        )
     )
     allowed_hard_breaches = {"deferred", "support", "support_telemetry"}
-    hard_breaches = {str(item).strip().lower() for item in _as_list(writer.get("hard_breaches")) if str(item).strip()}
-    elevated_breaches = {str(item).strip().lower() for item in _as_list(writer.get("elevated_breaches")) if str(item).strip()}
-    writer_breaches_managed = bool(hard_breaches <= allowed_hard_breaches and (elevated_breaches - allowed_hard_breaches) <= {"core"})
-    hot_path_ok = bool(core_pending <= RAW_LIVE_MAX_CORE_LINES and support_pending <= 12000)
+    hard_breaches = {
+        str(item).strip().lower()
+        for item in _as_list(writer.get("hard_breaches"))
+        if str(item).strip()
+    }
+    elevated_breaches = {
+        str(item).strip().lower()
+        for item in _as_list(writer.get("elevated_breaches"))
+        if str(item).strip()
+    }
+    writer_breaches_managed = bool(
+        hard_breaches <= allowed_hard_breaches
+        and (elevated_breaches - allowed_hard_breaches) <= {"core"}
+    )
+    hot_path_ok = bool(
+        core_pending <= RAW_LIVE_MAX_CORE_LINES and support_pending <= 12000
+    )
     deferred_managed = bool(
         deferred_pending > 0
-        and backlog_status in {"waiting_for_off_hours", "off_hours_scheduled", "market_hours_guard", "handoff_requested"}
+        and backlog_status
+        in {
+            "waiting_for_off_hours",
+            "off_hours_scheduled",
+            "market_hours_guard",
+            "handoff_requested",
+        }
     )
     active = bool(
         hot_path_ok
@@ -207,7 +313,9 @@ def _managed_deferred_backlog_relief(storage: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "active": active,
-        "status": "managed_deferred_backlog_waiting_for_off_hours" if active else "inactive",
+        "status": (
+            "managed_deferred_backlog_waiting_for_off_hours" if active else "inactive"
+        ),
         "hot_path_ok": hot_path_ok,
         "deferred_backlog_managed": deferred_managed,
         "route_ready": route_ready,
@@ -222,12 +330,123 @@ def _managed_deferred_backlog_relief(storage: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _residual_deferred_backlog_relief(
+    storage: dict[str, Any],
+    raw: dict[str, Any],
+    deferred_relief: dict[str, Any],
+) -> dict[str, Any]:
+    backpressure = _as_dict(storage.get("backpressure"))
+    storage_section = _as_dict(storage.get("storage"))
+    raw_total = _safe_int(raw.get("total_pending_lines"), 0)
+    total_pending = max(
+        raw_total, _safe_int(backpressure.get("total_pending_lines"), raw_total)
+    )
+    core_pending = _safe_int(
+        raw.get("core_pending_lines"),
+        _safe_int(backpressure.get("core_pending_lines"), 0),
+    )
+    support_pending = _safe_int(backpressure.get("support_pending_lines"), 0)
+    deferred_pending = _safe_int(backpressure.get("deferred_pending_lines"), 0)
+    oldest = _safe_float(raw.get("oldest_pending_age_seconds"), 0.0)
+    severity = (
+        str(storage.get("severity") or storage.get("overall_status") or "")
+        .strip()
+        .lower()
+    )
+    pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
+    backlog_status = (
+        str(
+            storage_section.get("backlog_drain_status")
+            or storage.get("backlog_drain_status")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    residual_total_ceiling = max(
+        RAW_LIVE_MAX_TOTAL_LINES + 1_500,
+        int(RAW_LIVE_MAX_TOTAL_LINES * 1.10),
+    )
+    allowed_statuses = {
+        "drain_active",
+        "handoff_requested",
+        "waiting_for_off_hours",
+        "off_hours_scheduled",
+        "market_hours_guard",
+        "steady_state",
+    }
+    active = bool(
+        not bool(raw.get("ok", False))
+        and raw_total > RAW_LIVE_MAX_TOTAL_LINES
+        and total_pending <= residual_total_ceiling
+        and core_pending <= RAW_LIVE_MAX_CORE_LINES
+        and support_pending <= 12_000
+        and deferred_pending > 0
+        and oldest <= RAW_LIVE_MAX_AGE_SECONDS
+        and severity in {"stable", "ready", ""}
+        and pressure_index < STORAGE_PRESSURE_ADVISORY_CEILING
+        and backlog_status in allowed_statuses
+        and bool(deferred_relief.get("hot_path_ok", False))
+        and bool(deferred_relief.get("route_ready", False))
+        and bool(deferred_relief.get("integrity_clean", False))
+        and bool(deferred_relief.get("writer_breaches_managed", False))
+    )
+    return {
+        "active": active,
+        "status": "residual_deferred_backlog_drain_active" if active else "inactive",
+        "core_pending_lines": core_pending,
+        "support_pending_lines": support_pending,
+        "deferred_pending_lines": deferred_pending,
+        "total_pending_lines": total_pending,
+        "raw_total_pending_lines": raw_total,
+        "overflow_lines": max(raw_total - RAW_LIVE_MAX_TOTAL_LINES, 0),
+        "max_total_pending_lines": RAW_LIVE_MAX_TOTAL_LINES,
+        "residual_total_ceiling": residual_total_ceiling,
+        "oldest_pending_age_seconds": round(oldest, 3),
+        "max_oldest_pending_age_seconds": RAW_LIVE_MAX_AGE_SECONDS,
+        "pressure_index": round(pressure_index, 3),
+        "pressure_advisory_ceiling": STORAGE_PRESSURE_ADVISORY_CEILING,
+        "severity": severity,
+        "backlog_drain_status": backlog_status,
+        "route_ready": bool(deferred_relief.get("route_ready", False)),
+        "integrity_clean": bool(deferred_relief.get("integrity_clean", False)),
+        "writer_breaches_managed": bool(
+            deferred_relief.get("writer_breaches_managed", False)
+        ),
+        "policy": "a small, fresh, deferred-only raw-live overflow is advisory while platform drain is active and core queues, route truth, integrity, and writer shedding are clean",
+    }
+
+
 def _queue_backpressure_section(storage: dict[str, Any]) -> dict[str, Any]:
     raw = _raw_live(storage)
     overlay_relief = _overlay_relief(storage, raw)
     deferred_relief = _managed_deferred_backlog_relief(storage)
-    severity = str(storage.get("severity") or storage.get("overall_status") or "").strip().lower()
+    residual_relief = _residual_deferred_backlog_relief(
+        storage, raw, deferred_relief
+    )
+    soak_contract = _as_dict(storage.get("continuous_run_soak_contract"))
+    soak_inputs = _as_dict(soak_contract.get("inputs"))
+    severity = (
+        str(storage.get("severity") or storage.get("overall_status") or "")
+        .strip()
+        .lower()
+    )
     pressure_index = _safe_float(storage.get("pressure_index"), 0.0)
+    bounded_soak_pressure_relief = bool(
+        raw.get("ok", False)
+        and severity in {"stable", "ready", ""}
+        and pressure_index < STORAGE_PRESSURE_HARD_CEILING
+        and bool(soak_contract.get("soak_ready", False))
+        and str(soak_contract.get("status") or "").strip().lower() in {"ready", "watch"}
+        and not _as_list(soak_contract.get("blockers"))
+        and (
+            bool(soak_inputs.get("pressure_only_writer_lag_relief_safe", False))
+            or bool(
+                soak_inputs.get("managed_deep_cold_backlog_relief_soak_watch", False)
+            )
+            or bool(soak_inputs.get("bounded_sparse_reserve_soak_watch", False))
+        )
+    )
     pressure_advisory = bool(
         severity in {"stable", "ready", ""}
         and pressure_index >= STORAGE_PRESSURE_TARGET
@@ -235,24 +454,68 @@ def _queue_backpressure_section(storage: dict[str, Any]) -> dict[str, Any]:
         and raw.get("ok", False)
     )
     pressure_hard = bool(
-        (severity in {"blocked", "critical", "high"} and not bool(overlay_relief.get("active", False)) and not bool(deferred_relief.get("active", False)))
+        (
+            severity in {"blocked", "critical", "high"}
+            and not bool(overlay_relief.get("active", False))
+            and not bool(deferred_relief.get("active", False))
+            and not bool(residual_relief.get("active", False))
+        )
         or (
             pressure_index >= STORAGE_PRESSURE_ADVISORY_CEILING
             and not bool(overlay_relief.get("active", False))
             and not bool(deferred_relief.get("active", False))
+            and not bool(residual_relief.get("active", False))
+            and not bounded_soak_pressure_relief
         )
-        or (pressure_index >= STORAGE_PRESSURE_HARD_CEILING and not bool(overlay_relief.get("active", False)) and not bool(deferred_relief.get("active", False)))
+        or (
+            pressure_index >= STORAGE_PRESSURE_HARD_CEILING
+            and not bool(overlay_relief.get("active", False))
+            and not bool(deferred_relief.get("active", False))
+            and not bool(residual_relief.get("active", False))
+        )
     )
-    storage_ready = bool((severity in {"stable", "ready", ""} or bool(overlay_relief.get("active", False)) or bool(deferred_relief.get("active", False))) and not pressure_hard)
-    ok = bool((raw.get("ok", False) or bool(deferred_relief.get("active", False))) and storage_ready)
+    storage_ready = bool(
+        (
+            severity in {"stable", "ready", ""}
+            or bool(overlay_relief.get("active", False))
+            or bool(deferred_relief.get("active", False))
+            or bool(residual_relief.get("active", False))
+            or bounded_soak_pressure_relief
+        )
+        and not pressure_hard
+    )
+    ok = bool(
+        (
+            raw.get("ok", False)
+            or bool(deferred_relief.get("active", False))
+            or bool(residual_relief.get("active", False))
+        )
+        and storage_ready
+    )
     blockers = []
-    if not raw.get("ok", False) and not bool(deferred_relief.get("active", False)):
+    if (
+        not raw.get("ok", False)
+        and not bool(deferred_relief.get("active", False))
+        and not bool(residual_relief.get("active", False))
+    ):
         blockers.append("raw_live_backpressure")
     if pressure_hard:
         blockers.append(f"storage_pressure={severity or pressure_index}")
+    if ok and bounded_soak_pressure_relief:
+        status = "bounded_soak_pressure_advisory"
+    elif ok and bool(deferred_relief.get("active", False)):
+        status = "managed_deferred_backlog_advisory"
+    elif ok and bool(residual_relief.get("active", False)):
+        status = "residual_deferred_backlog_advisory"
+    elif ok and not pressure_advisory:
+        status = "ready"
+    elif ok:
+        status = "storage_pressure_advisory"
+    else:
+        status = "blocked"
     return {
         "ok": ok,
-        "status": "managed_deferred_backlog_advisory" if ok and bool(deferred_relief.get("active", False)) else ("ready" if ok and not pressure_advisory else ("storage_pressure_advisory" if ok else "blocked")),
+        "status": status,
         "blockers": blockers,
         "severity": severity,
         "pressure_index": round(pressure_index, 3),
@@ -264,7 +527,25 @@ def _queue_backpressure_section(storage: dict[str, Any]) -> dict[str, Any]:
         "raw_live": raw,
         "overlay_relief": overlay_relief,
         "managed_deferred_backlog_relief": deferred_relief,
-        "backpressure_quality_score": _safe_float(storage.get("backpressure_quality_score"), 0.0),
+        "residual_deferred_backlog_relief": residual_relief,
+        "bounded_soak_pressure_relief": {
+            "active": bounded_soak_pressure_relief,
+            "soak_status": str(soak_contract.get("status") or ""),
+            "soak_ready": bool(soak_contract.get("soak_ready", False)),
+            "managed_conditions": [
+                key
+                for key in (
+                    "pressure_only_writer_lag_relief_safe",
+                    "managed_deep_cold_backlog_relief_soak_watch",
+                    "bounded_sparse_reserve_soak_watch",
+                )
+                if bool(soak_inputs.get(key, False))
+            ],
+            "policy": "stable raw-live queues can treat soak-managed pressure relief as advisory below the hard pressure ceiling",
+        },
+        "backpressure_quality_score": _safe_float(
+            storage.get("backpressure_quality_score"), 0.0
+        ),
         "policy": "raw-live queue health is authoritative for paper admission; stable storage pressure between target and advisory ceiling is a paper advisory, not a hard block",
     }
 
@@ -279,41 +560,82 @@ def _writer_section(writer: dict[str, Any], cycle: dict[str, Any]) -> dict[str, 
     timed_out = _safe_int(writer_health.get("timed_out_shard_count"), 0)
     child_count = _safe_int(writer_health.get("active_child_writer_count"), 0)
     cycle_status = _status(cycle, default="")
-    ok = bool(not stale_or_stalled and not duplicate and timed_out <= 0 and _status(writer) in {"ready", "advisory", "degraded"})
+    ok = bool(
+        not stale_or_stalled
+        and not duplicate
+        and timed_out <= 0
+        and _status(writer) in {"ready", "advisory", "degraded"}
+    )
     return {
         "ok": ok,
         "status": "ready" if ok else "blocked",
         "state": state or "unknown",
         "active": active,
-        "current_step": str(writer_health.get("current_step") or _as_dict(cycle.get("writer_state_before")).get("current_step") or ""),
-        "progress_age_minutes": _safe_float(writer_health.get("progress_age_minutes"), 0.0),
+        "current_step": str(
+            writer_health.get("current_step")
+            or _as_dict(cycle.get("writer_state_before")).get("current_step")
+            or ""
+        ),
+        "progress_age_minutes": _safe_float(
+            writer_health.get("progress_age_minutes"), 0.0
+        ),
         "cycle_age_minutes": _safe_float(writer_health.get("cycle_age_minutes"), 0.0),
-        "completed_shard_count": _safe_int(writer_health.get("completed_shard_count"), 0),
+        "completed_shard_count": _safe_int(
+            writer_health.get("completed_shard_count"), 0
+        ),
         "planned_shard_count": _safe_int(writer_health.get("planned_shard_count"), 0),
         "active_child_writer_count": child_count,
         "duplicate_sql_writer_processes": duplicate,
         "timed_out_shard_count": timed_out,
         "cycle_status": cycle_status,
-        "single_writer_enforced": bool(_as_dict(writer.get("safety_envelope")).get("single_writer_only", True)),
+        "single_writer_enforced": bool(
+            _as_dict(writer.get("safety_envelope")).get("single_writer_only", True)
+        ),
         "policy": "allow active shard linking as healthy plumbing when the single writer is progressing and no duplicate primary writer exists",
     }
 
 
-def _storage_route_section(storage: dict[str, Any], drain: dict[str, Any], failback: dict[str, Any]) -> dict[str, Any]:
-    route = _as_dict(storage.get("external_route_verification")) or _as_dict(failback.get("route_verification"))
+def _storage_route_section(
+    storage: dict[str, Any], drain: dict[str, Any], failback: dict[str, Any]
+) -> dict[str, Any]:
+    route = _as_dict(storage.get("external_route_verification")) or _as_dict(
+        failback.get("route_verification")
+    )
     route_state = str(route.get("verification_state") or "").strip().lower()
     mismatches = _as_list(route.get("mismatches"))
     resilience = _as_dict(storage.get("storage_resilience"))
-    split_brain = _safe_int(resilience.get("unresolved_split_brain_conflicts"), _safe_int(failback.get("split_brain_conflicts"), 0))
+    split_brain = _safe_int(
+        resilience.get("unresolved_split_brain_conflicts"),
+        _safe_int(failback.get("split_brain_conflicts"), 0),
+    )
     storage_plane = _as_dict(storage.get("storage_plane_contract"))
     disk_contract = _as_dict(storage_plane.get("disk_contract"))
     external_disk = _as_dict(disk_contract.get("external_disk"))
-    external_available = bool(external_disk.get("exists", False) or _as_dict(_as_dict(storage.get("storage_efficiency_contract")).get("metrics")).get("external_available", False))
-    external_available_gb = _safe_float(disk_contract.get("external_available_gb"), _safe_float(external_disk.get("available_gb"), 0.0))
+    external_available = bool(
+        external_disk.get("exists", False)
+        or _as_dict(
+            _as_dict(storage.get("storage_efficiency_contract")).get("metrics")
+        ).get("external_available", False)
+    )
+    external_available_gb = _safe_float(
+        disk_contract.get("external_available_gb"),
+        _safe_float(external_disk.get("available_gb"), 0.0),
+    )
     drain_status = _status(drain, default="")
-    blocked_reasons = [str(item).strip().lower() for item in _as_list(drain.get("blocked_reasons")) if str(item).strip()]
-    route_ok = bool(route_state in ROUTE_READY_STATES and not mismatches and split_brain <= 0)
-    external_drain_advisory = bool(drain_status == "blocked" and set(blocked_reasons).issubset({"external_storage_unavailable", "market_hours_guard"}))
+    blocked_reasons = [
+        str(item).strip().lower()
+        for item in _as_list(drain.get("blocked_reasons"))
+        if str(item).strip()
+    ]
+    route_ok = bool(
+        route_state in ROUTE_READY_STATES and not mismatches and split_brain <= 0
+    )
+    external_drain_advisory = bool(
+        drain_status == "blocked"
+        and set(blocked_reasons).issubset(
+            {"external_storage_unavailable", "market_hours_guard"}
+        )
+    )
     ok = bool(route_ok)
     return {
         "ok": ok,
@@ -331,8 +653,15 @@ def _storage_route_section(storage: dict[str, Any], drain: dict[str, Any], failb
             "target_free_gb": EXTERNAL_STORAGE_TARGET_FREE_GB,
             "min_free_gb": EXTERNAL_STORAGE_MIN_FREE_GB,
             "available_gb": round(external_available_gb, 3),
-            "advisory": bool(external_available and external_available_gb < EXTERNAL_STORAGE_TARGET_FREE_GB and external_available_gb >= EXTERNAL_STORAGE_MIN_FREE_GB),
-            "hard": bool(external_available and external_available_gb < EXTERNAL_STORAGE_MIN_FREE_GB),
+            "advisory": bool(
+                external_available
+                and external_available_gb < EXTERNAL_STORAGE_TARGET_FREE_GB
+                and external_available_gb >= EXTERNAL_STORAGE_MIN_FREE_GB
+            ),
+            "hard": bool(
+                external_available
+                and external_available_gb < EXTERNAL_STORAGE_MIN_FREE_GB
+            ),
         },
         "external_backlog_status": drain_status,
         "external_backlog_blocked_reasons": blocked_reasons,
@@ -350,12 +679,18 @@ def _watchdog_section(process: dict[str, Any]) -> dict[str, Any]:
     for raw in alerts:
         row = _as_dict(raw)
         alert = _as_dict(row.get("alert"))
-        severity = str(alert.get("severity") or row.get("severity") or "").strip().lower()
+        severity = (
+            str(alert.get("severity") or row.get("severity") or "").strip().lower()
+        )
         if severity in {"critical", "fatal", "blocker"}:
             critical_alerts.append(row)
         else:
             warnings.append(row)
-    ok = bool(not safety.get("active", False) and not critical_alerts and _safe_int(restart_isolation.get("execution_blocking_count"), 0) <= 0)
+    ok = bool(
+        not safety.get("active", False)
+        and not critical_alerts
+        and _safe_int(restart_isolation.get("execution_blocking_count"), 0) <= 0
+    )
     return {
         "ok": ok,
         "status": "ready" if ok else "blocked",
@@ -381,7 +716,16 @@ def _runtime_section(
     host_saturation = _safe_float(runtime.get("host_saturation_score"), 0.0)
     execution_expected = _execution_expected(global_halt)
     queue_section = _as_dict(queue_section)
-    managed_deferred_backlog = _as_dict(queue_section.get("managed_deferred_backlog_relief"))
+    managed_deferred_backlog = _as_dict(
+        queue_section.get("managed_deferred_backlog_relief")
+    )
+    residual_deferred_backlog = _as_dict(
+        queue_section.get("residual_deferred_backlog_relief")
+    )
+    queue_deferred_relief_active = bool(
+        managed_deferred_backlog.get("active", False)
+        or residual_deferred_backlog.get("active", False)
+    )
     memory_snapshot = _as_dict(memory.get("memory_snapshot"))
     memory_actual_clear = bool(
         _safe_float(memory_snapshot.get("memory_free_pct"), 100.0) >= 12.0
@@ -403,17 +747,20 @@ def _runtime_section(
         not strict_ok
         and not execution_expected
         and runtime_status in {"ready", "advisory", "guarded_ready", "degraded"}
-        and memory_status in {"ready", "advisory", "guarded_ready", "needs_work", "degraded"}
+        and memory_status
+        in {"ready", "advisory", "guarded_ready", "needs_work", "degraded"}
         and compute_ok_for_paper
         and memory_pressure not in {"high", "critical"}
         and host_saturation < 62.0
     )
     managed_deferred_advisory = bool(
         not strict_ok
-        and bool(managed_deferred_backlog.get("active", False))
+        and queue_deferred_relief_active
         and not execution_expected
-        and runtime_status in {"ready", "advisory", "guarded_ready", "degraded", "blocked"}
-        and memory_status in {"ready", "advisory", "guarded_ready", "needs_work", "degraded", "blocked"}
+        and runtime_status
+        in {"ready", "advisory", "guarded_ready", "degraded", "blocked"}
+        and memory_status
+        in {"ready", "advisory", "guarded_ready", "needs_work", "degraded", "blocked"}
         and compute not in {"high", "critical"}
         and memory_pressure not in {"high", "critical"}
         and memory_actual_clear
@@ -422,7 +769,19 @@ def _runtime_section(
     ok = bool(strict_ok or paper_only_advisory or managed_deferred_advisory)
     return {
         "ok": ok,
-        "status": "ready" if strict_ok else ("managed_deferred_backlog_advisory" if managed_deferred_advisory else ("advisory" if paper_only_advisory else "blocked")),
+        "status": (
+            "ready"
+            if strict_ok
+            else (
+                (
+                    "managed_deferred_backlog_advisory"
+                    if managed_deferred_backlog.get("active", False)
+                    else "residual_deferred_backlog_advisory"
+                )
+                if managed_deferred_advisory
+                else ("advisory" if paper_only_advisory else "blocked")
+            )
+        ),
         "runtime_status": runtime_status,
         "memory_status": memory_status,
         "host_saturation_score": host_saturation,
@@ -433,6 +792,11 @@ def _runtime_section(
         "paper_only_runtime_memory_relief": paper_only_advisory,
         "managed_deferred_runtime_memory_relief": managed_deferred_advisory,
         "managed_deferred_backlog_relief": managed_deferred_backlog,
+        "residual_deferred_backlog_relief": residual_deferred_backlog,
+        "residual_deferred_runtime_memory_relief": bool(
+            managed_deferred_advisory
+            and residual_deferred_backlog.get("active", False)
+        ),
         "memory_actual_clear": memory_actual_clear,
         "compute_pressure_advisory": compute in {"elevated", "high"} and ok,
         "runtime_soft_cap_paper_relief": soft_cap_relief,
@@ -440,7 +804,9 @@ def _runtime_section(
             "active": compute in {"elevated", "high"} and ok,
             "env": {
                 "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1",
-                "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": "0.24" if compute == "elevated" else "0.18",
+                "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": (
+                    "0.24" if compute == "elevated" else "0.18"
+                ),
                 "BOT_HEAVY_COLLECTOR_QOS": "background",
             },
             "policy": "smooth elevated compute by duty-cycling heavy read-only collectors before runtime becomes degraded",
@@ -457,31 +823,71 @@ def _data_plane_section(
     queue_section: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     write_failures = _safe_int(data_plane.get("write_failure_count"), 0)
-    raw_write_failures = _safe_int(data_plane.get("raw_write_failure_count"), write_failures)
+    raw_write_failures = _safe_int(
+        data_plane.get("raw_write_failure_count"), write_failures
+    )
     snapshot_failures = _safe_int(data_plane.get("account_snapshot_failure_count"), 0)
-    queue_depth = _safe_int(data_plane.get("queue_depth"), _safe_int(_as_dict(_as_dict(queue.get("lane_counts")).get("core")).get("pending_lines"), _safe_int(queue.get("queue_depth"), 0)))
+    queue_depth = _safe_int(
+        data_plane.get("queue_depth"),
+        _safe_int(
+            _as_dict(_as_dict(queue.get("lane_counts")).get("core")).get(
+                "pending_lines"
+            ),
+            _safe_int(queue.get("queue_depth"), 0),
+        ),
+    )
     recovery_state = str(data_plane.get("recovery_state") or "").strip().lower()
     writer_health = _as_dict(writer.get("writer_health"))
-    writer_active = bool(writer_health.get("active", False) or _as_dict(data_plane.get("writer_handoff_contract")).get("writer_service_active", False))
+    writer_active = bool(
+        writer_health.get("active", False)
+        or _as_dict(data_plane.get("writer_handoff_contract")).get(
+            "writer_service_active", False
+        )
+    )
     write_evidence = _as_dict(data_plane.get("write_path_recovery_evidence"))
-    current_storage_write_ready = bool(data_plane.get("current_storage_write_ready", False) or write_evidence.get("ready", False))
-    recovered_by_storage = bool(data_plane.get("write_path_recovered_by_storage", False))
+    current_storage_write_ready = bool(
+        data_plane.get("current_storage_write_ready", False)
+        or write_evidence.get("ready", False)
+    )
+    recovered_by_storage = bool(
+        data_plane.get("write_path_recovered_by_storage", False)
+    )
     execution_expected = _execution_expected(global_halt)
-    managed_deferred_backlog = _as_dict(_as_dict(queue_section).get("managed_deferred_backlog_relief"))
+    managed_deferred_backlog = _as_dict(
+        _as_dict(queue_section).get("managed_deferred_backlog_relief")
+    )
+    residual_deferred_backlog = _as_dict(
+        _as_dict(queue_section).get("residual_deferred_backlog_relief")
+    )
     managed_deferred_active = bool(managed_deferred_backlog.get("active", False))
+    residual_deferred_active = bool(residual_deferred_backlog.get("active", False))
+    queue_relief_active = bool(managed_deferred_active or residual_deferred_active)
     bounded_write_recovery = bool(
         raw_write_failures > 0
         and write_failures <= BOUNDED_WRITE_FAILURE_LIMIT
         and snapshot_failures <= 0
-        and (queue_depth < RAW_LIVE_MAX_TOTAL_LINES or managed_deferred_active)
-        and (current_storage_write_ready or recovered_by_storage or managed_deferred_active)
+        and (queue_depth < RAW_LIVE_MAX_TOTAL_LINES or queue_relief_active)
+        and (
+            current_storage_write_ready
+            or recovered_by_storage
+            or queue_relief_active
+        )
         and not execution_expected
-        and (writer_active or recovery_state in {"stable", "recovering_under_guard", "recovering"})
+        and (
+            writer_active
+            or recovery_state in {"stable", "recovering_under_guard", "recovering"}
+        )
     )
-    ok = bool(snapshot_failures <= 0 and (write_failures <= 0 or bounded_write_recovery) and (queue_depth < RAW_LIVE_MAX_TOTAL_LINES or managed_deferred_active))
+    ok = bool(
+        snapshot_failures <= 0
+        and (write_failures <= 0 or bounded_write_recovery)
+        and (queue_depth < RAW_LIVE_MAX_TOTAL_LINES or queue_relief_active)
+    )
     return {
         "ok": ok,
-        "status": "ready" if ok and write_failures <= 0 else ("advisory" if ok else "blocked"),
+        "status": (
+            "ready" if ok and write_failures <= 0 else ("advisory" if ok else "blocked")
+        ),
         "recovery_state": recovery_state,
         "write_failure_count": write_failures,
         "raw_write_failure_count": raw_write_failures,
@@ -492,15 +898,23 @@ def _data_plane_section(
         "write_path_recovered_by_storage": recovered_by_storage,
         "bounded_write_recovery": bounded_write_recovery,
         "managed_deferred_backlog_relief": managed_deferred_backlog,
+        "residual_deferred_backlog_relief": residual_deferred_backlog,
         "bounded_write_failure_limit": BOUNDED_WRITE_FAILURE_LIMIT,
         "policy": "old write incidents are advisory for paper only when storage truth is current, raw queues are cool, and live execution is off",
     }
 
 
-def _execution_boundary_section(global_halt: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
+def _execution_boundary_section(
+    global_halt: dict[str, Any], runtime: dict[str, Any]
+) -> dict[str, Any]:
     execution_expected = _execution_expected(global_halt)
     live_plane = _as_dict(runtime.get("live_plane"))
-    live_lane_running = bool(live_plane.get("live_lane_running", _as_dict(global_halt.get("metrics")).get("live_lane_running", False)))
+    live_lane_running = bool(
+        live_plane.get(
+            "live_lane_running",
+            _as_dict(global_halt.get("metrics")).get("live_lane_running", False),
+        )
+    )
     ok = bool(not execution_expected)
     return {
         "ok": ok,
@@ -513,8 +927,16 @@ def _execution_boundary_section(global_halt: dict[str, Any], runtime: dict[str, 
     }
 
 
-def _global_clear_relief(global_halt: dict[str, Any], data_plane_section: dict[str, Any], watchdog_section: dict[str, Any]) -> dict[str, Any]:
-    clear_blockers = [str(item).strip() for item in _as_list(global_halt.get("clear_blockers")) if str(item).strip()]
+def _global_clear_relief(
+    global_halt: dict[str, Any],
+    data_plane_section: dict[str, Any],
+    watchdog_section: dict[str, Any],
+) -> dict[str, Any]:
+    clear_blockers = [
+        str(item).strip()
+        for item in _as_list(global_halt.get("clear_blockers"))
+        if str(item).strip()
+    ]
     blocker_set = set(clear_blockers)
     write_requested = "write_path_recovery_pending" in blocker_set
     queue_requested = "queue_backpressure_active" in blocker_set
@@ -525,10 +947,29 @@ def _global_clear_relief(global_halt: dict[str, Any], data_plane_section: dict[s
         and bool(restart_iso.get("safe_to_clear_when_not_executing", False))
         and _safe_int(restart_iso.get("execution_blocking_count"), 0) <= 0
     )
-    bounded_write_recovery = bool(write_requested and data_plane_section.get("bounded_write_recovery", False))
-    managed_deferred_backlog = _as_dict(data_plane_section.get("managed_deferred_backlog_relief"))
-    managed_queue_backpressure = bool(queue_requested and managed_deferred_backlog.get("active", False) and data_plane_section.get("bounded_write_recovery", False))
-    allowed_blockers = {"write_path_recovery_pending", "restart_storm_active", "queue_backpressure_active"}
+    bounded_write_recovery = bool(
+        write_requested and data_plane_section.get("bounded_write_recovery", False)
+    )
+    managed_deferred_backlog = _as_dict(
+        data_plane_section.get("managed_deferred_backlog_relief")
+    )
+    residual_deferred_backlog = _as_dict(
+        data_plane_section.get("residual_deferred_backlog_relief")
+    )
+    queue_relief_active = bool(
+        managed_deferred_backlog.get("active", False)
+        or residual_deferred_backlog.get("active", False)
+    )
+    managed_queue_backpressure = bool(
+        queue_requested
+        and queue_relief_active
+        and data_plane_section.get("bounded_write_recovery", False)
+    )
+    allowed_blockers = {
+        "write_path_recovery_pending",
+        "restart_storm_active",
+        "queue_backpressure_active",
+    }
     active = bool(
         not bool(global_halt.get("halt", False))
         and blocker_set
@@ -538,9 +979,17 @@ def _global_clear_relief(global_halt: dict[str, Any], data_plane_section: dict[s
         and (not restart_requested or isolated_restart_storm)
     )
     if active and queue_requested and write_requested:
-        status = "managed_deferred_backpressure_advisory"
+        status = (
+            "managed_deferred_backpressure_advisory"
+            if managed_deferred_backlog.get("active", False)
+            else "residual_deferred_backpressure_advisory"
+        )
     elif active and queue_requested:
-        status = "queue_backpressure_deferred_advisory"
+        status = (
+            "queue_backpressure_deferred_advisory"
+            if managed_deferred_backlog.get("active", False)
+            else "queue_backpressure_residual_deferred_advisory"
+        )
     elif active:
         status = "ready"
     else:
@@ -553,6 +1002,7 @@ def _global_clear_relief(global_halt: dict[str, Any], data_plane_section: dict[s
         "bounded_write_recovery": bounded_write_recovery,
         "managed_queue_backpressure": managed_queue_backpressure,
         "managed_deferred_backlog_relief": managed_deferred_backlog,
+        "residual_deferred_backlog_relief": residual_deferred_backlog,
         "isolated_restart_storm": isolated_restart_storm,
         "policy": "global clear blockers become advisory for paper only when every named blocker has a bounded read-only relief contract",
     }
@@ -568,21 +1018,59 @@ def _root_cause_packet(
     if blockers:
         primary = blockers[0]
         command_map = {
-            "queue_backpressure_blocked": ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--quick-bounded", "--json"],
-            "sql_writer_blocked": ["./scripts/ops/opsctl.sh", "writer-process-intelligence", "--apply", "--json"],
-            "storage_route_blocked": ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"],
-            "collector_watchdog_blocked": ["./scripts/ops/opsctl.sh", "process-watchdog", "--json"],
-            "runtime_memory_blocked": ["./scripts/ops/opsctl.sh", "runtime-throttle", "--apply", "--json"],
-            "execution_boundary_blocked": ["./scripts/ops/opsctl.sh", "global-halt-status", "--json"],
-            "data_plane_recovery_blocked": ["./scripts/ops/opsctl.sh", "data-plane-recovery", "--json"],
-            "global_clear_blockers_unbounded": ["./scripts/ops/opsctl.sh", "global-halt-refresh", "--json"],
+            "queue_backpressure_blocked": [
+                "./scripts/ops/opsctl.sh",
+                "storage-backpressure-autopilot",
+                "--apply",
+                "--quick-bounded",
+                "--json",
+            ],
+            "sql_writer_blocked": [
+                "./scripts/ops/opsctl.sh",
+                "writer-process-intelligence",
+                "--apply",
+                "--json",
+            ],
+            "storage_route_blocked": [
+                "./scripts/ops/opsctl.sh",
+                "ingestion-storage-control",
+                "--json",
+            ],
+            "collector_watchdog_blocked": [
+                "./scripts/ops/opsctl.sh",
+                "process-watchdog",
+                "--json",
+            ],
+            "runtime_memory_blocked": [
+                "./scripts/ops/opsctl.sh",
+                "runtime-throttle",
+                "--apply",
+                "--json",
+            ],
+            "execution_boundary_blocked": [
+                "./scripts/ops/opsctl.sh",
+                "global-halt-status",
+                "--json",
+            ],
+            "data_plane_recovery_blocked": [
+                "./scripts/ops/opsctl.sh",
+                "data-plane-recovery",
+                "--json",
+            ],
+            "global_clear_blockers_unbounded": [
+                "./scripts/ops/opsctl.sh",
+                "global-halt-refresh",
+                "--json",
+            ],
         }
         return {
             "status": "blocked",
             "primary": primary,
             "why": "hard plumbing blocker remains bounded neither by raw-live queue health nor by paper-only relief contract",
             "confidence": 0.91,
-            "next_command": command_map.get(primary, ["./scripts/ops/opsctl.sh", "health-fast", "--json"]),
+            "next_command": command_map.get(
+                primary, ["./scripts/ops/opsctl.sh", "health-fast", "--json"]
+            ),
             "blockers": ordered_unique(blockers),
             "warnings": ordered_unique(warnings),
         }
@@ -593,7 +1081,13 @@ def _root_cause_packet(
             "primary": warnings[0],
             "why": "paper/data plumbing is ready, but one or more bounded maintenance lanes should keep draining in the background",
             "confidence": 0.86,
-            "next_command": ["./scripts/ops/opsctl.sh", "storage-backpressure-autopilot", "--apply", "--quick-bounded", "--json"],
+            "next_command": [
+                "./scripts/ops/opsctl.sh",
+                "storage-backpressure-autopilot",
+                "--apply",
+                "--quick-bounded",
+                "--json",
+            ],
             "blockers": [],
             "warnings": ordered_unique(warnings),
         }
@@ -625,6 +1119,7 @@ def _managed_advisories(
     raw_live = _as_dict(queue.get("raw_live"))
     overlay_relief = _as_dict(queue.get("overlay_relief"))
     deferred_relief = _as_dict(queue.get("managed_deferred_backlog_relief"))
+    residual_relief = _as_dict(queue.get("residual_deferred_backlog_relief"))
     external_reserve = _as_dict(storage.get("external_reserve"))
 
     managed: list[str] = []
@@ -633,7 +1128,11 @@ def _managed_advisories(
     if "external_backlog_drain_advisory" in warnings:
         active = bool(
             storage.get("route_ok", False)
-            and (raw_live.get("ok", False) or deferred_relief.get("active", False))
+            and (
+                raw_live.get("ok", False)
+                or deferred_relief.get("active", False)
+                or residual_relief.get("active", False)
+            )
             and storage.get("external_drain_advisory", False)
             and not external_reserve.get("hard", False)
         )
@@ -644,13 +1143,20 @@ def _managed_advisories(
             "route_ok": bool(storage.get("route_ok", False)),
             "raw_live_ready": bool(raw_live.get("ok", False)),
             "managed_deferred_backlog": bool(deferred_relief.get("active", False)),
-            "external_drain_advisory": bool(storage.get("external_drain_advisory", False)),
+            "external_drain_advisory": bool(
+                storage.get("external_drain_advisory", False)
+            ),
             "external_reserve_hard": bool(external_reserve.get("hard", False)),
-            "policy": "background drain availability is non-scoring when route truth is ready and either raw-live is cool or deferred backlog is explicitly owned by the off-hours drain",
+            "residual_deferred_backlog": bool(residual_relief.get("active", False)),
+            "policy": "background drain availability is non-scoring when route truth is ready and either raw-live is cool or deferred backlog is explicitly owned by the drain lane",
         }
 
     if "external_storage_reserve_advisory" in warnings:
-        active = bool(storage.get("route_ok", False) and external_reserve.get("advisory", False) and not external_reserve.get("hard", False))
+        active = bool(
+            storage.get("route_ok", False)
+            and external_reserve.get("advisory", False)
+            and not external_reserve.get("hard", False)
+        )
         if active:
             managed.append("external_storage_reserve_advisory")
         contracts["external_storage_reserve_advisory"] = {
@@ -663,7 +1169,10 @@ def _managed_advisories(
         }
 
     if "compute_pressure_advisory" in warnings:
-        active = bool(runtime.get("ok", False) and runtime.get("memory_pressure_level") not in {"high", "critical"})
+        active = bool(
+            runtime.get("ok", False)
+            and runtime.get("memory_pressure_level") not in {"high", "critical"}
+        )
         if active:
             managed.append("compute_pressure_advisory")
         contracts["compute_pressure_advisory"] = {
@@ -684,14 +1193,20 @@ def _managed_advisories(
         contracts["runtime_memory_paper_advisory"] = {
             "managed": active,
             "runtime_ready": bool(runtime.get("ok", False)),
-            "paper_only_runtime_memory_relief": bool(runtime.get("paper_only_runtime_memory_relief", False)),
+            "paper_only_runtime_memory_relief": bool(
+                runtime.get("paper_only_runtime_memory_relief", False)
+            ),
             "memory_pressure_level": runtime.get("memory_pressure_level"),
-            "host_saturation_score": _safe_float(runtime.get("host_saturation_score"), 0.0),
+            "host_saturation_score": _safe_float(
+                runtime.get("host_saturation_score"), 0.0
+            ),
             "policy": "elevated soft-cap runtime pressure is non-scoring for paper/data plumbing while live execution is locked",
         }
 
     if "storage_pressure_hysteresis_advisory" in warnings:
-        active = bool(raw_live.get("ok", False) and queue.get("pressure_advisory", False))
+        active = bool(
+            raw_live.get("ok", False) and queue.get("pressure_advisory", False)
+        )
         if active:
             managed.append("storage_pressure_hysteresis_advisory")
         contracts["storage_pressure_hysteresis_advisory"] = {
@@ -721,11 +1236,41 @@ def _managed_advisories(
             "managed": active,
             "queue_ready": bool(queue.get("ok", False)),
             "deferred_relief_active": bool(deferred_relief.get("active", False)),
-            "core_pending_lines": _safe_int(deferred_relief.get("core_pending_lines"), 0),
-            "support_pending_lines": _safe_int(deferred_relief.get("support_pending_lines"), 0),
-            "deferred_pending_lines": _safe_int(deferred_relief.get("deferred_pending_lines"), 0),
-            "backlog_drain_status": str(deferred_relief.get("backlog_drain_status") or ""),
+            "core_pending_lines": _safe_int(
+                deferred_relief.get("core_pending_lines"), 0
+            ),
+            "support_pending_lines": _safe_int(
+                deferred_relief.get("support_pending_lines"), 0
+            ),
+            "deferred_pending_lines": _safe_int(
+                deferred_relief.get("deferred_pending_lines"), 0
+            ),
+            "backlog_drain_status": str(
+                deferred_relief.get("backlog_drain_status") or ""
+            ),
             "policy": "deferred backlog is non-scoring for paper/data plumbing while hot queues are clean and the off-hours drain owns the debt",
+        }
+
+    if "residual_deferred_backlog_advisory" in warnings:
+        residual_relief = _as_dict(queue.get("residual_deferred_backlog_relief"))
+        active = bool(queue.get("ok", False) and residual_relief.get("active", False))
+        if active:
+            managed.append("residual_deferred_backlog_advisory")
+        contracts["residual_deferred_backlog_advisory"] = {
+            "managed": active,
+            "queue_ready": bool(queue.get("ok", False)),
+            "residual_relief_active": bool(residual_relief.get("active", False)),
+            "core_pending_lines": _safe_int(
+                residual_relief.get("core_pending_lines"), 0
+            ),
+            "deferred_pending_lines": _safe_int(
+                residual_relief.get("deferred_pending_lines"), 0
+            ),
+            "overflow_lines": _safe_int(residual_relief.get("overflow_lines"), 0),
+            "backlog_drain_status": str(
+                residual_relief.get("backlog_drain_status") or ""
+            ),
+            "policy": "small fresh deferred overflow is non-scoring while the native drain is active and core raw-live flow is under limit",
         }
 
     if "write_path_recovery_advisory" in warnings:
@@ -734,17 +1279,34 @@ def _managed_advisories(
             and data_plane.get("bounded_write_recovery", False)
             and (
                 data_plane.get("current_storage_write_ready", False)
-                or _as_dict(data_plane.get("managed_deferred_backlog_relief")).get("active", False)
+                or _as_dict(data_plane.get("managed_deferred_backlog_relief")).get(
+                    "active", False
+                )
+                or _as_dict(data_plane.get("residual_deferred_backlog_relief")).get(
+                    "active", False
+                )
             )
-            and str(clear_relief.get("status") or "") in {"not_needed", "ready", "managed_deferred_backpressure_advisory", "queue_backpressure_deferred_advisory"}
+            and str(clear_relief.get("status") or "")
+            in {
+                "not_needed",
+                "ready",
+                "managed_deferred_backpressure_advisory",
+                "queue_backpressure_deferred_advisory",
+                "residual_deferred_backpressure_advisory",
+                "queue_backpressure_residual_deferred_advisory",
+            }
         )
         if active:
             managed.append("write_path_recovery_advisory")
         contracts["write_path_recovery_advisory"] = {
             "managed": active,
             "data_plane_ready": bool(data_plane.get("ok", False)),
-            "bounded_write_recovery": bool(data_plane.get("bounded_write_recovery", False)),
-            "current_storage_write_ready": bool(data_plane.get("current_storage_write_ready", False)),
+            "bounded_write_recovery": bool(
+                data_plane.get("bounded_write_recovery", False)
+            ),
+            "current_storage_write_ready": bool(
+                data_plane.get("current_storage_write_ready", False)
+            ),
             "global_clear_relief_status": str(clear_relief.get("status") or ""),
             "policy": "historical write-path recovery is non-scoring once current storage truth and data-plane recovery are ready",
         }
@@ -771,7 +1333,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     queue = load_json(health_root / "ingestion_priority_queue_latest.json")
     runtime = load_json(health_root / "runtime_throttle_control_latest.json")
     memory = load_json(health_root / "memory_efficiency_control_latest.json")
-    global_halt = load_json(health_root / "global_halt_auto_clear_latest.json") or load_json(health_root / "global_killswitch_latest.json")
+    global_halt = load_json(
+        health_root / "global_halt_auto_clear_latest.json"
+    ) or load_json(health_root / "global_killswitch_latest.json")
 
     queue_section = _queue_backpressure_section(storage)
     writer_section = _writer_section(writer, cycle)
@@ -779,8 +1343,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     watchdog_section = _watchdog_section(process)
     runtime_section = _runtime_section(runtime, memory, global_halt, queue_section)
     boundary_section = _execution_boundary_section(global_halt, runtime)
-    data_plane_section = _data_plane_section(data_plane, queue, writer, global_halt, queue_section)
-    clear_relief = _global_clear_relief(global_halt, data_plane_section, watchdog_section)
+    data_plane_section = _data_plane_section(
+        data_plane, queue, writer, global_halt, queue_section
+    )
+    clear_relief = _global_clear_relief(
+        global_halt, data_plane_section, watchdog_section
+    )
 
     sections = {
         "queue_backpressure": queue_section,
@@ -811,8 +1379,14 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         warnings.append("storage_pressure_hysteresis_advisory")
     if _as_dict(queue_section.get("overlay_relief")).get("active", False):
         warnings.append("sql_overlay_cleanup_advisory")
-    if _as_dict(queue_section.get("managed_deferred_backlog_relief")).get("active", False):
+    if _as_dict(queue_section.get("managed_deferred_backlog_relief")).get(
+        "active", False
+    ):
         warnings.append("managed_deferred_backlog_advisory")
+    if _as_dict(queue_section.get("residual_deferred_backlog_relief")).get(
+        "active", False
+    ):
+        warnings.append("residual_deferred_backlog_advisory")
     if data_plane_section.get("bounded_write_recovery", False):
         warnings.append("write_path_recovery_advisory")
 
@@ -852,25 +1426,62 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "global_clear_relief": clear_relief,
         "paper_ramp_relief_contract": {
             "ok": ok,
-            "bounded_write_recovery": bool(data_plane_section.get("bounded_write_recovery", False)),
-            "managed_deferred_backlog": bool(_as_dict(queue_section.get("managed_deferred_backlog_relief")).get("active", False)),
+            "bounded_write_recovery": bool(
+                data_plane_section.get("bounded_write_recovery", False)
+            ),
+            "managed_deferred_backlog": bool(
+                _as_dict(queue_section.get("managed_deferred_backlog_relief")).get(
+                    "active", False
+                )
+            ),
+            "residual_deferred_backlog": bool(
+                _as_dict(queue_section.get("residual_deferred_backlog_relief")).get(
+                    "active", False
+                )
+            ),
             "advisory_clear_blockers": clear_relief.get("advisory_clear_blockers", []),
             "execution_boundary": boundary_section.get("status"),
-            "raw_live_expansion_ready": bool(_as_dict(queue_section.get("raw_live")).get("ok", False)),
+            "raw_live_expansion_ready": bool(
+                _as_dict(queue_section.get("raw_live")).get("ok", False)
+            ),
             "policy": "paper ramp may consume this only for paper-live-data while live execution remains locked",
         },
         "control_env_recommendations": {
             "SYSTEM_PLUMBING_READY": "1" if ok else "0",
             "SYSTEM_PLUMBING_SCORE": str(score),
-            "PAPER_WRITE_PATH_RECOVERY_ADVISORY": "1" if data_plane_section.get("bounded_write_recovery", False) else "0",
-            "PAPER_GLOBAL_CLEAR_RELIEF_ACTIVE": "1" if clear_relief.get("active", False) else "0",
-            "BOT_COLLECTION_DUTY_CYCLE_ENABLED": "1" if _as_dict(runtime_section.get("collector_duty_cycle_recommendation")).get("active", False) else "0",
-            "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": _as_dict(_as_dict(runtime_section.get("collector_duty_cycle_recommendation")).get("env")).get("BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO", "0.35"),
+            "PAPER_WRITE_PATH_RECOVERY_ADVISORY": (
+                "1" if data_plane_section.get("bounded_write_recovery", False) else "0"
+            ),
+            "PAPER_GLOBAL_CLEAR_RELIEF_ACTIVE": (
+                "1" if clear_relief.get("active", False) else "0"
+            ),
+            "PAPER_RESIDUAL_DEFERRED_BACKLOG_ADVISORY": (
+                "1"
+                if _as_dict(queue_section.get("residual_deferred_backlog_relief")).get(
+                    "active", False
+                )
+                else "0"
+            ),
+            "BOT_COLLECTION_DUTY_CYCLE_ENABLED": (
+                "1"
+                if _as_dict(
+                    runtime_section.get("collector_duty_cycle_recommendation")
+                ).get("active", False)
+                else "0"
+            ),
+            "BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO": _as_dict(
+                _as_dict(
+                    runtime_section.get("collector_duty_cycle_recommendation")
+                ).get("env")
+            ).get("BOT_COLLECTION_DUTY_CYCLE_MAX_ACTIVE_RATIO", "0.35"),
             "ALLOW_ORDER_EXECUTION": "0",
             "MARKET_DATA_ONLY": "1",
         },
         "recommended_commands": [
-            list(root_cause.get("next_command") or ["./scripts/ops/opsctl.sh", "health-fast", "--json"]),
+            list(
+                root_cause.get("next_command")
+                or ["./scripts/ops/opsctl.sh", "health-fast", "--json"]
+            ),
             ["./scripts/ops/opsctl.sh", "data-plane-recovery", "--json"],
             ["./scripts/ops/opsctl.sh", "writer-process-intelligence", "--json"],
             ["./scripts/ops/opsctl.sh", "ingestion-storage-control", "--json"],
@@ -881,7 +1492,9 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Publish a shared plumbing control contract across queues, storage, writer, data-plane, and paper/live boundaries.")
+    parser = argparse.ArgumentParser(
+        description="Publish a shared plumbing control contract across queues, storage, writer, data-plane, and paper/live boundaries."
+    )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_PATH))
     parser.add_argument("--json", action="store_true")

@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.runtime_python import resolve_runtime_python
+from core.stack_restart_coordination import stack_restart_fence_snapshot
 
 ALERT_ROUTER = PROJECT_ROOT / 'scripts' / 'pager_alert_router.py'
 PY = resolve_runtime_python(PROJECT_ROOT)
@@ -232,6 +233,13 @@ def main() -> int:
     pressure_relief = _pressure_relief_context()
     pressure_skip_labels = set(str(label) for label in pressure_relief.get('skip_labels', []))
     explicit_stack_stop = STACK_STOPPED_FLAG.exists()
+    restart_fence = stack_restart_fence_snapshot(PROJECT_ROOT)
+    restart_in_progress = bool(restart_fence.get('active', False))
+    public_restart_fence = {
+        key: value
+        for key, value in restart_fence.items()
+        if key not in {'token', 'payload'}
+    }
 
     recovered: List[Dict[str, Any]] = []
     healthy: List[Dict[str, Any]] = []
@@ -248,6 +256,20 @@ def main() -> int:
                     'ok': True,
                     'skipped': True,
                     'reason': 'explicit_stack_stop',
+                    'actions': [],
+                }
+            )
+            continue
+        if restart_in_progress:
+            loaded = _is_loaded(domain, label)
+            skipped.append(
+                {
+                    'label': label,
+                    'loaded_before': loaded,
+                    'loaded_after': loaded,
+                    'ok': True,
+                    'skipped': True,
+                    'reason': 'stack_restart_in_progress',
                     'actions': [],
                 }
             )
@@ -317,13 +339,18 @@ def main() -> int:
         'domain': domain,
         'required_labels': required,
         'critical_labels': critical,
-        'overall_status': 'stopped' if explicit_stack_stop else ('ready' if ok else 'blocked'),
+        'overall_status': (
+            'stopped'
+            if explicit_stack_stop
+            else ('restarting' if restart_in_progress else ('ready' if ok else 'blocked'))
+        ),
         'explicit_stack_stop': {
             'active': explicit_stack_stop,
             'path': str(STACK_STOPPED_FLAG),
             'policy': 'never recover launchd runtime services across an explicit stack stop',
         },
         'pressure_relief': pressure_relief,
+        'stack_restart_fence': public_restart_fence,
         'healthy': healthy,
         'skipped': skipped,
         'recovered': recovered,

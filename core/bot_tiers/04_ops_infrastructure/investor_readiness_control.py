@@ -1,0 +1,1 @@
+../../../scripts/ops/investor_readiness_control.py

@@ -4,6 +4,90 @@
   "soak_policy": "candidate_only_routes_do_not_mutate_dependencies_or_score_as_missing_runtime",
   "candidate_libraries": [
     {
+      "package": "pandas-ta-classic",
+      "lane": "dataframe_feature_engine",
+      "runtime_family": "python",
+      "priority": "medium",
+      "reason": "Fixed native SMA/RSI/ATR diagnostics and SMA prefix/parity checks in library-research.",
+      "install_window": "research_only",
+      "target_surfaces": ["library_research"],
+      "target_functions": ["offline_indicator_diagnostics"],
+      "compatibility_notes": ["Use explicit talib=False and fixed causal indicators, not all-indicator scans."],
+      "promotion_gate": "offline_library_comparison_only_no_trading_authority"
+    },
+    {
+      "package": "backtesting",
+      "lane": "simulation_sensitivity",
+      "runtime_family": "python",
+      "priority": "medium",
+      "reason": "Third-engine zero-cost next-open timing, price and equity control in library-research.",
+      "install_window": "research_only",
+      "target_surfaces": ["library_research"],
+      "target_functions": ["offline_fill_timing_control"],
+      "compatibility_notes": ["Zero-cost control is separate from cost-inclusive strategy results. No optimizer or Bokeh server.", "Installed metadata declares AGPL-3.0; redistribution and licensing require separate review."],
+      "promotion_gate": "offline_library_comparison_only_no_trading_authority"
+    },
+    {
+      "package": "quantstats",
+      "lane": "statistical_ml",
+      "runtime_family": "python",
+      "priority": "medium",
+      "reason": "Cost-inclusive simulated equity return, drawdown and per-bar volatility diagnostics.",
+      "install_window": "research_only",
+      "target_surfaces": ["library_research"],
+      "target_functions": ["offline_performance_diagnostics"],
+      "compatibility_notes": ["No download helpers, implicit annualization or relabeling period returns as trade win rates."],
+      "promotion_gate": "offline_library_comparison_only_no_trading_authority"
+    },
+    {
+      "package": "arch",
+      "lane": "statistical_ml",
+      "runtime_family": "python",
+      "priority": "medium",
+      "reason": "One bounded GARCH(1,1) diagnostic on at most 1000 observed close returns.",
+      "install_window": "research_only",
+      "target_surfaces": ["library_research"],
+      "target_functions": ["offline_volatility_diagnostics"],
+      "compatibility_notes": ["Require 100 variable returns, cap fitting at 100 iterations, and retain unavailable or unconverged outcomes."],
+      "promotion_gate": "offline_library_comparison_only_no_trading_authority"
+    },
+    {
+      "package": "ta-lib",
+      "lane": "dataframe_feature_engine",
+      "runtime_family": "python",
+      "priority": "high",
+      "reason": "Offline SMA/RSI/ATR calculations with Polars SMA parity in library-research.",
+      "install_window": "research_only",
+      "target_surfaces": ["library_research"],
+      "target_functions": ["offline_indicator_comparison"],
+      "compatibility_notes": ["Use an explicit research interpreter; never merge its packages into the live runtime."],
+      "promotion_gate": "offline_library_comparison_only_no_trading_authority"
+    },
+    {
+      "package": "backtrader",
+      "lane": "simulation_sensitivity",
+      "runtime_family": "python",
+      "priority": "high",
+      "reason": "Bounded event-driven simulation with next-open fills and modeled costs in library-research.",
+      "install_window": "research_only",
+      "target_surfaces": ["library_research"],
+      "target_functions": ["offline_event_driven_backtest"],
+      "compatibility_notes": ["The default simulated broker only; no network, broker stores or native bot authority."],
+      "promotion_gate": "offline_library_comparison_only_no_trading_authority"
+    },
+    {
+      "package": "vectorbt",
+      "lane": "simulation_sensitivity",
+      "runtime_family": "python",
+      "priority": "high",
+      "reason": "Single-thread bounded cross-engine comparison against Backtrader in library-research.",
+      "install_window": "research_only",
+      "target_surfaces": ["library_research"],
+      "target_functions": ["offline_vectorized_backtest"],
+      "compatibility_notes": ["No Ray extras, distributed workers, parameter search or runtime strategy replacement."],
+      "promotion_gate": "offline_library_comparison_only_no_trading_authority"
+    },
+    {
       "package": "exchange-calendars",
       "lane": "broker_market_data",
       "priority": "high",
@@ -50,28 +134,37 @@
       "lane": "statistical_ml",
       "priority": "medium",
       "reason": "Change-point detection for regime shifts, raw profitability drift, and data-quality step changes.",
-      "install_window": "off_hours"
+      "install_window": "off_hours",
+      "admission_status": "blocked_python_3_14",
+      "compatibility_notes": ["Latest verified release 1.1.10 requires Python <3.14; retain the existing native regime-change controls on Python 3.14."]
     },
     {
       "package": "hmmlearn",
       "lane": "statistical_ml",
       "priority": "medium",
       "reason": "Hidden-state regime modeling for market posture and sleeve activation research.",
-      "install_window": "off_hours"
+      "install_window": "off_hours",
+      "admission_status": "deferred_no_python_3_14_wheel",
+      "compatibility_notes": ["The latest verified release is limited-maintenance and publishes wheels only through CPython 3.13."]
     },
     {
       "package": "filterpy",
       "lane": "statistical_ml",
       "priority": "medium",
       "reason": "Kalman and Bayesian filters for smoother microstructure, spread, and rate-curve state estimates.",
-      "install_window": "off_hours"
+      "install_window": "off_hours",
+      "admission_status": "deferred_existing_state_space_overlap",
+      "compatibility_notes": ["Reconsider only after an evidence gap remains beyond the existing state-space and Kalman implementations."]
     },
     {
       "package": "river",
       "lane": "statistical_ml",
       "priority": "medium",
       "reason": "Online-learning and drift-aware models for incremental paper-trading feedback loops.",
-      "install_window": "off_hours"
+      "install_window": "off_hours",
+      "admission_status": "staged_validated",
+      "validated_version": "0.26.1",
+      "activation_mode": "research_off_hours_feature_gated"
     },
     {
       "package": "shap",
@@ -85,7 +178,10 @@
       "lane": "quant_derivatives_risk",
       "priority": "medium",
       "reason": "Convex optimization for portfolio constraints, capital allocation, and risk-budget experiments.",
-      "install_window": "maintenance"
+      "install_window": "maintenance",
+      "admission_status": "staged_validated",
+      "validated_version": "1.9.2",
+      "activation_mode": "research_off_hours_feature_gated"
     },
     {
       "package": "PyPortfolioOpt",
@@ -204,7 +300,10 @@
       "install_window": "off_hours",
       "target_surfaces": ["strategy_research", "risk_service"],
       "target_functions": ["panel_factor_models", "cross_sectional_diagnostics"],
-      "compatibility_notes": ["Use in research lanes before promotion gates consume outputs."]
+      "compatibility_notes": ["Use in research lanes before promotion gates consume outputs."],
+      "admission_status": "staged_validated",
+      "validated_version": "7.0",
+      "activation_mode": "research_off_hours_feature_gated"
     },
     {
       "package": "pyod",

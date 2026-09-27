@@ -26,7 +26,21 @@ echo "[RetrainLaunch] source=$RETRAIN_TRIGGER_SOURCE label=$RETRAIN_TRIGGER_LABE
   exit 0
 }
 
+if [[ "${GENERATION_FILL_LEARNING_ENABLED:-1}" == "1" ]]; then
+  set +e
+  "$PROJECT_ROOT/scripts/ops/opsctl.sh" generation-fill-learning --apply
+  generation_fill_learning_rc=$?
+  set -e
+  echo "generation_fill_learning_refresh rc=$generation_fill_learning_rc owner=current_candidate"
+fi
+
 export RETRAIN_ACTIVE_ONLY=1
+if [[ "${TRAINING_DATASET_EVALUATION_ENABLED:-1}" == "1" ]]; then
+  "$PROJECT_ROOT/scripts/ops/opsctl.sh" training-dataset-evaluate --prepare || {
+    echo "training_dataset_evaluation waiting_for_verified_data"
+  }
+fi
+
 export RETRAIN_MAX_TARGETS=0
 export RETRAIN_MIN_MODEL_AGE_HOURS=0
 export RETRAIN_PROFILE="${RETRAIN_PROFILE:-full_overnight}"

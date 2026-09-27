@@ -1,0 +1,1066 @@
+{
+  "schema_version": 1,
+  "policy_id": "candidate_bound_alpha_concept_registry_v1",
+  "operating_mode": "paper_only_read_only_alpha_measurement_laboratory",
+  "objective": "Measure, route, and expose materially useful alpha concepts without confusing catalog coverage, implemented mathematics, wired evidence, or economic support.",
+  "scope_contract": {
+    "finite_architecture_specific_ontology": true,
+    "claims_to_enumerate_every_possible_alpha_concept": false,
+    "inclusion_rule": "Include concepts that can improve forecast measurement, point-in-time validity, causal robustness, post-cost economics, diversification, execution, capacity, adaptation, or risk control for at least one governed sleeve.",
+    "duplicate_strategy_instances_created": false,
+    "cold_research_concepts_may_execute": false
+  },
+  "authority": {
+    "changes_active_action": false,
+    "changes_position_size": false,
+    "changes_allocator_weights": false,
+    "changes_training_labels": false,
+    "submits_paper_orders": false,
+    "submits_live_orders": false,
+    "grants_promotion": false,
+    "mutates_candidate": false,
+    "rewrites_history": false,
+    "guarantees_profitability": false
+  },
+  "candidate_binding": {
+    "required": true,
+    "candidate_state_path": "governance/runtime/production_candidate_state.json",
+    "paper_performance_path": "governance/health/paper_performance_latest.json",
+    "measurement_inputs_path": "governance/research/alpha_concept_inputs_latest.json",
+    "allow_historical_fallback": false,
+    "allow_cross_candidate_pooling": false,
+    "require_candidate_filter_active": true,
+    "require_zero_mismatch_rows": true,
+    "require_post_cutoff_watermark": true
+  },
+  "measurement_engines": {
+    "information_coefficient_term_structure": {
+      "function": "information_coefficient_term_structure",
+      "minimum_observations_per_horizon": 20,
+      "minimum_periods_for_icir": 5,
+      "concept_ids": [
+        "information_coefficient_term_structure",
+        "rank_information_coefficient",
+        "information_coefficient_information_ratio"
+      ]
+    },
+    "effective_breadth_transfer_coefficient": {
+      "function": "effective_breadth_transfer_coefficient",
+      "minimum_periods": 12,
+      "minimum_bets": 2,
+      "concept_ids": [
+        "effective_breadth",
+        "transfer_coefficient"
+      ]
+    },
+    "hierarchical_bayesian_skill": {
+      "function": "hierarchical_bayesian_skill",
+      "minimum_groups": 2,
+      "minimum_observations_per_group": 8,
+      "posterior_probability_floor": 0.95,
+      "concept_ids": [
+        "hierarchical_bayesian_skill"
+      ]
+    },
+    "subsample_stability_selection": {
+      "function": "subsample_stability_selection",
+      "minimum_observations": 30,
+      "replications": 200,
+      "subsample_fraction": 0.5,
+      "selection_probability_floor": 0.8,
+      "sign_consistency_floor": 0.8,
+      "seed": 1777,
+      "concept_ids": [
+        "stability_selection"
+      ]
+    },
+    "economic_alpha_decomposition": {
+      "function": "economic_alpha_decomposition",
+      "minimum_observations": 20,
+      "ridge_penalty": 1E-8,
+      "concept_ids": [
+        "economic_alpha_decomposition",
+        "selection_alpha_attribution",
+        "timing_alpha_attribution"
+      ]
+    },
+    "factor_neutral_residualization": {
+      "function": "factor_neutral_residualization",
+      "minimum_observations": 20,
+      "ridge_penalty": 1E-8,
+      "concept_ids": [
+        "full_multifactor_residual_alpha",
+        "market_beta_residual",
+        "sector_industry_neutralization",
+        "macro_factor_residual"
+      ]
+    },
+    "cross_fitted_causal_transportability": {
+      "function": "cross_fitted_causal_transportability",
+      "minimum_observations": 40,
+      "minimum_environments": 2,
+      "ridge_penalty": 0.001,
+      "maximum_relative_heterogeneity": 1.0,
+      "concept_ids": [
+        "cross_fitted_dml",
+        "transportability_stress"
+      ]
+    },
+    "capacity_impact_surface": {
+      "function": "capacity_impact_surface",
+      "minimum_surface_points": 3,
+      "impact_exponent": 0.5,
+      "concept_ids": [
+        "endogenous_capacity_impact",
+        "capacity_adjusted_net_alpha"
+      ]
+    },
+    "execution_alpha_attribution": {
+      "function": "execution_alpha_attribution",
+      "minimum_fills": 1,
+      "concept_ids": [
+        "execution_alpha_attribution",
+        "execution_component_attribution"
+      ]
+    },
+    "point_in_time_security_master_audit": {
+      "function": "point_in_time_security_master_audit",
+      "minimum_identifier_coverage_ratio": 1.0,
+      "minimum_observation_resolution_ratio": 1.0,
+      "concept_ids": [
+        "point_in_time_security_master",
+        "survivorship_delisting_control",
+        "corporate_action_adjustment"
+      ]
+    },
+    "split_conformal_residual_calibration": {
+      "function": "split_conformal_residual_calibration",
+      "minimum_observations": 30,
+      "calibration_fraction": 0.6,
+      "miscoverage_alpha": 0.1,
+      "coverage_tolerance": 0.05,
+      "maximum_width_to_outcome_scale": 2.0,
+      "concept_ids": [
+        "conformal_abstention"
+      ]
+    },
+    "sequential_change_point_stability": {
+      "function": "sequential_change_point_stability",
+      "minimum_observations_per_group": 30,
+      "minimum_groups": 1,
+      "burn_in_observations": 10,
+      "drift_delta_standard_deviations": 0.05,
+      "alarm_threshold_standard_deviations": 5.0,
+      "recent_window_observations": 10,
+      "minimum_stability_score": 0.7,
+      "concept_ids": [
+        "online_changepoint",
+        "feature_decay_monitoring"
+      ]
+    },
+    "residual_redundancy_graph": {
+      "function": "residual_redundancy_graph",
+      "minimum_common_observations": 20,
+      "minimum_groups": 2,
+      "absolute_correlation_threshold": 0.7,
+      "minimum_independent_group_ratio": 0.5,
+      "concept_ids": [
+        "ensemble_diversity",
+        "crowding_flow_residual"
+      ]
+    },
+    "regime_conditional_robustness": {
+      "function": "regime_conditional_robustness",
+      "minimum_regimes": 2,
+      "minimum_observations_per_regime": 10,
+      "minimum_supported_regime_ratio": 0.67,
+      "minimum_mean_lcb": 0.0,
+      "concept_ids": [
+        "hidden_state_regime",
+        "volatility_regime",
+        "correlation_break"
+      ]
+    },
+    "cost_stress_survival": {
+      "function": "cost_stress_survival",
+      "uncertainty_buffer_bps": 0.0,
+      "cost_multipliers": [
+        1.0,
+        1.25,
+        1.5,
+        2.0
+      ],
+      "minimum_positive_scenario_ratio": 0.75,
+      "concept_ids": [
+        "turnover_aware_optimization",
+        "capacity_adjusted_net_alpha"
+      ]
+    },
+    "active_learning_value_of_information": {
+      "function": "active_learning_value_of_information",
+      "minimum_gaps": 1,
+      "concept_ids": [
+        "active_learning_value_of_information"
+      ]
+    }
+  },
+  "family_defaults": {
+    "forecast_skill_validation": {
+      "route": "quantitative_research",
+      "owner": "core/quantitative_challengers.py"
+    },
+    "feature_discovery_integrity": {
+      "route": "research_validation",
+      "owner": "scripts/ops/deep_quant_layer_upgrade.py"
+    },
+    "causal_transportability": {
+      "route": "causal_research",
+      "owner": "core/causal_attribution.py"
+    },
+    "factor_residual_alpha": {
+      "route": "alpha_evidence",
+      "owner": "core/alpha_evidence_contract.py"
+    },
+    "cross_sectional_alpha": {
+      "route": "sleeve_hypothesis_catalog",
+      "owner": "config/sleeve_strategy_contracts_v1.json"
+    },
+    "time_series_regime_alpha": {
+      "route": "sleeve_hypothesis_catalog",
+      "owner": "config/sleeve_strategy_contracts_v1.json"
+    },
+    "event_special_situations": {
+      "route": "sleeve_hypothesis_catalog",
+      "owner": "config/sleeve_strategy_contracts_v1.json"
+    },
+    "macro_cross_asset_alpha": {
+      "route": "point_in_time_context",
+      "owner": "scripts/collect_decision_context_mesh.py"
+    },
+    "derivatives_volatility_alpha": {
+      "route": "sleeve_hypothesis_catalog",
+      "owner": "config/sleeve_strategy_contracts_v1.json"
+    },
+    "microstructure_execution_alpha": {
+      "route": "execution_research",
+      "owner": "scripts/platform_control_plane_report.py"
+    },
+    "portfolio_capacity_construction": {
+      "route": "portfolio_research",
+      "owner": "core/portfolio_advisory.py"
+    },
+    "learning_adaptation": {
+      "route": "research_orchestration",
+      "owner": "scripts/quantitative_challenger_report.py"
+    },
+    "data_identity_integrity": {
+      "route": "point_in_time_data",
+      "owner": "scripts/point_in_time_event_store.py"
+    },
+    "tail_risk_robustness": {
+      "route": "risk_research",
+      "owner": "core/profitability_hardening.py"
+    },
+    "economic_post_cost_attribution": {
+      "route": "profitability_evidence",
+      "owner": "scripts/ops/profitability_self_assessment.py"
+    },
+    "fundamental_alternative_information": {
+      "route": "entitlement_conditional_research",
+      "owner": "config/institutional_capability_control_v1.json"
+    }
+  },
+  "concept_families": {
+    "forecast_skill_validation": [
+      [
+        "information_coefficient_term_structure",
+        "Information coefficient term structure"
+      ],
+      [
+        "rank_information_coefficient",
+        "Cross-sectional rank information coefficient"
+      ],
+      [
+        "information_coefficient_information_ratio",
+        "Information coefficient stability and ICIR"
+      ],
+      [
+        "effective_breadth",
+        "Effective independent forecast breadth"
+      ],
+      [
+        "transfer_coefficient",
+        "Forecast-to-implemented-bet transfer coefficient"
+      ],
+      [
+        "probabilistic_sharpe_ratio",
+        "Probabilistic and deflated Sharpe evidence"
+      ],
+      [
+        "always_valid_sequential_edge",
+        "Always-valid sequential edge inference"
+      ],
+      [
+        "multiple_testing_model_selection",
+        "Multiple-testing-aware model selection"
+      ]
+    ],
+    "feature_discovery_integrity": [
+      [
+        "stability_selection",
+        "Subsample stability selection"
+      ],
+      [
+        "model_x_knockoffs",
+        "Model-X knockoff false-discovery control"
+      ],
+      [
+        "conditional_randomization_test",
+        "Conditional randomization feature test"
+      ],
+      [
+        "mutual_information_screening",
+        "Nonlinear mutual-information screening"
+      ],
+      [
+        "feature_decay_monitoring",
+        "Feature stability and decay monitoring"
+      ],
+      [
+        "adversarial_validation",
+        "Train-versus-deployment adversarial validation"
+      ],
+      [
+        "feature_orthogonalization",
+        "Redundancy-aware feature orthogonalization"
+      ],
+      [
+        "feature_lineage_point_in_time",
+        "Point-in-time feature lineage"
+      ]
+    ],
+    "causal_transportability": [
+      [
+        "cross_fitted_dml",
+        "Cross-fitted double/debiased machine learning"
+      ],
+      [
+        "heterogeneous_treatment_effects",
+        "Heterogeneous treatment-effect diagnostics"
+      ],
+      [
+        "causal_forest_challenger",
+        "Causal-forest challenger"
+      ],
+      [
+        "natural_experiment_event_study",
+        "Natural-experiment event study"
+      ],
+      [
+        "invariant_environment_selection",
+        "Invariant feature selection across environments"
+      ],
+      [
+        "transportability_stress",
+        "Environment transportability stress test"
+      ],
+      [
+        "synthetic_control",
+        "Synthetic-control counterfactual"
+      ],
+      [
+        "causal_mediation_path",
+        "Causal mediation path decomposition"
+      ]
+    ],
+    "factor_residual_alpha": [
+      [
+        "market_beta_residual",
+        "Market-beta residual alpha"
+      ],
+      [
+        "size_value_profitability_investment_residual",
+        "Size, value, profitability, and investment residual"
+      ],
+      [
+        "momentum_factor_residual",
+        "Momentum-factor residual"
+      ],
+      [
+        "sector_industry_neutralization",
+        "Sector and industry neutralization"
+      ],
+      [
+        "macro_factor_residual",
+        "Macro-factor residualization"
+      ],
+      [
+        "principal_component_residual",
+        "Principal-component residual alpha"
+      ],
+      [
+        "crowding_flow_residual",
+        "Crowding and systematic-flow residual"
+      ],
+      [
+        "full_multifactor_residual_alpha",
+        "Full multi-factor neutral residual alpha"
+      ]
+    ],
+    "cross_sectional_alpha": [
+      [
+        "cross_sectional_value",
+        "Cross-sectional value"
+      ],
+      [
+        "cross_sectional_momentum",
+        "Cross-sectional price momentum"
+      ],
+      [
+        "cross_sectional_quality",
+        "Cross-sectional quality"
+      ],
+      [
+        "cross_sectional_low_volatility",
+        "Cross-sectional low volatility"
+      ],
+      [
+        "cross_sectional_size",
+        "Cross-sectional size"
+      ],
+      [
+        "earnings_revision_momentum",
+        "Earnings-revision momentum"
+      ],
+      [
+        "short_term_reversal",
+        "Short-term reversal"
+      ],
+      [
+        "residual_momentum",
+        "Factor-neutral residual momentum"
+      ]
+    ],
+    "time_series_regime_alpha": [
+      [
+        "time_series_trend",
+        "Time-series trend"
+      ],
+      [
+        "breakout_followthrough",
+        "Breakout and follow-through"
+      ],
+      [
+        "time_series_mean_reversion",
+        "Time-series mean reversion"
+      ],
+      [
+        "calendar_seasonality",
+        "Calendar and session seasonality"
+      ],
+      [
+        "online_changepoint",
+        "Online changepoint detection"
+      ],
+      [
+        "hidden_state_regime",
+        "Hidden-state regime inference"
+      ],
+      [
+        "volatility_targeting",
+        "Volatility-targeted exposure research"
+      ],
+      [
+        "state_space_filtering",
+        "State-space and Kalman filtering"
+      ]
+    ],
+    "event_special_situations": [
+      [
+        "post_earnings_drift",
+        "Post-earnings-announcement drift"
+      ],
+      [
+        "earnings_surprise_reaction",
+        "Earnings-surprise reaction"
+      ],
+      [
+        "merger_arbitrage",
+        "Merger-arbitrage spread"
+      ],
+      [
+        "index_reconstitution",
+        "Index-reconstitution flow"
+      ],
+      [
+        "dividend_event",
+        "Dividend and ex-date event"
+      ],
+      [
+        "buyback_flow",
+        "Issuer buyback flow"
+      ],
+      [
+        "spinoff_tender_special_situation",
+        "Spin-off and tender special situations"
+      ],
+      [
+        "insider_ownership_change",
+        "Insider and institutional ownership change"
+      ]
+    ],
+    "macro_cross_asset_alpha": [
+      [
+        "yield_curve_term_premium",
+        "Yield-curve and term-premium signal"
+      ],
+      [
+        "central_bank_liquidity",
+        "Global central-bank liquidity impulse"
+      ],
+      [
+        "inflation_surprise",
+        "Inflation surprise"
+      ],
+      [
+        "growth_nowcast",
+        "Growth nowcast"
+      ],
+      [
+        "fx_carry_value_momentum",
+        "FX carry, value, and momentum"
+      ],
+      [
+        "credit_spread_cycle",
+        "Credit-spread cycle"
+      ],
+      [
+        "commodity_curve_carry",
+        "Commodity curve carry"
+      ],
+      [
+        "cross_asset_risk_transfer",
+        "Cross-asset risk-transfer signal"
+      ]
+    ],
+    "derivatives_volatility_alpha": [
+      [
+        "volatility_risk_premium",
+        "Volatility risk premium"
+      ],
+      [
+        "volatility_term_structure",
+        "Volatility term structure"
+      ],
+      [
+        "skew_relative_value",
+        "Skew relative value"
+      ],
+      [
+        "dispersion_relative_value",
+        "Index-component dispersion"
+      ],
+      [
+        "variance_swap_relative_value",
+        "Variance-swap relative value"
+      ],
+      [
+        "dealer_greek_flow",
+        "Dealer gamma, vanna, and charm flow"
+      ],
+      [
+        "option_implied_moments",
+        "Option-implied distribution moments"
+      ],
+      [
+        "futures_basis_carry",
+        "Futures basis and carry"
+      ]
+    ],
+    "microstructure_execution_alpha": [
+      [
+        "order_flow_imbalance",
+        "Order-flow imbalance"
+      ],
+      [
+        "spread_depth_liquidity",
+        "Spread, depth, and liquidity state"
+      ],
+      [
+        "queue_position_fill_probability",
+        "Queue position and fill probability"
+      ],
+      [
+        "auction_imbalance",
+        "Opening and closing auction imbalance"
+      ],
+      [
+        "cross_venue_lead_lag",
+        "Cross-venue lead-lag"
+      ],
+      [
+        "liquidity_provision_adverse_selection",
+        "Liquidity provision and adverse selection"
+      ],
+      [
+        "execution_alpha_attribution",
+        "Execution alpha attribution"
+      ],
+      [
+        "signal_execution_decay",
+        "Signal-to-execution decay"
+      ]
+    ],
+    "portfolio_capacity_construction": [
+      [
+        "endogenous_capacity_impact",
+        "Endogenous capacity and impact elasticity"
+      ],
+      [
+        "robust_covariance_shrinkage",
+        "Robust covariance shrinkage"
+      ],
+      [
+        "risk_parity",
+        "Risk-parity construction"
+      ],
+      [
+        "hierarchical_risk_parity",
+        "Hierarchical risk parity"
+      ],
+      [
+        "drawdown_constrained_kelly",
+        "Drawdown-constrained fractional Kelly"
+      ],
+      [
+        "turnover_aware_optimization",
+        "Turnover-aware optimization"
+      ],
+      [
+        "tax_aware_optimization",
+        "Tax-aware portfolio optimization"
+      ],
+      [
+        "cross_impact_concentration",
+        "Cross-impact and concentration control"
+      ]
+    ],
+    "learning_adaptation": [
+      [
+        "hierarchical_bayesian_skill",
+        "Hierarchical Bayesian sleeve and family skill"
+      ],
+      [
+        "bayesian_model_averaging",
+        "Bayesian model averaging"
+      ],
+      [
+        "online_expert_aggregation",
+        "Cost-aware online expert aggregation"
+      ],
+      [
+        "meta_labeling",
+        "Meta-label trade filter"
+      ],
+      [
+        "conformal_abstention",
+        "Conformal uncertainty and abstention"
+      ],
+      [
+        "active_learning_value_of_information",
+        "Active-learning value of information"
+      ],
+      [
+        "ensemble_diversity",
+        "Ensemble diversity and disagreement"
+      ],
+      [
+        "champion_challenger_retirement",
+        "Champion, challenger, decay, and retirement"
+      ]
+    ],
+    "data_identity_integrity": [
+      [
+        "point_in_time_security_master",
+        "Point-in-time security master"
+      ],
+      [
+        "survivorship_delisting_control",
+        "Survivorship and delisting control"
+      ],
+      [
+        "corporate_action_adjustment",
+        "Corporate-action adjustment"
+      ],
+      [
+        "revision_vintage_control",
+        "Macro and fundamental revision vintages"
+      ],
+      [
+        "source_confidence_consensus",
+        "Source confidence and consensus"
+      ],
+      [
+        "as_of_join_integrity",
+        "As-of join integrity"
+      ],
+      [
+        "exchange_sequence_integrity",
+        "Exchange-sequence integrity"
+      ],
+      [
+        "alternative_data_entitlement",
+        "Alternative-data entitlement and provenance"
+      ]
+    ],
+    "tail_risk_robustness": [
+      [
+        "extreme_value_tail",
+        "Extreme-value tail estimation"
+      ],
+      [
+        "conditional_value_at_risk",
+        "Conditional value at risk"
+      ],
+      [
+        "copula_tail_dependence",
+        "Copula and tail dependence"
+      ],
+      [
+        "historical_scenario_replay",
+        "Historical and synthetic scenario replay"
+      ],
+      [
+        "drawdown_state",
+        "Drawdown-state control"
+      ],
+      [
+        "volatility_regime",
+        "Volatility-regime risk"
+      ],
+      [
+        "correlation_break",
+        "Correlation-break stress"
+      ],
+      [
+        "liquidity_tail",
+        "Liquidity-tail and gap risk"
+      ]
+    ],
+    "economic_post_cost_attribution": [
+      [
+        "economic_alpha_decomposition",
+        "Economic alpha-source decomposition"
+      ],
+      [
+        "selection_alpha_attribution",
+        "Selection alpha attribution"
+      ],
+      [
+        "timing_alpha_attribution",
+        "Timing alpha attribution"
+      ],
+      [
+        "execution_component_attribution",
+        "Execution component attribution"
+      ],
+      [
+        "benchmark_hurdle",
+        "Benchmark and cash hurdle"
+      ],
+      [
+        "post_cost_lower_confidence_bound",
+        "Post-cost lower confidence bound"
+      ],
+      [
+        "full_cost_stack",
+        "Spread, fee, slippage, impact, borrow, financing, and tax stack"
+      ],
+      [
+        "capacity_adjusted_net_alpha",
+        "Capacity-adjusted net alpha"
+      ]
+    ],
+    "fundamental_alternative_information": [
+      [
+        "fundamental_quality_accruals",
+        "Fundamental quality and accruals"
+      ],
+      [
+        "valuation_revision",
+        "Valuation and estimate revision"
+      ],
+      [
+        "supply_chain_graph",
+        "Supply-chain graph signal"
+      ],
+      [
+        "news_filings_sentiment",
+        "News and filings sentiment"
+      ],
+      [
+        "informed_options_flow",
+        "Informed options-flow context"
+      ],
+      [
+        "short_interest_borrow",
+        "Short interest and borrow pressure"
+      ],
+      [
+        "web_app_activity",
+        "Entitled web and app activity"
+      ],
+      [
+        "geospatial_satellite_activity",
+        "Entitled geospatial and satellite activity"
+      ]
+    ]
+  },
+  "operational_overrides": {
+    "information_coefficient_term_structure": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "rank_information_coefficient": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "information_coefficient_information_ratio": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "effective_breadth": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "transfer_coefficient": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "hierarchical_bayesian_skill": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "stability_selection": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "economic_alpha_decomposition": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "selection_alpha_attribution": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "timing_alpha_attribution": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "full_multifactor_residual_alpha": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "market_beta_residual": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "sector_industry_neutralization": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "macro_factor_residual": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "cross_fitted_dml": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "transportability_stress": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "endogenous_capacity_impact": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "capacity_adjusted_net_alpha": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "execution_alpha_attribution": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "execution_component_attribution": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "point_in_time_security_master": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "survivorship_delisting_control": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "corporate_action_adjustment": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "active_learning_value_of_information": {
+      "class": "new_operational_math",
+      "owner": "core/alpha_concept_engine.py"
+    },
+    "probabilistic_sharpe_ratio": {
+      "class": "existing_operational_math",
+      "owner": "core/quantitative_challengers.py"
+    },
+    "always_valid_sequential_edge": {
+      "class": "existing_operational_math",
+      "owner": "core/quantitative_challengers.py"
+    },
+    "multiple_testing_model_selection": {
+      "class": "existing_operational_math",
+      "owner": "core/quantitative_challengers.py"
+    },
+    "drawdown_constrained_kelly": {
+      "class": "existing_operational_math",
+      "owner": "core/quantitative_challengers.py"
+    },
+    "online_expert_aggregation": {
+      "class": "existing_operational_math",
+      "owner": "core/quantitative_challengers.py"
+    },
+    "post_cost_lower_confidence_bound": {
+      "class": "existing_operational_control",
+      "owner": "scripts/paper_performance_report.py"
+    },
+    "full_cost_stack": {
+      "class": "existing_operational_control",
+      "owner": "core/alpha_evidence_contract.py"
+    },
+    "meta_labeling": {
+      "class": "existing_advisory_control",
+      "owner": "scripts/ops/deep_quant_layer_upgrade.py"
+    },
+    "conformal_abstention": {
+      "class": "existing_operational_control",
+      "owner": "scripts/ops/calibration_abstention_control.py"
+    },
+    "feature_decay_monitoring": {
+      "class": "existing_operational_control",
+      "owner": "scripts/decay_monitor.py"
+    },
+    "online_changepoint": {
+      "class": "existing_advisory_control",
+      "owner": "scripts/ops/deep_quant_layer_upgrade.py"
+    },
+    "exchange_sequence_integrity": {
+      "class": "existing_operational_control",
+      "owner": "core/exchange_sequence_control.py"
+    },
+    "as_of_join_integrity": {
+      "class": "existing_operational_control",
+      "owner": "scripts/point_in_time_event_store.py"
+    }
+  },
+  "conditional_concepts": {
+    "model_x_knockoffs": "requires a validated covariate-distribution model before false-discovery guarantees are meaningful",
+    "conditional_randomization_test": "requires a validated conditional feature distribution",
+    "causal_forest_challenger": "requires mature treatment, outcome, confounder, and environment labels",
+    "heterogeneous_treatment_effects": "requires mature treatment, outcome, confounder, and subgroup labels",
+    "alternative_data_entitlement": "requires verified rights, provenance, retention, and commercial-use terms",
+    "web_app_activity": "requires a licensed provider and point-in-time archive",
+    "geospatial_satellite_activity": "requires a licensed provider and point-in-time archive",
+    "informed_options_flow": "requires sufficient options depth, quote, trade, and entitlement evidence"
+  },
+  "resource_contract": {
+    "run_outside_market_decision_hot_path": true,
+    "compact_report_only_in_runtime": true,
+    "deterministic_seeded_resampling": true,
+    "raw_tick_scan_required": false,
+    "performance_core_priority_required": false,
+    "cold_research_lane": true
+  },
+  "reference_basis": [
+    {
+      "concepts": [
+        "cross_fitted_dml",
+        "transportability_stress"
+      ],
+      "url": "https://academic.oup.com/ectj/article/21/1/C1/5056401",
+      "title": "Double/debiased machine learning for treatment and structural parameters"
+    },
+    {
+      "concepts": [
+        "stability_selection"
+      ],
+      "url": "https://rss.onlinelibrary.wiley.com/doi/10.1111/j.1467-9868.2010.00740.x",
+      "title": "Stability selection"
+    },
+    {
+      "concepts": [
+        "model_x_knockoffs"
+      ],
+      "url": "https://lucasjanson.fas.harvard.edu/papers/Panning_For_Gold_Model_X_Knockoffs_For_High_Dimensional_Controlled_Variable_Selection-Candes_ea-2017.pdf",
+      "title": "Model-X knockoffs for high-dimensional controlled variable selection"
+    },
+    {
+      "concepts": [
+        "effective_breadth",
+        "transfer_coefficient"
+      ],
+      "url": "https://people.duke.edu/~charvey/Teaching/BA491_2005/Transfer_coefficient.pdf",
+      "title": "Portfolio Constraints and the Fundamental Law of Active Management"
+    },
+    {
+      "concepts": [
+        "market_beta_residual",
+        "size_value_profitability_investment_residual",
+        "momentum_factor_residual"
+      ],
+      "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_Library.html",
+      "title": "Kenneth R. French Data Library"
+    },
+    {
+      "concepts": [
+        "active_learning_value_of_information"
+      ],
+      "url": "https://proceedings.mlr.press/v206/bickfordsmith23a.html",
+      "title": "Prediction-Oriented Bayesian Active Learning"
+    },
+    {
+      "concepts": [
+        "conformal_abstention"
+      ],
+      "url": "https://papers.nips.cc/paper_files/paper/2019/hash/5103c3584b063c431bd1268e9b5e76fb-Abstract.html",
+      "title": "Conformalized Quantile Regression"
+    },
+    {
+      "concepts": [
+        "online_changepoint",
+        "feature_decay_monitoring"
+      ],
+      "url": "https://academic.oup.com/biomet/article-abstract/41/1-2/100/456627",
+      "title": "Continuous Inspection Schemes"
+    },
+    {
+      "concepts": [
+        "ensemble_diversity",
+        "crowding_flow_residual"
+      ],
+      "url": "https://www.ledoit.net/honey_abstract.htm",
+      "title": "Honey, I Shrunk the Sample Covariance Matrix"
+    },
+    {
+      "concepts": [
+        "turnover_aware_optimization",
+        "capacity_adjusted_net_alpha"
+      ],
+      "url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551",
+      "title": "The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting and Non-Normality"
+    }
+  ]
+}

@@ -19,6 +19,12 @@ else:
 
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "collector_capability_catalog_v1.json"
+DEFAULT_INGESTION_ROUTING_CONFIG_PATH = (
+    PROJECT_ROOT / "config" / "sleeve_ingestion_routing_v2.json"
+)
+DEFAULT_DECISION_POLICY_PATH = (
+    PROJECT_ROOT / "config" / "institutional_decision_flow_v1.json"
+)
 DEFAULT_COLLECTOR_CONTRACTS_PATH = PROJECT_ROOT / "governance" / "health" / "collector_contracts_latest.json"
 DEFAULT_HIERARCHY_PATH = PROJECT_ROOT / "governance" / "bot_organization" / "bot_hierarchy_latest.json"
 DEFAULT_OUT_PATH = PROJECT_ROOT / "governance" / "health" / "collector_capability_control_latest.json"
@@ -31,11 +37,21 @@ def build_payload(
     project_root: Path = PROJECT_ROOT,
     *,
     config_path: Path | None = None,
+    ingestion_routing_config_path: Path | None = None,
+    decision_policy_path: Path | None = None,
     collector_contracts_path: Path | None = None,
     hierarchy_path: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     root = project_root.resolve()
     config_path = config_path or root / "config" / DEFAULT_CONFIG_PATH.name
+    ingestion_routing_config_path = (
+        ingestion_routing_config_path
+        or root / "config" / DEFAULT_INGESTION_ROUTING_CONFIG_PATH.name
+    )
+    decision_policy_path = (
+        decision_policy_path
+        or root / "config" / DEFAULT_DECISION_POLICY_PATH.name
+    )
     collector_contracts_path = (
         collector_contracts_path
         or root / "governance" / "health" / DEFAULT_COLLECTOR_CONTRACTS_PATH.name
@@ -46,6 +62,8 @@ def build_payload(
         load_json(config_path),
         load_json(collector_contracts_path),
         load_json(hierarchy_path),
+        ingestion_policy=load_json(ingestion_routing_config_path),
+        decision_policy=load_json(decision_policy_path),
     )
 
 
@@ -62,6 +80,8 @@ def main() -> int:
     )
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--config")
+    parser.add_argument("--ingestion-routing-config")
+    parser.add_argument("--decision-policy")
     parser.add_argument("--collector-contracts")
     parser.add_argument("--hierarchy")
     parser.add_argument("--out-file")
@@ -71,6 +91,16 @@ def main() -> int:
 
     root = Path(args.project_root).expanduser().resolve()
     config_path = _resolve(root, args.config, DEFAULT_CONFIG_PATH)
+    ingestion_routing_config_path = _resolve(
+        root,
+        args.ingestion_routing_config,
+        DEFAULT_INGESTION_ROUTING_CONFIG_PATH,
+    )
+    decision_policy_path = _resolve(
+        root,
+        args.decision_policy,
+        DEFAULT_DECISION_POLICY_PATH,
+    )
     contracts_path = _resolve(root, args.collector_contracts, DEFAULT_COLLECTOR_CONTRACTS_PATH)
     hierarchy_path = _resolve(root, args.hierarchy, DEFAULT_HIERARCHY_PATH)
     out_path = _resolve(root, args.out_file, DEFAULT_OUT_PATH)
@@ -79,6 +109,8 @@ def main() -> int:
     health, routing = build_payload(
         root,
         config_path=config_path,
+        ingestion_routing_config_path=ingestion_routing_config_path,
+        decision_policy_path=decision_policy_path,
         collector_contracts_path=contracts_path,
         hierarchy_path=hierarchy_path,
     )

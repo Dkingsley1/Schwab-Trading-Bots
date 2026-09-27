@@ -10,6 +10,30 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import writer_cycle_coordinator as src
 
 
+def test_completed_handoff_requires_live_identity_and_unchanged_owner(tmp_path, monkeypatch):
+    state = {
+        "writer_lock_held": True, "current_step": "complete", "status": "ok",
+        "planned_shard_count": 2, "completed_shard_count": 2, "child_writer_active": False,
+        "writer_lock_owner": "pid=123 cmd=sql_link_shard_manager",
+    }
+    signals = []
+    monkeypatch.setattr(src.os, "kill", lambda *args: signals.append(args))
+    monkeypatch.setattr(src, "_pid_command", lambda pid: "unrelated-process")
+    result = src._release_completed_writer_lock(tmp_path, state)
+    assert result["reason"] == "pid_not_sql_link_shard_manager"
+    monkeypatch.setattr(src, "_pid_command", lambda pid: "python scripts/ops/sql_link_shard_manager.py")
+    monkeypatch.setattr(src, "writer_state_snapshot", lambda root: {**state, "current_step": "merge"})
+    result = src._release_completed_writer_lock(tmp_path, state)
+    assert result["reason"] == "writer_changed_before_handoff"
+    assert signals == []
+
+
+def test_storage_launcher_handoff_runs_before_maintenance_admission():
+    script = (PROJECT_ROOT / 'scripts/ops/run_storage_backpressure_autopilot_launchd.sh').read_text()
+    assert script.index('writer_cycle_coordinator.py" --apply --handoff-only') < script.index('run_guarded_maintenance.sh" storage_backpressure_autopilot')
+    assert '--no-control-plane-refresh' in script
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
@@ -148,6 +172,92 @@ def test_writer_cycle_coordinator_marks_progressing_writer_wait_as_healthy(tmp_p
     assert payload["ok"] is True
     assert payload["writer_progress"]["progress_observed"] is True
     assert payload["summary"]["writer_merged_rows_delta"] == 1500
+
+
+def test_forced_retention_delegates_writer_handoff_to_storage_lane(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "governance" / "health").mkdir(parents=True, exist_ok=True)
+    active_writer = {
+        "active": True,
+        "running": True,
+        "current_step": "merge_primary",
+        "merged_rows_this_cycle": 100,
+    }
+    monkeypatch.setattr(src, "writer_state_snapshot", lambda *args, **kwargs: active_writer)
+    monkeypatch.setattr(
+        src,
+        "_wait_for_writer_idle",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("storage lane owns this handoff")),
+    )
+    monkeypatch.setattr(
+        src.drain_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "idle",
+            "recommended_now": False,
+            "blocked_reasons": [],
+            "top_actions": [],
+            "writer_busy": False,
+        },
+    )
+    monkeypatch.setattr(
+        src.drainer_src,
+        "build_payload",
+        lambda *args, **kwargs: {
+            "overall_status": "idle",
+            "ready_drainer_count": 0,
+            "blocked_reasons": [],
+            "recommended_actions": [],
+            "active_drainer": {},
+        },
+    )
+    monkeypatch.setattr(
+        src.maintenance_src,
+        "_priority_retention_focus",
+        lambda *args, **kwargs: {
+            "enabled": True,
+            "focus_shards": ["crypto_shadow_attribution"],
+            "targeted_retention_debt_gb": 0.289,
+            "top_actions": ["run focused retention"],
+        },
+    )
+
+    def _fake_run(cmd: list[str], *, cwd: Path, payload_path: Path | None = None, timeout_sec: int) -> dict:
+        joined = " ".join(cmd)
+        if "storage_maintenance_lane.py" in joined:
+            payload = {"ok": True, "overall_status": "ready", "reason": "ok"}
+        elif "ingestion_storage_control.py" in joined:
+            payload = {"overall_status": "ready"}
+        elif "runtime_gate_dashboard.py" in joined:
+            payload = {"overall": {"status": "ready"}}
+        elif "operator_cockpit.py" in joined:
+            payload = {"overall_status": "ready"}
+        else:
+            raise AssertionError(f"unexpected command: {cmd}")
+        return {
+            "cmd": cmd,
+            "rc": 0,
+            "duration_ms": 5.0,
+            "payload": payload,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(src, "_run_json_command", _fake_run)
+
+    payload = src.build_payload(
+        project_root,
+        apply=True,
+        skip_drain=True,
+        maintenance_force=True,
+    )
+
+    assert payload["overall_status"] == "applied"
+    assert payload["maintenance_owns_writer_handoff"] is True
+    assert payload["summary"]["maintenance_applied"] is True
+    assert payload["wait_for_writer"]["requested"] is False
+    assert payload["steps"]["storage_maintenance_lane"]["status"] == "ok"
 
 
 def test_writer_cycle_coordinator_rechecks_stale_writer_after_timeout(tmp_path: Path, monkeypatch) -> None:

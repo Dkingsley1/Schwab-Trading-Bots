@@ -14,6 +14,9 @@ def _isolate_live_profitability_controls(monkeypatch) -> None:
     monkeypatch.setattr(loop, "_profit_rotation_contract_snapshot", lambda: {})
     monkeypatch.setattr(loop, "_profitability_global_policy", lambda: {})
     monkeypatch.setattr(loop, "_raw_profitability_a_recovery_contract", lambda: {})
+    monkeypatch.setattr(loop, "_paper_debt_recovery_contract", lambda: {})
+    monkeypatch.setattr(loop, "_profile_profitability_scaling_control", lambda profile: {})
+    monkeypatch.setattr(loop, "_strategy_profitability_scaling_control", lambda profile, strategy: {})
     monkeypatch.setattr(loop, "_profile_symbol_drag_penalty_norm", lambda profile, symbol: 0.0)
     monkeypatch.setattr(loop, "_profile_drag_snapshot", lambda profile: {"active": False, "drag_norm": 0.0})
 
@@ -713,6 +716,62 @@ def test_paper_mirror_profitability_quarantines_losing_strategy(monkeypatch) -> 
     assert any("paper_strategy_quarantine" in reason for reason in reasons)
     assert features["paper_profitability_strategy_control_active_norm"] == 1.0
     assert features["paper_profitability_strategy_size_multiplier_norm"] == 0.08
+
+
+def test_paper_mirror_profitability_quarantine_keeps_sell_exit_open(monkeypatch) -> None:
+    monkeypatch.setattr(loop, "_profitability_global_policy", lambda: {"apply_loser_quarantine": True})
+    monkeypatch.setattr(
+        loop,
+        "_strategy_profitability_control",
+        lambda profile, strategy: {
+            "mode": "paper_quarantine",
+            "score_penalty_norm": 0.82,
+            "position_size_multiplier": 0.0,
+        },
+    )
+
+    action, _score, reasons, features = loop._apply_paper_mirror_profitability_control(
+        profile="aggressive",
+        strategy="paper_mirror::brain_refinery_v48_position_1m_3m",
+        action="SELL",
+        score=0.36,
+        threshold=0.55,
+        reasons=["base_sell"],
+        features={"market_micro_tradeability_score_norm": 0.7},
+    )
+
+    assert action == "SELL"
+    assert any("paper_strategy_reduce_only_quarantine_exit_open" in reason for reason in reasons)
+    assert features["paper_profitability_strategy_size_multiplier_norm"] == 1.0
+
+
+def test_candidate_bound_strategy_scaling_can_expand_only_after_contract_allows(monkeypatch) -> None:
+    monkeypatch.setattr(loop, "_strategy_profitability_control", lambda profile, strategy: {})
+    monkeypatch.setattr(
+        loop,
+        "_strategy_profitability_scaling_control",
+        lambda profile, strategy: {
+            "tier": "scale_tier_1",
+            "entry_size_multiplier_norm": 1.05,
+            "above_baseline_scale_ready": True,
+            "block_new_entries": False,
+        },
+    )
+
+    action, _score, reasons, features = loop._apply_paper_mirror_profitability_control(
+        profile="default",
+        strategy="paper_mirror::candidate_bound_winner",
+        action="BUY",
+        score=0.64,
+        threshold=0.55,
+        reasons=["base_buy"],
+        features={"market_micro_tradeability_score_norm": 0.8},
+    )
+
+    assert action == "BUY"
+    assert features["paper_profitability_strategy_size_multiplier_norm"] == 1.05
+    assert features["paper_profitability_strategy_above_baseline_scale_norm"] == 1.0
+    assert any("candidate_bound_strategy_scaling tier=scale_tier_1" in reason for reason in reasons)
 
 
 def test_paper_consensus_recomputes_execution_realism_before_entry_policy(monkeypatch) -> None:
@@ -1425,3 +1484,265 @@ def test_long_term_allocation_policy_uses_staggered_accumulation(monkeypatch) ->
     assert action == "BUY"
     assert score >= 0.55
     assert any("long_term_staggered_accumulation" in reason for reason in reasons)
+
+
+def test_market_stress_quorum_ignores_non_actionable_quotes_and_requires_distinct_symbols() -> None:
+    state = {}
+
+    hold = loop._update_actionable_market_stress_quorum(
+        state=state,
+        symbol="ILLIQUID",
+        action="HOLD",
+        metric_value=90.0,
+        threshold=35.0,
+        now_ts=100.0,
+        window_seconds=120.0,
+        minimum_distinct_symbols=3,
+    )
+    first = loop._update_actionable_market_stress_quorum(
+        state=state,
+        symbol="AAA",
+        action="BUY",
+        metric_value=40.0,
+        threshold=35.0,
+        now_ts=101.0,
+        window_seconds=120.0,
+        minimum_distinct_symbols=3,
+    )
+    repeated = loop._update_actionable_market_stress_quorum(
+        state=state,
+        symbol="AAA",
+        action="SELL",
+        metric_value=45.0,
+        threshold=35.0,
+        now_ts=102.0,
+        window_seconds=120.0,
+        minimum_distinct_symbols=3,
+    )
+    loop._update_actionable_market_stress_quorum(
+        state=state,
+        symbol="BBB",
+        action="BUY",
+        metric_value=50.0,
+        threshold=35.0,
+        now_ts=103.0,
+        window_seconds=120.0,
+        minimum_distinct_symbols=3,
+    )
+    quorum = loop._update_actionable_market_stress_quorum(
+        state=state,
+        symbol="CCC",
+        action="BUY",
+        metric_value=55.0,
+        threshold=35.0,
+        now_ts=104.0,
+        window_seconds=120.0,
+        minimum_distinct_symbols=3,
+    )
+
+    assert hold["observed"] is False
+    assert first["triggered"] is False
+    assert repeated["distinct_symbol_count"] == 1
+    assert quorum["triggered"] is True
+    assert quorum["symbols"] == ["AAA", "BBB", "CCC"]
+
+
+def test_market_stress_quorum_expires_old_symbols() -> None:
+    state = {"OLD": 10.0, "FRESH": 95.0}
+
+    result = loop._update_actionable_market_stress_quorum(
+        state=state,
+        symbol="NEW",
+        action="BUY",
+        metric_value=50.0,
+        threshold=35.0,
+        now_ts=100.0,
+        window_seconds=20.0,
+        minimum_distinct_symbols=2,
+    )
+
+    assert result["triggered"] is True
+    assert result["symbols"] == ["FRESH", "NEW"]
+    assert "OLD" not in state
+
+
+def test_decision_disposition_distinguishes_no_edge_guarded_hold_and_trade() -> None:
+    no_edge = loop._decision_disposition(
+        intent_action="HOLD",
+        final_action="HOLD",
+        reasons=["grand_master_deadband"],
+    )
+    protected = loop._decision_disposition(
+        intent_action="BUY",
+        final_action="HOLD",
+        reasons=[
+            "lane_kill_switch_pause lane=equities",
+            "execution_guard_block spread_ok=0",
+        ],
+    )
+    trade = loop._decision_disposition(
+        intent_action="BUY",
+        final_action="BUY",
+        reasons=[],
+    )
+
+    assert no_edge == {
+        "disposition": "no_edge_hold",
+        "blocking_stage": "signal_selection",
+        "guard_categories": [],
+        "guard_reasons": [],
+    }
+    assert protected["disposition"] == "protected_hold"
+    assert protected["blocking_stage"] == "execution"
+    assert protected["guard_categories"] == ["execution", "circuit_breaker"]
+    assert trade["disposition"] == "paper_trade"
+
+
+def test_symbol_circuit_strikes_only_track_symbol_local_failures() -> None:
+    lane_pause = loop._symbol_scoped_guard_failure(
+        intent_action="BUY",
+        final_action="HOLD",
+        execution_guard_ok=True,
+        feature_freshness_ok=True,
+    )
+    bad_execution = loop._symbol_scoped_guard_failure(
+        intent_action="BUY",
+        final_action="HOLD",
+        execution_guard_ok=False,
+        feature_freshness_ok=True,
+    )
+    stale_features = loop._symbol_scoped_guard_failure(
+        intent_action="SELL",
+        final_action="HOLD",
+        execution_guard_ok=True,
+        feature_freshness_ok=False,
+    )
+
+    assert lane_pause is False
+    assert bad_execution is True
+    assert stale_features is True
+
+
+def test_paper_debt_recovery_pauses_buys_without_closing_reduce_path(monkeypatch) -> None:
+    monkeypatch.setenv("SHADOW_PROFILE", "default")
+    monkeypatch.setattr(loop, "_profitability_global_policy", lambda: {"apply_paper_debt_recovery": True})
+    monkeypatch.setattr(
+        loop,
+        "_paper_debt_recovery_contract",
+        lambda: {
+            "active": True,
+            "state": "paused_drawdown",
+            "baseline_debt_amount": 20_000.0,
+            "remaining_debt_amount": 20_250.0,
+            "recovery_progress_norm": 0.0,
+            "risk_budget": {"new_entries_paused": True},
+            "runtime_enforcement": {
+                "block_new_entries_on_weak_profiles": True,
+                "do_not_force_trades": True,
+                "prohibit_martingale": True,
+                "prohibit_averaging_down_for_recovery": True,
+                "prohibit_loss_based_size_increase": True,
+                "recovery_entry_size_multiplier_norm": 0.0,
+                "min_quality_gate_norm": 0.72,
+                "min_tradeability_norm": 0.58,
+                "min_execution_fitness_norm": 0.58,
+                "min_cross_asset_confirmation_norm": 0.56,
+                "max_overlap_pressure_norm": 0.58,
+            },
+        },
+    )
+    features = {
+        "market_micro_tradeability_score_norm": 0.90,
+        "execution_fitness_norm": 0.90,
+        "news_source_quality_norm": 0.90,
+        "cross_asset_confirmation_norm": 0.90,
+        "core_cross_asset_confirmation_norm": 0.90,
+        "core_portfolio_overlap_pressure_norm": 0.05,
+    }
+
+    buy_action, _, buy_reasons, buy_features = loop._apply_core_sleeve_strategy_overlay(
+        symbol="SPY",
+        action="BUY",
+        score=0.72,
+        threshold=0.55,
+        reasons=["base_buy"],
+        features=features,
+        rows=[],
+        profile="default",
+    )
+    sell_action, _, sell_reasons, _ = loop._apply_core_sleeve_strategy_overlay(
+        symbol="SPY",
+        action="SELL",
+        score=0.28,
+        threshold=0.55,
+        reasons=["base_sell"],
+        features=features,
+        rows=[],
+        profile="default",
+    )
+
+    assert buy_action == "HOLD"
+    assert any("paper_debt_recovery_gate paused=paused_drawdown" in reason for reason in buy_reasons)
+    assert buy_features["paper_debt_recovery_entry_size_multiplier_norm"] == 0.0
+    assert buy_features["paper_debt_recovery_no_loss_chasing_norm"] == 1.0
+    assert sell_action == "SELL"
+    assert not any("paper_debt_recovery_gate" in reason for reason in sell_reasons)
+
+
+def test_paper_debt_recovery_caps_clean_buy_size_while_evidence_accumulates(monkeypatch) -> None:
+    monkeypatch.setenv("SHADOW_PROFILE", "default")
+    monkeypatch.setattr(loop, "_profitability_global_policy", lambda: {"apply_paper_debt_recovery": True})
+    monkeypatch.setattr(
+        loop,
+        "_paper_debt_recovery_contract",
+        lambda: {
+            "active": True,
+            "state": "collecting_recovery_evidence",
+            "baseline_debt_amount": 20_000.0,
+            "remaining_debt_amount": 20_000.0,
+            "recovery_progress_norm": 0.0,
+            "risk_budget": {"new_entries_paused": False},
+            "runtime_enforcement": {
+                "do_not_force_trades": True,
+                "prohibit_martingale": True,
+                "prohibit_averaging_down_for_recovery": True,
+                "prohibit_loss_based_size_increase": True,
+                "recovery_entry_size_multiplier_norm": 0.25,
+                "min_quality_gate_norm": 0.60,
+                "min_tradeability_norm": 0.58,
+                "min_execution_fitness_norm": 0.58,
+                "min_cross_asset_confirmation_norm": 0.56,
+                "max_overlap_pressure_norm": 0.58,
+            },
+        },
+    )
+
+    action, _, reasons, out_features = loop._apply_core_sleeve_strategy_overlay(
+        symbol="SPY",
+        action="BUY",
+        score=0.72,
+        threshold=0.55,
+        reasons=["base_buy"],
+        features={
+            "market_micro_tradeability_score_norm": 0.90,
+            "execution_fitness_norm": 0.90,
+            "news_source_quality_norm": 0.90,
+            "cross_asset_confirmation_norm": 0.90,
+            "core_cross_asset_confirmation_norm": 0.90,
+            "core_portfolio_overlap_pressure_norm": 0.05,
+            "lead_lag_confirmation_norm": 0.90,
+            "lead_lag_signal_signed": 0.90,
+            "flow_direction_signed": 0.90,
+            "flow_conviction_norm": 0.90,
+            "ctx_SPY_pct_from_close": 0.012,
+            "ctx_QQQ_pct_from_close": 0.012,
+            "ctx_IWM_pct_from_close": 0.010,
+        },
+        rows=[],
+        profile="default",
+    )
+
+    assert action == "BUY"
+    assert not any("paper_debt_recovery_gate" in reason for reason in reasons)
+    assert out_features["paper_debt_recovery_active_norm"] == 1.0
+    assert out_features["paper_debt_recovery_entry_size_multiplier_norm"] == 0.25

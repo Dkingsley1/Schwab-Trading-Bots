@@ -119,6 +119,25 @@ def _line_count(path_text: Any) -> int | None:
         return None
 
 
+def _resolve_project_file(path_text: Any, *, project_root: Path) -> Path:
+    text = str(path_text or "").strip()
+    if not text:
+        return Path()
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = project_root / path
+    if path.is_file():
+        return path
+    try:
+        rel = path.relative_to(project_root)
+    except ValueError:
+        return path
+    fallback = project_root / "local_fallback_storage" / rel
+    if fallback.is_file():
+        return fallback
+    return path
+
+
 def _ordered_unique(items: list[str]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -191,7 +210,12 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     feature_versions_path = project_root / "governance" / "feature_versions" / "latest.json"
     feature_versions = _load_json(feature_versions_path)
     prior_manifest = _load_json(project_root / "governance" / "feature_store" / "latest.json")
-    coverage = _load_json(health_root / "snapshot_coverage_latest.json")
+    coverage, coverage_path = _load_first_json(
+        [
+            health_root / "snapshot_coverage_training_latest.json",
+            health_root / "snapshot_coverage_latest.json",
+        ]
+    )
     event_store = _load_json(health_root / "point_in_time_event_store_latest.json")
     retrain_scorecard = _load_json(health_root / "retrain_scorecard_latest.json")
     trade_behavior_dataset, trade_behavior_dataset_path = _load_first_json(
@@ -205,9 +229,7 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     sequence_count = _safe_int(snapshot.get("sequence_count"), 0)
     rows_path = str(snapshot.get("rows_path") or "")
     rows_sha256 = str(snapshot.get("rows_sha256") or "")
-    resolved_rows_path = Path(rows_path).expanduser() if rows_path else Path()
-    if rows_path and not resolved_rows_path.is_absolute():
-        resolved_rows_path = project_root / resolved_rows_path
+    resolved_rows_path = _resolve_project_file(rows_path, project_root=project_root)
     actual_rows_sha256 = _sha256_file(resolved_rows_path) if rows_path else ""
     actual_row_count = _line_count(resolved_rows_path) if rows_path else None
     rows_file_exists = bool(rows_path and resolved_rows_path.is_file())
@@ -338,6 +360,8 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "event_join_keys": ["join_key", "category", "timestamp_utc"],
         "snapshot_coverage_ratio": round(coverage_ratio, 6),
         "snapshot_coverage_floor": round(min_coverage_ratio, 6),
+        "snapshot_coverage_window_hours": _safe_int(coverage.get("window_hours"), 0),
+        "snapshot_coverage_source": str(coverage_path),
         "rows_with_snapshot_id": _safe_int(coverage.get("rows_with_snapshot_id"), 0),
         "unique_snapshot_ids": _safe_int(coverage.get("unique_snapshot_ids"), 0),
         "event_count": event_count,
@@ -621,7 +645,7 @@ def build_manifest(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         "evidence": {
             "runtime_training_snapshot": str(health_root / "runtime_training_snapshot_latest.json"),
             "feature_versions": str(feature_versions_path),
-            "snapshot_coverage": str(health_root / "snapshot_coverage_latest.json"),
+            "snapshot_coverage": str(coverage_path),
             "point_in_time_event_store": str(health_root / "point_in_time_event_store_latest.json"),
             "retrain_scorecard": str(health_root / "retrain_scorecard_latest.json"),
             "trade_behavior_dataset": trade_behavior_dataset_path_text,

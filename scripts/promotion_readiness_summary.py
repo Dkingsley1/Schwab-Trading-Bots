@@ -137,6 +137,8 @@ def main() -> int:
     coverage_shortfall = max(min_considered_bots - considered_bots, 0)
     readiness_margin = round(max_fail_share - fail_share, 6)
     blocking_reasons: list[str] = []
+    if gate.get("source_evidence_ready") is False:
+        blocking_reasons.append(str(gate.get("source_evidence_reason") or "walk_forward_source_unverified"))
     if not bool(gate.get("coverage_ok", False)):
         blocking_reasons.append("insufficient_walk_forward_coverage")
     if fail_share > max_fail_share:

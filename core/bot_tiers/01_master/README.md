@@ -147,4 +147,5 @@ PyCharm tier view generated from `master_bot_registry.json` and `core/bot_catalo
 | brain_refinery_v968_apex_identity_lineage_checkpoint_master_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v968_apex_identity_lineage_checkpoint_master_bot.py |
 | brain_refinery_v978_apex_stale_lesson_retirement_master_bot | infrastructure_sub_bot | active / collecting | core/brain_refinery_v978_apex_stale_lesson_retirement_master_bot.py |
 | master_bot | master_control_bot | master_control | core/master_bot.py |
+| master_grandmaster_evidence_control | ops_infrastructure_bot | scripted_control_plane | scripts/ops/master_grandmaster_evidence_control.py |
 | master_infrastructure_supervisor | ops_infrastructure_bot | scripted_control_plane | scripts/ops/master_infrastructure_supervisor.py |

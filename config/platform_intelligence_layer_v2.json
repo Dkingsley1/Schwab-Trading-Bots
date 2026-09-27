@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "updated_utc": "2026-07-28T00:18:45.633010+00:00",
+  "updated_utc": "2026-09-09T21:48:00.169870+00:00",
   "layer": "platform_intelligence_12_part_control_plane",
   "primary_section_keys": [
     "bot_lifecycle_manager",
@@ -98,7 +98,8 @@
     "research_to_strategy_pipeline": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/research_pipeline_latest.json",
     "cross_sleeve_correlation_governor": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/correlation_governor_latest.json",
     "model_decay_detector": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/model_decay_detector_latest.json",
-    "professional_system_dashboard": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/system_dashboard_latest.json"
+    "professional_system_dashboard": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/system_dashboard_latest.json",
+    "market_pattern_feedback_loop": "/Users/dankingsley/PycharmProjects/schwab_trading_bot/governance/platform_intelligence/market_pattern_feedback_latest.json"
   },
   "recommended_commands": [
     [

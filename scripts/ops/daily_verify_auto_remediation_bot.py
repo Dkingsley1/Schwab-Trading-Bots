@@ -15,6 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.runtime_python import resolve_runtime_python
+from core.ingestion_health_evidence import ingestion_observation_ready
+from scripts.ops.long_runtime_common import write_payload
 
 
 PY = resolve_runtime_python(PROJECT_ROOT)
@@ -98,6 +100,7 @@ def _promotion_packet_builder_ok(rc: int, stdout: str) -> bool:
 
 def _remediation_map() -> dict[str, list[str]]:
     return {
+        "ingestion_backpressure": [str(PY), str(PROJECT_ROOT / "scripts" / "ingestion_backpressure_guard.py"), "--json"],
         "new_bot_graduation_gate": [str(PY), str(PROJECT_ROOT / "scripts" / "new_bot_graduation_gate.py"), "--json"],
         "replay_hash_registry_guard": [str(PY), str(PROJECT_ROOT / "scripts" / "replay_hash_registry_guard.py"), "--json"],
         "paper_reconciliation_slo_guard": [str(PY), str(PROJECT_ROOT / "scripts" / "paper_reconciliation_slo_guard.py"), "--json"],
@@ -126,8 +129,14 @@ def build_payload(project_root: Path = PROJECT_ROOT, *, apply: bool = False, tim
             continue
         row = {"check": name, "actionable": True, "applied": bool(apply), "cmd": cmd}
         if apply:
+            started_utc = datetime.now(timezone.utc).isoformat()
             rc, stdout, stderr = _run(cmd, timeout_sec=timeout_sec)
             ok = bool(rc == 0 or (name == "promotion_packet_builder" and _promotion_packet_builder_ok(rc, stdout)))
+            if name == "ingestion_backpressure":
+                observation = _json_from_stdout(stdout)
+                ok = rc == 0 and ingestion_observation_ready(observation, after_utc=started_utc)
+                row["observation_timestamp_utc"] = observation.get("timestamp_utc")
+                row["started_utc"] = started_utc
             row.update({"rc": rc, "stdout": stdout[:4000], "stderr": stderr[:2000], "ok": ok})
             if ok:
                 resolved.append(name)
@@ -170,8 +179,7 @@ def main() -> int:
 
     payload = build_payload(Path(args.project_root).resolve(), apply=bool(args.apply), timeout_sec=int(args.timeout_sec))
     out_path = Path(args.out_file).expanduser()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    write_payload(out_path, payload)
     if args.json:
         print(json.dumps(payload, ensure_ascii=True))
     else:

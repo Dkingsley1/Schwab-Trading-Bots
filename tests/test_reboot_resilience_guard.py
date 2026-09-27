@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from pathlib import Path
@@ -40,3 +41,35 @@ def test_enable_label_uses_persistent_launchctl_override(monkeypatch) -> None:
 
     assert calls == [["launchctl", "enable", "gui/501/com.example.worker"]]
     assert action["rc"] == 0
+
+
+def test_reboot_guard_defers_all_recovery_during_stack_restart(monkeypatch, tmp_path) -> None:
+    out_path = tmp_path / "reboot.json"
+    monkeypatch.setattr(src, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(src, "STACK_STOPPED_FLAG", tmp_path / "STACK_STOPPED.flag")
+    monkeypatch.setattr(src, "DEFAULT_OUT_PATH", out_path)
+    monkeypatch.setattr(src, "FALLBACK_OUT_PATH", tmp_path / "fallback.json")
+    monkeypatch.setattr(
+        src,
+        "stack_restart_fence_snapshot",
+        lambda _root: {
+            "active": True,
+            "exists": True,
+            "owner_pid": os.getpid(),
+            "token": "secret",
+            "payload": {"token": "secret"},
+            "reason": "stack_restart_in_progress",
+        },
+    )
+    monkeypatch.setattr(src, "_pressure_relief_context", lambda: {"active": False, "skip_labels": []})
+    monkeypatch.setattr(src, "_is_loaded", lambda _domain, _label: False)
+    monkeypatch.setattr(sys, "argv", ["reboot_resilience_guard.py", "--required-labels", "one,two", "--json"])
+
+    assert src.main() == 0
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["overall_status"] == "restarting"
+    assert [row["reason"] for row in payload["skipped"]] == [
+        "stack_restart_in_progress",
+        "stack_restart_in_progress",
+    ]
+    assert "token" not in payload["stack_restart_fence"]

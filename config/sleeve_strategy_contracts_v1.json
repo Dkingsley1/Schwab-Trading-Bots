@@ -1,0 +1,1317 @@
+{
+  "schema_version": 1,
+  "policy_id": "sleeve_strategy_specialization_v1",
+  "purpose": "Materialize complete, objective-aware, candidate-bound contracts for every runtime sleeve strategy without granting decision, sizing, promotion, or live-order authority.",
+  "source_manifest": "config/sleeve_strategy_expansion.json",
+  "included_runtime_states": [
+    "active_runtime",
+    "active_data_collection"
+  ],
+  "included_sleeves": [
+    "options_on_futures_aggressive"
+  ],
+  "identity": {
+    "namespace": "sleeve",
+    "version": "v1",
+    "format": "sleeve::{sleeve_id}::{strategy_name}::v1",
+    "receipt_algorithm": "sha256_canonical_json"
+  },
+  "authority": {
+    "can_create_intent": false,
+    "can_reverse_intent": false,
+    "can_increase_quantity": false,
+    "can_allocate_capital": false,
+    "can_change_labels": false,
+    "can_grant_promotion": false,
+    "can_submit_live_order": false
+  },
+  "candidate_binding": {
+    "required": true,
+    "allow_historical_fallback": false,
+    "allow_cross_candidate_pooling": false,
+    "minimum_probation_samples": 30,
+    "minimum_validation_samples": 100,
+    "minimum_independent_days": 7,
+    "minimum_independent_symbols": 3
+  },
+  "strategy_library": {
+    "enabled": true,
+    "target_total_strategies": 12000,
+    "minimum_strategies_per_sleeve": 100,
+    "allocation_policy": "balanced_floor_then_deterministic_lexicographic_remainder",
+    "runtime_materialization": "hot_catalog_only",
+    "cold_library_materialization": "report_and_research_on_demand",
+    "max_generated_hot_slots_per_sleeve": 12,
+    "max_concurrent_generated_experiments_per_sleeve": 3,
+    "activation_policy": "cold_hypothesis_requires_explicit_candidate_bound_admission_before_counterfactual_ranking_training_or_paper_execution",
+    "retirement_policy": "retired_or_duplicate_hypotheses_release_a_hot_slot_but_remain_in_the_audit_ledger",
+    "conditioning_overlays": {
+      "baseline_confirmation": {
+        "confirmation": "primary_signal_and_sleeve_risk_qualification",
+        "failure_mode": "single_signal_false_positive"
+      },
+      "regime_conditioned": {
+        "confirmation": "primary_signal_plus_supported_market_regime",
+        "failure_mode": "regime_misclassification_or_transition_lag"
+      },
+      "cross_source_confirmed": {
+        "confirmation": "independent_point_in_time_sources_agree",
+        "failure_mode": "correlated_or_stale_source_confirmation"
+      },
+      "cost_adjusted": {
+        "confirmation": "expected_edge_exceeds_full_cost_and_uncertainty_hurdle",
+        "failure_mode": "cost_underestimation_or_edge_decay"
+      },
+      "liquidity_qualified": {
+        "confirmation": "spread_depth_volume_and_market_impact_are_qualified",
+        "failure_mode": "liquidity_evaporation_or_adverse_selection"
+      },
+      "volatility_targeted": {
+        "confirmation": "signal_survives_volatility_normalization_and_risk_budgeting",
+        "failure_mode": "volatility_jump_or_targeting_lag"
+      },
+      "capacity_aware": {
+        "confirmation": "participation_concentration_and_impact_capacity_remain_available",
+        "failure_mode": "crowding_or_capacity_exhaustion"
+      },
+      "decay_aware": {
+        "confirmation": "recent_candidate_forward_evidence_has_not_decayed",
+        "failure_mode": "structural_break_or_signal_half_life_collapse"
+      },
+      "stress_tested": {
+        "confirmation": "signal_survives_relevant_historical_and_synthetic_stress_scenarios",
+        "failure_mode": "unmodeled_tail_or_cross_asset_contagion"
+      },
+      "ensemble_disagreement_gated": {
+        "confirmation": "strategy_edge_survives_ensemble_disagreement_and_conflict_checks",
+        "failure_mode": "hidden_factor_overlap_or_consensus_instability"
+      },
+      "benchmark_relative": {
+        "confirmation": "signal_improves_on_the_objective_specific_benchmark_after_costs",
+        "failure_mode": "beta_or_benchmark_misattribution"
+      },
+      "tail_risk_aware": {
+        "confirmation": "signal_retains_utility_after_tail_loss_and_gap_risk_penalties",
+        "failure_mode": "hidden_convexity_or_tail_dependence"
+      }
+    },
+    "objective_archetypes": {
+      "directional_alpha": [
+        "time_series_momentum", "cross_sectional_momentum", "quality_value_composite", "earnings_revision_drift", "breadth_regime_rotation", "volatility_adjusted_breakout", "residual_mean_reversion", "defensive_trend_to_cash", "sector_relative_strength", "multi_horizon_signal_blend"
+      ],
+      "income_total_return": [
+        "distribution_safety", "dividend_growth_acceleration", "total_yield_value", "payout_recovery", "tax_adjusted_income", "free_cash_flow_income", "rate_sensitivity_rotation", "income_volatility_control", "buyback_dividend_blend", "quality_income_reinvestment"
+      ],
+      "event_alpha": [
+        "standardized_surprise", "implied_move_mispricing", "first_reaction_followthrough", "second_reaction_reversal", "pre_event_positioning", "post_event_drift", "source_ranked_catalyst", "gap_recovery", "event_volatility_reset", "cross_asset_event_spillover"
+      ],
+      "macro_carry_relative_value": [
+        "carry_roll_down", "time_series_momentum", "valuation_reversion", "curve_relative_value", "policy_surprise", "inflation_growth_regime", "cross_asset_macro_rotation", "liquidity_stress", "seasonal_inventory", "hedge_adjusted_macro_blend"
+      ],
+      "digital_asset_alpha": [
+        "digital_asset_momentum", "cross_sectional_token_rotation", "funding_carry", "spot_derivative_basis", "onchain_liquidity", "liquidation_reversal", "stablecoin_impulse", "venue_dispersion", "weekend_regime", "dominance_rotation"
+      ],
+      "basis_relative_value": [
+        "spot_future_convergence", "calendar_basis", "cross_venue_basis", "funding_dispersion", "cash_and_carry", "reverse_cash_and_carry", "curve_kink", "collateral_adjusted_basis", "latency_resilient_basis", "basis_stress_exit"
+      ],
+      "volatility_relative_value": [
+        "variance_risk_premium", "skew_relative_value", "term_structure_carry", "correlation_dispersion", "gamma_scalping", "vol_of_vol", "event_volatility_reset", "corridor_variance", "tail_convexity", "surface_relative_value"
+      ],
+      "market_neutral_relative_value": [
+        "cointegration_spread", "residual_reversal", "factor_neutral_momentum", "sector_pairs", "kalman_dynamic_hedge", "statistical_arbitrage_blend", "lead_lag_convergence", "cross_asset_convergence", "crowding_unwind", "relationship_break_defense"
+      ],
+      "execution_alpha": [
+        "opening_auction", "vwap_reversion", "liquidity_imbalance", "microprice_reversion", "toxicity_adjusted_spread_capture", "inventory_skew", "implementation_shortfall", "session_aware_execution", "queue_position", "impact_aware_scheduling"
+      ],
+      "hedge_utility": [
+        "beta_hedge", "tail_hedge", "volatility_spike_hedge", "credit_stress_hedge", "crowding_unwind_hedge", "correlation_break_hedge", "duration_hedge", "liquidity_hedge", "convexity_budget", "dynamic_hedge_carry"
+      ],
+      "capital_preservation": [
+        "trend_to_cash", "drawdown_throttle", "quality_minimum_variance", "t_bill_rotation", "defensive_sector_rotation", "volatility_reentry", "liquidity_preservation", "credit_stress_derisk", "opportunity_cost_optimized_cash", "slow_confirmation_reentry"
+      ],
+      "control_only": [
+        "freshness_guard", "source_divergence_guard", "backlog_pressure_guard", "restart_storm_guard", "storage_capacity_guard", "memory_pressure_guard", "model_drift_guard", "authorization_lease_guard", "reconciliation_integrity_guard", "recovery_effectiveness_guard"
+      ]
+    }
+  },
+  "economic_context_source_of_truth": {
+    "contract_id": "sleeve_economic_context_v1",
+    "canonical_statement": "Every trading sleeve must demonstrate positive economic contribution in its intended market context before it may be considered for capital; a nonmatching sleeve collects, quarantines, or retires instead of being forced to trade.",
+    "scope": {
+      "all_trading_objective_classes_covered": true,
+      "positive_contextual_economic_value_required_before_capital": true,
+      "simultaneous_sleeve_activation_required": false,
+      "simultaneous_sleeve_profitability_required": false,
+      "control_only_profitability_not_applicable": true,
+      "profitability_guaranteed": false
+    },
+    "runtime_states": {
+      "active": {
+        "meaning": "Current candidate-bound post-cost objective evidence, regime fit, sources, costs, liquidity, capacity, risk, account, route, and marginal portfolio contribution are clear.",
+        "may_be_considered_for_capital_by_separate_allocator": true,
+        "capital_allocation_authority": false
+      },
+      "collect_only": {
+        "meaning": "The sleeve remains economically plausible, but context or evidence is insufficient for capital consideration.",
+        "may_be_considered_for_capital_by_separate_allocator": false,
+        "capital_allocation_authority": false
+      },
+      "quarantined": {
+        "meaning": "Negative expectancy, drift, excessive drawdown, integrity failure, or hostile context blocks new exposure while repair evidence is collected.",
+        "may_be_considered_for_capital_by_separate_allocator": false,
+        "capital_allocation_authority": false
+      },
+      "retired": {
+        "meaning": "Mature adverse evidence or supersession removes the sleeve or strategy from activation while preserving immutable lineage and research history.",
+        "may_be_considered_for_capital_by_separate_allocator": false,
+        "capital_allocation_authority": false
+      },
+      "control_only": {
+        "meaning": "Operational infrastructure is graded on control effectiveness and never receives a trading-profit objective or capital allocation authority.",
+        "may_be_considered_for_capital_by_separate_allocator": false,
+        "capital_allocation_authority": false
+      }
+    },
+    "state_precedence": [
+      "control_only",
+      "retired",
+      "quarantined",
+      "collect_only",
+      "active"
+    ],
+    "active_requires": [
+      "current_candidate_binding",
+      "objective_specific_positive_economic_value_after_costs",
+      "objective_specific_benchmark_or_utility_hurdle",
+      "supported_current_market_regime",
+      "fresh_verified_sources",
+      "edge_above_cost_and_uncertainty_margin",
+      "liquidity_and_capacity_headroom",
+      "risk_and_drawdown_clearance",
+      "account_and_route_compatibility",
+      "positive_marginal_portfolio_contribution"
+    ],
+    "deactivation_triggers": [
+      "candidate_binding_missing_or_mismatched",
+      "post_cost_economic_value_not_positive",
+      "objective_benchmark_or_utility_hurdle_failed",
+      "regime_unsupported_or_transition_uncertain",
+      "source_stale_unverified_or_divergent",
+      "cost_liquidity_or_capacity_hurdle_failed",
+      "drawdown_drift_or_integrity_quarantine",
+      "account_or_route_incompatible",
+      "marginal_portfolio_contribution_not_positive"
+    ],
+    "authority": {
+      "can_activate_sleeve": false,
+      "can_allocate_capital": false,
+      "can_change_quantity": false,
+      "can_change_risk_limits": false,
+      "can_submit_paper_order": false,
+      "can_submit_live_order": false
+    }
+  },
+  "quality_assessment": {
+    "verdicts": [
+      "validated_good", "promising_unconfirmed", "mixed_watch", "weak", "retirement_candidate", "insufficient_evidence", "cold_untested", "objective_evidence_pending", "control_only"
+    ],
+    "good_requires": "candidate_bound_positive_clustered_lower_confidence_bound_after_costs_and_objective_specific_risk_checks",
+    "bad_requires": "mature_candidate_bound_negative_post_cost_expectancy_with_negative_lower_confidence_bound_or_objective_specific_harm",
+    "unknown_is_not_bad": true,
+    "standalone_profit_forbidden_for": ["hedge_utility", "capital_preservation", "control_only"]
+  },
+  "regime_adaptation": {
+    "enabled": true,
+    "source_path": "governance/health/regime_control_plane_latest.json",
+    "maximum_source_age_seconds": 3600,
+    "fresh_source_required_for_cold_activation": true,
+    "low_confidence_behavior": "retain_hot_runtime_contracts_and_block_cold_activation",
+    "adaptation_scope": "ranking_research_admission_and_evidence_segmentation_only",
+    "may_mutate_action_quantity_risk_limits_or_live_authority": false,
+    "regime_affinity": {
+      "risk_on_trend": {
+        "favored_taxonomy": ["trend", "carry_value", "liquidity_execution"],
+        "guarded_taxonomy": ["mean_reversion", "risk_control"]
+      },
+      "risk_off_shock": {
+        "favored_taxonomy": ["risk_control", "volatility", "mean_reversion"],
+        "guarded_taxonomy": ["trend", "carry_value", "liquidity_execution"]
+      },
+      "mixed_transition": {
+        "favored_taxonomy": ["risk_control", "mean_reversion", "event", "volatility"],
+        "guarded_taxonomy": ["trend", "carry_value"]
+      },
+      "range_bound": {
+        "favored_taxonomy": ["mean_reversion", "carry_value", "liquidity_execution"],
+        "guarded_taxonomy": ["trend"]
+      },
+      "high_volatility": {
+        "favored_taxonomy": ["volatility", "risk_control", "event"],
+        "guarded_taxonomy": ["carry_value", "liquidity_execution"]
+      },
+      "low_volatility": {
+        "favored_taxonomy": ["carry_value", "liquidity_execution", "mean_reversion"],
+        "guarded_taxonomy": ["volatility", "event"]
+      },
+      "liquidity_stress": {
+        "favored_taxonomy": ["risk_control", "volatility"],
+        "guarded_taxonomy": ["liquidity_execution", "carry_value", "trend"]
+      }
+    }
+  },
+  "profile_aliases": {
+    "default": "equity_core",
+    "aggressive": "equity_core",
+    "dividend": "dividend_income",
+    "dividend_compound": "dividend_income",
+    "bond": "bond_rates",
+    "fx": "fx_macro"
+  },
+  "objective_classes": {
+    "directional_alpha": {
+      "scorecard": "positive_candidate_forward_post_cost_expectancy_with_drawdown_and_turnover_limits",
+      "primary_metric": "post_cost_return_bps",
+      "benchmark_rule": "outperform_sleeve_benchmark_after_costs",
+      "economic_value_type": "standalone_post_cost_alpha",
+      "positive_contextual_value_required_for_activation": true,
+      "standalone_profit_required_for_activation": true,
+      "activation_evidence_rule": "positive_candidate_forward_post_cost_lower_confidence_bound_and_benchmark_excess_in_supported_regime"
+    },
+    "income_total_return": {
+      "scorecard": "tax_aware_income_plus_price_return_after_costs_and_drawdown",
+      "primary_metric": "post_cost_total_return_bps",
+      "benchmark_rule": "outperform_income_benchmark_on_total_return_and_distribution_safety",
+      "economic_value_type": "tax_aware_income_and_total_return",
+      "positive_contextual_value_required_for_activation": true,
+      "standalone_profit_required_for_activation": true,
+      "activation_evidence_rule": "positive_post_cost_total_return_distribution_safety_and_income_benchmark_excess_in_supported_regime"
+    },
+    "event_alpha": {
+      "scorecard": "event_window_abnormal_return_after_spread_slippage_and_gap_risk",
+      "primary_metric": "post_cost_event_abnormal_return_bps",
+      "benchmark_rule": "outperform_matched_event_cohort",
+      "economic_value_type": "event_window_abnormal_return",
+      "positive_contextual_value_required_for_activation": true,
+      "standalone_profit_required_for_activation": true,
+      "activation_evidence_rule": "positive_post_cost_event_abnormal_return_against_matched_cohort_with_bounded_gap_risk"
+    },
+    "macro_carry_relative_value": {
+      "scorecard": "carry_plus_roll_plus_price_return_after_funding_and_hedging_costs",
+      "primary_metric": "post_cost_carry_adjusted_return_bps",
+      "benchmark_rule": "outperform_asset_class_or_curve_benchmark",
+      "economic_value_type": "carry_roll_and_relative_value_return",
+      "positive_contextual_value_required_for_activation": true,
+      "standalone_profit_required_for_activation": true,
+      "activation_evidence_rule": "positive_carry_roll_and_price_return_after_funding_hedging_and_regime_costs"
+    },
+    "digital_asset_alpha": {
+      "scorecard": "venue_aware_post_cost_return_with_funding_basis_and_weekend_risk",
+      "primary_metric": "post_cost_return_bps",
+      "benchmark_rule": "outperform_spot_or_futures_beta_benchmark",
+      "economic_value_type": "venue_aware_digital_asset_alpha",
+      "positive_contextual_value_required_for_activation": true,
+      "standalone_profit_required_for_activation": true,
+      "activation_evidence_rule": "positive_post_cost_alpha_after_funding_basis_custody_venue_and_weekend_risk"
+    },
+    "basis_relative_value": {
+      "scorecard": "realized_basis_convergence_after_funding_fees_borrow_and_venue_risk",
+      "primary_metric": "post_cost_basis_capture_bps",
+      "benchmark_rule": "positive_market_neutral_basis_capture",
+      "economic_value_type": "market_neutral_basis_capture",
+      "positive_contextual_value_required_for_activation": true,
+      "standalone_profit_required_for_activation": true,
+      "activation_evidence_rule": "positive_realized_basis_capture_after_funding_fees_borrow_margin_and_venue_risk"
+    },
+    "volatility_relative_value": {
+      "scorecard": "realized_option_payoff_after_premium_greeks_slippage_and_tail_loss",
+      "primary_metric": "post_cost_volatility_risk_premium_bps",
+      "benchmark_rule": "outperform_delta_hedged_volatility_benchmark",
+      "economic_value_type": "delta_hedged_volatility_relative_value",
+      "positive_contextual_value_required_for_activation": true,
+      "standalone_profit_required_for_activation": true,
+      "activation_evidence_rule": "positive_realized_option_utility_after_premium_greeks_hedging_slippage_and_tail_loss"
+    },
+    "market_neutral_relative_value": {
+      "scorecard": "factor_neutral_spread_convergence_after_borrow_turnover_and_impact",
+      "primary_metric": "post_cost_residual_return_bps",
+      "benchmark_rule": "positive_residual_return_with_bounded_beta",
+      "economic_value_type": "factor_neutral_residual_return",
+      "positive_contextual_value_required_for_activation": true,
+      "standalone_profit_required_for_activation": true,
+      "activation_evidence_rule": "positive_post_cost_residual_return_with_bounded_beta_borrow_turnover_and_impact"
+    },
+    "execution_alpha": {
+      "scorecard": "implementation_shortfall_spread_capture_adverse_selection_and_inventory_risk",
+      "primary_metric": "implementation_shortfall_improvement_bps",
+      "benchmark_rule": "improve_arrival_or_vwap_execution_after_costs",
+      "economic_value_type": "implementation_cost_savings_and_spread_capture",
+      "positive_contextual_value_required_for_activation": true,
+      "standalone_profit_required_for_activation": false,
+      "activation_evidence_rule": "positive_implementation_shortfall_or_spread_capture_improvement_after_adverse_selection_inventory_and_impact"
+    },
+    "hedge_utility": {
+      "scorecard": "portfolio_drawdown_and_tail_loss_reduction_net_of_carry_and_false_positive_cost",
+      "primary_metric": "drawdown_reduction_per_carry_cost",
+      "benchmark_rule": "improve_portfolio_tail_outcome_not_standalone_profit",
+      "economic_value_type": "portfolio_tail_loss_and_drawdown_reduction",
+      "positive_contextual_value_required_for_activation": true,
+      "standalone_profit_required_for_activation": false,
+      "activation_evidence_rule": "positive_portfolio_tail_utility_net_of_carry_false_positive_cost_and_hedge_slippage"
+    },
+    "capital_preservation": {
+      "scorecard": "drawdown_avoidance_liquidity_preservation_and_opportunity_cost",
+      "primary_metric": "risk_adjusted_opportunity_cost_bps",
+      "benchmark_rule": "preserve_capital_relative_to_cash_and_defensive_benchmark",
+      "economic_value_type": "drawdown_avoidance_and_liquidity_preservation",
+      "positive_contextual_value_required_for_activation": true,
+      "standalone_profit_required_for_activation": false,
+      "activation_evidence_rule": "positive_risk_adjusted_capital_preservation_utility_relative_to_cash_defensive_benchmark_and_reentry_cost"
+    },
+    "control_only": {
+      "scorecard": "prevented_failure_detection_latency_false_positive_rate_and_recovery_time",
+      "primary_metric": "control_effectiveness",
+      "benchmark_rule": "no_trade_authority_and_no_profitability_claim",
+      "economic_value_type": "operational_control_effectiveness",
+      "positive_contextual_value_required_for_activation": false,
+      "standalone_profit_required_for_activation": false,
+      "activation_evidence_rule": "not_applicable_no_trading_capital_or_profitability_objective"
+    }
+  },
+  "contract_defaults": {
+    "economic_thesis": "A point-in-time signal must exhibit a repeatable sleeve-specific edge after realistic costs, uncertainty, and risk controls.",
+    "universe": "sleeve_manifest_universe",
+    "decision_horizon": "sleeve_specific",
+    "holding_horizon": "sleeve_specific",
+    "entry_rule": "enter_only_after_source_quality_signal_regime_cost_and_risk_qualification",
+    "add_rule": "add_only_on_independent_confirmation_with_remaining_risk_budget",
+    "trim_rule": "trim_on_edge_decay_concentration_cost_or_risk_budget_pressure",
+    "exit_rule": "exit_on_thesis_break_stop_target_or_regime_invalidation",
+    "time_stop": "strategy_horizon_specific",
+    "label_definition": "candidate_forward_post_cost_outcome_at_contract_horizon_with_point_in_time_features",
+    "allowed_regimes": [
+      "contract_supported"
+    ],
+    "blocked_regimes": [
+      "source_unverified",
+      "cost_unqualified",
+      "risk_veto",
+      "contract_unsupported"
+    ],
+    "cost_model": "spread_slippage_fees_market_impact_borrow_funding_and_tax_context_when_applicable",
+    "capacity_method": "participation_rate_depth_turnover_concentration_and_impact_curve",
+    "benchmark": "sleeve_specific",
+    "risk_budget": "candidate_bound_sleeve_budget",
+    "shorting_policy": "sleeve_specific",
+    "conflict_policy": "portfolio_level_netting_precedence_and_non_bypassable_risk_veto",
+    "evidence_policy": "candidate_forward_point_in_time_post_cost_independent_days_and_symbols",
+    "lifecycle_policy": "parked_candidate_to_probation_to_validated_candidate_with_watch_demotion_and_retirement_review",
+    "runtime_authority": "read_only_metadata_no_decision_authority"
+  },
+  "sleeve_characteristics": {
+    "purpose": "Give every sleeve an operator-readable market character, natural habitat, evidence type, and brain-routing boundary without changing strategy parameters or granting execution authority.",
+    "authority": {
+      "metadata_only": true,
+      "can_change_trade_logic": false,
+      "can_change_sizing": false,
+      "can_submit_order": false,
+      "can_claim_profitability": false,
+      "can_promote_candidate": false
+    },
+    "dimensions": [
+      "primary_character",
+      "market_question",
+      "naturally_helps_when",
+      "naturally_hurts_when",
+      "sensitive_to",
+      "profitability_evidence_type",
+      "trading_brain_categories",
+      "ops_brain_dependencies"
+    ],
+    "routing_defaults": {
+      "trading_brain_categories": [
+        "market_decision",
+        "strategy_logic",
+        "risk_execution_policy",
+        "candidate_evidence"
+      ],
+      "ops_brain_dependencies": [
+        "data_freshness",
+        "observability_reporting"
+      ],
+      "classification_rule": "Describe sleeve fit, evidence, and market context before considering any parameter or execution-policy change."
+    },
+    "hardening_invariants": {
+      "required_objective_characteristic_fields": [
+        "primary_character",
+        "market_question",
+        "naturally_helps_when",
+        "naturally_hurts_when",
+        "sensitive_to",
+        "profitability_evidence_type",
+        "trading_brain_categories",
+        "ops_brain_dependencies"
+      ],
+      "required_sleeve_fields": [
+        "objective_class",
+        "economic_thesis",
+        "universe",
+        "decision_horizon",
+        "holding_horizon",
+        "benchmark",
+        "risk_budget"
+      ],
+      "authority_false_fields": [
+        "can_change_trade_logic",
+        "can_change_sizing",
+        "can_submit_order",
+        "can_claim_profitability",
+        "can_promote_candidate"
+      ],
+      "every_sleeve_objective_class_must_have_characteristics": true,
+      "every_sleeve_must_have_measurement_focus": true,
+      "all_category_references_must_resolve_to_brain_boundary": true,
+      "control_only_must_have_no_trading_brain_categories": true,
+      "minimum_natural_habitat_count": 2,
+      "minimum_hostile_condition_count": 2,
+      "minimum_sensitivity_count": 3,
+      "metadata_authority_must_remain_true": true
+    },
+    "operator_output_requirements": [
+      "show_characterized_sleeve_count",
+      "show_objective_class_counts",
+      "show_prioritized_sleeve_traits",
+      "show_downshift_sleeve_traits",
+      "show_hardening_status_and_failed_checks"
+    ],
+    "objective_class_characteristics": {
+      "directional_alpha": {
+        "primary_character": "directional_return_seeker",
+        "market_question": "Is capital flowing persistently into or out of this risk asset after costs and benchmark exposure?",
+        "naturally_helps_when": [
+          "risk_on_trend",
+          "breadth_confirmation",
+          "earnings_revision_support",
+          "orderly_pullback"
+        ],
+        "naturally_hurts_when": [
+          "high_volatility_chop",
+          "failed_breakouts",
+          "liquidity_stress",
+          "benchmark_beta_misattribution"
+        ],
+        "sensitive_to": [
+          "trend_persistence",
+          "breadth",
+          "gap_risk",
+          "costs",
+          "drawdown"
+        ],
+        "profitability_evidence_type": "standalone_post_cost_alpha_above_benchmark",
+        "trading_brain_categories": [
+          "market_decision",
+          "strategy_logic",
+          "candidate_evidence"
+        ],
+        "ops_brain_dependencies": [
+          "data_freshness",
+          "observability_reporting"
+        ]
+      },
+      "execution_alpha": {
+        "primary_character": "microstructure_execution_edge",
+        "market_question": "Can the sleeve improve fills, capture spread, or exploit session structure after adverse selection and latency?",
+        "naturally_helps_when": [
+          "fresh_quotes",
+          "stable_liquidity",
+          "clear_session_structure",
+          "manageable_spreads"
+        ],
+        "naturally_hurts_when": [
+          "stale_quotes",
+          "wide_spreads",
+          "queue_toxicity",
+          "restart_or_writer_pressure"
+        ],
+        "sensitive_to": [
+          "quote_age",
+          "spread",
+          "latency",
+          "fill_quality",
+          "single_writer_health"
+        ],
+        "profitability_evidence_type": "post_cost_execution_improvement_or_realized_spread_capture",
+        "trading_brain_categories": [
+          "market_decision",
+          "strategy_logic",
+          "risk_execution_policy",
+          "candidate_evidence"
+        ],
+        "ops_brain_dependencies": [
+          "data_freshness",
+          "writer_queue",
+          "storage_runtime",
+          "process_recovery"
+        ]
+      },
+      "income_total_return": {
+        "primary_character": "income_and_quality_total_return",
+        "market_question": "Does income, quality, valuation, and tax-aware recovery beat the relevant income benchmark after costs?",
+        "naturally_helps_when": [
+          "stable_rates",
+          "quality_income_bid",
+          "distribution_safety",
+          "orderly_value_rotation"
+        ],
+        "naturally_hurts_when": [
+          "rate_shock",
+          "dividend_cut_risk",
+          "tax_or_ex_date_drag",
+          "liquidity_gap"
+        ],
+        "sensitive_to": [
+          "rate_path",
+          "distribution_quality",
+          "valuation",
+          "tax_context",
+          "holding_period"
+        ],
+        "profitability_evidence_type": "tax_adjusted_total_return_and_income_benchmark_excess",
+        "trading_brain_categories": [
+          "market_decision",
+          "strategy_logic",
+          "candidate_evidence"
+        ],
+        "ops_brain_dependencies": [
+          "data_freshness",
+          "observability_reporting"
+        ]
+      },
+      "macro_carry_relative_value": {
+        "primary_character": "macro_carry_and_relative_value",
+        "market_question": "Are rates, credit, FX, commodity, or curve moves paying carry or relative value after funding and hedge costs?",
+        "naturally_helps_when": [
+          "policy_path_clarity",
+          "curve_carry",
+          "macro_trend",
+          "cross_asset_confirmation"
+        ],
+        "naturally_hurts_when": [
+          "policy_surprise",
+          "liquidity_stress",
+          "funding_cost_jump",
+          "regime_transition"
+        ],
+        "sensitive_to": [
+          "central_bank_path",
+          "inflation_growth_mix",
+          "funding",
+          "roll_yield",
+          "cross_asset_beta"
+        ],
+        "profitability_evidence_type": "carry_roll_and_relative_value_return_after_funding",
+        "trading_brain_categories": [
+          "market_decision",
+          "strategy_logic",
+          "candidate_evidence"
+        ],
+        "ops_brain_dependencies": [
+          "data_freshness",
+          "observability_reporting"
+        ]
+      },
+      "digital_asset_alpha": {
+        "primary_character": "digital_asset_directional_and_venue_alpha",
+        "market_question": "Is crypto risk being rewarded after venue, funding, liquidity, liquidation, custody, and weekend risks?",
+        "naturally_helps_when": [
+          "crypto_risk_on",
+          "venue_health_clear",
+          "liquidity_expansion",
+          "funding_supportive"
+        ],
+        "naturally_hurts_when": [
+          "liquidation_cascade",
+          "venue_stress",
+          "weekend_liquidity_gap",
+          "basis_or_funding_spike"
+        ],
+        "sensitive_to": [
+          "venue_health",
+          "funding",
+          "basis",
+          "liquidations",
+          "weekend_regime"
+        ],
+        "profitability_evidence_type": "venue_aware_post_cost_alpha_after_funding_and_liquidity",
+        "trading_brain_categories": [
+          "market_decision",
+          "strategy_logic",
+          "risk_execution_policy",
+          "candidate_evidence"
+        ],
+        "ops_brain_dependencies": [
+          "data_freshness",
+          "writer_queue",
+          "process_recovery",
+          "observability_reporting"
+        ]
+      },
+      "basis_relative_value": {
+        "primary_character": "basis_convergence_relative_value",
+        "market_question": "Can spread legs converge after funding, fees, borrow, margin, venue, and synchronization costs?",
+        "naturally_helps_when": [
+          "basis_dislocation",
+          "funding_dispersion",
+          "leg_liquidity_available",
+          "relationship_stability"
+        ],
+        "naturally_hurts_when": [
+          "leg_sync_failure",
+          "venue_stress",
+          "margin_pressure",
+          "basis_break"
+        ],
+        "sensitive_to": [
+          "leg_synchronization",
+          "funding",
+          "margin",
+          "venue_health",
+          "latency"
+        ],
+        "profitability_evidence_type": "market_neutral_basis_capture_after_all_leg_costs",
+        "trading_brain_categories": [
+          "market_decision",
+          "strategy_logic",
+          "risk_execution_policy",
+          "candidate_evidence"
+        ],
+        "ops_brain_dependencies": [
+          "data_freshness",
+          "writer_queue",
+          "process_recovery"
+        ]
+      },
+      "volatility_relative_value": {
+        "primary_character": "volatility_surface_and_tail_pricing",
+        "market_question": "Is implied volatility, skew, term structure, or convexity mispriced after premium, hedge, and tail costs?",
+        "naturally_helps_when": [
+          "volatility_dislocation",
+          "defined_event_window",
+          "surface_liquidity",
+          "hedgeability_clear"
+        ],
+        "naturally_hurts_when": [
+          "surface_stale",
+          "spread_too_wide",
+          "tail_gap",
+          "delta_hedge_unavailable"
+        ],
+        "sensitive_to": [
+          "implied_realized_spread",
+          "skew",
+          "term_structure",
+          "gamma_theta_tradeoff",
+          "spread"
+        ],
+        "profitability_evidence_type": "realized_option_utility_after_premium_greeks_and_hedging",
+        "trading_brain_categories": [
+          "market_decision",
+          "strategy_logic",
+          "risk_execution_policy",
+          "candidate_evidence"
+        ],
+        "ops_brain_dependencies": [
+          "data_freshness",
+          "observability_reporting",
+          "process_recovery"
+        ]
+      },
+      "market_neutral_relative_value": {
+        "primary_character": "relationship_and_residual_convergence",
+        "market_question": "Is spread or residual convergence real after beta, factor, borrow, turnover, and crowding controls?",
+        "naturally_helps_when": [
+          "range_bound_market",
+          "stable_relationship",
+          "factor_neutrality_clear",
+          "borrow_available"
+        ],
+        "naturally_hurts_when": [
+          "correlation_break",
+          "crowding_unwind",
+          "borrow_stress",
+          "relationship_decay"
+        ],
+        "sensitive_to": [
+          "cointegration",
+          "hedge_ratio",
+          "beta_neutrality",
+          "borrow",
+          "turnover"
+        ],
+        "profitability_evidence_type": "factor_neutral_post_cost_residual_return",
+        "trading_brain_categories": [
+          "market_decision",
+          "strategy_logic",
+          "risk_execution_policy",
+          "candidate_evidence"
+        ],
+        "ops_brain_dependencies": [
+          "data_freshness",
+          "observability_reporting"
+        ]
+      },
+      "event_alpha": {
+        "primary_character": "event_window_abnormal_return",
+        "market_question": "Can the sleeve identify event mispricing, first/second reaction, or drift after gap and timing risk?",
+        "naturally_helps_when": [
+          "clean_event_clock",
+          "source_timestamp_quality",
+          "implied_move_mispricing",
+          "post_event_drift"
+        ],
+        "naturally_hurts_when": [
+          "event_clock_uncertain",
+          "source_latency",
+          "gap_risk_unbounded",
+          "headline_whipsaw"
+        ],
+        "sensitive_to": [
+          "event_timing",
+          "source_timestamp",
+          "gap_risk",
+          "liquidity",
+          "implied_move"
+        ],
+        "profitability_evidence_type": "matched_event_abnormal_return_after_costs",
+        "trading_brain_categories": [
+          "market_decision",
+          "strategy_logic",
+          "risk_execution_policy",
+          "candidate_evidence"
+        ],
+        "ops_brain_dependencies": [
+          "data_freshness",
+          "observability_reporting",
+          "process_recovery"
+        ]
+      },
+      "hedge_utility": {
+        "primary_character": "portfolio_drawdown_and_tail_utility",
+        "market_question": "Does the hedge reduce portfolio drawdown or tail loss enough to pay for carry, borrow, or premium costs?",
+        "naturally_helps_when": [
+          "risk_off_pressure",
+          "tail_pressure",
+          "credit_stress",
+          "crowded_long_unwind"
+        ],
+        "naturally_hurts_when": [
+          "risk_on_grind",
+          "false_hedge_signal",
+          "carry_bleed",
+          "borrow_or_premium_spike"
+        ],
+        "sensitive_to": [
+          "portfolio_beta",
+          "correlation_offset",
+          "carry_cost",
+          "crisis_hit_rate",
+          "borrow_or_premium"
+        ],
+        "profitability_evidence_type": "portfolio_utility_improvement_not_standalone_profit",
+        "trading_brain_categories": [
+          "market_decision",
+          "risk_execution_policy",
+          "candidate_evidence"
+        ],
+        "ops_brain_dependencies": [
+          "data_freshness",
+          "observability_reporting"
+        ]
+      },
+      "capital_preservation": {
+        "primary_character": "defensive_rotation_and_cash_optionality",
+        "market_question": "Does defensive positioning reduce drawdown and preserve liquidity without giving up too much opportunity cost?",
+        "naturally_helps_when": [
+          "risk_off_pressure",
+          "high_volatility_chop",
+          "liquidity_stress",
+          "trend_break"
+        ],
+        "naturally_hurts_when": [
+          "strong_risk_on_trend",
+          "late_reentry",
+          "false_cash_signal",
+          "cash_drag"
+        ],
+        "sensitive_to": [
+          "drawdown_avoidance",
+          "cash_yield",
+          "reentry_quality",
+          "volatility",
+          "opportunity_cost"
+        ],
+        "profitability_evidence_type": "risk_adjusted_capital_preservation_utility",
+        "trading_brain_categories": [
+          "market_decision",
+          "strategy_logic",
+          "candidate_evidence"
+        ],
+        "ops_brain_dependencies": [
+          "data_freshness",
+          "observability_reporting"
+        ]
+      },
+      "control_only": {
+        "primary_character": "operational_control_not_trading_sleeve",
+        "market_question": "Is the platform healthier, fresher, safer, and less failure-prone without claiming trading PnL?",
+        "naturally_helps_when": [
+          "storage_pressure",
+          "writer_backpressure",
+          "stale_artifacts",
+          "restart_risk"
+        ],
+        "naturally_hurts_when": [
+          "treated_as_profit_sleeve",
+          "given_trade_authority",
+          "used_to_override_evidence"
+        ],
+        "sensitive_to": [
+          "detection_latency",
+          "false_positive_rate",
+          "recovery_time",
+          "artifact_freshness",
+          "single_writer_health"
+        ],
+        "profitability_evidence_type": "control_effectiveness_only_no_profitability_claim",
+        "trading_brain_categories": [],
+        "ops_brain_dependencies": [
+          "storage_runtime",
+          "writer_queue",
+          "data_freshness",
+          "observability_reporting",
+          "process_recovery"
+        ]
+      }
+    }
+  },
+  "measurement_parameter_defaults": {
+    "authority": "measurement_only_no_execution_sizing_allocation_promotion_or_live_authority",
+    "automatic_live_promotion_allowed": false,
+    "may_allocate_capital": false,
+    "minimum_probation_samples": 30,
+    "minimum_validation_samples": 100,
+    "minimum_independent_days": 7,
+    "minimum_independent_symbols": 3,
+    "minimum_independent_regimes": 2,
+    "minimum_independent_fills": 30,
+    "minimum_post_cost_lcb_bps": 0.0,
+    "maximum_drawdown_bps": 250.0,
+    "maximum_slippage_bps": 50.0,
+    "maximum_spread_bps": 20.0,
+    "maximum_latency_ms": 1500,
+    "capacity_notional_multipliers": [0.25, 0.5, 1.0, 2.0, 4.0],
+    "measurement_focus": [
+      "candidate_forward_post_cost_expectancy",
+      "clustered_lower_confidence_bound",
+      "drawdown",
+      "turnover_efficiency",
+      "execution_realism",
+      "regime_fit",
+      "capacity_headroom"
+    ],
+    "score_weights": {
+      "expectancy": 0.25,
+      "lower_confidence_bound": 0.25,
+      "drawdown_control": 0.15,
+      "turnover_efficiency": 0.1,
+      "confidence": 0.1,
+      "persistence": 0.15
+    },
+    "uncertainty_policy": {
+      "treat_missing_evidence_as": "unknown_not_bad",
+      "market_uncertainty_response": "widen_collection_and_segment_by_regime_without_relaxing_promotion_gates",
+      "may_relax_live_money_gate": false,
+      "may_allocate_capital": false
+    }
+  },
+  "objective_measurement_parameters": {
+    "directional_alpha": {
+      "minimum_validation_samples": 120,
+      "minimum_independent_days": 8,
+      "minimum_independent_symbols": 4,
+      "minimum_post_cost_lcb_bps": 0.25,
+      "maximum_drawdown_bps": 300.0,
+      "measurement_focus": ["candidate_forward_post_cost_expectancy", "benchmark_excess_return", "clustered_lower_confidence_bound", "breadth_persistence", "drawdown"]
+    },
+    "execution_alpha": {
+      "minimum_probation_samples": 60,
+      "minimum_validation_samples": 200,
+      "minimum_independent_days": 5,
+      "minimum_independent_symbols": 8,
+      "minimum_independent_fills": 120,
+      "maximum_slippage_bps": 12.0,
+      "maximum_spread_bps": 8.0,
+      "maximum_latency_ms": 350,
+      "measurement_focus": ["candidate_forward_post_cost_expectancy", "fill_quality", "adverse_selection", "latency", "session_boundary_flattening"]
+    },
+    "income_total_return": {
+      "minimum_validation_samples": 90,
+      "minimum_independent_days": 10,
+      "minimum_independent_symbols": 5,
+      "minimum_post_cost_lcb_bps": 0.15,
+      "maximum_drawdown_bps": 220.0,
+      "measurement_focus": ["candidate_forward_post_cost_expectancy", "tax_adjusted_total_return", "distribution_safety", "ex_date_recovery", "benchmark_income_hurdle"]
+    },
+    "macro_carry_relative_value": {
+      "minimum_validation_samples": 100,
+      "minimum_independent_days": 12,
+      "minimum_independent_symbols": 4,
+      "minimum_independent_regimes": 3,
+      "maximum_drawdown_bps": 350.0,
+      "maximum_slippage_bps": 35.0,
+      "measurement_focus": ["candidate_forward_post_cost_expectancy", "regime_alignment", "carry_and_funding", "event_surprise", "curve_or_beta_adjusted_return"]
+    },
+    "digital_asset_alpha": {
+      "minimum_probation_samples": 80,
+      "minimum_validation_samples": 220,
+      "minimum_independent_days": 8,
+      "minimum_independent_symbols": 6,
+      "minimum_independent_regimes": 3,
+      "minimum_independent_fills": 100,
+      "maximum_drawdown_bps": 600.0,
+      "maximum_slippage_bps": 75.0,
+      "maximum_spread_bps": 45.0,
+      "maximum_latency_ms": 750,
+      "measurement_focus": ["candidate_forward_post_cost_expectancy", "venue_health", "funding_or_basis_context", "liquidation_risk", "weekend_liquidity"]
+    },
+    "volatility_relative_value": {
+      "minimum_validation_samples": 160,
+      "minimum_independent_days": 8,
+      "minimum_independent_symbols": 4,
+      "minimum_independent_fills": 80,
+      "maximum_drawdown_bps": 500.0,
+      "maximum_slippage_bps": 90.0,
+      "maximum_spread_bps": 60.0,
+      "measurement_focus": ["candidate_forward_post_cost_expectancy", "implied_realized_edge", "greek_exposure", "surface_quality", "hedgeability"]
+    },
+    "market_neutral_relative_value": {
+      "minimum_validation_samples": 180,
+      "minimum_independent_days": 10,
+      "minimum_independent_symbols": 8,
+      "minimum_independent_fills": 80,
+      "maximum_drawdown_bps": 180.0,
+      "maximum_slippage_bps": 35.0,
+      "measurement_focus": ["candidate_forward_post_cost_expectancy", "beta_neutrality", "borrow_and_funding", "relationship_stability", "residual_convergence"]
+    },
+    "event_alpha": {
+      "minimum_validation_samples": 120,
+      "minimum_independent_days": 6,
+      "minimum_independent_symbols": 8,
+      "minimum_independent_fills": 60,
+      "maximum_drawdown_bps": 450.0,
+      "maximum_slippage_bps": 45.0,
+      "measurement_focus": ["candidate_forward_post_cost_expectancy", "event_clock_accuracy", "source_timestamp_quality", "gap_risk", "post_event_drift"]
+    },
+    "hedge_utility": {
+      "minimum_probation_samples": 40,
+      "minimum_validation_samples": 120,
+      "minimum_independent_days": 8,
+      "minimum_independent_symbols": 4,
+      "maximum_drawdown_bps": 250.0,
+      "measurement_focus": ["drawdown_reduction_per_carry_cost", "portfolio_correlation_offset", "crisis_hit_rate", "borrow_or_premium_cost", "tail_beta_reduction"]
+    },
+    "capital_preservation": {
+      "minimum_validation_samples": 90,
+      "minimum_independent_days": 10,
+      "minimum_independent_symbols": 3,
+      "maximum_drawdown_bps": 120.0,
+      "maximum_slippage_bps": 15.0,
+      "measurement_focus": ["risk_adjusted_opportunity_cost_bps", "drawdown_avoidance", "liquidity_preservation", "reentry_quality", "false_positive_cash_rotation"]
+    },
+    "basis_relative_value": {
+      "minimum_probation_samples": 80,
+      "minimum_validation_samples": 180,
+      "minimum_independent_days": 10,
+      "minimum_independent_symbols": 5,
+      "minimum_independent_regimes": 3,
+      "minimum_independent_fills": 120,
+      "maximum_drawdown_bps": 250.0,
+      "maximum_slippage_bps": 35.0,
+      "maximum_latency_ms": 500,
+      "measurement_focus": ["candidate_forward_post_cost_expectancy", "leg_synchronization", "basis_convergence", "funding_and_margin", "venue_or_counterparty_risk"]
+    },
+    "control_only": {
+      "minimum_probation_samples": 1,
+      "minimum_validation_samples": 30,
+      "minimum_independent_days": 3,
+      "minimum_independent_symbols": 1,
+      "minimum_independent_fills": 0,
+      "maximum_drawdown_bps": 0.0,
+      "maximum_slippage_bps": 0.0,
+      "maximum_spread_bps": 0.0,
+      "maximum_latency_ms": 60,
+      "measurement_focus": ["control_effectiveness", "detection_latency", "false_positive_rate", "recovery_time", "telemetry_freshness"]
+    }
+  },
+  "sleeve_measurement_parameters": {
+    "equity_core": {"minimum_validation_samples": 120, "minimum_independent_days": 8, "minimum_independent_symbols": 4, "maximum_drawdown_bps": 280.0, "maximum_slippage_bps": 25.0, "measurement_focus": ["candidate_forward_post_cost_expectancy", "style_benchmark_excess_return", "cross_sectional_breadth", "earnings_revision_confirmation", "sector_concentration"]},
+    "intraday_aggressive": {"minimum_probation_samples": 80, "minimum_validation_samples": 240, "minimum_independent_days": 5, "minimum_independent_symbols": 10, "minimum_independent_fills": 160, "maximum_drawdown_bps": 300.0, "maximum_slippage_bps": 10.0, "maximum_spread_bps": 6.0, "maximum_latency_ms": 250, "measurement_focus": ["candidate_forward_post_cost_expectancy", "opening_auction_quality", "vwap_shortfall", "toxicity_shift", "flat_by_close_compliance"]},
+    "day_trading": {"minimum_probation_samples": 70, "minimum_validation_samples": 220, "minimum_independent_days": 6, "minimum_independent_symbols": 8, "minimum_independent_fills": 150, "maximum_drawdown_bps": 280.0, "maximum_slippage_bps": 12.0, "maximum_spread_bps": 8.0, "maximum_latency_ms": 350, "measurement_focus": ["candidate_forward_post_cost_expectancy", "session_structure", "opening_range_quality", "intraday_reversal_risk", "flat_by_close_compliance"]},
+    "swing_aggressive": {"minimum_probation_samples": 60, "minimum_validation_samples": 140, "minimum_independent_days": 10, "minimum_independent_symbols": 6, "minimum_independent_fills": 40, "maximum_drawdown_bps": 450.0, "maximum_slippage_bps": 35.0, "maximum_latency_ms": 2000, "measurement_focus": ["candidate_forward_post_cost_expectancy", "multi_day_follow_through", "gap_risk", "position_decay", "risk_matched_benchmark"]},
+    "dividend_income": {"minimum_probation_samples": 40, "minimum_validation_samples": 100, "minimum_independent_days": 12, "minimum_independent_symbols": 6, "maximum_drawdown_bps": 200.0, "maximum_slippage_bps": 30.0, "measurement_focus": ["tax_adjusted_total_return", "distribution_safety", "yield_quality", "valuation_support", "dividend_revision_confirmation"]},
+    "dividend_capture": {"minimum_probation_samples": 80, "minimum_validation_samples": 180, "minimum_independent_days": 12, "minimum_independent_symbols": 10, "minimum_independent_fills": 60, "maximum_drawdown_bps": 180.0, "maximum_slippage_bps": 20.0, "measurement_focus": ["tax_adjusted_capture", "ex_date_drop_recovery", "holding_period_risk", "liquidity_around_record_date", "wash_or_tax_context"]},
+    "bond_rates": {"minimum_probation_samples": 50, "minimum_validation_samples": 120, "minimum_independent_days": 15, "minimum_independent_symbols": 4, "minimum_independent_regimes": 3, "maximum_drawdown_bps": 220.0, "maximum_slippage_bps": 25.0, "measurement_focus": ["curve_carry_roll_down", "duration_adjusted_return", "inflation_regime_fit", "credit_spread_context", "funding_cost"]},
+    "fx_macro": {"minimum_probation_samples": 60, "minimum_validation_samples": 140, "minimum_independent_days": 12, "minimum_independent_symbols": 6, "minimum_independent_regimes": 3, "maximum_drawdown_bps": 300.0, "maximum_slippage_bps": 20.0, "measurement_focus": ["fx_carry_after_costs", "central_bank_surprise", "liquidity_session", "dollar_beta_control", "funding_differential"]},
+    "crypto_spot": {"minimum_probation_samples": 100, "minimum_validation_samples": 260, "minimum_independent_days": 10, "minimum_independent_symbols": 8, "minimum_independent_regimes": 3, "minimum_independent_fills": 120, "maximum_drawdown_bps": 650.0, "maximum_slippage_bps": 80.0, "maximum_spread_bps": 50.0, "maximum_latency_ms": 700, "measurement_focus": ["spot_rotation_after_costs", "venue_health", "liquidity_fragmentation", "weekend_regime", "stablecoin_or_onchain_stress"]},
+    "crypto_futures": {"minimum_probation_samples": 120, "minimum_validation_samples": 300, "minimum_independent_days": 10, "minimum_independent_symbols": 8, "minimum_independent_regimes": 3, "minimum_independent_fills": 180, "maximum_drawdown_bps": 700.0, "maximum_slippage_bps": 90.0, "maximum_spread_bps": 60.0, "maximum_latency_ms": 500, "measurement_focus": ["funding_carry_after_fees", "liquidation_reversal_quality", "margin_headroom", "venue_risk", "basis_context"]},
+    "schwab_futures": {"minimum_probation_samples": 80, "minimum_validation_samples": 180, "minimum_independent_days": 10, "minimum_independent_symbols": 6, "minimum_independent_regimes": 3, "minimum_independent_fills": 90, "maximum_drawdown_bps": 450.0, "maximum_slippage_bps": 35.0, "maximum_spread_bps": 20.0, "maximum_latency_ms": 500, "measurement_focus": ["futures_post_cost_expectancy", "contract_roll_quality", "margin_headroom", "session_liquidity", "macro_regime_fit"]},
+    "volatility": {"minimum_probation_samples": 90, "minimum_validation_samples": 200, "minimum_independent_days": 10, "minimum_independent_symbols": 5, "minimum_independent_fills": 100, "maximum_drawdown_bps": 550.0, "maximum_slippage_bps": 100.0, "maximum_spread_bps": 70.0, "measurement_focus": ["implied_realized_spread", "skew_and_term_structure", "delta_hedge_quality", "theta_budget", "tail_gap_risk"]},
+    "pairs_correlation": {"minimum_probation_samples": 80, "minimum_validation_samples": 200, "minimum_independent_days": 15, "minimum_independent_symbols": 10, "minimum_independent_fills": 80, "maximum_drawdown_bps": 160.0, "maximum_slippage_bps": 30.0, "maximum_spread_bps": 14.0, "measurement_focus": ["spread_convergence", "cointegration_stability", "hedge_ratio_drift", "beta_neutrality", "relationship_break_detection"]},
+    "stat_arb_market_neutral": {"minimum_probation_samples": 100, "minimum_validation_samples": 260, "minimum_independent_days": 15, "minimum_independent_symbols": 15, "minimum_independent_fills": 120, "maximum_drawdown_bps": 180.0, "maximum_slippage_bps": 25.0, "maximum_spread_bps": 12.0, "maximum_latency_ms": 800, "measurement_focus": ["residual_alpha_after_costs", "factor_neutrality", "borrow_capacity", "turnover_decay", "crowding_risk"]},
+    "earnings_event": {"minimum_probation_samples": 80, "minimum_validation_samples": 180, "minimum_independent_days": 8, "minimum_independent_symbols": 12, "minimum_independent_fills": 60, "maximum_drawdown_bps": 500.0, "maximum_slippage_bps": 45.0, "maximum_spread_bps": 25.0, "measurement_focus": ["event_clock_accuracy", "implied_move_error", "surprise_quality", "gap_risk", "post_earnings_drift"]},
+    "commodity_inflation": {"minimum_probation_samples": 60, "minimum_validation_samples": 140, "minimum_independent_days": 15, "minimum_independent_symbols": 5, "minimum_independent_regimes": 3, "minimum_independent_fills": 50, "maximum_drawdown_bps": 400.0, "maximum_slippage_bps": 40.0, "measurement_focus": ["curve_carry_after_roll", "inventory_surprise", "seasonality_fit", "inflation_beta", "weather_or_supply_shock"]},
+    "international_macro": {"minimum_probation_samples": 60, "minimum_validation_samples": 140, "minimum_independent_days": 15, "minimum_independent_symbols": 6, "minimum_independent_regimes": 3, "minimum_independent_fills": 40, "maximum_drawdown_bps": 400.0, "maximum_slippage_bps": 45.0, "measurement_focus": ["country_value_momentum", "fx_hedge_differential", "policy_surprise", "liquidity_calendar", "sovereign_risk"]},
+    "market_making_liquidity": {"minimum_probation_samples": 150, "minimum_validation_samples": 400, "minimum_independent_days": 5, "minimum_independent_symbols": 12, "minimum_independent_fills": 300, "maximum_drawdown_bps": 200.0, "maximum_slippage_bps": 6.0, "maximum_spread_bps": 4.0, "maximum_latency_ms": 100, "measurement_focus": ["realized_spread_capture", "queue_position_quality", "toxicity_detection", "inventory_skew", "latency_budget"]},
+    "short_bias_hedge": {"minimum_probation_samples": 60, "minimum_validation_samples": 150, "minimum_independent_days": 10, "minimum_independent_symbols": 8, "minimum_independent_fills": 50, "maximum_drawdown_bps": 250.0, "maximum_slippage_bps": 35.0, "maximum_spread_bps": 20.0, "measurement_focus": ["drawdown_reduction_per_carry_cost", "beta_hedge_efficiency", "borrow_availability", "crowded_long_unwind_signal", "portfolio_correlation_offset"]},
+    "single_name_options_event": {"minimum_probation_samples": 90, "minimum_validation_samples": 220, "minimum_independent_days": 8, "minimum_independent_symbols": 12, "minimum_independent_fills": 80, "maximum_drawdown_bps": 600.0, "maximum_slippage_bps": 120.0, "maximum_spread_bps": 80.0, "measurement_focus": ["event_implied_move_error", "surface_liquidity", "defined_risk_compliance", "vega_gamma_budget", "post_event_vol_reset"]},
+    "rates_credit_macro": {"minimum_probation_samples": 60, "minimum_validation_samples": 140, "minimum_independent_days": 15, "minimum_independent_symbols": 5, "minimum_independent_regimes": 3, "minimum_independent_fills": 50, "maximum_drawdown_bps": 280.0, "maximum_slippage_bps": 30.0, "measurement_focus": ["policy_path_surprise", "curve_carry_roll", "credit_spread_momentum", "funding_cost", "duration_credit_beta"]},
+    "cash_rotation_tactical": {"minimum_probation_samples": 30, "minimum_validation_samples": 90, "minimum_independent_days": 12, "minimum_independent_symbols": 3, "minimum_independent_fills": 20, "maximum_drawdown_bps": 80.0, "maximum_slippage_bps": 10.0, "maximum_spread_bps": 5.0, "measurement_focus": ["risk_adjusted_opportunity_cost_bps", "cash_yield_capture", "drawdown_avoidance", "reentry_timing", "false_cash_signal"]},
+    "conservative": {"minimum_probation_samples": 30, "minimum_validation_samples": 90, "minimum_independent_days": 15, "minimum_independent_symbols": 4, "minimum_independent_fills": 20, "maximum_drawdown_bps": 120.0, "maximum_slippage_bps": 20.0, "maximum_spread_bps": 10.0, "measurement_focus": ["minimum_variance_quality", "defensive_upside_capture", "drawdown_reentry", "cash_drag", "benchmark_defensive_blend"]},
+    "futures_index_intraday": {"minimum_probation_samples": 100, "minimum_validation_samples": 280, "minimum_independent_days": 7, "minimum_independent_symbols": 5, "minimum_independent_fills": 180, "maximum_drawdown_bps": 350.0, "maximum_slippage_bps": 12.0, "maximum_spread_bps": 8.0, "maximum_latency_ms": 250, "measurement_focus": ["index_futures_shortfall", "auction_basis_quality", "session_inventory", "macro_headline_sensitivity", "flat_by_close_compliance"]},
+    "futures_rates_curve": {"minimum_probation_samples": 80, "minimum_validation_samples": 180, "minimum_independent_days": 12, "minimum_independent_symbols": 5, "minimum_independent_regimes": 3, "minimum_independent_fills": 90, "maximum_drawdown_bps": 350.0, "maximum_slippage_bps": 25.0, "measurement_focus": ["curve_carry_roll", "auction_surprise", "policy_path_repricing", "convexity_context", "contract_roll_quality"]},
+    "futures_commodity_macro": {"minimum_probation_samples": 80, "minimum_validation_samples": 180, "minimum_independent_days": 12, "minimum_independent_symbols": 6, "minimum_independent_regimes": 3, "minimum_independent_fills": 90, "maximum_drawdown_bps": 450.0, "maximum_slippage_bps": 45.0, "measurement_focus": ["commodity_carry_after_roll", "inventory_seasonality", "intermarket_transmission", "supply_shock_context", "margin_headroom"]},
+    "crypto_futures_basis": {"minimum_probation_samples": 150, "minimum_validation_samples": 360, "minimum_independent_days": 12, "minimum_independent_symbols": 6, "minimum_independent_regimes": 3, "minimum_independent_fills": 240, "maximum_drawdown_bps": 250.0, "maximum_slippage_bps": 45.0, "maximum_spread_bps": 25.0, "maximum_latency_ms": 350, "measurement_focus": ["basis_convergence", "funding_dispersion", "leg_synchronization", "venue_health", "margin_and_liquidation_headroom"]},
+    "futures_event_reaction": {"minimum_probation_samples": 100, "minimum_validation_samples": 260, "minimum_independent_days": 8, "minimum_independent_symbols": 8, "minimum_independent_fills": 140, "maximum_drawdown_bps": 500.0, "maximum_slippage_bps": 30.0, "maximum_spread_bps": 18.0, "maximum_latency_ms": 250, "measurement_focus": ["macro_event_clock_accuracy", "first_second_reaction_split", "whipsaw_risk", "auction_tail_context", "session_liquidity"]},
+    "options_on_futures_aggressive": {"minimum_probation_samples": 120, "minimum_validation_samples": 300, "minimum_independent_days": 8, "minimum_independent_symbols": 6, "minimum_independent_fills": 160, "maximum_drawdown_bps": 650.0, "maximum_slippage_bps": 120.0, "maximum_spread_bps": 80.0, "maximum_latency_ms": 750, "measurement_focus": ["futures_option_surface_quality", "defined_risk_premium_budget", "gamma_theta_tradeoff", "event_gap_risk", "delta_hedge_quality"]},
+    "infrastructure_risk": {"minimum_probation_samples": 1, "minimum_validation_samples": 30, "minimum_independent_days": 3, "minimum_independent_symbols": 1, "minimum_independent_fills": 0, "maximum_drawdown_bps": 0.0, "maximum_slippage_bps": 0.0, "maximum_spread_bps": 0.0, "maximum_latency_ms": 60, "measurement_focus": ["control_effectiveness", "storage_and_queue_integrity", "detection_latency", "false_positive_rate", "recovery_time"]}
+  },
+  "derived_sleeve_policy": {
+    "purpose": "Complete active collection-sleeve contracts inherit conservative defaults and remain non-executing until an explicit reviewed sleeve override exists.",
+    "execution_eligible": false,
+    "economic_thesis": "This collection sleeve measures a named market relationship under point-in-time, cost-aware, candidate-bound evaluation before any execution consideration.",
+    "universe": "sleeve_manifest_universe",
+    "decision_horizon": "research_defined",
+    "holding_horizon": "research_defined",
+    "benchmark": "matched_asset_class_or_cash_hurdle",
+    "risk_budget": "zero_until_explicit_promotion",
+    "shorting_policy": "forbidden_until_explicitly_reviewed"
+  },
+  "sleeves": {
+    "equity_core": {"objective_class": "directional_alpha", "economic_thesis": "Persistent quality, value, breadth, and momentum effects can identify diversified equity excess return after costs.", "universe": "core", "decision_horizon": "daily", "holding_horizon": "days_to_months", "benchmark": "SPY_or_style_matched_equity_benchmark", "risk_budget": "core_equity", "shorting_policy": "long_flat_unless_explicitly_approved"},
+    "intraday_aggressive": {"objective_class": "execution_alpha", "economic_thesis": "Auction, order-flow, intraday trend, and liquidity dislocations can produce short-horizon execution edge after spread and impact.", "universe": "volatile", "decision_horizon": "seconds_to_minutes", "holding_horizon": "intraday_flat_by_close", "benchmark": "arrival_price_and_intraday_vwap", "risk_budget": "intraday_aggressive", "shorting_policy": "allowed_only_with_borrow_and_ssr_controls"},
+    "day_trading": {"objective_class": "execution_alpha", "economic_thesis": "Point-in-time volume, opening structure, and session context can support bounded intraday trades after realistic fills.", "universe": "volatile", "decision_horizon": "minutes", "holding_horizon": "intraday_flat_by_close", "benchmark": "arrival_price_and_intraday_vwap", "risk_budget": "day_trading", "shorting_policy": "allowed_only_with_borrow_and_ssr_controls"},
+    "swing_aggressive": {"objective_class": "directional_alpha", "economic_thesis": "Multi-day momentum, revisions, quality, and controlled pullbacks can persist beyond one session.", "universe": "volatile", "decision_horizon": "hourly_to_daily", "holding_horizon": "two_days_to_six_weeks", "benchmark": "risk_matched_equity_benchmark", "risk_budget": "swing_aggressive", "shorting_policy": "explicit_strategy_only"},
+    "dividend_income": {"objective_class": "income_total_return", "economic_thesis": "Distribution safety, quality, valuation, and total yield can improve long-run tax-aware total return.", "universe": "dividend", "decision_horizon": "daily_to_weekly", "holding_horizon": "months_to_years", "benchmark": "dividend_total_return_index", "risk_budget": "income_core", "shorting_policy": "long_flat"},
+    "dividend_capture": {"objective_class": "income_total_return", "economic_thesis": "Select ex-dividend windows may offer tax-adjusted income when expected price-drop recovery and costs are favorable.", "universe": "dividend", "decision_horizon": "daily", "holding_horizon": "days_to_weeks", "benchmark": "tax_adjusted_dividend_capture_cohort", "risk_budget": "income_tactical", "shorting_policy": "long_flat"},
+    "bond_rates": {"objective_class": "macro_carry_relative_value", "economic_thesis": "Curve carry, roll-down, inflation, duration, and credit regimes can create rate and spread opportunities.", "universe": "rates_credit", "decision_horizon": "daily_to_weekly", "holding_horizon": "days_to_months", "benchmark": "duration_and_credit_matched_bond_index", "risk_budget": "rates_credit", "shorting_policy": "hedged_relative_value_only"},
+    "fx_macro": {"objective_class": "macro_carry_relative_value", "economic_thesis": "Rate differentials, valuation, momentum, liquidity, and central-bank surprises can explain currency returns.", "universe": "fx", "decision_horizon": "hourly_to_daily", "holding_horizon": "days_to_months", "benchmark": "currency_beta_and_cash_differential", "risk_budget": "fx_macro", "shorting_policy": "allowed_with_symmetric_currency_risk_controls"},
+    "crypto_spot": {"objective_class": "digital_asset_alpha", "economic_thesis": "Liquidity, cross-sectional rotation, trend, flows, and venue health can condition digital-asset spot exposure.", "universe": "crypto", "decision_horizon": "minutes_to_daily", "holding_horizon": "hours_to_months", "benchmark": "BTC_ETH_or_market_cap_weighted_spot", "risk_budget": "crypto_spot", "shorting_policy": "long_flat"},
+    "crypto_futures": {"objective_class": "digital_asset_alpha", "economic_thesis": "Funding, open interest, basis, liquidation, and trend can condition bounded crypto-futures exposure.", "universe": "crypto_futures", "decision_horizon": "minutes_to_daily", "holding_horizon": "minutes_to_weeks", "benchmark": "spot_beta_plus_funding", "risk_budget": "crypto_futures", "shorting_policy": "allowed_with_margin_liquidation_and_venue_controls"},
+    "schwab_futures": {"objective_class": "macro_carry_relative_value", "economic_thesis": "Cross-asset futures trend, carry, event, basis, and session structure can diversify directional and relative-value evidence.", "universe": "futures", "decision_horizon": "minutes_to_daily", "holding_horizon": "intraday_to_months", "benchmark": "asset_class_futures_benchmark", "risk_budget": "futures_core", "shorting_policy": "allowed_with_contract_margin_and_roll_controls"},
+    "volatility": {"objective_class": "volatility_relative_value", "economic_thesis": "Implied-realized, skew, term structure, correlation, and tail pricing can create delta-aware volatility relative value.", "universe": "options_volatility", "decision_horizon": "intraday_to_daily", "holding_horizon": "days_to_expiry", "benchmark": "delta_hedged_option_or_volatility_index", "risk_budget": "volatility", "shorting_policy": "defined_risk_or_fully_hedged_only"},
+    "pairs_correlation": {"objective_class": "market_neutral_relative_value", "economic_thesis": "Stable economic relationships can mean-revert when cointegration, hedge ratios, and break diagnostics remain valid.", "universe": "cross_asset_pairs", "decision_horizon": "daily", "holding_horizon": "days_to_weeks", "benchmark": "cash_plus_market_neutral_hurdle", "risk_budget": "pairs_relative_value", "shorting_policy": "paired_hedged_only"},
+    "stat_arb_market_neutral": {"objective_class": "market_neutral_relative_value", "economic_thesis": "Cross-sectional residuals can converge after explicit factor, sector, beta, borrow, turnover, and capacity neutralization.", "universe": "core", "decision_horizon": "intraday_to_daily", "holding_horizon": "hours_to_weeks", "benchmark": "cash_plus_market_neutral_hurdle", "risk_budget": "stat_arb", "shorting_policy": "factor_neutral_borrow_verified_only"},
+    "earnings_event": {"objective_class": "event_alpha", "economic_thesis": "Surprises, revisions, implied moves, and post-event drift can create bounded abnormal-return opportunities.", "universe": "earnings", "decision_horizon": "event_to_daily", "holding_horizon": "event_window_to_weeks", "benchmark": "matched_earnings_event_cohort", "risk_budget": "earnings_event", "shorting_policy": "explicit_defined_risk_only"},
+    "commodity_inflation": {"objective_class": "macro_carry_relative_value", "economic_thesis": "Commodity curves, inventories, seasonality, supply shocks, and inflation transmission can create macro opportunities.", "universe": "commodities", "decision_horizon": "daily_to_weekly", "holding_horizon": "days_to_months", "benchmark": "commodity_curve_and_inflation_benchmark", "risk_budget": "commodity_macro", "shorting_policy": "allowed_with_curve_margin_and_roll_controls"},
+    "international_macro": {"objective_class": "macro_carry_relative_value", "economic_thesis": "Country valuation, momentum, carry, currency hedging, and policy surprises can drive international relative returns.", "universe": "international", "decision_horizon": "daily_to_weekly", "holding_horizon": "weeks_to_months", "benchmark": "country_and_fx_matched_index", "risk_budget": "international_macro", "shorting_policy": "hedged_relative_value_only"},
+    "market_making_liquidity": {"objective_class": "execution_alpha", "economic_thesis": "Queue, microprice, toxicity, spread, and inventory state can improve simulated liquidity provision after adverse selection.", "universe": "liquid", "decision_horizon": "subsecond_to_minutes", "holding_horizon": "seconds_to_intraday", "benchmark": "arrival_mid_and_realized_spread", "risk_budget": "market_making_research", "shorting_policy": "inventory_bounded_and_flattened"},
+    "short_bias_hedge": {"objective_class": "hedge_utility", "economic_thesis": "Downside, credit, revision, crowding, and beta signals can reduce portfolio tail loss net of hedge carry.", "universe": "hedges", "decision_horizon": "intraday_to_daily", "holding_horizon": "hours_to_weeks", "benchmark": "portfolio_without_hedge", "risk_budget": "portfolio_hedge", "shorting_policy": "hedge_only_with_borrow_or_defined_risk"},
+    "single_name_options_event": {"objective_class": "event_alpha", "economic_thesis": "Single-name event option surfaces can misprice implied moves, skew, and post-event volatility under defined risk.", "universe": "single_name_options", "decision_horizon": "event_to_daily", "holding_horizon": "event_window_to_expiry", "benchmark": "delta_hedged_matched_event_option", "risk_budget": "single_name_options_event", "shorting_policy": "defined_risk_or_fully_hedged_only"},
+    "rates_credit_macro": {"objective_class": "macro_carry_relative_value", "economic_thesis": "Policy paths, curve carry, funding, swap spreads, and credit dispersion can reveal rate-credit relative value.", "universe": "rates_credit", "decision_horizon": "daily", "holding_horizon": "days_to_months", "benchmark": "duration_credit_matched_index", "risk_budget": "rates_credit_macro", "shorting_policy": "hedged_relative_value_only"},
+    "cash_rotation_tactical": {"objective_class": "capital_preservation", "economic_thesis": "Cash, bill carry, risk-premium switches, and disciplined re-entry can reduce drawdown without ignoring opportunity cost.", "universe": "cash_equivalents", "decision_horizon": "daily_to_weekly", "holding_horizon": "days_to_months", "benchmark": "t_bill_plus_risk_adjusted_opportunity_cost", "risk_budget": "capital_preservation", "shorting_policy": "long_flat"},
+    "conservative": {"objective_class": "capital_preservation", "economic_thesis": "Quality, minimum variance, cash, and slow re-entry can preserve capital while retaining measured upside participation.", "universe": "defensive", "decision_horizon": "daily_to_weekly", "holding_horizon": "weeks_to_years", "benchmark": "blended_cash_and_defensive_equity", "risk_budget": "conservative", "shorting_policy": "long_flat"},
+    "futures_index_intraday": {"objective_class": "execution_alpha", "economic_thesis": "Cash-futures basis, auctions, session inventory, relative strength, and intraday trend can create execution-aware index-futures edge.", "universe": "index_futures", "decision_horizon": "seconds_to_minutes", "holding_horizon": "intraday_flat_by_close", "benchmark": "futures_arrival_price_and_vwap", "risk_budget": "index_futures_intraday", "shorting_policy": "allowed_with_margin_and_session_controls"},
+    "futures_rates_curve": {"objective_class": "macro_carry_relative_value", "economic_thesis": "Curve carry, auctions, policy repricing, duration momentum, and convexity can create rates-futures opportunities.", "universe": "rates_futures", "decision_horizon": "minutes_to_daily", "holding_horizon": "intraday_to_months", "benchmark": "duration_and_curve_matched_futures", "risk_budget": "rates_futures", "shorting_policy": "allowed_with_curve_margin_and_roll_controls"},
+    "futures_commodity_macro": {"objective_class": "macro_carry_relative_value", "economic_thesis": "Commodity carry, momentum, inventory, seasonality, and intermarket transmission can create futures opportunities.", "universe": "commodity_futures", "decision_horizon": "minutes_to_daily", "holding_horizon": "intraday_to_months", "benchmark": "commodity_curve_matched_futures", "risk_budget": "commodity_futures", "shorting_policy": "allowed_with_curve_margin_and_roll_controls"},
+    "crypto_futures_basis": {"objective_class": "basis_relative_value", "economic_thesis": "Spot-perpetual-calendar and cross-venue basis can converge after funding, fee, latency, margin, and venue-risk adjustments.", "universe": "crypto_futures", "decision_horizon": "seconds_to_daily", "holding_horizon": "minutes_to_weeks", "benchmark": "market_neutral_basis_hurdle", "risk_budget": "crypto_basis", "shorting_policy": "market_neutral_venue_verified_only"},
+    "futures_event_reaction": {"objective_class": "event_alpha", "economic_thesis": "Macro releases, auctions, and policy events can produce distinct first, second, fade, and follow-through reactions.", "universe": "futures", "decision_horizon": "seconds_to_minutes", "holding_horizon": "minutes_to_days", "benchmark": "matched_macro_event_cohort", "risk_budget": "futures_event", "shorting_policy": "allowed_with_event_margin_and_gap_controls"},
+    "options_on_futures_aggressive": {"objective_class": "volatility_relative_value", "economic_thesis": "Defined-risk futures options can express event, skew, gamma, and term-structure dislocations under strict premium budgets.", "universe": "futures_options", "decision_horizon": "minutes_to_daily", "holding_horizon": "event_window_to_expiry", "benchmark": "delta_hedged_futures_option", "risk_budget": "futures_options_defined_risk", "shorting_policy": "defined_risk_or_fully_hedged_only"},
+    "infrastructure_risk": {"objective_class": "control_only", "economic_thesis": "Operational controls preserve data integrity and prevent unsafe execution; they do not claim or receive trading profit.", "universe": "system_controls", "decision_horizon": "continuous", "holding_horizon": "not_applicable", "entry_rule": "not_applicable_no_trade_authority", "add_rule": "not_applicable_no_trade_authority", "trim_rule": "not_applicable_no_trade_authority", "exit_rule": "not_applicable_no_trade_authority", "time_stop": "not_applicable", "benchmark": "control_slo", "risk_budget": "zero_trading_risk", "shorting_policy": "forbidden"}
+  },
+  "strategy_additions": {
+    "equity_core": ["quality_value_momentum_composite", "residual_momentum", "earnings_revision_breadth", "trend_to_cash"],
+    "intraday_aggressive": ["opening_auction_imbalance", "time_of_day_vwap_mean_reversion", "overnight_inventory_unwind", "intraday_residual_momentum"],
+    "day_trading": ["opening_auction_imbalance", "time_of_day_vwap_mean_reversion", "overnight_inventory_unwind"],
+    "swing_aggressive": ["cross_sectional_momentum", "time_series_momentum", "earnings_revision_momentum", "quality_value_momentum"],
+    "dividend_income": ["dividend_quality_value_composite", "total_yield_value", "dividend_revision_momentum"],
+    "dividend_capture": ["tax_adjusted_capture", "expected_price_drop_recovery"],
+    "bond_rates": ["curve_carry_roll_down", "duration_time_series_momentum", "breakeven_inflation_value", "credit_carry_momentum"],
+    "fx_macro": ["fx_carry", "fx_value", "fx_time_series_momentum", "central_bank_surprise"],
+    "crypto_spot": ["crypto_time_series_momentum", "cross_sectional_crypto_rotation", "spot_perp_basis_context"],
+    "crypto_futures": ["funding_carry", "cross_venue_basis", "crypto_time_series_momentum", "liquidation_reversal"],
+    "schwab_futures": ["cross_asset_time_series_momentum", "futures_carry_roll", "calendar_spread_relative_value", "macro_surprise"],
+    "volatility": ["variance_risk_premium", "skew_carry", "term_structure_carry", "correlation_dispersion"],
+    "pairs_correlation": ["cointegration_spread", "kalman_dynamic_hedge_ratio", "residual_half_life", "relationship_break"],
+    "stat_arb_market_neutral": ["sector_neutral_short_term_reversal", "cross_sectional_residual_momentum", "factor_neutral_value", "borrow_capacity_guard"],
+    "earnings_event": ["standardized_earnings_surprise", "post_earnings_announcement_drift", "analyst_revision_momentum", "implied_move_error"],
+    "commodity_inflation": ["curve_carry", "time_series_momentum", "inventory_surprise", "seasonal_relative_value"],
+    "international_macro": ["country_value_momentum", "country_carry", "fx_hedge_differential", "policy_surprise"],
+    "market_making_liquidity": ["microprice_queue_imbalance", "toxicity_adjusted_spread_capture", "inventory_skew_rebalance"],
+    "short_bias_hedge": ["negative_revision_short", "quality_distress_short", "crowded_long_unwind", "beta_hedge_efficiency"],
+    "single_name_options_event": ["event_implied_move_error", "skew_dislocation", "post_event_volatility_reset", "defined_risk_event_spread"],
+    "rates_credit_macro": ["curve_carry_roll", "credit_spread_momentum", "swap_spread_relative_value", "policy_surprise"],
+    "cash_rotation_tactical": ["cash_risk_premium_switch", "t_bill_curve_roll", "trend_to_cash", "volatility_reentry"],
+    "conservative": ["quality_minimum_variance", "trend_to_cash", "defensive_carry", "drawdown_reentry"],
+    "futures_index_intraday": ["opening_auction_basis", "intraday_time_series_momentum", "overnight_inventory_reversal", "close_auction_imbalance"],
+    "futures_rates_curve": ["curve_carry_roll", "duration_momentum", "auction_surprise", "policy_path_relative_value"],
+    "futures_commodity_macro": ["commodity_carry", "time_series_momentum", "inventory_seasonality", "intercommodity_spread"],
+    "crypto_futures_basis": ["basis_term_structure_carry", "cross_venue_funding_dispersion"],
+    "futures_event_reaction": ["cpi_surprise", "fomc_first_second_reaction", "nfp_whipsaw_classifier", "auction_tail"],
+    "options_on_futures_aggressive": ["surface_term_structure", "defined_risk_event_debit_spread", "skew_dislocation", "gamma_theta_budget"]
+  },
+  "strategy_organization": {
+    "purpose": "Group strategy hypotheses inside sleeves by market archetype, evidence role, failure mode, and master/grandmaster aggregation need without granting decision, sizing, promotion, or execution authority.",
+    "authority": {
+      "metadata_only": true,
+      "can_change_trade_logic": false,
+      "can_change_sizing": false,
+      "can_submit_order": false,
+      "can_claim_profitability": false,
+      "can_promote_candidate": false,
+      "can_allocate_capital": false
+    },
+    "strategy_group_fields": [
+      "group_id",
+      "label",
+      "objective_classes",
+      "primary_sleeves",
+      "strategy_archetypes",
+      "expected_edge_source",
+      "measurement_focus",
+      "failure_modes",
+      "master_bot_needs",
+      "grandmaster_bot_needs"
+    ],
+    "groups": [
+      {
+        "group_id": "directional_trend_breakout",
+        "label": "Directional trend and breakout",
+        "objective_classes": ["directional_alpha", "macro_carry_relative_value", "execution_alpha"],
+        "primary_sleeves": ["equity_core", "swing_aggressive", "schwab_futures", "futures_index_intraday"],
+        "strategy_archetypes": ["time_series_momentum", "cross_sectional_momentum", "volatility_adjusted_breakout", "sector_relative_strength", "intraday_time_series_momentum"],
+        "expected_edge_source": "persistent_risk_asset_flow_breadth_confirmation_and_followthrough_after_costs",
+        "measurement_focus": ["benchmark_excess_return", "breadth_persistence", "followthrough_decay", "gap_risk", "drawdown"],
+        "failure_modes": ["false_breakout", "high_volatility_chop", "beta_misattribution", "late_trend_entry"],
+        "master_bot_needs": ["sleeve_specific_parameter_stability", "symbol_rank_explainability", "post_cost_by_regime", "drawdown_context"],
+        "grandmaster_bot_needs": ["cross_sleeve_beta_netting", "regime_conflict_resolution", "capital_preservation_override_context", "portfolio_marginal_contribution"]
+      },
+      {
+        "group_id": "execution_microstructure_liquidity",
+        "label": "Execution, microstructure, and liquidity",
+        "objective_classes": ["execution_alpha"],
+        "primary_sleeves": ["intraday_aggressive", "day_trading", "market_making_liquidity", "futures_index_intraday"],
+        "strategy_archetypes": ["opening_auction", "vwap_reversion", "liquidity_imbalance", "microprice_reversion", "toxicity_adjusted_spread_capture", "session_aware_execution"],
+        "expected_edge_source": "fresh_order_book_session_structure_fill_quality_and_adverse_selection_control",
+        "measurement_focus": ["arrival_shortfall", "realized_spread_capture", "quote_age", "latency", "flat_by_close_compliance"],
+        "failure_modes": ["stale_quotes", "wide_spreads", "queue_toxicity", "latency_spike", "forced_intraday_turnover"],
+        "master_bot_needs": ["independent_fill_quality", "latency_and_quote_age_truth", "spread_capacity_headroom", "session_specific_pnl_attribution"],
+        "grandmaster_bot_needs": ["system_writer_and_runtime_headroom", "cross_sleeve_intraday_exposure_limit", "liquidity_stress_override_context", "execution_cost_model_consistency"]
+      },
+      {
+        "group_id": "income_quality_rotation",
+        "label": "Income, quality, and tax-aware rotation",
+        "objective_classes": ["income_total_return"],
+        "primary_sleeves": ["dividend_income", "dividend_capture"],
+        "strategy_archetypes": ["distribution_safety", "dividend_growth_acceleration", "total_yield_value", "payout_recovery", "tax_adjusted_income", "ex_date_drop_recovery"],
+        "expected_edge_source": "income_quality_valuation_and_recovery_after_tax_cost_and_holding_period_drag",
+        "measurement_focus": ["tax_adjusted_total_return", "distribution_safety", "ex_date_drop_recovery", "holding_period_risk", "income_benchmark_excess"],
+        "failure_modes": ["dividend_cut_risk", "rate_shock", "tax_drag", "late_recovery", "liquidity_gap"],
+        "master_bot_needs": ["income_benchmark_match", "tax_and_holding_period_context", "distribution_revision_evidence", "post_cost_recovery_distribution"],
+        "grandmaster_bot_needs": ["rate_sensitivity_netting", "income_vs_cash_hurdle_context", "portfolio_cash_drag_tradeoff", "capital_duration_budget"]
+      },
+      {
+        "group_id": "macro_carry_policy",
+        "label": "Macro carry, policy, rates, FX, and commodities",
+        "objective_classes": ["macro_carry_relative_value"],
+        "primary_sleeves": ["bond_rates", "rates_credit_macro", "fx_macro", "commodity_inflation", "international_macro", "schwab_futures", "futures_rates_curve", "futures_commodity_macro"],
+        "strategy_archetypes": ["carry_roll_down", "curve_relative_value", "policy_surprise", "inflation_growth_regime", "cross_asset_macro_rotation", "seasonal_inventory", "hedge_adjusted_macro_blend"],
+        "expected_edge_source": "carry_roll_policy_repricing_cross_asset_confirmation_and_funding_adjusted_relative_value",
+        "measurement_focus": ["carry_after_funding", "policy_path_surprise", "curve_roll", "cross_asset_beta", "margin_and_roll_quality"],
+        "failure_modes": ["policy_surprise", "funding_cost_jump", "liquidity_stress", "regime_transition", "contract_roll_slippage"],
+        "master_bot_needs": ["macro_axis_specificity", "roll_and_funding_cost_truth", "country_or_curve_benchmark_fit", "regime_transition_detection"],
+        "grandmaster_bot_needs": ["cross_asset_macro_exposure_map", "rates_fx_commodity_beta_netting", "event_calendar_risk_budget", "portfolio_stress_scenario_context"]
+      },
+      {
+        "group_id": "mean_reversion_relative_value",
+        "label": "Mean reversion and market-neutral relative value",
+        "objective_classes": ["market_neutral_relative_value", "basis_relative_value"],
+        "primary_sleeves": ["pairs_correlation", "stat_arb_market_neutral", "crypto_futures_basis"],
+        "strategy_archetypes": ["cointegration_spread", "residual_reversal", "factor_neutral_momentum", "sector_pairs", "spot_future_convergence", "funding_dispersion", "basis_stress_exit"],
+        "expected_edge_source": "stable_relationship_residual_convergence_basis_normalization_and_factor_neutrality",
+        "measurement_focus": ["spread_convergence", "hedge_ratio_drift", "factor_neutrality", "leg_synchronization", "basis_convergence_after_funding"],
+        "failure_modes": ["correlation_break", "crowding_unwind", "borrow_stress", "leg_sync_failure", "basis_break"],
+        "master_bot_needs": ["relationship_stability_evidence", "leg_level_cost_and_sync_truth", "factor_beta_neutrality", "borrow_or_margin_capacity"],
+        "grandmaster_bot_needs": ["portfolio_correlation_cluster_map", "gross_net_exposure_context", "venue_and_counterparty_concentration", "crowding_unwind_risk_context"]
+      },
+      {
+        "group_id": "volatility_event_convexity",
+        "label": "Volatility, events, options, and convexity",
+        "objective_classes": ["volatility_relative_value", "event_alpha"],
+        "primary_sleeves": ["volatility", "single_name_options_event", "options_on_futures_aggressive", "earnings_event", "futures_event_reaction"],
+        "strategy_archetypes": ["variance_risk_premium", "skew_relative_value", "term_structure_carry", "correlation_dispersion", "implied_move_mispricing", "first_reaction_followthrough", "post_event_drift", "event_volatility_reset"],
+        "expected_edge_source": "surface_dislocation_event_clock_accuracy_defined_risk_premium_and_post_event_repricing",
+        "measurement_focus": ["implied_realized_spread", "surface_liquidity", "event_clock_accuracy", "gap_risk", "gamma_theta_tradeoff"],
+        "failure_modes": ["surface_stale", "spread_too_wide", "event_clock_uncertain", "headline_whipsaw", "tail_gap"],
+        "master_bot_needs": ["option_surface_freshness", "defined_risk_budget_context", "event_timestamp_truth", "delta_hedge_or_premium_attribution"],
+        "grandmaster_bot_needs": ["convexity_budget_across_sleeves", "event_crowding_calendar", "tail_gap_capital_context", "hedge_utility_offset_map"]
+      },
+      {
+        "group_id": "digital_asset_venue_basis",
+        "label": "Digital asset venue, funding, basis, and liquidation",
+        "objective_classes": ["digital_asset_alpha", "basis_relative_value"],
+        "primary_sleeves": ["crypto_spot", "crypto_futures", "crypto_futures_basis"],
+        "strategy_archetypes": ["digital_asset_momentum", "cross_sectional_token_rotation", "funding_carry", "spot_derivative_basis", "liquidation_reversal", "venue_dispersion", "weekend_regime"],
+        "expected_edge_source": "crypto_flow_liquidity_funding_basis_venue_health_and_liquidation_context",
+        "measurement_focus": ["venue_health", "funding_after_fees", "basis_context", "liquidation_reversal_quality", "weekend_liquidity"],
+        "failure_modes": ["venue_stress", "liquidation_cascade", "weekend_liquidity_gap", "funding_spike", "margin_pressure"],
+        "master_bot_needs": ["venue_specific_fill_truth", "funding_and_fee_attribution", "liquidation_context", "weekend_regime_partitioning"],
+        "grandmaster_bot_needs": ["digital_asset_risk_budget", "venue_concentration_context", "crypto_beta_vs_total_portfolio", "basis_and_directional_conflict_resolution"]
+      },
+      {
+        "group_id": "defensive_hedge_capital_preservation",
+        "label": "Defensive hedge and capital preservation",
+        "objective_classes": ["hedge_utility", "capital_preservation"],
+        "primary_sleeves": ["short_bias_hedge", "cash_rotation_tactical", "conservative"],
+        "strategy_archetypes": ["beta_hedge", "tail_hedge", "crowding_unwind_hedge", "trend_to_cash", "drawdown_throttle", "quality_minimum_variance", "volatility_reentry"],
+        "expected_edge_source": "drawdown_reduction_tail_offset_cash_optionality_and_reentry_quality_after_carry_cost",
+        "measurement_focus": ["drawdown_reduction_per_carry_cost", "portfolio_correlation_offset", "cash_yield_vs_opportunity_cost", "reentry_quality", "tail_beta_reduction"],
+        "failure_modes": ["carry_bleed", "false_hedge_signal", "late_reentry", "cash_drag", "risk_on_grind"],
+        "master_bot_needs": ["portfolio_utility_not_standalone_profit", "carry_cost_truth", "drawdown_state_context", "reentry_false_positive_tracking"],
+        "grandmaster_bot_needs": ["capital_preservation_override_context", "portfolio_tail_exposure_map", "cash_vs_risk_asset_opportunity_cost", "defensive_sleeve_conflict_resolution"]
+      }
+    ],
+    "hardening_invariants": {
+      "metadata_authority_must_remain_true": true,
+      "authority_false_fields": ["can_change_trade_logic", "can_change_sizing", "can_submit_order", "can_claim_profitability", "can_promote_candidate", "can_allocate_capital"],
+      "required_group_fields": ["group_id", "label", "objective_classes", "primary_sleeves", "strategy_archetypes", "expected_edge_source", "measurement_focus", "failure_modes", "master_bot_needs", "grandmaster_bot_needs"],
+      "all_group_sleeves_must_exist": true,
+      "all_group_objective_classes_must_exist": true,
+      "all_groups_need_master_and_grandmaster_needs": true,
+      "every_trading_sleeve_must_be_in_at_least_one_group": true,
+      "every_sleeve_strategy_addition_must_inherit_a_group": true,
+      "control_only_sleeves_must_not_be_in_strategy_groups": true
+    },
+    "operator_output_requirements": [
+      "show_strategy_group_count",
+      "show_grouped_sleeve_count",
+      "show_unmapped_trading_sleeves",
+      "show_sleeve_to_group_map",
+      "show_master_success_needs",
+      "show_grandmaster_success_needs",
+      "show_hardening_status"
+    ]
+  },
+  "taxonomy": {
+    "trend": ["trend", "momentum", "followthrough", "continuation", "breakout", "relative_strength", "drive"],
+    "mean_reversion": ["reversion", "reversal", "snapback", "fade", "convergence", "reclaim", "failed"],
+    "carry_value": ["carry", "value", "yield", "roll", "basis", "dividend", "premium"],
+    "event": ["event", "earnings", "surprise", "fomc", "cpi", "nfp", "auction", "catalyst", "guidance"],
+    "volatility": ["vol", "variance", "gamma", "skew", "straddle", "option", "convexity"],
+    "liquidity_execution": ["liquidity", "vwap", "auction", "queue", "spread", "microprice", "imbalance", "tape"],
+    "risk_control": ["guard", "risk", "stress", "halt", "quality", "safety", "preservation", "cash"]
+  },
+  "synthetic_runtime_strategies": {
+    "ensemble_champion": "Current broad master or grand-master decision; no named catalog strategy is credited until explicit selection evidence exists.",
+    "portfolio_consensus": "Current paper portfolio consensus decision; constituent attribution remains separately auditable.",
+    "runtime_challenger": "Runtime bot decision not yet mapped to a named catalog strategy; retained as an explicit challenger identity."
+  }
+}

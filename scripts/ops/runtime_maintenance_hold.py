@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.runtime_maintenance import (
     engage_maintenance_hold,
     maintenance_hold_snapshot,
+    maintenance_hold_token_authorized,
     release_maintenance_hold,
 )
 
@@ -48,7 +49,11 @@ def main() -> int:
         payload = maintenance_hold_snapshot(project_root)
         action_name = "status"
 
-    output = {"action": action_name, **payload}
+    output = {
+        "action": action_name,
+        **payload,
+        "token_authorized": maintenance_hold_token_authorized(payload),
+    }
     if args.json:
         print(json.dumps(output, ensure_ascii=True))
     else:

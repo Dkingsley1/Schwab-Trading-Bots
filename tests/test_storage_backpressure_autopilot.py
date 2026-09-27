@@ -4,6 +4,9 @@ import json
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -14,9 +17,43 @@ if str(OPS_DIR) not in sys.path:
 import storage_backpressure_autopilot as autopilot_src
 
 
+@pytest.fixture(autouse=True)
+def restore_applied_runtime_environment():
+    # Apply-mode policy refreshes deliberately update the worker's environment.
+    with patch.dict(os.environ):
+        yield
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+
+def test_large_single_line_diagnostics_are_bounded_without_truncating_payload(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    payload = {"bot": "writer_cycle_coordinator", "overall_status": "blocked",
+               "diagnostic": "x" * 100_000}
+    monkeypatch.setattr(autopilot_src.subprocess, "run", lambda *args, **kwargs:
+        SimpleNamespace(returncode=2, stdout=json.dumps(payload), stderr="failure:" + "e" * 100_000))
+    result = autopilot_src._run_json(["unused"], cwd=tmp_path, timeout_sec=1)
+    assert result["payload"] == payload
+    assert result["stdout_truncated"] and result["stderr_truncated"]
+    assert len(result["stdout_tail"]) <= 4000
+    assert len(result["stderr_tail"]) <= 4000
+    receipt = autopilot_src._attempt_record(result)
+    assert receipt["status"] == "error" and receipt["rc"] == 2
+    assert len(json.dumps(receipt)) < 9000
+
+
+def test_attempt_receipt_caps_inherited_uncapped_diagnostics():
+    receipt = autopilot_src._attempt_record({
+        "rc": 0, "payload": {"overall_status": "ready"},
+        "stdout_tail": "x" * 100_000, "stderr_tail": "e" * 100_000,
+    })
+    assert receipt["status"] == "ok"
+    assert receipt["stdout_truncated"] and receipt["stderr_truncated"]
+    assert len(receipt["stdout_tail"]) == len(receipt["stderr_tail"]) == 4000
 
 
 def test_storage_backpressure_autopilot_duplicate_run_preserves_active_artifact(

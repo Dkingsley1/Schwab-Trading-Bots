@@ -1,7 +1,9 @@
 from scripts import run_shadow_training_loop as loop
 
 
-def test_extract_account_metrics_prefers_current_balances_over_initial_day_trading_power() -> None:
+def test_extract_account_metrics_prefers_current_balances_over_initial_day_trading_power() -> (
+    None
+):
     payload = {
         "securitiesAccount": {
             "initialBalances": {
@@ -76,7 +78,9 @@ def test_extract_account_metrics_sums_connected_accounts() -> None:
     assert metrics["maintenance_margin_requirement"] == 5000.0
 
 
-def test_broker_margin_available_proxy_uses_available_funds_before_cash_or_large_buying_power() -> None:
+def test_broker_margin_available_proxy_uses_available_funds_before_cash_or_large_buying_power() -> (
+    None
+):
     broker_truth = {
         "account_metrics": {
             "available_funds": 214.06,
@@ -91,6 +95,48 @@ def test_broker_margin_available_proxy_uses_available_funds_before_cash_or_large
     assert round(available, 3) == round(214.06 * 0.70, 3)
 
 
+def test_limited_margin_capability_uses_cash_not_borrowing_power() -> None:
+    broker_truth = {
+        "account_metrics": {
+            "available_funds": 9000.0,
+            "buying_power": 18000.0,
+            "cash_balance": 200.0,
+            "equity": 20000.0,
+        },
+        "account_capability_context": {
+            "schema_version": 1,
+            "status": "ready",
+            "limited_margin_account_count": 1,
+            "borrowing_enabled_account_count": 0,
+        },
+    }
+
+    available = loop._broker_margin_available_proxy(broker_truth, "options")
+
+    assert round(available, 3) == round(200.0 * 0.70, 3)
+    assert loop._broker_margin_truth_has_basis(broker_truth) is True
+
+
+def test_zero_cash_limited_margin_does_not_invent_equity_headroom() -> None:
+    broker_truth = {
+        "account_metrics": {
+            "available_funds": 9000.0,
+            "buying_power": 18000.0,
+            "cash_balance": 0.0,
+            "equity": 20000.0,
+        },
+        "account_capability_context": {
+            "schema_version": 1,
+            "status": "classification_incomplete",
+            "limited_margin_account_count": 1,
+            "borrowing_enabled_account_count": 0,
+        },
+    }
+
+    assert loop._broker_margin_available_proxy(broker_truth, "options") == 0.0
+    assert loop._broker_margin_truth_has_basis(broker_truth) is False
+
+
 def test_options_margin_proxy_uses_crypto_contract_multiplier(monkeypatch) -> None:
     monkeypatch.delenv("CRYPTO_OPTIONS_CONTRACT_MULTIPLIER", raising=False)
     decision = {
@@ -102,8 +148,18 @@ def test_options_margin_proxy_uses_crypto_contract_multiplier(monkeypatch) -> No
             "underlying_price": 76000.0,
             "contracts": 1,
             "legs": [
-                {"side": "BUY_TO_OPEN", "type": "PUT", "strike": 76000.0, "quantity": 1},
-                {"side": "SELL_TO_OPEN", "type": "PUT", "strike": 72200.0, "quantity": 1},
+                {
+                    "side": "BUY_TO_OPEN",
+                    "type": "PUT",
+                    "strike": 76000.0,
+                    "quantity": 1,
+                },
+                {
+                    "side": "SELL_TO_OPEN",
+                    "type": "PUT",
+                    "strike": 72200.0,
+                    "quantity": 1,
+                },
             ],
         },
     }
@@ -113,7 +169,9 @@ def test_options_margin_proxy_uses_crypto_contract_multiplier(monkeypatch) -> No
     assert required == 3800.0
 
 
-def test_options_margin_guard_is_advisory_for_shadow_without_broker_truth(monkeypatch) -> None:
+def test_options_margin_guard_is_advisory_for_shadow_without_broker_truth(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("MARKET_DATA_ONLY", "1")
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "0")
     decision = {
@@ -128,8 +186,18 @@ def test_options_margin_guard_is_advisory_for_shadow_without_broker_truth(monkey
             "underlying_price": 76000.0,
             "contracts": 1,
             "legs": [
-                {"side": "BUY_TO_OPEN", "type": "PUT", "strike": 76000.0, "quantity": 1},
-                {"side": "SELL_TO_OPEN", "type": "PUT", "strike": 72200.0, "quantity": 1},
+                {
+                    "side": "BUY_TO_OPEN",
+                    "type": "PUT",
+                    "strike": 76000.0,
+                    "quantity": 1,
+                },
+                {
+                    "side": "SELL_TO_OPEN",
+                    "type": "PUT",
+                    "strike": 72200.0,
+                    "quantity": 1,
+                },
             ],
         },
     }
@@ -148,7 +216,9 @@ def test_options_margin_guard_is_advisory_for_shadow_without_broker_truth(monkey
     assert meta["reason"] == "shadow_no_broker_margin_truth"
 
 
-def test_options_margin_guard_blocks_execution_without_broker_truth(monkeypatch) -> None:
+def test_options_margin_guard_blocks_execution_without_broker_truth(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("MARKET_DATA_ONLY", "0")
     monkeypatch.setenv("ALLOW_ORDER_EXECUTION", "1")
     decision = {
@@ -163,8 +233,18 @@ def test_options_margin_guard_blocks_execution_without_broker_truth(monkeypatch)
             "underlying_price": 76000.0,
             "contracts": 1,
             "legs": [
-                {"side": "BUY_TO_OPEN", "type": "PUT", "strike": 76000.0, "quantity": 1},
-                {"side": "SELL_TO_OPEN", "type": "PUT", "strike": 72200.0, "quantity": 1},
+                {
+                    "side": "BUY_TO_OPEN",
+                    "type": "PUT",
+                    "strike": 76000.0,
+                    "quantity": 1,
+                },
+                {
+                    "side": "SELL_TO_OPEN",
+                    "type": "PUT",
+                    "strike": 72200.0,
+                    "quantity": 1,
+                },
             ],
         },
     }

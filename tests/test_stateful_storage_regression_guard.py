@@ -4,6 +4,8 @@ import plistlib
 import sys
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -12,6 +14,58 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.execution_lane_pipeline import execution_lane_daily_path
 from scripts.ops import infrastructure_autofix_bot as infra_src
 from scripts.ops import stateful_storage_regression_guard as guard_src
+
+
+def test_same_size_collision_preserves_both_versions(tmp_path):
+    source = tmp_path / "local" / "data.sqlite3"
+    target_root = tmp_path / "external"
+    destination = target_root / "data.sqlite3"
+    source.parent.mkdir()
+    target_root.mkdir()
+    source.write_bytes(b"LOCAL")
+    destination.write_bytes(b"OTHER")
+    actions = []
+    with pytest.raises(RuntimeError, match="unverified_storage_collision"):
+        guard_src._merge_path(source, destination, target_root, actions)
+    assert destination.read_bytes() == b"OTHER"
+    assert source.read_bytes() == b"LOCAL"
+    assert not any(row["action"] == "remove_duplicate" for row in actions)
+
+
+def test_identical_size_and_bytes_do_not_authorize_retirement(tmp_path):
+    source = tmp_path / "local" / "data.sqlite3"
+    target_root = tmp_path / "external"
+    destination = target_root / "data.sqlite3"
+    source.parent.mkdir()
+    target_root.mkdir()
+    source.write_bytes(b"SAME")
+    destination.write_bytes(b"SAME")
+    actions = []
+    with pytest.raises(RuntimeError, match="unverified_storage_collision"):
+        guard_src._merge_path(source, destination, target_root, actions)
+    assert destination.read_bytes() == b"SAME"
+    assert source.read_bytes() == b"SAME"
+    assert not any(row["action"] == "remove_duplicate" for row in actions)
+
+
+def test_same_size_collision_publishes_blocked_route(tmp_path, monkeypatch):
+    source = tmp_path / "local"
+    target = tmp_path / "external"
+    source.mkdir()
+    target.mkdir()
+    (source / "data.sqlite3").write_bytes(b"LOCAL")
+    (target / "data.sqlite3").write_bytes(b"OTHER")
+    monkeypatch.setattr(guard_src, "_active_process", lambda _: False)
+    monkeypatch.setattr(guard_src, "_has_open_handles", lambda _: False)
+    result = guard_src._repair_stateful_path(
+        name="sql_link_shards", local=source, target=target, apply=True,
+        max_local_bytes=1024, active_patterns=(),
+    )
+    assert result["status"] == "blocked"
+    assert result["reason"] == "unverified_storage_collision"
+    assert not source.is_symlink()
+    assert (source / "data.sqlite3").read_bytes() == b"LOCAL"
+    assert (target / "data.sqlite3").read_bytes() == b"OTHER"
 
 
 def test_execution_lane_daily_path_prefers_external_project_root(tmp_path: Path, monkeypatch) -> None:

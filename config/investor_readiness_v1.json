@@ -1,0 +1,224 @@
+{
+  "schema_version": 1,
+  "policy_id": "investor_readiness_v1",
+  "control_policy": "investor_readiness_requires_separate_implementation_organic_live_and_external_evidence",
+  "maximum_shortlisted_sleeves": 3,
+  "controls": [
+    {
+      "control_id": "i01_broker_verified_live_results",
+      "section": "investor_due_diligence",
+      "title": "Broker-verified live results",
+      "completion_class": "organic_live_and_external",
+      "owner": "broker_truth_and_independent_performance_verifier"
+    },
+    {
+      "control_id": "i02_net_of_all_costs",
+      "section": "investor_due_diligence",
+      "title": "Returns net of trading costs",
+      "completion_class": "organic_candidate_evidence",
+      "owner": "paper_performance_and_independent_validator"
+    },
+    {
+      "control_id": "i03_controlled_drawdowns",
+      "section": "investor_due_diligence",
+      "title": "Controlled drawdowns and risk of ruin",
+      "completion_class": "organic_candidate_evidence",
+      "owner": "risk_and_transition_controls"
+    },
+    {
+      "control_id": "i04_statistically_credible_edge",
+      "section": "investor_due_diligence",
+      "title": "Statistically credible edge",
+      "completion_class": "organic_candidate_evidence",
+      "owner": "multiple_testing_guard"
+    },
+    {
+      "control_id": "i05_capacity_evidence",
+      "section": "investor_due_diligence",
+      "title": "Liquidity and capital capacity evidence",
+      "completion_class": "organic_candidate_evidence",
+      "owner": "portfolio_capacity_curve"
+    },
+    {
+      "control_id": "i06_diversification_evidence",
+      "section": "investor_due_diligence",
+      "title": "Diversification and concentration evidence",
+      "completion_class": "organic_candidate_evidence",
+      "owner": "profitability_evidence_firewall"
+    },
+    {
+      "control_id": "i07_independently_checkable_records",
+      "section": "investor_due_diligence",
+      "title": "Independently checkable records",
+      "completion_class": "organic_live_and_external",
+      "owner": "immutable_ledger_and_independent_verifier"
+    },
+    {
+      "control_id": "i08_bounded_automation",
+      "section": "investor_due_diligence",
+      "title": "Bounded automation and human release",
+      "completion_class": "system_control",
+      "owner": "system_role_and_live_transition_controls"
+    },
+    {
+      "control_id": "i09_operational_resilience",
+      "section": "investor_due_diligence",
+      "title": "Operational resilience",
+      "completion_class": "organic_runtime_evidence",
+      "owner": "production_resilience_control"
+    },
+    {
+      "control_id": "i10_commercial_defensibility",
+      "section": "investor_due_diligence",
+      "title": "Commercial and IP defensibility",
+      "completion_class": "external_attestation",
+      "owner": "commercial_readiness_and_external_ip_counsel"
+    },
+    {
+      "control_id": "r01_shortlist_strong_sleeves",
+      "section": "execution_roadmap",
+      "title": "Shortlist one to three independently qualified sleeves",
+      "completion_class": "organic_candidate_evidence",
+      "owner": "profitability_evidence_firewall"
+    },
+    {
+      "control_id": "r02_record_every_experiment",
+      "section": "execution_roadmap",
+      "title": "Record every experiment and failed trial",
+      "completion_class": "organic_replay_evidence",
+      "owner": "immutable_experiment_ledger"
+    },
+    {
+      "control_id": "r03_positive_post_cost_expectancy",
+      "section": "execution_roadmap",
+      "title": "Require positive post-cost expectancy",
+      "completion_class": "organic_candidate_evidence",
+      "owner": "profitability_independent_validator"
+    },
+    {
+      "control_id": "r04_complete_soak_before_canary",
+      "section": "execution_roadmap",
+      "title": "Complete the soak before a founder-funded canary",
+      "completion_class": "organic_runtime_evidence",
+      "owner": "continuous_soak_and_canary_readiness"
+    },
+    {
+      "control_id": "r05_measure_paper_live_divergence",
+      "section": "execution_roadmap",
+      "title": "Measure paper-to-live divergence",
+      "completion_class": "organic_live_evidence",
+      "owner": "live_transition_integrity"
+    },
+    {
+      "control_id": "r06_predetermined_scaling_gates",
+      "section": "execution_roadmap",
+      "title": "Use predetermined scaling and rollback gates",
+      "completion_class": "system_control",
+      "owner": "live_transition_integrity"
+    },
+    {
+      "control_id": "r07_monthly_investor_tear_sheet",
+      "section": "execution_roadmap",
+      "title": "Generate a clearly labeled monthly tear sheet",
+      "completion_class": "generated_evidence_packet",
+      "owner": "investor_readiness_control"
+    },
+    {
+      "control_id": "r08_independent_accounting_review",
+      "section": "execution_roadmap",
+      "title": "Obtain independent accounting review",
+      "completion_class": "external_attestation",
+      "owner": "external_accountant"
+    },
+    {
+      "control_id": "r09_investor_data_room",
+      "section": "execution_roadmap",
+      "title": "Maintain an investor data-room index",
+      "completion_class": "generated_evidence_packet",
+      "owner": "investor_readiness_control"
+    },
+    {
+      "control_id": "r10_legal_business_structure",
+      "section": "execution_roadmap",
+      "title": "Choose the legal and commercial structure",
+      "completion_class": "external_attestation",
+      "owner": "qualified_securities_and_derivatives_counsel"
+    }
+  ],
+  "external_attestations": {
+    "independent_performance_verification": "governance/investor/evidence/independent_performance_verification.json",
+    "independent_accounting_review": "governance/investor/evidence/independent_accounting_review.json",
+    "ip_ownership_review": "governance/investor/evidence/ip_ownership_review.json",
+    "legal_structure_review": "governance/investor/evidence/legal_structure_review.json"
+  },
+  "future_live_evidence": {
+    "broker_verified_performance": "governance/investor/live/broker_verified_performance_latest.json",
+    "paper_live_divergence": "governance/investor/live/paper_live_divergence_latest.json"
+  },
+  "source_artifacts": {
+    "paper_performance": "governance/health/paper_performance_latest.json",
+    "profitability_independent_validator": "governance/health/profitability_independent_validator_latest.json",
+    "profitability_evidence_firewall": "governance/health/profitability_evidence_firewall_latest.json",
+    "multiple_testing_guard": "governance/research/multiple_testing_guard_latest.json",
+    "portfolio_capacity_curve": "governance/allocator/portfolio_capacity_curve_latest.json",
+    "live_transition_integrity": "governance/health/live_transition_integrity_control_latest.json",
+    "live_canary_control": "governance/health/live_canary_control_latest.json",
+    "continuous_soak_integrity": "governance/health/continuous_soak_integrity_control_latest.json",
+    "production_resilience": "governance/health/production_resilience_control_latest.json",
+    "commercial_readiness": "governance/health/commercial_readiness_control_latest.json",
+    "immutable_experiment_ledger": "governance/experiments/immutable_experiment_ledger_latest.json",
+    "independent_fill_acquisition": "governance/health/independent_fill_evidence_acquisition_latest.json",
+    "broker_shared_truth": "governance/health/broker_truth_shared_snapshot_schwab_latest.json",
+    "live_order_ledger": "governance/health/live_order_ledger_control_latest.json",
+    "system_role_contract": "governance/health/system_role_contract_latest.json",
+    "independent_runtime_monitor": "governance/health/independent_runtime_monitor_latest.json"
+  },
+  "outputs": {
+    "health": "governance/health/investor_readiness_control_latest.json",
+    "packet": "exports/reports/operator/investor_readiness_packet_latest.md",
+    "tear_sheet": "exports/reports/investor/paper_performance_tear_sheet_latest.md",
+    "data_room_index": "exports/investor_data_room/index_latest.json",
+    "data_room_readme": "exports/investor_data_room/README_latest.md"
+  },
+  "safety_contract": {
+    "live_execution_authority": false,
+    "automatic_allocation": false,
+    "automatic_sleeve_promotion": false,
+    "automatic_canary_scaling": false,
+    "customer_funds_authority": false,
+    "marketing_approval_authority": false,
+    "external_attestation_self_issuance": false,
+    "profitability_guaranteed": false,
+    "paper_results_must_be_labeled_hypothetical": true
+  },
+  "capital_scaling_contract": {
+    "initial_canary_budget_usd": 200,
+    "initial_canary_purpose": "execution_validation_not_income_target",
+    "future_deposits_may_increase_account_equity": true,
+    "account_growth_alone_may_increase_weight": false,
+    "automatic_scaling_allowed": false,
+    "operator_release_required_for_every_stage": true,
+    "required_scale_gates": [
+      "positive_candidate_bound_post_cost_expectancy",
+      "controlled_drawdown",
+      "acceptable_risk_of_ruin",
+      "measured_capacity",
+      "qualified_diversification",
+      "paper_live_divergence_within_limits",
+      "required_clean_evidence_windows",
+      "explicit_operator_release"
+    ]
+  },
+  "external_attestation_contract": {
+    "ready_statuses": ["approved", "complete"],
+    "independent_must_be_true": true,
+    "required_fields": ["provider", "signed_by", "signed_at_utc", "document_path", "document_sha256"],
+    "document_sha256_format": "lowercase_or_uppercase_64_character_hex"
+  },
+  "regulatory_references": [
+    "https://www.sec.gov/resources-small-businesses/small-business-compliance-guides/investment-adviser-marketing",
+    "https://www.investor.gov/introduction-investing/getting-started/working-investment-professional/investment-advisers-0",
+    "https://www.nfa.futures.org/registration-membership/who-has-to-register/index.html",
+    "https://www.gipsstandards.org/standards/gips-standards-for-verifiers/"
+  ]
+}

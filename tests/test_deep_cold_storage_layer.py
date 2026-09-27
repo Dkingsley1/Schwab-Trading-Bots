@@ -1,9 +1,22 @@
 import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from scripts.ops import deep_cold_storage_layer as src
+
+
+@pytest.fixture(autouse=True)
+def deterministic_copy_capacity(monkeypatch):
+    # Tiny-file policy tests must not depend on the host's changing 64 GiB reserve.
+    monkeypatch.setattr(
+        src.shutil, "disk_usage",
+        lambda path: SimpleNamespace(total=1024**4, free=512 * 1024**3, used=512 * 1024**3),
+    )
 
 
 def test_deep_cold_move_to_second_cold_preserves_original_path_with_symlink(monkeypatch, tmp_path: Path) -> None:
@@ -76,7 +89,194 @@ def test_deep_cold_move_restarts_when_partial_prefix_does_not_match(tmp_path: Pa
     assert target.read_bytes() == payload
 
 
-def test_video_cold_archive_subtree_remains_protected_when_legacy_override_is_enabled(monkeypatch) -> None:
+def test_existing_divergent_archive_is_never_overwritten(tmp_path):
+    source, target = tmp_path / "source.gz", tmp_path / "cold.gz"
+    source.write_bytes(b"source")
+    target.write_bytes(b"other!")
+    result = src._copy_verify_then_symlink(source, target)
+    assert result["reason"] == "existing_target_content_mismatch"
+    assert not source.is_symlink()
+    assert target.read_bytes() == b"other!"
+
+
+def test_existing_match_rechecks_source_identity_before_release(tmp_path, monkeypatch):
+    source, target = tmp_path / "source.gz", tmp_path / "cold.gz"
+    source.write_bytes(b"source")
+    target.write_bytes(b"source")
+    original = src._sha256
+
+    def hash_then_mutate(path):
+        digest = original(path)
+        if path == target:
+            source.write_bytes(b"new data")
+        return digest
+
+    monkeypatch.setattr(src, "_sha256", hash_then_mutate)
+    result = src._copy_verify_then_symlink(source, target)
+    assert not result["source_replaced_with_symlink"]
+    assert source.read_bytes() == b"new data" and not source.is_symlink()
+
+
+def test_failed_atomic_link_replacement_preserves_source(tmp_path, monkeypatch):
+    source, target = tmp_path / "source.gz", tmp_path / "cold.gz"
+    source.write_bytes(b"source")
+
+    def fail(*args):
+        raise OSError("replace denied")
+
+    monkeypatch.setattr(src.os, "replace", fail)
+    result = src._copy_verify_then_symlink(source, target)
+    assert not result["source_replaced_with_symlink"]
+    assert source.read_bytes() == target.read_bytes() == b"source"
+    proof = target.with_name(target.name + ".restore_proofs.jsonl")
+    assert (
+        json.loads(proof.read_text())["phase"]
+        == "verified_before_atomic_source_replacement"
+    )
+
+
+def test_protected_alias_rejected_before_source_metadata(tmp_path, monkeypatch):
+    alias = tmp_path / "alias"
+    alias.symlink_to("/Volumes/VIDEO")
+    original = Path.stat
+
+    def guarded(path, *args, **kwargs):
+        assert not str(path).startswith("/Volumes/VIDEO")
+        assert not (path == alias and kwargs.get("follow_symlinks", True))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", guarded)
+    assert src._iter_candidate_files(alias, min_size_bytes=1) == []
+    result = src._copy_verify_then_symlink(alias / "source.gz", tmp_path / "target.gz")
+    assert result["reason"] == "protected_or_unavailable_route"
+
+
+def test_compressed_history_is_explicit_old_and_never_raw(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    root = project / "decisions" / "sleeve"
+    root.mkdir(parents=True)
+    old = root / "trade_decisions_20200101.jsonl.gz"
+    recent = root / "trade_decisions_20200102.jsonl.gz"
+    raw = root / "trade_decisions_20200101.jsonl"
+    for path in (old, recent, raw):
+        path.write_bytes(b"retained" * 100)
+    os.utime(old, (time.time() - 172800,) * 2)
+    os.utime(raw, (time.time() - 172800,) * 2)
+    monkeypatch.setattr(
+        src,
+        "resolve_external_storage",
+        lambda: SimpleNamespace(external_root=tmp_path / "external"),
+    )
+    baseline = src.build_payload(project, min_size_mb=0.000001)
+    assert not baseline["top_rows"]
+    payload = src.build_payload(
+        project, min_size_mb=0.000001, include_compressed_history=True
+    )
+    assert [row["path"] for row in payload["top_rows"]] == [str(old)]
+    assert payload["top_rows"][0]["economic_value"] == "critical"
+
+
+def test_explicit_stale_root_may_be_a_safe_local_route_alias(tmp_path):
+    root = tmp_path / "fallback"
+    root.mkdir()
+    source = root / "archive.gz"
+    source.write_bytes(b"archive")
+    alias = tmp_path / "stale_stage"
+    alias.symlink_to(root)
+    assert src._iter_candidate_files(alias, min_size_bytes=1) == [alias / source.name]
+
+
+def test_closed_governance_history_requires_explicit_old_gzip(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    root = project / "governance" / "shadow_crypto"
+    root.mkdir(parents=True)
+    old = root / "master_control_20200101.jsonl.gz"
+    recent = root / "master_control_20200102.jsonl.gz"
+    raw = root / "master_control_20200101.jsonl"
+    current = root / f"master_control_{datetime.now(timezone.utc):%Y%m%d}.jsonl.gz"
+    latest = root / "latest.jsonl.gz"
+    for path in (old, recent, raw, current, latest):
+        path.write_bytes(b"retained governance\n" * 100)
+        if path != recent:
+            os.utime(path, (time.time() - 172800,) * 2)
+    monkeypatch.setattr(
+        src,
+        "resolve_external_storage",
+        lambda: SimpleNamespace(external_root=tmp_path / "external"),
+    )
+    assert not src.build_payload(project, min_size_mb=0.000001)["top_rows"]
+    payload = src.build_payload(
+        project, min_size_mb=0.000001, include_compressed_history=True
+    )
+    assert [row["path"] for row in payload["top_rows"]] == [str(old)]
+    assert payload["top_rows"][0]["artifact_class"] == "closed_compressed_history"
+    assert payload["top_rows"][0]["economic_value"] == "high"
+
+
+def test_move_rechecks_destination_reserve_before_each_file(tmp_path, monkeypatch):
+    paths = [tmp_path / "first.gz", tmp_path / "second.gz"]
+    for path in paths:
+        path.write_bytes(b"retained" * 16)
+    rows = [
+        {
+            "path": str(path),
+            "relative_path": path.name,
+            "size_bytes": path.stat().st_size,
+        }
+        for path in paths
+    ]
+    free = iter([4096, 1024])
+    monkeypatch.setattr(src, "_disk_free_bytes", lambda _: next(free))
+    result = src._apply_second_cold_moves(
+        rows,
+        second_cold_root=tmp_path / "cold",
+        max_move_gb=1,
+        max_move_files=2,
+        include_critical=False,
+        destination_reserve_gb=1024 / 1024**3,
+    )
+    assert result["moved_files"] == 1
+    assert paths[0].is_symlink()
+    assert not paths[1].is_symlink()
+    assert paths[1].read_bytes() == b"retained" * 16
+    assert result["actions"][-1]["reason"] == "destination_reserve_would_be_consumed"
+
+
+def test_unknown_destination_free_space_preserves_source(tmp_path, monkeypatch):
+    source = tmp_path / "source.gz"
+    source.write_bytes(b"retained")
+    monkeypatch.setattr(src, "_disk_free_bytes", lambda _: None)
+    result = src._apply_second_cold_moves(
+        [{"path": str(source), "relative_path": source.name, "size_bytes": 8}],
+        second_cold_root=tmp_path / "cold",
+        max_move_gb=1,
+        max_move_files=1,
+        include_critical=False,
+        destination_reserve_gb=64,
+    )
+    assert result["moved_files"] == 0
+    assert not source.is_symlink()
+    assert not (tmp_path / "cold" / source.name).exists()
+
+
+def test_source_growth_cannot_use_stale_inventory_capacity(tmp_path, monkeypatch):
+    source = tmp_path / "source.gz"
+    source.write_bytes(b"larger than planned")
+    monkeypatch.setattr(src, "_disk_free_bytes", lambda _: 1025)
+    result = src._apply_second_cold_moves(
+        [{"path": str(source), "relative_path": source.name, "size_bytes": 1}],
+        second_cold_root=tmp_path / "cold", max_move_gb=1, max_move_files=1,
+        include_critical=False, destination_reserve_gb=1024 / 1024**3,
+    )
+    assert result["moved_files"] == 0
+    assert result["actions"][0]["reason"] == "source_changed_since_inventory"
+    assert source.read_bytes() == b"larger than planned"
+    assert not source.is_symlink()
+
+
+def test_video_cold_archive_subtree_remains_protected_when_legacy_override_is_enabled(
+    monkeypatch,
+) -> None:
     root = Path("/Volumes/VIDEO/schwab_trading_bot_cold")
 
     monkeypatch.delenv("BOT_ALLOW_VIDEO_COLD_ARCHIVE", raising=False)
@@ -89,7 +289,9 @@ def test_video_cold_archive_subtree_remains_protected_when_legacy_override_is_en
     assert src._is_protected_volume(root / "deep_cold" / "file.gz") is True
 
 
-def test_active_capacity_source_prioritizes_external_hard_reserve_breach(monkeypatch, tmp_path: Path) -> None:
+def test_active_capacity_source_prioritizes_external_hard_reserve_breach(
+    monkeypatch, tmp_path: Path
+) -> None:
     gib = 1024**3
     project_root = tmp_path / "project"
     external_root = tmp_path / "BOT_LOGS" / "schwab_trading_bot"

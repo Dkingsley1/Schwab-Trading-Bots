@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "policy_id": "profitability_crisis_drill_v1",
+  "operating_mode": "deterministic_historical_and_synthetic_paper_diagnostic",
+  "scenario_paths": [
+    "config/stress_scenarios/gfc_2008_financial_crisis.json",
+    "config/stress_scenarios/covid_2020_pandemic_crash.json",
+    "config/stress_scenarios/us_regional_banking_2023.json"
+  ],
+  "minimum_scenario_count": 3,
+  "severity_contract": {
+    "severe_phase_floor_norm": 0.7,
+    "recovery_phase_ceiling_norm": 0.4,
+    "require_severe_new_long_entry_block": true,
+    "require_reduce_only_exit_path": true,
+    "require_recovery_reentry_opportunity": true,
+    "require_cost_adjusted_action_comparison": true
+  },
+  "execution_contract": {
+    "broker": "schwab",
+    "market_kind": "equities",
+    "asset_class": "equities",
+    "reference_price": 100.0,
+    "order_type": "limit",
+    "new_exposure_actions": ["BUY", "HOLD", "SELL_SHORT"],
+    "existing_long_reduce_action": "SELL"
+  },
+  "evidence_contract": {
+    "scenario_inputs_are_diagnostic_parameters_not_historical_ticks": true,
+    "historical_event_sources_must_be_official": true,
+    "candidate_binding_required": true,
+    "candidate_state_must_remain_unchanged": true,
+    "results_are_promotion_evidence": false,
+    "results_are_profitability_proof": false
+  },
+  "authority_contract": {
+    "network_access": false,
+    "broker_access": false,
+    "market_data_access": false,
+    "paper_order_authority": false,
+    "live_order_authority": false,
+    "automatic_promotion_authority": false,
+    "candidate_mutation_authority": false,
+    "historical_outcome_rewrite_authority": false,
+    "training_label_authority": false,
+    "profitability_guaranteed": false
+  }
+}

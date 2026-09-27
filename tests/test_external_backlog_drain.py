@@ -80,6 +80,109 @@ def test_external_backlog_drain_drops_blank_shard_path_filters() -> None:
     assert all(value.strip() for key, value in env.items() if key.endswith("_PATH_CONTAINS"))
 
 
+def test_external_backlog_drain_preserves_its_active_lease_without_extension(tmp_path: Path) -> None:
+    request_path = tmp_path / "sql_link_service_request_latest.json"
+    requested_at = "2026-09-03T21:57:12+00:00"
+    expires_utc = "2026-09-03T22:12:12+00:00"
+    _write_json(
+        request_path,
+        {
+            "active": True,
+            "request_kind": "external_backlog_drain",
+            "requested_at": requested_at,
+            "expires_utc": expires_utc,
+            "reason": "offhours_external_backlog_drain",
+            "env_overrides": {
+                "SQL_LINK_SERVICE_SHARDS": "trading,runtime,governance",
+                "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "5",
+            },
+        },
+    )
+
+    payload = src._write_service_request(
+        path=request_path,
+        drain_profile="offhours_external_backlog_drain",
+        drain_env={
+            "SQL_LINK_SERVICE_SHARDS": "trading,runtime,governance",
+            "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "1",
+        },
+        wait_timeout_seconds=900.0,
+        now_utc=datetime(2026, 9, 3, 22, 0, tzinfo=timezone.utc),
+    )
+
+    assert payload["requested_at"] == requested_at
+    assert payload["expires_utc"] == expires_utc
+    assert payload["env_overrides"]["SQL_LINK_SERVICE_SHARD_WRITER_LANES"] == "1"
+    assert payload["preserved_existing_request"] is True
+    assert payload["preserved_without_lease_extension"] is True
+    assert payload["resource_cap_downshift"]["SQL_LINK_SERVICE_SHARD_WRITER_LANES"] == {
+        "previous": 5,
+        "effective": 1,
+    }
+    persisted = json.loads(request_path.read_text(encoding="utf-8"))
+    assert persisted["expires_utc"] == expires_utc
+    assert persisted["env_overrides"]["SQL_LINK_SERVICE_SHARD_WRITER_LANES"] == "1"
+
+
+def test_external_backlog_drain_honors_runtime_worker_caps(monkeypatch) -> None:
+    for key in src._MEMORY_SAFETY_WORKER_KEYS:
+        monkeypatch.setenv(key, "1")
+
+    _, env = src._drain_env(
+        {
+            "BACKLOG_PCORE_PREPROCESS_WORKERS": "5",
+            "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "5",
+            "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "5",
+            "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": "7",
+        },
+        critical=False,
+        off_hours_active=True,
+        backpressure={"pending_lines": 500, "pending_lines_total": 3000},
+    )
+
+    assert {env[key] for key in src._MEMORY_SAFETY_WORKER_KEYS} == {"1"}
+
+
+def test_external_backlog_drain_honors_managed_runtime_override_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    override = project_root / "config" / ".env.runtime_resource_guard_override"
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_text(
+        "\n".join(
+            [
+                "# managed runtime policy",
+                "BACKLOG_PCORE_PREPROCESS_WORKERS=1",
+                "SQL_LINK_SERVICE_PREPROCESS_WORKERS=1",
+                "SQL_LINK_SERVICE_SHARD_WRITER_LANES=1",
+                "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES=1",
+                "UNRELATED_SETTING=99",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    for key in src._MEMORY_SAFETY_WORKER_KEYS:
+        monkeypatch.setenv(key, "8")
+
+    runtime_caps = src._load_runtime_worker_caps(project_root)
+    _, env = src._drain_env(
+        {
+            "BACKLOG_PCORE_PREPROCESS_WORKERS": "5",
+            "SQL_LINK_SERVICE_PREPROCESS_WORKERS": "5",
+            "SQL_LINK_SERVICE_SHARD_WRITER_LANES": "5",
+            "SQL_LINK_SERVICE_MAX_SHARD_WRITER_LANES": "7",
+        },
+        critical=False,
+        off_hours_active=True,
+        runtime_worker_caps=runtime_caps,
+    )
+
+    assert set(runtime_caps) == set(src._MEMORY_SAFETY_WORKER_KEYS)
+    assert {env[key] for key in src._MEMORY_SAFETY_WORKER_KEYS} == {"1"}
+
+
 def test_fresh_managed_overlay_replaces_larger_raw_backlog() -> None:
     raw = {
         "timestamp_utc": "2026-08-05T13:03:30+00:00",

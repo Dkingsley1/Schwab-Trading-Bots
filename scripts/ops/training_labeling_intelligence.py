@@ -2512,6 +2512,18 @@ def build_payload(
         "skipped_existing_count": plan["skipped_existing_count"],
         "missing_label_contract_count": missing_contracts,
         "incomplete_label_contract_count": incomplete_contracts,
+        "label_contract_summary": {
+            "total_rows": len(rows),
+            "complete_contract_count": len(rows) - missing_contracts - incomplete_contracts,
+            "missing_contract_count": missing_contracts,
+            "incomplete_contract_count": incomplete_contracts,
+            "coverage_ratio_after": round(
+                (len(rows) - missing_contracts - incomplete_contracts) / max(len(rows), 1),
+                6,
+            ),
+            "observation_only": True,
+            "outcome_evidence_certified": False,
+        },
         "pack": plan["pack"],
         "free_label_source_enrichment": source_enrichment,
         "label_materialization_plan": materialization_plan,

@@ -1,4 +1,5 @@
 import gzip
+import fcntl
 import json
 import sys
 from pathlib import Path
@@ -9,6 +10,152 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.ops import data_collection_observation_rollup as src
+
+
+def test_incremental_reads_resume_only_after_complete_rows(tmp_path, monkeypatch):
+    path = tmp_path / "rows.jsonl"
+    row = (json.dumps({"value": "caf\u00e9"}, ensure_ascii=False) + "\n").encode()
+    path.write_bytes(row * 3 + row[:8])
+    monkeypatch.setattr(src, "MAX_SOURCE_READ_BYTES", len(row) + 5)
+    offset = 0
+    for _ in range(3):
+        budget = src.ObservationScanBudget(max_bytes=1000)
+        lines, end, _ = src._iter_new_lines(path, offset=offset, budget=budget)
+        assert lines == [row.decode()]
+        assert end == offset + len(row)
+        assert budget.bytes_read <= len(row) + 5
+        offset = end
+    lines, end, _ = src._iter_new_lines(path, offset=offset)
+    assert lines == [] and end == offset
+    with path.open("ab") as handle:
+        handle.write(row[8:])
+    lines, end, _ = src._iter_new_lines(path, offset=offset)
+    assert lines == [row.decode()] and end == 4 * len(row)
+
+
+def test_bootstrap_cursor_comes_from_same_bounded_tail_read(tmp_path):
+    path = tmp_path / "rows.jsonl"
+    path.write_bytes(b'{"a":1}\n{"a":2}\n{"a":')
+    budget = src.ObservationScanBudget(max_bytes=100)
+    audit = {}
+    lines = src._iter_tail_lines(path, limit=10, budget=budget, read_audit=audit)
+    assert lines == ['{"a":1}\n', '{"a":2}\n']
+    assert audit["complete_end"] == 16
+    assert budget.bytes_read == path.stat().st_size
+
+
+def test_gzip_expansion_cap_never_advances_cursor_or_counts_partial_decode(tmp_path, monkeypatch):
+    path = tmp_path / "rows.jsonl.gz"
+    with gzip.open(path, "wb") as handle:
+        handle.write(b'{"a":1}\n' * 10000)
+    monkeypatch.setattr(src, "MAX_SOURCE_READ_BYTES", 1024)
+    budget = src.ObservationScanBudget(max_bytes=2048)
+    lines, offset, line_offset = src._iter_new_lines(path, offset=0, budget=budget)
+    assert (lines, offset, line_offset) == ([], 0, 0)
+    assert budget.bytes_read == 1024
+    assert budget.receipt()["limited_source_count"] == 1
+    assert not budget.receipt()["scan_complete"]
+
+
+def test_shared_scan_budget_bounds_json_and_decisions(tmp_path):
+    meta = tmp_path / "meta.json"
+    meta.write_bytes(b'{"ok":true}')
+    rows = tmp_path / "rows.jsonl"
+    rows.write_bytes(b'{"a":1}\n' * 100)
+    budget = src.ObservationScanBudget(max_bytes=27)
+    assert budget.load_json(meta) == {"ok": True}
+    assert src._iter_new_lines(rows, offset=0, budget=budget)[1] == 16
+    assert budget.bytes_read == 27
+    assert budget.load_json(meta) == {}
+    assert budget.bytes_read == 27
+
+
+def test_expired_scan_does_not_read_source(tmp_path, monkeypatch):
+    path = tmp_path / "rows.jsonl"
+    path.write_bytes(b'{"a":1}\n')
+    budget = src.ObservationScanBudget(seconds=-1)
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("read after deadline")))
+    assert src._iter_new_lines(path, offset=0, budget=budget) == ([], 0, 0)
+    assert budget.bytes_read == 0
+
+
+def test_disappearing_source_does_not_advance_cursor_or_certify_empty_tail(tmp_path, monkeypatch):
+    path = tmp_path / "rows.jsonl"
+    budget = src.ObservationScanBudget()
+    monkeypatch.setattr(budget, "present", lambda path: True)
+    assert src._iter_new_lines(path, offset=14, line_offset=2, budget=budget) == ([], 14, 2)
+    assert str(path) in budget.failed_sources
+
+
+def test_discovery_rejects_protected_intermediate_alias_before_traversal(tmp_path, monkeypatch):
+    root = tmp_path / "decision_explanations"
+    root.mkdir()
+    (root / "blocked").symlink_to("/Volumes/VIDEO/unavailable")
+    original = Path.lstat
+
+    def checked_lstat(path, *args, **kwargs):
+        assert not str(path).startswith("/Volumes/VIDEO")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", checked_lstat)
+    assert src._decision_files(tmp_path, days=1) == []
+
+
+def test_state_only_partial_scan_keeps_registry_and_exclusions_unchanged(tmp_path, monkeypatch):
+    bot_id = "brain_refinery_v167_test_collector"
+    registry_path = tmp_path / "master_bot_registry.json"
+    state_path = tmp_path / "state.json"
+    _write_json(registry_path, _registry(bot_id))
+    _write_json(state_path, {"initialized": True})
+    before = registry_path.read_bytes()
+    stamp = src._day_stamps(1)[0]
+    rows = tmp_path / "decision_explanations" / "lane" / f"decision_explanations_{stamp}.jsonl"
+    rows.parent.mkdir(parents=True)
+    line = json.dumps({"bot_id": bot_id}) + "\n"
+    rows.write_text(line * 10)
+    monkeypatch.setattr(src, "MAX_SOURCE_READ_BYTES", len(line) * 2 + 1)
+    payload = src.build_payload(project_root=tmp_path, registry_path=registry_path,
+        state_path=state_path, days=1, bootstrap_tail_lines=20, apply=True, state_only=True)
+    assert registry_path.read_bytes() == before
+    assert payload["registry_written"] is False
+    assert payload["new_rows_counted"] == 2
+    assert payload["overall_status"] == "degraded"
+    assert payload["operational_ok"] is True
+    assert payload["training_exclusion_releasable_count"] == 0
+    state = json.loads(state_path.read_text())
+    assert state["file_offsets"][str(rows.relative_to(tmp_path))] == len(line) * 2
+
+
+def test_failed_gzip_cannot_certify_operational_readiness(tmp_path):
+    bot_id = "brain_refinery_v167_test_collector"
+    registry_path = tmp_path / "master_bot_registry.json"
+    registry = _registry(bot_id)
+    registry["sub_bots"][0]["data_collection_observations"] = 100
+    _write_json(registry_path, registry)
+    stamp = src._day_stamps(1)[0]
+    rows = tmp_path / "decision_explanations" / "lane" / f"decision_explanations_{stamp}.jsonl.gz"
+    rows.parent.mkdir(parents=True)
+    rows.write_bytes(b"not gzip")
+    payload = src.build_payload(project_root=tmp_path, registry_path=registry_path,
+        state_path=tmp_path / "state.json", days=1, bootstrap_tail_lines=20, apply=False)
+    assert payload["overall_status"] == "blocked"
+    assert not payload["operational_ok"]
+    assert payload["training_exclusion_releasable_count"] == 0
+
+
+def test_main_singleflight_defers_without_overwriting_receipt(tmp_path, monkeypatch):
+    state = tmp_path / "state.json"
+    out = tmp_path / "out.json"
+    out.write_text('{"previous":true}')
+    lock_path = state.with_suffix(".json.lock")
+    monkeypatch.setattr(sys, "argv", ["rollup", "--project-root", str(tmp_path),
+        "--registry", str(tmp_path / "registry.json"), "--state-file", str(state),
+        "--out-file", str(out), "--apply", "--state-only", "--json"])
+    with lock_path.open("w") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert src.main() == 75
+    assert out.read_text() == '{"previous":true}'
+    assert not state.exists()
 
 
 def _write_json(path: Path, payload: dict) -> None:

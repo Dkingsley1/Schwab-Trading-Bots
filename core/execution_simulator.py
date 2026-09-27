@@ -38,6 +38,15 @@ class ExecutionSimResult:
     market_impact_bps: float = 0.0
     option_liquidity_penalty_bps: float = 0.0
     asset_class: str = ""
+    reference_price: float = 0.0
+    touch_price: float = 0.0
+    quoted_spread_bps: float = 0.0
+    beyond_touch_cost_bps: float = 0.0
+    total_cost_bps: float = 0.0
+    financing_bps: float = 0.0
+    dividend_cashflow_bps: float = 0.0
+    quote_source_mode: str = ""
+    quote_crossed_or_locked: bool = False
 
 
 def _env_float(name: str, default: float) -> float:
@@ -88,6 +97,8 @@ def simulate_execution(
     spread_bps: float,
     volatility_1m: float,
     latency_ms: float = 120.0,
+    bid_price: float = 0.0,
+    ask_price: float = 0.0,
     bid_size: float = 0.0,
     ask_size: float = 0.0,
     order_size: float = 1.0,
@@ -103,6 +114,8 @@ def simulate_execution(
     market_volume: float = 0.0,
     avg_daily_volume: float = 0.0,
     open_interest: float = 0.0,
+    financing_bps: float = 0.0,
+    dividend_cashflow_bps: float = 0.0,
 ) -> ExecutionSimResult:
     action = (action or "HOLD").upper()
     buy_like_actions = {"BUY", "BUY_TO_COVER", "BUY_TO_OPEN", "BUY_TO_CLOSE"}
@@ -110,7 +123,26 @@ def simulate_execution(
     price = float(last_price or 0.0)
     ret = float(return_1m or 0.0)
     spread = max(float(spread_bps or 0.0), 0.0)
+    bid = max(float(bid_price or 0.0), 0.0)
+    ask = max(float(ask_price or 0.0), 0.0)
+    observed_two_sided_quote = bid > 0.0 and ask > 0.0
+    quote_crossed_or_locked = bool(observed_two_sided_quote and ask <= bid)
+    if observed_two_sided_quote and not quote_crossed_or_locked:
+        quote_mid = (bid + ask) * 0.5
+        observed_spread_bps = ((ask - bid) / max(quote_mid, 1e-12)) * 10000.0
+        spread = max(observed_spread_bps, 0.0)
+        quote_source_mode = "observed_bid_ask"
+        if price <= 0.0:
+            price = quote_mid
+    else:
+        quote_source_mode = (
+            "crossed_or_locked_bid_ask"
+            if quote_crossed_or_locked
+            else "derived_from_last_and_spread"
+        )
     vol = max(float(volatility_1m or 0.0), 0.0)
+    financing_cost_bps = max(float(financing_bps or 0.0), 0.0)
+    dividend_carry_bps = float(dividend_cashflow_bps or 0.0)
     resolved_market_kind = str(market_kind or "").strip().lower()
     if not resolved_market_kind:
         resolved_market_kind = "crypto" if str(broker or "").strip().lower() == "coinbase" else "equities"
@@ -259,6 +291,15 @@ def simulate_execution(
             market_impact_bps=0.0,
             option_liquidity_penalty_bps=0.0,
             asset_class=resolved_asset_class,
+            reference_price=float(price),
+            touch_price=float(price),
+            quoted_spread_bps=float(spread),
+            beyond_touch_cost_bps=0.0,
+            total_cost_bps=0.0,
+            financing_bps=float(financing_cost_bps),
+            dividend_cashflow_bps=float(dividend_carry_bps),
+            quote_source_mode=quote_source_mode,
+            quote_crossed_or_locked=quote_crossed_or_locked,
         )
 
     is_buy_like = action in buy_like_actions
@@ -352,9 +393,8 @@ def simulate_execution(
             0.99,
         ),
     )
-    total_bps = (
-        half_spread
-        + fee_bps
+    beyond_touch_cost_bps = (
+        fee_bps
         + borrow_fee_bps
         + venue_rule_penalty_bps
         + session_penalty_bps
@@ -367,6 +407,34 @@ def simulate_execution(
         + option_liquidity_penalty_bps
         + max(live_fill_slippage_bps, 0.0)
     ) * symbol_curve_multiplier
+    if observed_two_sided_quote and not quote_crossed_or_locked:
+        touch_price = ask if is_buy_like else bid
+    else:
+        touch_multiplier = (
+            1.0 + (half_spread / 10000.0)
+            if is_buy_like
+            else 1.0 - (half_spread / 10000.0)
+        )
+        touch_price = price * touch_multiplier if price > 0.0 else price
+    beyond_touch_multiplier = (
+        1.0 + (beyond_touch_cost_bps / 10000.0)
+        if is_buy_like
+        else 1.0 - (beyond_touch_cost_bps / 10000.0)
+    )
+    fill_price = (
+        touch_price * beyond_touch_multiplier if touch_price > 0.0 else touch_price
+    )
+    if price > 0.0 and fill_price > 0.0:
+        total_bps = max(
+            (
+                ((fill_price - price) / price) * 10000.0
+                if is_buy_like
+                else ((price - fill_price) / price) * 10000.0
+            ),
+            0.0,
+        )
+    else:
+        total_bps = max(half_spread + beyond_touch_cost_bps, 0.0)
     if depth_same_side <= 0.0:
         partial_fill_ratio = 0.45
     else:
@@ -393,7 +461,12 @@ def simulate_execution(
             1.0,
         ),
     )
-    if stale_quote_probability >= 0.95:
+    if quote_crossed_or_locked:
+        paper_execution_status = "crossed_or_locked_quote_rejected"
+        reject_probability = 1.0
+        queue_fill_probability = 0.0
+        effective_fill_ratio = 0.0
+    elif stale_quote_probability >= 0.95:
         paper_execution_status = "stale_quote_rejected"
         effective_fill_ratio = 0.0
     elif reject_probability >= 0.90:
@@ -419,11 +492,12 @@ def simulate_execution(
     spread_regime = "wide" if spread >= 20.0 else ("normal" if spread >= 6.0 else "tight")
     latency_bucket = "slow" if latency_ms >= 400.0 else ("watch" if latency_ms >= 180.0 else "fast")
 
-    fill_mult = 1.0 + (total_bps / 10000.0) if is_buy_like else 1.0 - (total_bps / 10000.0)
-    fill_price = price * fill_mult if price > 0 else price
-
     drag = total_bps / 10000.0
-    adjusted_ret = (ret - drag) if is_buy_like else ((-ret) - drag)
+    directional_dividend_bps = (
+        dividend_carry_bps if is_buy_like else -dividend_carry_bps
+    )
+    carry_return = (directional_dividend_bps - financing_cost_bps) / 10000.0
+    adjusted_ret = ((ret - drag) if is_buy_like else ((-ret) - drag)) + carry_return
 
     return ExecutionSimResult(
         action=action,
@@ -459,4 +533,13 @@ def simulate_execution(
         market_impact_bps=float(market_impact_bps),
         option_liquidity_penalty_bps=float(option_liquidity_penalty_bps),
         asset_class=resolved_asset_class,
+        reference_price=float(price),
+        touch_price=float(touch_price),
+        quoted_spread_bps=float(spread),
+        beyond_touch_cost_bps=float(beyond_touch_cost_bps),
+        total_cost_bps=float(total_bps),
+        financing_bps=float(financing_cost_bps),
+        dividend_cashflow_bps=float(dividend_carry_bps),
+        quote_source_mode=quote_source_mode,
+        quote_crossed_or_locked=quote_crossed_or_locked,
     )
