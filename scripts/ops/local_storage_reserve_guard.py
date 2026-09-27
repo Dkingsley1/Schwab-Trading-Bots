@@ -387,6 +387,51 @@ def cap_launchd_log_roots(
 
 
 def telemetry_route_contract(project_root: Path) -> dict[str, Any]:
+    from core import sqlite_primary_storage as primary
+
+    if primary.enabled():
+        observation = primary.observe(project_root)
+        rows = []
+        for relative in TELEMETRY_ROUTE_PATHS:
+            path = project_root / relative
+            expected = (
+                project_root / "local_fallback_storage/governance/channels/decision"
+                if relative == "governance/channels/decision"
+                else path
+            )
+            route = inspect_storage_path(
+                path, boundary_root=project_root, allow_external=False
+            )
+            ready = bool(
+                route.get("status") == "present"
+                and route.get("resolved_path") == str(expected.absolute())
+                and expected.is_dir()
+            )
+            rows.append(
+                {
+                    "relative_path": relative,
+                    "path": str(path),
+                    "resolved_path": route.get("resolved_path"),
+                    "ready": ready,
+                    "external_bot_logs": False,
+                    "bounded_internal_buffer": ready,
+                    "route_status": route.get("status"),
+                }
+            )
+        ready_count = sum(row["ready"] for row in rows)
+        ready = bool(observation.get("ok") and ready_count == len(rows))
+        return {
+            "status": "ready" if ready else "degraded",
+            "ready": ready,
+            "profile": "sqlite_primary",
+            "ready_count": ready_count,
+            "tracked_count": len(rows),
+            "rows": rows,
+            "primary_route": observation,
+            "capacity_certified": False,
+            "ingestion_verified": False,
+            "policy": "Internal controls and bounded telemetry buffers; primary SQLite external. Local reserve is assessed separately.",
+        }
     rows: list[dict[str, Any]] = []
     for relative in TELEMETRY_ROUTE_PATHS:
         path = project_root / relative

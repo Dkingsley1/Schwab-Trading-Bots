@@ -13,6 +13,46 @@ from core.local_storage_reserve import GIB, local_storage_reserve_contract
 from scripts.ops import local_storage_reserve_guard as guard
 
 
+def test_sqlite_primary_internal_buffer_routes_require_real_primary_and_paths(
+    tmp_path, monkeypatch
+):
+    from core import sqlite_primary_storage as primary
+
+    monkeypatch.setattr(primary, "enabled", lambda: True)
+    monkeypatch.setattr(primary, "observe", lambda root: {"ok": True})
+    for relative in guard.TELEMETRY_ROUTE_PATHS:
+        if relative != "governance/channels/decision":
+            (tmp_path / relative).mkdir(parents=True)
+    channel = tmp_path / "governance/channels/decision"
+    channel.parent.mkdir(parents=True)
+    target = tmp_path / "local_fallback_storage/governance/channels/decision"
+    channel.symlink_to(target)
+    assert guard.telemetry_route_contract(tmp_path)["ready"] is False
+    target.mkdir(parents=True)
+    result = guard.telemetry_route_contract(tmp_path)
+    assert result["ready"] is True
+    assert result["capacity_certified"] is False
+    assert result["ingestion_verified"] is False
+    monkeypatch.setattr(primary, "observe", lambda root: {"ok": False})
+    assert guard.telemetry_route_contract(tmp_path)["ready"] is False
+
+
+def test_sqlite_primary_rejects_unknown_buffer_alias(tmp_path, monkeypatch):
+    from core import sqlite_primary_storage as primary
+
+    monkeypatch.setattr(primary, "enabled", lambda: True)
+    monkeypatch.setattr(primary, "observe", lambda root: {"ok": True})
+    monkeypatch.setattr(
+        guard, "TELEMETRY_ROUTE_PATHS", ("local_fallback_storage/decisions",)
+    )
+    target = tmp_path / "foreign"
+    target.mkdir()
+    path = tmp_path / "local_fallback_storage/decisions"
+    path.parent.mkdir()
+    path.symlink_to(target)
+    assert guard.telemetry_route_contract(tmp_path)["ready"] is False
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
