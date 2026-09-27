@@ -320,7 +320,19 @@ def connect_sqlite(
     if not math.isfinite(timeout) or timeout < 0:
         raise ValueError("SQLite timeout must be finite and nonnegative")
     memory_database = str(path) == ":memory:"
+    if not memory_database:
+        from core.runtime_maintenance import (
+            maintenance_hold_blocks_runtime_start,
+            maintenance_hold_snapshot,
+        )
+
+        # WAL readers can create SHM files and disrupt a storage quiet point.
+        if maintenance_hold_blocks_runtime_start(
+            maintenance_hold_snapshot(project_root)
+        ):
+            raise RuntimeError("sqlite_runtime_maintenance_hold")
     from core import sqlite_primary_storage as primary
+
     if primary.enabled() and not memory_database:
         primary.check_database_open(project_root, path, readonly=readonly)
     if memory_database and readonly:

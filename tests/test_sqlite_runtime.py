@@ -9,6 +9,48 @@ import pytest
 from core import sqlite_runtime as src
 
 
+@pytest.mark.parametrize("readonly", [False, True])
+@pytest.mark.parametrize("token", ["", "wrong"])
+def test_maintenance_blocks_disk_before_any_sqlite_open(
+    tmp_path, monkeypatch, readonly, token
+):
+    from core.runtime_maintenance import engage_maintenance_hold
+
+    engage_maintenance_hold(tmp_path, reason="storage_handoff")
+    monkeypatch.setenv("SQL_LINK_SERVICE_MAINTENANCE_HOLD_TOKEN", token)
+    monkeypatch.setattr(
+        src.sqlite3, "connect", lambda *a, **k: pytest.fail("database opened")
+    )
+    path = tmp_path / "new_parent/db.sqlite3"
+    with pytest.raises(RuntimeError, match="sqlite_runtime_maintenance_hold"):
+        src.connect_sqlite(path, project_root=tmp_path, readonly=readonly)
+    assert not path.parent.exists()
+
+
+def test_maintenance_owner_can_verify_disk_io(tmp_path, monkeypatch):
+    from core.runtime_maintenance import engage_maintenance_hold
+
+    hold = engage_maintenance_hold(tmp_path, reason="storage_handoff")
+    monkeypatch.setenv("SQL_LINK_SERVICE_MAINTENANCE_HOLD_TOKEN", hold["token"])
+    conn = src.connect_sqlite(tmp_path / "db.sqlite3", project_root=tmp_path)
+    try:
+        conn.execute("CREATE TABLE probe (id INTEGER)")
+    finally:
+        conn.close()
+
+
+def test_maintenance_does_not_block_memory_only_database(tmp_path, monkeypatch):
+    from core.runtime_maintenance import engage_maintenance_hold
+
+    engage_maintenance_hold(tmp_path, reason="storage_handoff")
+    monkeypatch.delenv("SQL_LINK_SERVICE_MAINTENANCE_HOLD_TOKEN", raising=False)
+    conn = src.connect_sqlite(":memory:", project_root=tmp_path)
+    try:
+        assert conn.execute("SELECT 1").fetchone() == (1,)
+    finally:
+        conn.close()
+
+
 @pytest.fixture(autouse=True)
 def clean_sqlite_environment(monkeypatch):
     import os
