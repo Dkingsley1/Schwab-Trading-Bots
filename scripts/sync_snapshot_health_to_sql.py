@@ -34,7 +34,7 @@ def main() -> int:
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
-    sqlite_path = Path(args.sqlite_path).expanduser().resolve() if str(args.sqlite_path).strip() else None
+    sqlite_path = Path(args.sqlite_path).expanduser().absolute() if str(args.sqlite_path).strip() else None
     prefer_sql = True
     if args.prefer_files:
         prefer_sql = False
@@ -50,12 +50,13 @@ def main() -> int:
 
     debug_coverage = debug_snapshot_ingest_coverage(
         project_root=project_root,
-        sqlite_path=Path(meta.get("sqlite_path")).expanduser().resolve() if str(meta.get("sqlite_path") or "").strip() else sqlite_path,
+        sqlite_path=Path(meta.get("sqlite_path")).expanduser().absolute() if str(meta.get("sqlite_path") or "").strip() else sqlite_path,
     )
     required_ratio = max(min(float(args.min_debug_sync_ratio), 1.0), 0.0)
     debug_sync_ok = bool(debug_coverage.get("all_ready", False)) and float(debug_coverage.get("coverage_ratio", 0.0) or 0.0) >= required_ratio
 
     out = {
+        "overall_status": "deferred" if debug_coverage.get("overall_status") == "deferred" else ("ready" if debug_sync_ok else "degraded"),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "project_root": str(project_root),
         "sqlite_path": meta.get("sqlite_path"),

@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from core.sqlite_runtime import connect_sqlite
+from core.runtime_maintenance import maintenance_hold_snapshot
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 SNAPSHOT_DRILL_KEY = "state_snapshot_drill"
 SNAPSHOT_DRILL_LATEST_REL = Path("exports") / "state_snapshot_drills" / "latest.json"
@@ -92,8 +95,15 @@ def _sqlite_has_table(conn: sqlite3.Connection, table: str) -> bool:
     return bool(row)
 
 
-def _connect_sqlite(path: Path) -> sqlite3.Connection:
-    return connect_sqlite(path, project_root=path.resolve().parents[1], timeout_seconds=120.0)
+def _require_database_io(project_root: Path) -> None:
+    # Even read-only WAL connections can create sidecars during a quiet handoff.
+    if maintenance_hold_snapshot(project_root).get("active"):
+        raise RuntimeError("snapshot_sql_deferred:runtime_maintenance_hold")
+
+
+def _connect_sqlite(path: Path, *, project_root: Path = PROJECT_ROOT, readonly: bool = False) -> sqlite3.Connection:
+    _require_database_io(project_root)
+    return connect_sqlite(path, project_root=project_root, readonly=readonly, timeout_seconds=120.0)
 
 
 def _default_raw_debug_context() -> Dict[str, float]:
@@ -222,7 +232,8 @@ def sync_snapshot_health_to_sqlite(
     source_paths: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     db_path = sqlite_path if sqlite_path is not None else _default_sqlite_path(project_root)
-    db_path = Path(db_path).expanduser().resolve()
+    db_path = Path(db_path).expanduser().absolute()
+    _require_database_io(project_root)
 
     if payloads is None:
         payloads, source_paths = load_snapshot_health_payloads_from_files(project_root)
@@ -248,8 +259,7 @@ def sync_snapshot_health_to_sqlite(
             )
         )
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = _connect_sqlite(db_path)
+    conn = _connect_sqlite(db_path, project_root=project_root)
     try:
         _ensure_snapshot_health_schema(conn)
 
@@ -265,6 +275,7 @@ def sync_snapshot_health_to_sqlite(
                 rows,
             )
             inserted = max(conn.total_changes - before, 0)
+            _require_database_io(project_root)
             conn.commit()
 
         total = conn.execute("SELECT COUNT(*) FROM snapshot_health_records").fetchone()
@@ -285,15 +296,15 @@ def sync_raw_debug_snapshots_to_sqlite(
     snapshot_dirs: Optional[Sequence[Path]] = None,
 ) -> Dict[str, Any]:
     db_path = sqlite_path if sqlite_path is not None else _default_sqlite_path(project_root)
-    db_path = Path(db_path).expanduser().resolve()
+    db_path = Path(db_path).expanduser().absolute()
+    _require_database_io(project_root)
 
     dirs = [Path(p).resolve() for p in snapshot_dirs] if snapshot_dirs is not None else _iter_debug_snapshot_dirs(project_root)
 
     store_content = os.getenv("SNAPSHOT_RAW_SQL_STORE_CONTENT", "1").strip() == "1"
     fast_skip = os.getenv("SNAPSHOT_RAW_SYNC_FAST_SKIP", "1").strip() == "1"
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = _connect_sqlite(db_path)
+    conn = _connect_sqlite(db_path, project_root=project_root)
 
     dirs_seen = 0
     files_seen = 0
@@ -316,6 +327,7 @@ def sync_raw_debug_snapshots_to_sqlite(
             existing_counts = {str(k): int(v) for k, v in rows}
 
         for snap_dir in dirs:
+            _require_database_io(project_root)
             if (not snap_dir.exists()) or (not snap_dir.is_dir()):
                 continue
             if not DEBUG_SNAPSHOT_DIR_RE.match(snap_dir.name):
@@ -402,6 +414,7 @@ def sync_raw_debug_snapshots_to_sqlite(
                 if isinstance(cur_rec.rowcount, int) and cur_rec.rowcount > 0:
                     record_rows_inserted += int(cur_rec.rowcount)
 
+        _require_database_io(project_root)
         conn.commit()
 
         rec_total = conn.execute("SELECT COUNT(*) FROM debug_snapshot_raw_records").fetchone()
@@ -430,7 +443,11 @@ def debug_snapshot_ingest_coverage(
     snapshot_dirs: Optional[Sequence[Path]] = None,
 ) -> Dict[str, Any]:
     db_path = sqlite_path if sqlite_path is not None else _default_sqlite_path(project_root)
-    db_path = Path(db_path).expanduser().resolve()
+    db_path = Path(db_path).expanduser().absolute()
+    if maintenance_hold_snapshot(project_root).get("active"):
+        return {"db_path": str(db_path), "overall_status": "deferred",
+                "reason": "runtime_maintenance_hold", "all_ready": False,
+                "coverage_ratio": 0.0, "coverage_measured": False, "rows": []}
 
     dirs = [Path(p).resolve() for p in snapshot_dirs] if snapshot_dirs is not None else _iter_debug_snapshot_dirs(project_root)
     dirs = [d for d in dirs if d.exists() and d.is_dir() and DEBUG_SNAPSHOT_DIR_RE.match(d.name)]
@@ -448,7 +465,7 @@ def debug_snapshot_ingest_coverage(
 
     ingested_counts: Dict[str, int] = {}
     if db_path.exists():
-        conn = _connect_sqlite(db_path)
+        conn = _connect_sqlite(db_path, project_root=project_root, readonly=True)
         try:
             if _sqlite_has_table(conn, "debug_snapshot_raw_records"):
                 ids = [d.name for d in dirs]
@@ -490,12 +507,12 @@ def debug_snapshot_ingest_coverage(
     }
 
 
-def load_snapshot_health_payloads_from_sqlite(sqlite_path: Path) -> Dict[str, Dict[str, Any]]:
-    db_path = Path(sqlite_path).expanduser().resolve()
+def load_snapshot_health_payloads_from_sqlite(sqlite_path: Path, *, project_root: Path = PROJECT_ROOT) -> Dict[str, Dict[str, Any]]:
+    db_path = Path(sqlite_path).expanduser().absolute()
     if not db_path.exists():
         return {}
 
-    conn = _connect_sqlite(db_path)
+    conn = _connect_sqlite(db_path, project_root=project_root, readonly=True)
     try:
         if not _sqlite_has_table(conn, "snapshot_health_records"):
             return {}
@@ -542,7 +559,7 @@ def load_raw_debug_snapshot_context_from_sqlite(
         "ingest_coverage_ratio": 0.0,
     }
 
-    db_path = Path(sqlite_path).expanduser().resolve()
+    db_path = Path(sqlite_path).expanduser().absolute()
     if not db_path.exists():
         meta["reason"] = "db_missing"
         return context, meta
@@ -552,7 +569,7 @@ def load_raw_debug_snapshot_context_from_sqlite(
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
     cutoff_iso = cutoff.isoformat()
 
-    conn = _connect_sqlite(db_path)
+    conn = _connect_sqlite(db_path, project_root=project_root or PROJECT_ROOT, readonly=True)
     try:
         if not _sqlite_has_table(conn, "debug_snapshot_raw_records"):
             meta["reason"] = "table_missing"
@@ -754,7 +771,7 @@ def load_snapshot_context(
     raw_context_meta: Dict[str, Any] = {}
 
     db_path = sqlite_path if sqlite_path is not None else _default_sqlite_path(project_root)
-    db_path = Path(db_path).expanduser().resolve()
+    db_path = Path(db_path).expanduser().absolute()
 
     raw_context_enabled = os.getenv("SNAPSHOT_RAW_CONTEXT_ENABLED", "1").strip() == "1"
     raw_sync_enabled = os.getenv("SNAPSHOT_RAW_SYNC_ENABLED", "1").strip() == "1"
@@ -781,7 +798,7 @@ def load_snapshot_context(
 
     sql_payloads: Dict[str, Dict[str, Any]] = {}
     try:
-        sql_payloads = load_snapshot_health_payloads_from_sqlite(db_path)
+        sql_payloads = load_snapshot_health_payloads_from_sqlite(db_path, project_root=project_root)
     except Exception:
         sql_payloads = {}
 
