@@ -2,6 +2,7 @@ import gzip
 import json
 import sys
 from pathlib import Path
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +17,8 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
-def test_training_lineage_reads_compressed_registry_and_training_horizon_evidence(tmp_path: Path) -> None:
+@pytest.mark.parametrize("suffix", [".gz", ".raw-training.gz"])
+def test_training_lineage_reads_compressed_registry_and_training_horizon_evidence(tmp_path: Path, suffix: str) -> None:
     health_root = tmp_path / "governance" / "health"
     experiments_root = tmp_path / "governance" / "experiments"
     feature_store_root = tmp_path / "governance" / "feature_store"
@@ -40,7 +42,7 @@ def test_training_lineage_reads_compressed_registry_and_training_horizon_evidenc
     _write_json(tmp_path / "governance" / "research" / "multiple_testing_guard_latest.json", {"ok": True})
     _write_json(tmp_path / "governance" / "research" / "decay_monitor_latest.json", {"overall_status": "ready"})
     experiments_root.mkdir(parents=True, exist_ok=True)
-    with gzip.open(experiments_root / "experiment_registry.jsonl.gz", "wt", encoding="utf-8") as handle:
+    with gzip.open(experiments_root / f"experiment_registry.jsonl{suffix}", "wt", encoding="utf-8") as handle:
         handle.write(
             json.dumps(
                 {
@@ -65,6 +67,23 @@ def test_training_lineage_reads_compressed_registry_and_training_horizon_evidenc
     assert payload["snapshot_coverage_ok"] is True
     assert payload["source_artifacts"]["paper_replay_drill"].endswith("paper_replay_training_latest.json")
     assert payload["source_artifacts"]["snapshot_coverage"].endswith("snapshot_coverage_training_latest.json")
+    assert payload["promotion_bundle_ready"] is False
+
+
+@pytest.mark.parametrize("suffix", [".gz", ".raw-training.gz"])
+def test_quality_and_lineage_keep_newest_registry_row_after_compaction(tmp_path, suffix):
+    from scripts.ops import training_quality_control
+
+    path = tmp_path / "experiment_registry.jsonl"
+    older = {"experiment_id": "old", "timestamp_utc": "2026-08-01T00:00:00+00:00"}
+    newer = {"experiment_id": "new", "timestamp_utc": "2026-09-01T00:00:00+00:00"}
+    with gzip.open(path.with_name(path.name + suffix), "wt") as handle:
+        handle.write(json.dumps(older) + "\n")
+    for reader in (src._load_latest_jsonl_row, training_quality_control._load_latest_jsonl_row):
+        assert reader(path) == older
+    path.write_text(json.dumps(newer) + "\n")
+    for reader in (src._load_latest_jsonl_row, training_quality_control._load_latest_jsonl_row):
+        assert reader(path) == newer
 
 
 def test_training_lineage_manifest_reports_ready_when_bundle_is_complete(tmp_path: Path) -> None:

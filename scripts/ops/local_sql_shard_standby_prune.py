@@ -429,6 +429,7 @@ def main() -> int:
     parser.add_argument("--lock-file", default=str(DEFAULT_LOCK_PATH))
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--independent-backup-receipt", default="", help="Explicit sqlite_primary retirement under an authorized maintenance hold; requires full independent backup proof")
+    parser.add_argument("--central-databases", action="store_true", help="Explicitly include the three central standby names; requires fresh row reconciliation and quiet primary")
     parser.add_argument("--max-delete-gb", type=float, default=512.0)
     parser.add_argument("--min-age-minutes", type=float, default=0.0)
     parser.add_argument("--allow-unmirrored", action="store_true")
@@ -462,6 +463,7 @@ def main() -> int:
 
             payload = retire_standbys(
                 Path(args.project_root), Path(args.independent_backup_receipt),
+                allow_central_databases=args.central_databases,
                 apply=bool(args.apply),
             )
         else:

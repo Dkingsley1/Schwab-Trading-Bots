@@ -4,6 +4,17 @@ import json
 from scripts.ops import grade_regression_autopilot as src
 
 
+def test_quality_repair_refreshes_label_observation_before_quality(tmp_path):
+    plan = src._repair_plan(tmp_path, {"surfaces": [
+        {"surface": "training_quality", "state": "degraded"}
+    ]}, storage_max_cycles=1)
+    assert len(plan) == 2
+    assert plan[0]["cmd"][1].endswith("training_labeling_intelligence.py")
+    assert "--refresh-artifacts" in plan[0]["cmd"]
+    assert "--apply" not in plan[0]["cmd"]
+    assert plan[1]["cmd"][1].endswith("training_quality_control.py")
+
+
 def test_new_failed_source_triggers_refresh_even_when_lineage_summary_is_older(tmp_path):
     path = tmp_path / "governance/feature_store/latest.json"
     path.parent.mkdir(parents=True)
@@ -168,6 +179,9 @@ def test_repair_plan_refreshes_dependencies_before_consumers_without_pdf(tmp_pat
     assert scripts.count("retrain_schema_compatibility_guard.py") == 1
     assert scripts.index("retrain_schema_compatibility_guard.py") < scripts.index("promotion_packet_builder.py")
     assert scripts.index("promotion_packet_builder.py") < scripts.index("promotion_autopilot_packet.py")
+    assert scripts.index("schema_migration_guard.py") < scripts.index("promotion_quality_gate.py")
+    assert scripts.index("promotion_packet_builder.py") < scripts.index("promotion_quality_gate.py")
+    assert scripts.index("promotion_quality_gate.py") < scripts.index("promotion_autopilot_packet.py")
     builder = next(step for step in plan if "promotion_packet_builder.py" in step["cmd"][1])
     assert builder["cmd"][2:] == ["--json"]
     assert scripts.index("promotion_autopilot_packet.py") < scripts.index(
@@ -230,7 +244,7 @@ def test_owner_resource_deferral_remains_visible(tmp_path):
     payload = src.build_payload(tmp_path, apply=True, guard_builder=lambda _: guard,
         runner=lambda cmd, root, timeout: {"cmd": cmd, "rc": 2, "payload": {
             "overall_status": "deferred", "reason": "resource_hold"}})
-    assert payload["deferred_attempt_count"] == 1
+    assert payload["deferred_attempt_count"] == 2
     assert payload["attempts"][0]["defer_reason"] == "resource_hold"
     assert not payload["ok"]
 
@@ -253,11 +267,13 @@ def test_lineage_repairs_actual_replay_dependency_before_signed_packet(tmp_path)
     scripts = [Path(row["cmd"][1]).name for row in plan]
     expected = [
         "paper_replay_drill.py",
+        "schema_migration_guard.py",
         "retrain_schema_compatibility_guard.py",
         "walk_forward_validate.py",
         "walk_forward_promotion_gate.py",
         "promotion_readiness_summary.py",
         "promotion_packet_builder.py",
+        "promotion_quality_gate.py",
         "promotion_autopilot_packet.py",
         "training_lineage_manifest.py",
         "coverage_gap_closer.py",

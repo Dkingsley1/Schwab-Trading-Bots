@@ -161,6 +161,7 @@ def test_supervised_restart_uses_runtime_flag_tolerant_coinbase_match() -> None:
 def test_restart_fence_blocks_unauthorized_watchdog_repairs(
     monkeypatch, tmp_path
 ) -> None:
+    monkeypatch.setattr(watchdog, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(
         watchdog, "maintenance_hold_snapshot", lambda _root: {"active": False}
     )

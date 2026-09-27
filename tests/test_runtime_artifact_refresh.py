@@ -843,6 +843,7 @@ def test_runtime_artifact_refresh_training_scope_is_dependency_closed(
     names = [str(row["name"]) for row in selected]
 
     assert names == [
+        "training_labeling_observation",
         "paper_replay_training",
         "replay_hash_registry_final",
         "golden_replay_regression_final",

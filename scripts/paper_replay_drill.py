@@ -95,7 +95,8 @@ def _candidate_paths(in_file: str, profile: str, domain: str, *, audit=None) -> 
     profile_l = str(profile or "").strip().lower()
     domain_l = str(domain or "").strip().lower()
     return [path for path in paths
-        if (path.match("paper_trades_*.jsonl") or path.match("paper_trades_*.jsonl.gz"))
+        if (path.match("paper_trades_*.jsonl") or path.match("paper_trades_*.jsonl.gz")
+            or path.match("paper_trades_*.jsonl.raw-training.gz"))
         and "independent_fills" not in path.parts
         and (not profile_l or f"shadow_{profile_l}" in str(path).lower())
         and (not domain_l or f"_{domain_l}" in str(path).lower())]
@@ -137,7 +138,7 @@ def _execution_paths(prefix: str, *, audit=None) -> list[Path]:
             continue
         try:
             for path in folder.iterdir():
-                if not path.name.startswith(prefix) or not (path.name.endswith(".jsonl") or path.name.endswith(".jsonl.gz")):
+                if not path.name.startswith(prefix) or not path.name.endswith((".jsonl", ".jsonl.gz", ".jsonl.raw-training.gz")):
                     continue
                 route = inspect(path)
                 if route["status"] == "present":

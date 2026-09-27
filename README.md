@@ -1,5 +1,21 @@
 # Schwab Trading Bot
 
+The golden replay guard uses reviewed, tracked expectations in
+`config/golden_replay_pack_v1.json` for action, risk and sizing regression checks.
+It never learns its reference from the current engine output. Synthetic checks
+cannot establish profitability, current-candidate paper history or order authority.
+
+Training evidence readers retain access to both `.jsonl.gz` and the native
+`.jsonl.raw-training.gz` archives. Scheduled quality refreshes first observe
+current label-contract coverage without changing the bot registry. Restored
+history and definition completeness are not new training outcomes, profitable
+paper evidence, promotion approval, or live execution authority.
+Paper replay and performance reports also read the native compressed suffix,
+preserving duplicate suppression and candidate/time-window exclusions. Promotion
+quality can retire historical schema, watchdog and storage failures only from
+newer, fresh successful owner reports; missing ownership and economic evidence
+remain blocked.
+
 Overdue risk-summary refresh can use its existing bounded maintenance exception
 under backlog-selected `protect_live`, subject to the same fresh CPU, memory,
 thermal and resource-admission checks. This prevents stale risk evidence from
@@ -25,6 +41,8 @@ action and a confirmed broker fill; they do not grant trading authority.
 The incoming primary-data SSD can be prepared with `./scripts/ops/opsctl.sh external-drive-preflight --json`. The staged plan includes large SQL shards, datasets, models, logs, reports and eligible cold archives, while keeping source, Python environments, credentials and small active control records internal. It never adopts, formats or writes to a drive and does not change current routes. See [External Drive Onboarding](docs/operations/EXTERNAL_DRIVE_ONBOARDING.md) for identity checks and the supervised database handoff.
 
 The opt-in `sqlite_primary` storage profile narrows the first handoff to declared SQLite databases and shards. It binds an external APFS UUID, preserves internal controls and at least 200 GiB of external reserve, and requires a receipt-verified maintenance-held handoff with trading OFF. Unlike legacy disconnect failover, this profile defers affected writers instead of switching to stale local copies; legacy broad repair and pruning owners are blocked. A separate explicit standby-retirement mode requires independent-drive full-restoration proof and routed I/O verification. Staged copies alone are not active routes or deletion authority. See the onboarding guide for the native owners, transaction recovery and drive distribution.
+
+Collection-only startup can retain internal JSONL while the selected SSD is unavailable, with execution OFF and internal reserves protected. Shared-channel outage evidence uses a durable internal buffer; existing SQL-writer and accrual schedules archive it to the same verified SSD after reconnect and complete readback. They never replay delayed trading signals. Canonical SQL ingestion remains a separate native writer step, and long-running collectors need reviewed runtime adoption of the new owner. See the onboarding guide's collection-continuity section for scope and limits.
 
 Snapshot-health SQL honors maintenance before opening databases and again before committing writes. Its readers use read-only connections with the real project root, preserving logical routes instead of inferring ownership from an external or standby location. During maintenance, file observations remain available but SQL sync and coverage are explicitly deferred.
 

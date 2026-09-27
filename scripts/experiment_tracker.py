@@ -66,7 +66,11 @@ def _sign_payload(payload: dict[str, Any], secret: str) -> str:
 def _load_jsonl_rows(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    for candidate in (path.with_name(f"{path.name}.gz"), path):
+    for candidate in (
+        path.with_name(f"{path.name}.raw-training.gz"),
+        path.with_name(f"{path.name}.gz"),
+        path,
+    ):
         if not candidate.exists():
             continue
         opener = gzip.open if candidate.name.endswith(".gz") else open

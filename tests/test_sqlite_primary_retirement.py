@@ -92,6 +92,73 @@ def test_plan_preserves_source_and_apply_preserves_active_and_backup(cohort):
     assert json.loads(Path(result["journal"]).read_text())["phase"] == "complete"
 
 
+@pytest.mark.parametrize("mode", ["success", "not_explicit", "missing_rows", "target_changed"])
+def test_central_retirement_requires_explicit_fresh_proof(cohort, monkeypatch, mode):
+    from core import sqlite_standby_reconciliation
+
+    root, proof, old_source, backup, old_active = cohort
+    relative = "bot_channel_queue.sqlite3"
+    source = old_source.parent.parent / relative
+    active = old_active.parent.parent / relative
+    old_source.rename(source)
+    old_active.rename(active)
+    payload = json.loads(proof.read_text())
+    row = payload["files"][0]
+    row.update(relative=relative, source=str(source), source_identity=src.primary._identity(source))
+    proof.write_text(json.dumps(payload))
+    path = proof.parent / "sqlite_primary_cutover_reviewed.json"
+    cutover = json.loads(path.read_text())
+    cutover["files"] = [row]
+    path.write_text(json.dumps(cutover))
+    def verify(*args, **kwargs):
+        if mode == "missing_rows":
+            raise ValueError("missing rows")
+        if mode == "target_changed":
+            active.write_bytes(b"changed primary")
+        return {"all_operational_rows_preserved": True}
+    monkeypatch.setattr(sqlite_standby_reconciliation, "verify_records", verify)
+    if mode == "success":
+        result = src.retire_standbys(root, proof, apply=True, allow_central_databases=True)
+        assert result["retired"] == [relative] and not source.exists()
+    else:
+        with pytest.raises(ValueError):
+            src.retire_standbys(root, proof, apply=True, allow_central_databases=mode != "not_explicit")
+        assert source.exists()
+    assert backup.exists() and active.exists()
+
+
+def test_central_orphan_cleanup_uses_existing_guarded_owner(cohort, monkeypatch):
+    from core import sqlite_primary_recovery
+
+    root, proof, source, backup, active = cohort
+    target = active.parents[2]
+    relative = "sql_link_shards/" + active.name
+    shm = Path(str(active) + "-shm")
+    shm.write_bytes(b"orphan")
+    calls = []
+    def quiet(old, new, rows, identities):
+        calls.append((old, new, rows, identities))
+        shm.unlink()
+    monkeypatch.setattr(sqlite_primary_recovery, "_quiet", quiet)
+    src._central_idle(root, source, target, relative)
+    assert len(calls) == 1
+    assert calls[0][3][relative] == src.primary._identity(source)
+    assert source.exists() and active.exists()
+
+
+def test_central_orphan_cleanup_cannot_override_native_failure(cohort, monkeypatch):
+    from core import sqlite_primary_recovery
+
+    root, proof, source, backup, active = cohort
+    Path(str(active) + "-shm").write_bytes(b"orphan")
+    def blocked(*args, **kwargs):
+        raise ValueError("nonempty journal or busy reader")
+    monkeypatch.setattr(sqlite_primary_recovery, "_quiet", blocked)
+    with pytest.raises(ValueError, match="nonempty journal"):
+        src._central_idle(root, source, active.parents[2], "sql_link_shards/" + active.name)
+    assert source.exists()
+
+
 @pytest.mark.parametrize(
     "damage", ["source", "backup", "active", "io", "route_binding", "duplicate"]
 )

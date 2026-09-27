@@ -1079,6 +1079,18 @@ def _queue_publish(
             source_path=source_path,
         )
     except Exception as exc:
+        # The JSONL owner already retained these records. Archive outage evidence
+        # separately; replaying delayed decision messages could execute old trades.
+        try:
+            from core import sqlite_primary_storage as primary
+            from core.collection_continuity import preserve
+
+            if primary.enabled(Path(project_root)) and not primary.observe(Path(project_root))["ok"]:
+                preserve(Path(project_root), channel=channel, source_path=source_path,
+                         payloads=list(payloads))
+                return
+        except Exception as buffer_exc:
+            exc = RuntimeError(f"collection_buffer_failed:{buffer_exc}; queue_error:{exc}")
         _emit_write_failure_event(
             project_root=project_root,
             source="channel_queue.enqueue",

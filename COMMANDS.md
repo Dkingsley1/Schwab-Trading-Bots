@@ -4,7 +4,7 @@ Use these exact commands as the current source of truth.
 
 This file is generated from the curated operator inventory in `scripts/ops/commands_hygiene_bot.py`.
 Rebuild it with `./scripts/ops/opsctl.sh commands-hygiene --apply` after changing that inventory.
-Command contract hash: `4882c00a5c42b5ff530492202ec57b4a568ae68efe1a7a0aa4cb5fe4604e4ab7`.
+Command contract hash: `0bc39adf6e53022f7c2ba030bdae4ee1a61d79e30a0ef88831946eaeea67b2e7`.
 Command contract artifact: `governance/health/commands_contract_latest.json`.
 
 Live Execution Control is pinned above Most Used; the remaining sections are alphabetized by section and command title:
@@ -23,7 +23,7 @@ Fast search tokens: `start` `stop` `paper` `profitability` `soak` `halt` `auth` 
 
 Useful compound searches: `paper profitability`, `global halt`, `token refresh`, `livefeed heavy`, `storage prune`, `soak readiness`.
 
-Search coverage: `277` generated command entries from the current command contract.
+Search coverage: `278` generated command entries from the current command contract.
 
 <datalist id="command-search-index-options">
   <option value="Live Execution OFF - block new live orders (Live Execution Control)"></option>
@@ -59,6 +59,7 @@ Search coverage: `277` generated command entries from the current command contra
   <option value="Check Schwab indicator intelligence (Most Used)"></option>
   <option value="Check support maintenance yield gate (Most Used)"></option>
   <option value="Clear all halt flags now (Most Used)"></option>
+  <option value="Drain the SSD collection outage buffer (Most Used)"></option>
   <option value="Emergency stop: engage operator stop and global halt (Most Used)"></option>
   <option value="Fast read-only health check (Most Used)"></option>
   <option value="Inspect grade regressions and bounded repairs (Most Used)"></option>
@@ -306,7 +307,7 @@ Search coverage: `277` generated command entries from the current command contra
 </datalist>
 
 <details>
-<summary>Generated command search index (277 commands; rebuilt by commands-hygiene)</summary>
+<summary>Generated command search index (278 commands; rebuilt by commands-hygiene)</summary>
 
 Each row is generated from `governance/health/commands_contract_latest.json`, so added, removed, renamed, or cleaned-up commands change this index automatically.
 
@@ -331,7 +332,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:b4ec197c829c79297d5b206a318875882fcb5d3043aa2e7c50026bf67de5b29b section:`Most Used` section_key:`most-used` title:Apply runtime throttle and P-core priority controls title_key:`apply-runtime-throttle-and-p-core-priority-controls` opsctl:`runtime-throttle` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:57f30273c9e0a76c17e804248b0059ece2a20d4d5b721e1cd31be80084b17a99 section:`Most Used` section_key:`most-used` title:Ask what backlog and runtime need next title_key:`ask-what-backlog-and-runtime-need-next` opsctl:`system-needs` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2791c2ca3930ab6c83c43a35475613267d9a338634453adf93e5ac24a1f3e67f section:`Most Used` section_key:`most-used` title:Attempt a safe global halt clear title_key:`attempt-a-safe-global-halt-clear` opsctl:`global-halt-auto-clear` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
-- search-entry:c4c464cd561811d39eccef9deace89a67304fb1313f2b6ef2ce8d647b0fcce29 section:`Most Used` section_key:`most-used` title:Audit self-healing gaps and physical routes title_key:`audit-self-healing-gaps-and-physical-routes` opsctl:`self-healing-gaps, storage-route-verify, storage-fallback-repair, emergency-storage-thin` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:3b23d746b4806576db646e460a3d63faca92dea5900192d06be319aeb4ff8b0a section:`Most Used` section_key:`most-used` title:Audit self-healing gaps and physical routes title_key:`audit-self-healing-gaps-and-physical-routes` opsctl:`self-healing-gaps, storage-route-verify, emergency-storage-thin` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:6da4fa570df2247a7aaf805a0d839d646cad4f02547f71b4a6c8758cdccc0303 section:`Most Used` section_key:`most-used` title:Broker Truth Step 1: refresh Schwab auth title_key:`broker-truth-step-1-refresh-schwab-auth` opsctl:`token-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:3e494b156f6a54e22c473ee62ccd2b9e3927578cc05bccdd5f79cd2e2090e51e section:`Most Used` section_key:`most-used` title:Broker Truth Step 2: restart the Schwab loops title_key:`broker-truth-step-2-restart-the-schwab-loops` opsctl:`feed-refresh` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e8ffaee1559eb46b606ea6880bc6a4f0e44d00d5b8097b8f0cae316065dad94d section:`Most Used` section_key:`most-used` title:Broker Truth Step 3: verify broker readiness and lane statuses title_key:`broker-truth-step-3-verify-broker-readiness-and-lane-statuses` opsctl:`none` scripts:`none` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -343,6 +344,7 @@ Each row is generated from `governance/health/commands_contract_latest.json`, so
 - search-entry:d0c6ae912a39199e49e30bb31fc00e7213ef3f8cf2c507375075583d0ba33509 section:`Most Used` section_key:`most-used` title:Check Schwab indicator intelligence title_key:`check-schwab-indicator-intelligence` opsctl:`schwab-indicator-intelligence` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:5a04b7890366a0378b1a2a8be997ed63c98d929d9f38ed9e50630b54648d0b9d section:`Most Used` section_key:`most-used` title:Check support maintenance yield gate title_key:`check-support-maintenance-yield-gate` opsctl:`support-maintenance-gate` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:2b88c9c6053fdfb06e59133c5e2fd94d8ba95538d438cc0366b357c235e8c153 section:`Most Used` section_key:`most-used` title:Clear all halt flags now title_key:`clear-all-halt-flags-now` opsctl:`clear-all-halts` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
+- search-entry:b1c1380b987edc83b640d8d76600829a51a34160ed5ce5dfb8ea1c43db5c8804 section:`Most Used` section_key:`most-used` title:Drain the SSD collection outage buffer title_key:`drain-the-ssd-collection-outage-buffer` opsctl:`collection-buffer-drain` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:3e9a108107ab5d4ba44045a4fa2a9ef53dfb90055365176b4f8e54c980bba2c3 section:`Most Used` section_key:`most-used` title:Emergency stop: engage operator stop and global halt title_key:`emergency-stop-engage-operator-stop-and-global-halt` opsctl:`operator-control` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:f311e5809cc856703411fdcc5f2aab73a64131c779a23e0341ca7eaabe8d5be0 section:`Most Used` section_key:`most-used` title:Fast read-only health check title_key:`fast-read-only-health-check` opsctl:`health-fast` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
 - search-entry:e79c0c0c67e9cefa00a776188987080673f914426f718d92d7d472d38a5c51eb section:`Most Used` section_key:`most-used` title:Inspect grade regressions and bounded repairs title_key:`inspect-grade-regressions-and-bounded-repairs` opsctl:`grade-regression-guard, grade-regression-autopilot` scripts:`scripts/ops/opsctl.sh` first_command:`cd /Users/dankingsley/PycharmProjects/schwab_trading_bot`
@@ -787,11 +789,10 @@ This only clears the halt when the runtime, auth, watchdog, and data-plane guard
 cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh self-healing-gaps --json
 ./scripts/ops/opsctl.sh storage-route-verify --json
-./scripts/ops/opsctl.sh storage-fallback-repair --json
 ./scripts/ops/opsctl.sh emergency-storage-thin --json
 ```
 
-Census and route commands are observation-only. Fallback repair and emergency-thin without --apply are previews; native accrual owns bounded conditional apply. Known legacy fallback aliases are preserved as historical links before creating real local directories. No external data is deleted and no command grants trading authority. See docs/operations/SELF_HEALING_GAPS.md.
+Census and route commands are observation-only; emergency-thin without --apply is a preview. The selected SQLite-primary profile uses collection-buffer-drain rather than legacy alias repair. Native accrual owns bounded conditional apply. No command grants trading authority. See docs/operations/SELF_HEALING_GAPS.md and docs/operations/EXTERNAL_DRIVE_ONBOARDING.md.
 
 ### Broker Truth Step 1: refresh Schwab auth
 ```bash
@@ -886,6 +887,14 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ```
 
 This clears both OPERATOR_STOP and GLOBAL_TRADING_HALT in one command. It is a manual collection-unblock override; it does not mark auth, snapshot recovery, or backpressure gates healthy.
+
+### Drain the SSD collection outage buffer
+```bash
+cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
+./scripts/ops/opsctl.sh collection-buffer-drain --apply --json
+```
+
+The native accrual schedule performs this bounded pass automatically for the selected SQLite primary. UUID/reserve checks and full compressed readback precede local buffer retirement. Archives collection evidence only; never replays queued orders or switches database routes. Existing JSONL ingestion catches up separately. See docs/operations/EXTERNAL_DRIVE_ONBOARDING.md.
 
 ### Emergency stop: engage operator stop and global halt
 ```bash
@@ -2468,7 +2477,7 @@ cd /Users/dankingsley/PycharmProjects/schwab_trading_bot
 ./scripts/ops/opsctl.sh golden-replay-regression --json
 ```
 
-This compares deterministic replay against the golden replay pack or the seeded replay hash fallback.
+This checks the tracked `config/golden_replay_pack_v1.json` reference without overriding runtime risk policy. Seeded fallback is not strict-ready; synthetic replay is not paper-trading or profitability evidence.
 
 ### Health snapshot
 ```bash

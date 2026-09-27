@@ -121,7 +121,7 @@ def test_execution_lane_loads_runtime_control_env(tmp_path: Path, monkeypatch) -
 
 def test_paper_execution_lane_skips_stale_intents_without_trader_execution(tmp_path: Path, monkeypatch) -> None:
     queue_db = tmp_path / "data" / "queue.sqlite3"
-    queue = ChannelQueue(queue_db)
+    queue = ChannelQueue(queue_db, project_root=tmp_path)
     queue.enqueue(
         channel=EXECUTION_INTENT_CHANNEL,
         payload={
@@ -163,7 +163,7 @@ def test_paper_execution_lane_skips_stale_intents_without_trader_execution(tmp_p
 
 def test_paper_execution_lane_drain_stale_only_bulk_acks_prefix_without_trader(tmp_path: Path, monkeypatch) -> None:
     queue_db = tmp_path / "data" / "queue.sqlite3"
-    queue = ChannelQueue(queue_db)
+    queue = ChannelQueue(queue_db, project_root=tmp_path)
     for idx in range(2):
         message_id = f"stale-paper-intent-{idx}"
         queue.enqueue(

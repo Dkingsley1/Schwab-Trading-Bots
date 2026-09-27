@@ -54,6 +54,48 @@ attempts without readiness credit or automatic fallback to stale local data.
 Legacy broad switching, disaster recovery and source-pruning owners are blocked
 for this profile rather than allowed to rearrange or retire its files.
 
+### Collection Continuity During An SSD Outage
+
+The collection launchers explicitly request collection-only startup. With the
+live execution switch OFF, no maintenance hold, physical internal collection
+routes, and at least 125 GiB internal reserve (or the higher configured target),
+an unavailable primary permits local JSONL collection. The SQLite links stay
+unchanged and database/execution admission stays blocked. This is not a writable
+standby database, warm failover, or trading clearance.
+
+Shared channel publication retains outage batches in an internal FULL-sync SQLite
+outbox after their normal local JSONL write. Stable content hashes deduplicate
+retries; each batch is limited to 8 MiB and pending payloads to 4 GiB. Capacity
+and write failures remain visible rather than acknowledging unretained data.
+This covers the shared runtime, gate, ingress, API, loop-state, decision, and risk
+channels. Direct third-party writers outside the shared owner are not certified
+by this feature. Existing plain JSONL collectors keep their internal source files
+for the native SQL linker to ingest when storage admission recovers.
+
+The existing native accrual schedule replaces its legacy alias-repair step with
+a bounded collection-buffer drain for this profile. The SQL writer also drains
+at each admitted cycle (normally every 120 seconds); a shared nonblocking lock
+prevents the two owners from draining concurrently. On the same UUID-bound SSD,
+with verified routes and reserve, it compresses batches beneath
+`cold_archive/collection_buffer`, fsyncs, verifies complete decompressed readback,
+rechecks the device, and only then records custody and removes pending payloads.
+Each pass is bounded to 64 batches, 32 MiB, and a 10-second work deadline;
+unfinished work remains pending for subsequent scheduled passes. Connection and
+device-probe timeouts are bounded separately. The manual equivalent is:
+
+```sh
+./scripts/ops/opsctl.sh collection-buffer-drain --apply --json
+```
+
+`governance/health/collection_continuity_latest.json` distinguishes archive
+completion from canonical SQL ingestion. A reconnect never queues delayed
+decisions into an execution consumer. Crash-after-copy retries verify the same
+content-addressed archive; wrong devices, divergent archives, lost admission,
+and invalid local routes retain pending evidence. No new Codex automation or
+LaunchAgent is introduced. Long-running collectors require reviewed runtime
+adoption of the updated shared writer; unit tests do not certify a physical
+disconnect/reconnect of the live primary.
+
 The explicit native handoff owner is:
 
 ```sh
@@ -136,6 +178,24 @@ and all other originals. Protected VIDEO paths are rejected before inspection.
 A partial retirement journal requires review; no automatic retry or blanket
 deletion authority is granted. Measure actual free space afterward: logical
 bytes retired are not necessarily physical bytes recovered.
+
+The additional explicit `--central-databases` option admits only
+`jsonl_link.sqlite3`, `bot_channel_queue.sqlite3`, and `snapshot_context.sqlite3`,
+still at most two per invocation. It requires quiet sources and primaries and
+fresh read-only comparison of every operational table, with matching schemas.
+Payloads and processing claims must match exactly. Consumer and merge cursors
+and autoincrement sequences cannot regress. Previously reconciled report IDs
+are compared through their saved mapping; no report is overwritten or replayed.
+The changed main standby must match the reviewed reconciliation receipt, not
+an invented replacement for its original cutover identity. Primary identities
+are checked again after backup verification and immediately before unlink.
+SQLite optimizer statistics remain in the independent backup; they are not
+business-record reconciliation evidence. Unknown tables, missing rows, changed
+payloads, busy journals or unavailable proof preserve the original.
+If an otherwise quiet primary has orphan shared-memory bookkeeping, the existing
+native recovery owner may ask SQLite to retire it. Nonempty WAL/rollback journals,
+open handles, changed database identity, a lost hold or reappearing SHM still
+block deletion. SHM is never manually unlinked by the retirement owner.
 
 ## Read-Only Preparation Command
 

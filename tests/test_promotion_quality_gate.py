@@ -1,5 +1,7 @@
 import json
 import sys
+import pytest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -8,6 +10,47 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import scripts.promotion_quality_gate as promotion_quality_gate
+
+
+@pytest.mark.parametrize("name", promotion_quality_gate.RECOVERABLE_OPERATIONAL_CHECKS)
+def test_operational_daily_failure_requires_new_fresh_owner_evidence(name):
+    now = datetime.now(timezone.utc)
+    daily = {"running": False, "timestamp_utc": (now - timedelta(days=1)).isoformat()}
+    evidence = {"ok": True, "timestamp_utc": now.isoformat(), "overall_status": "ready"}
+    check = promotion_quality_gate._operational_check_recovered
+    assert check(name, evidence, daily)
+    for mutation in (
+        {"ok": False}, {"ok": "true"}, {"artifact_refresh_failed": True},
+        {"failed_checks": ["unresolved"]}, {"overall_status": "degraded"},
+        {"timestamp_utc": (now + timedelta(seconds=60)).isoformat()},
+        {"timestamp_utc": (now - timedelta(hours=1)).isoformat()},
+        {"timestamp_utc": (now - timedelta(days=2)).isoformat()},
+        {"timestamp_utc": now.replace(tzinfo=None).isoformat()},
+        {"timestamp_utc": "bad"},
+    ):
+        assert not check(name, {**evidence, **mutation}, daily)
+    assert not check(name, evidence, {**daily, "running": True})
+    assert not check(name, evidence, {})
+    assert not check("unknown_check", evidence, daily)
+
+
+def test_operational_recovery_does_not_clear_ownership_or_economic_requirements():
+    now = datetime.now(timezone.utc)
+    names = list(promotion_quality_gate.RECOVERABLE_OPERATIONAL_CHECKS)
+    _, failed, details = promotion_quality_gate.evaluate_quality(
+        {"promote_ok": False, "considered_bots": 4, "fail_share": 1.0},
+        {"running": False, "timestamp_utc": (now - timedelta(days=1)).isoformat(),
+         "ok": False, "failed_checks": [*names, "bot_support_owner_guard"]},
+        {"ok": True}, {"ok": True}, {"ok": True}, {"ok": True},
+        current_operational_checks={name: {"ok": True, "timestamp_utc": now.isoformat()}
+                                    for name in names},
+        max_fail_share=0.25, min_considered_bots=4,
+        require_replay=True, require_reconciliation_slo=False,
+    )
+    assert details["daily_verify_resolved_failed_checks"] == names
+    assert details["daily_verify_unresolved_failed_checks"] == ["bot_support_owner_guard"]
+    assert "daily_verify_not_ok" in failed
+    assert len(failed) > 1
 
 
 def _write_json(path: Path, payload: dict) -> None:

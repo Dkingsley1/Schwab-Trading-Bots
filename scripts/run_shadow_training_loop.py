@@ -1134,7 +1134,7 @@ def _route_storage_or_fail() -> bool:
     try:
         from core.storage_router import describe_storage_routing, route_runtime_storage
 
-        routing = route_runtime_storage(PROJECT_ROOT)
+        routing = route_runtime_storage(PROJECT_ROOT, collection_only=True)
         print(describe_storage_routing(routing))
         return True
     except Exception as exc:

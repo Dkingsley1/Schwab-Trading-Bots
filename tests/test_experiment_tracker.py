@@ -1,4 +1,5 @@
 import gzip
+import pytest
 import json
 from pathlib import Path
 import sys
@@ -102,11 +103,12 @@ def test_build_experiment_row_tracks_replayability_bundle(tmp_path: Path) -> Non
     assert summary["latest_attestation_ready"] is True
 
 
-def test_write_experiment_artifacts_preserves_compressed_ledger_history(tmp_path: Path) -> None:
+@pytest.mark.parametrize("suffix", [".gz", ".raw-training.gz"])
+def test_write_experiment_artifacts_preserves_compressed_ledger_history(tmp_path: Path, suffix: str) -> None:
     project_root = tmp_path / "project"
     ledger = project_root / "governance" / "experiments" / "immutable_experiment_ledger.jsonl"
     ledger.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(ledger.with_name(f"{ledger.name}.gz"), "wt", encoding="utf-8") as handle:
+    with gzip.open(ledger.with_name(f"{ledger.name}{suffix}"), "wt", encoding="utf-8") as handle:
         handle.write(
             json.dumps(
                 {

@@ -1,5 +1,6 @@
 import json
 import sys
+import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -9,6 +10,62 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.ops import live_canary_control as src
+
+
+@pytest.mark.parametrize("mode,ok,ready", [
+    ("sqlite_primary", True, True),
+    ("sqlite_primary_unavailable", False, False),
+    ("sqlite_primary_pending", False, False),
+    ("unexpected", True, False),
+])
+def test_selected_sqlite_profile_uses_current_native_probe_without_order_authority(
+    tmp_path, monkeypatch, mode, ok, ready
+):
+    health = tmp_path / "governance/health"
+    _write_json(health / "storage_route_status_latest.json", {"ok": True, "mode": "external"})
+    calls = []
+    monkeypatch.setattr(src.sqlite_primary_storage, "enabled", lambda root: True)
+
+    def observe(root):
+        calls.append(root)
+        return {"ok": ok, "mode": mode, "integrity_verified": False,
+                "route_mutation_performed": False}
+
+    monkeypatch.setattr(src.sqlite_primary_storage, "observe", observe)
+    payload = src.build_payload(tmp_path)
+    assert calls == [tmp_path]
+    assert payload["storage_external_ready"] is ready
+    assert payload["storage_mode"] == mode
+    assert payload["storage_route_probe"]["integrity_verified"] is False
+    assert payload["supervised_canary_ready"] is False
+    assert "broker_not_ready" in payload["blocking_reasons"]
+    assert "canary_allowlist_not_ready" in payload["blocking_reasons"]
+    if ready:
+        assert "storage_not_external" not in payload["blocking_reasons"]
+        assert "storage_not_ready" not in payload["blocking_reasons"]
+
+
+@pytest.mark.parametrize("cached", [{}, {"ok": True, "mode": "sqlite_primary"}])
+def test_unselected_or_missing_storage_cannot_claim_external_readiness(tmp_path, monkeypatch, cached):
+    _write_json(tmp_path / "governance/health/storage_route_status_latest.json", cached)
+    monkeypatch.setattr(src.sqlite_primary_storage, "enabled", lambda root: False)
+    payload = src.build_payload(tmp_path)
+    assert payload["storage_external_ready"] is False
+    assert payload["supervised_canary_ready"] is False
+
+
+def test_invalid_selected_storage_configuration_blocks_without_cached_fallback(tmp_path, monkeypatch):
+    _write_json(tmp_path / "governance/health/storage_route_status_latest.json",
+                {"ok": True, "mode": "external"})
+
+    def invalid(root):
+        raise ValueError("invalid_profile")
+
+    monkeypatch.setattr(src.sqlite_primary_storage, "enabled", invalid)
+    payload = src.build_payload(tmp_path)
+    assert payload["storage_external_ready"] is False
+    assert payload["storage_ok"] is False
+    assert "storage_not_ready" in payload["blocking_reasons"]
 
 
 def _write_json(path: Path, payload: dict) -> None:

@@ -316,18 +316,22 @@ def _classify_row(
         6.0, min_age_hours
     )
     active_latest_artifact = path.name.lower().endswith("_latest.jsonl")
+    custody_receipt = path.name.lower().endswith(".restore_proofs.jsonl")
     archived_fallback_evidence = _is_archived_fallback_evidence(path, scan_root)
     local_fallback = bool(
         _is_live_local_fallback_artifact(path) and not archived_fallback_evidence
+        and not custody_receipt
     )
     protected = _is_under_protected_volume(path)
     training_candidate = bool(
-        _contains_hint(path, TRAINING_PATH_HINTS) or size_bytes > 0
+        not custody_receipt and (_contains_hint(path, TRAINING_PATH_HINTS) or size_bytes > 0)
     )
     sibling = _compressed_sibling(path)
     already_compressed_sibling = sibling.exists() and sibling.stat().st_size > 0
     old_enough = age_hours >= min_age_hours
     queue_blockers: list[str] = []
+    if custody_receipt:
+        queue_blockers.append("protected_restore_custody_receipt")
     if protected:
         queue_blockers.append("protected_volume")
     if local_fallback:
@@ -382,6 +386,7 @@ def _classify_row(
         "age_hours": round(age_hours, 3),
         "current_day_protected": bool(current_day),
         "active_latest_artifact_protected": bool(active_latest_artifact),
+        "custody_receipt_protected": bool(custody_receipt),
         "training_candidate": bool(training_candidate),
         "training_eligible": bool(training_eligible),
         "compression_candidate": bool(compression_candidate),

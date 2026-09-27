@@ -419,7 +419,7 @@ def _paper_source_files(
         for path in children(resolved_root, recursive=True):
             if path.match("paper_trades_*.jsonl") or path.match(
                 "paper_trades_*.jsonl.gz"
-            ):
+            ) or path.match("paper_trades_*.jsonl.raw-training.gz"):
                 all_trade_log_paths.append(path)
             elif path.match("paper_trades_*.jsonl.local_fallback*") or path.match(
                 "paper_trades_*.jsonl.gz.local_fallback*"
@@ -439,6 +439,7 @@ def _paper_source_files(
             for path in children(bridge_root, recursive=False)
             if path.match("paper_bridge_orders_*.jsonl")
             or path.match("paper_bridge_orders_*.jsonl.gz")
+            or path.match("paper_bridge_orders_*.jsonl.raw-training.gz")
         ]
     )
     source_groups = [
@@ -459,6 +460,7 @@ def _paper_source_files(
             sorted(
                 list(project_root.glob("paper_trades_*.jsonl"))
                 + list(project_root.glob("paper_trades_*.jsonl.gz"))
+                + list(project_root.glob("paper_trades_*.jsonl.raw-training.gz"))
             ),
         ),
     ]
@@ -625,7 +627,9 @@ def _iter_rows(
         counters.setdefault(key, 0)
     counters.setdefault("source_read_errors", [])
     for path in files:
-        opener = gzip.open if ".jsonl.gz" in path.name else Path.open
+        opener = gzip.open if (
+            ".jsonl.gz" in path.name or path.name.endswith(".jsonl.raw-training.gz")
+        ) else Path.open
         try:
             with opener(path, "rt", encoding="utf-8") as handle:
                 counters["source_files_opened"] += 1

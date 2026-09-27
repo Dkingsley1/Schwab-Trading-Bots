@@ -365,7 +365,12 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
             _row(
                 surface="training_quality",
                 state="degraded",
-                summary=f"training_quality_score={training_score:.2f} is recovering but still below the regression target",
+                summary=(
+                    f"training_quality_score={training_score:.2f} meets the score target; "
+                    f"producer_status={training_status or 'unknown'} still requires resolution"
+                    if training_score >= 85.0
+                    else f"training_quality_score={training_score:.2f} remains below the regression target"
+                ),
                 recommended_command=[
                     "./scripts/ops/opsctl.sh",
                     "training-quality",
@@ -1061,6 +1066,14 @@ def build_payload(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     for row in rows:
         surface = str(row.get("surface") or "")
         row["source_evidence"] = _source_diagnostics(*sources[surface])
+        producer = sources[surface][0]
+        if producer.get("artifact_refresh_failed") is True:
+            missing = list(producer.get("missing_current_epoch_dependencies") or [])
+            row.update(state="blocked", severity="critical",
+                       summary=f"{surface} evidence refresh failed; current score unavailable")
+            row["metrics"] = {"score_available": False, "missing_dependencies": missing}
+            row["source_evidence"]["issues"].append({
+                "check": "artifact_refresh_failed", "missing_dependencies": missing})
         if surface == "incident_closeout" and row["state"] == "ready" and incident_closeout.get("closeout_ready") is False and incident_closeout.get("blocking_surfaces"):
             critical = any(_as_dict(item).get("severity") == "critical" for item in _as_list(incident_closeout.get("blocking_surfaces")))
             row.update(state="blocked" if critical else "degraded",

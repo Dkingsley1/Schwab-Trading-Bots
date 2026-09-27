@@ -281,6 +281,22 @@ def test_queue_all_raw_sources_but_only_eligible_old_sources_compact(
     assert payload["overall_grade"] == "A+"
 
 
+def test_restore_receipts_are_protected_not_live_fallback_or_training(tmp_path):
+    from scripts.ops import raw_training_compaction_intelligence as owner
+    import time
+
+    path = tmp_path / "cold_archive/storage_split_brain/local_fallback_storage/sample.local_fallback.restore_proofs.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"verified":true}\n')
+    row = owner._classify_row(path, scan_root=tmp_path, now_ts=time.time() + 86400 * 3,
+                              today="20990101", min_age_hours=24, sample_bytes=1024)
+    assert row["custody_receipt_protected"]
+    assert not row["local_fallback_reconciliation_required"]
+    assert not row["training_eligible"]
+    assert not row["compression_candidate"]
+    assert owner._select_batch([row], 10, 1) == []
+
+
 def test_external_fallback_archive_is_evidence_not_live_reconciliation_debt(
     tmp_path: Path,
 ) -> None:

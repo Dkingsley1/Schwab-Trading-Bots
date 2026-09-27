@@ -344,10 +344,22 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "timeout_sec": 180,
         },
         {
+            "name": "training_labeling_observation",
+            "payload_path": health_root / "training_labeling_intelligence_latest.json",
+            "cmd": [
+                str(PY),
+                str(ops_root / "training_labeling_intelligence.py"),
+                "--refresh-artifacts",
+                "--json",
+            ],
+            "timeout_sec": 90,
+        },
+        {
             "name": "training_quality_control",
             "payload_path": health_root / "training_quality_control_latest.json",
             "cmd": [str(PY), str(ops_root / "training_quality_control.py"), "--json"],
             "timeout_sec": 180,
+            "depends_on": ["training_labeling_observation"],
         },
         {
             "name": "bot_needs_intelligence",
@@ -1618,6 +1630,7 @@ def _step_specs(project_root: Path) -> list[dict[str, Any]]:
             "cmd": [str(PY), str(ops_root / "training_quality_control.py"), "--json"],
             "timeout_sec": 180,
             "depends_on": [
+                "training_labeling_observation",
                 "training_lineage_manifest_verified",
                 "training_label_audit_verified",
             ],

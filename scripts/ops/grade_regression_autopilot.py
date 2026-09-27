@@ -145,6 +145,7 @@ def _repair_plan(project_root: Path, guard_payload: dict[str, Any], *, storage_m
         )
 
     def promotion_dependencies(surface: str, state: str) -> None:
+        add(surface, "refresh_schema_contracts", [str(PYTHON_BIN), str(project_root / "scripts" / "schema_migration_guard.py"), "--json"], 30)
         add(surface, "refresh_schema_assessment", [str(PYTHON_BIN), str(project_root / "scripts" / "retrain_schema_compatibility_guard.py"), "--json"], 30)
         for owner in ("walk_forward_validate.py", "walk_forward_promotion_gate.py"):
             add(surface, state, [str(PYTHON_BIN), str(project_root / "scripts" / owner)], 30)
@@ -167,6 +168,12 @@ def _repair_plan(project_root: Path, guard_payload: dict[str, Any], *, storage_m
                 "--json",
             ],
             180,
+        )
+        add(
+            surface,
+            state,
+            [str(PYTHON_BIN), str(project_root / "scripts" / "promotion_quality_gate.py"), "--json"],
+            30,
         )
         add(
             surface,
@@ -326,6 +333,9 @@ def _repair_plan(project_root: Path, guard_payload: dict[str, Any], *, storage_m
             promotion_dependencies(surface, state)
 
     if training_quality_state:
+        add("training_quality", "refresh_label_contract_observation",
+            [str(PYTHON_BIN), str(ops_root / "training_labeling_intelligence.py"),
+             "--refresh-artifacts", "--json"], 90)
         add("training_quality", training_quality_state,
             [str(PYTHON_BIN), str(ops_root / "training_quality_control.py"), "--json"], 180)
 

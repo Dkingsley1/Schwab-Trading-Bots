@@ -42,6 +42,13 @@ it is not an exact new incident count. Incomplete scans cannot erase prior state
 
 ## Bounds And Authority
 
+The failure census reads only the latest two daily families, with ceilings of
+32 MiB decoded bytes, 50,000 raw rows, 64 files and eight seconds. The larger
+bounded byte/row allowance covers retained maintenance-failure journals without
+truncating them at the former 8 MiB/25,000-row limit. The 2 MiB per-line bound,
+schema checks, stable-source checks and prior-debt preservation remain unchanged.
+A complete census counts failures; it does not certify recovery of their payloads.
+
 Failed checks back off from 60 to 900 seconds and escalate after six attempts per
 failure generation. A new failure generation resets probation. Recovery state is
 bounded to 256 domains and 2 MiB; each failed batch checkpoint holds at most 128
@@ -50,3 +57,12 @@ record identities. Control state and proof receipts are excluded from ingestion.
 No recovery receipt changes storage reserves, broker approval, trading locks,
 economic evidence or execution authority. A read-only `data-plane-recovery --json`
 reports state without advancing requests, retries or probation.
+
+For the selected external SQLite primary, `core/collection_continuity.py` retains
+shared-channel outage evidence in an internal FULL-sync outbox. Native accrual
+archives it after UUID/reserve/route verification and full gzip readback, without
+replaying execution signals or altering database links. Collection-only startup
+requires execution OFF, local routes, no maintenance hold and adequate reserve.
+Normal retained JSONL files remain the SQL linker's recovery inputs. Archive
+completion is not an ingestion checkpoint or failed-write closeout certificate.
+See `docs/operations/EXTERNAL_DRIVE_ONBOARDING.md` for scope and runtime adoption.

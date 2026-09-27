@@ -8,6 +8,12 @@ from pathlib import Path
 from scripts.ops import readiness_evidence_refresh as refresh
 
 
+def test_quality_refresh_requires_read_only_label_observation():
+    steps = {row["name"]: row for row in refresh.default_steps()}
+    assert "training_labeling_observation" in steps["training_quality_control"]["depends_on"]
+    assert steps["training_labeling_observation"]["args"] == ["--refresh-artifacts", "--json"]
+
+
 @pytest.mark.parametrize("profile", ["accrual", "dashboard"])
 def test_feature_manifest_refreshes_its_preferred_training_coverage(profile):
     steps = refresh.profile_steps(profile)

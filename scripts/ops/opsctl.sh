@@ -850,6 +850,9 @@ case "$cmd" in
   storage-fallback-repair)
     exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_failback_sync.py" --repair-local-fallback-aliases "$@"
     ;;
+  collection-buffer-drain)
+    exec "$PY" "$PROJECT_ROOT/scripts/ops/storage_failback_sync.py" --drain-collection-buffer "$@"
+    ;;
   start-sim)
     exec "$PROJECT_ROOT/scripts/ops/start_stack.sh" --profile sim --simulate "$@"
     ;;
@@ -3297,6 +3300,7 @@ opsctl commands:
   decision-chart-report --decision-log PATH --decision-id ID [--executions-json PATH] [--review-capture-sha256 HASH]
   decision-candle-capture --symbol SYMBOL
   storage-fallback-repair [--apply] [--json]
+  collection-buffer-drain --apply [--json]  # verified evidence archival only; never replay execution signals
   emergency-storage-thin [--apply] [--json]
   storage-route-verify [--json]
   status

@@ -9,6 +9,33 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ops import grade_regression_guard as src
 
 
+def test_high_training_score_does_not_hide_owner_block_or_claim_score_shortfall(tmp_path):
+    _write_json(
+        tmp_path / "governance/health/training_quality_control_latest.json",
+        {"overall_status": "blocked", "training_quality_score": 100.0},
+    )
+    row = next(row for row in src.build_payload(tmp_path)["surfaces"]
+               if row["surface"] == "training_quality")
+    assert row["state"] == "degraded"
+    assert "meets the score target" in row["summary"]
+    assert "producer_status=blocked" in row["summary"]
+    assert "below" not in row["summary"]
+
+
+def test_refresh_failure_cannot_be_reported_as_measured_zero_or_good_score(tmp_path):
+    for supplied_score in (None, 99.0):
+        data = {"overall_status": "blocked", "artifact_refresh_failed": True,
+                "missing_current_epoch_dependencies": ["feature_store_manifest_verified"]}
+        if supplied_score is not None:
+            data["training_quality_score"] = supplied_score
+        _write_json(tmp_path / "governance/health/training_quality_control_latest.json", data)
+        row = next(row for row in src.build_payload(tmp_path)["surfaces"] if row["surface"] == "training_quality")
+        assert row["state"] == "blocked"
+        assert "score unavailable" in row["summary"]
+        assert "0.00" not in row["summary"]
+        assert not row["metrics"]["score_available"]
+
+
 def test_source_diagnostics_preserve_old_evidence_and_exact_failed_checks(tmp_path):
     _write_json(
         tmp_path / "governance/health/training_quality_control_latest.json",

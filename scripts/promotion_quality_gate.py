@@ -14,6 +14,11 @@ from core.ingestion_health_evidence import ingestion_observation_ready
 from scripts.ops.long_runtime_common import write_payload
 
 OPS_THRESHOLDS_FILE = PROJECT_ROOT / "governance" / "ops_thresholds.json"
+RECOVERABLE_OPERATIONAL_CHECKS = {
+    "schema_migration_guard": ("governance/migrations/latest.json", 1800),
+    "sleeve_slo_guard": ("governance/watchdog/sleeve_slo_latest.json", 360),
+    "ingestion_storage_control": ("governance/health/ingestion_storage_control_latest.json", 300),
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -138,6 +143,30 @@ def _calibration_promotion_ready(payload: dict[str, Any] | None) -> bool:
     return bool(snapshot.get("ok", False))
 
 
+def _operational_check_recovered(name: str, evidence: dict, daily: dict) -> bool:
+    specification = RECOVERABLE_OPERATIONAL_CHECKS.get(name)
+    if (
+        specification is None
+        or daily.get("running") is not False
+        or evidence.get("ok") is not True
+        or evidence.get("artifact_refresh_failed") is True
+        or evidence.get("failed_checks")
+        or evidence.get("overall_status", "ready") != "ready"
+    ):
+        return False
+    try:
+        observed = datetime.fromisoformat(str(evidence["timestamp_utc"]).replace("Z", "+00:00"))
+        failed_at = datetime.fromisoformat(str(daily["timestamp_utc"]).replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        return bool(
+            observed.tzinfo and failed_at.tzinfo
+            and failed_at < observed <= now
+            and (now - observed).total_seconds() <= specification[1]
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
 def _resolve_daily_verify_failures(
     daily_verify: dict[str, Any],
     *,
@@ -165,6 +194,7 @@ def _resolve_daily_verify_failures(
     resource_guard: dict[str, Any] | None = None,
     ignored_failed_checks: set[str] | None = None,
     ingestion_backpressure: dict[str, Any] | None = None,
+    current_operational_checks: dict[str, dict] | None = None,
 ) -> tuple[list[str], list[str]]:
     failed = (
         daily_verify.get("failed_checks")
@@ -182,6 +212,11 @@ def _resolve_daily_verify_failures(
     resource_guard = resource_guard or {}
     for item in failed:
         name = str(item or "").strip()
+        if _operational_check_recovered(
+            name, (current_operational_checks or {}).get(name) or {}, daily_verify
+        ):
+            resolved.append(name)
+            continue
         if name in ignored:
             resolved.append(name)
             continue
@@ -352,6 +387,7 @@ def evaluate_quality(
     resource_guard: dict[str, Any] | None = None,
     *,
     ingestion_backpressure: dict[str, Any] | None = None,
+    current_operational_checks: dict[str, dict] | None = None,
     max_fail_share: float,
     min_considered_bots: int,
     require_replay: bool,
@@ -446,6 +482,7 @@ def evaluate_quality(
         resource_guard=resource_guard,
         ignored_failed_checks=ignore_daily_verify_failed_checks,
         ingestion_backpressure=ingestion_backpressure,
+        current_operational_checks=current_operational_checks,
     )
 
     promotion_scope_active = _promotion_scope_active(promotion_gate, graduation_gate)
@@ -945,6 +982,10 @@ def main() -> int:
     db_integrity = _load_json(Path(args.db_integrity_file))
     execution_queue_stress = _load_json(Path(args.execution_queue_stress_file))
     resource_guard = _load_json(Path(args.resource_guard_file))
+    operational_check_files = {
+        name: PROJECT_ROOT / relative
+        for name, (relative, _) in RECOVERABLE_OPERATIONAL_CHECKS.items()
+    }
 
     ok, failed_checks, details = evaluate_quality(
         promotion,
@@ -955,6 +996,9 @@ def main() -> int:
         replay_hash_registry,
         reconciliation,
         ingestion_backpressure=ingestion_backpressure,
+        current_operational_checks={
+            name: _load_json(path) for name, path in operational_check_files.items()
+        },
         feature_store_manifest=feature_store_manifest,
         bot_support_owner_guard=owner_guard,
         new_bot_admission_guard=new_bot_admission,
@@ -1105,6 +1149,9 @@ def main() -> int:
         "source_files": {
             "promotion_gate": str(args.promotion_gate_file),
             "daily_verify": str(args.daily_verify_file),
+            "operational_recovery_checks": {
+                name: str(path) for name, path in operational_check_files.items()
+            },
             "ingestion_backpressure": str(args.ingestion_backpressure_file),
             "graduation": str(args.graduation_file),
             "bot_support_owner_guard": str(args.bot_support_owner_file),

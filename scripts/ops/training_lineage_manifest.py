@@ -22,7 +22,11 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _load_latest_jsonl_row(path: Path) -> dict[str, Any]:
-    candidates = [path, path.with_name(f"{path.name}.gz")]
+    candidates = [
+        path,
+        path.with_name(f"{path.name}.gz"),
+        path.with_name(f"{path.name}.raw-training.gz"),
+    ]
     latest: dict[str, Any] = {}
     latest_key = ("", -1)
     ordinal = 0

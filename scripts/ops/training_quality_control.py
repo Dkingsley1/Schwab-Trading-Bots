@@ -177,7 +177,11 @@ def _load_latest_jsonl_row(path: Path) -> Dict[str, Any]:
     latest: Dict[str, Any] = {}
     latest_key = ("", -1)
     ordinal = 0
-    for candidate in (path, path.with_name(f"{path.name}.gz")):
+    for candidate in (
+        path,
+        path.with_name(f"{path.name}.gz"),
+        path.with_name(f"{path.name}.raw-training.gz"),
+    ):
         if not candidate.exists():
             continue
         opener = gzip.open if candidate.name.endswith(".gz") else open

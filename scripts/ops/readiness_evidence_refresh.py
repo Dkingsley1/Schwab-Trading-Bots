@@ -310,12 +310,22 @@ def default_steps() -> list[dict[str, Any]]:
             owner_timeout_seconds=1500,
         ),
         _step(
+            "training_labeling_observation",
+            "scripts/ops/training_labeling_intelligence.py",
+            "governance/health/training_labeling_intelligence_latest.json",
+            "--refresh-artifacts",
+            "--json",
+            max_age_minutes=15,
+            owner_timeout_seconds=90,
+        ),
+        _step(
             "training_quality_control",
             "scripts/ops/training_quality_control.py",
             "governance/health/training_quality_control_latest.json",
             "--json",
             max_age_minutes=15,
             allowed_returncodes=(0, 2),
+            depends_on=("training_labeling_observation",),
         ),
         _step(
             "bot_needs_intelligence",
@@ -1396,6 +1406,21 @@ def default_steps() -> list[dict[str, Any]]:
     ]
 
 
+def _storage_profile_steps(project_root: Path, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from core import sqlite_primary_storage as primary
+
+    if not primary.enabled(project_root):
+        return steps
+    return [
+        {**step, "script": "scripts/ops/storage_failback_sync.py",
+         "args": ["--drain-collection-buffer", "--apply", "--json"],
+         "artifact": "governance/health/collection_continuity_latest.json",
+         "max_age_minutes": 1, "allowed_returncodes": [0, 2]}
+        if step.get("name") == "storage_fallback_repair" else step
+        for step in steps
+    ]
+
+
 def profile_steps(
     profile: str, *, steps: list[dict[str, Any]] | None = None
 ) -> list[dict[str, Any]]:
@@ -1558,6 +1583,7 @@ def refresh(
         }
 
     selected_steps = steps if steps is not None else profile_steps(profile_key)
+    selected_steps = _storage_profile_steps(project_root, selected_steps)
     selected_names = {str(spec.get("name") or "unnamed") for spec in selected_steps}
     selected_by_name = {
         str(spec.get("name") or "unnamed"): spec for spec in selected_steps

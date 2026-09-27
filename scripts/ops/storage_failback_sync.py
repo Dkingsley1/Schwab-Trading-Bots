@@ -1077,10 +1077,13 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--verify-only", action="store_true", help="Refresh read-only route metadata without failback, copying, pruning, or environment changes.")
     parser.add_argument("--repair-local-fallback-aliases", action="store_true")
+    parser.add_argument("--drain-collection-buffer", action="store_true", help="Archive collection-only outage evidence to the verified selected SSD; never replay queue messages.")
     parser.add_argument("--apply", action="store_true", help="Apply an explicit fallback-alias repair or receipt-bound SQLite primary handoff.")
     parser.add_argument("--sqlite-primary-receipt", type=Path, help="Owned, verified quiet-point handoff receipt; requires --apply and an authorized maintenance hold.")
     args = parser.parse_args()
     from core import sqlite_primary_storage as primary
+    if args.drain_collection_buffer and (not args.apply or args.verify_only or args.sqlite_primary_receipt or args.repair_local_fallback_aliases or not primary.enabled(PROJECT_ROOT)):
+        parser.error("collection drain requires selected SQLite primary and --apply, without other mutation or observation modes")
     if args.sqlite_primary_receipt and (not args.apply or args.verify_only or not primary.enabled(PROJECT_ROOT)):
         parser.error("SQLite handoff requires sqlite_primary profile and --apply, without --verify-only")
     if args.verify_only and args.repair_local_fallback_aliases:
@@ -1111,6 +1114,11 @@ def main() -> int:
 
     if primary.enabled(PROJECT_ROOT):
         try:
+            if args.drain_collection_buffer:
+                from core.collection_continuity import reconcile
+                payload = reconcile(PROJECT_ROOT)
+                print(json.dumps(payload))
+                return 0 if payload["ok"] else 2
             if args.repair_local_fallback_aliases:
                 raise RuntimeError("sqlite_primary_legacy_fallback_repair_forbidden")
             payload = (primary.commit_routes(PROJECT_ROOT, args.sqlite_primary_receipt)

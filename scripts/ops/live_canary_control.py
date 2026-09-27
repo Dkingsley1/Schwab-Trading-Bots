@@ -29,6 +29,7 @@ else:
 
 from core.live_canary_allowlist import evaluate_live_canary_allowlist
 from core.live_canary_preflight import evaluate_live_canary_preflight
+from core import sqlite_primary_storage
 
 DEFAULT_OUT_PATH = (
     PROJECT_ROOT / "governance" / "health" / "live_canary_control_latest.json"
@@ -106,8 +107,23 @@ def build_payload(
 
     broker_ready = bool(broker.get("ready_for_open", False))
     session_ready = bool(session.get("ready", session.get("ok", False)))
-    storage_ok = bool(storage.get("ok", True))
+    storage_route_probe = None
+    try:
+        if sqlite_primary_storage.enabled(project_root):
+            # Observe the selected device and routes now; an old report cannot certify a moved SSD.
+            storage_route_probe = sqlite_primary_storage.observe(project_root)
+            storage = storage_route_probe
+    except (OSError, ValueError) as exc:
+        storage = {"ok": False, "mode": "sqlite_primary_unavailable", "blockers": [str(exc)]}
+        storage_route_probe = storage
+    storage_ok = storage.get("ok") is True
     storage_mode = str(storage.get("mode") or "").strip()
+    storage_external_ready = bool(
+        storage_ok and (
+            storage_mode == "external"
+            or (storage_mode == sqlite_primary_storage.PROFILE and storage_route_probe is not None)
+        )
+    )
     live_lane_running = bool(
         (bool(live_lane) and not bool(live_lane.get("stale", False)))
         or live_readiness.get("live_lane_running", False)
@@ -207,7 +223,7 @@ def build_payload(
         )
     )
     prereq_ready = bool(
-        broker_ready and session_ready and storage_ok and storage_mode == "external"
+        broker_ready and session_ready and storage_external_ready
     )
 
     blocking_reasons = ordered_unique(
@@ -222,7 +238,7 @@ def build_payload(
             "storage_not_ready" if not storage_ok else "",
             (
                 "storage_not_external"
-                if storage_ok and storage_mode and storage_mode != "external"
+                if storage_ok and not storage_external_ready
                 else ""
             ),
             "live_lane_not_running" if not live_lane_running else "",
@@ -454,6 +470,8 @@ def build_payload(
         "session_ready": session_ready,
         "storage_ok": storage_ok,
         "storage_mode": storage_mode,
+        "storage_external_ready": storage_external_ready,
+        "storage_route_probe": storage_route_probe,
         "live_lane_running": live_lane_running,
         "runtime_clearance_state": clearance_state or "unknown",
         "runtime_clearance_recoverable": runtime_clearance_recoverable,

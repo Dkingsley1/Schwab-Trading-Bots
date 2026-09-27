@@ -306,6 +306,18 @@ def test_history_row_budget_counts_records_before_deduplication(tmp_path, monkey
     assert not result["write_failure_history"]["complete"]
 
 
+def test_failure_census_covers_larger_retained_history_without_reconciling_it(tmp_path):
+    path = write_journal(tmp_path, [failure(iter_id=f"run:{n}", detail="x" * 150) for n in range(26000)])
+    assert path.stat().st_size > 8 * 1024**2
+    result = data_plane._write_failure_history(tmp_path, {})
+    assert result["complete"] is True
+    assert result["count"] == result["raw_event_count"] == 26000
+    assert result["bytes_read"] == path.stat().st_size
+    assert result["domains"][0]["record_checkpoint_complete"] is False
+    assert data_plane.WRITE_HISTORY_MAX_BYTES == 32 * 1024**2
+    assert data_plane.WRITE_HISTORY_MAX_ROWS == 50000
+
+
 def test_complete_journal_census_supersedes_preupgrade_display_sample(tmp_path):
     write_journal(tmp_path, [failure(iter_id=f"run:{n}") for n in range(13)])
     health = tmp_path / "governance/health"

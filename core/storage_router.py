@@ -758,11 +758,24 @@ def route_runtime_storage(
     link_dirs: Iterable[str] = DEFAULT_LINK_DIRS,
     *,
     allow_autosync: bool = False,
+    collection_only: bool = False,
 ) -> StorageRoutingResult:
     root = Path(project_root).resolve()
     from core import sqlite_primary_storage as primary
     if primary.enabled(root):
-        target = primary.require_ready(root)
+        try:
+            target = primary.require_ready(root)
+        except RuntimeError:
+            if not collection_only:
+                raise
+            from core.collection_continuity import collection_start_allowed
+
+            collection_start_allowed(root)
+            return StorageRoutingResult(
+                mode="sqlite_primary_collection_buffer", active_root=root,
+                switched_links=(), passthrough_paths=("governance", "logs", "decisions", "decision_explanations"),
+                autosync_skipped_reason="collection_only_internal_buffer_sqlite_and_execution_stay_blocked",
+            )
         # Only the explicit maintenance-held handoff owner may alter these links.
         return StorageRoutingResult(
             mode=primary.PROFILE, active_root=target, switched_links=(),

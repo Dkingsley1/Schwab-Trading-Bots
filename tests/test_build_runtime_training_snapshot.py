@@ -358,7 +358,7 @@ def test_stored_coverage_uses_existing_json_accelerator_with_safe_fallback(
     assert bool(calls) == (backend != "unavailable")
 
 
-@pytest.mark.parametrize("size_mib,expected", [(0, 15), (1, 15), (480, 15), (1024, 32), (1920, 60), (8192, 60)])
+@pytest.mark.parametrize("size_mib,expected", [(0, 15), (1, 15), (180, 15), (480, 40), (1024, 1024/12), (1920, 110), (8192, 110)])
 def test_light_coverage_budget_scales_with_size_and_stays_bounded(size_mib, expected):
     assert src._light_coverage_runtime_budget(size_mib * 1024 * 1024) == expected
 

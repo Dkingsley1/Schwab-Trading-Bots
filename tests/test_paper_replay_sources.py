@@ -1,6 +1,7 @@
 import gzip
 import json
 import sys
+import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -33,10 +34,11 @@ def _run(tmp_path, monkeypatch, *extra):
     return rc, json.loads(out.read_text())
 
 
-def test_compressed_external_trade_logs_are_discovered(tmp_path, monkeypatch):
+@pytest.mark.parametrize("suffix", [".gz", ".raw-training.gz"])
+def test_compressed_external_trade_logs_are_discovered(tmp_path, monkeypatch, suffix):
     external = tmp_path / "external"
     monkeypatch.setenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", str(external))
-    path = external / "exports/trade_logs/shadow_aggressive_equities/paper_trades_paper.jsonl.gz"
+    path = external / f"exports/trade_logs/shadow_aggressive_equities/paper_trades_paper.jsonl{suffix}"
     _write(path, _rows())
     rc, payload = _run(tmp_path, monkeypatch)
     assert rc == 0 and payload["ok"]
@@ -49,9 +51,10 @@ def test_identical_raw_and_compressed_rows_do_not_inflate_floor(tmp_path, monkey
     rows = _rows(1) * 20
     _write(tmp_path / "paper_trades_test.jsonl", rows)
     _write(tmp_path / "paper_trades_test.jsonl.gz", rows)
+    _write(tmp_path / "paper_trades_test.jsonl.raw-training.gz", rows)
     rc, payload = _run(tmp_path, monkeypatch)
     assert rc == 2 and payload["rows"] == 1
-    assert payload["source"]["duplicate_rows_excluded"] == 39
+    assert payload["source"]["duplicate_rows_excluded"] == 59
     assert "paper_rows_low" in payload["failed_checks"]
 
 
@@ -84,9 +87,10 @@ def test_shared_byte_budget_cannot_publish_partial_success(tmp_path, monkeypatch
     assert "incomplete_or_oversized_source_row" in payload["failed_checks"]
 
 
-def test_gzip_crc_failure_preserves_failed_scan(tmp_path, monkeypatch):
+@pytest.mark.parametrize("suffix", [".gz", ".raw-training.gz"])
+def test_gzip_crc_failure_preserves_failed_scan(tmp_path, monkeypatch, suffix):
     monkeypatch.delenv("BOT_LOGS_EXTERNAL_PROJECT_ROOT", raising=False)
-    path = tmp_path / "paper_trades_test.jsonl.gz"
+    path = tmp_path / f"paper_trades_test.jsonl{suffix}"
     _write(path, _rows())
     path.write_bytes(path.read_bytes()[:-5])
     rc, payload = _run(tmp_path, monkeypatch)

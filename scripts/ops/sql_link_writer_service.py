@@ -385,6 +385,15 @@ def main() -> int:
         cycle_ts = time.time()
         json_file_sync_interval = max(int(args.json_file_sync_min_interval_seconds), 60)
         include_json_files = (cycle_ts - float(last_json_file_sync_ts)) >= json_file_sync_interval
+        from core import sqlite_primary_storage as primary
+        if primary.enabled(PROJECT_ROOT):
+            from core.collection_continuity import reconcile
+            # Custody archival never enqueues delayed execution signals. Failure
+            # retains the outbox and must not starve normal JSONL ingestion.
+            try:
+                reconcile(PROJECT_ROOT)
+            except (OSError, ValueError, RuntimeError) as exc:
+                print(f"collection_buffer_deferred={type(exc).__name__}", flush=True)
         rc, out, err = _run_link(
             timeout_s=int(args.sqlite_timeout_seconds),
             lock_retries=int(args.sqlite_lock_retries),

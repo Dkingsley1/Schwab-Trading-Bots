@@ -950,7 +950,8 @@ def test_paper_performance_report_surfaces_advanced_feature_telemetry(tmp_path, 
     assert "cross_sectional_rank" in sleeve["advanced_feature_summary"]
 
 
-def test_paper_performance_report_ingests_mixed_and_gz_sources(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("suffix", [".gz", ".raw-training.gz"])
+def test_paper_performance_report_ingests_mixed_and_gz_sources(tmp_path, monkeypatch, suffix) -> None:
     import gzip
 
     project_root = tmp_path / "project"
@@ -988,9 +989,9 @@ def test_paper_performance_report_ingests_mixed_and_gz_sources(tmp_path, monkeyp
     }
 
     (bridge_dir / "paper_bridge_orders_20260401.jsonl").write_text(json.dumps(bridge_row) + "\n", encoding="utf-8")
-    with gzip.open(trade_logs_dir / "paper_trades_20260401.jsonl.gz", "wt", encoding="utf-8") as handle:
+    with gzip.open(trade_logs_dir / f"paper_trades_20260401.jsonl{suffix}", "wt", encoding="utf-8") as handle:
         handle.write(json.dumps(trade_log_row) + "\n")
-    with gzip.open(project_root / "paper_trades_20260401.jsonl.gz", "wt", encoding="utf-8") as handle:
+    with gzip.open(project_root / f"paper_trades_20260401.jsonl{suffix}", "wt", encoding="utf-8") as handle:
         handle.write(json.dumps(root_row) + "\n")
 
     monkeypatch.setattr(report, "PROJECT_ROOT", project_root)

@@ -110,7 +110,36 @@ def _idle(path):
             raise RuntimeError("retirement_source_journal_present")
 
 
-def retire_standbys(root: Path, receipt_path: Path, *, apply: bool = False) -> dict:
+def reviewed_source_identity(root, relative, prepared):
+    if relative != "jsonl_link.sqlite3":
+        return prepared[relative]["source_identity"], []
+    reconciled = _owned_json(root, root / "governance/storage_recovery/sqlite_primary_recovery_reconciliation.json")
+    if (reconciled.get("purpose") != "sqlite_primary_route_recovery_reconciliation"
+            or reconciled.get("all_standby_payloads_preserved") is not True
+            or reconciled.get("primary_cursors_not_regressed") is not True):
+        raise ValueError("central_retirement_prior_reconciliation_missing")
+    reports = [r for r in reconciled.get("tables", []) if r.get("table") == "one_numbers_snapshots"]
+    if len(reports) != 1:
+        raise ValueError("central_retirement_report_mapping_missing")
+    return reconciled["source_identity"], reports[0]["report_id_mapping"]
+
+
+def _central_idle(root, source, target, relative):
+    active = target / "data" / relative
+    shared_memory = Path(str(active) + "-shm")
+    if os.path.lexists(shared_memory) and primary._identity(shared_memory)[2]:
+        from core.sqlite_primary_recovery import _quiet
+
+        # Reuse the recovery owner's SQLite-only cleanup, including its second
+        # quiet point and unchanged database identity checks. Never unlink SHM.
+        primary._hold(root)
+        _quiet(root / "local_fallback_storage/data", target,
+               [{"relative": relative}], {relative: primary._identity(source)})
+    _idle(active)
+
+
+def retire_standbys(root: Path, receipt_path: Path, *, apply: bool = False,
+                    allow_central_databases: bool = False) -> dict:
     root = Path(root).absolute()
     if not primary.enabled(root):
         raise RuntimeError("retirement_requires_sqlite_primary")
@@ -151,23 +180,39 @@ def retire_standbys(root: Path, receipt_path: Path, *, apply: bool = False) -> d
         verified = []
         for row in rows:
             relative = row["relative"]
-            if not re.fullmatch(
+            central = allow_central_databases and relative in primary.DATABASES
+            if not central and not re.fullmatch(
                 r"sql_link_shards/jsonl_link_[A-Za-z0-9_]+\.sqlite3", relative
             ):
                 raise ValueError("retirement_only_named_standby_shards")
             source = root / "local_fallback_storage/data" / relative
             primary._physical(source.parent)
+            if relative not in prepared:
+                raise ValueError("retirement_source_not_in_cutover")
+            expected_identity, mapping = (
+                reviewed_source_identity(root, relative, prepared) if central
+                else (prepared[relative]["source_identity"], [])
+            )
             if (
                 row.get("source") != str(source)
                 or relative not in prepared
                 or primary._identity(source) != row["source_identity"]
-                or row["source_identity"] != prepared[relative]["source_identity"]
+                or row["source_identity"] != expected_identity
                 or row.get("restored_bytes") != row["source_identity"][2]
                 or row.get("full_restore_hash_verified") is not True
             ):
                 raise ValueError("retirement_source_custody_mismatch")
             _idle(source)
-            primary._identity(target / "data" / relative)
+            active = target / "data" / relative
+            active_identity = primary._identity(active)
+            if central:
+                from core.sqlite_standby_reconciliation import verify_records
+
+                _central_idle(root, source, target, relative)
+                custody = verify_records(source, active, report_mapping=mapping,
+                    guard=lambda: primary._hold(root))
+                row = {**row, "central_reconciliation": custody,
+                       "reconciled_target_identity": active_identity}
             backup = _backup_volume(row, target, source)
             backup_identity = primary._identity(backup)
             if backup_identity != row["backup_identity"]:
@@ -185,6 +230,10 @@ def retire_standbys(root: Path, receipt_path: Path, *, apply: bool = False) -> d
                 raise ValueError("retirement_changed_during_verification")
             primary._hold(root)
             primary.require_ready(root)
+            if central:
+                _central_idle(root, source, target, relative)
+                if primary._identity(active) != active_identity:
+                    raise ValueError("central_retirement_target_changed")
             verified.append(row)
         result = {
             "purpose": "sqlite_primary_standby_retirement",
@@ -205,6 +254,11 @@ def retire_standbys(root: Path, receipt_path: Path, *, apply: bool = False) -> d
             primary.require_ready(root)
             source = Path(row["source"])
             primary._identity(target / "data" / row["relative"])
+            if row.get("central_reconciliation"):
+                active = target / "data" / row["relative"]
+                _central_idle(root, source, target, row["relative"])
+                if primary._identity(active) != row["reconciled_target_identity"]:
+                    raise ValueError("central_retirement_target_changed_before_unlink")
             backup = _backup_volume(row, target, source)
             _idle(source)
             if (
