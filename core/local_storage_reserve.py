@@ -129,6 +129,9 @@ def local_storage_reserve_contract(
         "BOT_LOCAL_STORAGE_EMERGENCY_FREE_GB": f"{emergency:.3f}",
         "BOT_LOCAL_STORAGE_RESERVE_PRESSURE": "1" if pressure_active else "0",
         "BOT_LOCAL_STORAGE_RESERVE_HARD_BLOCK": "1" if hard_block else "0",
+        # Explicitly release this owner's pause after a fresh clear assessment;
+        # omission can leave an inherited executor environment stuck paused.
+        "PAPER_EXECUTION_RUNTIME_PAUSED_FOR_LOCAL_STORAGE": "1" if pressure_active or hard_block else "0",
     }
     if pressure_active or hard_block:
         control_env.update(
@@ -139,7 +142,6 @@ def local_storage_reserve_contract(
                 "HEAVY_COLLECTORS_PAUSED_FOR_BACKLOG": "1",
                 "REPORT_REFRESH_PAUSED_FOR_BACKLOG": "1",
                 "SQL_LINK_SERVICE_PAUSED_FOR_LOCAL_STORAGE": "1",
-                "PAPER_EXECUTION_RUNTIME_PAUSED_FOR_LOCAL_STORAGE": "1",
                 "BOT_DATA_CAPTURE_MODE": "thin_digest_with_manifest",
                 "BOT_RAW_PAYLOAD_STORAGE_MODE": "manifest_first",
                 "BOT_STORAGE_SPACE_RECOVERY_REQUIRED": "1",

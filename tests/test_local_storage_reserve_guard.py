@@ -130,6 +130,20 @@ def test_live_reserve_contract_healthy_state_drops_pressure_only_keys(
     assert payload["ready"] is True
     assert "TRAINING_RUNTIME_PAUSED_FOR_BACKLOG" not in payload["control_env"]
     assert "HEAVY_COLLECTORS_PAUSED_FOR_BACKLOG" not in payload["control_env"]
+    assert payload["control_env"]["PAPER_EXECUTION_RUNTIME_PAUSED_FOR_LOCAL_STORAGE"] == "0"
+
+
+def test_paper_storage_pause_release_requires_known_pressure_clear(tmp_path):
+    thresholds = dict(target_free_gb=125, pressure_free_gb=64, hard_free_gb=32, emergency_free_gb=16)
+    clear = local_storage_reserve_contract(tmp_path, disk_usage_fn=lambda _: _usage(free_gb=95, total_gb=1000), **thresholds)
+    pressure = local_storage_reserve_contract(tmp_path, disk_usage_fn=lambda _: _usage(free_gb=60, total_gb=1000), **thresholds)
+    def unavailable(_):
+        raise OSError('unavailable')
+    unknown = local_storage_reserve_contract(tmp_path, disk_usage_fn=unavailable, **thresholds)
+    key = 'PAPER_EXECUTION_RUNTIME_PAUSED_FOR_LOCAL_STORAGE'
+    assert clear['status'] == 'watch' and clear['control_env'][key] == '0'
+    assert pressure['control_env'][key] == '1'
+    assert unknown['control_env'][key] == '1'
 
 
 def test_launchd_log_guard_caps_same_inode_and_preserves_tail(tmp_path: Path) -> None:

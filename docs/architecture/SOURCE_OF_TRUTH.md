@@ -4,6 +4,8 @@ This file is the top-level source-of-truth map for the Schwab trading bot. Each 
 
 The Coinbase snapshot merges only order-book-derived fields from the book summary, preserving funding, open interest, basis and other values from the quote summary. Focused snapshot tests verify the merge; they do not establish futures contract identity, provider-clock validity, loaded-process adoption or trading readiness.
 
+The local-storage reserve owner explicitly clears its paper-execution storage pause when its live disk assessment is known and above the pressure threshold. Unknown or pressured storage remains paused; the paper breaker, registration, risk and trading controls remain separate.
+
 Supervised readiness preserves risk-owner dependency blockers and ages in `technical_gate_diagnostics.risk_boundary`. Fresh degraded owner evidence is a successful observation, not technical clearance; refreshing a wrapper cannot renew its expired inputs.
 
 | Area | Canonical Source | Verification / Runtime Evidence | Edit Here First |
