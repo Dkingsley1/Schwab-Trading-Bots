@@ -114,6 +114,15 @@ FUTURES_FEATURE_KEYS = [
     "futures_cash_basis_confirmation_norm",
 ]
 
+# These are the fields measured by summarize_order_book. Its result also
+# includes defaults for other futures features, which must not erase quotes.
+FUTURES_ORDER_BOOK_FEATURE_KEYS = frozenset({
+    "futures_spread_bps", "futures_spread_bps_norm", "futures_bid_size",
+    "futures_ask_size", "futures_order_book_imbalance",
+    "futures_order_book_imbalance_norm", "futures_depth_ratio",
+    "futures_depth_ratio_norm",
+})
+
 CALENDAR_FEATURE_KEYS = [
     "calendar_feed_available",
     "calendar_events_24h_norm",

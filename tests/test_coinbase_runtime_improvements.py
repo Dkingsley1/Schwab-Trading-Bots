@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 import threading
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -114,6 +115,28 @@ def test_coinbase_market_snapshot_adds_execution_relevant_features(monkeypatch) 
     assert snapshot["volume_30m"] > 0.0
     assert snapshot["queue_depth_norm"] > 0.0
     assert snapshot["futures_vwap_bias_norm"] > 0.0
+
+
+def test_coinbase_snapshot_keeps_quote_features_when_book_is_present(monkeypatch):
+    client = CoinbaseMarketDataClient(timeout_seconds=0.1)
+    monkeypatch.setattr(client._ws_cache, 'latest', lambda symbol: {})
+    monkeypatch.setattr(client, 'get_ticker', lambda symbol: {
+        'price': '100', 'fundingRate': '0.001', 'openInterest': '1234',
+        'markPrice': '105', 'indexPrice': '100',
+    })
+    monkeypatch.setattr(client, 'get_candles', lambda symbol, minutes=60, granularity=60: [])
+    monkeypatch.setattr(client, 'get_product', lambda symbol: {})
+    monkeypatch.setattr(client, 'get_book', lambda symbol, level=2: {
+        'bids': [['99', '3']], 'asks': [['101', '1']],
+    })
+    snapshot = client.market_snapshot('BTC-USD')
+    client.close()
+    assert snapshot['futures_funding_rate'] == pytest.approx(0.001)
+    assert snapshot['futures_open_interest'] == pytest.approx(1234)
+    assert snapshot['futures_basis_bps'] == pytest.approx(500)
+    assert snapshot['futures_order_book_imbalance'] == pytest.approx((297 - 101) / (297 + 101))
+    assert snapshot['futures_bid_size'] == 3
+    assert snapshot['futures_ask_size'] == 1
 
 
 def test_coinbase_market_snapshot_prefers_fresh_websocket_data(monkeypatch) -> None:

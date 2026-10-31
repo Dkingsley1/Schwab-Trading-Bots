@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.derivatives_features import (
+    FUTURES_ORDER_BOOK_FEATURE_KEYS,
     default_futures_features,
     summarize_futures_quote_features,
     summarize_order_book,
@@ -617,9 +618,8 @@ class CoinbaseMarketDataClient:
         )
         futures = default_futures_features()
         futures.update(futures_quote)
-        for key, value in book_features.items():
-            if key in futures:
-                futures[key] = float(value)
+        for key in FUTURES_ORDER_BOOK_FEATURE_KEYS:
+            futures[key] = float(book_features[key])
 
         vwap_60m = (vwap_numerator / vwap_denominator) if vwap_denominator > 0.0 else 0.0
         if vwap_60m > 0.0 and last_price > 0.0:
